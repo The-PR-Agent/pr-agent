@@ -455,7 +455,7 @@ pr_commands = [
 
 [otel]
 # OpenTelemetry configuration
-enabled = true # Set to false to disable all telemetry
+enabled = false # Set to true to enable telemetry via LiteLLMAIHandler
 exporter_type = "console" # "console", "otlp", or "none"
 service_name = "pr-agent"
 environment = "development" # "development", "staging", "production", etc.
