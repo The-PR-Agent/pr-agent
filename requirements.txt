@@ -44,6 +44,9 @@ pydantic==2.13.3
 pydantic-settings==2.14.2
 html2text==2024.2.26
 giteapy==1.0.8
+opentelemetry-api==1.39.1
+opentelemetry-sdk==1.39.1
+opentelemetry-exporter-otlp-proto-grpc==1.39.1
 # Uncomment the following lines to enable the 'similar issue' tool
 # pinecone-client
 # pinecone-datasets @ git+https://github.com/mrT23/pinecone-datasets.git@main
