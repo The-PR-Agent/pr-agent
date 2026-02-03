@@ -31,7 +31,7 @@ def _init_telemetry():
     try:
         config = get_telemetry_config()
 
-        if not config.enabled or config.exporter_type == "none":
+        if not (config.is_enabled or config.exporter_type == "none"):
             # Return no-op tracer
             _tracer = trace.get_tracer(__name__)
             _initialized = True

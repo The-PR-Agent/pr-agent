@@ -3,15 +3,15 @@ from pr_agent.config_loader import get_settings
 from pr_agent.telemetry.types import TelemetryConfig
 
 
-def get_telemetry_config() -> TelemetryConfig:
+def get_otel_config() -> TelemetryConfig:
     """Read and validate telemetry configuration from settings"""
     settings = get_settings()
 
-    # Check if telemetry is enabled
-    enabled = settings.get("OTEL.ENABLED", True)
-    if not enabled:
+    # Check if telemetry is is_enabled
+    is_enabled = settings.get("OTEL.is_enabled", True)
+    if not is_enabled:
         return TelemetryConfig(
-            enabled=False,
+            is_enabled=False,
             exporter_type=None,
             service_name=None,
             service_version=None,
@@ -21,10 +21,10 @@ def get_telemetry_config() -> TelemetryConfig:
         )
 
     # Read configuration from settings
-    exporter_type = settings.get("OTEL.EXPORTER_TYPE", "console")
-    service_name = settings.get("OTEL.SERVICE_NAME", "pr-agent")
+    exporter_type = settings.get("OTEL.EXPORTER_TYPE", None)
+    service_name = settings.get("OTEL.SERVICE_NAME", None)
     service_version = get_version()  # From pr_agent.algo.utils
-    environment = settings.get("OTEL.ENVIRONMENT", "development")
+    environment = settings.get("OTEL.ENVIRONMENT", None)
 
     # OTLP configuration (secrets)
     otlp_endpoint = settings.get("OTEL.OTLP_ENDPOINT")
@@ -41,7 +41,7 @@ def get_telemetry_config() -> TelemetryConfig:
             )
 
     return TelemetryConfig(
-        enabled=True,
+        is_enabled=True,
         exporter_type=exporter_type,
         service_name=service_name,
         service_version=service_version,
