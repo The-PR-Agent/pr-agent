@@ -10,7 +10,7 @@ def get_otel_config() -> TelemetryConfig:
     settings = get_settings()
 
     # Check if telemetry is is_enabled
-    is_enabled = settings.get("OTEL.is_enabled", True)
+    is_enabled = settings.get("OTEL.is_enabled", False)
     if not is_enabled:
         return TelemetryConfig(
             is_enabled=False,
