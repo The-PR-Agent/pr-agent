@@ -7,7 +7,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
 
 from pr_agent.log import get_logger
-from pr_agent.telemetry.config import get_telemetry_config
+from pr_agent.telemetry.config import get_otel_config
 from pr_agent.telemetry.shutdown import register_shutdown_handler
 
 _tracer = None
@@ -29,7 +29,7 @@ def _init_telemetry():
     global _tracer, _provider, _initialized
 
     try:
-        config = get_telemetry_config()
+        config = get_otel_config()
 
         if not (config.is_enabled or config.exporter_type == "none"):
             # Return no-op tracer

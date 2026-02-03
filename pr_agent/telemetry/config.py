@@ -1,7 +1,9 @@
 from pr_agent.algo.utils import get_version
 from pr_agent.config_loader import get_settings
+from pr_agent.log import get_logger
 from pr_agent.telemetry.types import TelemetryConfig
 
+VALID_EXPORTER_TYPES = {"console", "otlp"}
 
 def get_otel_config() -> TelemetryConfig:
     """Read and validate telemetry configuration from settings"""
@@ -31,14 +33,37 @@ def get_otel_config() -> TelemetryConfig:
     otlp_headers_raw = settings.get("OTEL.OTLP_HEADERS")
     otlp_headers = _parse_otlp_headers(otlp_headers_raw) if otlp_headers_raw else None
 
+    # Validate required fields - fall back to disabled if missing
+    if not (exporter_type and service_name and environment):
+        get_logger().warning(
+            f"OpenTelemetry enabled but missing required configuration - "
+            f"exporter_type: {exporter_type}, service_name: {service_name}, "
+            f"environment: {environment}. Falling back to non-OTEL mode."
+        )
+        return TelemetryConfig(
+            is_enabled=False,
+            exporter_type=exporter_type,
+            service_name=service_name,
+            service_version=service_version,
+            environment=environment,
+            otlp_endpoint=otlp_endpoint,
+            otlp_headers=otlp_headers
+        )
+
+    # Validate exporter type
+    if exporter_type and exporter_type not in VALID_EXPORTER_TYPES:
+        raise ValueError(
+            f"Invalid OTEL.EXPORTER_TYPE '{exporter_type}'. "
+            f"Valid options are: {', '.join(sorted(VALID_EXPORTER_TYPES))}"
+        )
+
     # Validate OTLP configuration if using OTLP exporter
-    if exporter_type == "otlp":
-        if not otlp_endpoint:
-            raise ValueError(
-                "OTEL.OTLP_ENDPOINT must be configured in secrets.toml when "
-                "OTEL.EXPORTER_TYPE is set to 'otlp'. Please add the endpoint URL "
-                "to your secrets.toml file."
-            )
+    if exporter_type == "otlp" and not otlp_endpoint:
+        get_logger().warning(
+            "OTEL.EXPORTER_TYPE is 'otlp' but OTEL.OTLP_ENDPOINT is not configured. "
+            "Falling back to 'console' exporter."
+        )
+        exporter_type = "console"
 
     return TelemetryConfig(
         is_enabled=True,
