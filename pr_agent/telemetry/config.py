@@ -31,6 +31,15 @@ def get_telemetry_config() -> TelemetryConfig:
     otlp_headers_raw = settings.get("OTEL.OTLP_HEADERS")
     otlp_headers = _parse_otlp_headers(otlp_headers_raw) if otlp_headers_raw else None
 
+    # Validate OTLP configuration if using OTLP exporter
+    if exporter_type == "otlp":
+        if not otlp_endpoint:
+            raise ValueError(
+                "OTEL.OTLP_ENDPOINT must be configured in secrets.toml when "
+                "OTEL.EXPORTER_TYPE is set to 'otlp'. Please add the endpoint URL "
+                "to your secrets.toml file."
+            )
+
     return TelemetryConfig(
         enabled=True,
         exporter_type=exporter_type,
