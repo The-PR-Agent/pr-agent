@@ -8,6 +8,7 @@ from pr_agent.algo.utils import update_settings_from_args
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import get_logger
+from pr_agent.telemetry.meter import meter
 from pr_agent.telemetry.tracer import tracer
 from pr_agent.tools.pr_add_docs import PRAddDocs
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
@@ -111,7 +112,11 @@ class PRAgent:
             # Set command attributes
             span.set_attribute("pr_agent.command", action)
             span.set_attribute("pr_agent.args_count", len(args))
-            span.set_attribute("git.provider", get_settings().config.git_provider)
+            _git_provider = get_settings().config.git_provider
+            span.set_attribute("git.provider", _git_provider)
+            meter.create_counter(
+                "pr_agent.commands.total", unit="1", description="Total PR-Agent commands executed"
+            ).add(1, {"pr_agent.command": action, "git.provider": _git_provider})
 
             if action not in command2class:
                 get_logger().warning(f"Unknown command: {action}")
