@@ -377,7 +377,6 @@ reasoning_max_tokens = 0 # cap the reasoning budget in tokens; 0 = unset
 max_tokens = 0 # hard cap on completion tokens for the request; 0 = unset
 
 [otel]
-# OpenTelemetry configuration
 # Keys map to settings.get("OTEL.*") via section-key dot notation.
 is_enabled = false # disabled by default; set to true to enable telemetry
 exporter_type = "console" # "console", "otlp", or "none"
