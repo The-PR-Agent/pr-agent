@@ -378,10 +378,12 @@ max_tokens = 0 # hard cap on completion tokens for the request; 0 = unset
 
 [otel]
 # OpenTelemetry configuration
-is_enabled = true # Set to true to enable telemetry via LiteLLMAIHandler
+# Keys map to settings.get("OTEL.*") via section-key dot notation.
+is_enabled = false # disabled by default; set to true to enable telemetry
 exporter_type = "console" # "console", "otlp", or "none"
 service_name = "pr-agent"
 environment = "development" # "development", "staging", "production", etc.
+include_pr_url = false # set to true to attach PR URLs to spans (may expose private repo names)
 
 [pr_similar_issue]
 skip_comments = false

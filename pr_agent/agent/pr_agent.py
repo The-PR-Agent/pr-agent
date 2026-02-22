@@ -8,8 +8,8 @@ from pr_agent.algo.utils import update_settings_from_args
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import get_logger
-from pr_agent.telemetry.meter import meter
-from pr_agent.telemetry.tracer import tracer
+from pr_agent.telemetry.meter import get_commands_counter
+from pr_agent.telemetry.tracer import get_tracer
 from pr_agent.tools.pr_add_docs import PRAddDocs
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.tools.pr_config import PRConfig
@@ -55,9 +55,10 @@ class PRAgent:
         self.ai_handler = ai_handler  # will be initialized in run_action
 
     async def _handle_request(self, pr_url, request, notify=None) -> bool:
-        with tracer.start_as_current_span("pr_agent.handle_request") as span:
+        with get_tracer().start_as_current_span("pr_agent.handle_request") as span:
             # Set base attributes
-            span.set_attribute("pr_agent.pr_url", pr_url)
+            if get_settings().get("OTEL.INCLUDE_PR_URL", False):
+                span.set_attribute("pr_agent.pr_url", pr_url)
 
             # First, apply repo specific settings if exists
             apply_repo_settings(pr_url)
@@ -114,9 +115,7 @@ class PRAgent:
             span.set_attribute("pr_agent.args_count", len(args))
             _git_provider = get_settings().config.git_provider
             span.set_attribute("git.provider", _git_provider)
-            meter.create_counter(
-                "pr_agent.commands.total", unit="1", description="Total PR-Agent commands executed"
-            ).add(1, {"pr_agent.command": action, "git.provider": _git_provider})
+            get_commands_counter().add(1, {"pr_agent.command": action, "git.provider": _git_provider})
 
             if action not in command2class:
                 get_logger().warning(f"Unknown command: {action}")
@@ -129,9 +128,10 @@ class PRAgent:
                 get_logger().info("PR-Agent request handler started", analytics=True)
 
                 # Create nested span for command execution
-                with tracer.start_as_current_span(f"pr_agent.execute.{action}") as cmd_span:
+                with get_tracer().start_as_current_span(f"pr_agent.execute.{action}") as cmd_span:
                     cmd_span.set_attribute("pr_agent.command", action)
-                    cmd_span.set_attribute("pr_agent.pr_url", pr_url)
+                    if get_settings().get("OTEL.INCLUDE_PR_URL", False):
+                        cmd_span.set_attribute("pr_agent.pr_url", pr_url)
 
                     if action == "answer":
                         if notify:
@@ -155,8 +155,9 @@ class PRAgent:
                 return True
 
     async def handle_request(self, pr_url, request, notify=None) -> bool:
-        with tracer.start_as_current_span("pr_agent.request") as span:
-            span.set_attribute("pr_agent.pr_url", pr_url)
+        with get_tracer().start_as_current_span("pr_agent.request") as span:
+            if get_settings().get("OTEL.INCLUDE_PR_URL", False):
+                span.set_attribute("pr_agent.pr_url", pr_url)
             try:
                 result = await self._handle_request(pr_url, request, notify)
                 span.set_attribute("success", result)

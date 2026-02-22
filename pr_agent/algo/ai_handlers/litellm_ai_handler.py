@@ -28,8 +28,8 @@ from pr_agent.algo.utils import ReasoningEffort, get_version
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 from pr_agent.telemetry.config import get_otel_config
-from pr_agent.telemetry.meter import meter
-from pr_agent.telemetry.tracer import tracer
+from pr_agent.telemetry.meter import get_tokens_histogram
+from pr_agent.telemetry.tracer import get_tracer
 
 MODEL_RETRIES = 2
 DUMMY_LITELLM_API_KEY = "dummy_key"  # placeholder set when no OpenAI key is configured
@@ -851,13 +851,11 @@ class LiteLLMAIHandler(BaseAiHandler):
                     kwargs["api_key"] = litellm.api_key
 
                 # Get completion with automatic streaming detection
-                with tracer.start_as_current_span("LiteLLMAIHandler._get_completion") as span:
+                with get_tracer().start_as_current_span("LiteLLMAIHandler._get_completion") as span:
                     resp, finish_reason, response_obj = await self._get_completion(span, **kwargs)
 
                 if hasattr(response_obj, "usage") and response_obj.usage:
-                    meter.create_histogram(
-                        "pr_agent.llm.tokens", unit="token", description="LLM token usage per completion"
-                    ).record(
+                    get_tokens_histogram().record(
                         getattr(response_obj.usage, "total_tokens", 0),
                         {"litellm.request.model": model},
                     )
@@ -872,7 +870,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                     # env-var swap is fully visible to this call. Letting @retry
                     # handle the retry would release the lock between attempts,
                     # allowing a concurrent coroutine to overwrite os.environ.
-                    with tracer.start_as_current_span("LiteLLMAIHandler._get_completion") as span:
+                    with get_tracer().start_as_current_span("LiteLLMAIHandler._get_completion") as span:
                         resp, finish_reason, response_obj = await self._get_completion(span, **kwargs)
                 else:
                     get_logger().warning(f"Error during LLM inference: {e}")

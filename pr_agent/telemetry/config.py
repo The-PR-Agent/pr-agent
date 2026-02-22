@@ -3,14 +3,12 @@ from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 from pr_agent.telemetry.types import TelemetryConfig
 
-VALID_EXPORTER_TYPES = {"console", "otlp"}
+VALID_EXPORTER_TYPES = {"console", "otlp", "none"}
 
 def get_otel_config() -> TelemetryConfig:
     """Read and validate telemetry configuration from settings"""
-    settings = get_settings()
-
     # Check if telemetry is is_enabled
-    is_enabled = settings.get("OTEL.IS_ENABLED", False)
+    is_enabled = get_settings().get("OTEL.IS_ENABLED", False)
     if not is_enabled:
         return TelemetryConfig(
             is_enabled=False,
@@ -23,15 +21,22 @@ def get_otel_config() -> TelemetryConfig:
         )
 
     # Read configuration from settings
-    exporter_type = settings.get("OTEL.EXPORTER_TYPE", None)
-    service_name = settings.get("OTEL.SERVICE_NAME", None)
+    exporter_type = get_settings().get("OTEL.EXPORTER_TYPE", None)
+    service_name = get_settings().get("OTEL.SERVICE_NAME", None)
     service_version = get_version()  # From pr_agent.algo.utils
-    environment = settings.get("OTEL.ENVIRONMENT", None)
+    environment = get_settings().get("OTEL.ENVIRONMENT", None)
 
-    # OTLP configuration (secrets)
-    otlp_endpoint = settings.get("OTEL.OTLP_ENDPOINT")
-    otlp_headers_raw = settings.get("OTEL.OTLP_HEADERS")
+    # OTLP configuration (secrets — intentionally not included in any log messages)
+    otlp_endpoint = get_settings().get("OTEL.OTLP_ENDPOINT")
+    otlp_headers_raw = get_settings().get("OTEL.OTLP_HEADERS")
     otlp_headers = _parse_otlp_headers(otlp_headers_raw) if otlp_headers_raw else None
+
+    # Validate exporter type early — before missing-fields check so it is always surfaced
+    if exporter_type and exporter_type not in VALID_EXPORTER_TYPES:
+        raise ValueError(
+            f"Invalid OTEL.EXPORTER_TYPE '{exporter_type}'. "
+            f"Valid options are: {', '.join(sorted(VALID_EXPORTER_TYPES))}"
+        )
 
     # Validate required fields - fall back to disabled if missing
     if not (exporter_type and service_name and environment):
@@ -48,13 +53,6 @@ def get_otel_config() -> TelemetryConfig:
             environment=environment,
             otlp_endpoint=otlp_endpoint,
             otlp_headers=otlp_headers
-        )
-
-    # Validate exporter type
-    if exporter_type and exporter_type not in VALID_EXPORTER_TYPES:
-        raise ValueError(
-            f"Invalid OTEL.EXPORTER_TYPE '{exporter_type}'. "
-            f"Valid options are: {', '.join(sorted(VALID_EXPORTER_TYPES))}"
         )
 
     # Validate OTLP configuration if using OTLP exporter

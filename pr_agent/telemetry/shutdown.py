@@ -1,17 +1,16 @@
 import atexit
+import functools
 
 from opentelemetry import trace
 
 from pr_agent.log import get_logger
 
-_shutdown_registered = False
 
+@functools.lru_cache(maxsize=1)
 def register_shutdown_handler():
-    """Register atexit handler to flush spans"""
-    global _shutdown_registered
-    if not _shutdown_registered:
-        atexit.register(shutdown_telemetry)
-        _shutdown_registered = True
+    """Register atexit handler to flush spans (called once via lru_cache)."""
+    atexit.register(shutdown_telemetry)
+
 
 def shutdown_telemetry():
     """Flush and shutdown telemetry provider"""

@@ -1,4 +1,4 @@
-import threading
+import functools
 
 from opentelemetry import metrics
 from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
@@ -9,54 +9,43 @@ from opentelemetry.sdk.resources import DEPLOYMENT_ENVIRONMENT, SERVICE_NAME, SE
 from pr_agent.log import get_logger
 from pr_agent.telemetry.config import get_otel_config
 
-_meter = None
-_provider = None
-_lock = threading.Lock()
 
-
+@functools.lru_cache(maxsize=1)
 def get_meter():
-    """Get or initialize the meter (lazy initialization, thread-safe)."""
-    global _meter
-    if _meter is None:
-        with _lock:
-            if _meter is None:  # Double-check locking
-                _init_metrics()
-    return _meter
+    """Get or initialize the meter (lazy, cached, thread-safe via lru_cache)."""
+    return _init_metrics()
 
 
 def _init_metrics():
-    """Initialize MeterProvider based on shared OTel config. Mirrors tracer._init_telemetry()."""
-    global _meter, _provider
-
     try:
-        config = get_otel_config()
+        if not get_otel_config().is_enabled:
+            return metrics.get_meter(__name__)  # no-op
 
-        if not config.is_enabled:
-            _meter = metrics.get_meter(__name__)  # no-op meter
-            return
+        exporter = _create_metric_exporter(get_otel_config())
+        if exporter is None:  # exporter_type == "none"
+            return metrics.get_meter(__name__)  # no-op
 
         resource = Resource.create({
-            SERVICE_NAME: config.service_name,
-            SERVICE_VERSION: config.service_version,
-            DEPLOYMENT_ENVIRONMENT: config.environment,
+            SERVICE_NAME: get_otel_config().service_name,
+            SERVICE_VERSION: get_otel_config().service_version,
+            DEPLOYMENT_ENVIRONMENT: get_otel_config().environment,
         })
 
-        exporter = _create_metric_exporter(config)
-        reader = PeriodicExportingMetricReader(exporter)  # default export interval: 60 000 ms
-        _provider = MeterProvider(resource=resource, metric_readers=[reader])
-        metrics.set_meter_provider(_provider)
-        _meter = metrics.get_meter("pr_agent")
+        reader = PeriodicExportingMetricReader(exporter)  # default: 60 000 ms
+        provider = MeterProvider(resource=resource, metric_readers=[reader])
+        metrics.set_meter_provider(provider)
 
         import atexit
-        atexit.register(lambda: _provider.shutdown())
+        atexit.register(lambda: metrics.get_meter_provider().shutdown())
+
+        return metrics.get_meter("pr_agent")
 
     except Exception as e:
         get_logger().warning(f"Failed to initialize metrics: {e}")
-        _meter = metrics.get_meter(__name__)  # no-op fallback
+        return metrics.get_meter(__name__)  # no-op fallback
 
 
 def _create_metric_exporter(config):
-    """Create metric exporter matching tracer._create_exporter() logic."""
     if config.exporter_type == "otlp":
         kwargs = {}
         if config.otlp_endpoint:
@@ -64,14 +53,22 @@ def _create_metric_exporter(config):
         if config.otlp_headers:
             kwargs["headers"] = config.otlp_headers
         return OTLPMetricExporter(**kwargs)
+    elif config.exporter_type == "none":
+        return None
     return ConsoleMetricExporter()
 
 
-class _LazyMeterProxy:
-    """Proxy that initializes meter on first use. Mirrors _LazyTracerProxy."""
+@functools.lru_cache(maxsize=1)
+def get_commands_counter():
+    """Return the commands counter instrument (created once, cached)."""
+    return get_meter().create_counter(
+        "pr_agent.commands.total", unit="1", description="Total PR-Agent commands executed"
+    )
 
-    def __getattr__(self, name):
-        return getattr(get_meter(), name)
 
-
-meter = _LazyMeterProxy()
+@functools.lru_cache(maxsize=1)
+def get_tokens_histogram():
+    """Return the token usage histogram instrument (created once, cached)."""
+    return get_meter().create_histogram(
+        "pr_agent.llm.tokens", unit="token", description="LLM token usage per completion"
+    )

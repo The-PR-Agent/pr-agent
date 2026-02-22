@@ -1,4 +1,4 @@
-import threading
+import functools
 
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
@@ -10,67 +10,39 @@ from pr_agent.log import get_logger
 from pr_agent.telemetry.config import get_otel_config
 from pr_agent.telemetry.shutdown import register_shutdown_handler
 
-_tracer = None
-_provider = None
-_initialized = False
-_lock = threading.Lock()
 
+@functools.lru_cache(maxsize=1)
 def get_tracer():
-    """Get or initialize the tracer (lazy initialization)"""
-    global _tracer
-    if _tracer is None:
-        with _lock:
-            if _tracer is None:  # Double-check locking
-                _init_telemetry()
-    return _tracer
+    """Get or initialize the tracer (lazy, cached, thread-safe via lru_cache)."""
+    return _init_telemetry()
+
 
 def _init_telemetry():
-    """Initialize telemetry based on configuration"""
-    global _tracer, _provider, _initialized
-
     try:
-        config = get_otel_config()
+        if not get_otel_config().is_enabled:
+            return trace.get_tracer(__name__)  # no-op
 
-        if not (config.is_enabled or config.exporter_type == "none"):
-            # Return no-op tracer
-            _tracer = trace.get_tracer(__name__)
-            _initialized = True
-            return
-
-        # Create resource with service identification
         resource = Resource.create({
-            SERVICE_NAME: config.service_name,
-            SERVICE_VERSION: config.service_version,
-            DEPLOYMENT_ENVIRONMENT: config.environment,
+            SERVICE_NAME: get_otel_config().service_name,
+            SERVICE_VERSION: get_otel_config().service_version,
+            DEPLOYMENT_ENVIRONMENT: get_otel_config().environment,
         })
 
-        # Create provider
-        _provider = TracerProvider(resource=resource)
-
-        # Add appropriate exporter
-        exporter = _create_exporter(config)
+        provider = TracerProvider(resource=resource)
+        exporter = _create_exporter(get_otel_config())
         if exporter:
-            processor = BatchSpanProcessor(exporter)
-            _provider.add_span_processor(processor)
+            provider.add_span_processor(BatchSpanProcessor(exporter))
 
-        # Set global provider
-        trace.set_tracer_provider(_provider)
-
-        # Get tracer
-        _tracer = trace.get_tracer("pr_agent")
-
-        # Register shutdown
+        trace.set_tracer_provider(provider)
         register_shutdown_handler()
+        return trace.get_tracer("pr_agent")
 
-        _initialized = True
     except Exception as e:
-        # Fail-safe: return no-op tracer on initialization error
         get_logger().warning(f"Failed to initialize telemetry: {e}")
-        _tracer = trace.get_tracer(__name__)
-        _initialized = True
+        return trace.get_tracer(__name__)  # no-op fallback
+
 
 def _create_exporter(config):
-    """Create appropriate span exporter"""
     if config.exporter_type == "console":
         return ConsoleSpanExporter()
     elif config.exporter_type == "otlp":
@@ -80,15 +52,4 @@ def _create_exporter(config):
         if config.otlp_headers:
             kwargs['headers'] = config.otlp_headers
         return OTLPSpanExporter(**kwargs)
-    return None
-
-# Backward-compatible proxy for existing decorator usage
-class _LazyTracerProxy:
-    """Proxy that initializes tracer on first use"""
-    def start_as_current_span(self, *args, **kwargs):
-        return get_tracer().start_as_current_span(*args, **kwargs)
-
-    def __getattr__(self, name):
-        return getattr(get_tracer(), name)
-
-tracer = _LazyTracerProxy()
+    return None  # "none" or unknown type — no exporter, spans dropped
