@@ -111,6 +111,7 @@ class PRAgent:
             # Set command attributes
             span.set_attribute("pr_agent.command", action)
             span.set_attribute("pr_agent.args_count", len(args))
+            span.set_attribute("git.provider", get_settings().config.git_provider)
 
             if action not in command2class:
                 get_logger().warning(f"Unknown command: {action}")

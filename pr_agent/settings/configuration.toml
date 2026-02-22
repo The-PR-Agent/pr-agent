@@ -376,6 +376,13 @@ reasoning_effort = "" # "" leaves reasoning to the model default; "none" disable
 reasoning_max_tokens = 0 # cap the reasoning budget in tokens; 0 = unset
 max_tokens = 0 # hard cap on completion tokens for the request; 0 = unset
 
+[otel]
+# OpenTelemetry configuration
+is_enabled = true # Set to true to enable telemetry via LiteLLMAIHandler
+exporter_type = "console" # "console", "otlp", or "none"
+service_name = "pr-agent"
+environment = "development" # "development", "staging", "production", etc.
+
 [pr_similar_issue]
 skip_comments = false
 force_update_dataset = false
@@ -452,10 +459,3 @@ pr_commands = [
     "/review",
     "/improve",
 ]
-
-[otel]
-# OpenTelemetry configuration
-enabled = false # Set to true to enable telemetry via LiteLLMAIHandler
-exporter_type = "console" # "console", "otlp", or "none"
-service_name = "pr-agent"
-environment = "development" # "development", "staging", "production", etc.
