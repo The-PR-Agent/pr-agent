@@ -200,10 +200,19 @@ async def handle_push_trigger_for_new_commits(body: Dict[str, Any],
             await _perform_auto_commands_github("push_commands", agent, body, api_url, log_context)
 
     finally:
-        # release the waiting task block
-        async with _pending_task_duplicate_push_conditions[api_url]:
-            _pending_task_duplicate_push_conditions[api_url].notify(1)
-            _duplicate_push_triggers[api_url] -= 1
+        # release the waiting task block, then clean up if no tasks remain
+        should_cleanup = False
+        try:
+            async with _pending_task_duplicate_push_conditions[api_url]:
+                _pending_task_duplicate_push_conditions[api_url].notify(1)
+                _duplicate_push_triggers[api_url] -= 1
+                should_cleanup = _duplicate_push_triggers[api_url] <= 0
+        except KeyError:
+            # TTL eviction already cleaned up this entry
+            pass
+        if should_cleanup:
+            _duplicate_push_triggers.pop(api_url, None)
+            _pending_task_duplicate_push_conditions.pop(api_url, None)
 
 
 def handle_closed_pr(body, event, action, log_context):
