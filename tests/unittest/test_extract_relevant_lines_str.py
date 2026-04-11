@@ -207,17 +207,17 @@ class TestConvertToMarkdownV2ThreeIssues:
 
     # Generic Python block at lines 25-38: no backtick sequences inside.
     _PY_LINES_25_38 = (
-        'def ipsum_fetch(base_url: str) -> str:\n'
+        "def ipsum_fetch(base_url: str) -> str:\n"
         '    url = f"{base_url}/dolor"\n'
         '    payload = json.dumps({"sit": "amet"}).encode()\n'
-        '    req = urllib.request.Request(\n'
-        '        url,\n'
-        '        data=payload,\n'
+        "    req = urllib.request.Request(\n"
+        "        url,\n"
+        "        data=payload,\n"
         '        headers={"Content-Type": "application/json"},\n'
         '        method="GET",\n'
-        '    )\n'
-        '    with urllib.request.urlopen(req) as resp:\n'
-        '        data = json.loads(resp.read())\n'
+        "    )\n"
+        "    with urllib.request.urlopen(req) as resp:\n"
+        "        data = json.loads(resp.read())\n"
         '    if "consectetur" not in data:\n'
         '        raise RuntimeError(f"ipsum_fetch: unexpected response: {data}")\n'
         '    return data["consectetur"]'
@@ -226,14 +226,14 @@ class TestConvertToMarkdownV2ThreeIssues:
     def _make_py_file(self) -> FilePatchInfo:
         """Build a synthetic .py file with the two blocks at the correct line positions."""
         # 24 filler lines so that line 25 starts _PY_LINES_25_38
-        filler_24 = '\n'.join(f'# filler {i}' for i in range(1, 25))
+        filler_24 = "\n".join(f"# filler {i}" for i in range(1, 25))
         # filler between end of block 1 (line 38) and start of block 2 (line 59)
-        filler_between = '\n'.join(f'# filler {i}' for i in range(39, 59))
+        filler_between = "\n".join(f"# filler {i}" for i in range(39, 59))
         content = (
-            filler_24 + '\n' + self._PY_LINES_25_38 + '\n'
-            + filler_between + '\n' + self._PY_LINES_59_63 + '\n'
+            filler_24 + "\n" + self._PY_LINES_25_38 + "\n"
+            + filler_between + "\n" + self._PY_LINES_59_63 + "\n"
         )
-        return _make_file('src/lorem/script.py', content, language='python')
+        return _make_file("src/lorem/script.py", content, language="python")
 
     def _make_readme_file(self) -> FilePatchInfo:
         """Build a synthetic README.md where line 43 is a closing ``` fence.
@@ -243,54 +243,54 @@ class TestConvertToMarkdownV2ThreeIssues:
           42: dolor sit amet flag value
           43: ```          ← closing fence of a bash block already open in the README
         """
-        filler_40 = '\n'.join(f'lorem ipsum line {i}' for i in range(1, 41))
+        filler_40 = "\n".join(f"lorem ipsum line {i}" for i in range(1, 41))
         readme_lines_41_43 = (
             "  --lorem-param 'adipiscing-elit-sed-do-eiusmod' \\\n"
             "  --ipsum-param 'tempor-incididunt'\n"
-            '```'
+            "```"
         )
-        content = filler_40 + '\n' + readme_lines_41_43 + '\n'
-        return _make_file('docs/ipsum/README.md', content, language='markdown')
+        content = filler_40 + "\n" + readme_lines_41_43 + "\n"
+        return _make_file("docs/ipsum/README.md", content, language="markdown")
 
     def _make_input_data(self) -> dict:
         return {
-            'review': {
-                'estimated_effort_to_review_[1-5]': '2\n',
-                'relevant_tests': 'No\n',
-                'security_concerns': (
-                    'Lorem ipsum: docs/ipsum/README.md contains values that look like '
-                    'real credentials used as examples.\n'
+            "review": {
+                "estimated_effort_to_review_[1-5]": "2\n",
+                "relevant_tests": "No\n",
+                "security_concerns": (
+                    "Lorem ipsum: docs/ipsum/README.md contains values that look like "
+                    "real credentials used as examples.\n"
                 ),
-                'key_issues_to_review': [
+                "key_issues_to_review": [
                     {
-                        'relevant_file': 'src/lorem/script.py\n',
-                        'issue_header': '[Secure] Lorem ipsum error messages expose response body\n',
-                        'issue_content': (
-                            'The `lorem` function includes the full response body in '
-                            'exception messages (`RuntimeError`).\n'
+                        "relevant_file": "src/lorem/script.py\n",
+                        "issue_header": "[Secure] Lorem ipsum error messages expose response body\n",
+                        "issue_content": (
+                            "The `lorem` function includes the full response body in "
+                            "exception messages (`RuntimeError`).\n"
                         ),
-                        'start_line': 59,
-                        'end_line': 63,
+                        "start_line": 59,
+                        "end_line": 63,
                     },
                     {
-                        'relevant_file': 'src/lorem/script.py\n',
-                        'issue_header': '[Correct] Lorem ipsum incorrect HTTP method in `ipsum_fetch`\n',
-                        'issue_content': (
+                        "relevant_file": "src/lorem/script.py\n",
+                        "issue_header": "[Correct] Lorem ipsum incorrect HTTP method in `ipsum_fetch`\n",
+                        "issue_content": (
                             'The `ipsum_fetch` function sets `method="GET"` but also sends '
-                            'a JSON `data=payload` body.\n'
+                            "a JSON `data=payload` body.\n"
                         ),
-                        'start_line': 25,
-                        'end_line': 38,
+                        "start_line": 25,
+                        "end_line": 38,
                     },
                     {
-                        'relevant_file': 'docs/ipsum/README.md\n',
-                        'issue_header': '[Secure] Lorem ipsum placeholder values in README\n',
-                        'issue_content': (
-                            'The README contains values that look like real credentials: '
-                            '`\'adipiscing-elit-sed-do-eiusmod\'` (lorem ipsum example).\n'
+                        "relevant_file": "docs/ipsum/README.md\n",
+                        "issue_header": "[Secure] Lorem ipsum placeholder values in README\n",
+                        "issue_content": (
+                            "The README contains values that look like real credentials: "
+                            "`'adipiscing-elit-sed-do-eiusmod'` (lorem ipsum example).\n"
                         ),
-                        'start_line': 41,
-                        'end_line': 43,
+                        "start_line": 41,
+                        "end_line": 43,
                     },
                 ],
             }
@@ -301,28 +301,28 @@ class TestConvertToMarkdownV2ThreeIssues:
         result = extract_relevant_lines_str(
             end_line=63,
             files=[self._make_py_file()],
-            relevant_file='src/lorem/script.py',
+            relevant_file="src/lorem/script.py",
             start_line=59,
             dedent=True,
         )
-        assert result.startswith('```python\n'), (
-            f'Expected plain ```python fence, got: {result[:40]!r}'
+        assert result.startswith("```python\n"), (
+            f"Expected plain ```python fence, got: {result[:40]!r}"
         )
-        assert result.endswith('\n```'), f'Expected closing ```, got end: {result[-20:]!r}'
-        assert '````' not in result, 'Should not need a 4-backtick fence for plain Python code'
+        assert result.endswith("\n```"), f"Expected closing ```, got end: {result[-20:]!r}"
+        assert "````" not in result, "Should not need a 4-backtick fence for plain Python code"
 
     def test_python_issue_lines_25_38_uses_plain_fence(self):
         """Python code block (lines 25-38) with no inner fences must use a plain ```python fence."""
         result = extract_relevant_lines_str(
             end_line=38,
             files=[self._make_py_file()],
-            relevant_file='src/lorem/script.py',
+            relevant_file="src/lorem/script.py",
             start_line=25,
             dedent=True,
         )
-        assert result.startswith('```python\n'), f'Expected plain ```python fence, got: {result[:40]!r}'
-        assert result.endswith('\n```'), f'Expected closing ```, got end: {result[-20:]!r}'
-        assert '````' not in result, 'Should not need a 4-backtick fence for plain Python code'
+        assert result.startswith("```python\n"), f"Expected plain ```python fence, got: {result[:40]!r}"
+        assert result.endswith("\n```"), f"Expected closing ```, got end: {result[-20:]!r}"
+        assert "````" not in result, "Should not need a 4-backtick fence for plain Python code"
 
     def test_readme_issue_lines_41_43_uses_tilde_fence(self):
         """README lines 41-43 include a closing ``` fence on line 43.
@@ -332,24 +332,24 @@ class TestConvertToMarkdownV2ThreeIssues:
         result = extract_relevant_lines_str(
             end_line=43,
             files=[self._make_readme_file()],
-            relevant_file='docs/ipsum/README.md',
+            relevant_file="docs/ipsum/README.md",
             start_line=41,
             dedent=True,
         )
         first_line = result.splitlines()[0]
         last_line = result.splitlines()[-1]
-        assert first_line == '~~~markdown', f'Expected tilde opening fence, got: {first_line!r}'
-        assert last_line == '~~~', f'Expected tilde closing fence, got: {last_line!r}'
+        assert first_line == "~~~markdown", f"Expected tilde opening fence, got: {first_line!r}"
+        assert last_line == "~~~", f"Expected tilde closing fence, got: {last_line!r}"
         inner_lines = result.splitlines()[1:-1]
-        assert any(line.strip() == '```' for line in inner_lines), (
-            f'Expected inner ``` preserved as content, got inner lines: {inner_lines}'
+        assert any(line.strip() == "```" for line in inner_lines), (
+            f"Expected inner ``` preserved as content, got inner lines: {inner_lines}"
         )
 
     def test_convert_to_markdown_v2_uses_fenced_blocks_not_pre(self):
         """In the gfm_supported <details> path, all issues must use fenced code blocks, not <pre>."""
         mock_git_provider = Mock()
         mock_git_provider.get_line_link.return_value = (
-            'https://example.com/repo/-/blob/main/src/lorem/script.py#L59-63'
+            "https://example.com/repo/-/blob/main/src/lorem/script.py#L59-63"
         )
 
         result = convert_to_markdown_v2(
@@ -360,8 +360,8 @@ class TestConvertToMarkdownV2ThreeIssues:
         )
 
         # Python issues: plain ```python fence inside <details>
-        assert '```python\n' in result
+        assert "```python\n" in result
         # README issue: tilde fence inside <details> (shorter than a 4-backtick fence)
-        assert '~~~markdown\n' in result
+        assert "~~~markdown\n" in result
         # No <pre> blocks anywhere — fenced syntax only
-        assert '<pre>' not in result
+        assert "<pre>" not in result
