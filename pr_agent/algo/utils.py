@@ -292,15 +292,25 @@ def _expand_minute_suffix(text: str) -> str:
 
 
 def _get_fence(content: str) -> str:
-    """Return the shortest backtick fence (minimum 3) that does not appear in content.
+    """Return the shortest fence string (minimum 3) that does not appear in content.
 
-    This prevents inner backtick sequences from prematurely closing the outer fence
-    when content (e.g. a README) itself contains fenced code blocks.
+    Considers both backtick and tilde fences and picks whichever yields a shorter
+    safe fence, reducing the risk that a very long backtick run in the content
+    produces an extremely long fence line that gets truncated by the provider.
     """
-    max_consecutive = 2
+    max_backticks = 2
     for m in re.finditer(r'`+', content):
-        max_consecutive = max(max_consecutive, len(m.group()))
-    return '`' * (max_consecutive + 1)
+        max_backticks = max(max_backticks, len(m.group()))
+    backtick_len = max_backticks + 1
+
+    max_tildes = 2
+    for m in re.finditer(r'~+', content):
+        max_tildes = max(max_tildes, len(m.group()))
+    tilde_len = max_tildes + 1
+
+    if tilde_len < backtick_len:
+        return '~' * tilde_len
+    return '`' * backtick_len
 
 
 def convert_to_markdown_v2(output_data: dict,

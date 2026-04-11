@@ -92,7 +92,8 @@ class TestExtractRelevantLinesStr:
         assert result == "```python\nline1\n```"
 
     def test_content_with_inner_fenced_block_uses_longer_fence(self):
-        # When the extracted lines contain ```, the outer fence must use more than 3 backticks.
+        # When the extracted lines contain ```, the outer fence must not collide with that run.
+        # The new implementation chooses a tilde fence (~~~) because it is shorter than ````.
         readme = "Usage:\n\n```bash\necho hello\n```\n"
         file = _make_file("README.md", readme, language="markdown")
         result = extract_relevant_lines_str(end_line=5, files=[file], relevant_file="README.md", start_line=1)
@@ -100,10 +101,10 @@ class TestExtractRelevantLinesStr:
         first_line = result.splitlines()[0]
         last_line = result.splitlines()[-1]
 
-        # Both the opening and closing fence must have more than 3 backticks.
-        assert first_line.startswith("````"), f"Expected 4+ backtick fence, got: {first_line!r}"
-        assert last_line.startswith("````"), f"Expected 4+ backtick fence, got: {last_line!r}"
-        # The inner ``` must be preserved verbatim inside the longer fence.
+        # The outer fence must be a tilde fence because it is shorter than a 4-backtick fence.
+        assert first_line.startswith("~~~"), f"Expected tilde fence, got: {first_line!r}"
+        assert last_line.startswith("~~~"), f"Expected tilde fence, got: {last_line!r}"
+        # The inner ``` must be preserved verbatim inside the outer fence.
         assert "```bash" in result
         assert "```\n" in result
 
@@ -171,14 +172,14 @@ class TestDetailsBlockWithCodeFence:
         details_end = result.index("</details>") + len("</details>")
         details_block = result[details_start:details_end]
 
-        # The outer fence (the body of the <details> block) must use 4 backticks because
-        # the README content contains ```bash inside it.
-        assert "````markdown\n" in details_block, (
-            f"Expected a 4-backtick outer fence (````markdown), got:\n{details_block}"
+        # The outer fence must be a tilde fence because it is shorter than a 4-backtick fence
+        # when the README content contains ```bash inside it.
+        assert "~~~markdown\n" in details_block, (
+            f"Expected a tilde outer fence (~~~markdown), got:\n{details_block}"
         )
-        # The closing fence must also be 4 backticks.
-        assert "\n````\n" in details_block, (
-            f"Expected a 4-backtick closing fence, got:\n{details_block}"
+        # The closing fence must also be tildes.
+        assert "\n~~~\n" in details_block, (
+            f"Expected a tilde closing fence, got:\n{details_block}"
         )
         # The inner ```bash block from the README must be preserved verbatim inside the outer fence.
         assert "```bash\n" in details_block
@@ -323,9 +324,10 @@ class TestConvertToMarkdownV2ThreeIssues:
         assert result.endswith('\n```'), f'Expected closing ```, got end: {result[-20:]!r}'
         assert '````' not in result, 'Should not need a 4-backtick fence for plain Python code'
 
-    def test_readme_issue_lines_41_43_uses_4backtick_fence(self):
+    def test_readme_issue_lines_41_43_uses_tilde_fence(self):
         """README lines 41-43 include a closing ``` fence on line 43.
-        The outer fence must be 4 backticks to avoid the inner ``` closing the block.
+        The outer fence must not collide with that inner ```. The new implementation
+        picks a tilde fence (~~~markdown) because it is shorter than a 4-backtick fence.
         """
         result = extract_relevant_lines_str(
             end_line=43,
@@ -336,8 +338,8 @@ class TestConvertToMarkdownV2ThreeIssues:
         )
         first_line = result.splitlines()[0]
         last_line = result.splitlines()[-1]
-        assert first_line == '````markdown', f'Expected 4-backtick opening fence, got: {first_line!r}'
-        assert last_line == '````', f'Expected 4-backtick closing fence, got: {last_line!r}'
+        assert first_line == '~~~markdown', f'Expected tilde opening fence, got: {first_line!r}'
+        assert last_line == '~~~', f'Expected tilde closing fence, got: {last_line!r}'
         inner_lines = result.splitlines()[1:-1]
         assert any(line.strip() == '```' for line in inner_lines), (
             f'Expected inner ``` preserved as content, got inner lines: {inner_lines}'
@@ -359,7 +361,7 @@ class TestConvertToMarkdownV2ThreeIssues:
 
         # Python issues: plain ```python fence inside <details>
         assert '```python\n' in result
-        # README issue: 4-backtick fence inside <details>
-        assert '````markdown\n' in result
+        # README issue: tilde fence inside <details> (shorter than a 4-backtick fence)
+        assert '~~~markdown\n' in result
         # No <pre> blocks anywhere — fenced syntax only
         assert '<pre>' not in result
