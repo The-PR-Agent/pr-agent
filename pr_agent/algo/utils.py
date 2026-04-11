@@ -291,6 +291,18 @@ def _expand_minute_suffix(text: str) -> str:
     return re.sub(r'(\d+)m\b', r'\1 minutes', text)
 
 
+def _get_fence(content: str) -> str:
+    """Return the shortest backtick fence (minimum 3) that does not appear in content.
+
+    This prevents inner backtick sequences from prematurely closing the outer fence
+    when content (e.g. a README) itself contains fenced code blocks.
+    """
+    max_consecutive = 2
+    for m in re.finditer(r'`+', content):
+        max_consecutive = max(max_consecutive, len(m.group()))
+    return '`' * (max_consecutive + 1)
+
+
 def convert_to_markdown_v2(output_data: dict,
                            gfm_supported: bool = True,
                            incremental_review=None,
@@ -582,7 +594,9 @@ def extract_relevant_lines_str(end_line, files, relevant_file, start_line, deden
                     if dedent and relevant_lines_str:
                         # Remove the longest leading string of spaces and tabs common to all lines.
                         relevant_lines_str = textwrap.dedent(relevant_lines_str)
-                    relevant_lines_str = f"```{file.language}\n{relevant_lines_str}\n```"
+                    if relevant_lines_str:
+                        fence = _get_fence(relevant_lines_str)
+                        relevant_lines_str = f"{fence}{file.language}\n{relevant_lines_str}\n{fence}"
                     break
 
         return relevant_lines_str
