@@ -228,7 +228,10 @@ class TestConvertToMarkdownV2ThreeIssues:
         filler_24 = '\n'.join(f'# filler {i}' for i in range(1, 25))
         # filler between end of block 1 (line 38) and start of block 2 (line 59)
         filler_between = '\n'.join(f'# filler {i}' for i in range(39, 59))
-        content = filler_24 + '\n' + self._PY_LINES_25_38 + '\n' + filler_between + '\n' + self._PY_LINES_59_63 + '\n'
+        content = (
+            filler_24 + '\n' + self._PY_LINES_25_38 + '\n'
+            + filler_between + '\n' + self._PY_LINES_59_63 + '\n'
+        )
         return _make_file('src/lorem/script.py', content, language='python')
 
     def _make_readme_file(self) -> FilePatchInfo:
@@ -301,7 +304,9 @@ class TestConvertToMarkdownV2ThreeIssues:
             start_line=59,
             dedent=True,
         )
-        assert result.startswith('```python\n'), f'Expected plain ```python fence, got: {result[:40]!r}'
+        assert result.startswith('```python\n'), (
+            f'Expected plain ```python fence, got: {result[:40]!r}'
+        )
         assert result.endswith('\n```'), f'Expected closing ```, got end: {result[-20:]!r}'
         assert '````' not in result, 'Should not need a 4-backtick fence for plain Python code'
 
