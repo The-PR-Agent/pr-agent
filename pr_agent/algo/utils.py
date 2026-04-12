@@ -299,18 +299,18 @@ def _get_fence(content: str) -> str:
     produces an extremely long fence line that gets truncated by the provider.
     """
     max_backticks = 2
-    for m in re.finditer(r'`+', content):
+    for m in re.finditer(r"`+", content):
         max_backticks = max(max_backticks, len(m.group()))
     backtick_len = max_backticks + 1
 
     max_tildes = 2
-    for m in re.finditer(r'~+', content):
+    for m in re.finditer(r"~+", content):
         max_tildes = max(max_tildes, len(m.group()))
     tilde_len = max_tildes + 1
 
     if tilde_len < backtick_len:
-        return '~' * tilde_len
-    return '`' * backtick_len
+        return "~" * tilde_len
+    return "`" * backtick_len
 
 
 def convert_to_markdown_v2(output_data: dict,
