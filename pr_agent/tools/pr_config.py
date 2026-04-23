@@ -3,6 +3,7 @@ from dynaconf import Dynaconf
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
 from pr_agent.log import get_logger
+from pr_agent.mcp import MCPRuntime, MCPRuntimeError
 
 
 class PRConfig:
@@ -48,6 +49,7 @@ class PRConfig:
             get_logger().error("Caught exception during Dynaconf loading. Returning empty dict",
                                artifact={"exception": e})
             conf_settings = {}
+        markdown_text = self._prepare_mcp_status_block()
         configuration_headers = [header.lower() for header in conf_settings.keys()]
         relevant_configs = {
             header: configs for header, configs in get_settings().to_dict().items()
@@ -65,7 +67,7 @@ class PRConfig:
         skip_keys_lower = [key.lower() for key in skip_keys]
 
 
-        markdown_text = "<details> <summary><strong>🛠️ PR-Agent Configurations:</strong></summary> \n\n"
+        markdown_text += "<details> <summary><strong>🛠️ PR-Agent Configurations:</strong></summary> \n\n"
         markdown_text += f"\n\n```yaml\n\n"
         for header, configs in relevant_configs.items():
             if configs:
@@ -81,4 +83,21 @@ class PRConfig:
         markdown_text += "\n```"
         markdown_text += "\n</details>\n"
         get_logger().info(f"Possible Configurations outputted to PR comment", artifact=markdown_text)
+        return markdown_text
+
+    def _prepare_mcp_status_block(self) -> str:
+        try:
+            status = MCPRuntime().get_status()
+        except (MCPRuntimeError, ValueError, TypeError, KeyError):
+            return ""
+        if not status["enabled"] and not status["configured_servers"]:
+            return ""
+
+        markdown_text = "<details> <summary><strong> MCP Runtime Status </strong></summary><hr>\n\n"
+        markdown_text += "```yaml\n"
+        markdown_text += f"mcp.enabled = {status['enabled']}\n"
+        markdown_text += f"mcp.configured_servers = {status['configured_servers']}\n"
+        markdown_text += f"mcp.connected_servers = {status['connected_servers']}\n"
+        markdown_text += "```\n"
+        markdown_text += "</details>\n\n"
         return markdown_text

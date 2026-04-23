@@ -9,9 +9,10 @@ from pr_agent.algo.pr_processing import get_pr_diff, retry_with_fallback_models
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import ModelType
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers import get_git_provider, GitLabProvider
+from pr_agent.git_providers import GitLabProvider, get_git_provider
 from pr_agent.git_providers.git_provider import get_main_pr_language
 from pr_agent.log import get_logger
+from pr_agent.mcp.integration import maybe_chat_completion_with_mcp
 from pr_agent.servers.help import HelpMessage
 
 
@@ -79,16 +80,16 @@ class PRQuestions:
         return ""
 
     def identify_image_in_comment(self):
-        img_path = ''
-        if '![image]' in self.question_str:
+        img_path = ""
+        if "![image]" in self.question_str:
             # assuming structure:
             # /ask question ...  > ![image](img_path)
-            img_path = self.question_str.split('![image]')[1].strip().strip('()')
-            self.vars['img_path'] = img_path
-        elif 'https://' in self.question_str and ('.png' in self.question_str or 'jpg' in self.question_str): # direct image link
+            img_path = self.question_str.split("![image]")[1].strip().strip("()")
+            self.vars["img_path"] = img_path
+        elif "https://" in self.question_str and (".png" in self.question_str or "jpg" in self.question_str):  # direct image link
             # include https:// in the image path
-            img_path = 'https://' + self.question_str.split('https://')[1]
-            self.vars['img_path'] = img_path
+            img_path = "https://" + self.question_str.split("https://")[1]
+            self.vars["img_path"] = img_path
         return img_path
 
     async def _prepare_prediction(self, model: str):
@@ -106,14 +107,16 @@ class PRQuestions:
         environment = Environment(undefined=StrictUndefined)
         system_prompt = environment.from_string(get_settings().pr_questions_prompt.system).render(variables)
         user_prompt = environment.from_string(get_settings().pr_questions_prompt.user).render(variables)
-        if 'img_path' in variables:
-            img_path = self.vars['img_path']
-            response, finish_reason = await (self.ai_handler.chat_completion
-                                             (model=model, temperature=get_settings().config.temperature,
-                                              system=system_prompt, user=user_prompt, img_path=img_path))
-        else:
-            response, finish_reason = await self.ai_handler.chat_completion(
-                model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
+        img_path = variables.get("img_path")
+        response, finish_reason = await maybe_chat_completion_with_mcp(
+            self.ai_handler,
+            model=model,
+            temperature=get_settings().config.temperature,
+            system=system_prompt,
+            user=user_prompt,
+            img_path=img_path,
+            command_name="ask",
+        )
         return response
 
     def gitlab_protections(self, model_answer: str) -> str:
