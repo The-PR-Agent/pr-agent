@@ -27,23 +27,24 @@ from pr_agent.tools.ticket_pr_compliance_check import (
     extract_and_cache_pr_tickets, extract_tickets)
 
 
-class PRReviewer:
+from pr_agent.tools.base import PRTool
+from pr_agent.tools.registry import ToolRegistry
+
+@ToolRegistry.register("review")
+@ToolRegistry.register("review_pr")
+@ToolRegistry.register("auto_review")
+@ToolRegistry.register("answer")
+class PRReviewer(PRTool):
     """
     The PRReviewer class is responsible for reviewing a pull request and generating feedback using an AI model.
     """
-
+    
     def __init__(self, pr_url: str, is_answer: bool = False, is_auto: bool = False, args: list = None,
                  ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
         """
         Initialize the PRReviewer object with the necessary attributes and objects to review a pull request.
-
-        Args:
-            pr_url (str): The URL of the pull request to be reviewed.
-            is_answer (bool, optional): Indicates whether the review is being done in answer mode. Defaults to False.
-            is_auto (bool, optional): Indicates whether the review is being done in automatic mode. Defaults to False.
-            ai_handler (BaseAiHandler): The AI handler to be used for the review. Defaults to None.
-            args (list, optional): List of arguments passed to the PRReviewer class. Defaults to None.
         """
+        super().__init__(pr_url, ai_handler=ai_handler, args=args)
         self.git_provider = get_git_provider_with_context(pr_url)
         self.args = args
         self.incremental = self.parse_incremental(args)  # -i command

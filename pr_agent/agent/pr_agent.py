@@ -8,42 +8,47 @@ from pr_agent.algo.utils import update_settings_from_args
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import get_logger
-from pr_agent.tools.pr_add_docs import PRAddDocs
-from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
-from pr_agent.tools.pr_config import PRConfig
-from pr_agent.tools.pr_description import PRDescription
-from pr_agent.tools.pr_generate_labels import PRGenerateLabels
-from pr_agent.tools.pr_help_docs import PRHelpDocs
-from pr_agent.tools.pr_help_message import PRHelpMessage
-from pr_agent.tools.pr_line_questions import PR_LineQuestions
-from pr_agent.tools.pr_questions import PRQuestions
+from pr_agent.tools.registry import ToolRegistry
 from pr_agent.tools.pr_reviewer import PRReviewer
-from pr_agent.tools.pr_similar_issue import PRSimilarIssue
-from pr_agent.tools.pr_update_changelog import PRUpdateChangelog
 
-command2class = {
-    "auto_review": PRReviewer,
-    "answer": PRReviewer,
-    "review": PRReviewer,
-    "review_pr": PRReviewer,
-    "describe": PRDescription,
-    "describe_pr": PRDescription,
-    "improve": PRCodeSuggestions,
-    "improve_code": PRCodeSuggestions,
-    "ask": PRQuestions,
-    "ask_question": PRQuestions,
-    "ask_line": PR_LineQuestions,
-    "update_changelog": PRUpdateChangelog,
-    "config": PRConfig,
-    "settings": PRConfig,
-    "help": PRHelpMessage,
-    "similar_issue": PRSimilarIssue,
-    "add_docs": PRAddDocs,
-    "generate_labels": PRGenerateLabels,
-    "help_docs": PRHelpDocs,
-}
+# Ensure all tools are imported to trigger registration
+import pr_agent.tools.pr_add_docs
+import pr_agent.tools.pr_code_suggestions
+import pr_agent.tools.pr_config
+import pr_agent.tools.pr_description
+import pr_agent.tools.pr_generate_labels
+import pr_agent.tools.pr_help_docs
+import pr_agent.tools.pr_help_message
+import pr_agent.tools.pr_line_questions
+import pr_agent.tools.pr_questions
+import pr_agent.tools.pr_similar_issue
+import pr_agent.tools.pr_update_changelog
+import pr_agent.tools.ticket_pr_compliance_check
 
-commands = list(command2class.keys())
+# command2class = {
+#     "auto_review": PRReviewer,
+#     "answer": PRReviewer,
+#     "review": PRReviewer,
+#     "review_pr": PRReviewer,
+#     "describe": PRDescription,
+#     "describe_pr": PRDescription,
+#     "improve": PRCodeSuggestions,
+#     "improve_code": PRCodeSuggestions,
+#     "ask": PRQuestions,
+#     "ask_question": PRQuestions,
+#     "ask_line": PR_LineQuestions,
+#     "update_changelog": PRUpdateChangelog,
+#     "config": PRConfig,
+#     "settings": PRConfig,
+#     "help": PRHelpMessage,
+#     "similar_issue": PRSimilarIssue,
+#     "add_docs": PRAddDocs,
+#     "generate_labels": PRGenerateLabels,
+#     "help_docs": PRHelpDocs,
+# }
+
+# commands = list(command2class.keys())
+commands = ToolRegistry.get_all_commands()
 
 
 
@@ -98,24 +103,23 @@ class PRAgent:
                         # If lang_instruction_text is already present, do nothing.
 
         action = action.lstrip("/").lower()
-        if action not in command2class:
+        tool_class = ToolRegistry.get_tool(action)
+        if not tool_class:
             get_logger().warning(f"Unknown command: {action}")
             return False
+            
         with get_logger().contextualize(command=action, pr_url=pr_url):
             get_logger().info("PR-Agent request handler started", analytics=True)
-            if action == "answer":
-                if notify:
-                    notify()
-                await PRReviewer(pr_url, is_answer=True, args=args, ai_handler=self.ai_handler).run()
-            elif action == "auto_review":
-                await PRReviewer(pr_url, is_auto=True, args=args, ai_handler=self.ai_handler).run()
-            elif action in command2class:
-                if notify:
-                    notify()
+            
+            if notify:
+                notify()
 
-                await command2class[action](pr_url, ai_handler=self.ai_handler, args=args).run()
+            if tool_class == PRReviewer:
+                is_answer = (action == "answer")
+                is_auto = (action == "auto_review")
+                await PRReviewer(pr_url, is_answer=is_answer, is_auto=is_auto, args=args, ai_handler=self.ai_handler).run()
             else:
-                return False
+                await tool_class(pr_url, ai_handler=self.ai_handler, args=args).run()
             return True
 
     async def handle_request(self, pr_url, request, notify=None) -> bool:
