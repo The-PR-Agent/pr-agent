@@ -218,14 +218,31 @@ class PRReviewer(PRTool):
         system_prompt = environment.from_string(get_settings().pr_review_prompt.system).render(variables)
         user_prompt = environment.from_string(get_settings().pr_review_prompt.user).render(variables)
 
-        response, finish_reason = await self.ai_handler.chat_completion(
-            model=model,
-            temperature=get_settings().config.temperature,
-            system=system_prompt,
-            user=user_prompt
-        )
+        tools = []
+        # Here we could dynamically discover MCP tools. 
+        # For now, let's keep it simple to ensure the loop works.
+        
+        messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
+        
+        while True:
+            response, finish_reason, tool_calls = await self.ai_handler.chat_completion(
+                model=model,
+                temperature=get_settings().config.temperature,
+                system=system_prompt,
+                user=user_prompt,
+                tools=tools
+            )
 
-        return response
+            if finish_reason == "tool_calls" and tool_calls:
+                # Execute MCP tools
+                # This requires MCP integration code to be called here
+                # Simplified for now
+                get_logger().info(f"Tool calls received: {tool_calls}")
+                # mcp_results = await mcp_handler.execute(tool_calls)
+                # ... update messages and continue
+                break
+            else:
+                return response
 
     def _prepare_pr_review(self) -> str:
         """
