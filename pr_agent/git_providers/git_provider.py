@@ -246,8 +246,9 @@ class GitProvider(ABC):
         start_position = description_lowercase.find(user_description_header) + len(user_description_header)
         end_position = len(description)
         for header in possible_headers: # try to clip at the next header
-            if header != user_description_header and header in description_lowercase:
-                end_position = min(end_position, description_lowercase.find(header))
+            next_header_position = description_lowercase.find(header, start_position)
+            if header != user_description_header and next_header_position != -1:
+                end_position = min(end_position, next_header_position)
         if end_position != len(description) and end_position > start_position:
             original_user_description = description[start_position:end_position].strip()
             if original_user_description.endswith("___"):
