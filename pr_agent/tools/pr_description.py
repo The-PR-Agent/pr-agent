@@ -30,21 +30,35 @@ from pr_agent.tools.ticket_pr_compliance_check import (
     extract_tickets)
 
 
-class PRDescription:
-    def __init__(self, pr_url: str, args: list = None,
-                 ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
-        """
-        Initialize the PRDescription object with the necessary attributes and objects for generating a PR description
-        using an AI model.
-        Args:
-            pr_url (str): The URL of the pull request.
-            args (list, optional): List of arguments passed to the PRDescription class. Defaults to None.
-        """
-        # Initialize the git provider and main PR language
+from pr_agent.tools.base import PRTool
+from pr_agent.tools.registry import ToolRegistry
+
+@ToolRegistry.register("describe")
+@ToolRegistry.register("describe_pr")
+class PRDescription(PRTool):
+    def __init__(self, pr_url: str, ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler, args: list = None):
+        super().__init__(pr_url, ai_handler=ai_handler, args=args)
         self.git_provider = get_git_provider_with_context(pr_url)
-        self.main_pr_language = get_main_pr_language(
-            self.git_provider.get_languages(), self.git_provider.get_files()
+        self.ai_handler = ai_handler()
+        self.vars = {
+            "title": self.git_provider.pr.title,
+            "branch": self.git_provider.get_pr_branch(),
+            "description": self.git_provider.get_pr_description(),
+            "language": get_main_pr_language(
+                self.git_provider.get_languages(), self.git_provider.get_files()
+            ),
+            "commit_messages_str": self.git_provider.get_commit_messages(),
+            "extra_instructions": get_settings().pr_description_prompt.extra_instructions,
+            'duplicate_prompt_examples': get_settings().config.get('duplicate_prompt_examples', False),
+            "enable_custom_labels": get_settings().config.enable_custom_labels,
+        }
+        self.token_handler = TokenHandler(
+            self.git_provider.pr,
+            self.vars,
+            get_settings().pr_description_prompt.system,
+            get_settings().pr_description_prompt.user
         )
+
         self.pr_id = self.git_provider.get_pr_id()
         self.keys_fix = ["filename:", "language:", "changes_summary:", "changes_title:", "description:", "title:"]
 
