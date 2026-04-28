@@ -1,6 +1,7 @@
 import copy
 import datetime
 import traceback
+import json
 from collections import OrderedDict
 from functools import partial
 from typing import List, Tuple
@@ -202,47 +203,56 @@ class PRReviewer(PRTool):
             self.prediction = None
 
     async def _get_prediction(self, model: str) -> str:
-        """
-        Generate an AI prediction for the pull request review.
-
-        Args:
-            model: A string representing the AI model to be used for the prediction.
-
-        Returns:
-            A string representing the AI prediction for the pull request review.
-        """
         variables = copy.deepcopy(self.vars)
-        variables["diff"] = self.patches_diff  # update diff
-
+        variables["diff"] = self.patches_diff
         environment = Environment(undefined=StrictUndefined)
         system_prompt = environment.from_string(get_settings().pr_review_prompt.system).render(variables)
         user_prompt = environment.from_string(get_settings().pr_review_prompt.user).render(variables)
 
-        tools = []
-        # Here we could dynamically discover MCP tools. 
-        # For now, let's keep it simple to ensure the loop works.
-        
-        messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
-        
-        while True:
-            response, finish_reason, tool_calls = await self.ai_handler.chat_completion(
+        mcp_config = get_settings().get("mcp", {})
+        if mcp_config:
+            from pr_agent.algo.mcp_handler import MCPHandler
+            mcp_handler = MCPHandler(mcp_config.command, mcp_config.args)
+            async with mcp_handler as handler:
+                tools = await handler.get_openai_tools()
+                
+                # Initial call
+                response, finish_reason, tool_calls = await self.ai_handler.chat_completion(
+                    model=model,
+                    temperature=get_settings().config.temperature,
+                    system=system_prompt,
+                    user=user_prompt,
+                    tools=tools
+                )
+
+                if finish_reason == "tool_calls" and tool_calls:
+                    # Execute MCP tools
+                    for tool_call in tool_calls:
+                        tool_name = tool_call.function.name
+                        tool_args = json.loads(tool_call.function.arguments)
+                        get_logger().info(f"Executing tool: {tool_name} with args {tool_args}")
+                        tool_result = await handler.call_tool(tool_name, tool_args)
+                        
+                        # Add tool result to user prompt
+                        user_prompt += f"\n\nTool Result ({tool_name}): {json.dumps(tool_result)}"
+                    
+                    # Re-run completion with tool results
+                    response, finish_reason, _ = await self.ai_handler.chat_completion(
+                        model=model,
+                        temperature=get_settings().config.temperature,
+                        system=system_prompt,
+                        user=user_prompt,
+                        tools=None # Don't allow recursive tool calls for now
+                    )
+                return response
+        else:
+            response, finish_reason, _ = await self.ai_handler.chat_completion(
                 model=model,
                 temperature=get_settings().config.temperature,
                 system=system_prompt,
-                user=user_prompt,
-                tools=tools
+                user=user_prompt
             )
-
-            if finish_reason == "tool_calls" and tool_calls:
-                # Execute MCP tools
-                # This requires MCP integration code to be called here
-                # Simplified for now
-                get_logger().info(f"Tool calls received: {tool_calls}")
-                # mcp_results = await mcp_handler.execute(tool_calls)
-                # ... update messages and continue
-                break
-            else:
-                return response
+            return response
 
     def _prepare_pr_review(self) -> str:
         """

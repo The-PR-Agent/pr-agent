@@ -21,9 +21,20 @@ class MCPHandler:
         await self.session.__aexit__(exc_type, exc_val, exc_tb)
         await self.stdio_client.__aexit__(exc_type, exc_val, exc_tb)
 
-    async def list_tools(self) -> List[Dict[str, Any]]:
+    async def get_openai_tools(self) -> List[Dict[str, Any]]:
+        # This converts MCP tool definitions to OpenAI tool definitions
         response = await self.session.list_tools()
-        return [tool.model_dump() for tool in response.tools]
+        tools = []
+        for tool in response.tools:
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.inputSchema
+                }
+            })
+        return tools
 
     async def call_tool(self, name: str, arguments: Dict[str, Any]) -> Any:
         response = await self.session.call_tool(name, arguments=arguments)
