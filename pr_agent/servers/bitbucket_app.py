@@ -138,8 +138,8 @@ async def _validate_time_from_last_commit_to_pr_update(data: dict) -> bool:
 
 async def _perform_commands_bitbucket(commands_conf: str, agent: PRAgent, api_url: str, log_context: dict, data: dict):
     apply_repo_settings(api_url)
-    if commands_conf == "pr_commands" and get_settings().config.disable_auto_feedback:  # auto commands for PR, and auto feedback is disabled
-        get_logger().info(f"Auto feedback is disabled, skipping auto commands for PR {api_url=}")
+    if get_settings().config.disable_auto_feedback:
+        get_logger().info(f"Auto feedback is disabled, skipping auto commands for {api_url=}")
         return
     if commands_conf == "push_commands":
         if not get_settings().get("bitbucket_app.handle_push_trigger"):

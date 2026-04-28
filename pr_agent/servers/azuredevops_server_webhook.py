@@ -93,8 +93,8 @@ def authorize(credentials: HTTPBasicCredentials = Depends(security)):
 
 async def _perform_commands_azure(commands_conf: str, agent: PRAgent, api_url: str, log_context: dict):
     apply_repo_settings(api_url)
-    if commands_conf == "pr_commands" and get_settings().config.disable_auto_feedback:  # auto commands for PR, and auto feedback is disabled
-        get_logger().info(f"Auto feedback is disabled, skipping auto commands for PR {api_url=}", **log_context)
+    if get_settings().config.disable_auto_feedback:
+        get_logger().info(f"Auto feedback is disabled, skipping auto commands for {api_url=}", **log_context)
         return
     commands = get_settings().get(f"azure_devops_server.{commands_conf}")
     if not commands:

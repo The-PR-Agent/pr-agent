@@ -39,8 +39,8 @@ async def handle_request(api_url: str, body: str, log_context: dict, sender_id: 
 async def _perform_commands_gitlab(commands_conf: str, agent: PRAgent, api_url: str,
                                    log_context: dict, data: dict):
     apply_repo_settings(api_url)
-    if commands_conf == "pr_commands" and get_settings().config.disable_auto_feedback:  # auto commands for PR, and auto feedback is disabled
-        get_logger().info(f"Auto feedback is disabled, skipping auto commands for PR {api_url=}", **log_context)
+    if get_settings().config.disable_auto_feedback:
+        get_logger().info(f"Auto feedback is disabled, skipping auto commands for {api_url=}", **log_context)
         return
     if not should_process_pr_logic(data): # Here we already updated the configurations
         return
