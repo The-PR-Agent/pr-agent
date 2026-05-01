@@ -275,6 +275,9 @@ class GitProvider(ABC):
     def get_repo_settings(self):
         pass
 
+    def get_repo_file_content(self, file_path: str):
+        return ""
+
     def get_workspace_name(self):
         return ""
 

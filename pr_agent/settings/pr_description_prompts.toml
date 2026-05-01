@@ -16,6 +16,13 @@ Extra instructions from the user:
 =====
 {% endif %}
 
+{%- if repo_context %}
+
+Repository context:
+=====
+{{ repo_context }}
+=====
+{% endif %}
 
 The output must be a YAML object equivalent to type $PRDescription, according to the following Pydantic definitions:
 =====

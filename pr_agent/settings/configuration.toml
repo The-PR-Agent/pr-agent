@@ -25,6 +25,8 @@ ai_timeout=120 # 2 minutes
 skip_keys = []
 custom_reasoning_model = false # when true, disables system messages and temperature controls for models that don't support chat-style inputs
 response_language="en-US" # Language locales code for PR responses in ISO 3166 and ISO 639 format (e.g., "en-US", "it-IT", "zh-CN", ...)
+repo_context_files = [] # Explicit repository-relative files to include as AI prompt context, e.g. ["AGENTS.md"]
+repo_context_max_lines = 500 # Maximum total lines rendered from configured repo context files
 # token limits
 max_description_tokens = 500
 max_commits_tokens = 500

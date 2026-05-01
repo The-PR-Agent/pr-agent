@@ -82,6 +82,15 @@ Extra user-provided instructions (should be addressed with high priority):
 ======
 {%- endif %}
 
+{%- if repo_context %}
+
+
+Repository context:
+======
+{{ repo_context }}
+======
+{%- endif %}
+
 
 The output must be a YAML object equivalent to type $PRCodeSuggestions, according to the following Pydantic definitions:
 =====
