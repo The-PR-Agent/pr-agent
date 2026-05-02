@@ -14,8 +14,10 @@ on:
 permissions:
   contents: read
 
+# Normalize the concurrency key so a release event (tag `v0.3.2`) and a
+# workflow_dispatch (input `0.3.2`) for the same version can never overlap.
 concurrency:
-  group: publish-${{ github.event_name == 'release' && github.event.release.tag_name || inputs.version }}
+  group: publish-${{ github.event_name == 'release' && github.event.release.tag_name || format('v{0}', inputs.version) }}
   cancel-in-progress: false
 
 jobs:
@@ -36,8 +38,10 @@ jobs:
             VERSION="${{ inputs.version }}"
             TAG="v${VERSION}"
           fi
-          if ! echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([a-zA-Z0-9.+-]+)?$'; then
-            echo "::error::Version '$VERSION' is not a valid semver string."
+          # Strict SemVer 2.0.0 regex (https://semver.org/#is-there-a-suggested-regular-expression-regex-to-check-a-semver-string)
+          SEMVER='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$'
+          if ! printf '%s' "$VERSION" | grep -Pq "$SEMVER"; then
+            echo "::error::Version '$VERSION' is not a valid SemVer 2.0.0 string."
             exit 1
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
@@ -49,11 +53,11 @@ jobs:
     runs-on: ubuntu-latest
     environment: release
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           ref: ${{ needs.prepare.outputs.sha }}
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: '3.12'
 
@@ -62,14 +66,23 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           python - <<'PY'
-          import os, re, pathlib
+          import os
+          import pathlib
+          import re
+
           version = os.environ["VERSION"]
-          p = pathlib.Path("pyproject.toml")
-          text = p.read_text()
-          new_text, n = re.subn(r'^version = "[^"]+"', f'version = "{version}"', text, count=1, flags=re.M)
-          if n != 1:
-              raise SystemExit("Could not locate `version = \"...\"` in pyproject.toml")
-          p.write_text(new_text)
+          path = pathlib.Path("pyproject.toml")
+          text = path.read_text()
+          new_text, count = re.subn(
+              r'^version = "[^"]+"',
+              f'version = "{version}"',
+              text,
+              count=1,
+              flags=re.MULTILINE,
+          )
+          if count != 1:
+              raise SystemExit('Could not locate `version = "..."` in pyproject.toml')
+          path.write_text(new_text)
           print(f"Set pyproject.toml version to {version}")
           PY
 
@@ -78,7 +91,7 @@ jobs:
           python -m pip install --upgrade pip build
           python -m build
 
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # release/v1
         with:
           password: ${{ secrets.PYPI_API_TOKEN }}
 
@@ -135,11 +148,11 @@ jobs:
             suffix: gitlab_lambda
             rolling: gitlab_lambda
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           ref: ${{ needs.prepare.outputs.sha }}
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: '3.12'
 
@@ -148,19 +161,28 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           python - <<'PY'
-          import os, re, pathlib
+          import os
+          import pathlib
+          import re
+
           version = os.environ["VERSION"]
-          p = pathlib.Path("pyproject.toml")
-          text = p.read_text()
-          new_text, n = re.subn(r'^version = "[^"]+"', f'version = "{version}"', text, count=1, flags=re.M)
-          if n != 1:
-              raise SystemExit("Could not locate `version = \"...\"` in pyproject.toml")
-          p.write_text(new_text)
+          path = pathlib.Path("pyproject.toml")
+          text = path.read_text()
+          new_text, count = re.subn(
+              r'^version = "[^"]+"',
+              f'version = "{version}"',
+              text,
+              count=1,
+              flags=re.MULTILINE,
+          )
+          if count != 1:
+              raise SystemExit('Could not locate `version = "..."` in pyproject.toml')
+          path.write_text(new_text)
           PY
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -181,7 +203,7 @@ jobs:
           fi
           echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
 
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6
         with:
           context: .
           file: ${{ matrix.dockerfile }}
@@ -198,11 +220,15 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           ref: main
           fetch-depth: 0
           token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: '3.12'
 
       - name: Configure git identity
         run: |
@@ -214,14 +240,23 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           python - <<'PY'
-          import os, re, pathlib
+          import os
+          import pathlib
+          import re
+
           version = os.environ["VERSION"]
-          p = pathlib.Path("pyproject.toml")
-          text = p.read_text()
-          new_text, n = re.subn(r'^version = "[^"]+"', f'version = "{version}"', text, count=1, flags=re.M)
-          if n != 1:
-              raise SystemExit("Could not locate `version = \"...\"` in pyproject.toml")
-          p.write_text(new_text)
+          path = pathlib.Path("pyproject.toml")
+          text = path.read_text()
+          new_text, count = re.subn(
+              r'^version = "[^"]+"',
+              f'version = "{version}"',
+              text,
+              count=1,
+              flags=re.MULTILINE,
+          )
+          if count != 1:
+              raise SystemExit('Could not locate `version = "..."` in pyproject.toml')
+          path.write_text(new_text)
           PY
 
       - name: Commit & push bump
@@ -258,11 +293,17 @@ jobs:
             gh release create "$TAG" --target "$SHA" --title "$TAG" --generate-notes
           fi
 
+      # Tag move runs after PyPI/Docker have already published. We don't want a
+      # tag-protection failure or transient push error to fail the workflow at
+      # this point — surface a warning so a maintainer can sync the tag manually.
       - name: Move release tag to bump commit (release event only)
         if: github.event_name == 'release' && steps.commit.outputs.bumped == 'true'
         env:
           TAG: ${{ needs.prepare.outputs.tag }}
           SHA: ${{ steps.commit.outputs.sha }}
         run: |
-          git tag -f "$TAG" "$SHA"
-          git push --force origin "refs/tags/$TAG"
+          if git tag -f "$TAG" "$SHA" && git push --force origin "refs/tags/$TAG"; then
+            echo "Moved tag $TAG to $SHA so it matches the published version."
+          else
+            echo "::warning::Failed to force-update tag $TAG to bump commit $SHA. PyPI and Docker artifacts are already published. The tag may be protected; align it manually with: git tag -f $TAG $SHA && git push --force origin refs/tags/$TAG"
+          fi
