@@ -10,7 +10,7 @@ pipelines:
       '**':
         - step:
             name: PR Agent Review
-            image: codiumai/pr-agent:latest
+            image: pragent/pr-agent:latest
             script:
               - pr-agent --pr_url=https://bitbucket.org/$BITBUCKET_WORKSPACE/$BITBUCKET_REPO_SLUG/pull-requests/$BITBUCKET_PR_ID review
 ```
@@ -67,8 +67,8 @@ python cli.py --pr_url https://git.on-prem-instance-of-bitbucket.com/projects/PR
 To run PR-Agent as webhook, build the docker image:
 
 ```bash
-docker build . -t codiumai/pr-agent:bitbucket_server_webhook --target bitbucket_server_webhook -f docker/Dockerfile
-docker push codiumai/pr-agent:bitbucket_server_webhook  # Push to your Docker repository
+docker build . -t pragent/pr-agent:bitbucket_server_webhook --target bitbucket_server_webhook -f docker/Dockerfile
+docker push pragent/pr-agent:bitbucket_server_webhook  # Push to your Docker repository
 ```
 
 Navigate to `Projects` or `Repositories`, `Settings`, `Webhooks`, `Create Webhook`.

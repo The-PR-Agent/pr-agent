@@ -27,7 +27,7 @@ git clone https://github.com/the-pr-agent/pr-agent.git
 
 ```bash
 docker build -f /docker/Dockerfile -t pr-agent:gitea_app --target gitea_app .
-docker push codiumai/pr-agent:gitea_webhook  # Push to your Docker repository
+docker push pragent/pr-agent:gitea_webhook  # Push to your Docker repository
 ```
 
 7. Set the environmental variables, the method depends on your docker runtime. Skip this step if you included your secrets/configuration directly in the Docker image.

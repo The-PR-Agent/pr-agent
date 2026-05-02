@@ -41,7 +41,7 @@ For example, to github action:
 steps:
   - name: PR Agent action step
     id: pragent
-    uses: docker://codiumai/pr-agent:0.26-github_action
+    uses: docker://pragent/pr-agent:0.34.2-github_action
 ```
 
 #### Enhanced Security with Docker Digest
@@ -52,7 +52,7 @@ For maximum security, you can specify the Docker image using its digest:
 steps:
   - name: PR Agent action step
     id: pragent
-    uses: docker://codiumai/pr-agent@sha256:14165e525678ace7d9b51cda8652c2d74abb4e1d76b57c4a6ccaeba84663cc64
+    uses: docker://pragent/pr-agent@sha256:a0b36966ca3a197ca739fa1e65c16703076fc1c744cd423ca203b8c21707d71c
 ```
 
 ## Reporting a Vulnerability

@@ -24,7 +24,7 @@ jobs:
           file: ./docker/Dockerfile
           push: false
           load: true
-          tags: codiumai/pr-agent:test
+          tags: pragent/pr-agent:test
           cache-from: type=gha,scope=dev
           cache-to: type=gha,mode=max,scope=dev
           target: test
@@ -32,14 +32,14 @@ jobs:
       - id: test1
         name: E2E test github app
         run: |
-          docker run -e GITHUB.USER_TOKEN=${{ secrets.TOKEN_GITHUB }} --rm codiumai/pr-agent:test pytest -v tests/e2e_tests/test_github_app.py
+          docker run -e GITHUB.USER_TOKEN=${{ secrets.TOKEN_GITHUB }} --rm pragent/pr-agent:test pytest -v tests/e2e_tests/test_github_app.py
 
       - id: test2
         name: E2E gitlab webhook
         run: |
-          docker run -e gitlab.PERSONAL_ACCESS_TOKEN=${{ secrets.TOKEN_GITLAB }} --rm codiumai/pr-agent:test pytest -v tests/e2e_tests/test_gitlab_webhook.py
+          docker run -e gitlab.PERSONAL_ACCESS_TOKEN=${{ secrets.TOKEN_GITLAB }} --rm pragent/pr-agent:test pytest -v tests/e2e_tests/test_gitlab_webhook.py
 
       - id: test3
         name: E2E bitbucket app
         run: |
-          docker run -e BITBUCKET.USERNAME=${{ secrets.BITBUCKET_USERNAME }}  -e BITBUCKET.PASSWORD=${{ secrets.BITBUCKET_PASSWORD }} --rm codiumai/pr-agent:test pytest -v tests/e2e_tests/test_bitbucket_app.py
+          docker run -e BITBUCKET.USERNAME=${{ secrets.BITBUCKET_USERNAME }}  -e BITBUCKET.PASSWORD=${{ secrets.BITBUCKET_PASSWORD }} --rm pragent/pr-agent:test pytest -v tests/e2e_tests/test_bitbucket_app.py

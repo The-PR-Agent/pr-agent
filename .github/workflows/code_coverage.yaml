@@ -29,7 +29,7 @@ jobs:
           file: ./docker/Dockerfile
           push: false
           load: true
-          tags: codiumai/pr-agent:test
+          tags: pragent/pr-agent:test
           cache-from: type=gha,scope=dev
           cache-to: type=gha,mode=max,scope=dev
           target: test
@@ -37,7 +37,7 @@ jobs:
       - id: code_cov
         name: Test dev docker
         run: |
-          docker run --name test_container codiumai/pr-agent:test  pytest  tests/unittest --cov=pr_agent --cov-report term --cov-report xml:coverage.xml
+          docker run --name test_container pragent/pr-agent:test  pytest  tests/unittest --cov=pr_agent --cov-report term --cov-report xml:coverage.xml
           docker cp test_container:/app/coverage.xml coverage.xml
           docker rm test_container
 

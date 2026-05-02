@@ -12,7 +12,7 @@ To invoke a tool (for example `review`), you can run PR-Agent directly from the 
 - For GitHub:
 
     ```bash
-    docker run --rm -it -e OPENAI.KEY=<your_openai_key> -e GITHUB.USER_TOKEN=<your_github_token> codiumai/pr-agent:latest --pr_url <pr_url> review
+    docker run --rm -it -e OPENAI.KEY=<your_openai_key> -e GITHUB.USER_TOKEN=<your_github_token> pragent/pr-agent:latest --pr_url <pr_url> review
     ```
 
     If you are using GitHub enterprise server, you need to specify the custom url as variable.
@@ -25,7 +25,7 @@ To invoke a tool (for example `review`), you can run PR-Agent directly from the 
 - For GitLab:
 
     ```bash
-    docker run --rm -it -e OPENAI.KEY=<your key> -e CONFIG.GIT_PROVIDER=gitlab -e GITLAB.PERSONAL_ACCESS_TOKEN=<your token> codiumai/pr-agent:latest --pr_url <pr_url> review
+    docker run --rm -it -e OPENAI.KEY=<your key> -e CONFIG.GIT_PROVIDER=gitlab -e GITLAB.PERSONAL_ACCESS_TOKEN=<your token> pragent/pr-agent:latest --pr_url <pr_url> review
     ```
 
     If you have a dedicated GitLab instance, you need to specify the custom url as variable:
@@ -37,13 +37,13 @@ To invoke a tool (for example `review`), you can run PR-Agent directly from the 
 - For BitBucket:
 
     ```bash
-    docker run --rm -it -e CONFIG.GIT_PROVIDER=bitbucket -e OPENAI.KEY=$OPENAI_API_KEY -e BITBUCKET.BEARER_TOKEN=$BITBUCKET_BEARER_TOKEN codiumai/pr-agent:latest --pr_url=<pr_url> review
+    docker run --rm -it -e CONFIG.GIT_PROVIDER=bitbucket -e OPENAI.KEY=$OPENAI_API_KEY -e BITBUCKET.BEARER_TOKEN=$BITBUCKET_BEARER_TOKEN pragent/pr-agent:latest --pr_url=<pr_url> review
     ```
 
 - For Gitea:
 
     ```bash
-    docker run --rm -it -e OPENAI.KEY=<your key> -e CONFIG.GIT_PROVIDER=gitea -e GITEA.PERSONAL_ACCESS_TOKEN=<your token> codiumai/pr-agent:latest --pr_url <pr_url> review
+    docker run --rm -it -e OPENAI.KEY=<your key> -e CONFIG.GIT_PROVIDER=gitea -e GITEA.PERSONAL_ACCESS_TOKEN=<your token> pragent/pr-agent:latest --pr_url <pr_url> review
     ```
 
     If you have a dedicated Gitea instance, you need to specify the custom url as variable:
@@ -74,7 +74,7 @@ OPENAI__KEY="<your key>"
 Then, you can run `pr_agent` using Docker with the following command:
 
 ```shell
-docker run --rm -it --env-file .env codiumai/pr-agent:latest <tool> <tool parameter>
+docker run --rm -it --env-file .env pragent/pr-agent:latest <tool> <tool parameter>
 ```
 
 ---

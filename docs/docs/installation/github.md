@@ -487,23 +487,23 @@ For more detailed configuration options, see:
 ### Using a specific release
 
 !!! tip ""
-    if you want to pin your action to a specific release (v0.23 for example) for stability reasons, use:
+    if you want to pin your action to a specific release (v0.34.2 for example) for stability reasons, use:
     ```yaml
     ...
         steps:
           - name: PR Agent action step
             id: pragent
-            uses: docker://codiumai/pr-agent:0.23-github_action
+            uses: docker://pragent/pr-agent:0.34.2-github_action
     ...
     ```
 
-    For enhanced security, you can also specify the Docker image by its [digest](https://hub.docker.com/repository/docker/codiumai/pr-agent/tags):
+    For enhanced security, you can also specify the Docker image by its [digest](https://hub.docker.com/repository/docker/pragent/pr-agent/tags):
     ```yaml
     ...
         steps:
           - name: PR Agent action step
             id: pragent
-            uses: docker://codiumai/pr-agent@sha256:14165e525678ace7d9b51cda8652c2d74abb4e1d76b57c4a6ccaeba84663cc64
+            uses: docker://pragent/pr-agent@sha256:a0b36966ca3a197ca739fa1e65c16703076fc1c744cd423ca203b8c21707d71c
     ...
     ```
 
@@ -591,8 +591,8 @@ cp pr_agent/settings/.secrets_template.toml pr_agent/settings/.secrets.toml
 6) Build a Docker image for the app and optionally push it to a Docker repository. We'll use Dockerhub as an example:
 
     ```bash
-    docker build . -t codiumai/pr-agent:github_app --target github_app -f docker/Dockerfile
-    docker push codiumai/pr-agent:github_app  # Push to your Docker repository
+    docker build . -t pragent/pr-agent:github_app --target github_app -f docker/Dockerfile
+    docker push pragent/pr-agent:github_app  # Push to your Docker repository
     ```
 
 7. Host the app using a server, serverless function, or container environment. Alternatively, for development and
@@ -622,7 +622,7 @@ For example: `GITHUB.WEBHOOK_SECRET` --> `GITHUB__WEBHOOK_SECRET`
 2. Build a docker image that can be used as a lambda function
 
     ```shell
-    docker buildx build --platform=linux/amd64 . -t codiumai/pr-agent:github_lambda --target github_lambda -f docker/Dockerfile.lambda
+    docker buildx build --platform=linux/amd64 . -t pragent/pr-agent:github_lambda --target github_lambda -f docker/Dockerfile.lambda
    ```
    (Note: --target github_lambda is optional as it's the default target)
 
@@ -630,8 +630,8 @@ For example: `GITHUB.WEBHOOK_SECRET` --> `GITHUB__WEBHOOK_SECRET`
 3. Push image to ECR
 
     ```shell
-    docker tag codiumai/pr-agent:github_lambda <AWS_ACCOUNT>.dkr.ecr.<AWS_REGION>.amazonaws.com/codiumai/pr-agent:github_lambda
-    docker push <AWS_ACCOUNT>.dkr.ecr.<AWS_REGION>.amazonaws.com/codiumai/pr-agent:github_lambda
+    docker tag pragent/pr-agent:github_lambda <AWS_ACCOUNT>.dkr.ecr.<AWS_REGION>.amazonaws.com/pragent/pr-agent:github_lambda
+    docker push <AWS_ACCOUNT>.dkr.ecr.<AWS_REGION>.amazonaws.com/pragent/pr-agent:github_lambda
     ```
 
 4. Create a lambda function that uses the uploaded image. Set the lambda timeout to be at least 3m.

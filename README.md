@@ -56,6 +56,9 @@ What else changed:
 
 ## Getting Started
 
+> [!NOTE]
+> **Docker Hub namespace migration.** Releases `0.34.2` and later are published under [`pragent/pr-agent`](https://hub.docker.com/r/pragent/pr-agent). Older releases (up to and including `v0.31`) remain available at the legacy [`codiumai/pr-agent`](https://hub.docker.com/r/codiumai/pr-agent) namespace as a frozen archive — no new images are pushed there. Update any pinned `image:` / `docker pull` / `uses: docker://` references when upgrading to `0.34.2+`.
+
 ### 🚀 Quick Start for PR-Agent
 
 #### 1. GitHub Action (Recommended)

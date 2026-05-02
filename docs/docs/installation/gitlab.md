@@ -11,7 +11,7 @@ stages:
 pr_agent_job:
   stage: pr_agent
   image:
-    name: codiumai/pr-agent:latest
+    name: pragent/pr-agent:latest
     entrypoint: [""]
   script:
     - cd /app
@@ -76,7 +76,7 @@ git clone https://github.com/the-pr-agent/pr-agent.git
 
 ```bash
 docker build . -t gitlab_pr_agent --target gitlab_webhook -f docker/Dockerfile
-docker push codiumai/pr-agent:gitlab_webhook  # Push to your Docker repository
+docker push pragent/pr-agent:gitlab_webhook  # Push to your Docker repository
 ```
 
 7. Set the environmental variables, the method depends on your docker runtime. Skip this step if you included your secrets/configuration directly in the Docker image.
@@ -104,14 +104,14 @@ For example: `GITLAB.PERSONAL_ACCESS_TOKEN` --> `GITLAB__PERSONAL_ACCESS_TOKEN`
 2. Build a docker image that can be used as a lambda function
 
     ```shell
-    docker buildx build --platform=linux/amd64 . -t codiumai/pr-agent:gitlab_lambda --target gitlab_lambda -f docker/Dockerfile.lambda
+    docker buildx build --platform=linux/amd64 . -t pragent/pr-agent:gitlab_lambda --target gitlab_lambda -f docker/Dockerfile.lambda
    ```
 
 3. Push image to ECR
 
     ```shell
-    docker tag codiumai/pr-agent:gitlab_lambda <AWS_ACCOUNT>.dkr.ecr.<AWS_REGION>.amazonaws.com/codiumai/pr-agent:gitlab_lambda
-    docker push <AWS_ACCOUNT>.dkr.ecr.<AWS_REGION>.amazonaws.com/codiumai/pr-agent:gitlab_lambda
+    docker tag pragent/pr-agent:gitlab_lambda <AWS_ACCOUNT>.dkr.ecr.<AWS_REGION>.amazonaws.com/pragent/pr-agent:gitlab_lambda
+    docker push <AWS_ACCOUNT>.dkr.ecr.<AWS_REGION>.amazonaws.com/pragent/pr-agent:gitlab_lambda
     ```
 
 4. Create a lambda function that uses the uploaded image. Set the lambda timeout to be at least 3m.
