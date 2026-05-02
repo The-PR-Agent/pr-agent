@@ -6,13 +6,17 @@ build-backend = "setuptools.build_meta"
 name = "pr-agent"
 version = "0.34.2"
 
-authors = [{ name = "QodoAI", email = "ofir.f@qodo.ai" }]
+authors = [
+  { name = "Naor Peled", email = "me@naor.dev" },
+  { name = "QodoAI", email = "ofir.f@qodo.ai" },
+]
 
 maintainers = [
+  { name = "Naor Peled", email = "me@naor.dev" },
   { name = "Ofir Friedman", email = "ofir.f@qodo.ai" },
 ]
 
-description = "QodoAI PR-Agent aims to help efficiently review and handle pull requests, by providing AI feedbacks and suggestions."
+description = "PR-Agent aims to help efficiently review and handle pull requests, by providing AI feedback and suggestions."
 readme = "README.md"
 requires-python = ">=3.12"
 keywords = ["AI", "Agents", "Pull Request", "Automation", "Code Review"]
@@ -29,8 +33,10 @@ dynamic = ["dependencies"]
 dependencies = { file = ["requirements.txt"] }
 
 [project.urls]
-"Homepage" = "https://github.com/qodo-ai/pr-agent"
-"Documentation" = "https://qodo-merge-docs.qodo.ai/"
+"Homepage" = "https://github.com/the-pr-agent/pr-agent"
+"Documentation" = "https://docs.pr-agent.ai/"
+"Repository" = "https://github.com/the-pr-agent/pr-agent"
+"Issues" = "https://github.com/the-pr-agent/pr-agent/issues"
 
 [tool.setuptools]
 include-package-data = true
