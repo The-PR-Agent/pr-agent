@@ -7,15 +7,15 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to publish (e.g., 0.3.2). Will overwrite pyproject.toml on main.'
+        description: 'Version to publish (e.g., 0.35.0). Will overwrite pyproject.toml on main.'
         required: true
         type: string
 
 permissions:
   contents: read
 
-# Normalize the concurrency key so a release event (tag `v0.3.2`) and a
-# workflow_dispatch (input `0.3.2`) for the same version can never overlap.
+# Normalize the concurrency key so a release event (tag `v0.35.0`) and a
+# workflow_dispatch (input `0.35.0`) for the same version can never overlap.
 concurrency:
   group: publish-${{ github.event_name == 'release' && github.event.release.tag_name || format('v{0}', inputs.version) }}
   cancel-in-progress: false
