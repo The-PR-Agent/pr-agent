@@ -28,6 +28,16 @@ jobs:
       tag: ${{ steps.resolve.outputs.tag }}
       sha: ${{ steps.resolve.outputs.sha }}
     steps:
+      # workflow_dispatch can be triggered from any branch in the UI, but the
+      # finalize job pushes the version bump to main and creates the tag. If
+      # we let it run from a non-main ref we'd publish artifacts from a commit
+      # that isn't on main and tag main with mismatched code.
+      - name: Reject workflow_dispatch from non-main ref
+        if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::workflow_dispatch must be triggered from the main branch (got ${{ github.ref }})."
+          exit 1
+
       - name: Resolve version
         id: resolve
         run: |
@@ -62,29 +72,7 @@ jobs:
           python-version: '3.12'
 
       - name: Set version in pyproject.toml
-        env:
-          VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          python - <<'PY'
-          import os
-          import pathlib
-          import re
-
-          version = os.environ["VERSION"]
-          path = pathlib.Path("pyproject.toml")
-          text = path.read_text()
-          new_text, count = re.subn(
-              r'^version = "[^"]+"',
-              f'version = "{version}"',
-              text,
-              count=1,
-              flags=re.MULTILINE,
-          )
-          if count != 1:
-              raise SystemExit('Could not locate `version = "..."` in pyproject.toml')
-          path.write_text(new_text)
-          print(f"Set pyproject.toml version to {version}")
-          PY
+        run: python scripts/set_pyproject_version.py "${{ needs.prepare.outputs.version }}"
 
       - name: Build distributions
         run: |
@@ -94,6 +82,10 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # release/v1
         with:
           password: ${{ secrets.PYPI_API_TOKEN }}
+          # Re-running the workflow for the same version (e.g. after a
+          # transient registry failure) should not fail because the wheel
+          # already exists on PyPI.
+          skip-existing: true
 
   publish-docker:
     needs: prepare
@@ -157,28 +149,7 @@ jobs:
           python-version: '3.12'
 
       - name: Set version in pyproject.toml
-        env:
-          VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          python - <<'PY'
-          import os
-          import pathlib
-          import re
-
-          version = os.environ["VERSION"]
-          path = pathlib.Path("pyproject.toml")
-          text = path.read_text()
-          new_text, count = re.subn(
-              r'^version = "[^"]+"',
-              f'version = "{version}"',
-              text,
-              count=1,
-              flags=re.MULTILINE,
-          )
-          if count != 1:
-              raise SystemExit('Could not locate `version = "..."` in pyproject.toml')
-          path.write_text(new_text)
-          PY
+        run: python scripts/set_pyproject_version.py "${{ needs.prepare.outputs.version }}"
 
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
 
@@ -220,9 +191,15 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Check out the exact commit publish-pypi/publish-docker built from, so
+      # the bump commit's parent equals what was actually published. We push
+      # to main fast-forward only — if main has moved during the run, we skip
+      # the push (and the tag move below) rather than rebasing onto a newer
+      # commit that wasn't built. This preserves the invariant that
+      # `git checkout vX.Y.Z` resolves to a commit whose tree was published.
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
-          ref: main
+          ref: ${{ needs.prepare.outputs.sha }}
           fetch-depth: 0
           token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
 
@@ -235,50 +212,31 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Bump pyproject.toml on main
-        env:
-          VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          python - <<'PY'
-          import os
-          import pathlib
-          import re
+      - name: Bump pyproject.toml
+        run: python scripts/set_pyproject_version.py "${{ needs.prepare.outputs.version }}"
 
-          version = os.environ["VERSION"]
-          path = pathlib.Path("pyproject.toml")
-          text = path.read_text()
-          new_text, count = re.subn(
-              r'^version = "[^"]+"',
-              f'version = "{version}"',
-              text,
-              count=1,
-              flags=re.MULTILINE,
-          )
-          if count != 1:
-              raise SystemExit('Could not locate `version = "..."` in pyproject.toml')
-          path.write_text(new_text)
-          PY
-
-      - name: Commit & push bump
+      - name: Commit & push bump (fast-forward only)
         id: commit
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
+          PUBLISHED_SHA: ${{ needs.prepare.outputs.sha }}
         run: |
           if git diff --quiet pyproject.toml; then
-            echo "pyproject.toml already at $VERSION on main; nothing to commit."
+            echo "pyproject.toml already at $VERSION on $PUBLISHED_SHA; nothing to commit."
             echo "bumped=false" >> "$GITHUB_OUTPUT"
-            echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            echo "sha=$PUBLISHED_SHA" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           git add pyproject.toml
           git commit -m "chore(release): bump version to $VERSION [skip ci]"
-          # Retry once on push race with main
-          if ! git push origin main; then
-            git pull --rebase origin main
-            git push origin main
+          if git push origin "HEAD:refs/heads/main"; then
+            echo "bumped=true" >> "$GITHUB_OUTPUT"
+            echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::main has moved past the published commit ($PUBLISHED_SHA); skipping bump push and tag-move so the tag continues to point at built artifacts. Bump pyproject.toml on main manually:  git checkout main && python scripts/set_pyproject_version.py $VERSION && git commit -am 'chore(release): bump version to $VERSION' && git push"
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+            echo "sha=$PUBLISHED_SHA" >> "$GITHUB_OUTPUT"
           fi
-          echo "bumped=true" >> "$GITHUB_OUTPUT"
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Create tag and GitHub Release (workflow_dispatch only)
         if: github.event_name == 'workflow_dispatch'
