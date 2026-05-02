@@ -165,12 +165,12 @@ jobs:
           SUFFIX="${{ matrix.suffix }}"
           ROLLING="${{ matrix.rolling }}"
           if [ -z "$SUFFIX" ]; then
-            TAGS="codiumai/pr-agent:${V}"
+            TAGS="pragent/pr-agent:${V}"
           else
-            TAGS="codiumai/pr-agent:${V}-${SUFFIX}"
+            TAGS="pragent/pr-agent:${V}-${SUFFIX}"
           fi
           if [ -n "$ROLLING" ]; then
-            TAGS="${TAGS},codiumai/pr-agent:${ROLLING}"
+            TAGS="${TAGS},pragent/pr-agent:${ROLLING}"
           fi
           echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
 
