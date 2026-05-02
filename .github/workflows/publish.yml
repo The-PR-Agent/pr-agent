@@ -1,0 +1,268 @@
+name: Publish
+
+on:
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (e.g., 0.3.2). Will overwrite pyproject.toml on main.'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ github.event_name == 'release' && github.event.release.tag_name || inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - name: Resolve version
+        id: resolve
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+            TAG="${GITHUB_REF_NAME}"
+          else
+            VERSION="${{ inputs.version }}"
+            TAG="v${VERSION}"
+          fi
+          if ! echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([a-zA-Z0-9.+-]+)?$'; then
+            echo "::error::Version '$VERSION' is not a valid semver string."
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "sha=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+  publish-pypi:
+    needs: prepare
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set version in pyproject.toml
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          python - <<'PY'
+          import os, re, pathlib
+          version = os.environ["VERSION"]
+          p = pathlib.Path("pyproject.toml")
+          text = p.read_text()
+          new_text, n = re.subn(r'^version = "[^"]+"', f'version = "{version}"', text, count=1, flags=re.M)
+          if n != 1:
+              raise SystemExit("Could not locate `version = \"...\"` in pyproject.toml")
+          p.write_text(new_text)
+          print(f"Set pyproject.toml version to {version}")
+          PY
+
+      - name: Build distributions
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
+
+  publish-docker:
+    needs: prepare
+    runs-on: ubuntu-latest
+    environment: release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - dockerfile: docker/Dockerfile
+            target: cli
+            suffix: ''
+            rolling: latest
+          - dockerfile: docker/Dockerfile
+            target: github_app
+            suffix: github_app
+            rolling: ''
+          - dockerfile: docker/Dockerfile
+            target: bitbucket_app
+            suffix: bitbucket_app
+            rolling: ''
+          - dockerfile: docker/Dockerfile
+            target: bitbucket_server_webhook
+            suffix: bitbucket_server_webhook
+            rolling: bitbucket_server_webhook
+          - dockerfile: docker/Dockerfile
+            target: github_polling
+            suffix: github_polling
+            rolling: ''
+          - dockerfile: docker/Dockerfile
+            target: gitlab_webhook
+            suffix: gitlab_webhook
+            rolling: gitlab_webhook
+          - dockerfile: docker/Dockerfile
+            target: azure_devops_webhook
+            suffix: azure_devops_webhook
+            rolling: ''
+          - dockerfile: docker/Dockerfile
+            target: gitea_app
+            suffix: gitea_app
+            rolling: gitea_app
+          - dockerfile: Dockerfile.github_action
+            target: ''
+            suffix: github_action
+            rolling: github_action
+          - dockerfile: docker/Dockerfile.lambda
+            target: github_lambda
+            suffix: github_lambda
+            rolling: github_lambda
+          - dockerfile: docker/Dockerfile.lambda
+            target: gitlab_lambda
+            suffix: gitlab_lambda
+            rolling: gitlab_lambda
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set version in pyproject.toml
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          python - <<'PY'
+          import os, re, pathlib
+          version = os.environ["VERSION"]
+          p = pathlib.Path("pyproject.toml")
+          text = p.read_text()
+          new_text, n = re.subn(r'^version = "[^"]+"', f'version = "{version}"', text, count=1, flags=re.M)
+          if n != 1:
+              raise SystemExit("Could not locate `version = \"...\"` in pyproject.toml")
+          p.write_text(new_text)
+          PY
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Compute image tags
+        id: tags
+        run: |
+          V="${{ needs.prepare.outputs.version }}"
+          SUFFIX="${{ matrix.suffix }}"
+          ROLLING="${{ matrix.rolling }}"
+          if [ -z "$SUFFIX" ]; then
+            TAGS="codiumai/pr-agent:${V}"
+          else
+            TAGS="codiumai/pr-agent:${V}-${SUFFIX}"
+          fi
+          if [ -n "$ROLLING" ]; then
+            TAGS="${TAGS},codiumai/pr-agent:${ROLLING}"
+          fi
+          echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          target: ${{ matrix.target }}
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha,scope=${{ matrix.suffix || 'cli' }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.suffix || 'cli' }}
+
+  finalize:
+    needs: [prepare, publish-pypi, publish-docker]
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Bump pyproject.toml on main
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          python - <<'PY'
+          import os, re, pathlib
+          version = os.environ["VERSION"]
+          p = pathlib.Path("pyproject.toml")
+          text = p.read_text()
+          new_text, n = re.subn(r'^version = "[^"]+"', f'version = "{version}"', text, count=1, flags=re.M)
+          if n != 1:
+              raise SystemExit("Could not locate `version = \"...\"` in pyproject.toml")
+          p.write_text(new_text)
+          PY
+
+      - name: Commit & push bump
+        id: commit
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          if git diff --quiet pyproject.toml; then
+            echo "pyproject.toml already at $VERSION on main; nothing to commit."
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+            echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git add pyproject.toml
+          git commit -m "chore(release): bump version to $VERSION [skip ci]"
+          # Retry once on push race with main
+          if ! git push origin main; then
+            git pull --rebase origin main
+            git push origin main
+          fi
+          echo "bumped=true" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Create tag and GitHub Release (workflow_dispatch only)
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          SHA: ${{ steps.commit.outputs.sha }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; not recreating."
+          else
+            gh release create "$TAG" --target "$SHA" --title "$TAG" --generate-notes
+          fi
+
+      - name: Move release tag to bump commit (release event only)
+        if: github.event_name == 'release' && steps.commit.outputs.bumped == 'true'
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          SHA: ${{ steps.commit.outputs.sha }}
+        run: |
+          git tag -f "$TAG" "$SHA"
+          git push --force origin "refs/tags/$TAG"
