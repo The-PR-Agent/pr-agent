@@ -28,6 +28,8 @@ from pr_agent.git_providers.git_provider import get_main_pr_language, GitProvide
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
 from pr_agent.tools.pr_description import insert_br_after_x_chars
+from pr_agent.tools.progress_comment import (build_progress_comment,
+                                             get_progress_gif_url)
 
 
 class PRCodeSuggestions:
@@ -86,8 +88,7 @@ class PRCodeSuggestions:
                                           self.pr_code_suggestions_prompt_system,
                                           self.pr_code_suggestions_prompt_user)
 
-        self.progress = f"## Generating PR code suggestions\n\n"
-        self.progress += f"""\nWork in progress ...<br>\n<img src="https://codium.ai/images/pr_agent/dual_ball_loading-crop.gif" width=48>"""
+        self.progress = build_progress_comment(get_progress_gif_url())
         self.progress_response = None
 
     async def run(self):
