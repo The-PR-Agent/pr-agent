@@ -1256,7 +1256,10 @@ def validate_and_await_rate_limit(github_token):
 
 def github_action_output(output_data: dict, key_name: str):
     try:
-        if not get_settings().get('github_action_config.enable_output', False):
+        enable_output = get_settings().get('github_action_config.enable_output', False)
+        if isinstance(enable_output, str):
+            enable_output = enable_output.lower().strip() not in ("false", "0", "no", "")
+        if not enable_output:
             return
 
         key_data = output_data.get(key_name, {})
