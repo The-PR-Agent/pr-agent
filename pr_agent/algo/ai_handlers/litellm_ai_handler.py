@@ -33,6 +33,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         self.azure = False
         self.api_base = None
         self.repetition_penalty = None
+        self.ollama_api_key = None
 
         if get_settings().get("LITELLM.DISABLE_AIOHTTP", False):
             litellm.disable_aiohttp_transport = True
@@ -84,7 +85,7 @@ class LiteLLMAIHandler(BaseAiHandler):
             litellm.api_base = get_settings().ollama.api_base
             self.api_base = get_settings().ollama.api_base
         if get_settings().get("OLLAMA.API_KEY", None):
-            litellm.api_key = get_settings().ollama.api_key
+            self.ollama_api_key = get_settings().ollama.api_key
         if get_settings().get("HUGGINGFACE.REPETITION_PENALTY", None):
             self.repetition_penalty = float(get_settings().huggingface.repetition_penalty)
         if get_settings().get("VERTEXAI.VERTEX_PROJECT", None):
@@ -411,6 +412,11 @@ class LiteLLMAIHandler(BaseAiHandler):
             # like Groq, XAI, Azure AD, and OpenRouter. Skip if None or placeholder.
             if litellm.api_key and litellm.api_key != DUMMY_LITELLM_API_KEY:
                 kwargs["api_key"] = litellm.api_key
+
+            # Inject Ollama API key per-request instead of globally, to avoid
+            # polluting litellm.api_key which is shared across all providers.
+            if self.ollama_api_key and model.startswith(("ollama/", "ollama_chat/")):
+                kwargs["api_key"] = self.ollama_api_key
 
             # Get completion with automatic streaming detection
             resp, finish_reason, response_obj = await self._get_completion(**kwargs)

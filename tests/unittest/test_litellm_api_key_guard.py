@@ -277,14 +277,13 @@ class TestApiKeyGuard:
     async def test_ollama_and_groq_coexist(self, monkeypatch):
         """Verify both Ollama and Groq keys can coexist and be forwarded correctly.
 
-        When multiple providers are configured, litellm.api_key gets overwritten
-        sequentially during __init__. The sentinel guard should still forward
-        whatever real key is currently in litellm.api_key.
+        Ollama key is stored on the handler instance (not globally) and only
+        injected for ollama/ models. Groq key stays in litellm.api_key and is
+        forwarded for non-Ollama models.
         """
         groq_key = "gsk-groq-key"
         ollama_key = "ollama-key"
 
-        # Simulate: Groq key set first, then Ollama overwrites litellm.api_key
         mixed_settings = type("Settings", (), {
             "config": type("Config", (), {
                 "reasoning_effort": None,
@@ -320,14 +319,15 @@ class TestApiKeyGuard:
             mock_call.return_value = _mock_response()
             handler = LiteLLMAIHandler()
 
-            # After init, litellm.api_key should be Ollama (last assignment)
-            assert litellm.api_key == ollama_key
+            # After init, litellm.api_key should be Groq (Ollama no longer pollutes global)
+            assert litellm.api_key == groq_key
+            # Ollama key stored on the instance
+            assert handler.ollama_api_key == ollama_key
 
-            # Call with Ollama model — should get Ollama key
+            # Call with Ollama model — should get Ollama key (per-request)
             await handler.chat_completion(model="ollama/mistral", system="sys", user="usr")
             assert mock_call.call_args[1]["api_key"] == ollama_key
 
-            # Call with non-Ollama model — should still forward the key
-            # (which is Ollama in this case, but the guard correctly allows real keys through)
+            # Call with non-Ollama model — should get Groq key (from litellm.api_key)
             await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
-            assert mock_call.call_args[1]["api_key"] == ollama_key
+            assert mock_call.call_args[1]["api_key"] == groq_key
