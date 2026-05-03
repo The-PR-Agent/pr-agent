@@ -56,7 +56,7 @@ class TokenHandler:
     CLAUDE_MODEL = "claude-3-7-sonnet-20250219"
     CLAUDE_MAX_CONTENT_SIZE = 9_000_000 # Maximum allowed content size (9MB) for Claude API
 
-    def __init__(self, pr=None, vars: dict = {}, system="", user=""):
+    def __init__(self, pr=None, vars: dict = None, system="", user=""):
         """
         Initializes the TokenHandler object.
 
@@ -66,6 +66,8 @@ class TokenHandler:
         - system: The system string.
         - user: The user string.
         """
+        if vars is None:
+            vars = {}
         self.encoder = TokenEncoder.get_token_encoder()
         
         if pr is not None:
