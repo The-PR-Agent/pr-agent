@@ -18,3 +18,4 @@ push_commands = [
 [review_agent]
 enabled = true
 publish_output = true
+extra_instructions = "The MAX_TOKENS dictionary in pr_agent/algo/__init__.py is the designated model token registry. Adding new model entries there is the expected pattern, not a hardcoded configuration violation."
