@@ -1,3 +1,4 @@
+import copy
 from os.path import abspath, dirname, join
 from pathlib import Path
 from typing import Optional
@@ -89,6 +90,37 @@ def _find_pyproject() -> Optional[Path]:
 pyproject_path = _find_pyproject()
 if pyproject_path is not None:
     get_settings().load_file(pyproject_path, env=f'tool.{PR_AGENT_TOML_KEY}')
+
+
+# --- State-leak fix ---------------------------------------------------------
+# Snapshot of global_settings captured on first call to reset_to_startup_defaults().
+# Lazy (not taken at import time) so that startup tasks like
+# apply_secrets_manager_config() that run after module import are included.
+_STARTUP_SETTINGS_SNAPSHOT: Optional[dict] = None
+
+
+def reset_to_startup_defaults():
+    """Restore ``global_settings`` to the state captured at the first call.
+
+    Must be invoked at the top of ``apply_repo_settings()`` so that sections
+    set by a previously-reviewed repo's ``.pr_agent.toml`` do not leak into
+    subsequent PRs processed by the same Python process.
+    """
+    global _STARTUP_SETTINGS_SNAPSHOT
+    if _STARTUP_SETTINGS_SNAPSHOT is None:
+        _STARTUP_SETTINGS_SNAPSHOT = copy.deepcopy(global_settings.as_dict())
+        return  # nothing to restore on the very first call
+
+    current_sections = set(global_settings.as_dict().keys())
+    snapshot_sections = set(_STARTUP_SETTINGS_SNAPSHOT.keys())
+    # Remove sections that appeared after startup (i.e. injected by apply_repo_settings).
+    for section in current_sections - snapshot_sections:
+        global_settings.unset(section)
+    # Restore pre-existing sections to their startup values.
+    for section, contents in _STARTUP_SETTINGS_SNAPSHOT.items():
+        global_settings.unset(section)
+        global_settings.set(section, copy.deepcopy(contents), merge=False)
+# ---------------------------------------------------------------------------
 
 
 def apply_secrets_manager_config():
