@@ -25,6 +25,8 @@ ai_timeout=120 # 2 minutes
 skip_keys = []
 custom_reasoning_model = false # when true, disables system messages and temperature controls for models that don't support chat-style inputs
 response_language="en-US" # Language locales code for PR responses in ISO 3166 and ISO 639 format (e.g., "en-US", "it-IT", "zh-CN", ...)
+repo_context_files = [] # Explicit repository-relative files to include as AI prompt context, e.g. ["AGENTS.md"]
+repo_context_max_lines = 500 # Maximum total lines rendered from configured repo context files
 # token limits
 max_description_tokens = 500
 max_commits_tokens = 500
@@ -61,6 +63,10 @@ reasoning_effort = "medium" # "low", "medium", "high"
 enable_claude_extended_thinking = false # Set to true to enable extended thinking feature
 extended_thinking_budget_tokens = 2048
 extended_thinking_max_output_tokens = 4096
+# Optional: override the built-in list of Claude models that receive the extended-thinking payload.
+# When non-empty, this list fully replaces the built-in defaults (see CLAUDE_EXTENDED_THINKING_MODELS
+# in pr_agent/algo/__init__.py). Leave empty to use the defaults.
+claude_extended_thinking_models_override = []
 # Extract issue number from PR source branch name (e.g. feature/1-auth-google -> issue #1). When true, branch-derived
 # issue URLs are merged with tickets from the PR description for compliance. Set to false to restore description-only behaviour.
 # Note: Branch-name extraction is GitHub-only for now; other providers planned for later.
@@ -137,6 +143,15 @@ extra_instructions = ""
 enable_help_text=false
 enable_chat_text=false
 persistent_comment=true
+# Deduplicate inline suggestions across re-runs by embedding a content-hash marker.
+# "update": edit matching existing comment in place (default)
+# "skip":   skip if a matching comment already exists
+# "off":    always post a new comment (legacy behavior)
+persistent_inline_comments = "update"
+# When a previously-posted inline suggestion is no longer emitted on a re-run,
+# resolve its thread (and append a short note) so reviewers see only currently
+# relevant comments. Has no effect when persistent_inline_comments = "off".
+resolve_outdated_inline_comments = true
 max_history_len=4
 publish_output_no_suggestions=true
 # suggestions scoring

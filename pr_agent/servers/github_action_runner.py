@@ -80,6 +80,10 @@ async def run_action():
     except Exception as e:
         get_logger().info(f"github action: failed to apply repo settings: {e}")
 
+    if get_settings().config.disable_auto_feedback:
+        get_logger().info("Auto feedback is disabled, skipping GitHub Action automatic tools")
+        return
+
     # Append the response language in the extra instructions
     try:
         response_language = get_settings().config.get('response_language', 'en-us')

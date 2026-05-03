@@ -305,6 +305,14 @@ Note: Chunking is primarily relevant for large PRs. For most PRs (up to 600 line
         <td>If set to true, the improve comment will be persistent, meaning that every new improve request will edit the previous one. Default is true.</td>
       </tr>
       <tr>
+        <td><b>persistent_inline_comments</b></td>
+        <td>Controls how inline suggestions are deduplicated across re-runs on the same PR/MR. <code>"update"</code> (default) edits the matching existing inline comment in place; <code>"skip"</code> leaves the existing one untouched; <code>"off"</code> always posts a new inline comment (legacy behavior). The dedup key is the hash of the proposed edit (file + normalized <code>improved_code</code>), with a fallback to a prose-based hash only when no <code>improved_code</code> is available. Line numbers are intentionally excluded so dedup stays stable across upstream pushes that drift the target line. See <a href="#how-inline-comment-deduplication-works">How inline-comment deduplication works</a> below for details.</td>
+      </tr>
+      <tr>
+        <td><b>resolve_outdated_inline_comments</b></td>
+        <td>When dedup is enabled (<code>persistent_inline_comments != "off"</code>), automatically resolve inline-comment threads whose suggestion was not re-emitted on the latest run; the thread body gets a short auto-resolve note. Default is true. Has no effect when <code>persistent_inline_comments = "off"</code>. Reviewers can manually unresolve an auto-resolved thread to opt it out of future auto-resolution &mdash; the bot detects the prior resolution marker in the body and respects it.</td>
+      </tr>
+      <tr>
         <td><b>suggestions_score_threshold</b></td>
         <td> Any suggestion with importance score less than this threshold will be removed. Default is 0. Highly recommend not to set this value above 7-8, since above it may clip relevant suggestions that can be useful. </td>
       </tr>
@@ -344,3 +352,35 @@ Note: Chunking is primarily relevant for large PRs. For most PRs (up to 600 line
 - **Hierarchy:** Presenting the suggestions in a structured hierarchical table enables the user to _quickly_ understand them, and to decide which ones are relevant and which are not.
 - **Customization:** To guide the model to suggestions that are more relevant to the specific needs of your project, we recommend using the [`extra_instructions`](./improve.md#extra-instructions-and-best-practices) and [`best practices`](./improve.md#best-practices) fields.
 - **Model Selection:** For specific programming languages or use cases, some models may perform better than others.
+
+## How inline-comment deduplication works
+
+When `persistent_inline_comments` is enabled (the default is `"update"`), re-running `/improve` on the same PR/MR will recognize and update — instead of duplicating — inline comments that were already posted for the same suggestion on a previous run. This uses a hidden marker (an HTML comment of the form `<!-- pr-agent-inline-id:XXXX -->`) embedded in each inline-comment body.
+
+### Identity rule
+
+Two inline comments are considered the same suggestion when the marker matches. The marker is a short hash computed as follows:
+
+- **Structured (preferred):** When the suggestion has an `improved_code` field (i.e., the model proposed replacement code), the hash covers `(file, normalized improved_code)`. Wording changes in the suggestion's prose do **not** affect the key; `label` is **not** part of the key either — the edit itself is the identity.
+- **Prose fallback:** When no `improved_code` is present, the hash falls back to `(file, label, normalized prose prefix)`.
+
+Normalization of `improved_code` expands tabs, strips trailing whitespace, drops leading/trailing blank lines, removes the longest common leading indent, and collapses internal whitespace runs — so reindentation of the same proposed edit does not split comments.
+
+### Strict behaviour
+
+This is intentionally a strict rule: when a suggestion has `improved_code`, its prose is never consulted for dedup. Two suggestions at the same spot with identical prose but **different** proposed edits are treated as distinct and remain as two separate inline comments. We'd rather under-merge (and show two comments) than over-merge two genuinely different fixes into one.
+
+### What's invariant across runs
+
+- Prose paraphrase of the same finding (same proposed edit) — does **not** split.
+- Reindentation or whitespace variation in the proposed edit — does **not** split.
+- Upstream commits that push the target line up or down in the file — do **not** split. Line numbers are not part of the key.
+
+### What still splits
+
+- A genuinely different proposed edit at the same spot — by design.
+- A different `label` when the prose fallback is in use (e.g., the same prose-only suggestion now tagged "best practice" vs "possible issue").
+
+### Future work
+
+A fuzzy near-miss signal (e.g., shingle/Jaccard similarity) may be added later if users report recurring duplicates that this deterministic scheme doesn't catch. For now the behaviour is strictly deterministic, with no similarity threshold to tune.

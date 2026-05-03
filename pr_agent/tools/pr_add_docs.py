@@ -120,9 +120,18 @@ class PRAddDocs:
                                                         add_original_line=True)
 
                     body = f"**Suggestion:** Proposed documentation\n```suggestion\n" + new_code_snippet + "\n```"
+                    original_suggestion = {
+                        "relevant_file": relevant_file,
+                        "relevant_lines_start": relevant_line,
+                        "relevant_lines_end": relevant_line,
+                        "label": "documentation",
+                        "suggestion_content": "Proposed documentation",
+                        "improved_code": new_code_snippet,
+                    }
                     docs.append({'body': body, 'relevant_file': relevant_file,
                                              'relevant_lines_start': relevant_line,
-                                             'relevant_lines_end': relevant_line})
+                                             'relevant_lines_end': relevant_line,
+                                             'original_suggestion': original_suggestion})
             except Exception:
                 if get_settings().config.verbosity_level >= 2:
                     get_logger().info(f"Could not parse code docs: {d}")

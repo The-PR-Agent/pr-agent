@@ -284,7 +284,16 @@ SUPPORT_REASONING_EFFORT_MODELS = [
 
 CLAUDE_EXTENDED_THINKING_MODELS = [
     "anthropic/claude-3-7-sonnet-20250219",
-    "claude-3-7-sonnet-20250219"
+    "claude-3-7-sonnet-20250219",
+    "anthropic/claude-sonnet-4-6",
+    "claude-sonnet-4-6",
+    "vertex_ai/claude-sonnet-4-6",
+    "bedrock/anthropic.claude-sonnet-4-6",
+    "bedrock/us.anthropic.claude-sonnet-4-6",
+    "bedrock/au.anthropic.claude-sonnet-4-6",
+    "bedrock/eu.anthropic.claude-sonnet-4-6",
+    "bedrock/jp.anthropic.claude-sonnet-4-6",
+    "bedrock/global.anthropic.claude-sonnet-4-6",
 ]
 
 # Models that require streaming mode

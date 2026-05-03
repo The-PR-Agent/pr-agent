@@ -14,6 +14,19 @@ from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 
 from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import decode_if_bytes
+from ..algo.inline_comments_dedup import (
+    MARKER_PREFIX,
+    MARKER_SUFFIX,
+    PERSISTENT_MODE_OFF,
+    PERSISTENT_MODE_SKIP,
+    RESOLVED_BODY_MARKER,
+    append_marker,
+    build_marker_index,
+    find_comment_by_location,
+    format_resolved_body,
+    generate_marker,
+    normalize_persistent_mode,
+)
 from ..algo.language_handler import is_valid_file
 from ..algo.utils import (clip_tokens,
                           find_line_number_of_relevant_line_in_file,
@@ -654,7 +667,119 @@ class GitLabProvider(GitProvider):
                 f'No relevant diff found for {relevant_file} {relevant_line_in_file}. Falling back to last diff.')
         return self.last_diff  # fallback to last_diff if no relevant diff is found
 
+    def get_bot_review_comments(self) -> list[dict]:
+        """
+        Return the bot's existing inline review comments on this MR.
+
+        Iterates MR discussions and collects DiffNote-type notes authored by the
+        authenticated bot user. Returns a list of dicts with:
+          id, body, path, line, start_line, thread_id, discussion_id, is_resolved.
+        On any exception, logs a warning and returns [].
+        """
+        try:
+            if getattr(self.gl, "user", None) is None:
+                try:
+                    self.gl.auth()
+                except Exception:
+                    pass
+            bot_username = getattr(getattr(self.gl, "user", None), "username", None)
+            if not bot_username:
+                get_logger().warning("get_bot_review_comments: could not determine bot username")
+                return []
+            bot_username = bot_username.lower()
+
+            out = []
+            for discussion in self.mr.discussions.list(get_all=True):
+                notes = discussion.attributes.get("notes") or []
+                for note in notes:
+                    # Only inline/diff notes
+                    if note.get("type") != "DiffNote":
+                        continue
+                    author_username = ((note.get("author") or {}).get("username") or "").lower()
+                    if author_username != bot_username:
+                        continue
+                    position = note.get("position") or {}
+                    line_range = position.get("line_range") or {}
+                    start_line = None
+                    if line_range:
+                        start = line_range.get("start") or {}
+                        start_line = start.get("new_line")
+                    disc_notes = discussion.attributes.get("notes") or [{}]
+                    is_resolved = getattr(discussion, "resolved", None)
+                    if is_resolved is None:
+                        is_resolved = disc_notes[0].get("resolved", False)
+                    out.append({
+                        "id": note.get("id"),
+                        "thread_id": discussion.id,
+                        "discussion_id": discussion.id,  # back-compat alias
+                        "body": note.get("body") or "",
+                        "path": position.get("new_path"),
+                        "line": position.get("new_line"),
+                        "start_line": start_line,
+                        "is_resolved": bool(is_resolved),
+                    })
+            return out
+        except Exception as e:
+            get_logger().warning(f"Failed to list GitLab review comments: {e}")
+            return []
+
+    def edit_review_comment(self, comment_id, body: str) -> bool:
+        """
+        Edit an existing MR note by id.
+
+        Uses self.mr.notes.get(comment_id) and saves the updated body.
+        Returns True on success, False with a warning log on failure.
+        """
+        try:
+            body = self.limit_output_characters(body, self.max_comment_chars)
+            note = self.mr.notes.get(comment_id)
+            note.body = body
+            note.save()
+            return True
+        except Exception as e:
+            get_logger().warning(f"Failed to edit GitLab review comment {comment_id}: {e}")
+            return False
+
+    def _set_discussion_resolved(self, comment: dict, resolved: bool) -> bool:
+        thread_id = comment.get("thread_id") or comment.get("discussion_id")
+        if not thread_id:
+            return False
+        try:
+            d = self.mr.discussions.get(thread_id)
+            if not getattr(d, "resolvable", True):  # fail-open: missing attr -> attempt
+                return False
+            d.resolved = resolved
+            d.save()
+            return True
+        except Exception as e:
+            get_logger().warning(f"GitLab set-resolved={resolved} failed for {thread_id}: {e}")
+            return False
+
+    def resolve_review_thread(self, comment: dict) -> bool:
+        return self._set_discussion_resolved(comment, True)
+
+    def unresolve_review_thread(self, comment: dict) -> bool:
+        return self._set_discussion_resolved(comment, False)
+
     def publish_code_suggestions(self, code_suggestions: list) -> bool:
+        mode = normalize_persistent_mode(
+            get_settings().pr_code_suggestions.get("persistent_inline_comments", PERSISTENT_MODE_OFF)
+        )
+        resolve_outdated = bool(
+            get_settings().pr_code_suggestions.get("resolve_outdated_inline_comments", True)
+        )
+
+        existing_index: dict[str, list[dict]] = {}
+        reused_comment_ids: set[int] = set()
+        if mode != PERSISTENT_MODE_OFF:
+            try:
+                existing_index = build_marker_index(self.get_bot_review_comments())
+            except Exception as e:
+                get_logger().warning(
+                    f"persistent_inline_comments: fetch failed, falling back to create-new: {e}"
+                )
+                existing_index = {}
+
         for suggestion in code_suggestions:
             try:
                 if suggestion and 'original_suggestion' in suggestion:
@@ -666,13 +791,57 @@ class GitLabProvider(GitProvider):
                 relevant_lines_start = suggestion['relevant_lines_start']
                 relevant_lines_end = suggestion['relevant_lines_end']
 
+                if mode != PERSISTENT_MODE_OFF:
+                    marker = generate_marker(suggestion.get("original_suggestion") or suggestion)
+                    if marker:
+                        body = append_marker(body, marker)
+                        marker_hash = marker[len(MARKER_PREFIX):-len(MARKER_SUFFIX)]
+                        existing = find_comment_by_location(
+                            existing_index.get(marker_hash, []),
+                            relevant_file,
+                            relevant_lines_start,
+                            relevant_lines_end,
+                        )
+                        if existing is not None:
+                            if mode == PERSISTENT_MODE_SKIP:
+                                if resolve_outdated and (
+                                    existing.get("is_resolved")
+                                    or RESOLVED_BODY_MARKER in (existing.get("body") or "")
+                                ):
+                                    if self.edit_review_comment(existing.get("id"), body):
+                                        reused_comment_ids.add(existing.get("id"))
+                                        if existing.get("is_resolved"):
+                                            self.unresolve_review_thread(existing)
+                                        continue
+                                    get_logger().info(
+                                        f"persistent_inline_comments=skip: reopen failed for {existing.get('id')}; "
+                                        f"falling back to create-new"
+                                    )
+                                else:
+                                    reused_comment_ids.add(existing.get("id"))
+                                    get_logger().info(
+                                        f"persistent_inline_comments=skip: existing comment {existing.get('id')} "
+                                        f"on {relevant_file}; not re-posting"
+                                    )
+                                    continue
+                            else:
+                                # mode == update
+                                if self.edit_review_comment(existing.get("id"), body):
+                                    reused_comment_ids.add(existing.get("id"))
+                                    if resolve_outdated and existing.get("is_resolved"):
+                                        self.unresolve_review_thread(existing)
+                                    continue
+                                get_logger().info(
+                                    f"persistent_inline_comments=update: edit failed for {existing.get('id')}; "
+                                    f"falling back to create-new"
+                                )
+
                 diff_files = self.get_diff_files()
                 target_file = None
                 for file in diff_files:
                     if file.filename == relevant_file:
-                        if file.filename == relevant_file:
-                            target_file = file
-                            break
+                        target_file = file
+                        break
                 range = relevant_lines_end - relevant_lines_start # no need to add 1
                 body = body.replace('```suggestion', f'```suggestion:-0+{range}')
                 lines = target_file.head_file.splitlines()
@@ -690,6 +859,35 @@ class GitLabProvider(GitProvider):
                                          target_file, target_line_no, original_suggestion)
             except Exception as e:
                 get_logger().exception(f"Could not publish code suggestion:\nsuggestion: {suggestion}\nerror: {e}")
+
+        # ---- Outdated pass: resolve threads whose marker is no longer emitted ----
+        if mode != PERSISTENT_MODE_OFF and resolve_outdated:
+            for candidates in existing_index.values():
+                for c in candidates:
+                    if c.get("id") in reused_comment_ids:
+                        continue
+                    if c.get("is_resolved"):
+                        continue
+                    if RESOLVED_BODY_MARKER in (c.get("body") or ""):
+                        continue
+                    # Per-iteration guard so a single failure cannot propagate; criterion 8 of resolve-outdated-inline-comments.
+                    try:
+                        if not self.resolve_review_thread(c):
+                            continue
+                        if not self.edit_review_comment(c.get("id"), format_resolved_body(c.get("body") or "")):
+                            get_logger().warning(
+                                f"resolve_outdated_inline_comments: failed to write resolved marker for "
+                                f"GitLab comment {c.get('id')}; attempting to unresolve thread"
+                            )
+                            if not self.unresolve_review_thread(c):
+                                get_logger().warning(
+                                    f"resolve_outdated_inline_comments: failed to unresolve GitLab thread "
+                                    f"after marker write failed for comment {c.get('id')}"
+                                )
+                    except Exception as e:
+                        get_logger().warning(
+                            f"resolve_outdated_inline_comments: outdated pass failed for {c.get('id')}: {e}"
+                        )
 
         # note that we publish suggestions one-by-one. so, if one fails, the rest will still be published
         return True
