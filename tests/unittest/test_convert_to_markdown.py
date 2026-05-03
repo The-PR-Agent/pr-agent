@@ -2,7 +2,7 @@
 import textwrap
 from unittest.mock import Mock
 
-from pr_agent.algo.utils import PRReviewHeader, convert_to_markdown_v2
+from pr_agent.algo.utils import PRReviewHeader, _expand_minute_suffix, convert_to_markdown_v2
 from pr_agent.tools.pr_description import insert_br_after_x_chars
 
 """
@@ -303,3 +303,23 @@ class TestBR:
                                               '</code> and implements <br>aaa')
         # print("-----")
         # print(file_change_description_br)
+
+
+class TestExpandMinuteSuffix:
+    """Tests for _expand_minute_suffix regex replacement."""
+
+    def test_standalone_minute_suffix(self):
+        """'30m' at end of string becomes '30 minutes'."""
+        assert _expand_minute_suffix("30m") == "30 minutes"
+
+    def test_minute_suffix_not_replaced_when_part_of_longer_unit(self):
+        """'30ms' stays unchanged because 'm' is not at a word boundary."""
+        assert _expand_minute_suffix("30ms") == "30ms"
+
+    def test_minute_suffix_replaced_before_space(self):
+        """'30m implementation' replaces '30m' because 'm' is at a word boundary."""
+        assert _expand_minute_suffix("30m implementation") == "30 minutes implementation"
+
+    def test_minute_suffix_in_compound_estimate(self):
+        """'2h 30m' becomes '2h 30 minutes' (only the minute part is replaced)."""
+        assert _expand_minute_suffix("2h 30m") == "2h 30 minutes"
