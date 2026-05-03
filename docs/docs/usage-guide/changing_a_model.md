@@ -111,7 +111,7 @@ Please note that the `custom_model_max_tokens` setting should be configured in a
     Commercial models such as GPT-5, Claude Sonnet, and Gemini have demonstrated robust capabilities in generating structured output for code analysis tasks with large input. In contrast, most open-source models currently available (as of January 2025) face challenges with these complex tasks.
 
     Based on our testing, local open-source models are suitable for experimentation and learning purposes (mainly for the `ask` command), but they are not suitable for production-level code analysis tasks.
-    
+
     Hence, for production workflows and real-world usage, we recommend using commercial models.
 
 ### Hugging Face
@@ -251,6 +251,43 @@ model="bedrock/us.meta.llama4-scout-17b-instruct-v1:0"
 fallback_models=["bedrock/us.meta.llama4-maverick-17b-instruct-v1:0"]
 ```
 
+#### Using IAM Role Credentials (Recommended on AWS Compute)
+
+When running PR-Agent on AWS infrastructure (EC2, ECS/Fargate, EKS with IRSA, Lambda, or any self-hosted GitHub Actions runner on AWS), the instance or task already has an IAM role attached. You can use those ambient credentials directly instead of storing long-lived static keys.
+
+Set `AWS_USE_IMDS=true` in the environment. PR-Agent will resolve credentials via boto3's standard provider chain, which handles all AWS compute contexts transparently:
+
+| Compute context | Mechanism |
+|---|---|
+| EC2 instance with IAM role | IMDSv2 (169.254.169.254) |
+| ECS / Fargate task role | Task metadata endpoint |
+| EKS pod with IRSA | Web identity token + STS |
+| Lambda function | Runtime-injected credentials |
+
+Minimal GitHub Actions workflow (no AWS secret keys required):
+
+```yaml
+- uses: Codium-ai/pr-agent@main
+  env:
+    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    AWS_USE_IMDS: "true"
+    # AWS_REGION_NAME: us-east-1  # optional if the instance metadata provides it
+  with:
+    command: review
+```
+
+The IAM role must have `bedrock:InvokeModel` permission on the target model ARN, for example:
+
+```json
+{
+  "Effect": "Allow",
+  "Action": "bedrock:InvokeModel",
+  "Resource": "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-5-sonnet-20240620-v1:0"
+}
+```
+
+If you also configure static keys in `[aws]`, they serve as an automatic fallback: if the ambient credentials fail a Bedrock call (e.g., the role lacks `bedrock:InvokeModel`), PR-Agent retries with the static keys and logs a warning.
+
 #### Custom Inference Profiles
 
 To use a custom inference profile with Amazon Bedrock (for cost allocation tags and other configuration settings), add the `model_id` parameter to your configuration:
@@ -339,7 +376,7 @@ key = "..." # your Codestral api key
 To use model from Openrouter, for example, set:
 
 ```toml
-[config] # in configuration.toml 
+[config] # in configuration.toml
 model="openrouter/anthropic/claude-3.7-sonnet"
 fallback_models=["openrouter/deepseek/deepseek-chat"]
 custom_model_max_tokens=20000
