@@ -1204,15 +1204,16 @@ def get_rate_limit_status(github_token) -> dict:
         "Authorization": f"token {github_token}"
     }
 
-    response = requests.get(RATE_LIMIT_URL, headers=HEADERS)
+    response = requests.get(RATE_LIMIT_URL, headers=HEADERS, timeout=10)
     try:
         rate_limit_info = response.json()
         if rate_limit_info.get('message') == 'Rate limiting is not enabled.':  # for github enterprise
             return {'resources': {}}
         response.raise_for_status()  # Check for HTTP errors
-    except:  # retry
+    except Exception:  # retry
+        get_logger().warning("Rate limit check failed, retrying once", exc_info=True)
         time.sleep(0.1)
-        response = requests.get(RATE_LIMIT_URL, headers=HEADERS)
+        response = requests.get(RATE_LIMIT_URL, headers=HEADERS, timeout=10)
         return response.json()
     return rate_limit_info
 
@@ -1249,8 +1250,8 @@ def validate_and_await_rate_limit(github_token):
                     time.sleep(sleep_time_sec + 1)
                 rate_limit_status = get_rate_limit_status(github_token)
         return rate_limit_status
-    except:
-        get_logger().error("Error in rate limit")
+    except Exception:
+        get_logger().error("Error in rate limit", exc_info=True)
         return None
 
 
