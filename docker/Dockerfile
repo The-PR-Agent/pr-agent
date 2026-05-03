@@ -1,4 +1,8 @@
-FROM python:3.12.10-slim AS base
+ARG BASE_IMAGE=python:3.12.10-slim
+FROM ${BASE_IMAGE} AS base
+
+RUN if ! command -v apt-get >/dev/null 2>&1; then echo "BASE_IMAGE must provide apt-get (Debian/Ubuntu base)"; exit 1; fi \
+ && if ! command -v python >/dev/null 2>&1; then echo "BASE_IMAGE must include python"; exit 1; fi
 
 RUN apt update && apt install --no-install-recommends -y git curl && apt-get clean && rm -rf /var/lib/apt/lists/*
 

@@ -595,6 +595,8 @@ cp pr_agent/settings/.secrets_template.toml pr_agent/settings/.secrets.toml
     docker push pragent/pr-agent:github_app  # Push to your Docker repository
     ```
 
+    To use a custom base image (for example from an internal mirror), add `--build-arg BASE_IMAGE=<image>` and ensure the base image provides `python` and `apt-get` (Debian/Ubuntu base).
+
 7. Host the app using a server, serverless function, or container environment. Alternatively, for development and
    debugging, you may use tools like smee.io to forward webhooks to your local machine.
     You can check [Deploy as a Lambda Function](#deploy-as-a-lambda-function)
