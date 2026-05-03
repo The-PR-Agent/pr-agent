@@ -39,7 +39,7 @@ async def handle_gerrit_request(action: Action, item: Item):
 
     if action == Action.ask:
         if not item.msg:
-            return HTTPException(
+            raise HTTPException(
                 status_code=400,
                 detail="msg is required for ask command"
             )
