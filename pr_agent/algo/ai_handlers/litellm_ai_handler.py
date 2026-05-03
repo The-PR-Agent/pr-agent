@@ -71,6 +71,8 @@ class LiteLLMAIHandler(BaseAiHandler):
             litellm.cohere_key = get_settings().cohere.key
         if get_settings().get("GROQ.KEY", None):
             litellm.api_key = get_settings().groq.key
+        if get_settings().get("SAMBANOVA.KEY", None):
+            litellm.api_key = get_settings().sambanova.key
         if get_settings().get("REPLICATE.KEY", None):
             litellm.replicate_key = get_settings().replicate.key
         if get_settings().get("XAI.KEY", None):
