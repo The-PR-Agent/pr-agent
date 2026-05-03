@@ -19,7 +19,7 @@ class TestTryFixYaml:
 
     # The function extracts YAML snippet
     def test_extract_snippet(self):
-        review_text = '''\
+        review_text1 = '''\
 Here is the answer in YAML format:
 
 ```yaml
@@ -27,8 +27,26 @@ name: John Smith
 age: 35
 ```
 '''
+        review_text2 = '''\
+Here is the answer in YAML format:
+
+```yml
+name: John Smith
+age: 35
+```
+'''
+        review_text3 = '''\
+Here is the answer in YAML format:
+
+```
+name: John Smith
+age: 35
+```
+'''
         expected_output = {'name': 'John Smith', 'age': 35}
-        assert try_fix_yaml(review_text) == expected_output
+        assert try_fix_yaml(review_text1) == expected_output
+        assert try_fix_yaml(review_text2) == expected_output
+        assert try_fix_yaml(review_text3) == expected_output
 
 
     # The YAML string is empty.
