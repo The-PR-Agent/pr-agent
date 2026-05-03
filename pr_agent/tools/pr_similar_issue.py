@@ -445,7 +445,7 @@ class PRSimilarIssue:
                         if len(comment_body) < 8000 or \
                                 self.token_handler.count_tokens(comment_body) < MAX_TOKENS[MODEL]:
                             comment_record = Record(
-                                id=issue_key + ".comment_" + str(j + 1),
+                                id=issue_key + ".comment_" + str(j),
                                 text=comment_body,
                                 metadata=Metadata(repo=repo_name_for_index,
                                                   username=username,  # use issue username for all comments
@@ -541,7 +541,7 @@ class PRSimilarIssue:
                         if len(comment_body) < 8000 or \
                                 self.token_handler.count_tokens(comment_body) < MAX_TOKENS[MODEL]:
                             comment_record = Record(
-                                id=issue_key + ".comment_" + str(j + 1),
+                                id=issue_key + ".comment_" + str(j),
                                 text=comment_body,
                                 metadata=Metadata(repo=repo_name_for_index,
                                                     username=username,  # use issue username for all comments
@@ -639,7 +639,7 @@ class PRSimilarIssue:
                         if len(comment_body) < 8000 or \
                                 self.token_handler.count_tokens(comment_body) < MAX_TOKENS[MODEL]:
                             comment_record = Record(
-                                id=issue_key + ".comment_" + str(j + 1),
+                                id=issue_key + ".comment_" + str(j),
                                 text=comment_body,
                                 metadata=Metadata(repo=repo_name_for_index,
                                                   username=username,
@@ -672,8 +672,20 @@ class PRSimilarIssue:
         get_logger().info('Upserting into Qdrant...')
         points = []
         for row in df.to_dict(orient="records"):
+            point_uuid = uuid.uuid5(
+                uuid.NAMESPACE_DNS,
+                f"{repo_name_for_index}:{row['id']}",
+            ).hex
             points.append(
-                PointStruct(id=uuid.uuid5(uuid.NAMESPACE_DNS, row["id"]).hex, vector=row["vector"], payload={"id": row["id"], "text": row["text"], "metadata": row["metadata"]})
+                PointStruct(
+                    id=point_uuid,
+                    vector=row["vector"],
+                    payload={
+                        "id": row["id"],
+                        "text": row["text"],
+                        "metadata": row["metadata"],
+                    },
+                )
             )
         self.qdrant.upsert(collection_name=self.index_name, points=points)
         get_logger().info('Done')

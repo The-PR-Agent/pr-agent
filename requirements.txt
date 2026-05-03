@@ -39,6 +39,7 @@ giteapy==1.0.8
 # pinecone-datasets @ git+https://github.com/mrT23/pinecone-datasets.git@main
 # lancedb==0.5.1
 # qdrant-client==1.15.1
+# pandas  # required by qdrant and pinecone indexing paths
 # uncomment this to support language LangChainOpenAIHandler
 # langchain==0.2.0
 # langchain-core==0.2.28
