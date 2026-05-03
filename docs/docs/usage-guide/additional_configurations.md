@@ -1,3 +1,30 @@
+## MCP Integration
+
+You can integrate external MCP (Model Context Protocol) servers to provide additional tools for the PR-Agent. This allows the AI model to dynamically discover and execute tools to gather more context during a PR review.
+
+Configure your MCP server in the `[mcp]` section of your `.pr_agent.toml`:
+
+```toml
+[mcp]
+command = "node"  # Command to run the MCP server
+args = ["/path/to/your/mcp-server/dist/index.js"]
+```
+
+Once configured, PR-Agent will automatically discover the tools provided by the MCP server and make them available to the LLM during the review process.
+
+## Custom HTTP Headers for AI Models
+
+If you need to send custom HTTP headers to the AI model provider (for example, to identify your request with a specific model name or for API gateway authentication), you can use the `LITELLM.EXTRA_HEADERS` configuration.
+
+Add the following to your `.pr_agent.toml` (or `configuration.toml`):
+
+```toml
+[litellm]
+extra_headers = '{"OtterScale-Model-Name": "minimax-m2.7", "Another-Header": "value"}'
+```
+
+The `extra_headers` value must be a valid JSON string.
+
 ## Show possible configurations
 
 The possible configurations of PR-Agent are stored in [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml){:target="_blank"}.

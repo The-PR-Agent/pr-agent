@@ -1,6 +1,7 @@
 import copy
 import datetime
 import traceback
+import json
 from collections import OrderedDict
 from functools import partial
 from typing import List, Tuple
@@ -27,23 +28,24 @@ from pr_agent.tools.ticket_pr_compliance_check import (
     extract_and_cache_pr_tickets, extract_tickets)
 
 
-class PRReviewer:
+from pr_agent.tools.base import PRTool
+from pr_agent.tools.registry import ToolRegistry
+
+@ToolRegistry.register("review")
+@ToolRegistry.register("review_pr")
+@ToolRegistry.register("auto_review")
+@ToolRegistry.register("answer")
+class PRReviewer(PRTool):
     """
     The PRReviewer class is responsible for reviewing a pull request and generating feedback using an AI model.
     """
-
+    
     def __init__(self, pr_url: str, is_answer: bool = False, is_auto: bool = False, args: list = None,
                  ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
         """
         Initialize the PRReviewer object with the necessary attributes and objects to review a pull request.
-
-        Args:
-            pr_url (str): The URL of the pull request to be reviewed.
-            is_answer (bool, optional): Indicates whether the review is being done in answer mode. Defaults to False.
-            is_auto (bool, optional): Indicates whether the review is being done in automatic mode. Defaults to False.
-            ai_handler (BaseAiHandler): The AI handler to be used for the review. Defaults to None.
-            args (list, optional): List of arguments passed to the PRReviewer class. Defaults to None.
         """
+        super().__init__(pr_url, ai_handler=ai_handler, args=args)
         self.git_provider = get_git_provider_with_context(pr_url)
         self.args = args
         self.incremental = self.parse_incremental(args)  # -i command
@@ -201,30 +203,56 @@ class PRReviewer:
             self.prediction = None
 
     async def _get_prediction(self, model: str) -> str:
-        """
-        Generate an AI prediction for the pull request review.
-
-        Args:
-            model: A string representing the AI model to be used for the prediction.
-
-        Returns:
-            A string representing the AI prediction for the pull request review.
-        """
         variables = copy.deepcopy(self.vars)
-        variables["diff"] = self.patches_diff  # update diff
-
+        variables["diff"] = self.patches_diff
         environment = Environment(undefined=StrictUndefined)
         system_prompt = environment.from_string(get_settings().pr_review_prompt.system).render(variables)
         user_prompt = environment.from_string(get_settings().pr_review_prompt.user).render(variables)
 
-        response, finish_reason = await self.ai_handler.chat_completion(
-            model=model,
-            temperature=get_settings().config.temperature,
-            system=system_prompt,
-            user=user_prompt
-        )
+        mcp_config = get_settings().get("mcp", {})
+        if mcp_config:
+            from pr_agent.algo.mcp_handler import MCPHandler
+            mcp_handler = MCPHandler(mcp_config.command, mcp_config.args)
+            async with mcp_handler as handler:
+                tools = await handler.get_openai_tools()
+                
+                # Initial call
+                response, finish_reason, tool_calls = await self.ai_handler.chat_completion(
+                    model=model,
+                    temperature=get_settings().config.temperature,
+                    system=system_prompt,
+                    user=user_prompt,
+                    tools=tools
+                )
 
-        return response
+                if finish_reason == "tool_calls" and tool_calls:
+                    # Execute MCP tools
+                    for tool_call in tool_calls:
+                        tool_name = tool_call.function.name
+                        tool_args = json.loads(tool_call.function.arguments)
+                        get_logger().info(f"Executing tool: {tool_name} with args {tool_args}")
+                        tool_result = await handler.call_tool(tool_name, tool_args)
+                        
+                        # Add tool result to user prompt
+                        user_prompt += f"\n\nTool Result ({tool_name}): {json.dumps(tool_result)}"
+                    
+                    # Re-run completion with tool results
+                    response, finish_reason, _ = await self.ai_handler.chat_completion(
+                        model=model,
+                        temperature=get_settings().config.temperature,
+                        system=system_prompt,
+                        user=user_prompt,
+                        tools=None # Don't allow recursive tool calls for now
+                    )
+                return response
+        else:
+            response, finish_reason, _ = await self.ai_handler.chat_completion(
+                model=model,
+                temperature=get_settings().config.temperature,
+                system=system_prompt,
+                user=user_prompt
+            )
+            return response
 
     def _prepare_pr_review(self) -> str:
         """
