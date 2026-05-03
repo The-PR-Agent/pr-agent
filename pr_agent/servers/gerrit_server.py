@@ -64,6 +64,7 @@ async def root():
 
 
 def start():
+    get_settings().set("CONFIG.GIT_PROVIDER", "gerrit")
     # to prevent adding help messages with the output
     get_settings().set("CONFIG.CLI_MODE", True)
     middleware = [Middleware(RawContextMiddleware)]
