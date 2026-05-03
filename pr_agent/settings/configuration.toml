@@ -224,6 +224,10 @@ publish_inline_comments_fallback_with_verification = true
 try_fix_invalid_inline_comments = true
 app_name = "pr-agent"
 ignore_bot_pr = true
+# When true, reduces GitHub API calls by skipping file content fetches for /review
+# and suppressing temporary "Preparing review..." comments. Useful for GHES deployments
+# where appliance load is a concern. Only affects /review; /improve and /describe are unaffected.
+minimize_api_calls = false
 
 [github_action_config]
 # auto_review = true    # set as env var in .github/workflows/pr-agent.yaml
