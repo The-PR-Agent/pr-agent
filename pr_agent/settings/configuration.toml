@@ -70,6 +70,14 @@ extract_issue_from_branch = true
 # followed by hyphen or end (e.g. feature/1-test, 123-fix). GitHub only; other providers planned for later.
 branch_issue_regex = ""
 
+[mcp]
+enabled = false
+config_path = "/etc/pr-agent/mcp.json"
+fail_on_invalid_config = false
+resolve_env_vars = true
+max_tool_catalog_tools = 12
+max_tool_catalog_schema_chars = 12000
+
 
 [pr_reviewer] # /review #
 # enable/disable features

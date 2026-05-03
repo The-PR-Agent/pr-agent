@@ -24,6 +24,7 @@ PyJWT==2.10.1
 PyYAML==6.0.1
 python-gitlab==3.15.0
 retry==0.9.2
+requests==2.32.3
 starlette-context==0.3.6
 tiktoken==0.8.0
 ujson==5.8.0

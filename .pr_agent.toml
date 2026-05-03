@@ -18,3 +18,17 @@ push_commands = [
 [review_agent]
 enabled = true
 publish_output = true
+
+[mcp]
+# Set to true to enable MCP tool orchestration for /ask, /review, /improve
+enabled = false
+# Path to the MCP server config file (JSON/JSONC). Defaults to mcp_config.json in cwd.
+# config_path = "/path/to/mcp_config.json"
+# Whether to fail hard when the MCP config file is invalid (default: false = log and skip)
+fail_on_invalid_config = false
+# Expand environment variables and ~ in MCP server config values
+resolve_env_vars = true
+# Maximum number of tools to expose to the model per request
+max_tool_catalog_tools = 12
+# Maximum total characters of tool schemas to include in the prompt
+max_tool_catalog_schema_chars = 12000

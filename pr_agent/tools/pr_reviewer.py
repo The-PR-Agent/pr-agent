@@ -22,6 +22,7 @@ from pr_agent.git_providers import (get_git_provider,
 from pr_agent.git_providers.git_provider import (IncrementalPR,
                                                  get_main_pr_language)
 from pr_agent.log import get_logger
+from pr_agent.mcp.integration import maybe_chat_completion_with_mcp
 from pr_agent.servers.help import HelpMessage
 from pr_agent.tools.ticket_pr_compliance_check import (
     extract_and_cache_pr_tickets, extract_tickets)
@@ -217,11 +218,13 @@ class PRReviewer:
         system_prompt = environment.from_string(get_settings().pr_review_prompt.system).render(variables)
         user_prompt = environment.from_string(get_settings().pr_review_prompt.user).render(variables)
 
-        response, finish_reason = await self.ai_handler.chat_completion(
+        response, finish_reason = await maybe_chat_completion_with_mcp(
+            self.ai_handler,
             model=model,
             temperature=get_settings().config.temperature,
             system=system_prompt,
-            user=user_prompt
+            user=user_prompt,
+            command_name="review",
         )
 
         return response

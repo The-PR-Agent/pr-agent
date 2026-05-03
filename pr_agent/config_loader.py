@@ -1,11 +1,15 @@
+import copy
+import json
+import os
 from os.path import abspath, dirname, join
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from dynaconf import Dynaconf
 from starlette_context import context
 
 PR_AGENT_TOML_KEY = 'pr-agent'
+MCP_CONFIG_ENV_VAR = "MCP_CONFIG_PATH"
 
 current_dir = dirname(abspath(__file__))
 
@@ -60,6 +64,202 @@ def get_settings(use_context=False):
         return global_settings
 
 
+def _get_logger():
+    try:
+        from pr_agent.log import get_logger
+
+        return get_logger()
+    except ImportError:
+        class DummyLogger:
+            def debug(self, *args, **kwargs):
+                return None
+
+            def info(self, *args, **kwargs):
+                return None
+
+            def warning(self, *args, **kwargs):
+                return None
+
+            def error(self, *args, **kwargs):
+                return None
+
+        return DummyLogger()
+
+
+
+def _strip_json_comments(content: str) -> str:
+    """Strip line and block comments from JSONC-style config while preserving newlines."""
+    stripped = []
+    in_string = False
+    in_line_comment = False
+    in_block_comment = False
+    is_escaped = False
+    index = 0
+
+    while index < len(content):
+        char = content[index]
+        next_char = content[index + 1] if index + 1 < len(content) else ""
+
+        if in_line_comment:
+            if char == "\n":
+                in_line_comment = False
+                stripped.append(char)
+            index += 1
+            continue
+
+        if in_block_comment:
+            if char == "*" and next_char == "/":
+                in_block_comment = False
+                index += 2
+                continue
+            if char == "\n":
+                stripped.append(char)
+            index += 1
+            continue
+
+        if in_string:
+            stripped.append(char)
+            if is_escaped:
+                is_escaped = False
+            elif char == "\\":
+                is_escaped = True
+            elif char == '"':
+                in_string = False
+            index += 1
+            continue
+
+        if char == '"':
+            in_string = True
+            stripped.append(char)
+            index += 1
+            continue
+
+        if char == "/" and next_char == "/":
+            in_line_comment = True
+            index += 2
+            continue
+
+        if char == "/" and next_char == "*":
+            in_block_comment = True
+            index += 2
+            continue
+
+        stripped.append(char)
+        index += 1
+
+    return "".join(stripped)
+
+
+def _strip_json_trailing_commas(content: str) -> str:
+    """Strip trailing commas outside strings so common JSONC files can be parsed."""
+    stripped = []
+    in_string = False
+    is_escaped = False
+    index = 0
+
+    while index < len(content):
+        char = content[index]
+
+        if in_string:
+            stripped.append(char)
+            if is_escaped:
+                is_escaped = False
+            elif char == "\\":
+                is_escaped = True
+            elif char == '"':
+                in_string = False
+            index += 1
+            continue
+
+        if char == '"':
+            in_string = True
+            stripped.append(char)
+            index += 1
+            continue
+
+        if char == ",":
+            lookahead = index + 1
+            while lookahead < len(content) and content[lookahead] in {" ", "\t", "\r", "\n"}:
+                lookahead += 1
+            if lookahead < len(content) and content[lookahead] in {"]", "}"}:
+                index += 1
+                continue
+
+        stripped.append(char)
+        index += 1
+
+    return "".join(stripped)
+
+
+def _resolve_mcp_config_path() -> Path:
+    env_path = os.getenv(MCP_CONFIG_ENV_VAR)
+    if env_path:
+        return Path(env_path).expanduser()
+    configured_path = get_settings().get("MCP.CONFIG_PATH")
+    if configured_path is None or str(configured_path).lower() in {"none", ""}:
+        return Path("mcp_config.json").expanduser()
+    return Path(str(configured_path)).expanduser()
+
+
+
+def _normalize_mcp_servers(config_data: dict[str, Any]) -> dict[str, Any]:
+    servers = config_data.get("servers")
+    if servers is None:
+        servers = config_data.get("mcpServers")
+    if servers is None:
+        raise ValueError("MCP config must define either 'servers' or 'mcpServers'")
+    if not isinstance(servers, dict):
+        raise ValueError("MCP server definitions must be a JSON object")
+    return servers
+
+
+def load_mcp_server_config(config_path: Path) -> dict[str, Any]:
+    if not config_path.is_file():
+        raise FileNotFoundError(f"MCP config file not found: {config_path}")
+    config_text = config_path.read_text(encoding="utf-8")
+    try:
+        normalized = _strip_json_trailing_commas(_strip_json_comments(config_text))
+        config_data = json.loads(normalized)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid MCP config JSON in {config_path}: {exc}") from exc
+    if not isinstance(config_data, dict):
+        raise ValueError("MCP config root must be a JSON object")
+    servers = _normalize_mcp_servers(config_data)
+    return {"servers": servers}
+
+
+def _parse_bool_setting(value: Any, default: bool = False) -> bool:
+    """Safely parse a boolean setting value, correctly handling string 'false'/'true'."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in {"false", "0", "no", "off", ""}
+    if value is None:
+        return default
+    return bool(value)
+
+
+def apply_mcp_server_config():
+    logger = _get_logger()
+    config_path = _resolve_mcp_config_path()
+    fail_on_invalid = _parse_bool_setting(get_settings().get("MCP.FAIL_ON_INVALID_CONFIG", False))
+    try:
+        if not config_path.exists():
+            logger.debug(f"MCP config file not found, skipping load: {config_path}")
+            return
+        config_data = load_mcp_server_config(config_path)
+        settings = get_settings()
+        settings.set("MCP.SERVERS", config_data["servers"], merge=False)
+        settings.set("MCP.SERVER_CONFIG", config_data, merge=False)
+        settings.set("MCP.ACTIVE_CONFIG_PATH", str(config_path), merge=False)
+        logger.info(f"Loaded MCP server configuration from {config_path}")
+    except (ValueError, OSError, FileNotFoundError) as exc:
+        logger.error(f"Failed to load MCP server configuration from {config_path}: {exc}")
+        if fail_on_invalid:
+            raise
+
+
+
 # Add local configuration from pyproject.toml of the project being reviewed
 def _find_repository_root() -> Optional[Path]:
     """
@@ -86,9 +286,25 @@ def _find_pyproject() -> Optional[Path]:
     return None
 
 
+def load_repo_pyproject_settings(pyproject_path: Optional[Path] = None, settings=None):
+    """Load repository pyproject settings while preserving trusted MCP configuration."""
+    if pyproject_path is None:
+        pyproject_path = _find_pyproject()
+    if pyproject_path is None:
+        return
+
+    if settings is None:
+        settings = get_settings()
+
+    trusted_mcp_settings = copy.deepcopy(dict(settings.get("MCP", {}) or {}))
+    settings.load_file(pyproject_path, env=f"tool.{PR_AGENT_TOML_KEY}")
+    settings.set("MCP", trusted_mcp_settings, merge=False)
+
+
 pyproject_path = _find_pyproject()
-if pyproject_path is not None:
-    get_settings().load_file(pyproject_path, env=f'tool.{PR_AGENT_TOML_KEY}')
+load_repo_pyproject_settings(pyproject_path=pyproject_path)
+
+apply_mcp_server_config()
 
 
 def apply_secrets_manager_config():
@@ -97,8 +313,8 @@ def apply_secrets_manager_config():
     """
     try:
         # Dynamic imports to avoid circular dependency (secret_providers imports config_loader)
-        from pr_agent.secret_providers import get_secret_provider
         from pr_agent.log import get_logger
+        from pr_agent.secret_providers import get_secret_provider
 
         secret_provider = get_secret_provider()
         if not secret_provider:
@@ -132,7 +348,8 @@ def apply_secrets_to_config(secrets: dict):
     except:
         def get_logger():
             class DummyLogger:
-                def debug(self, msg): pass
+                def debug(self, msg):
+                    return None
             return DummyLogger()
 
     for key, value in secrets.items():
