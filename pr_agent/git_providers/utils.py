@@ -1,7 +1,9 @@
 import copy
 import os
+import posixpath
 import tempfile
 import traceback
+import urllib.parse
 
 from dynaconf import Dynaconf
 from starlette_context import context
@@ -9,6 +11,42 @@ from starlette_context import context
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.log import get_logger
+
+# Baseline extra_instructions values captured before the first metadata injection.
+# Used in non-context runtimes (CLI, polling) to restore clean state between PRs,
+# preventing metadata from one PR leaking into the next.
+_extra_instructions_baseline: dict[str, str] = {}
+
+def _is_safe_repo_file_path(file_path: str) -> bool:
+    """
+    Validate that a file path is safe to read from a repository root.
+    Rejects absolute paths, paths with '..' traversal components, backslashes,
+    and percent-encoded bypass attempts.
+    """
+    if not file_path or not file_path.strip():
+        return False
+    # Decode percent-encoded sequences (e.g. %2e%2e/) before validation to prevent bypass
+    file_path = urllib.parse.unquote(file_path)
+    # Reject paths that still contain '%' after decoding (double-encoding, ambiguous encodings)
+    if "%" in file_path:
+        return False
+    # Reject absolute paths (Unix and Windows-style)
+    if os.path.isabs(file_path) or file_path.startswith("/") or file_path.startswith("\\"):
+        return False
+    if len(file_path) >= 2 and file_path[1] == ":":  # e.g. C:\...
+        return False
+    # Reject backslashes (non-standard on most git providers, potential traversal vector)
+    if "\\" in file_path:
+        return False
+    # Reject any ".." path segment to prevent directory traversal
+    segments = file_path.replace("\\", "/").split("/")
+    if ".." in segments:
+        return False
+    # Normalize and reject any ".." components as a defense-in-depth check
+    normalized = posixpath.normpath(file_path)
+    if normalized.startswith("..") or "/.." in normalized:
+        return False
+    return True
 
 
 def apply_repo_settings(pr_url):
@@ -84,6 +122,88 @@ def apply_repo_settings(pr_url):
                     os.remove(repo_settings_file)
                 except Exception as e:
                     get_logger().error(f"Failed to remove temporary settings file {repo_settings_file}", e)
+
+    # Repository metadata: fetch well-known instruction files (AGENTS.md, QODO.md, CLAUDE.md, …)
+    # from the PR's head branch root and inject their contents into every tool's extra_instructions.
+    # See: https://qodo-merge-docs.qodo.ai/usage-guide/additional_configurations/#bringing-additional-repository-metadata-to-pr-agent
+    #
+    # Guard: apply_repo_settings() can be called multiple times per request (e.g. once in the
+    # server handler and again inside PRAgent.handle_request). The TOML settings are idempotent
+    # (set/overwrite), but metadata is *appended* to extra_instructions, so we must skip on
+    # repeated calls to avoid duplicating content in prompts.
+    # In server mode we use the Starlette request context for a per-request flag. In CLI/polling
+    # mode (no context), we restore extra_instructions to the pre-metadata baseline before each
+    # application, preventing metadata from one PR leaking into the next.
+    repo_metadata_applied = False
+    try:
+        repo_metadata_applied = context.get("repo_metadata_applied", False)
+    except Exception:
+        pass
+    if not repo_metadata_applied and get_settings().config.get("add_repo_metadata", False):
+        try:
+            tool_sections = [
+                "pr_reviewer",
+                "pr_description",
+                "pr_code_suggestions",
+                "pr_add_docs",
+                "pr_update_changelog",
+                "pr_test",
+                "pr_improve_component",
+            ]
+
+            # In non-context runtimes (CLI, polling), restore extra_instructions to their
+            # pre-metadata baseline so metadata from a previous PR doesn't persist.
+            global _extra_instructions_baseline
+            is_context_mode = False
+            try:
+                is_context_mode = context.exists()
+            except Exception:
+                pass
+            if not is_context_mode:
+                if _extra_instructions_baseline:
+                    # Restore baseline before applying this PR's metadata
+                    for section, baseline_value in _extra_instructions_baseline.items():
+                        get_settings().set(f"{section}.extra_instructions", baseline_value)
+                else:
+                    # First run: capture the current values as the baseline
+                    for section in tool_sections:
+                        section_obj = get_settings().get(section, None)
+                        if section_obj is not None and hasattr(section_obj, "extra_instructions"):
+                            _extra_instructions_baseline[section] = section_obj.extra_instructions or ""
+
+            metadata_files = get_settings().config.get("add_repo_metadata_file_list",
+                                                        ["AGENTS.md", "QODO.md", "CLAUDE.md"])
+
+            # Collect contents of all metadata files that exist in the repo
+            metadata_content_parts = []
+            for file_name in metadata_files:
+                if not _is_safe_repo_file_path(file_name):
+                    get_logger().warning(f"Skipping unsafe metadata file path: '{file_name}'")
+                    continue
+                content = git_provider.get_repo_file(file_name)
+                if content and content.strip():
+                    metadata_content_parts.append(content.strip())
+                    get_logger().info(f"Loaded repository metadata file: {file_name}")
+
+            # Append combined metadata to extra_instructions for every tool that supports it.
+            if metadata_content_parts:
+                combined_metadata = "\n\n".join(metadata_content_parts)
+                for section in tool_sections:
+                    section_obj = get_settings().get(section, None)
+                    if section_obj is not None and hasattr(section_obj, "extra_instructions"):
+                        existing = section_obj.extra_instructions or ""
+                        if existing:
+                            new_value = f"{existing}\n\n{combined_metadata}"
+                        else:
+                            new_value = combined_metadata
+                        get_settings().set(f"{section}.extra_instructions", new_value)
+            # Mark as applied for this request (server mode only)
+            try:
+                context["repo_metadata_applied"] = True
+            except Exception:
+                pass
+        except Exception as e:
+            get_logger().debug(f"Failed to load repository metadata files: {e}")
 
     # enable switching models with a short definition
     if get_settings().config.model.lower() == 'claude-3-5-sonnet':

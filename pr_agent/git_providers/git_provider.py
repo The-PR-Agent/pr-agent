@@ -274,6 +274,19 @@ class GitProvider(ABC):
     def get_repo_settings(self):
         pass
 
+    def get_repo_file(self, file_path: str) -> str:
+        """
+        Read a text file from the PR's head branch root directory.
+
+        Args:
+            file_path: Relative path to the file from the repository root.
+
+        Returns:
+            The file content as a UTF-8 string, or "" if the file does not exist
+            or cannot be read.
+        """
+        return ""
+
     def get_workspace_name(self):
         return ""
 
