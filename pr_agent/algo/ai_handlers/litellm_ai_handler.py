@@ -152,6 +152,25 @@ class LiteLLMAIHandler(BaseAiHandler):
 
         # Models that require streaming
         self.streaming_required_models = STREAMING_REQUIRED_MODELS
+        self.force_streaming_provider = str(
+            getattr(get_settings().litellm, "force_streaming_custom_llm_provider", "") or ""
+        ).strip().lower()
+        raw_force_streaming_api_base_substrings = getattr(
+            get_settings().litellm, "force_streaming_api_base_substrings", []
+        )
+        if isinstance(raw_force_streaming_api_base_substrings, (list, tuple, set)):
+            self.force_streaming_api_base_substrings = [
+                str(value).strip().lower()
+                for value in raw_force_streaming_api_base_substrings
+                if value is not None and str(value).strip()
+            ]
+        else:
+            if raw_force_streaming_api_base_substrings:
+                get_logger().warning(
+                    "LITELLM.FORCE_STREAMING_API_BASE_SUBSTRINGS must be a list, tuple, or set. "
+                    "Ignoring invalid value."
+                )
+            self.force_streaming_api_base_substrings = []
 
     def prepare_logs(self, response, system, user, resp, finish_reason):
         response_log = response.dict().copy()
@@ -395,6 +414,12 @@ class LiteLLMAIHandler(BaseAiHandler):
             # Support for custom OpenAI body fields (e.g., Flex Processing)
             kwargs = _process_litellm_extra_body(kwargs)
 
+            custom_llm_provider = str(
+                getattr(get_settings().litellm, "custom_llm_provider", "") or ""
+            ).strip().lower()
+            if custom_llm_provider:
+                kwargs["custom_llm_provider"] = custom_llm_provider
+
             # Support for Bedrock custom inference profile via model_id
             model_id = get_settings().get("litellm.model_id")
             if model_id and 'bedrock/' in model:
@@ -442,9 +467,28 @@ class LiteLLMAIHandler(BaseAiHandler):
         Wrapper that automatically handles streaming for required models.
         """
         model = kwargs["model"]
-        if model in self.streaming_required_models:
+        custom_llm_provider = str(kwargs.get("custom_llm_provider") or "").strip().lower()
+        api_base_value = kwargs.get("api_base")
+        api_base = api_base_value.strip().lower() if isinstance(api_base_value, str) else ""
+        force_streaming = (
+            bool(self.force_streaming_provider)
+            and custom_llm_provider == self.force_streaming_provider
+            and bool(self.force_streaming_api_base_substrings)
+            and any(substring in api_base for substring in self.force_streaming_api_base_substrings)
+        )
+
+        # Some OpenAI-compatible endpoints can return an empty-string
+        # finish_reason on non-streaming responses, which LiteLLM rejects during
+        # response normalization. Streaming avoids that conversion path.
+        if model in self.streaming_required_models or force_streaming:
             kwargs["stream"] = True
-            get_logger().info(f"Using streaming mode for model {model}")
+            if force_streaming and model not in self.streaming_required_models:
+                get_logger().info(
+                    f"Using streaming mode for model {model} "
+                    "due to OpenAI-compatible endpoint compatibility"
+                )
+            else:
+                get_logger().info(f"Using streaming mode for model {model}")
             response = await acompletion(**kwargs)
             resp, finish_reason = await _handle_streaming_response(response)
             # Create MockResponse for streaming since we don't have the full response object

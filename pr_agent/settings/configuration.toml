@@ -323,6 +323,9 @@ enable_callbacks = false
 success_callback = []
 failure_callback = []
 service_callback = []
+custom_llm_provider = ""
+force_streaming_custom_llm_provider = ""
+force_streaming_api_base_substrings = []
 # model_id = "" # Optional: Custom inference profile ID for Amazon Bedrock
 
 [pr_similar_issue]
