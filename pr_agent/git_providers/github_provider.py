@@ -475,8 +475,8 @@ class GithubProvider(GitProvider):
         if verified_comments:
             try:
                 self.pr.create_review(commit=self.last_commit_id, comments=verified_comments)
-            except:
-                pass
+            except Exception:
+                raise
 
         # try to publish one by one the invalid comments as a one-line code comment
         if invalid_comments and get_settings().github.try_fix_invalid_inline_comments:
