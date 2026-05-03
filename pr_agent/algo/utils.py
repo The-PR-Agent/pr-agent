@@ -956,7 +956,8 @@ def set_custom_labels(variables, git_provider=None):
     counter = 0
     labels_minimal_to_labels_dict = {}
     for k, v in labels.items():
-        description = "'" + v['description'].strip('\n').replace('\n', '\\n') + "'"
+        description = v.get('description', '') if isinstance(v, dict) else str(v)
+        description = "'" + description.strip('\n').replace('\n', '\\n').replace("'", "\\'") + "'"
         # variables["custom_labels_class"] += f"\n    {k.lower().replace(' ', '_')} = '{k}' # {description}"
         variables["custom_labels_class"] += f"\n    {k.lower().replace(' ', '_')} = {description}"
         labels_minimal_to_labels_dict[k.lower().replace(' ', '_')] = k
