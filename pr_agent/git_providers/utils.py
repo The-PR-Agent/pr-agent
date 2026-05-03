@@ -35,7 +35,10 @@ def apply_repo_settings(pr_url):
                 category = 'local'
                 try:
                     fd, repo_settings_file = tempfile.mkstemp(suffix='.toml')
-                    os.write(fd, repo_settings)
+                    try:
+                        os.write(fd, repo_settings)
+                    finally:
+                        os.close(fd)
 
                     try:
                         dynconf_kwargs = {'core_loaders': [],  # DISABLE default loaders, otherwise will load toml files more than once.
