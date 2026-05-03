@@ -142,6 +142,25 @@ LANGSMITH_PROJECT=<project>
 LANGSMITH_BASE_URL=<url>
 ```
 
+To use [Langfuse](https://langfuse.com) for utilization and adoption tracking (LLM cost, token usage, latency, and unique repo adoption), add the following to your configuration:
+
+```toml
+[litellm]
+enable_callbacks = true
+success_callback = ["langfuse"]
+failure_callback = ["langfuse"]
+```
+
+Then set the following environment variables:
+
+```
+LANGFUSE_HOST=https://cloud.langfuse.com
+LANGFUSE_PUBLIC_KEY=<public_key>
+LANGFUSE_SECRET_KEY=<secret_key>
+```
+
+Each LLM call is traced with the command name, git provider, PR URL, model, token counts, and version as tags — giving you full visibility into how pr-agent is being used across your repositories.
+
 ## Bringing additional repository metadata to PR-Agent
 
 To provide PR-Agent tools with additional context about your project, you can enable automatic repository metadata detection. 

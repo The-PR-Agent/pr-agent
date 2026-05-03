@@ -325,6 +325,14 @@ failure_callback = []
 service_callback = []
 # model_id = "" # Optional: Custom inference profile ID for Amazon Bedrock
 
+[otel]
+# Keys map to settings.get("OTEL.*") via section-key dot notation.
+is_enabled = false # disabled by default; set to true to enable telemetry
+exporter_type = "console" # "console", "otlp", or "none"
+service_name = "pr-agent"
+environment = "development" # "development", "staging", "production", etc.
+include_pr_url = false # set to true to attach PR URLs to spans (may expose private repo names)
+
 [pr_similar_issue]
 skip_comments = false
 force_update_dataset = false

@@ -9,7 +9,7 @@ certifi==2024.8.30
 dynaconf==3.2.4
 fastapi==0.118.0
 GitPython==3.1.41
-google-cloud-aiplatform==1.38.0
+google-cloud-aiplatform>=1.66.0
 google-generativeai==0.8.3
 google-cloud-storage==2.10.0
 Jinja2==3.1.6
@@ -34,6 +34,9 @@ pytest-cov==7.0.0
 pydantic==2.8.2
 html2text==2024.2.26
 giteapy==1.0.8
+opentelemetry-api==1.39.1
+opentelemetry-sdk==1.39.1
+opentelemetry-exporter-otlp-proto-grpc==1.39.1
 # Uncomment the following lines to enable the 'similar issue' tool
 # pinecone-client
 # pinecone-datasets @ git+https://github.com/mrT23/pinecone-datasets.git@main
