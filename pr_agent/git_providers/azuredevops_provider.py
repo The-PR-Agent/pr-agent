@@ -79,7 +79,7 @@ class AzureDevopsProvider(GitProvider):
         self.pr = None
         self.temp_comments = []
         self.incremental = incremental
-        self.unreviewed_files_set = {}
+        self.unreviewed_files_map = {}
         self.pr_commits = None
         self.previous_review = None
         if pr_url:
@@ -194,7 +194,7 @@ class AzureDevopsProvider(GitProvider):
             incremental = IncrementalPR(False)
         self.incremental = incremental
         if self.incremental.is_incremental:
-            self.unreviewed_files_set = {}
+            self.unreviewed_files_map = {}
             self._get_incremental_commits()
 
     def _get_incremental_commits(self):
@@ -245,10 +245,10 @@ class AzureDevopsProvider(GitProvider):
 
         if candidate_paths:
             deduped = list(dict.fromkeys(candidate_paths))
-            filtered = filter_ignored(deduped, 'azure')
+            filtered = filter_ignored(deduped, "azure")
             for path in filtered:
                 if is_valid_file(path):
-                    self.unreviewed_files_set[path] = path
+                    self.unreviewed_files_map[path] = path
         elif had_errors and self.incremental.commits_range:
             get_logger().warning(
                 "Failed to fetch changes for incremental commits; falling back to full review."
@@ -287,7 +287,10 @@ class AzureDevopsProvider(GitProvider):
                 matches.append(comment)
         if not matches:
             return None
-        latest = max(matches, key=lambda c: _to_naive_utc(getattr(c, "published_date", None)) or _dt.datetime.min)
+        latest = max(
+            matches,
+            key=lambda c: _to_naive_utc(getattr(c, "published_date", None)) or _dt.datetime.min,
+        )
         latest.html_url = self.get_comment_url(latest)
         latest.created_at = _to_naive_utc(getattr(latest, "published_date", None))
         return latest
@@ -311,8 +314,8 @@ class AzureDevopsProvider(GitProvider):
     def get_files(self):
         if (isinstance(getattr(self, "incremental", None), IncrementalPR)
                 and self.incremental.is_incremental
-                and self.unreviewed_files_set):
-            return list(self.unreviewed_files_set.keys())
+                and self.unreviewed_files_map):
+            return list(self.unreviewed_files_map.keys())
         return self._get_files_full()
 
     def _get_files_full(self):
@@ -335,7 +338,7 @@ class AzureDevopsProvider(GitProvider):
     def get_diff_files(self) -> list[FilePatchInfo]:
         try:
 
-            if self.diff_files:
+            if self.diff_files is not None:
                 return self.diff_files
 
             if self.pr.last_merge_commit is None or self.pr.last_merge_target_commit is None:
@@ -403,7 +406,7 @@ class AzureDevopsProvider(GitProvider):
             # diffs = list(set(diffs))
 
             diffs_original = diffs
-            diffs = filter_ignored(diffs_original, 'azure')
+            diffs = filter_ignored(diffs_original, "azure")
             if diffs_original != diffs:
                 try:
                     get_logger().info(f"Filtered out [ignore] files for pull request:", extra=
@@ -415,11 +418,11 @@ class AzureDevopsProvider(GitProvider):
             incremental_active = (
                 isinstance(getattr(self, "incremental", None), IncrementalPR)
                 and self.incremental.is_incremental
-                and bool(self.unreviewed_files_set)
+                and bool(self.unreviewed_files_map)
                 and self.incremental.last_seen_commit_sha
             )
             if incremental_active:
-                diffs = [f for f in diffs if f in self.unreviewed_files_set]
+                diffs = [f for f in diffs if f in self.unreviewed_files_map]
 
             invalid_files_names = []
             for file in diffs:
@@ -459,27 +462,9 @@ class AzureDevopsProvider(GitProvider):
                 elif "rename" in diff_types[file]: # diff_type can be `rename` | `edit, rename`
                     edit_type = EDIT_TYPE.RENAMED
 
-                version = GitVersionDescriptor(
-                    version=base_sha.commit_id, version_type="commit"
-                )
                 if edit_type == EDIT_TYPE.ADDED or edit_type == EDIT_TYPE.RENAMED:
                     original_file_content_str = ""
-                else:
-                    try:
-                        original_file_content_str = self.azure_devops_client.get_item(
-                            repository_id=self.repo_slug,
-                            path=file,
-                            project=self.workspace_slug,
-                            version_descriptor=version,
-                            download=False,
-                            include_content=True,
-                        )
-                        original_file_content_str = original_file_content_str.content
-                    except Exception as error:
-                        get_logger().error(f"Failed to retrieve original file content of {file} at version {version}", error=error)
-                        original_file_content_str = ""
-
-                if incremental_active:
+                elif incremental_active:
                     inc_version = GitVersionDescriptor(
                         version=self.incremental.last_seen_commit_sha, version_type="commit"
                     )
@@ -498,12 +483,32 @@ class AzureDevopsProvider(GitProvider):
                             f"Failed to retrieve original of {file} at {self.incremental.last_seen_commit_sha}: {error}"
                         )
                         original_file_content_str = ""
+                else:
+                    base_version = GitVersionDescriptor(
+                        version=base_sha.commit_id, version_type="commit"
+                    )
+                    try:
+                        base_original = self.azure_devops_client.get_item(
+                            repository_id=self.repo_slug,
+                            path=file,
+                            project=self.workspace_slug,
+                            version_descriptor=base_version,
+                            download=False,
+                            include_content=True,
+                        )
+                        original_file_content_str = base_original.content
+                    except Exception as error:
+                        get_logger().error(
+                            f"Failed to retrieve original file content of {file} at version {base_version}",
+                            error=error,
+                        )
+                        original_file_content_str = ""
 
                 patch = load_large_diff(
                     file, new_file_content_str, original_file_content_str, show_warning=False
                 ).rstrip()
                 if incremental_active:
-                    self.unreviewed_files_set[file] = patch
+                    self.unreviewed_files_map[file] = patch
 
                 # count number of lines added and removed
                 patch_lines = patch.splitlines(keepends=True)

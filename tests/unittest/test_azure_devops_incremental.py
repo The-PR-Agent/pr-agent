@@ -127,9 +127,9 @@ class TestGetIncrementalCommits(unittest.TestCase):
         self.assertEqual(provider.incremental.first_new_commit.sha, "new1")
         self.assertEqual(provider.incremental.last_seen_commit.sha, "old1")
         self.assertEqual(provider.incremental.last_seen_commit_sha, "old1")
-        self.assertIn("/foo.py", provider.unreviewed_files_set)
-        self.assertIn("/bar.py", provider.unreviewed_files_set)
-        self.assertNotIn("/somedir", provider.unreviewed_files_set)
+        self.assertIn("/foo.py", provider.unreviewed_files_map)
+        self.assertIn("/bar.py", provider.unreviewed_files_map)
+        self.assertNotIn("/somedir", provider.unreviewed_files_map)
         self.assertEqual(prev.html_url, provider.get_comment_url(prev))
 
     def test_skips_merge_commits(self):
