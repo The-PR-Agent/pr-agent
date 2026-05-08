@@ -342,7 +342,8 @@ class PRReviewer:
                 f"Incremental review not initialized for {get_settings().config.git_provider}; "
                 f"falling back to full review."
             )
-            return False
+            self.incremental.is_incremental = False
+            return True
         # checking if there are enough commits to start the review
         num_new_commits = len(self.incremental.commits_range)
         num_commits_threshold = get_settings().pr_reviewer.minimal_commits_for_incremental_review

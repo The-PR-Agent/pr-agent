@@ -215,6 +215,7 @@ class AzureDevopsProvider(GitProvider):
             return
 
         self.incremental.commits_range = self._get_commit_range()
+        candidate_paths = []
         for commit in self.incremental.commits_range:
             if len(commit.parents) > 1:
                 get_logger().info(f"Skipping merge commit {commit.sha}")
@@ -232,11 +233,18 @@ class AzureDevopsProvider(GitProvider):
                 try:
                     item = change["item"]
                 except (KeyError, TypeError):
-                    item = getattr(change, "additional_properties", {}).get("item", {}) or {}
+                    additional = getattr(change, "additional_properties", None) or {}
+                    item = additional.get("item") or {}
                 if not isinstance(item, dict) or item.get("gitObjectType") == "tree":
                     continue
                 path = item.get("path")
                 if path:
+                    candidate_paths.append(path)
+
+        if candidate_paths:
+            filtered = filter_ignored(list(set(candidate_paths)), 'azure')
+            for path in filtered:
+                if is_valid_file(path):
                     self.unreviewed_files_set[path] = path
 
     def _get_commit_range(self):
