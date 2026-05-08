@@ -216,6 +216,7 @@ class AzureDevopsProvider(GitProvider):
 
         self.incremental.commits_range = self._get_commit_range()
         candidate_paths = []
+        had_errors = False
         for commit in self.incremental.commits_range:
             if len(commit.parents) > 1:
                 get_logger().info(f"Skipping merge commit {commit.sha}")
@@ -227,6 +228,7 @@ class AzureDevopsProvider(GitProvider):
                     commit_id=commit.commit_id,
                 )
             except Exception as e:
+                had_errors = True
                 get_logger().warning(f"Failed to fetch changes for {commit.commit_id}: {e}")
                 continue
             for change in (getattr(changes_obj, "changes", None) or []):
@@ -247,6 +249,11 @@ class AzureDevopsProvider(GitProvider):
             for path in filtered:
                 if is_valid_file(path):
                     self.unreviewed_files_set[path] = path
+        elif had_errors and self.incremental.commits_range:
+            get_logger().warning(
+                "Failed to fetch changes for incremental commits; falling back to full review."
+            )
+            self.incremental.is_incremental = False
 
     def _get_commit_range(self):
         last_review_time = _to_naive_utc(getattr(self.previous_review, "created_at", None))

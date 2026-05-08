@@ -123,8 +123,11 @@ class PRReviewer:
                 get_logger().info(f"PR has no files: {self.pr_url}, skipping review")
                 return None
 
-            if self.incremental.is_incremental and not self._can_run_incremental_review():
-                return None
+            if self.incremental.is_incremental:
+                can_run = self._can_run_incremental_review()
+                # If the gate disabled incremental (e.g., commits_range is None), fall through to full review.
+                if not can_run and self.incremental.is_incremental:
+                    return None
 
             # if isinstance(self.args, list) and self.args and self.args[0] == 'auto_approve':
             #     get_logger().info(f'Auto approve flow PR: {self.pr_url} ...')
@@ -343,7 +346,7 @@ class PRReviewer:
                 f"falling back to full review."
             )
             self.incremental.is_incremental = False
-            return True
+            return False
         # checking if there are enough commits to start the review
         num_new_commits = len(self.incremental.commits_range)
         num_commits_threshold = get_settings().pr_reviewer.minimal_commits_for_incremental_review
