@@ -242,7 +242,8 @@ class AzureDevopsProvider(GitProvider):
                     candidate_paths.append(path)
 
         if candidate_paths:
-            filtered = filter_ignored(list(set(candidate_paths)), 'azure')
+            deduped = list(dict.fromkeys(candidate_paths))
+            filtered = filter_ignored(deduped, 'azure')
             for path in filtered:
                 if is_valid_file(path):
                     self.unreviewed_files_set[path] = path
@@ -272,13 +273,17 @@ class AzureDevopsProvider(GitProvider):
             prefixes.append(PRReviewHeader.REGULAR.value)
         if incremental:
             prefixes.append(PRReviewHeader.INCREMENTAL.value)
+        matches = []
         for comment in self.get_issue_comments():
             body = getattr(comment, "body", None)
             if body and any(body.startswith(p) for p in prefixes):
-                comment.html_url = self.get_comment_url(comment)
-                comment.created_at = _to_naive_utc(getattr(comment, "published_date", None))
-                return comment
-        return None
+                matches.append(comment)
+        if not matches:
+            return None
+        latest = max(matches, key=lambda c: _to_naive_utc(getattr(c, "published_date", None)) or _dt.datetime.min)
+        latest.html_url = self.get_comment_url(latest)
+        latest.created_at = _to_naive_utc(getattr(latest, "published_date", None))
+        return latest
 
     def get_repo_settings(self):
         try:
