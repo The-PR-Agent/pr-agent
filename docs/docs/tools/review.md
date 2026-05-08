@@ -49,6 +49,9 @@ extra_instructions = "..."
 - The `pr_commands` lists commands that will be executed automatically when a PR is opened.
 - The `[pr_reviewer]` section contains the configurations for the `review` tool you want to edit (if any).
 
+!!! info "Open-source `pr-agent`"
+    The OSS `pr-agent` package automatically loads `best_practices.md` from the repository's default branch on every `review` run, truncates it to `[best_practices].max_lines_allowed` (default 800), and feeds it to the model as a labeled block in the `review` prompt. To opt out, set `[best_practices].enable_repo_best_practices_md = false` in `.pr_agent.toml` (the same flag also gates `/improve`).
+
 ## Configuration options
 
 ???+ example "General options"

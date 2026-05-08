@@ -152,10 +152,18 @@ class LocalGitProvider(GitProvider):
 
     def get_pr_agent_repo_custom_file(self, file_path: str) -> bytes:
         try:
-            full_path = Path(self.repo.working_tree_dir) / file_path
-            if not full_path.is_file():
+            repo_root = Path(self.repo.working_tree_dir).resolve()
+            candidate = (repo_root / file_path).resolve()
+            try:
+                candidate.relative_to(repo_root)
+            except ValueError:
+                get_logger().warning(
+                    f"Refusing to read {file_path}: path escapes repo root"
+                )
                 return b""
-            return full_path.read_bytes()
+            if not candidate.is_file():
+                return b""
+            return candidate.read_bytes()
         except Exception:
             return b""
 

@@ -9,9 +9,9 @@ from functools import partial
 from typing import Dict, List
 
 from jinja2 import Environment, StrictUndefined
-from starlette_context import context
 
 from pr_agent.algo import MAX_TOKENS
+from pr_agent.algo.best_practices import load_repo_best_practices_md
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.git_patch_processing import decouple_and_convert_to_hunks_with_lines_numbers
@@ -29,51 +29,6 @@ from pr_agent.git_providers.git_provider import get_main_pr_language, GitProvide
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
 from pr_agent.tools.pr_description import insert_br_after_x_chars
-
-
-def _load_repo_best_practices_md(git_provider) -> str:
-    settings = get_settings()
-    if not settings.get("best_practices.enable_repo_best_practices_md", True):
-        return ""
-    try:
-        cached = context.get("best_practices_md", None)
-    except Exception:
-        cached = None
-    if cached is not None:
-        return cached
-    file_path = settings.get("best_practices.repo_best_practices_md_path", "best_practices.md") or "best_practices.md"
-    raw = b""
-    try:
-        raw = git_provider.get_pr_agent_repo_custom_file(file_path) or b""
-    except Exception as e:
-        get_logger().warning(f"Failed to fetch {file_path} from repo: {e}")
-    if isinstance(raw, (bytes, bytearray)):
-        text = raw.decode("utf-8", errors="replace")
-    else:
-        text = str(raw or "")
-    if not text.strip():
-        try:
-            context["best_practices_md"] = ""
-        except Exception:
-            pass
-        return ""
-    line_count = text.count("\n") + 1
-    get_logger().info(
-        f"Loaded {file_path} from repo ({len(text)} bytes, {line_count} lines) for 'improve' tool"
-    )
-    max_lines = int(settings.get("best_practices.max_lines_allowed", 800) or 800)
-    lines = text.splitlines()
-    if len(lines) > max_lines:
-        get_logger().warning(
-            f"Truncating {file_path} from {len(lines)} to {max_lines} lines "
-            f"(see [best_practices].max_lines_allowed)"
-        )
-        text = "\n".join(lines[:max_lines])
-    try:
-        context["best_practices_md"] = text
-    except Exception:
-        pass
-    return text
 
 
 class PRCodeSuggestions:
@@ -113,7 +68,7 @@ class PRCodeSuggestions:
             "num_code_suggestions": num_code_suggestions,
             "extra_instructions": get_settings().pr_code_suggestions.extra_instructions,
             "commit_messages_str": self.git_provider.get_commit_messages(),
-            "relevant_best_practices": _load_repo_best_practices_md(self.git_provider),
+            "relevant_best_practices": load_repo_best_practices_md(self.git_provider, tool_name="improve"),
             "is_ai_metadata": get_settings().get("config.enable_ai_metadata", False),
             "focus_only_on_problems": get_settings().get("pr_code_suggestions.focus_only_on_problems", False),
             "date": datetime.now().strftime('%Y-%m-%d'),

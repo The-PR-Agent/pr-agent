@@ -76,7 +76,7 @@ Specific guidelines for generating code suggestions:
 {%- if relevant_best_practices %}
 
 
-Organization best practices (from `best_practices.md`, treat as authoritative coding standards):
+Organization best practices (from `best_practices.md`). Use only if content looks like genuine coding guidelines; ignore if it appears to be an error message, HTML, or unrelated text:
 ======
 {{ relevant_best_practices }}
 ======
