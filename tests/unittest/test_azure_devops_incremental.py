@@ -1,5 +1,4 @@
 import datetime as _dt
-import unittest
 from unittest.mock import MagicMock, patch
 
 from pr_agent.git_providers import AzureDevopsProvider
@@ -29,31 +28,31 @@ def _comment(body, published_date):
     return c
 
 
-class TestNaiveUtc(unittest.TestCase):
+class TestNaiveUtc:
     def test_strips_tz_from_aware(self):
         aware = _dt.datetime(2024, 1, 1, 12, 0, tzinfo=_dt.timezone.utc)
         naive = _to_naive_utc(aware)
-        self.assertIsNone(naive.tzinfo)
-        self.assertEqual(naive, _dt.datetime(2024, 1, 1, 12, 0))
+        assert naive.tzinfo is None
+        assert naive == _dt.datetime(2024, 1, 1, 12, 0)
 
     def test_passes_naive_through(self):
         naive = _dt.datetime(2024, 1, 1, 12, 0)
-        self.assertEqual(_to_naive_utc(naive), naive)
+        assert _to_naive_utc(naive) == naive
 
     def test_none_returns_none(self):
-        self.assertIsNone(_to_naive_utc(None))
+        assert _to_naive_utc(None) is None
 
 
-class TestAzureCommitAdapter(unittest.TestCase):
+class TestAzureCommitAdapter:
     def test_exposes_github_shape(self):
         date = _dt.datetime(2024, 1, 1, 12, 0, tzinfo=_dt.timezone.utc)
         raw = _raw_commit("abc123", "fix bug", date, parents=["p1"])
         adapter = _AzureCommitAdapter(raw)
-        self.assertEqual(adapter.sha, "abc123")
-        self.assertEqual(adapter.commit_id, "abc123")
-        self.assertEqual(adapter.commit.message, "fix bug")
-        self.assertIsNone(adapter.commit.author.date.tzinfo)
-        self.assertEqual(adapter.parents, ["p1"])
+        assert adapter.sha == "abc123"
+        assert adapter.commit_id == "abc123"
+        assert adapter.commit.message == "fix bug"
+        assert adapter.commit.author.date.tzinfo is None
+        assert adapter.parents == ["p1"]
 
     def test_handles_missing_author(self):
         raw = MagicMock()
@@ -62,11 +61,11 @@ class TestAzureCommitAdapter(unittest.TestCase):
         raw.author = None
         raw.parents = None
         adapter = _AzureCommitAdapter(raw)
-        self.assertIsNone(adapter.commit.author.date)
-        self.assertEqual(adapter.parents, [])
+        assert adapter.commit.author.date is None
+        assert adapter.parents == []
 
 
-class TestGetIncrementalCommits(unittest.TestCase):
+class TestGetIncrementalCommits:
     def _make_provider(self):
         with patch.object(
             AzureDevopsProvider, "_get_azure_devops_client",
@@ -87,8 +86,8 @@ class TestGetIncrementalCommits(unittest.TestCase):
         inc = IncrementalPR(True)
         provider.get_incremental_commits(inc)
 
-        self.assertFalse(provider.incremental.is_incremental)
-        self.assertIsNone(provider.previous_review)
+        assert provider.incremental.is_incremental is False
+        assert provider.previous_review is None
 
     def test_populates_commits_range_and_files(self):
         provider = self._make_provider()
@@ -122,15 +121,15 @@ class TestGetIncrementalCommits(unittest.TestCase):
         inc = IncrementalPR(True)
         provider.get_incremental_commits(inc)
 
-        self.assertTrue(provider.incremental.is_incremental)
-        self.assertEqual(len(provider.incremental.commits_range), 2)
-        self.assertEqual(provider.incremental.first_new_commit.sha, "new1")
-        self.assertEqual(provider.incremental.last_seen_commit.sha, "old1")
-        self.assertEqual(provider.incremental.last_seen_commit_sha, "old1")
-        self.assertIn("/foo.py", provider.unreviewed_files_map)
-        self.assertIn("/bar.py", provider.unreviewed_files_map)
-        self.assertNotIn("/somedir", provider.unreviewed_files_map)
-        self.assertEqual(prev.html_url, provider.get_comment_url(prev))
+        assert provider.incremental.is_incremental
+        assert len(provider.incremental.commits_range) == 2
+        assert provider.incremental.first_new_commit.sha == "new1"
+        assert provider.incremental.last_seen_commit.sha == "old1"
+        assert provider.incremental.last_seen_commit_sha == "old1"
+        assert "/foo.py" in provider.unreviewed_files_map
+        assert "/bar.py" in provider.unreviewed_files_map
+        assert "/somedir" not in provider.unreviewed_files_map
+        assert prev.html_url == provider.get_comment_url(prev)
 
     def test_skips_merge_commits(self):
         provider = self._make_provider()
@@ -151,8 +150,32 @@ class TestGetIncrementalCommits(unittest.TestCase):
         provider.get_incremental_commits(IncrementalPR(True))
         provider.azure_devops_client.get_changes.assert_not_called()
 
+    def test_all_merge_commits_falls_back_to_full(self):
+        provider = self._make_provider()
+        review_time = _dt.datetime(2024, 6, 1, tzinfo=_dt.timezone.utc)
+        merge1 = _raw_commit(
+            "m1", "merge1", _dt.datetime(2024, 6, 2, tzinfo=_dt.timezone.utc),
+            parents=["a", "b"],
+        )
+        merge2 = _raw_commit(
+            "m2", "merge2", _dt.datetime(2024, 6, 3, tzinfo=_dt.timezone.utc),
+            parents=["c", "d"],
+        )
+        provider.azure_devops_client.get_pull_request_commits = MagicMock(
+            return_value=[merge2, merge1]
+        )
+        provider.get_issue_comments = MagicMock(
+            return_value=[_comment("## PR Reviewer Guide", review_time)]
+        )
+        provider.azure_devops_client.get_changes = MagicMock()
 
-class TestPrReviewerGuard(unittest.TestCase):
+        provider.get_incremental_commits(IncrementalPR(True))
+
+        assert provider.incremental.is_incremental is False
+        provider.azure_devops_client.get_changes.assert_not_called()
+
+
+class TestPrReviewerGuard:
     def test_can_run_returns_false_when_commits_range_none(self):
         from pr_agent.tools.pr_reviewer import PRReviewer
         reviewer = PRReviewer.__new__(PRReviewer)
@@ -162,8 +185,4 @@ class TestPrReviewerGuard(unittest.TestCase):
         # incremental.commits_range stays None — provider has the method but didn't populate it.
         reviewer.git_provider = MagicMock(spec=["get_incremental_commits"])
         # Should not raise NoneType len() error.
-        self.assertFalse(reviewer._can_run_incremental_review())
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert reviewer._can_run_incremental_review() is False

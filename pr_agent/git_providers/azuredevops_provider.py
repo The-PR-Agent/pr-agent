@@ -53,7 +53,6 @@ class _AzureCommitAdapter:
     """Mimics PyGithub `Commit` shape (.sha, .commit.author.date, .commit.message, .parents)."""
 
     def __init__(self, raw):
-        self._raw = raw
         self.sha = raw.commit_id
         self.commit_id = raw.commit_id
         self.commit = _AzureCommitInner(raw)
@@ -219,10 +218,12 @@ class AzureDevopsProvider(GitProvider):
             return
         candidate_paths = []
         had_errors = False
+        non_merge_seen = False
         for commit in self.incremental.commits_range:
             if len(commit.parents) > 1:
                 get_logger().info(f"Skipping merge commit {commit.sha}")
                 continue
+            non_merge_seen = True
             try:
                 changes_obj = self.azure_devops_client.get_changes(
                     project=self.workspace_slug,
@@ -254,6 +255,11 @@ class AzureDevopsProvider(GitProvider):
         elif had_errors and self.incremental.commits_range:
             get_logger().warning(
                 "Failed to fetch changes for incremental commits; falling back to full review."
+            )
+            self.incremental.is_incremental = False
+        elif self.incremental.commits_range and not non_merge_seen:
+            get_logger().info(
+                "Incremental range only contains merge commits; falling back to full review."
             )
             self.incremental.is_incremental = False
 
