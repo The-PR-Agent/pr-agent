@@ -107,9 +107,21 @@ Use triple quotes to write multi-line instructions. Use bullet points or numbers
 
 ### Best practices
 
-`Platforms supported: GitHub, GitLab, Bitbucket`
+`Platforms supported: GitHub, GitLab, Bitbucket, Azure DevOps`
 
 PR-Agent supports both simple and hierarchical best practices configurations to provide guidance to the AI model for generating relevant code suggestions.
+
+!!! info "Open-source `pr-agent`"
+    The OSS `pr-agent` package automatically loads `best_practices.md` from the repository's default branch on every `improve` run, truncates it to `[best_practices].max_lines_allowed` (default 800), and feeds it to the model as a labeled block in the `improve` prompt. The OSS `review` tool does not consume this file.
+
+    To opt out, add to your `.pr_agent.toml`:
+
+    ```toml
+    [best_practices]
+    enable_repo_best_practices_md = false
+    # Or override the default file path:
+    # repo_best_practices_md_path = "docs/best_practices.md"
+    ```
 
 ???- tip "Writing effective best practices files"
     

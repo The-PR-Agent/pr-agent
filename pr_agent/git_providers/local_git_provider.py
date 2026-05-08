@@ -150,6 +150,15 @@ class LocalGitProvider(GitProvider):
     def get_repo_settings(self):
         pass  # Not applicable to the local git provider, but required by the interface
 
+    def get_pr_agent_repo_custom_file(self, file_path: str) -> bytes:
+        try:
+            full_path = Path(self.repo.working_tree_dir) / file_path
+            if not full_path.is_file():
+                return b""
+            return full_path.read_bytes()
+        except Exception:
+            return b""
+
     def remove_reaction(self, comment):
         pass  # Not applicable to the local git provider, but required by the interface
 
