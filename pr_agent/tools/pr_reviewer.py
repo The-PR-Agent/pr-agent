@@ -142,8 +142,8 @@ class PRReviewer:
             if self.incremental.is_incremental and hasattr(self.git_provider, "unreviewed_files_set") and not self.git_provider.unreviewed_files_set:
                 get_logger().info(f"Incremental review is enabled for {self.pr_url} but there are no new files")
                 previous_review_url = ""
-                if hasattr(self.git_provider, "previous_review"):
-                    previous_review_url = self.git_provider.previous_review.html_url
+                if hasattr(self.git_provider, "previous_review") and self.git_provider.previous_review is not None:
+                    previous_review_url = getattr(self.git_provider.previous_review, "html_url", "") or ""
                 if get_settings().config.publish_output:
                     self.git_provider.publish_comment(f"Incremental Review Skipped\n"
                                     f"No files were changed since the [previous PR Review]({previous_review_url})")
@@ -336,6 +336,12 @@ class PRReviewer:
 
         if not hasattr(self.git_provider, "get_incremental_commits"):
             get_logger().info(f"Incremental review is not supported for {get_settings().config.git_provider}")
+            return False
+        if self.incremental.commits_range is None:
+            get_logger().info(
+                f"Incremental review not initialized for {get_settings().config.git_provider}; "
+                f"falling back to full review."
+            )
             return False
         # checking if there are enough commits to start the review
         num_new_commits = len(self.incremental.commits_range)
