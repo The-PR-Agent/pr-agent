@@ -142,7 +142,11 @@ class PRReviewer:
             # ticket extraction if exists
             await extract_and_cache_pr_tickets(self.git_provider, self.vars)
 
-            if self.incremental.is_incremental and hasattr(self.git_provider, "unreviewed_files_map") and not self.git_provider.unreviewed_files_map:
+            if (
+                self.incremental.is_incremental
+                and hasattr(self.git_provider, "unreviewed_files_map")
+                and not self.git_provider.unreviewed_files_map
+            ):
                 get_logger().info(f"Incremental review is enabled for {self.pr_url} but there are no new files")
                 previous_review_url = ""
                 if hasattr(self.git_provider, "previous_review") and self.git_provider.previous_review is not None:

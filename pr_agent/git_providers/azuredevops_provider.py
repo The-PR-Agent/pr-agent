@@ -215,6 +215,8 @@ class AzureDevopsProvider(GitProvider):
             return
 
         self.incremental.commits_range = self._get_commit_range()
+        if self.incremental.commits_range is None:
+            return
         candidate_paths = []
         had_errors = False
         for commit in self.incremental.commits_range:
@@ -258,18 +260,32 @@ class AzureDevopsProvider(GitProvider):
     def _get_commit_range(self):
         last_review_time = _to_naive_utc(getattr(self.previous_review, "created_at", None))
         if last_review_time is None or not self.pr_commits:
-            return []
+            get_logger().info(
+                "Cannot compute incremental commit range "
+                "(missing previous review timestamp or PR commits); falling back to full review."
+            )
+            self.incremental.is_incremental = False
+            return None
         first_new_commit_index = None
+        saw_reliable_date = False
         for index in range(len(self.pr_commits) - 1, -1, -1):
             cdate = self.pr_commits[index].commit.author.date
             if cdate is None:
                 continue
+            saw_reliable_date = True
             if cdate > last_review_time:
                 self.incremental.first_new_commit = self.pr_commits[index]
                 first_new_commit_index = index
             else:
                 self.incremental.last_seen_commit = self.pr_commits[index]
                 break
+        if not saw_reliable_date:
+            get_logger().info(
+                "All PR commit author dates are missing; cannot compute incremental range. "
+                "Falling back to full review."
+            )
+            self.incremental.is_incremental = False
+            return None
         return self.pr_commits[first_new_commit_index:] if first_new_commit_index is not None else []
 
     def get_previous_review(self, *, full: bool, incremental: bool):
