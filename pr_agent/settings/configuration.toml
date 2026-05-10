@@ -352,6 +352,14 @@ uri = "./lancedb"
 # url = "https://YOUR-QDRANT-URL"
 # api_key = "..."
 
+[skills]
+# Agent skills (SKILL.md) support: discovers SKILL.md files from the configured
+# filesystem paths and injects their content into review/improve/describe prompts.
+# See https://github.com/The-PR-Agent/pr-agent/issues/2384
+enabled = false
+paths = [] # list of directories to scan recursively for "*/SKILL.md"
+max_skills_tokens = 4000 # token budget for the combined skills_context block
+
 [best_practices]
 content = ""
 organization_name = ""
