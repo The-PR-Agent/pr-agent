@@ -15,10 +15,12 @@ from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import GithubProvider, get_git_provider
 from pr_agent.git_providers.git_provider import get_main_pr_language
 from pr_agent.log import get_logger
+from pr_agent.tools.registry import ToolRegistry
 
 CHANGELOG_LINES = 50
 
 
+@ToolRegistry.register("update_changelog")
 class PRUpdateChangelog:
     def __init__(self, pr_url: str, cli_mode=False, args=None, ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
 
@@ -108,7 +110,7 @@ class PRUpdateChangelog:
         environment = Environment(undefined=StrictUndefined)
         system_prompt = environment.from_string(get_settings().pr_update_changelog_prompt.system).render(variables)
         user_prompt = environment.from_string(get_settings().pr_update_changelog_prompt.user).render(variables)
-        response, finish_reason = await self.ai_handler.chat_completion(
+        response, finish_reason, _ = await self.ai_handler.chat_completion(
             model=model, system=system_prompt, user=user_prompt, temperature=get_settings().config.temperature)
 
         # post-process the response

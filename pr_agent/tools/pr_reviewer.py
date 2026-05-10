@@ -1,10 +1,10 @@
 import copy
 import datetime
-import traceback
 import json
+import traceback
 from collections import OrderedDict
 from functools import partial
-from typing import List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from jinja2 import Environment, StrictUndefined
 
@@ -209,10 +209,11 @@ class PRReviewer(PRTool):
         system_prompt = environment.from_string(get_settings().pr_review_prompt.system).render(variables)
         user_prompt = environment.from_string(get_settings().pr_review_prompt.user).render(variables)
 
-        mcp_config = get_settings().get("mcp", {})
+        mcp_config = self._get_mcp_config()
         if mcp_config:
             from pr_agent.algo.mcp_handler import MCPHandler
-            mcp_handler = MCPHandler(mcp_config.command, mcp_config.args)
+
+            mcp_handler = MCPHandler(mcp_config["command"], mcp_config["args"])
             async with mcp_handler as handler:
                 tools = await handler.get_openai_tools()
                 
@@ -229,7 +230,7 @@ class PRReviewer(PRTool):
                     # Execute MCP tools
                     for tool_call in tool_calls:
                         tool_name = tool_call.function.name
-                        tool_args = json.loads(tool_call.function.arguments)
+                        tool_args = json.loads(tool_call.function.arguments or "{}")
                         get_logger().info(f"Executing tool: {tool_name} with args {tool_args}")
                         tool_result = await handler.call_tool(tool_name, tool_args)
                         
@@ -253,6 +254,23 @@ class PRReviewer(PRTool):
                 user=user_prompt
             )
             return response
+
+    def _get_mcp_config(self) -> Optional[Dict[str, Any]]:
+        mcp_config = get_settings().get("mcp", None)
+        if not mcp_config:
+            return None
+
+        if not mcp_config.get("enabled", False):
+            return None
+
+        command = mcp_config.get("command")
+        args = mcp_config.get("args", [])
+        if not command:
+            raise ValueError("MCP is enabled but mcp.command is not configured")
+        if not isinstance(args, list):
+            raise ValueError("MCP mcp.args must be a list")
+
+        return {"command": command, "args": args}
 
     def _prepare_pr_review(self) -> str:
         """

@@ -13,8 +13,11 @@ from pr_agent.git_providers import get_git_provider, GitLabProvider
 from pr_agent.git_providers.git_provider import get_main_pr_language
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
+from pr_agent.tools.registry import ToolRegistry
 
 
+@ToolRegistry.register("ask")
+@ToolRegistry.register("ask_question")
 class PRQuestions:
     def __init__(self, pr_url: str, args=None, ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
         question_str = self.parse_args(args)
@@ -108,11 +111,11 @@ class PRQuestions:
         user_prompt = environment.from_string(get_settings().pr_questions_prompt.user).render(variables)
         if 'img_path' in variables:
             img_path = self.vars['img_path']
-            response, finish_reason = await (self.ai_handler.chat_completion
-                                             (model=model, temperature=get_settings().config.temperature,
-                                              system=system_prompt, user=user_prompt, img_path=img_path))
+            response, finish_reason, _ = await (self.ai_handler.chat_completion
+                                                (model=model, temperature=get_settings().config.temperature,
+                                                 system=system_prompt, user=user_prompt, img_path=img_path))
         else:
-            response, finish_reason = await self.ai_handler.chat_completion(
+            response, finish_reason, _ = await self.ai_handler.chat_completion(
                 model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
         return response
 

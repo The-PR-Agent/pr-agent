@@ -1,5 +1,7 @@
-from typing import Dict, Type
+from typing import Dict, List, Optional, Type
+
 from pr_agent.tools.base import PRTool
+
 
 class ToolRegistry:
     _tools: Dict[str, Type[PRTool]] = {}

@@ -11,10 +11,12 @@ from pr_agent.algo.utils import get_max_tokens
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
 from pr_agent.log import get_logger
+from pr_agent.tools.registry import ToolRegistry
 
 MODEL = "text-embedding-ada-002"
 
 
+@ToolRegistry.register("similar_issue")
 class PRSimilarIssue:
     def __init__(self, issue_url: str, ai_handler, args: list = None):
         self.issue_url = issue_url

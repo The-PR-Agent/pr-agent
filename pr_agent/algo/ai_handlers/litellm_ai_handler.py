@@ -1,4 +1,7 @@
+import json
 import os
+from typing import Dict, List, Optional
+
 import litellm
 import openai
 import requests
@@ -12,7 +15,6 @@ from pr_agent.algo.ai_handlers.litellm_helpers import _handle_streaming_response
 from pr_agent.algo.utils import ReasoningEffort, get_version
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
-import json
 
 MODEL_RETRIES = 2
 DUMMY_LITELLM_API_KEY = "dummy_key"  # placeholder set when no OpenAI key is configured
@@ -424,6 +426,8 @@ class LiteLLMAIHandler(BaseAiHandler):
             raise
         except openai.APIError as e:
             get_logger().warning(f"Error during LLM inference: {e}")
+            raise
+        except ValueError:
             raise
         except Exception as e:
             get_logger().warning(f"Unknown error during LLM inference: {e}")

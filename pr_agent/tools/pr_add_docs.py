@@ -14,8 +14,10 @@ from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.git_provider import get_main_pr_language
 from pr_agent.log import get_logger
+from pr_agent.tools.registry import ToolRegistry
 
 
+@ToolRegistry.register("add_docs")
 class PRAddDocs:
     def __init__(self, pr_url: str, cli_mode=False, args: list = None,
                  ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
@@ -89,7 +91,7 @@ class PRAddDocs:
         if get_settings().config.verbosity_level >= 2:
             get_logger().info(f"\nSystem prompt:\n{system_prompt}")
             get_logger().info(f"\nUser prompt:\n{user_prompt}")
-        response, finish_reason = await self.ai_handler.chat_completion(
+        response, finish_reason, _ = await self.ai_handler.chat_completion(
             model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
 
         return response

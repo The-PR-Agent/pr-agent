@@ -17,7 +17,10 @@ from pr_agent.git_providers.git_provider import get_main_pr_language
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
+from pr_agent.tools.registry import ToolRegistry
 
+
+@ToolRegistry.register("ask_line")
 class PR_LineQuestions:
     def __init__(self, pr_url: str, args=None, ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
         self.question_str = self.parse_args(args)
@@ -161,6 +164,6 @@ class PR_LineQuestions:
             print(f"\nSystem prompt:\n{system_prompt}")
             print(f"\nUser prompt:\n{user_prompt}")
 
-        response, finish_reason = await self.ai_handler.chat_completion(
+        response, finish_reason, _ = await self.ai_handler.chat_completion(
             model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
         return response

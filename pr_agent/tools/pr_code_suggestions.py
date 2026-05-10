@@ -27,9 +27,12 @@ from pr_agent.git_providers import (AzureDevopsProvider, GithubProvider,
 from pr_agent.git_providers.git_provider import get_main_pr_language, GitProvider
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
+from pr_agent.tools.registry import ToolRegistry
 from pr_agent.tools.pr_description import insert_br_after_x_chars
 
 
+@ToolRegistry.register("improve")
+@ToolRegistry.register("improve_code")
 class PRCodeSuggestions:
     def __init__(self, pr_url: str, cli_mode=False, args: list = None,
                  ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
@@ -390,7 +393,7 @@ class PRCodeSuggestions:
         environment = Environment(undefined=StrictUndefined)
         system_prompt = environment.from_string(self.pr_code_suggestions_prompt_system).render(variables)
         user_prompt = environment.from_string(get_settings().pr_code_suggestions_prompt.user).render(variables)
-        response, finish_reason = await self.ai_handler.chat_completion(
+        response, finish_reason, _ = await self.ai_handler.chat_completion(
             model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
         if not get_settings().config.publish_output:
             get_settings().system_prompt = system_prompt
@@ -934,10 +937,10 @@ class PRCodeSuggestions:
                     get_settings().pr_code_suggestions_reflect_prompt.user).render(variables)
 
             with get_logger().contextualize(command="self_reflect_on_suggestions"):
-                response_reflect, finish_reason_reflect = await self.ai_handler.chat_completion(model=model,
-                                                                                                system=system_prompt_reflect,
-                                                                                                temperature=get_settings().config.temperature,
-                                                                                                user=user_prompt_reflect)
+                response_reflect, finish_reason_reflect, _ = await self.ai_handler.chat_completion(model=model,
+                                                                                                   system=system_prompt_reflect,
+                                                                                                   temperature=get_settings().config.temperature,
+                                                                                                   user=user_prompt_reflect)
         except Exception as e:
             get_logger().info(f"Could not reflect on suggestions, error: {e}")
             return ""

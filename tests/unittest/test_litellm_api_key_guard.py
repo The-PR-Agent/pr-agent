@@ -34,6 +34,28 @@ def _make_settings():
     })()
 
 
+def _make_extra_headers_settings(extra_headers):
+    """Settings with LITELLM.EXTRA_HEADERS configured."""
+    return type("Settings", (), {
+        "config": type("Config", (), {
+            "reasoning_effort": None,
+            "ai_timeout": 30,
+            "custom_reasoning_model": False,
+            "max_model_tokens": 32000,
+            "verbosity_level": 0,
+            "seed": -1,
+            "get": lambda self, key, default=None: default,
+        })(),
+        "litellm": type("LiteLLM", (), {
+            "extra_headers": extra_headers,
+            "get": lambda self, key, default=None: default,
+        })(),
+        "get": lambda self, key, default=None: (
+            extra_headers if key == "LITELLM.EXTRA_HEADERS" else default
+        ),
+    })()
+
+
 def _mock_response():
     """Minimal acompletion response."""
     mock = MagicMock()
@@ -170,6 +192,36 @@ class TestApiKeyGuard:
             # Verify the dummy key was NOT passed to the call.
             # This allows litellm to use litellm.anthropic_key internally.
             assert "api_key" not in mock_call.call_args[1]
+
+    @pytest.mark.asyncio
+    async def test_extra_headers_forwarded(self, monkeypatch):
+        """LITELLM.EXTRA_HEADERS is parsed as JSON and forwarded to LiteLLM."""
+        monkeypatch.setattr(
+            litellm_handler,
+            "get_settings",
+            lambda: _make_extra_headers_settings('{"projectId": "test-project"}'),
+        )
+
+        with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion",
+                   new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = _mock_response()
+            handler = LiteLLMAIHandler()
+            await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
+
+        assert mock_call.call_args[1]["extra_headers"] == {"projectId": "test-project"}
+
+    @pytest.mark.asyncio
+    async def test_extra_headers_rejects_non_object_json(self, monkeypatch):
+        """LITELLM.EXTRA_HEADERS must be a JSON object, not another JSON value."""
+        monkeypatch.setattr(
+            litellm_handler,
+            "get_settings",
+            lambda: _make_extra_headers_settings('["not", "an", "object"]'),
+        )
+
+        handler = LiteLLMAIHandler()
+        with pytest.raises(Exception, match="LITELLM.EXTRA_HEADERS must be a JSON object"):
+            await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
 
     @pytest.mark.asyncio
     async def test_groq_key_forwarded_for_non_ollama_model(self, monkeypatch):

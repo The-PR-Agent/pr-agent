@@ -14,6 +14,7 @@ from pr_agent.algo.utils import ModelType, clip_tokens, load_yaml, get_max_token
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import BitbucketServerProvider, GithubProvider, get_git_provider_with_context
 from pr_agent.log import get_logger
+from pr_agent.tools.registry import ToolRegistry
 
 
 def extract_header(snippet):
@@ -29,6 +30,7 @@ def extract_header(snippet):
         res = f"#{highest_header.lower().replace(' ', '-')}"
     return res
 
+@ToolRegistry.register("help")
 class PRHelpMessage:
     def __init__(self, pr_url: str, args=None, ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler, return_as_string=False):
         self.git_provider = get_git_provider_with_context(pr_url)
@@ -51,7 +53,7 @@ class PRHelpMessage:
             environment = Environment(undefined=StrictUndefined)
             system_prompt = environment.from_string(get_settings().pr_help_prompts.system).render(variables)
             user_prompt = environment.from_string(get_settings().pr_help_prompts.user).render(variables)
-            response, finish_reason = await self.ai_handler.chat_completion(
+            response, finish_reason, _ = await self.ai_handler.chat_completion(
                 model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
             return response
         except Exception as e:

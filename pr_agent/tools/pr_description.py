@@ -447,7 +447,7 @@ class PRDescription(PRTool):
         system_prompt = environment.from_string(get_settings().get(prompt, {}).get("system", "")).render(self.variables)
         user_prompt = environment.from_string(get_settings().get(prompt, {}).get("user", "")).render(self.variables)
 
-        response, finish_reason = await self.ai_handler.chat_completion(
+        response, finish_reason, _ = await self.ai_handler.chat_completion(
             model=model,
             temperature=get_settings().config.temperature,
             system=system_prompt,

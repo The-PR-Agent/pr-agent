@@ -17,6 +17,7 @@ from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
+from pr_agent.tools.registry import ToolRegistry
 
 
 #Common code that can be called from similar tools:
@@ -274,7 +275,7 @@ class PredictionPreparator:
             get_logger().error("ai handler not set. Cannot invoke model!")
             raise ValueError("PredictionPreparator not initialized")
         try:
-            response, finish_reason = await self.ai_handler.chat_completion(
+            response, finish_reason, _ = await self.ai_handler.chat_completion(
                 model=model, temperature=get_settings().config.temperature, system=self.system_prompt, user=self.user_prompt)
             return response
         except Exception as e:
@@ -282,6 +283,7 @@ class PredictionPreparator:
             raise e
 
 
+@ToolRegistry.register("help_docs")
 class PRHelpDocs(object):
     def __init__(self, ctx_url, ai_handler:partial[BaseAiHandler,] = LiteLLMAIHandler, args: tuple[str]=None, return_as_string: bool=False):
         try:

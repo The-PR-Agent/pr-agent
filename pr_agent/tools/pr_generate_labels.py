@@ -14,8 +14,10 @@ from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.git_provider import get_main_pr_language
 from pr_agent.log import get_logger
+from pr_agent.tools.registry import ToolRegistry
 
 
+@ToolRegistry.register("generate_labels")
 class PRGenerateLabels:
     def __init__(self, pr_url: str, args: list = None,
                  ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
@@ -141,7 +143,7 @@ class PRGenerateLabels:
         system_prompt = environment.from_string(get_settings().pr_custom_labels_prompt.system).render(self.variables)
         user_prompt = environment.from_string(get_settings().pr_custom_labels_prompt.user).render(self.variables)
 
-        response, finish_reason = await self.ai_handler.chat_completion(
+        response, finish_reason, _ = await self.ai_handler.chat_completion(
             model=model,
             temperature=get_settings().config.temperature,
             system=system_prompt,

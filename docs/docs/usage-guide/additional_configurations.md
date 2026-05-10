@@ -6,11 +6,12 @@ Configure your MCP server in the `[mcp]` section of your `.pr_agent.toml`:
 
 ```toml
 [mcp]
+enabled = true
 command = "node"  # Command to run the MCP server
 args = ["/path/to/your/mcp-server/dist/index.js"]
 ```
 
-Once configured, PR-Agent will automatically discover the tools provided by the MCP server and make them available to the LLM during the review process.
+Once enabled, PR-Agent will automatically discover the tools provided by the MCP server and make them available to the LLM during the review process. MCP support requires the optional `mcp` Python package to be installed in the PR-Agent runtime environment.
 
 ## Custom HTTP Headers for AI Models
 

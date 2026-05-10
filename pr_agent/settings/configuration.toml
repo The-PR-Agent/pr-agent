@@ -325,6 +325,11 @@ failure_callback = []
 service_callback = []
 # model_id = "" # Optional: Custom inference profile ID for Amazon Bedrock
 
+[mcp]
+enabled = false
+command = ""
+args = []
+
 [pr_similar_issue]
 skip_comments = false
 force_update_dataset = false
