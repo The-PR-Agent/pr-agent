@@ -3,7 +3,10 @@ import os
 import textwrap
 from pathlib import Path
 
-from pr_agent.algo.skills_loader import (Skill, _parse_skill_file,
+from jinja2 import Environment, StrictUndefined
+
+from pr_agent.algo.skills_loader import (Skill, SkillResource,
+                                         _parse_skill_file,
                                          discover_skills,
                                          format_skills_context,
                                          get_skills_context)
@@ -180,3 +183,136 @@ class TestGetSkillsContext:
         out = get_skills_context()
         assert "Skill: demo" in out
         assert "check the thing" in out
+
+    def test_invalid_max_tokens_falls_back_to_default(self, tmp_path):
+        _write_skill(tmp_path, "demo", body="check the thing")
+        from pr_agent.config_loader import get_settings
+        get_settings().set("skills", {"enabled": True, "paths": [str(tmp_path)],
+                                       "max_skills_tokens": "not-a-number"})
+        # Should not raise; should still produce skills_context using the default budget.
+        out = get_skills_context()
+        assert "Skill: demo" in out
+
+
+class TestJinjaSafety:
+    """Skills bodies often contain {{ }} or {% %} (Helm/Ansible/Terraform).
+
+    Confirm that Jinja2 substitution is single-pass: the rendered template
+    contains the literal characters from the substituted variable, not a
+    re-evaluation of them.
+    """
+
+    def test_jinja_syntax_in_skill_body_renders_as_literal(self, tmp_path):
+        body = "Use {{ unknown_var }} and {% if foo %}bar{% endif %} here."
+        _write_skill(tmp_path, "helm", body=body)
+        skills = discover_skills([str(tmp_path)])
+        out = format_skills_context(skills, max_tokens=4000)
+
+        # Mirror the prompt-template injection site: a guarded {{ skills_context }}.
+        template = "before\n{%- if skills_context %}{{ skills_context }}{% endif %}\nafter"
+        env = Environment(undefined=StrictUndefined)
+        rendered = env.from_string(template).render(skills_context=out)
+
+        assert "{{ unknown_var }}" in rendered
+        assert "{% if foo %}" in rendered
+
+
+class TestPathExpansion:
+    def test_env_var_in_path_is_expanded(self, tmp_path, monkeypatch):
+        _write_skill(tmp_path, "envtest")
+        monkeypatch.setenv("SKILLS_TEST_DIR", str(tmp_path))
+        skills = discover_skills(["$SKILLS_TEST_DIR"])
+        assert [s.name for s in skills] == ["envtest"]
+
+    def test_tilde_in_path_is_expanded(self, tmp_path, monkeypatch):
+        _write_skill(tmp_path, "homestest")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        skills = discover_skills(["~"])
+        assert [s.name for s in skills] == ["homestest"]
+
+
+class TestResourceGathering:
+    def test_sibling_md_file_is_inlined_as_resource(self, tmp_path):
+        _write_skill(tmp_path, "withrefs", body="main body")
+        skill_dir = tmp_path / "withrefs"
+        (skill_dir / "examples.md").write_text("# Examples\n- one\n- two\n")
+
+        skills = discover_skills([str(tmp_path)])
+        assert len(skills) == 1
+        names = [r.relative_path for r in skills[0].resources]
+        assert names == ["examples.md"]
+        assert "- one" in skills[0].resources[0].content
+
+    def test_references_subdirectory_is_inlined(self, tmp_path):
+        _write_skill(tmp_path, "withdir")
+        refs = tmp_path / "withdir" / "references"
+        refs.mkdir()
+        (refs / "guide.md").write_text("guide content")
+        (refs / "deep" / "nested").mkdir(parents=True)
+        (refs / "deep" / "nested" / "more.md").write_text("deeper content")
+
+        skills = discover_skills([str(tmp_path)])
+        rels = sorted(r.relative_path for r in skills[0].resources)
+        # Use os.sep-agnostic comparison
+        rels_normalised = [r.replace(os.sep, "/") for r in rels]
+        assert rels_normalised == ["references/deep/nested/more.md", "references/guide.md"]
+
+    def test_scripts_and_assets_directories_are_excluded(self, tmp_path):
+        _write_skill(tmp_path, "secure")
+        skill_dir = tmp_path / "secure"
+        (skill_dir / "scripts").mkdir()
+        (skill_dir / "scripts" / "run.py").write_text("print('hi')")
+        (skill_dir / "scripts" / "notes.md").write_text("script notes (should be excluded)")
+        (skill_dir / "assets").mkdir()
+        (skill_dir / "assets" / "data.md").write_text("asset data (should be excluded)")
+        (skill_dir / "assets" / "img.svg").write_text("<svg/>")
+
+        skills = discover_skills([str(tmp_path)])
+        rels = [r.relative_path for r in skills[0].resources]
+        assert rels == []
+
+    def test_nested_skill_directory_is_treated_independently(self, tmp_path):
+        _write_skill(tmp_path, "outer", body="outer body")
+        # Nested skill inside the outer skill's directory.
+        inner_dir = tmp_path / "outer" / "inner"
+        inner_dir.mkdir()
+        (inner_dir / "SKILL.md").write_text(textwrap.dedent("""\
+            ---
+            name: inner
+            description: Use when inner.
+            ---
+
+            inner body
+            """))
+        # An additional .md right next to the inner SKILL.md should belong to inner only.
+        (inner_dir / "extra.md").write_text("extra inner content")
+
+        skills = discover_skills([str(tmp_path)])
+        by_name = {s.name: s for s in skills}
+        assert set(by_name) == {"inner", "outer"}
+        # outer must not absorb the inner skill's files
+        outer_rels = [r.relative_path for r in by_name["outer"].resources]
+        assert outer_rels == []
+        # inner picks up only its own sibling
+        inner_rels = [r.relative_path for r in by_name["inner"].resources]
+        assert inner_rels == ["extra.md"]
+
+    def test_format_skills_context_includes_resource_content(self, tmp_path):
+        _write_skill(tmp_path, "doc")
+        (tmp_path / "doc" / "checklist.md").write_text("- item one\n- item two")
+        skills = discover_skills([str(tmp_path)])
+        out = format_skills_context(skills, max_tokens=4000)
+        assert "#### checklist.md" in out
+        assert "- item one" in out
+
+    def test_huge_resource_is_dropped_when_skill_already_consumed_budget(self, tmp_path):
+        # Two skills; the second has a huge resource. Budget fits skill 1 plus
+        # SKILL.md of skill 2 only — so skill 2 is dropped entirely (not partially).
+        _write_skill(tmp_path, "first", body="first body")
+        _write_skill(tmp_path, "second", body="second body")
+        (tmp_path / "second" / "huge.md").write_text("z" * 50_000)
+
+        skills = discover_skills([str(tmp_path)])
+        out = format_skills_context(skills, max_tokens=200)  # 800-char budget
+        assert "Skill: first" in out
+        assert "Skill: second" not in out
