@@ -67,7 +67,7 @@ Organizational standards and review skills (apply the ones relevant to this PR):
 ======
 {{ skills_context }}
 ======
-{% endif %}
+{%- endif %}
 
 {%- if extra_instructions %}
 

@@ -42,17 +42,19 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 import yaml
+from starlette_context import context
 
+from pr_agent.algo.token_handler import TokenEncoder
+from pr_agent.algo.utils import clip_tokens
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
-# Approximate characters-per-token used to keep the skills block under budget.
-_CHARS_PER_TOKEN = 4
 _FRONTMATTER_DELIMITER = "---"
 _DEFAULT_MAX_SKILLS_TOKENS = 8000
 # Subdirectories whose contents are intentionally excluded from inlining,
 # matching the agent-skills standard's executable/binary conventions.
 _EXCLUDED_RESOURCE_DIRS = frozenset({"scripts", "assets"})
+_CONTEXT_CACHE_KEY = "skills_context"
 
 
 @dataclass(frozen=True)
@@ -67,8 +69,11 @@ class Skill:
     name: str
     description: str
     body: str
-    path: str
     resources: Tuple[SkillResource, ...] = field(default_factory=tuple)
+
+
+def _count_tokens(text: str) -> int:
+    return len(TokenEncoder.get_token_encoder().encode(text))
 
 
 def _gather_resources(skill_md_path: str) -> Tuple[SkillResource, ...]:
@@ -82,13 +87,11 @@ def _gather_resources(skill_md_path: str) -> Tuple[SkillResource, ...]:
     resources: List[SkillResource] = []
 
     for root, dirs, files in os.walk(skill_dir):
-        # Prune executable / binary subtrees per the agent-skills convention.
         dirs[:] = [d for d in dirs if d not in _EXCLUDED_RESOURCE_DIRS]
-        # A nested skill directory is independent; do not absorb its files.
         if root != skill_dir and "SKILL.md" in files:
             dirs[:] = []
             continue
-        for filename in sorted(files):
+        for filename in files:
             if not filename.endswith(".md"):
                 continue
             if root == skill_dir and filename == "SKILL.md":
@@ -155,7 +158,6 @@ def _parse_skill_file(file_path: str) -> Optional[Skill]:
         name=name.strip(),
         description=description.strip(),
         body=body,
-        path=file_path,
         resources=_gather_resources(file_path),
     )
 
@@ -218,49 +220,75 @@ def _format_skill(skill: Skill) -> str:
 def format_skills_context(skills: List[Skill], max_tokens: int) -> str:
     """Format skills into a prompt-ready string under a token budget.
 
-    Skills are emitted in order; once the running character count would exceed
-    the budget (estimated as ``max_tokens * 4`` characters), remaining skills
-    are dropped. If even the first skill exceeds the budget, its formatted text
-    is truncated and a marker appended. Returns an empty string when nothing fits.
+    Skills are emitted in order; once the running token count would exceed the
+    budget, remaining skills are dropped. If the first skill alone exceeds the
+    budget, its formatted text is clipped via ``clip_tokens`` and a marker is
+    appended. Returns an empty string when nothing fits.
     """
     if not skills:
         return ""
     if max_tokens is None or max_tokens <= 0:
         return ""
 
-    char_budget = max_tokens * _CHARS_PER_TOKEN
     truncate_marker = "\n\n[truncated]"
     separator = "\n\n---\n\n"
+    sep_tokens = _count_tokens(separator)
+    marker_tokens = _count_tokens(truncate_marker)
     pieces: List[str] = []
     used = 0
     for skill in skills:
         formatted = _format_skill(skill)
-        addition_len = (len(separator) if pieces else 0) + len(formatted)
-        if used + addition_len > char_budget:
+        tokens = _count_tokens(formatted)
+        addition = (sep_tokens if pieces else 0) + tokens
+        if used + addition > max_tokens:
             if not pieces:
-                available = max(0, char_budget - len(truncate_marker))
-                pieces.append(formatted[:available] + truncate_marker)
+                budget = max(1, max_tokens - marker_tokens)
+                truncated = clip_tokens(formatted, budget, add_three_dots=False)
+                pieces.append(truncated + truncate_marker)
+                if len(skills) > 1:
+                    get_logger().info(
+                        f"First skill exceeded budget; truncated and dropped {len(skills) - 1} skill(s)"
+                    )
             else:
                 get_logger().info(
                     f"Skills context budget reached; dropping {len(skills) - len(pieces)} skill(s)"
                 )
             break
         pieces.append(formatted)
-        used += addition_len
+        used += addition
 
     return separator.join(pieces).strip()
+
+
+def _get_cached_context() -> Optional[str]:
+    try:
+        return context.get(_CONTEXT_CACHE_KEY, None)
+    except Exception:
+        return None
+
+
+def _set_cached_context(value: str) -> None:
+    try:
+        context[_CONTEXT_CACHE_KEY] = value
+    except Exception:
+        pass
 
 
 def get_skills_context() -> str:
     """Read settings, discover skills, and format them for prompt injection.
 
-    Returns ``''`` when skills are disabled, no paths are configured, or no
-    skills are found. The only swallowed error is a non-numeric override of
-    ``skills.max_skills_tokens``; everything else surfaces normally so genuine
-    bugs are not masked.
+    Memoised per request via ``starlette_context`` so the three tools that
+    inject ``skills_context`` (review, improve, describe) share a single
+    discovery + parse + format. Returns ``''`` when skills are disabled, no
+    paths are configured, or no skills are found.
     """
+    cached = _get_cached_context()
+    if cached is not None:
+        return cached
+
     settings = get_settings()
     if not settings.skills.enabled:
+        _set_cached_context("")
         return ""
     paths = list(settings.skills.paths or [])
     raw_max = settings.skills.max_skills_tokens
@@ -272,6 +300,6 @@ def get_skills_context() -> str:
         )
         max_tokens = _DEFAULT_MAX_SKILLS_TOKENS
     skills = discover_skills(paths)
-    if not skills:
-        return ""
-    return format_skills_context(skills, max_tokens)
+    out = format_skills_context(skills, max_tokens) if skills else ""
+    _set_cached_context(out)
+    return out

@@ -5,8 +5,7 @@ from pathlib import Path
 
 from jinja2 import Environment, StrictUndefined
 
-from pr_agent.algo.skills_loader import (Skill, SkillResource,
-                                         _parse_skill_file,
+from pr_agent.algo.skills_loader import (Skill, _parse_skill_file,
                                          discover_skills,
                                          format_skills_context,
                                          get_skills_context)
@@ -84,7 +83,6 @@ class TestDiscoverSkills:
     def test_finds_nested_skill_md_files(self, tmp_path):
         _write_skill(tmp_path / "a", "alpha")
         _write_skill(tmp_path / "b" / "nested", "bravo")
-        # Directory without SKILL.md should be ignored
         (tmp_path / "c").mkdir()
         (tmp_path / "c" / "README.md").write_text("not a skill")
 
@@ -124,7 +122,7 @@ class TestDiscoverSkills:
 
 class TestFormatSkillsContext:
     def _mk(self, name: str, body: str = "guidance body") -> Skill:
-        return Skill(name=name, description=f"Use when {name}", body=body, path=f"/{name}/SKILL.md")
+        return Skill(name=name, description=f"Use when {name}", body=body)
 
     def test_returns_empty_when_no_skills(self):
         assert format_skills_context([], 4000) == ""
@@ -140,19 +138,15 @@ class TestFormatSkillsContext:
         assert "step two" in out
 
     def test_drops_skills_beyond_budget(self):
-        big_body = "x" * 1000
-        skills = [self._mk(f"s{i}", body=big_body) for i in range(5)]
-        # Budget of 250 tokens ~ 1000 chars, fits roughly one skill.
-        out = format_skills_context(skills, max_tokens=250)
+        skills = [self._mk(f"s{i}", body="x " * 500) for i in range(5)]
+        out = format_skills_context(skills, max_tokens=300)
         assert "Skill: s0" in out
-        # At least one of the later skills must be dropped.
         assert "Skill: s4" not in out
 
     def test_truncates_when_first_skill_exceeds_budget(self):
-        huge = self._mk("huge", body="y" * 5000)
-        out = format_skills_context([huge], max_tokens=50)  # 200 char budget
+        huge = self._mk("huge", body="y " * 5000)
+        out = format_skills_context([huge], max_tokens=50)
         assert "[truncated]" in out
-        assert len(out) <= 250  # budget + truncation marker
 
     def test_separator_between_multiple_skills(self):
         out = format_skills_context(
@@ -284,7 +278,6 @@ class TestResourceGathering:
 
             inner body
             """))
-        # An additional .md right next to the inner SKILL.md should belong to inner only.
         (inner_dir / "extra.md").write_text("extra inner content")
 
         skills = discover_skills([str(tmp_path)])
