@@ -328,6 +328,23 @@ class TestResourceGathering:
         assert "#### checklist.md" in out
         assert "- item one" in out
 
+    def test_non_utf8_skill_md_is_skipped_without_crashing(self, tmp_path):
+        bad = tmp_path / "broken"
+        bad.mkdir()
+        (bad / "SKILL.md").write_bytes(b"---\nname: x\ndescription: y\n---\n\n\xff\xfe invalid utf-8")
+        _write_skill(tmp_path, "good")
+        skills = discover_skills([str(tmp_path)])
+        assert [s.name for s in skills] == ["good"]
+
+    def test_non_utf8_resource_file_is_skipped_without_crashing(self, tmp_path):
+        _write_skill(tmp_path, "mixed")
+        (tmp_path / "mixed" / "good.md").write_text("readable content")
+        (tmp_path / "mixed" / "bad.md").write_bytes(b"\xff\xfe binary garbage")
+        skills = discover_skills([str(tmp_path)])
+        rels = [r.relative_path for r in skills[0].resources]
+        assert "good.md" in rels
+        assert "bad.md" not in rels
+
     def test_oversized_resource_file_is_skipped(self, tmp_path, caplog):
         _write_skill(tmp_path, "huge-res")
         huge = tmp_path / "huge-res" / "huge.md"

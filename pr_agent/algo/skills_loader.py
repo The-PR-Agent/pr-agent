@@ -114,7 +114,7 @@ def _gather_resources(skill_md_path: str) -> Tuple[SkillResource, ...]:
             try:
                 with open(full, "r", encoding="utf-8") as fh:
                     content = fh.read()
-            except OSError as e:
+            except (OSError, UnicodeDecodeError) as e:
                 get_logger().warning(f"Skill resource unreadable: {full} ({e})")
                 continue
             rel = os.path.relpath(full, skill_dir)
@@ -129,7 +129,7 @@ def _parse_skill_file(file_path: str) -> Optional[Skill]:
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             content = f.read()
-    except OSError as e:
+    except (OSError, UnicodeDecodeError) as e:
         get_logger().warning(f"Skill file unreadable: {file_path} ({e})")
         return None
 
