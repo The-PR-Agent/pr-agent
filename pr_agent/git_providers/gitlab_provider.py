@@ -796,6 +796,17 @@ class GitLabProvider(GitProvider):
         except Exception:
             return ""
 
+    def get_repo_file_content(self, file_path: str):
+        try:
+            project = self.gl.projects.get(self.id_project)
+            contents = project.files.get(file_path=file_path, ref=project.default_branch).decode()
+            return decode_if_bytes(contents)
+        except GitlabGetError:
+            return ""
+        except Exception as e:
+            get_logger().warning(f"Failed to load repo file: {file_path}, error: {e}")
+            return ""
+
     def get_workspace_name(self):
         return self.id_project.split('/')[0]
 
