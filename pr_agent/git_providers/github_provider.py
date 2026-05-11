@@ -756,7 +756,18 @@ class GithubProvider(GitProvider):
         try:
             contents = self.repo_obj.get_contents(".pr_agent.toml").decoded_content
             return contents
-        except Exception:
+        except Exception as e:
+            get_logger().warning(f"Failed to load .pr_agent.toml file, error: {e}")
+            return ""
+
+    def get_repo_file_content(self, file_path: str):
+        try:
+            contents = self.repo_obj.get_contents(file_path).decoded_content
+            if isinstance(contents, bytes):
+                return contents.decode("utf-8", errors="replace")
+            return contents
+        except Exception as e:
+            get_logger().warning(f"Failed to load repo file: {file_path}, error: {e}")
             return ""
 
     def get_workspace_name(self):
