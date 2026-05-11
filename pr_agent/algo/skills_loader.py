@@ -55,6 +55,10 @@ _DEFAULT_MAX_SKILLS_TOKENS = 8000
 # matching the agent-skills standard's executable/binary conventions.
 _EXCLUDED_RESOURCE_DIRS = frozenset({"scripts", "assets"})
 _CONTEXT_CACHE_KEY = "skills_context"
+# Per-resource-file size cap. Defence-in-depth against pathological skill
+# directories (large markdown dumps, accidental inclusion of generated docs,
+# or a misconfigured paths entry pointing at a directory with huge files).
+_MAX_RESOURCE_FILE_BYTES = 256 * 1024
 
 
 @dataclass(frozen=True)
@@ -97,6 +101,16 @@ def _gather_resources(skill_md_path: str) -> Tuple[SkillResource, ...]:
             if root == skill_dir and filename == "SKILL.md":
                 continue
             full = os.path.join(root, filename)
+            try:
+                size = os.path.getsize(full)
+            except OSError as e:
+                get_logger().warning(f"Skill resource unreadable: {full} ({e})")
+                continue
+            if size > _MAX_RESOURCE_FILE_BYTES:
+                get_logger().warning(
+                    f"Skill resource skipped (exceeds {_MAX_RESOURCE_FILE_BYTES} bytes): {full} ({size} bytes)"
+                )
+                continue
             try:
                 with open(full, "r", encoding="utf-8") as fh:
                     content = fh.read()

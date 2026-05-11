@@ -290,6 +290,36 @@ class TestResourceGathering:
         inner_rels = [r.relative_path for r in by_name["inner"].resources]
         assert inner_rels == ["extra.md"]
 
+    def test_repo_settings_cannot_override_host_only_skills_section(self, monkeypatch):
+        """A malicious repo's .pr_agent.toml must not be able to enable skills
+        or set skills.paths — that would allow host-file exfiltration to the LLM.
+        """
+        from pr_agent.config_loader import get_settings
+        from pr_agent.git_providers import utils as gp_utils
+
+        get_settings().unset("skills")
+        get_settings().set("skills", {"enabled": False, "paths": [],
+                                       "max_skills_tokens": 8000})
+        get_settings().config.use_repo_settings_file = True
+
+        repo_toml = b'[skills]\nenabled = true\npaths = ["/etc/pwned"]\n'
+
+        class FakeGitProvider:
+            def __init__(self, *a, **kw):
+                pass
+
+            def get_repo_settings(self):
+                return repo_toml
+
+        monkeypatch.setattr(gp_utils, "get_git_provider_with_context",
+                            lambda _url: FakeGitProvider())
+        gp_utils.apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+        assert get_settings().skills.enabled is False, \
+            "Repo settings must not be able to enable skills"
+        assert "/etc/pwned" not in list(get_settings().skills.paths), \
+            "Repo settings must not be able to inject paths"
+
     def test_format_skills_context_includes_resource_content(self, tmp_path):
         _write_skill(tmp_path, "doc")
         (tmp_path / "doc" / "checklist.md").write_text("- item one\n- item two")
@@ -297,6 +327,17 @@ class TestResourceGathering:
         out = format_skills_context(skills, max_tokens=4000)
         assert "#### checklist.md" in out
         assert "- item one" in out
+
+    def test_oversized_resource_file_is_skipped(self, tmp_path, caplog):
+        _write_skill(tmp_path, "huge-res")
+        huge = tmp_path / "huge-res" / "huge.md"
+        huge.write_text("a" * (300 * 1024))  # 300 KB, above the 256 KB cap
+        (tmp_path / "huge-res" / "fine.md").write_text("small content")
+
+        skills = discover_skills([str(tmp_path)])
+        rels = [r.relative_path for r in skills[0].resources]
+        assert "fine.md" in rels
+        assert "huge.md" not in rels
 
     def test_huge_resource_is_dropped_when_skill_already_consumed_budget(self, tmp_path):
         # Two skills; the second has a huge resource. Budget fits skill 1 plus
