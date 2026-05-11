@@ -1,21 +1,55 @@
 from html import escape
 
 from pr_agent.config_loader import get_settings
+from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.log import get_logger
+
+TRUNCATION_MARKER = "...(truncated)..."
+INSTRUCTION_FILES_INTRO = (
+    "You are being given instruction files. Follow them as project-specific guidance when reviewing code."
+)
+MARKDOWN_FENCE = "`````"
+REPO_CONTEXT_CACHE_ATTRIBUTE = "_repo_context_cache"
+_repo_context_process_cache = {}
+_unsupported_repo_context_provider_classes = set()
+
+
+def _get_markdown_fence(content: str) -> str:
+    fence = MARKDOWN_FENCE
+    while fence in content:
+        fence += "`"
+    return fence
+
+
+def _get_repo_context_cache_key(context_files: list, max_lines: int) -> tuple[tuple[tuple[str, str], ...], int]:
+    return tuple((type(file_path).__name__, str(file_path)) for file_path in context_files), max_lines
+
+
+def _get_repo_context_process_cache_key(git_provider, context_files: list, max_lines: int) -> tuple | None:
+    try:
+        pr_url = git_provider.get_pr_url()
+    except Exception:
+        pr_url = getattr(git_provider, "pr_url", None)
+
+    if not pr_url:
+        return None
+
+    return type(git_provider).__name__, pr_url, _get_repo_context_cache_key(context_files, max_lines)
 
 
 def render_instruction_files(files: dict[str, str]) -> str:
     parts = [
-        "You are being given instruction files. Follow them as project-specific guidance when reviewing code.",
+        INSTRUCTION_FILES_INTRO,
         "<instruction_files>",
     ]
 
     for path, content in files.items():
         scope = path.rsplit("/", 1)[0] if "/" in path else "repo-root"
+        fence = _get_markdown_fence(content)
         parts.append(f'<file path="{escape(path, quote=True)}" scope="{escape(scope, quote=True)}">')
-        parts.append("`````markdown")
+        parts.append(f"{fence}markdown")
         parts.append(content.rstrip())
-        parts.append("`````")
+        parts.append(fence)
         parts.append("</file>")
         parts.append("")
 
@@ -23,9 +57,74 @@ def render_instruction_files(files: dict[str, str]) -> str:
     return "\n".join(parts)
 
 
+def render_instruction_files_with_line_budget(files: dict[str, str], max_lines: int) -> str:
+    parts = [
+        INSTRUCTION_FILES_INTRO,
+        "<instruction_files>",
+    ]
+    closing_tag = "</instruction_files>"
+    if max_lines < len(parts) + 1:
+        return ""
+
+    for path, content in files.items():
+        scope = path.rsplit("/", 1)[0] if "/" in path else "repo-root"
+        fence = _get_markdown_fence(content)
+        file_header = [
+            f'<file path="{escape(path, quote=True)}" scope="{escape(scope, quote=True)}">',
+            f"{fence}markdown",
+        ]
+        file_footer = [
+            fence,
+            "</file>",
+            "",
+        ]
+        content_lines = content.rstrip().splitlines()
+        reserved_file_and_closing_lines = len(file_header) + len(file_footer) + 1
+        available_content_lines = max_lines - len(parts) - reserved_file_and_closing_lines
+        if available_content_lines < 0 or (content_lines and available_content_lines < 1):
+            break
+
+        parts.extend(file_header)
+        if available_content_lines >= len(content_lines):
+            parts.extend(content_lines)
+        else:
+            if available_content_lines > 1:
+                parts.extend(content_lines[: available_content_lines - 1])
+            parts.append(TRUNCATION_MARKER)
+            parts.extend(file_footer)
+            break
+
+        parts.extend(file_footer)
+
+    parts.append(closing_tag)
+    return "\n".join(parts).strip()
+
+
 def build_repo_context(git_provider) -> str:
     context_files = get_settings().config.get("repo_context_files", [])
     if not context_files:
+        return ""
+    if isinstance(context_files, str):
+        get_logger().warning(
+            "repo_context_files should be a list of file paths; treating string value as one file path",
+            artifact={"repo_context_files": context_files},
+        )
+        context_files = [context_files]
+    elif not isinstance(context_files, list):
+        get_logger().warning(
+            "repo_context_files should be a list of file paths; skipping repo context",
+            artifact={"repo_context_files": context_files},
+        )
+        return ""
+
+    provider_class = type(git_provider)
+    if provider_class.get_repo_file_content is GitProvider.get_repo_file_content:
+        if provider_class not in _unsupported_repo_context_provider_classes:
+            _unsupported_repo_context_provider_classes.add(provider_class)
+            get_logger().warning(
+                f"repo_context_files is configured, but {provider_class.__name__} does not support repository "
+                "file fetching; skipping repo context"
+            )
         return ""
 
     max_lines = get_settings().config.get("repo_context_max_lines", 500)
@@ -34,7 +133,20 @@ def build_repo_context(git_provider) -> str:
     except (TypeError, ValueError):
         max_lines = 500
 
+    cache_key = _get_repo_context_cache_key(context_files, max_lines)
+    process_cache_key = _get_repo_context_process_cache_key(git_provider, context_files, max_lines)
+    if process_cache_key is not None and process_cache_key in _repo_context_process_cache:
+        return _repo_context_process_cache[process_cache_key]
+
+    repo_context_cache = getattr(git_provider, REPO_CONTEXT_CACHE_ATTRIBUTE, None)
+    if repo_context_cache is None:
+        repo_context_cache = {}
+        setattr(git_provider, REPO_CONTEXT_CACHE_ATTRIBUTE, repo_context_cache)
+    if cache_key in repo_context_cache:
+        return repo_context_cache[cache_key]
+
     files = {}
+    had_fetch_error = False
     for file_path in context_files:
         if not isinstance(file_path, str) or not file_path.strip():
             get_logger().warning("Skipping invalid repo context file path", artifact={"file_path": file_path})
@@ -44,6 +156,7 @@ def build_repo_context(git_provider) -> str:
         try:
             content = git_provider.get_repo_file_content(file_path)
         except Exception as e:
+            had_fetch_error = True
             get_logger().warning(f"Failed to load repo context file: {file_path}", artifact={"error": str(e)})
             continue
 
@@ -56,9 +169,17 @@ def build_repo_context(git_provider) -> str:
 
         files[file_path] = str(content).rstrip()
 
-    if not files:
+    if not files and had_fetch_error:
         return ""
 
-    rendered_lines = render_instruction_files(files).splitlines()
+    if not files:
+        repo_context_cache[cache_key] = ""
+        if process_cache_key:
+            _repo_context_process_cache[process_cache_key] = ""
+        return ""
 
-    return "\n".join(rendered_lines[:max_lines]).strip()
+    repo_context = render_instruction_files_with_line_budget(files, max_lines)
+    repo_context_cache[cache_key] = repo_context
+    if process_cache_key:
+        _repo_context_process_cache[process_cache_key] = repo_context
+    return repo_context
