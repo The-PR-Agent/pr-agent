@@ -269,6 +269,11 @@ push_commands = [
 ]
 # Configure SSL validation for GitLab. Can be either set to the path of a custom CA or disabled entirely.
 # ssl_verify = true
+# Auto-trigger commands when the bot is assigned as a reviewer on an MR
+handle_reviewer_assignment = false
+reviewer_commands = [
+    "/review",
+]
 
 [gitea]
 url = "https://gitea.com"
