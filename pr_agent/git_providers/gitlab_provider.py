@@ -955,22 +955,47 @@ class GitLabProvider(GitProvider):
         return ""
     #Clone related
     def _prepare_clone_url_with_token(self, repo_url_to_clone: str) -> str | None:
-        if "gitlab." not in repo_url_to_clone:
-            get_logger().error(f"Repo URL: {repo_url_to_clone} is not a valid gitlab URL.")
-            return None
-        (scheme, base_url) = repo_url_to_clone.split("gitlab.")
         access_token = getattr(self.gl, 'oauth_token', None) or getattr(self.gl, 'private_token', None)
-        if not all([scheme, access_token, base_url]):
-            get_logger().error(f"Either no access token found, or repo URL: {repo_url_to_clone} "
-                               f"is missing prefix: {scheme} and/or base URL: {base_url}.")
+        if not access_token:
+            return self._log_missing_clone_token()
+
+        # Note: GitLab instances are not always hosted under a gitlab.* domain.
+        # Build a clone URL that works with any host (e.g., gitlab.example.com).
+        if repo_url_to_clone.startswith(("http://", "https://")):
+            try:
+                parsed = urlparse(repo_url_to_clone)
+                if not parsed.scheme or not parsed.netloc:
+                    raise ValueError("missing scheme or host")
+                netloc = parsed.netloc.split("@")[-1]
+                return f"{parsed.scheme}://oauth2:{access_token}@{netloc}{parsed.path}"
+            except Exception as e:
+                get_logger().error(
+                    f"Repo URL: {repo_url_to_clone} could not be parsed for clone.",
+                    artifact={"error": str(e)},
+                )
+                return None
+
+        # Fallback for non-HTTP URLs (e.g., ssh or scp-style).
+        try:
+            if "@" in repo_url_to_clone and ":" in repo_url_to_clone and not repo_url_to_clone.startswith("ssh://"):
+                # Handle SCP-like URLs: git@gitlab.com:group/repo.git
+                repo_url_to_clone = "ssh://" + repo_url_to_clone.replace(":", "/", 1)
+
+            parsed = urlparse(repo_url_to_clone)
+            if not parsed.netloc:
+                raise ValueError("missing host")
+
+            netloc = parsed.netloc.split("@")[-1]
+            scheme = parsed.scheme if parsed.scheme else "https"
+            return f"{scheme}://oauth2:{access_token}@{netloc}{parsed.path}"
+        except Exception as e:
+            get_logger().error(
+                f"Repo URL: {repo_url_to_clone} could not be parsed for clone.",
+                artifact={"error": str(e)},
+            )
             return None
 
-        #Note that the ""official"" method found here:
-        # https://docs.gitlab.com/user/profile/personal_access_tokens/#clone-repository-using-personal-access-token
-        # requires a username, which may not be applicable.
-        # The following solution is taken from: https://stackoverflow.com/questions/25409700/using-gitlab-token-to-clone-without-authentication/35003812#35003812
-        # For example: For repo url: https://gitlab.codium-inc.com/qodo/autoscraper.git
-        # Then to clone one will issue: 'git clone https://oauth2:<access token>@gitlab.codium-inc.com/qodo/autoscraper.git'
-
-        clone_url = f"{scheme}oauth2:{access_token}@gitlab.{base_url}"
-        return clone_url
+    @staticmethod
+    def _log_missing_clone_token() -> None:
+        get_logger().error("No access token found for GitLab clone.")
+        return None

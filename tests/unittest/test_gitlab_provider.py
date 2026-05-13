@@ -35,6 +35,7 @@ class TestGitLabProvider:
             provider = GitLabProvider("https://gitlab.com/test/repo/-/merge_requests/1")
             provider.gl = mock_gitlab_client
             provider.id_project = "test/repo"
+            provider.gl.oauth_token = "fake_token"
             return provider
 
     def test_get_pr_file_content_success(self, gitlab_provider, mock_project):
@@ -192,3 +193,43 @@ class TestGitLabProvider:
         assert first == second == [{"diff": "d"}]
         m_pbp.assert_called_once_with("grp/repo")
         proj.repository_compare.assert_called_once_with("old", "new")
+
+    def test_prepare_clone_url_with_token_gitlab_com(self, gitlab_provider):
+        gitlab_provider.gl.oauth_token = "token123"
+        repo_url = "https://gitlab.com/group/repo.git"
+
+        result = gitlab_provider._prepare_clone_url_with_token(repo_url)
+
+        assert result == "https://oauth2:token123@gitlab.com/group/repo.git"
+
+    def test_prepare_clone_url_with_token_custom_domain(self, gitlab_provider):
+        gitlab_provider.gl.oauth_token = "token123"
+        repo_url = "https://gitlab.example.com/group/repo.git"
+
+        result = gitlab_provider._prepare_clone_url_with_token(repo_url)
+
+        assert result == "https://oauth2:token123@gitlab.example.com/group/repo.git"
+
+    def test_prepare_clone_url_with_token_invalid_url(self, gitlab_provider):
+        gitlab_provider.gl.oauth_token = "token123"
+        repo_url = "gitlab.example.com/group/repo.git"
+
+        result = gitlab_provider._prepare_clone_url_with_token(repo_url)
+
+        assert result is None
+
+    def test_prepare_clone_url_with_token_scp_style(self, gitlab_provider):
+        gitlab_provider.gl.oauth_token = "token123"
+        repo_url = "git@gitlab.example.com:group/repo.git"
+
+        result = gitlab_provider._prepare_clone_url_with_token(repo_url)
+
+        assert result == "ssh://oauth2:token123@gitlab.example.com/group/repo.git"
+
+    def test_prepare_clone_url_with_token_ssh_url(self, gitlab_provider):
+        gitlab_provider.gl.oauth_token = "token123"
+        repo_url = "ssh://git@gitlab.example.com/group/repo.git"
+
+        result = gitlab_provider._prepare_clone_url_with_token(repo_url)
+
+        assert result == "ssh://oauth2:token123@gitlab.example.com/group/repo.git"
