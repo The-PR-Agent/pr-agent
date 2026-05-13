@@ -242,3 +242,36 @@ int sub(int a, int b) {
 '''
         expected_output = {'code_suggestions': [{'relevant_file': 'a.c\n', 'existing_code': '  int sum(int a, int b) {\n    return a + b;\n  }\n\n  int sub(int a, int b) {\n    return a - b;\n  }\n'}]}
         assert try_fix_yaml(review_text, first_key='code_suggestions', last_key='existing_code') == expected_output
+
+    def test_diff_markers_removed_within_list_item(self):
+        """
+            Ensures diff-style '-' markers nested inside list items are normalised so the YAML parses
+            into the expected structure.
+        """
+        review_text = '''\
+code_suggestions:
+- relevant_file: |
+    example.rb
+  existing_code: |
++    puts 'hello'
++    puts 'world'
+- relevant_file: |
+-    example.py
+-  existing_code: |
+-+    print('hello')
+-+    print('world')
+'''
+        expected_output = {
+            'code_suggestions': [
+                {
+                    'relevant_file': 'example.rb\n',
+                    'existing_code': "puts 'hello'\nputs 'world'\n"
+                },
+                {
+                    'relevant_file': 'example.py\n',
+                    'existing_code': "print('hello')\nprint('world')\n"
+                }
+            ]
+        }
+
+        assert try_fix_yaml(review_text, first_key='code_suggestions', last_key='existing_code') == expected_output

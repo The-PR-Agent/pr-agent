@@ -871,6 +871,44 @@ def try_fix_yaml(response_text: str,
     except:
         pass
 
+    # 5.5 fallback - try to normalize diff-style removal markers ('-') within list items
+    response_text_lines_copy = response_text_lines.copy()
+    modified = False
+
+    for i, line in enumerate(response_text_lines_copy):
+        if line.startswith('+'):
+            response_text_lines_copy[i] = ' ' + line[1:]
+            modified = True
+
+    # normalize lines starting with '-'. Distinguish real YAML list items from diff deletions.
+    for i, line in enumerate(response_text_lines_copy):
+        if not line.startswith('-'):
+            continue
+
+        remainder = line[1:]
+        if line.startswith('- '):
+            second_char = remainder[1] if len(remainder) > 1 else ''
+            if second_char and second_char not in (' ', '\t', '+', '-'):
+                continue # real list item → keep as-is
+
+        # treat it as a diff "removed" marker inside block content
+        cleaned = remainder
+        while cleaned and cleaned[0] in ('+', '-'):
+            cleaned = cleaned[1:]
+        if cleaned and cleaned[0] not in (' ', '\t'):
+            cleaned = ' ' + cleaned
+        if cleaned != line:
+            response_text_lines_copy[i] = cleaned
+            modified = True
+    if modified:
+        try:
+            data = yaml.safe_load('\n'.join(response_text_lines_copy))
+            get_logger().info("Successfully parsed AI prediction after normalizing diff removal markers")
+            return data
+        except:
+            pass
+
+
     # sixth fallback - replace tabs with spaces
     if '\t' in response_text:
         response_text_copy = copy.deepcopy(response_text)
