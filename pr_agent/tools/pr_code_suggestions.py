@@ -123,59 +123,82 @@ class PRCodeSuggestions:
                 await self.publish_no_suggestions()
                 return
 
+            # Filter data by suggestions_score_threshold
+            score_threshold = max(1, int(get_settings().pr_code_suggestions.suggestions_score_threshold))
+            data['code_suggestions'] = [
+                d for d in data['code_suggestions']
+                if int(d.get('score', 0)) >= score_threshold
+            ]
+
+            if not data['code_suggestions']:
+                await self.publish_no_suggestions()
+                return
+
             # publish the suggestions
             if get_settings().config.publish_output:
                 # If a temporary comment was published, remove it
                 self.git_provider.remove_initial_comment()
 
-                # Publish table summarized suggestions
-                if ((not get_settings().pr_code_suggestions.commitable_code_suggestions) and
-                        self.git_provider.is_supported("gfm_markdown")):
+                # Logic for Inline Suggestions
+                dual_threshold = int(get_settings().pr_code_suggestions.dual_publishing_score_threshold)
+                if get_settings().pr_code_suggestions.commitable_code_suggestions or dual_threshold > 0:
+                    await self.push_inline_code_suggestions(data)
 
-                    # generate summarized suggestions
-                    pr_body = self.generate_summarized_suggestions(data)
-                    get_logger().debug(f"PR output", artifact=pr_body)
+                # Logic for Table Suggestions
+                if self.git_provider.is_supported("gfm_markdown") and \
+                   (not get_settings().pr_code_suggestions.commitable_code_suggestions or dual_threshold > 0):
 
-                    # require self-review
-                    if get_settings().pr_code_suggestions.demand_code_suggestions_self_review:
-                        pr_body = await self.add_self_review_text(pr_body)
+                    data_for_table = data
+                    # dual publishing mode
+                    if dual_threshold > 0:
+                        data_for_table = {'code_suggestions': []}
+                        for suggestion in data['code_suggestions']:
+                            if int(suggestion.get('score', 0)) >= dual_threshold:
+                                data_for_table['code_suggestions'].append(suggestion)
 
-                    # add usage guide
-                    if (get_settings().pr_code_suggestions.enable_chat_text and get_settings().config.is_auto_command
-                            and isinstance(self.git_provider, GithubProvider)):
-                        pr_body += "\n\n>💡 Need additional feedback ? start a [PR chat](https://chromewebstore.google.com/detail/ephlnjeghhogofkifjloamocljapahnl) \n\n"
-                    if get_settings().pr_code_suggestions.enable_help_text:
-                        pr_body += "<hr>\n\n<details> <summary><strong>💡 Tool usage guide:</strong></summary><hr> \n\n"
-                        pr_body += HelpMessage.get_improve_usage_guide()
-                        pr_body += "\n</details>\n"
+                    if data_for_table['code_suggestions']:
+                        # generate summarized suggestions
+                        pr_body = self.generate_summarized_suggestions(data_for_table)
+                        get_logger().debug(f"PR output", artifact=pr_body)
 
-                    # Output the relevant configurations if enabled
-                    if get_settings().get('config', {}).get('output_relevant_configurations', False):
-                        pr_body += show_relevant_configurations(relevant_section='pr_code_suggestions')
+                        # require self-review
+                        if get_settings().pr_code_suggestions.demand_code_suggestions_self_review:
+                            pr_body = await self.add_self_review_text(pr_body)
 
-                    # publish the PR comment
-                    if get_settings().pr_code_suggestions.persistent_comment: # true by default
-                        self.publish_persistent_comment_with_history(self.git_provider,
-                                                                     pr_body,
-                                                                     initial_header="## PR Code Suggestions ✨",
-                                                                     update_header=True,
-                                                                     name="suggestions",
-                                                                     final_update_message=False,
-                                                                     max_previous_comments=get_settings().pr_code_suggestions.max_history_len,
-                                                                     progress_response=self.progress_response)
+                        # add usage guide
+                        if (get_settings().pr_code_suggestions.enable_chat_text and get_settings().config.is_auto_command
+                                and isinstance(self.git_provider, GithubProvider)):
+                            pr_body += "\n\n>💡 Need additional feedback ? start a [PR chat](https://chromewebstore.google.com/detail/ephlnjeghhogofkifjloamocljapahnl) \n\n"
+                        if get_settings().pr_code_suggestions.enable_help_text:
+                            pr_body += "<hr>\n\n<details> <summary><strong>💡 Tool usage guide:</strong></summary><hr> \n\n"
+                            pr_body += HelpMessage.get_improve_usage_guide()
+                            pr_body += "\n</details>\n"
+
+                        # Output the relevant configurations if enabled
+                        if get_settings().get('config', {}).get('output_relevant_configurations', False):
+                            pr_body += show_relevant_configurations(relevant_section='pr_code_suggestions')
+
+                        # publish the PR comment
+                        if get_settings().pr_code_suggestions.persistent_comment: # true by default
+                            self.publish_persistent_comment_with_history(self.git_provider,
+                                                                         pr_body,
+                                                                         initial_header="## PR Code Suggestions ✨",
+                                                                         update_header=True,
+                                                                         name="suggestions",
+                                                                         final_update_message=False,
+                                                                         max_previous_comments=get_settings().pr_code_suggestions.max_history_len,
+                                                                         progress_response=self.progress_response)
+                        else:
+                            if self.progress_response:
+                                self.git_provider.edit_comment(self.progress_response, body=pr_body)
+                            else:
+                                self.git_provider.publish_comment(pr_body)
                     else:
                         if self.progress_response:
-                            self.git_provider.edit_comment(self.progress_response, body=pr_body)
-                        else:
-                            self.git_provider.publish_comment(pr_body)
-
-                    # dual publishing mode
-                    if int(get_settings().pr_code_suggestions.dual_publishing_score_threshold) > 0:
-                        await self.dual_publishing(data)
+                            self.git_provider.remove_comment(self.progress_response)
                 else:
-                    await self.push_inline_code_suggestions(data)
-                    if self.progress_response:
-                        self.git_provider.remove_comment(self.progress_response)
+                    if self.progress_response and not (get_settings().pr_code_suggestions.commitable_code_suggestions or dual_threshold > 0):
+                         self.git_provider.remove_comment(self.progress_response)
             else:
                 get_logger().info('Code suggestions generated for PR, but not published since publish_output is False.')
                 pr_body = self.generate_summarized_suggestions(data)
