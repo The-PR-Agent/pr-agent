@@ -61,6 +61,8 @@ class GiteaProvider(GitProvider):
         self.file_contents = {}
         self.file_diffs = {}
         self.sha = None
+        self.base_sha = ""
+        self.base_ref = ""
         self.diff_files = []
         self.incremental = IncrementalPR(False)
         self.comments_list = []
@@ -739,24 +741,26 @@ class GiteaProvider(GitProvider):
         return clone_url
 
     def get_repo_file_content(self, file_path: str) -> str:
-        """Get content of a file from the repository at the PR head commit.
+        """Get content of a file from the repository target branch.
 
         This method implements the interface required by PR #2387 repo_context feature.
-        It retrieves file content from the repository at the PR's head commit.
+        It retrieves file content from the PR target when available, falling back to
+        the PR head commit for non-PR contexts.
         """
         try:
             if not self.owner or not self.repo:
                 self.logger.warning(f"Cannot get repo file content: owner or repo not set")
                 return ""
 
-            if not self.sha:
-                self.logger.warning(f"Cannot get repo file content: SHA not set")
+            ref = self.base_sha or self.base_ref or self.sha
+            if not ref:
+                self.logger.warning(f"Cannot get repo file content: ref not set")
                 return ""
 
             content = self.repo_api.get_file_content(
                 owner=self.owner,
                 repo=self.repo,
-                commit_sha=self.sha,
+                commit_sha=ref,
                 filepath=file_path
             )
             return content
