@@ -126,7 +126,6 @@ class PRReviewer:
                 is_incremental = True
         incremental = IncrementalPR(is_incremental)
         return incremental
-    
 
     def _get_review_rules(self) -> str:
         if not get_settings().pr_reviewer.get("enable_review_rules", False):
@@ -311,7 +310,7 @@ class PRReviewer:
 
         # Add help text if gfm_markdown is supported
         if self.git_provider.is_supported("gfm_markdown") and get_settings().pr_reviewer.enable_help_text:
-            markdown_text += "<hr>\n\n<details> <summary><strong>濡絽鍟€?Tool usage guide:</strong></summary><hr> \n\n"
+            markdown_text += "<hr>\n\n<details> <summary><strong>💡 Tool usage guide:</strong></summary><hr> \n\n"
             markdown_text += HelpMessage.get_review_usage_guide()
             markdown_text += "\n</details>\n"
 
