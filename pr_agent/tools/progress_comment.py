@@ -1,7 +1,7 @@
 from pr_agent.config_loader import get_settings
 
 DEFAULT_PROGRESS_GIF_WIDTH = 48
-DEFAULT_PROGRESS_GIF_URL = "https://codium.ai/images/pr_agent/dual_ball_loading-crop.gif"
+DEFAULT_PROGRESS_GIF_URL = "https://www.qodo.ai/images/pr_agent/dual_ball_loading-crop.gif"
 
 
 def get_progress_gif_url() -> str:
