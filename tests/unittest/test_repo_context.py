@@ -269,6 +269,16 @@ def test_render_instruction_files_with_line_budget_returns_empty_when_wrapper_ex
     assert context == ""
 
 
+@pytest.mark.parametrize("max_lines", range(0, 12))
+def test_render_instruction_files_with_line_budget_never_exceeds_configured_budget(max_lines):
+    context = render_instruction_files_with_line_budget({
+        "AGENTS.md": "one\ntwo\nthree",
+        "CONTRIBUTING.md": "four\nfive",
+    }, max_lines=max_lines)
+
+    assert len(context.splitlines()) <= max_lines
+
+
 def test_build_repo_context_returns_empty_when_no_files_configured(repo_context_settings):
     repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", [])
 
