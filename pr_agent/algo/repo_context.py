@@ -1,3 +1,5 @@
+import time
+from collections import OrderedDict
 from html import escape
 
 from pr_agent.config_loader import get_settings
@@ -10,8 +12,44 @@ INSTRUCTION_FILES_INTRO = (
 )
 MARKDOWN_FENCE = "`````"
 REPO_CONTEXT_CACHE_ATTRIBUTE = "_repo_context_cache"
-_repo_context_process_cache = {}
+REPO_CONTEXT_CACHE_MAX_SIZE = 256
+REPO_CONTEXT_CACHE_TTL_SECONDS = 15 * 60
+_REPO_CONTEXT_CACHE_MISS = object()
 _unsupported_repo_context_provider_classes = set()
+
+
+class _RepoContextCache:
+    def __init__(self, max_size: int = REPO_CONTEXT_CACHE_MAX_SIZE, ttl_seconds: int = REPO_CONTEXT_CACHE_TTL_SECONDS):
+        self._max_size = max(1, int(max_size))
+        self._ttl_seconds = max(0, int(ttl_seconds))
+        self._entries = OrderedDict()
+
+    def copy(self):
+        cache = type(self)(max_size=self._max_size, ttl_seconds=self._ttl_seconds)
+        cache._entries = self._entries.copy()
+        return cache
+
+    def get(self, key, default=None):
+        entry = self._entries.get(key)
+        if entry is None:
+            return default
+
+        value, expires_at = entry
+        if expires_at <= time.monotonic():
+            del self._entries[key]
+            return default
+
+        self._entries.move_to_end(key)
+        return value
+
+    def __setitem__(self, key, value):
+        self._entries[key] = (value, time.monotonic() + self._ttl_seconds)
+        self._entries.move_to_end(key)
+        while len(self._entries) > self._max_size:
+            self._entries.popitem(last=False)
+
+
+_repo_context_process_cache = _RepoContextCache()
 
 
 def _get_markdown_fence(content: str) -> str:
@@ -135,15 +173,18 @@ def build_repo_context(git_provider) -> str:
 
     cache_key = _get_repo_context_cache_key(context_files, max_lines)
     process_cache_key = _get_repo_context_process_cache_key(git_provider, context_files, max_lines)
-    if process_cache_key is not None and process_cache_key in _repo_context_process_cache:
-        return _repo_context_process_cache[process_cache_key]
+    if process_cache_key is not None:
+        cached_repo_context = _repo_context_process_cache.get(process_cache_key, _REPO_CONTEXT_CACHE_MISS)
+        if cached_repo_context is not _REPO_CONTEXT_CACHE_MISS:
+            return cached_repo_context
 
     repo_context_cache = getattr(git_provider, REPO_CONTEXT_CACHE_ATTRIBUTE, None)
-    if repo_context_cache is None:
-        repo_context_cache = {}
+    if repo_context_cache is None or not isinstance(repo_context_cache, _RepoContextCache):
+        repo_context_cache = _RepoContextCache()
         setattr(git_provider, REPO_CONTEXT_CACHE_ATTRIBUTE, repo_context_cache)
-    if cache_key in repo_context_cache:
-        return repo_context_cache[cache_key]
+    cached_repo_context = repo_context_cache.get(cache_key, _REPO_CONTEXT_CACHE_MISS)
+    if cached_repo_context is not _REPO_CONTEXT_CACHE_MISS:
+        return cached_repo_context
 
     files = {}
     had_fetch_error = False

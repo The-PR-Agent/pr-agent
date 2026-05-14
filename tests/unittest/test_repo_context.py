@@ -106,6 +106,52 @@ def test_build_repo_context_reuses_process_cache_for_same_pr_url(repo_context_se
     assert second_provider.requested_paths == []
 
 
+def test_build_repo_context_refreshes_process_cache_after_ttl(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["AGENTS.md"])
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 500)
+    first_provider = FakeProvider({"AGENTS.md": "Repo purpose"}, pr_url="https://example.com/org/repo/pull/1")
+    second_provider = FakeProvider({"AGENTS.md": "Changed repo purpose"}, pr_url="https://example.com/org/repo/pull/1")
+
+    with patch("pr_agent.algo.repo_context.time.monotonic", side_effect=[100, 100, 2000, 2000, 2000]):
+        first_context = build_repo_context(first_provider)
+        second_context = build_repo_context(second_provider)
+
+    assert "Repo purpose" in first_context
+    assert "Changed repo purpose" in second_context
+    assert first_provider.requested_paths == ["AGENTS.md"]
+    assert second_provider.requested_paths == ["AGENTS.md"]
+
+
+def test_build_repo_context_refreshes_empty_process_cache_after_ttl(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["AGENTS.md"])
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 500)
+    first_provider = FakeProvider({}, pr_url="https://example.com/org/repo/pull/1")
+    second_provider = FakeProvider({"AGENTS.md": "Repo purpose"}, pr_url="https://example.com/org/repo/pull/1")
+
+    with patch("pr_agent.algo.repo_context.time.monotonic", side_effect=[100, 100, 2000, 2000, 2000]):
+        first_context = build_repo_context(first_provider)
+        second_context = build_repo_context(second_provider)
+
+    assert first_context == ""
+    assert "Repo purpose" in second_context
+    assert first_provider.requested_paths == ["AGENTS.md"]
+    assert second_provider.requested_paths == ["AGENTS.md"]
+
+
+def test_repo_context_cache_evicts_oldest_entry_when_full():
+    cache = repo_context._RepoContextCache(max_size=2, ttl_seconds=900)
+    missing = object()
+
+    with patch("pr_agent.algo.repo_context.time.monotonic", return_value=100):
+        cache["first"] = "one"
+        cache["second"] = "two"
+        cache["third"] = "three"
+
+        assert cache.get("first", missing) is missing
+        assert cache.get("second", missing) == "two"
+        assert cache.get("third", missing) == "three"
+
+
 def test_build_repo_context_process_cache_invalidates_when_config_changes(repo_context_settings):
     repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["AGENTS.md"])
     repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 500)
