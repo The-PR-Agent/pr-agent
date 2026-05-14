@@ -1,6 +1,9 @@
 import copy
 import datetime
 import traceback
+import json
+from pathlib import Path
+
 from collections import OrderedDict
 from functools import partial
 from typing import List, Tuple
@@ -13,7 +16,7 @@ from pr_agent.algo.pr_processing import (add_ai_metadata_to_diff_files,
                                          get_pr_diff,
                                          retry_with_fallback_models)
 from pr_agent.algo.token_handler import TokenHandler
-from pr_agent.algo.utils import (ModelType, PRReviewHeader,
+from pr_agent.algo.utils import (ModelType, PRReviewHeader, clip_tokens,
                                  convert_to_markdown_v2, github_action_output,
                                  load_yaml, show_relevant_configurations)
 from pr_agent.config_loader import get_settings
@@ -66,6 +69,8 @@ class PRReviewer:
         answer_str, question_str = self._get_user_answers()
         self.pr_description, self.pr_description_files = (
             self.git_provider.get_pr_description(split_changes_walkthrough=True))
+        self.review_rules = self._get_review_rules()
+        self.review_history = self._get_review_history()
         if (self.pr_description_files and get_settings().get("config.is_auto_command", False) and
                 get_settings().get("config.enable_ai_metadata", False)):
             add_ai_metadata_to_diff_files(self.git_provider, self.pr_description_files)
@@ -85,6 +90,9 @@ class PRReviewer:
             "require_score": get_settings().pr_reviewer.require_score_review,
             "require_tests": get_settings().pr_reviewer.require_tests_review,
             "require_estimate_effort_to_review": get_settings().pr_reviewer.require_estimate_effort_to_review,
+            "require_risk_assessment": get_settings().pr_reviewer.get("require_risk_assessment", False),
+            "require_merge_recommendation": get_settings().pr_reviewer.get("require_merge_recommendation", False),
+            "require_priority_files": get_settings().pr_reviewer.get("require_priority_files", False),
             "require_estimate_contribution_time_cost": get_settings().pr_reviewer.require_estimate_contribution_time_cost,
             'require_can_be_split_review': get_settings().pr_reviewer.require_can_be_split_review,
             'require_security_review': get_settings().pr_reviewer.require_security_review,
@@ -99,6 +107,8 @@ class PRReviewer:
             "related_tickets": get_settings().get('related_tickets', []),
             'duplicate_prompt_examples': get_settings().config.get('duplicate_prompt_examples', False),
             "date": datetime.datetime.now().strftime('%Y-%m-%d'),
+            "review_rules": self.review_rules,
+            "review_history": self.review_history,
         }
 
         self.token_handler = TokenHandler(
@@ -116,6 +126,165 @@ class PRReviewer:
                 is_incremental = True
         incremental = IncrementalPR(is_incremental)
         return incremental
+    
+
+    def _get_review_memory_file(self) -> Path:
+        configured = get_settings().pr_reviewer.get(
+            "review_history_file", "review_memory/review_history.jsonl"
+        )
+        return Path(__file__).resolve().parents[2] / configured
+
+    def _get_changed_filenames(self) -> List[str]:
+        names = []
+        for file in self.git_provider.get_files():
+            name = getattr(file, "filename", None) or getattr(file, "path", None)
+            if name:
+                names.append(name)
+        return names
+
+    def _get_review_history(self) -> str:
+        if not get_settings().pr_reviewer.get("enable_review_history", False):
+            return ""
+
+        memory_file = self._get_review_memory_file()
+        if not memory_file.exists():
+            get_logger().info("No review history file found yet")
+            return ""
+
+        repo_id = getattr(self.git_provider, "repo", "")
+        current_files = set(self._get_changed_filenames())
+        rows = []
+
+        for line in memory_file.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+            except Exception:
+                continue
+
+            if entry.get("repo") != repo_id:
+                continue
+
+            overlap = len(current_files.intersection(entry.get("files", [])))
+            if current_files and overlap == 0:
+                continue
+
+            rows.append((overlap, entry))
+
+        rows.sort(
+            key=lambda item: (item[0], item[1].get("reviewed_at", "")),
+            reverse=True,
+        )
+
+        max_matches = int(
+            get_settings().pr_reviewer.get("max_review_history_matches", 3)
+        )
+        selected = [item[1] for item in rows[:max_matches]]
+
+        if not selected:
+            get_logger().info("No matching review history found for this PR")
+            return ""
+
+        chunks = []
+        for entry in selected:
+            chunks.append(
+                f"PR: {entry.get('title', '')}\n"
+                f"Risk level: {entry.get('risk_level', '')}\n"
+                f"Merge recommendation: {entry.get('merge_recommendation', '')}\n"
+                f"Files: {', '.join(entry.get('files', []))}\n"
+                f"Key issues: {'; '.join(entry.get('key_issue_headers', [])) or 'None'}"
+            )
+
+        history_text = "\n\n---\n\n".join(chunks)
+        max_tokens = int(
+            get_settings().pr_reviewer.get("max_review_history_tokens", 800)
+        )
+        if max_tokens > 0:
+            history_text = clip_tokens(history_text, max_tokens)
+
+        get_logger().info(
+            "Loaded review history for this PR",
+            artifacts={"matches": len(selected)},
+        )
+        return history_text
+
+    def _store_review_memory(self, data: dict) -> None:
+        if not get_settings().pr_reviewer.get("enable_review_history", False):
+            return
+
+        review = data.get("review", {})
+        entry = {
+            "reviewed_at": datetime.datetime.now().isoformat(),
+            "repo": getattr(self.git_provider, "repo", ""),
+            "pr_url": self.pr_url,
+            "title": self.git_provider.pr.title,
+            "files": self._get_changed_filenames(),
+            "risk_level": review.get("risk_level", ""),
+            "merge_recommendation": review.get("merge_recommendation", ""),
+            "key_issue_headers": [
+                issue.get("issue_header", "").strip()
+                for issue in review.get("key_issues_to_review", [])
+                if isinstance(issue, dict)
+            ],
+        }
+
+        memory_file = self._get_review_memory_file()
+        memory_file.parent.mkdir(parents=True, exist_ok=True)
+
+        existing = []
+        if memory_file.exists():
+            existing = [
+                line
+                for line in memory_file.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+
+        existing.append(json.dumps(entry, ensure_ascii=False))
+
+        max_entries = int(
+            get_settings().pr_reviewer.get("max_review_history_entries", 200)
+        )
+        if max_entries > 0 and len(existing) > max_entries:
+            existing = existing[-max_entries:]
+
+        memory_file.write_text("\n".join(existing) + "\n", encoding="utf-8")
+
+
+    def _get_review_rules(self) -> str:
+        if not get_settings().pr_reviewer.get("enable_review_rules", False):
+            return ""
+
+        rule_paths = get_settings().pr_reviewer.get("review_rules_paths", []) or []
+        if isinstance(rule_paths, str):
+            rule_paths = [rule_paths]
+
+        ref = getattr(getattr(self.git_provider, 'pr', None), 'head', None)
+        ref = getattr(ref, 'sha', None) or self.git_provider.get_pr_branch()
+        loaded_rules = []
+        loaded_rule_paths = []
+
+        for rule_path in rule_paths:
+            try:
+                rule_content = self.git_provider.get_pr_file_content(rule_path, ref)
+            except Exception:
+                continue
+
+            if rule_content and rule_content.strip():
+                loaded_rule_paths.append(rule_path)
+                loaded_rules.append(f"File: `{rule_path}`\n{rule_content.strip()}")
+
+        if not loaded_rules:
+            get_logger().info("No review rules file found for this PR")
+            return ""
+
+        review_rules = "\n\n---\n\n".join(loaded_rules)
+        max_tokens = get_settings().pr_reviewer.get("max_review_rules_tokens", 0)
+        if max_tokens and int(max_tokens) > 0:
+            review_rules = clip_tokens(review_rules, int(max_tokens))
+
+        get_logger().info("Loaded review rules for this PR", artifacts={"rule_files": loaded_rule_paths})
+        return review_rules
 
     async def run(self) -> None:
         try:
@@ -173,7 +342,7 @@ class PRReviewer:
             if get_settings().pr_reviewer.persistent_comment and not self.incremental.is_incremental:
                 final_update_message = get_settings().pr_reviewer.final_update_message
                 self.git_provider.publish_persistent_comment(pr_review,
-                                                            initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
+                                                            initial_header=f"{PRReviewHeader.REGULAR.value}",
                                                             update_header=True,
                                                             final_update_message=final_update_message, )
             else:
@@ -234,7 +403,7 @@ class PRReviewer:
         first_key = 'review'
         last_key = 'security_concerns'
         data = load_yaml(self.prediction.strip(),
-                         keys_fix_yaml=["ticket_compliance_check", "estimated_effort_to_review_[1-5]:", "security_concerns:", "key_issues_to_review:",
+                         keys_fix_yaml=["ticket_compliance_check", "estimated_effort_to_review_[1-5]:", "risk_level:", "merge_recommendation:", "review_priority_files:", "security_concerns:", "key_issues_to_review:",
                                         "relevant_file:", "relevant_line:", "suggestion:"],
                          first_key=first_key, last_key=last_key)
         github_action_output(data, 'review')
@@ -242,6 +411,9 @@ class PRReviewer:
         if 'review' not in data:
             get_logger().exception("Failed to parse review data", artifact={"data": data})
             return ""
+        get_logger().info(f"Risk level: {data.get('review', {}).get('risk_level')}")
+        get_logger().info(f"Merge recommendation: {data.get('review', {}).get('merge_recommendation')}")
+        get_logger().info(f"Priority files: {data.get('review', {}).get('review_priority_files')}")
 
         # move data['review'] 'key_issues_to_review' key to the end of the dictionary
         if 'key_issues_to_review' in data['review']:
@@ -262,7 +434,7 @@ class PRReviewer:
 
         # Add help text if gfm_markdown is supported
         if self.git_provider.is_supported("gfm_markdown") and get_settings().pr_reviewer.enable_help_text:
-            markdown_text += "<hr>\n\n<details> <summary><strong>💡 Tool usage guide:</strong></summary><hr> \n\n"
+            markdown_text += "<hr>\n\n<details> <summary><strong>濡絽鍟€?Tool usage guide:</strong></summary><hr> \n\n"
             markdown_text += HelpMessage.get_review_usage_guide()
             markdown_text += "\n</details>\n"
 
@@ -272,6 +444,7 @@ class PRReviewer:
 
         # Add custom labels from the review prediction (effort, security)
         self.set_review_labels(data)
+        self._store_review_memory(data)
 
         if markdown_text == None or len(markdown_text) == 0:
             markdown_text = ""
