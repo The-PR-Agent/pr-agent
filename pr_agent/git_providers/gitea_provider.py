@@ -742,6 +742,32 @@ class GiteaProvider(GitProvider):
         clone_url += f"{gitea_token}@{base_url}{repo_full_name}"
         return clone_url
 
+    def get_repo_file_content(self, file_path: str) -> str:
+        """Get content of a file from the repository at the PR head commit.
+
+        This method implements the interface required by PR #2387 repo_context feature.
+        It retrieves file content from the repository at the PR's head commit.
+        """
+        try:
+            if not self.owner or not self.repo:
+                self.logger.warning(f"Cannot get repo file content: owner or repo not set")
+                return ""
+
+            if not self.sha:
+                self.logger.warning(f"Cannot get repo file content: SHA not set")
+                return ""
+
+            content = self.repo_api.get_file_content(
+                owner=self.owner,
+                repo=self.repo,
+                commit_sha=self.sha,
+                filepath=file_path
+            )
+            return content
+        except Exception as e:
+            self.logger.debug(f"Failed to load repo file: {file_path}, error: {e}")
+            return ""
+
 class RepoApi(giteapy.RepositoryApi):
     def __init__(self, client: giteapy.ApiClient):
         self.repository = giteapy.RepositoryApi(client)
