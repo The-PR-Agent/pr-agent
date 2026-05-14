@@ -817,14 +817,10 @@ def try_fix_yaml(response_text: str,
     if not snippet:
         snippet = re.search(snippet_pattern, response_text_original) # before we removed the "```"
     if snippet:
-        snippet_text = snippet.group()
-        prefix = (
-            '```yaml'
-            if snippet_text.startswith('```yaml')
-            else ('```yml' if snippet_text.startswith('```yml') else '```')
-        )
+        # group(2) is the snippet body, without the ``` fences or the optional yaml/yml language identifier
+        snippet_text = snippet.group(2)
         try:
-            data = yaml.safe_load(snippet_text.removeprefix(prefix).rstrip('`'))
+            data = yaml.safe_load(snippet_text)
             get_logger().info(f"Successfully parsed AI prediction after extracting yaml snippet")
             return data
         except:
