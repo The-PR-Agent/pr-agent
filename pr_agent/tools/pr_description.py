@@ -461,11 +461,9 @@ class PRDescription:
         if 'description' in self.data:
             self.data['description'] = self.data.pop('description')
         if 'changes_diagram' in self.data:
-            changes_diagram = self.data.pop('changes_diagram').strip()
-            if changes_diagram.startswith('```'):
-                if not changes_diagram.endswith('```'):  # fallback for missing closing
-                    changes_diagram += '\n```'
-                self.data['changes_diagram'] = '\n'+ changes_diagram
+            sanitized = sanitize_diagram(self.data.pop('changes_diagram'))
+            if sanitized:
+                self.data['changes_diagram'] = sanitized
         if 'pr_files' in self.data:
             self.data['pr_files'] = self.data.pop('pr_files')
 
@@ -770,6 +768,32 @@ class PRDescription:
 </tr>
 """
         return pr_body
+
+
+def sanitize_diagram(diagram_raw: str) -> str:
+    """Sanitize a diagram string: fix missing closing fence and remove backticks."""
+    if not isinstance(diagram_raw, str):
+        return ''
+    diagram = diagram_raw.strip()
+    if not diagram.startswith('```mermaid'):
+        return ''
+
+    # fallback missing closing
+    if not diagram.endswith('```'):
+        diagram += '\n```'
+
+
+    # remove backticks inside node labels: ["`label`"] -> ["label"]
+    result = []
+    for line in diagram.split('\n'):
+        line = re.sub(
+            r'\["([^"]*?)"\]',
+            lambda m: '["' + m.group(1).replace('`', '') + '"]',
+            line,
+        )
+        result.append(line)
+    return '\n' + '\n'.join(result)
+
 
 def count_chars_without_html(string):
     if '<' not in string:

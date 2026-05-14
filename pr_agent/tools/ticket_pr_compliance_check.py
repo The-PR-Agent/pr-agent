@@ -10,6 +10,8 @@ from pr_agent.log import get_logger
 GITHUB_TICKET_PATTERN = re.compile(
      r'(https://github[^/]+/[^/]+/[^/]+/issues/\d+)|(\b(\w+)/(\w+)#(\d+)\b)|(#\d+)'
 )
+# Option A: issue number at start of branch or after /, followed by - or end (e.g. feature/1-test-issue, 123-fix)
+BRANCH_ISSUE_PATTERN = re.compile(r"(?:^|/)(\d{1,6})(?=-|$)")
 
 def find_jira_tickets(text):
     # Regular expression patterns for JIRA tickets
@@ -63,13 +65,69 @@ def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url
 
     return list(github_tickets)
 
+def extract_ticket_links_from_branch_name(branch_name, repo_path, base_url_html="https://github.com"):
+    """
+    Extract GitHub issue URLs from branch name. Numbers are matched at start of branch or after /,
+    followed by - or end (e.g. feature/1-test-issue -> #1). Respects extract_issue_from_branch
+    and optional branch_issue_regex (may be under [config] in TOML).
+    """
+    if not branch_name or not repo_path:
+        return []
+    if not isinstance(branch_name, str):
+        return []
+    settings = get_settings()
+    if not settings.get("extract_issue_from_branch", settings.get("config.extract_issue_from_branch", True)):
+        return []
+    github_tickets = set()
+    custom_regex_str = settings.get("branch_issue_regex") or settings.get("config.branch_issue_regex", "") or ""
+    if custom_regex_str:
+        try:
+            pattern = re.compile(custom_regex_str)
+            if pattern.groups < 1:
+                get_logger().error(
+                    "branch_issue_regex must contain at least one capturing group for the issue number; using default pattern."
+                )
+                pattern = BRANCH_ISSUE_PATTERN
+        except re.error as e:
+            get_logger().error(f"Invalid custom regex for branch issue extraction: {e}")
+            return []
+    else:
+        pattern = BRANCH_ISSUE_PATTERN
+    for match in pattern.finditer(branch_name):
+        try:
+            issue_number = match.group(1)
+        except IndexError:
+            continue
+        if issue_number and issue_number.isdigit():
+            github_tickets.add(
+                f"{base_url_html.strip('/')}/{repo_path}/issues/{issue_number}"
+            )
+    return list(github_tickets)
+
 
 async def extract_tickets(git_provider):
     MAX_TICKET_CHARACTERS = 10000
     try:
         if isinstance(git_provider, GithubProvider):
             user_description = git_provider.get_user_description()
-            tickets = extract_ticket_links_from_pr_description(user_description, git_provider.repo, git_provider.base_url_html)
+            description_tickets = extract_ticket_links_from_pr_description(
+                user_description, git_provider.repo, git_provider.base_url_html
+            )
+            branch_name = git_provider.get_pr_branch()
+            branch_tickets = extract_ticket_links_from_branch_name(
+                branch_name, git_provider.repo, git_provider.base_url_html
+            )
+            seen = set()
+            merged = []
+            for link in description_tickets + branch_tickets:
+                if link not in seen:
+                    seen.add(link)
+                    merged.append(link)
+            if len(merged) > 3:
+                get_logger().info(f"Too many tickets (description + branch): {len(merged)}")
+                tickets = merged[:3]
+            else:
+                tickets = merged
             tickets_content = []
 
             if tickets:

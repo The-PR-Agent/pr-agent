@@ -1,4 +1,5 @@
-pytest==7.4.0
+pytest==9.0.2
+pytest-asyncio>=1.3.0
 poetry
 twine
 pre-commit>=4,<5

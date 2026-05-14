@@ -20,10 +20,16 @@ def is_valid_file(filename:str, bad_extensions=None) -> bool:
         if get_settings().config.use_extra_bad_extensions:
             bad_extensions += get_settings().bad_extensions.extra
 
-    auto_generated_files = ['package-lock.json', 'yarn.lock', 'composer.lock', 'Gemfile.lock', 'poetry.lock']
-    for forbidden_file in auto_generated_files:
-        if filename.endswith(forbidden_file):
-            return False
+    auto_generated_files_exact = {
+        'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'composer.lock', 'Gemfile.lock',
+        'poetry.lock', 'go.sum', '.terraform.lock.hcl', 'uv.lock',
+        'Cargo.lock', 'Pipfile.lock', 'mix.lock', 'pubspec.lock', 'bun.lockb',
+    }
+    auto_generated_suffixes = ('.min.js', '.min.css', '.js.map', '.ts.map', '.css.map')
+    if filename.replace('\\', '/').split('/')[-1] in auto_generated_files_exact:
+        return False
+    if filename.endswith(auto_generated_suffixes):
+        return False
 
     return filename.split('.')[-1] not in bad_extensions
 

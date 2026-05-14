@@ -187,7 +187,7 @@ class PRCodeSuggestions:
                                artifact={"traceback": traceback.format_exc()})
             if get_settings().config.publish_output:
                 if self.progress_response:
-                    self.progress_response.delete()
+                    self.git_provider.remove_comment(self.progress_response)
                 else:
                     try:
                         self.git_provider.remove_initial_comment()

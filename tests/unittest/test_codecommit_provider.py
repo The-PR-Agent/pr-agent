@@ -3,9 +3,7 @@ from unittest.mock import patch
 import pytest
 
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
-from pr_agent.git_providers.codecommit_provider import (CodeCommitFile,
-                                                        CodeCommitProvider,
-                                                        PullRequestCCMimic)
+from pr_agent.git_providers.codecommit_provider import CodeCommitFile, CodeCommitProvider, PullRequestCCMimic
 
 
 class TestCodeCommitFile:

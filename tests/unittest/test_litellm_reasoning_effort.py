@@ -1,7 +1,9 @@
+from unittest.mock import AsyncMock, MagicMock, call, patch
+
 import pytest
-from unittest.mock import patch, MagicMock, AsyncMock, call
-from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
+
 import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_handler
+from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 
 
 def create_mock_settings(reasoning_effort_value):
@@ -305,7 +307,21 @@ class TestLiteLLMReasoningEffort:
         fake_settings = create_mock_settings("medium")
         monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
 
-        gpt5_models = ["gpt-5-2025-08-07", "gpt-5.1", "gpt-5-turbo", "gpt-5.1-codex"]
+        gpt5_models = [
+            "gpt-5-2025-08-07",
+            "gpt-5.1",
+            "gpt-5.4",
+            "gpt-5.4-nano",
+            "gpt-5.4-nano-2026-03-17",
+            "gpt-5.4-mini",
+            "gpt-5.4-mini-2026-03-17",
+            "gpt-5.4-2026-03-05",
+            "gpt-5.5",
+            "gpt-5.5-2026-04-23",
+            "gpt-5-turbo",
+            "gpt-5.1-codex",
+            "gpt-5.3-codex",
+        ]
 
         for model in gpt5_models:
             with patch('pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion', new_callable=AsyncMock) as mock_completion:

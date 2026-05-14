@@ -1,6 +1,7 @@
 import json
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 from botocore.exceptions import ClientError
 
 from pr_agent.secret_providers.aws_secrets_manager_provider import AWSSecretsManagerProvider

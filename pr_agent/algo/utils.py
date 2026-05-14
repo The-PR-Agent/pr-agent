@@ -1256,7 +1256,10 @@ def validate_and_await_rate_limit(github_token):
 
 def github_action_output(output_data: dict, key_name: str):
     try:
-        if not get_settings().get('github_action_config.enable_output', False):
+        enable_output = get_settings().get('github_action_config.enable_output', False)
+        if isinstance(enable_output, str):
+            enable_output = enable_output.lower().strip() not in ("false", "0", "no", "")
+        if not enable_output:
             return
 
         key_data = output_data.get(key_name, {})
@@ -1381,7 +1384,7 @@ def process_description(description_full: str) -> Tuple[str, List]:
                         pattern_back = r'<details>\s*<summary><strong>(.*?)</strong><dd><code>(.*?)</code>.*?</summary>\s*<hr>\s*(.*?)\n\n\s*(.*?)</details>'
                         res = re.search(pattern_back, file_data, re.DOTALL)
                     if not res or res.lastindex != 4:
-                        pattern_back = r'<details>\s*<summary><strong>(.*?)</strong>\s*<dd><code>(.*?)</code>.*?</summary>\s*<hr>\s*(.*?)\s*-\s*(.*?)\s*</details>' # looking for hypen ('- ')
+                        pattern_back = r'<details>\s*<summary><strong>(.*?)</strong>\s*<dd><code>(.*?)</code>.*?</summary>\s*<hr>\s*(.*?)\s*-\s*(.*?)\s*</details>' # looking for hyphen ('- ')
                         res = re.search(pattern_back, file_data, re.DOTALL)
                     if res and res.lastindex == 4:
                         short_filename = res.group(1).strip()

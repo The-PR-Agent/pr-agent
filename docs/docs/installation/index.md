@@ -1,8 +1,6 @@
 # Installation
 
-## Self-hosted PR-Agent
-
-There are several ways to use self-hosted PR-Agent:
+There are several ways to use PR-Agent:
 
 - [Locally](./locally.md)
 - [GitHub integration](./github.md)
@@ -11,9 +9,5 @@ There are several ways to use self-hosted PR-Agent:
 - [Azure DevOps integration](./azure.md)
 - [Gitea integration](./gitea.md)
 
-## Qodo Merge 💎
-
-Qodo Merge, an app hosted by QodoAI for GitHub\GitLab\BitBucket, is also available.
-<br>
-With Qodo Merge, installation is as simple as adding the Qodo Merge app to your relevant repositories.
-See [here](https://qodo-merge-docs.qodo.ai/installation/qodo_merge/) for more details.
+!!! note "Docker Hub namespace migration"
+    Releases **`0.34.2` and later** are published under [`pragent/pr-agent`](https://hub.docker.com/r/pragent/pr-agent). Older releases (up to and including `v0.31`) remain at the legacy [`codiumai/pr-agent`](https://hub.docker.com/r/codiumai/pr-agent) namespace as a frozen archive — no new images are pushed there. The examples on this site reference the new namespace; if you are pinning to a release before `0.34.2`, swap `pragent/pr-agent` for `codiumai/pr-agent` in your `image:` / `docker pull` / `uses: docker://` references.

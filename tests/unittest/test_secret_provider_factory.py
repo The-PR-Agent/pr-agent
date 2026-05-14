@@ -1,5 +1,6 @@
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from pr_agent.secret_providers import get_secret_provider
 

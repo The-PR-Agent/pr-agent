@@ -1,10 +1,6 @@
 from io import BytesIO
 from unittest.mock import MagicMock, patch
 
-import pytest
-
-from pr_agent.git_providers.gitea_provider import GiteaProvider
-
 
 class TestGiteaProvider:
     @patch('pr_agent.git_providers.gitea_provider.get_settings')
@@ -41,8 +37,6 @@ class TestGiteaProvider:
             return mock_resp
 
         mock_api_client.call_api.side_effect = call_api_side_effect
-
-        import giteapy
 
         from pr_agent.git_providers.gitea_provider import RepoApi
 

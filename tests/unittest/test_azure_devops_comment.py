@@ -1,7 +1,9 @@
 import unittest
+from unittest.mock import MagicMock, patch
+
 from pr_agent.config_loader import get_settings
-from unittest.mock import patch, MagicMock
 from pr_agent.git_providers import AzureDevopsProvider
+
 
 class TestAzureDevopsProviderPublishComment(unittest.TestCase):
     @patch("pr_agent.git_providers.azuredevops_provider.get_settings")

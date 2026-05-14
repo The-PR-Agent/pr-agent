@@ -95,7 +95,7 @@ class TestGitLabProvider:
 
     def test_create_or_update_pr_file_update_existing(self, gitlab_provider, mock_project):
         mock_file = MagicMock(ProjectFile)
-        mock_file.decode.return_value = "# Old changelog content"
+        mock_file.content = "# Old changelog content"
         mock_project.files.get.return_value = mock_file
 
         new_content = "# New changelog content"
@@ -106,8 +106,9 @@ class TestGitLabProvider:
         )
 
         mock_project.files.get.assert_called_once_with("CHANGELOG.md", "feature-branch")
-        mock_file.content = new_content
+        assert mock_file.content == new_content
         mock_file.save.assert_called_once_with(branch="feature-branch", commit_message=commit_message)
+        mock_project.files.create.assert_not_called()
 
     def test_create_or_update_pr_file_update_exception(self, gitlab_provider, mock_project):
         mock_project.files.get.side_effect = Exception("Network error")
@@ -174,13 +175,18 @@ class TestGitLabProvider:
         gitlab_provider.gl.projects.get.reset_mock()
         gitlab_provider.gl.projects.get.side_effect = Exception("not found")
         fake = MagicMock()
+        fake.id = "mismatched-project-id"
         fake.path_with_namespace = "other/group/repo"
         gitlab_provider.gl.projects.list.return_value = [fake]
 
         result = gitlab_provider._project_by_path("group/repo")
 
         assert result is None
-        assert gitlab_provider.gl.projects.get.call_count == 2
+        gitlab_provider.gl.projects.list.assert_called_once()
+        list_kwargs = gitlab_provider.gl.projects.list.call_args.kwargs
+        assert list_kwargs["search"] == "repo"
+        assert list_kwargs["membership"] is True
+        assert all(call.args[0] != fake.id for call in gitlab_provider.gl.projects.get.call_args_list)
 
     def test_compare_submodule_cached(self, gitlab_provider):
         proj = MagicMock()
@@ -192,3 +198,37 @@ class TestGitLabProvider:
         assert first == second == [{"diff": "d"}]
         m_pbp.assert_called_once_with("grp/repo")
         proj.repository_compare.assert_called_once_with("old", "new")
+
+    def test_compare_submodule_cache_hit_skips_project_resolution(self, gitlab_provider):
+        cached_diffs = [{"diff": "d"}]
+        gitlab_provider._submodule_cache[("grp/repo", "old", "new")] = cached_diffs
+
+        with patch.object(gitlab_provider, "_project_by_path") as m_pbp:
+            result = gitlab_provider._compare_submodule("grp/repo", "old", "new")
+
+        assert result == cached_diffs
+        m_pbp.assert_not_called()
+
+    def test_parse_merge_request_url_handles_nested_project_paths(self, gitlab_provider):
+        project_path, mr_id = gitlab_provider._parse_merge_request_url(
+            "https://gitlab.com/group/subgroup/repo/-/merge_requests/123"
+        )
+
+        assert project_path == "group/subgroup/repo"
+        assert mr_id == 123
+
+    def test_get_line_link_handles_file_and_line_ranges(self, gitlab_provider):
+        gitlab_provider.gl.url = "https://gitlab.com"
+        gitlab_provider.id_project = "group/repo"
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.source_branch = "feature/cache"
+
+        assert gitlab_provider.get_line_link("src/app.py", -1) == (
+            "https://gitlab.com/group/repo/-/blob/feature/cache/src/app.py?ref_type=heads"
+        )
+        assert gitlab_provider.get_line_link("src/app.py", 10) == (
+            "https://gitlab.com/group/repo/-/blob/feature/cache/src/app.py?ref_type=heads#L10"
+        )
+        assert gitlab_provider.get_line_link("src/app.py", 10, 12) == (
+            "https://gitlab.com/group/repo/-/blob/feature/cache/src/app.py?ref_type=heads#L10-12"
+        )

@@ -101,7 +101,7 @@
 #         Test fetch_sub_issues() to ensure an empty set is returned for an issue with no sub-issues.
 #         """
 #         github_provider = GithubProvider()
-#         issue_url = "https://github.com/qodo-ai/pr-agent/issues/1499"  # Likely non-existent issue
+#         issue_url = "https://github.com/the-pr-agent/pr-agent/issues/1499"  # Likely non-existent issue
 #         result = github_provider.fetch_sub_issues(issue_url)
 #
 #         print("Fetched sub-issues for non-existent issue:", result)

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 from typing import Optional, Tuple
 from urllib.parse import urlparse

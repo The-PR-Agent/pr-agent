@@ -4,12 +4,11 @@ import copy
 import os
 from pathlib import Path
 
-from starlette_context import request_cycle_context, context
-
-from pr_agent.cli import run_command
-from pr_agent.config_loader import get_settings, global_settings
+from starlette_context import context, request_cycle_context
 
 from pr_agent.agent.pr_agent import PRAgent, commands
+from pr_agent.cli import run_command
+from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.log import get_logger, setup_logger
 from tests.e2e_tests import e2e_utils
 
