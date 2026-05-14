@@ -1,8 +1,8 @@
 import copy
 import datetime
 import traceback
-import json
-from pathlib import Path
+
+
 
 from collections import OrderedDict
 from functools import partial
@@ -70,7 +70,7 @@ class PRReviewer:
         self.pr_description, self.pr_description_files = (
             self.git_provider.get_pr_description(split_changes_walkthrough=True))
         self.review_rules = self._get_review_rules()
-        self.review_history = self._get_review_history()
+
         if (self.pr_description_files and get_settings().get("config.is_auto_command", False) and
                 get_settings().get("config.enable_ai_metadata", False)):
             add_ai_metadata_to_diff_files(self.git_provider, self.pr_description_files)
@@ -108,7 +108,7 @@ class PRReviewer:
             'duplicate_prompt_examples': get_settings().config.get('duplicate_prompt_examples', False),
             "date": datetime.datetime.now().strftime('%Y-%m-%d'),
             "review_rules": self.review_rules,
-            "review_history": self.review_history,
+
         }
 
         self.token_handler = TokenHandler(
@@ -127,129 +127,6 @@ class PRReviewer:
         incremental = IncrementalPR(is_incremental)
         return incremental
     
-
-    def _get_review_memory_file(self) -> Path:
-        configured = get_settings().pr_reviewer.get(
-            "review_history_file", "review_memory/review_history.jsonl"
-        )
-        return Path(__file__).resolve().parents[2] / configured
-
-    def _get_changed_filenames(self) -> List[str]:
-        names = []
-        for file in self.git_provider.get_files():
-            name = getattr(file, "filename", None) or getattr(file, "path", None)
-            if name:
-                names.append(name)
-        return names
-
-    def _get_review_history(self) -> str:
-        if not get_settings().pr_reviewer.get("enable_review_history", False):
-            return ""
-
-        memory_file = self._get_review_memory_file()
-        if not memory_file.exists():
-            get_logger().info("No review history file found yet")
-            return ""
-
-        repo_id = getattr(self.git_provider, "repo", "")
-        current_files = set(self._get_changed_filenames())
-        rows = []
-
-        for line in memory_file.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            try:
-                entry = json.loads(line)
-            except Exception:
-                continue
-
-            if entry.get("repo") != repo_id:
-                continue
-
-            overlap = len(current_files.intersection(entry.get("files", [])))
-            if current_files and overlap == 0:
-                continue
-
-            rows.append((overlap, entry))
-
-        rows.sort(
-            key=lambda item: (item[0], item[1].get("reviewed_at", "")),
-            reverse=True,
-        )
-
-        max_matches = int(
-            get_settings().pr_reviewer.get("max_review_history_matches", 3)
-        )
-        selected = [item[1] for item in rows[:max_matches]]
-
-        if not selected:
-            get_logger().info("No matching review history found for this PR")
-            return ""
-
-        chunks = []
-        for entry in selected:
-            chunks.append(
-                f"PR: {entry.get('title', '')}\n"
-                f"Risk level: {entry.get('risk_level', '')}\n"
-                f"Merge recommendation: {entry.get('merge_recommendation', '')}\n"
-                f"Files: {', '.join(entry.get('files', []))}\n"
-                f"Key issues: {'; '.join(entry.get('key_issue_headers', [])) or 'None'}"
-            )
-
-        history_text = "\n\n---\n\n".join(chunks)
-        max_tokens = int(
-            get_settings().pr_reviewer.get("max_review_history_tokens", 800)
-        )
-        if max_tokens > 0:
-            history_text = clip_tokens(history_text, max_tokens)
-
-        get_logger().info(
-            "Loaded review history for this PR",
-            artifacts={"matches": len(selected)},
-        )
-        return history_text
-
-    def _store_review_memory(self, data: dict) -> None:
-        if not get_settings().pr_reviewer.get("enable_review_history", False):
-            return
-
-        review = data.get("review", {})
-        entry = {
-            "reviewed_at": datetime.datetime.now().isoformat(),
-            "repo": getattr(self.git_provider, "repo", ""),
-            "pr_url": self.pr_url,
-            "title": self.git_provider.pr.title,
-            "files": self._get_changed_filenames(),
-            "risk_level": review.get("risk_level", ""),
-            "merge_recommendation": review.get("merge_recommendation", ""),
-            "key_issue_headers": [
-                issue.get("issue_header", "").strip()
-                for issue in review.get("key_issues_to_review", [])
-                if isinstance(issue, dict)
-            ],
-        }
-
-        memory_file = self._get_review_memory_file()
-        memory_file.parent.mkdir(parents=True, exist_ok=True)
-
-        existing = []
-        if memory_file.exists():
-            existing = [
-                line
-                for line in memory_file.read_text(encoding="utf-8").splitlines()
-                if line.strip()
-            ]
-
-        existing.append(json.dumps(entry, ensure_ascii=False))
-
-        max_entries = int(
-            get_settings().pr_reviewer.get("max_review_history_entries", 200)
-        )
-        if max_entries > 0 and len(existing) > max_entries:
-            existing = existing[-max_entries:]
-
-        memory_file.write_text("\n".join(existing) + "\n", encoding="utf-8")
-
 
     def _get_review_rules(self) -> str:
         if not get_settings().pr_reviewer.get("enable_review_rules", False):
@@ -444,7 +321,7 @@ class PRReviewer:
 
         # Add custom labels from the review prediction (effort, security)
         self.set_review_labels(data)
-        self._store_review_memory(data)
+
 
         if markdown_text == None or len(markdown_text) == 0:
             markdown_text = ""
