@@ -482,7 +482,15 @@ class GitLabProvider(GitProvider):
         for index in range(len(self.mr_commits) - 1, -1, -1):
             adapter = _GitlabIncrementalCommit(self.mr_commits[index])
             commit_time = adapter.commit.author.date
-            if commit_time is not None and commit_time > last_review_time:
+            if commit_time is None:
+                # A commit without a parseable timestamp cannot be placed on the timeline;
+                # skip it so it never lands in last_seen_commit (PRReviewer compares that
+                # date with `>`, which would TypeError against None).
+                get_logger().warning(
+                    f"Skipping commit {adapter.sha} with unparseable timestamp during incremental review"
+                )
+                continue
+            if commit_time > last_review_time:
                 self.incremental.first_new_commit = adapter
                 first_new_commit_index = index
             else:
@@ -585,9 +593,15 @@ class GitLabProvider(GitProvider):
 
         if incremental_active:
             raw_changes = list(self.unreviewed_files_set.values())
+            # Apply submodule expansion symmetrically with the full-review path so that
+            # `GITLAB.EXPAND_SUBMODULE_DIFFS` keeps working under `/review -i`.
+            raw_changes = self._expand_submodule_changes(raw_changes)
             base_sha_for_content = self.incremental.last_seen_commit_sha
-            head_sha_for_content = getattr(self, '_incremental_head_sha', None) \
-                or self.mr.diff_refs['head_sha']
+            # `_incremental_head_sha` is populated by `_get_incremental_commits()` whenever
+            # incremental_active is true; we still guard for defensive callers.
+            head_sha_for_content = getattr(self, '_incremental_head_sha', None)
+            if not head_sha_for_content:
+                head_sha_for_content = (self.mr.diff_refs or {}).get('head_sha')
         else:
             raw_changes = self.mr.changes().get('changes', [])
             raw_changes = self._expand_submodule_changes(raw_changes)

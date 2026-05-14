@@ -393,3 +393,58 @@ class TestGitLabIncrementalReview:
 
         assert result is not None
         assert result.id == 2
+
+    def test_commit_with_unparseable_date_is_skipped_not_anchored(self, gitlab_provider, mock_project):
+        # Anchor commit (c0) has a valid date older than the review; a stray dateless
+        # commit (cX) sits between the new commits and must not become last_seen_commit.
+        gitlab_provider.mr.notes.list.return_value = [
+            self._make_note(7, "## PR Reviewer Guide 🔍\nbody", "2024-05-01T10:00:00Z"),
+        ]
+        bad_commit = MagicMock(spec=["id", "committed_date", "authored_date", "created_at"])
+        bad_commit.id = "cX"
+        bad_commit.committed_date = "not-a-date"
+        bad_commit.authored_date = None
+        bad_commit.created_at = None
+        gitlab_provider.mr.commits.return_value = [
+            self._make_commit("c1", "2024-05-01T11:00:00Z"),
+            bad_commit,
+            self._make_commit("c0", "2024-05-01T09:00:00Z"),
+        ]
+        mock_project.repository_compare.return_value = {
+            "diffs": [{"new_path": "a.py", "old_path": "a.py", "diff": "@@ ... @@",
+                       "new_file": False, "deleted_file": False, "renamed_file": False}],
+        }
+
+        gitlab_provider.get_incremental_commits(IncrementalPR(True))
+
+        # The dateless commit must be ignored: anchor falls through to c0 (valid date).
+        assert gitlab_provider.incremental.is_incremental is True
+        assert gitlab_provider.incremental.last_seen_commit_sha == "c0"
+        assert gitlab_provider.incremental.last_seen_commit.commit.author.date is not None
+        assert gitlab_provider.incremental.first_new_commit_sha == "c1"
+
+    def test_incremental_get_diff_files_expands_submodule_changes(self, gitlab_provider):
+        # Set up incremental state directly to isolate get_diff_files behaviour.
+        gitlab_provider.incremental = IncrementalPR(True)
+        gitlab_provider.unreviewed_files_set = {
+            "libs/sub": {"new_path": "libs/sub", "old_path": "libs/sub",
+                          "diff": "-Subproject commit aaa\n+Subproject commit bbb\n",
+                          "new_file": False, "deleted_file": False, "renamed_file": False}
+        }
+        gitlab_provider._incremental_head_sha = "head"
+        gitlab_provider.incremental.last_seen_commit = _GitlabIncrementalCommit(
+            self._make_commit("c0", "2024-05-01T09:00:00Z")
+        )
+
+        expanded = [{
+            "new_path": "libs/sub/file.py", "old_path": "libs/sub/file.py",
+            "diff": "@@ ... @@", "new_file": False, "deleted_file": False, "renamed_file": False,
+        }]
+        with patch.object(gitlab_provider, "_expand_submodule_changes", return_value=expanded) as m_exp, \
+             patch.object(gitlab_provider, "get_pr_file_content", return_value=""):
+            files = gitlab_provider.get_diff_files()
+
+        # _expand_submodule_changes was called with the incremental raw_changes,
+        # and the resulting file list reflects the expanded entries.
+        m_exp.assert_called_once()
+        assert [f.filename for f in files] == ["libs/sub/file.py"]
