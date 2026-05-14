@@ -4,8 +4,10 @@ Tests for the litellm.api_key guard in LiteLLMAIHandler.chat_completion.
 Verifies:
   - Placeholder key (DUMMY_LITELLM_API_KEY) is never injected into the call.
   - None is not injected (e.g. when OpenAI key is set via litellm.openai_key).
-  - Real provider keys (Groq, SambaNova, XAI, OpenRouter, Azure AD) ARE injected.
+  - Real provider keys (Groq, XAI, OpenRouter, Azure AD) ARE injected.
+  - Env-var providers (e.g. SambaNova) are exported to os.environ, not litellm.api_key.
 """
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import litellm
@@ -274,12 +276,13 @@ class TestApiKeyGuard:
         assert mock_call.call_args[1].get("api_key") == xai_key
 
     @pytest.mark.asyncio
-    async def test_sambanova_key_forwarded_for_non_ollama_model(self, monkeypatch):
-        """SambaNova key must be forwarded for non-Ollama models.
+    async def test_sambanova_key_exported_as_env_var(self, monkeypatch):
+        """SambaNova key must be exported to os.environ["SAMBANOVA_API_KEY"].
 
-        Like Groq and xAI, SambaNova sets litellm.api_key during __init__
-        (see litellm_ai_handler.py) and relies on it being forwarded via
-        kwargs["api_key"] to acompletion.
+        SambaNova uses the env-var pattern (like DeepSeek/Mistral/Codestral):
+        litellm reads SAMBANOVA_API_KEY natively, so __init__ exports it there
+        instead of writing to the shared litellm.api_key global. This keeps
+        SambaNova out of the "last provider wins" litellm.api_key collision.
         """
         sambanova_key = "sambanova-test-key-67890"
 
@@ -306,19 +309,15 @@ class TestApiKeyGuard:
 
         monkeypatch.setattr(litellm_handler, "get_settings", lambda: sambanova_settings)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("SAMBANOVA_API_KEY", raising=False)
         monkeypatch.setattr(litellm, "api_key", None)
 
-        with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion",
-                   new_callable=AsyncMock) as mock_call:
-            mock_call.return_value = _mock_response()
-            handler = LiteLLMAIHandler()
+        LiteLLMAIHandler()
 
-            assert litellm.api_key == sambanova_key
-            await handler.chat_completion(
-                model="sambanova/MiniMax-M2.7", system="sys", user="usr"
-            )
-
-        assert mock_call.call_args[1].get("api_key") == sambanova_key
+        # __init__ exports the key to the env var litellm reads natively...
+        assert os.environ.get("SAMBANOVA_API_KEY") == sambanova_key
+        # ...and must NOT route it through the shared litellm.api_key global.
+        assert litellm.api_key != sambanova_key
 
     @pytest.mark.asyncio
     async def test_ollama_and_groq_coexist(self, monkeypatch):

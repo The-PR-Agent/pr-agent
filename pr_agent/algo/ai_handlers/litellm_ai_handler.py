@@ -156,8 +156,6 @@ class LiteLLMAIHandler(BaseAiHandler):
             litellm.cohere_key = get_settings().cohere.key
         if get_settings().get("GROQ.KEY", None):
             litellm.api_key = get_settings().groq.key
-        if get_settings().get("SAMBANOVA.KEY", None):
-            litellm.api_key = get_settings().sambanova.key
         if get_settings().get("REPLICATE.KEY", None):
             litellm.replicate_key = get_settings().replicate.key
         if get_settings().get("XAI.KEY", None):
@@ -199,6 +197,10 @@ class LiteLLMAIHandler(BaseAiHandler):
         # Support codestral models
         if get_settings().get("CODESTRAL.KEY", None):
             os.environ["CODESTRAL_API_KEY"] = get_settings().get("CODESTRAL.KEY")
+
+        # Support sambanova models
+        if get_settings().get("SAMBANOVA.KEY", None):
+            os.environ["SAMBANOVA_API_KEY"] = get_settings().get("SAMBANOVA.KEY")
 
         # Check for Azure AD configuration
         if get_settings().get("AZURE_AD.CLIENT_ID", None):
@@ -545,7 +547,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                     get_logger().info(f"\nUser prompt:\n{user}")
 
                 # Inject api_key to the call. This key is populated during init by providers
-                # like Groq, SambaNova, XAI, Azure AD, and OpenRouter. Skip if None or placeholder.
+                # like Groq, XAI, Azure AD, and OpenRouter. Skip if None or placeholder.
                 if litellm.api_key and litellm.api_key != DUMMY_LITELLM_API_KEY:
                     kwargs["api_key"] = litellm.api_key
 
