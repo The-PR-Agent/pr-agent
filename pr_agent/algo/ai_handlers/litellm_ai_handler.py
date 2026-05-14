@@ -1,18 +1,27 @@
+import asyncio
+import contextlib
+import json
 import os
+
 import litellm
 import openai
 import requests
 from litellm import acompletion
-from tenacity import retry, retry_if_exception_type, retry_if_not_exception_type, stop_after_attempt
+from tenacity import (retry, retry_if_exception_type,
+                      retry_if_not_exception_type, stop_after_attempt)
 
-from pr_agent.algo import CLAUDE_EXTENDED_THINKING_MODELS, NO_SUPPORT_TEMPERATURE_MODELS, SUPPORT_REASONING_EFFORT_MODELS, USER_MESSAGE_ONLY_MODELS, STREAMING_REQUIRED_MODELS
+from pr_agent.algo import (CLAUDE_EXTENDED_THINKING_MODELS,
+                           NO_SUPPORT_TEMPERATURE_MODELS,
+                           STREAMING_REQUIRED_MODELS,
+                           SUPPORT_REASONING_EFFORT_MODELS,
+                           USER_MESSAGE_ONLY_MODELS)
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
-from pr_agent.algo.ai_handlers.litellm_helpers import _handle_streaming_response, MockResponse, _get_azure_ad_token, \
-    _process_litellm_extra_body
+from pr_agent.algo.ai_handlers.litellm_helpers import (
+    MockResponse, _get_azure_ad_token, _handle_streaming_response,
+    _process_litellm_extra_body)
 from pr_agent.algo.utils import ReasoningEffort, get_version
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
-import json
 
 MODEL_RETRIES = 2
 DUMMY_LITELLM_API_KEY = "dummy_key"  # placeholder set when no OpenAI key is configured
@@ -33,6 +42,11 @@ class LiteLLMAIHandler(BaseAiHandler):
         self.azure = False
         self.api_base = None
         self.repetition_penalty = None
+        self._aws_imds_mode = False
+        self._aws_static_creds = None
+        self._aws_imds_fell_back = False
+        self._aws_boto3_creds = None  # original boto3 credentials object for IMDS refresh
+        self._aws_bedrock_lock = asyncio.Lock()
 
         if get_settings().get("LITELLM.DISABLE_AIOHTTP", False):
             litellm.disable_aiohttp_transport = True
@@ -41,11 +55,82 @@ class LiteLLMAIHandler(BaseAiHandler):
             litellm.openai_key = get_settings().openai.key
         elif 'OPENAI_API_KEY' not in os.environ:
             litellm.api_key = DUMMY_LITELLM_API_KEY
-        if get_settings().get("aws.AWS_ACCESS_KEY_ID"):
+        if os.environ.get("AWS_USE_IMDS", "").strip().lower() in ("1", "true", "yes"):
+            import boto3
+            import botocore.exceptions
+            session = boto3.Session()
+            try:
+                creds = session.get_credentials()
+                if creds:
+                    self._aws_boto3_creds = creds  # store for refresh; avoids env-var re-read
+                    self._write_frozen_aws_creds_to_env(creds.get_frozen_credentials())
+                    self._aws_imds_mode = True
+                    get_logger().info("Using ambient AWS credentials from IMDS/task-role/IRSA")
+                else:
+                    get_logger().warning(
+                        "AWS_USE_IMDS is set but boto3 found no credentials; "
+                        "falling through to static keys"
+                    )
+            except (botocore.exceptions.BotoCoreError, botocore.exceptions.ClientError):
+                # ClientError is intentionally not a BotoCoreError subclass in botocore's
+                # design; it is raised by STS-backed providers (AssumeRole, IRSA web-identity).
+                get_logger().exception(
+                    "AWS_USE_IMDS: failed to resolve credentials via boto3; "
+                    "falling through to static keys"
+                )
+            if not os.environ.get("AWS_REGION_NAME"):
+                if get_settings().get("aws.AWS_REGION_NAME"):
+                    os.environ["AWS_REGION_NAME"] = get_settings().aws.AWS_REGION_NAME
+                else:
+                    try:
+                        region = session.region_name
+                        if region:
+                            os.environ["AWS_REGION_NAME"] = region
+                            get_logger().info(f"AWS region resolved from environment: {region}")
+                        else:
+                            get_logger().warning(
+                                "AWS_USE_IMDS: could not determine AWS region; "
+                                "set AWS_REGION_NAME explicitly"
+                            )
+                    except Exception as e:
+                        get_logger().warning(f"AWS_USE_IMDS: failed to resolve region via boto3: {e}")
+            if get_settings().get("aws.AWS_ACCESS_KEY_ID"):
+                if get_settings().aws.AWS_SECRET_ACCESS_KEY and get_settings().aws.AWS_REGION_NAME:
+                    static_creds = {
+                        "AWS_ACCESS_KEY_ID": get_settings().aws.AWS_ACCESS_KEY_ID,
+                        "AWS_SECRET_ACCESS_KEY": get_settings().aws.AWS_SECRET_ACCESS_KEY,
+                        "AWS_REGION_NAME": get_settings().aws.AWS_REGION_NAME,
+                    }
+                    static_token = get_settings().get("aws.AWS_SESSION_TOKEN", None)
+                    if static_token:
+                        static_creds["AWS_SESSION_TOKEN"] = static_token
+                    if self._aws_imds_mode:
+                        # IMDS succeeded; stash static keys for runtime fallback only
+                        self._aws_static_creds = static_creds
+                    else:
+                        # IMDS failed; activate static credentials immediately and stash
+                        # them so the runtime fallback path is also available if needed.
+                        self._aws_static_creds = static_creds
+                        os.environ["AWS_ACCESS_KEY_ID"] = static_creds["AWS_ACCESS_KEY_ID"]
+                        os.environ["AWS_SECRET_ACCESS_KEY"] = static_creds["AWS_SECRET_ACCESS_KEY"]
+                        os.environ["AWS_REGION_NAME"] = static_creds["AWS_REGION_NAME"]
+                        if static_token:
+                            os.environ["AWS_SESSION_TOKEN"] = static_token
+                        elif "AWS_SESSION_TOKEN" in os.environ:
+                            del os.environ["AWS_SESSION_TOKEN"]
+                        get_logger().info(
+                            "AWS_USE_IMDS: IMDS resolution failed; using static credentials"
+                        )
+        elif get_settings().get("aws.AWS_ACCESS_KEY_ID"):
             assert get_settings().aws.AWS_SECRET_ACCESS_KEY and get_settings().aws.AWS_REGION_NAME, "AWS credentials are incomplete"
             os.environ["AWS_ACCESS_KEY_ID"] = get_settings().aws.AWS_ACCESS_KEY_ID
             os.environ["AWS_SECRET_ACCESS_KEY"] = get_settings().aws.AWS_SECRET_ACCESS_KEY
             os.environ["AWS_REGION_NAME"] = get_settings().aws.AWS_REGION_NAME
+            static_token = get_settings().get("aws.AWS_SESSION_TOKEN", None)
+            if static_token:
+                os.environ["AWS_SESSION_TOKEN"] = static_token
+            elif "AWS_SESSION_TOKEN" in os.environ:
+                del os.environ["AWS_SESSION_TOKEN"]
         if get_settings().get("LITELLM.DROP_PARAMS", None):
             litellm.drop_params = get_settings().litellm.drop_params
         if get_settings().get("LITELLM.SUCCESS_CALLBACK", None):
@@ -108,7 +193,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         # Support mistral models
         if get_settings().get("MISTRAL.KEY", None):
             os.environ["MISTRAL_API_KEY"] = get_settings().get("MISTRAL.KEY")
-        
+
         # Support codestral models
         if get_settings().get("CODESTRAL.KEY", None):
             os.environ["CODESTRAL_API_KEY"] = get_settings().get("CODESTRAL.KEY")
@@ -120,7 +205,7 @@ class LiteLLMAIHandler(BaseAiHandler):
             access_token = _get_azure_ad_token()
             litellm.api_key = access_token
             openai.api_key = access_token
-            
+
             # Set API base from settings
             self.api_base = get_settings().azure_ad.api_base
             litellm.api_base = self.api_base
@@ -152,6 +237,48 @@ class LiteLLMAIHandler(BaseAiHandler):
 
         # Models that require streaming
         self.streaming_required_models = STREAMING_REQUIRED_MODELS
+
+    @staticmethod
+    def _write_frozen_aws_creds_to_env(frozen) -> None:
+        """Write a botocore FrozenCredentials snapshot into os.environ for litellm/Bedrock."""
+        os.environ["AWS_ACCESS_KEY_ID"] = frozen.access_key
+        os.environ["AWS_SECRET_ACCESS_KEY"] = frozen.secret_key
+        if frozen.token:
+            os.environ["AWS_SESSION_TOKEN"] = frozen.token
+        elif "AWS_SESSION_TOKEN" in os.environ:
+            del os.environ["AWS_SESSION_TOKEN"]
+
+    def _refresh_aws_imds_credentials(self) -> bool:
+        """Refresh ambient AWS credentials from boto3 provider chain. Called before each Bedrock call
+        to avoid serving stale credentials from long-lived processes (EC2 roles rotate every ~6h).
+
+        Uses the credentials object stored during __init__ rather than creating a new boto3.Session,
+        which would read the already-set AWS_* env vars and return stale values.
+
+        Returns True on success, False on failure (caller should trigger static fallback)."""
+        import botocore.exceptions
+        try:
+            if self._aws_boto3_creds is None:
+                get_logger().warning("IMDS credential refresh: no boto3 credentials object stored")
+                return False
+            self._write_frozen_aws_creds_to_env(self._aws_boto3_creds.get_frozen_credentials())
+            return True
+        except (botocore.exceptions.BotoCoreError, botocore.exceptions.ClientError):
+            # ClientError (STS/AssumeRole failures) is not a BotoCoreError subclass.
+            get_logger().exception("IMDS credential refresh failed")
+            return False
+
+    def _activate_static_aws_fallback(self):
+        """Swap process env to static credentials for Bedrock fallback after IMDS failure."""
+        os.environ["AWS_ACCESS_KEY_ID"] = self._aws_static_creds["AWS_ACCESS_KEY_ID"]
+        os.environ["AWS_SECRET_ACCESS_KEY"] = self._aws_static_creds["AWS_SECRET_ACCESS_KEY"]
+        os.environ["AWS_REGION_NAME"] = self._aws_static_creds["AWS_REGION_NAME"]
+        if "AWS_SESSION_TOKEN" in self._aws_static_creds:
+            os.environ["AWS_SESSION_TOKEN"] = self._aws_static_creds["AWS_SESSION_TOKEN"]
+        elif "AWS_SESSION_TOKEN" in os.environ:
+            del os.environ["AWS_SESSION_TOKEN"]
+        self._aws_imds_fell_back = True
+        get_logger().warning("Bedrock call failed with ambient (IMDS) credentials; retrying with static credentials")
 
     def prepare_logs(self, response, system, user, resp, finish_reason):
         response_log = response.dict().copy()
@@ -268,174 +395,190 @@ class LiteLLMAIHandler(BaseAiHandler):
         stop=stop_after_attempt(MODEL_RETRIES),
     )
     async def chat_completion(self, model: str, system: str, user: str, temperature: float = 0.2, img_path: str = None):
-        try:
-            resp, finish_reason = None, None
-            deployment_id = self.deployment_id
-            if self.azure:
-                model = 'azure/' + model
-            if 'claude' in model and not system:
-                system = "No system prompt provided"
-                get_logger().warning(
-                    "Empty system prompt for claude model. Adding a newline character to prevent OpenAI API error.")
-            messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+        # Serialize env-var mutation + Bedrock call for IMDS mode to prevent concurrent
+        # requests from interleaving os.environ credentials during asyncio.gather usage.
+        _bedrock_imds = self._aws_imds_mode and 'bedrock/' in model
+        async with (self._aws_bedrock_lock if _bedrock_imds else contextlib.nullcontext()):
+            if _bedrock_imds and not self._aws_imds_fell_back:
+                if not self._refresh_aws_imds_credentials() and self._aws_static_creds:
+                    self._activate_static_aws_fallback()
+                    self._aws_imds_fell_back = True
+            try:
+                resp, finish_reason = None, None
+                deployment_id = self.deployment_id
+                if self.azure:
+                    model = 'azure/' + model
+                if 'claude' in model and not system:
+                    system = "No system prompt provided"
+                    get_logger().warning(
+                        "Empty system prompt for claude model. Adding a newline character to prevent OpenAI API error.")
+                messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
-            if img_path:
-                try:
-                    # check if the image link is alive
-                    r = requests.head(img_path, allow_redirects=True)
-                    if r.status_code == 404:
-                        error_msg = f"The image link is not [alive](img_path).\nPlease repost the original image as a comment, and send the question again with 'quote reply' (see [instructions](https://pr-agent-docs.codium.ai/tools/ask/#ask-on-images-using-the-pr-code-as-context))."
-                        get_logger().error(error_msg)
-                        return f"{error_msg}", "error"
-                except Exception as e:
-                    get_logger().error(f"Error fetching image: {img_path}", e)
-                    return f"Error fetching image: {img_path}", "error"
-                messages[1]["content"] = [{"type": "text", "text": messages[1]["content"]},
-                                          {"type": "image_url", "image_url": {"url": img_path}}]
+                if img_path:
+                    try:
+                        # check if the image link is alive
+                        r = requests.head(img_path, allow_redirects=True)
+                        if r.status_code == 404:
+                            error_msg = f"The image link is not [alive](img_path).\nPlease repost the original image as a comment, and send the question again with 'quote reply' (see [instructions](https://pr-agent-docs.codium.ai/tools/ask/#ask-on-images-using-the-pr-code-as-context))."
+                            get_logger().error(error_msg)
+                            return f"{error_msg}", "error"
+                    except Exception as e:
+                        get_logger().error(f"Error fetching image: {img_path}", e)
+                        return f"Error fetching image: {img_path}", "error"
+                    messages[1]["content"] = [{"type": "text", "text": messages[1]["content"]},
+                                              {"type": "image_url", "image_url": {"url": img_path}}]
 
-            thinking_kwargs_gpt5 = None
-            if model.startswith('gpt-5'):
-                # Use configured reasoning_effort or default to MEDIUM
-                config_effort = get_settings().config.reasoning_effort
-                try:
-                    ReasoningEffort(config_effort)
-                    effort = config_effort
-                except (ValueError, TypeError):
-                    effort = ReasoningEffort.MEDIUM.value
-                    if config_effort is not None:
-                        get_logger().warning(
-                            f"Invalid reasoning_effort '{config_effort}' in config. "
-                            f"Using default '{effort}'. Valid values: {[e.value for e in ReasoningEffort]}"
-                        )
+                thinking_kwargs_gpt5 = None
+                if model.startswith('gpt-5'):
+                    # Use configured reasoning_effort or default to MEDIUM
+                    config_effort = get_settings().config.reasoning_effort
+                    try:
+                        ReasoningEffort(config_effort)
+                        effort = config_effort
+                    except (ValueError, TypeError):
+                        effort = ReasoningEffort.MEDIUM.value
+                        if config_effort is not None:
+                            get_logger().warning(
+                                f"Invalid reasoning_effort '{config_effort}' in config. "
+                                f"Using default '{effort}'. Valid values: {[e.value for e in ReasoningEffort]}"
+                            )
 
-                thinking_kwargs_gpt5 = {
-                    "reasoning_effort": effort,
-                    "allowed_openai_params": ["reasoning_effort"],
-                }
-                get_logger().info(f"Using reasoning_effort='{effort}' for GPT-5 model")
-                model = 'openai/'+model.replace('_thinking', '')  # remove _thinking suffix
+                    thinking_kwargs_gpt5 = {
+                        "reasoning_effort": effort,
+                        "allowed_openai_params": ["reasoning_effort"],
+                    }
+                    get_logger().info(f"Using reasoning_effort='{effort}' for GPT-5 model")
+                    model = 'openai/'+model.replace('_thinking', '')  # remove _thinking suffix
 
 
-            # Currently, some models do not support a separate system and user prompts
-            if model in self.user_message_only_models or get_settings().config.custom_reasoning_model:
-                user = f"{system}\n\n\n{user}"
-                system = ""
-                get_logger().info(f"Using model {model}, combining system and user prompts")
-                messages = [{"role": "user", "content": user}]
-                kwargs = {
-                    "model": model,
-                    "deployment_id": deployment_id,
-                    "messages": messages,
-                    "timeout": get_settings().config.ai_timeout,
-                    "api_base": self.api_base,
-                }
-            else:
-                kwargs = {
-                    "model": model,
-                    "deployment_id": deployment_id,
-                    "messages": messages,
-                    "timeout": get_settings().config.ai_timeout,
-                    "api_base": self.api_base,
-                }
+                # Currently, some models do not support a separate system and user prompts
+                if model in self.user_message_only_models or get_settings().config.custom_reasoning_model:
+                    user = f"{system}\n\n\n{user}"
+                    system = ""
+                    get_logger().info(f"Using model {model}, combining system and user prompts")
+                    messages = [{"role": "user", "content": user}]
+                    kwargs = {
+                        "model": model,
+                        "deployment_id": deployment_id,
+                        "messages": messages,
+                        "timeout": get_settings().config.ai_timeout,
+                        "api_base": self.api_base,
+                    }
+                else:
+                    kwargs = {
+                        "model": model,
+                        "deployment_id": deployment_id,
+                        "messages": messages,
+                        "timeout": get_settings().config.ai_timeout,
+                        "api_base": self.api_base,
+                    }
 
-            # Add temperature only if model supports it
-            if model not in self.no_support_temperature_models and not get_settings().config.custom_reasoning_model:
-                # get_logger().info(f"Adding temperature with value {temperature} to model {model}.")
-                kwargs["temperature"] = temperature
+                # Add temperature only if model supports it
+                if model not in self.no_support_temperature_models and not get_settings().config.custom_reasoning_model:
+                    # get_logger().info(f"Adding temperature with value {temperature} to model {model}.")
+                    kwargs["temperature"] = temperature
 
-            if thinking_kwargs_gpt5:
-                kwargs.update(thinking_kwargs_gpt5)
-                if 'temperature' in kwargs:
-                    del kwargs['temperature']
+                if thinking_kwargs_gpt5:
+                    kwargs.update(thinking_kwargs_gpt5)
+                    if 'temperature' in kwargs:
+                        del kwargs['temperature']
 
-            # Add reasoning_effort if model supports it
-            if model in self.support_reasoning_models:
-                config_effort = get_settings().config.reasoning_effort
-                try:
-                    ReasoningEffort(config_effort)
-                    reasoning_effort = config_effort
-                except (ValueError, TypeError):
-                    reasoning_effort = ReasoningEffort.MEDIUM.value
-                    if config_effort is not None:
-                        get_logger().warning(
-                            f"Invalid reasoning_effort '{config_effort}' in config. "
-                            f"Using default '{reasoning_effort}'. Valid values: {[e.value for e in ReasoningEffort]}"
-                        )
+                # Add reasoning_effort if model supports it
+                if model in self.support_reasoning_models:
+                    config_effort = get_settings().config.reasoning_effort
+                    try:
+                        ReasoningEffort(config_effort)
+                        reasoning_effort = config_effort
+                    except (ValueError, TypeError):
+                        reasoning_effort = ReasoningEffort.MEDIUM.value
+                        if config_effort is not None:
+                            get_logger().warning(
+                                f"Invalid reasoning_effort '{config_effort}' in config. "
+                                f"Using default '{reasoning_effort}'. Valid values: {[e.value for e in ReasoningEffort]}"
+                            )
 
-                get_logger().info(f"Adding reasoning_effort with value {reasoning_effort} to model {model}.")
-                kwargs["reasoning_effort"] = reasoning_effort
+                    get_logger().info(f"Adding reasoning_effort with value {reasoning_effort} to model {model}.")
+                    kwargs["reasoning_effort"] = reasoning_effort
 
-            # https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking
-            if (model in self.claude_extended_thinking_models) and get_settings().config.get("enable_claude_extended_thinking", False):
-                kwargs = self._configure_claude_extended_thinking(model, kwargs)
+                # https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking
+                if (model in self.claude_extended_thinking_models) and get_settings().config.get("enable_claude_extended_thinking", False):
+                    kwargs = self._configure_claude_extended_thinking(model, kwargs)
 
-            if get_settings().litellm.get("enable_callbacks", False):
-                kwargs = self.add_litellm_callbacks(kwargs)
+                if get_settings().litellm.get("enable_callbacks", False):
+                    kwargs = self.add_litellm_callbacks(kwargs)
 
-            seed = get_settings().config.get("seed", -1)
-            if temperature > 0 and seed >= 0:
-                raise ValueError(f"Seed ({seed}) is not supported with temperature ({temperature}) > 0")
-            elif seed >= 0:
-                get_logger().info(f"Using fixed seed of {seed}")
-                kwargs["seed"] = seed
+                seed = get_settings().config.get("seed", -1)
+                if temperature > 0 and seed >= 0:
+                    raise ValueError(f"Seed ({seed}) is not supported with temperature ({temperature}) > 0")
+                elif seed >= 0:
+                    get_logger().info(f"Using fixed seed of {seed}")
+                    kwargs["seed"] = seed
 
-            if self.repetition_penalty:
-                kwargs["repetition_penalty"] = self.repetition_penalty
+                if self.repetition_penalty:
+                    kwargs["repetition_penalty"] = self.repetition_penalty
 
-            #Added support for extra_headers while using litellm to call underlying model, via a api management gateway, would allow for passing custom headers for security and authorization
-            if get_settings().get("LITELLM.EXTRA_HEADERS", None):
-                try:
-                    litellm_extra_headers = json.loads(get_settings().litellm.extra_headers)
-                    if not isinstance(litellm_extra_headers, dict):
-                        raise ValueError("LITELLM.EXTRA_HEADERS must be a JSON object")
-                except json.JSONDecodeError as e:
-                    raise ValueError(f"LITELLM.EXTRA_HEADERS contains invalid JSON: {str(e)}")
-                kwargs["extra_headers"] = litellm_extra_headers
+                #Added support for extra_headers while using litellm to call underlying model, via a api management gateway, would allow for passing custom headers for security and authorization
+                if get_settings().get("LITELLM.EXTRA_HEADERS", None):
+                    try:
+                        litellm_extra_headers = json.loads(get_settings().litellm.extra_headers)
+                        if not isinstance(litellm_extra_headers, dict):
+                            raise ValueError("LITELLM.EXTRA_HEADERS must be a JSON object")
+                    except json.JSONDecodeError as e:
+                        raise ValueError(f"LITELLM.EXTRA_HEADERS contains invalid JSON: {str(e)}")
+                    kwargs["extra_headers"] = litellm_extra_headers
 
-            # Support for custom OpenAI body fields (e.g., Flex Processing)
-            kwargs = _process_litellm_extra_body(kwargs)
+                # Support for custom OpenAI body fields (e.g., Flex Processing)
+                kwargs = _process_litellm_extra_body(kwargs)
 
-            # Support for Bedrock custom inference profile via model_id
-            model_id = get_settings().get("litellm.model_id")
-            if model_id and 'bedrock/' in model:
-                kwargs["model_id"] = model_id
-                get_logger().info(f"Using Bedrock custom inference profile: {model_id}")
+                # Support for Bedrock custom inference profile via model_id
+                model_id = get_settings().get("litellm.model_id")
+                if model_id and 'bedrock/' in model:
+                    kwargs["model_id"] = model_id
+                    get_logger().info(f"Using Bedrock custom inference profile: {model_id}")
 
-            get_logger().debug("Prompts", artifact={"system": system, "user": user})
+                get_logger().debug("Prompts", artifact={"system": system, "user": user})
 
+                if get_settings().config.verbosity_level >= 2:
+                    get_logger().info(f"\nSystem prompt:\n{system}")
+                    get_logger().info(f"\nUser prompt:\n{user}")
+
+                # Inject api_key to the call. This key is populated during init by providers
+                # like Groq, XAI, Azure AD, and OpenRouter. Skip if None or placeholder.
+                if litellm.api_key and litellm.api_key != DUMMY_LITELLM_API_KEY:
+                    kwargs["api_key"] = litellm.api_key
+
+                # Get completion with automatic streaming detection
+                resp, finish_reason, response_obj = await self._get_completion(**kwargs)
+
+            except openai.RateLimitError as e:
+                get_logger().error(f"Rate limit error during LLM inference: {e}")
+                raise
+            except openai.APIError as e:
+                if _bedrock_imds and not self._aws_imds_fell_back and self._aws_static_creds:
+                    self._activate_static_aws_fallback()
+                    # Retry immediately while still holding the lock so that the
+                    # env-var swap is fully visible to this call. Letting @retry
+                    # handle the retry would release the lock between attempts,
+                    # allowing a concurrent coroutine to overwrite os.environ.
+                    resp, finish_reason, response_obj = await self._get_completion(**kwargs)
+                else:
+                    get_logger().warning(f"Error during LLM inference: {e}")
+                    raise
+            except Exception as e:
+                get_logger().warning(f"Unknown error during LLM inference: {e}")
+                raise openai.APIError from e
+
+            get_logger().debug(f"\nAI response:\n{resp}")
+
+            # log the full response for debugging
+            response_log = self.prepare_logs(response_obj, system, user, resp, finish_reason)
+            get_logger().debug("Full_response", artifact=response_log)
+
+            # for CLI debugging
             if get_settings().config.verbosity_level >= 2:
-                get_logger().info(f"\nSystem prompt:\n{system}")
-                get_logger().info(f"\nUser prompt:\n{user}")
+                get_logger().info(f"\nAI response:\n{resp}")
 
-            # Inject api_key to the call. This key is populated during init by providers
-            # like Groq, XAI, Azure AD, and OpenRouter. Skip if None or placeholder.
-            if litellm.api_key and litellm.api_key != DUMMY_LITELLM_API_KEY:
-                kwargs["api_key"] = litellm.api_key
-
-            # Get completion with automatic streaming detection
-            resp, finish_reason, response_obj = await self._get_completion(**kwargs)
-
-        except openai.RateLimitError as e:
-            get_logger().error(f"Rate limit error during LLM inference: {e}")
-            raise
-        except openai.APIError as e:
-            get_logger().warning(f"Error during LLM inference: {e}")
-            raise
-        except Exception as e:
-            get_logger().warning(f"Unknown error during LLM inference: {e}")
-            raise openai.APIError from e
-
-        get_logger().debug(f"\nAI response:\n{resp}")
-
-        # log the full response for debugging
-        response_log = self.prepare_logs(response_obj, system, user, resp, finish_reason)
-        get_logger().debug("Full_response", artifact=response_log)
-
-        # for CLI debugging
-        if get_settings().config.verbosity_level >= 2:
-            get_logger().info(f"\nAI response:\n{resp}")
-
-        return resp, finish_reason
+            return resp, finish_reason
 
     async def _get_completion(self, **kwargs):
         """

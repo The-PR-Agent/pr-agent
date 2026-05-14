@@ -1,4 +1,4 @@
-aiohttp==3.12.15
+aiohttp==3.13.4
 anthropic>=0.69.0
 #anthropic[vertex]==0.47.1
 atlassian-python-api==3.41.4
@@ -13,7 +13,7 @@ google-cloud-aiplatform==1.38.0
 google-generativeai==0.8.3
 google-cloud-storage==2.10.0
 Jinja2==3.1.6
-litellm==1.81.12
+litellm==1.83.14
 loguru==0.7.2
 msrest==0.7.1
 openai>=1.55.3

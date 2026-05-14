@@ -4,7 +4,7 @@
 
 [config]
 # models
-model="gpt-5.4-2026-03-05"
+model="gpt-5.5-2026-04-23"
 fallback_models=["gpt-5.4-mini"]
 #model_reasoning="gpt-5.4-mini" # dedicated reasoning model for self-reflection
 #model_weak="gpt-5.4-nano" # optional, a weaker model to use for some easier tasks
@@ -56,7 +56,7 @@ ignore_language_framework = [] # a list of code-generation languages or framewor
 #
 is_auto_command = false # will be auto-set to true if the command is triggered by an automation
 enable_ai_metadata = false # will enable adding ai metadata
-reasoning_effort = "medium" # "low", "medium", "high"
+reasoning_effort = "medium" # "none", "minimal", "low", "medium", "high", "xhigh"
 # extended thinking for Claude reasoning models
 enable_claude_extended_thinking = false # Set to true to enable extended thinking feature
 extended_thinking_budget_tokens = 2048

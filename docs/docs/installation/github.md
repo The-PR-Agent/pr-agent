@@ -280,6 +280,35 @@ To use local models via Ollama:
 
 **Note:** For local models, you'll need to use a self-hosted runner with Ollama installed, as GitHub Actions hosted runners cannot access localhost services.
 
+##### Using Amazon Bedrock
+
+To use Amazon Bedrock models with static IAM credentials:
+
+```yaml
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        config.model: "bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0"
+        config.fallback_models: '["bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0"]'
+        aws.AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws.AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws.AWS_REGION_NAME: "us-east-1"
+```
+
+**Recommended: IAM Role Credentials on AWS Compute**
+
+When the GitHub Actions runner is on AWS infrastructure (EC2, ECS, EKS), use the instance/task IAM role directly — no secrets required:
+
+```yaml
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        config.model: "bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0"
+        config.fallback_models: '["bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0"]'
+        AWS_USE_IMDS: "true"
+        # AWS_REGION_NAME: us-east-1  # optional if instance metadata provides the region
+```
+
+The IAM role must have `bedrock:InvokeModel` on the target model ARN. See [Bedrock model configuration](../usage-guide/changing_a_model.md#amazon-bedrock) for the full IAM policy example and supported models.
+
 #### Advanced Configuration Options
 
 ##### Custom Review Instructions
