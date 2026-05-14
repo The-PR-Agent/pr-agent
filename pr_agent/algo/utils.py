@@ -823,8 +823,8 @@ def try_fix_yaml(response_text: str,
             data = yaml.safe_load(snippet_text)
             get_logger().info(f"Successfully parsed AI prediction after extracting yaml snippet")
             return data
-        except:
-            pass
+        except Exception as e:
+            get_logger().debug(f"Failed to parse AI prediction after extracting yaml snippet: {e}")
 
 
     # third fallback - try to remove leading and trailing curly brackets
