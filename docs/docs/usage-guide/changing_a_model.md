@@ -164,11 +164,11 @@ key = ... # your Groq api key
 
 ### SambaNova
 
-To use MiniMax-M2.5 model with SambaNova, for example, set:
+To use MiniMax-M2.7 model with SambaNova, for example, set:
 
 ```toml
 [config] # in configuration.toml
-model = "sambanova/MiniMax-M2.5"
+model = "sambanova/MiniMax-M2.7"
 fallback_models = ["sambanova/MiniMax-M2.5"]
 [sambanova] # in .secrets.toml
 key = ... # your SambaNova api key
