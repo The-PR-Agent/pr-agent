@@ -174,7 +174,7 @@ def convert_to_markdown_v2(output_data: dict,
     todo_summary = output_data['review'].pop('todo_summary', '')
     for key, value in output_data['review'].items():
         if value is None or value == '' or value == {} or value == []:
-            if key.lower() not in ['can_be_split', 'key_issues_to_review']:
+            if key.lower() not in ['can_be_split', 'key_issues_to_review', 'review_priority_files']:
                 continue
         key_nice = key.replace('_', ' ').capitalize()
         emoji = emojis.get(key_nice, "")
