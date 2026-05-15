@@ -134,6 +134,18 @@ class PRReviewer:
         rule_paths = get_settings().pr_reviewer.get("review_rules_paths", []) or []
         if isinstance(rule_paths, str):
             rule_paths = [rule_paths]
+        elif isinstance(rule_paths, (list, tuple)):
+            rule_paths = [
+                str(rule_path).strip()
+                for rule_path in rule_paths
+                if str(rule_path).strip()
+            ]
+        else:
+            get_logger().warning(
+                "Invalid review_rules_paths value; expected string or list of strings",
+                artifacts={"review_rules_paths": rule_paths},
+            )
+            rule_paths = []
 
         base = getattr(getattr(self.git_provider, "pr", None), "base", None)
         ref = (
