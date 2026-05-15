@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import ast
 import copy
 import difflib
@@ -153,6 +152,9 @@ def convert_to_markdown_v2(output_data: dict,
         "Estimated effort to review [1-5]": "⏱️",
         "Contribution time cost estimate": "⏳",
         "Ticket compliance check": "🎫",
+        "Risk level": "⚠️",
+        "Merge recommendation": "✅",
+        "Review priority files": "📂",
     }
     markdown_text = ""
     if not incremental_review:
@@ -236,38 +238,29 @@ def convert_to_markdown_v2(output_data: dict,
                     markdown_text += f"### {emoji} Security concerns\n\n"
                     value = emphasize_header(value.strip(), only_markdown=True)
                     markdown_text += f"{value}\n\n"
-        elif 'risk level' in key_nice.lower():
-            risk_value = str(value).strip().lower().replace('_', ' ')
-            risk_display = risk_value.capitalize() if risk_value else 'Unknown'
-            if gfm_supported:
-                markdown_text += f"<tr><td><strong>Risk level</strong>: {risk_display}</td></tr>\n"
+        elif "risk level" in key_nice.lower():
+            risk_value = str(value).strip().lower().replace("_", " ")
+            risk_display = risk_value.capitalize() if risk_value else "Unknown"
+            markdown_text += f"### {emoji} Risk level: {risk_display}\n\n"
+
+        elif "merge recommendation" in key_nice.lower():
+            recommendation = str(value).strip().replace("_", " ")
+            recommendation_display = (
+                recommendation.capitalize() if recommendation else "Unknown"
+            )
+            markdown_text += (
+                f"### {emoji} Merge recommendation: {recommendation_display}\n\n"
+            )
+
+        elif "Review priority files" in key_nice.lower():
+            if not value:
+                markdown_text += f"### {emoji} Priority files: None\n\n"
             else:
-                markdown_text += f"### Risk level: {risk_display}\n\n"
-        elif 'merge recommendation' in key_nice.lower():
-            recommendation = str(value).strip().replace('_', ' ')
-            recommendation_display = recommendation.capitalize() if recommendation else 'Unknown'
-            if gfm_supported:
-                markdown_text += f"<tr><td><strong>Merge recommendation</strong>: {recommendation_display}</td></tr>\n"
-            else:
-                markdown_text += f"### Merge recommendation: {recommendation_display}\n\n"
-        elif 'review priority files' in key_nice.lower():
-            if gfm_supported:
-                markdown_text += "<tr><td>"
-                if not value:
-                    markdown_text += "<strong>Priority files</strong>: None"
-                else:
-                    markdown_text += "<strong>Priority files</strong><br><br>"
-                    for priority_file in value:
-                        markdown_text += f"- {priority_file}<br>"
-                markdown_text += "</td></tr>\n"
-            else:
-                if not value:
-                    markdown_text += "### Priority files: None\n\n"
-                else:
-                    markdown_text += "### Priority files\n\n"
-                    for priority_file in value:
-                        markdown_text += f"- {priority_file}\n"
-                    markdown_text += "\n"
+                markdown_text += f"### {emoji} Priority files\n\n"
+                for priority_file in value:
+                    markdown_text += f"- {priority_file}\n"
+                markdown_text += "\n"
+
         elif 'todo sections' in key_nice.lower():
             if gfm_supported:
                 markdown_text += "<tr><td>"
