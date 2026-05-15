@@ -252,12 +252,17 @@ def convert_to_markdown_v2(output_data: dict,
                 f"### {emoji} Merge recommendation: {recommendation_display}\n\n"
             )
 
-        elif "Review priority files" in key_nice.lower():
-            if not value:
+        elif "review priority files" in key_nice.lower():
+            if not isinstance(value, list):
+                value = []
+
+            priority_files = [str(priority_file).strip() for priority_file in value if str(priority_file).strip()]
+
+            if not priority_files:
                 markdown_text += f"### {emoji} Priority files: None\n\n"
             else:
                 markdown_text += f"### {emoji} Priority files\n\n"
-                for priority_file in value:
+                for priority_file in priority_files:
                     markdown_text += f"- {priority_file}\n"
                 markdown_text += "\n"
 
