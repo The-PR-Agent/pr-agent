@@ -135,8 +135,16 @@ class PRReviewer:
         if isinstance(rule_paths, str):
             rule_paths = [rule_paths]
 
-        ref = getattr(getattr(self.git_provider, 'pr', None), 'head', None)
-        ref = getattr(ref, 'sha', None) or self.git_provider.get_pr_branch()
+        base = getattr(getattr(self.git_provider, "pr", None), "base", None)
+        ref = (
+            getattr(base, "sha", None)
+            or getattr(base, "ref", None)
+            or getattr(self.git_provider, "base_sha", None)
+            or getattr(self.git_provider, "base_ref", None)
+        )
+        if not ref:
+            get_logger().warning("Could not resolve a trusted base ref for review rules")
+            return ""
         loaded_rules = []
         loaded_rule_paths = []
 
