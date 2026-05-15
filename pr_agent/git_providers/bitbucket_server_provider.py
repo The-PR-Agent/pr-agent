@@ -417,6 +417,9 @@ class BitbucketServerProvider(GitProvider):
     def get_pr_branch(self):
         return self.pr.fromRef['displayId']
 
+    def get_pr_base_ref(self) -> str:
+        return self.pr.toRef.get("latestCommit") or self.pr.toRef.get("displayId") or ""
+
     def get_pr_owner_id(self) -> str | None:
         return self.workspace_slug
 

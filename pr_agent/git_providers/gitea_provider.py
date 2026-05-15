@@ -578,6 +578,9 @@ class GiteaProvider(GitProvider):
 
         return self.pr.head.ref if self.pr.head.ref else ""
 
+    def get_pr_base_ref(self) -> str:
+        return self.base_sha or self.base_ref or ""
+
     def get_pr_description_full(self) -> str:
         """Get full PR description with metadata"""
         if not self.pr:

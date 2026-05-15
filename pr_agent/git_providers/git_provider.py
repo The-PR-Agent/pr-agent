@@ -181,6 +181,10 @@ class GitProvider(ABC):
     def get_pr_branch(self):
         pass
 
+    def get_pr_base_ref(self) -> str:
+        get_logger().warning("Not implemented! Returning empty base ref")
+        return ""
+
     @abstractmethod
     def get_user_id(self):
         pass

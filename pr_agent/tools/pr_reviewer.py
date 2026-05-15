@@ -145,14 +145,7 @@ class PRReviewer:
             )
             rule_paths = []
 
-        base = getattr(getattr(self.git_provider, "pr", None), "base", None)
-        ref = (
-            getattr(base, "sha", None)
-            or getattr(base, "ref", None)
-            or getattr(self.git_provider, "base_sha", None)
-            or getattr(self.git_provider, "base_ref", None)
-            or getattr(getattr(self.git_provider, "mr", None), "target_branch", None)
-        )
+        ref = self.git_provider.get_pr_base_ref()
         if not ref:
             get_logger().warning("Could not resolve a trusted base ref for review rules")
             return ""
