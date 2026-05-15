@@ -1,4 +1,4 @@
-import copy
+﻿import copy
 import datetime
 import traceback
 
@@ -141,6 +141,7 @@ class PRReviewer:
             or getattr(base, "ref", None)
             or getattr(self.git_provider, "base_sha", None)
             or getattr(self.git_provider, "base_ref", None)
+            or getattr(getattr(self.git_provider, "mr", None), "target_branch", None)
         )
         if not ref:
             get_logger().warning("Could not resolve a trusted base ref for review rules")
