@@ -12,6 +12,8 @@ fallback_models=["gpt-5.4-mini"]
 git_provider="github"
 publish_output=true
 publish_output_progress=true
+progress_gif_url="" # optional, override for the progress loading gif url (example: 'https://.../spinner.gif').
+progress_gif_width=48 # optional, width (in px) of the progress loading gif.
 verbosity_level=0 # 0,1,2
 use_extra_bad_extensions=false
 # Log

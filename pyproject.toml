@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pr-agent"
-version = "0.34.3"
+version = "0.35.0"
 
 authors = [
   { name = "QodoAI", email = "ofir.f@qodo.ai" },
