@@ -152,6 +152,58 @@ def test_repo_context_cache_evicts_oldest_entry_when_full():
         assert cache.get("third", missing) == "three"
 
 
+def test_get_repo_context_config_normalizes_inputs(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", "AGENTS.md")
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", "12")
+
+    assert repo_context._get_repo_context_config() == (["AGENTS.md"], 12)
+
+
+def test_get_repo_context_config_rejects_non_list_container(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", {"AGENTS.md": True})
+
+    assert repo_context._get_repo_context_config() is None
+
+
+def test_provider_supports_repo_context_warns_once_for_unsupported_provider(repo_context_settings):
+    provider = UnsupportedProvider()
+
+    with patch("pr_agent.algo.repo_context.get_logger") as mock_get_logger:
+        assert repo_context._provider_supports_repo_context(provider) is False
+        assert repo_context._provider_supports_repo_context(provider) is False
+
+    mock_get_logger.return_value.warning.assert_called_once_with(
+        "repo_context_files is configured, but UnsupportedProvider does not support repository file fetching; "
+        "skipping repo context"
+    )
+
+
+def test_load_repo_context_files_normalizes_fetch_results():
+    provider = FakeProvider({
+        "AGENTS.md": b"Repo purpose",
+        "EMPTY.md": "",
+        "MISSING.md": None,
+    })
+
+    files, had_fetch_error = repo_context._load_repo_context_files(
+        provider, ["AGENTS.md", "EMPTY.md", "MISSING.md", " "]
+    )
+
+    assert files == {"AGENTS.md": "Repo purpose"}
+    assert had_fetch_error is False
+    assert provider.requested_paths == ["AGENTS.md", "EMPTY.md", "MISSING.md"]
+
+
+def test_load_repo_context_files_reports_fetch_errors():
+    provider = FakeProvider({})
+    provider.get_repo_file_content = Mock(side_effect=Exception("temporary outage"))
+
+    files, had_fetch_error = repo_context._load_repo_context_files(provider, ["AGENTS.md"])
+
+    assert files == {}
+    assert had_fetch_error is True
+
+
 def test_build_repo_context_process_cache_invalidates_when_config_changes(repo_context_settings):
     repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["AGENTS.md"])
     repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 500)
