@@ -407,12 +407,26 @@ class GitLabProvider(GitProvider):
             get_logger().error(f"Could not get diff for merge request {self.id_mr}")
             raise DiffNotFoundError(f"Could not get diff for merge request {self.id_mr}") from e
 
-    def get_incremental_commits(self, incremental: Optional[IncrementalPR] = None):
-        """Populate state needed for an incremental review.
+    # Anchor-note prefixes per incremental "kind". An incremental run looks for the most recent
+    # prior note matching ANY of these prefixes and uses its timestamp as the timeline anchor.
+    _INCREMENTAL_ANCHOR_PREFIXES = {
+        "review": (
+            PRReviewHeader.REGULAR.value,         # "## PR Reviewer Guide"
+            PRReviewHeader.INCREMENTAL.value,     # "## Incremental PR Reviewer Guide"
+        ),
+        "suggestions": (
+            "## PR Code Suggestions ✨",           # summary-table mode
+            "**Suggestion:**",                     # commitable-suggestions inline mode
+        ),
+    }
 
-        Mirrors `GithubProvider.get_incremental_commits`: locates the previous review note,
-        determines which commits have arrived since, and pre-computes the diff set restricted
-        to those commits. Falls back silently to a full review when no previous review exists.
+    def get_incremental_commits(self, incremental: Optional[IncrementalPR] = None, kind: str = "review"):
+        """Populate state needed for an incremental run.
+
+        Mirrors `GithubProvider.get_incremental_commits` for `/review -i`, and also supports
+        `/improve -i` via `kind="suggestions"` — in that case we anchor on the most recent prior
+        `## PR Code Suggestions` or inline `**Suggestion:**` note instead of a review note, so
+        re-runs of `/improve` only act on commits added since the last suggestions pass.
         """
         if incremental is None:
             incremental = IncrementalPR(False)
@@ -420,6 +434,7 @@ class GitLabProvider(GitProvider):
         if not self.incremental.is_incremental:
             return
         self.unreviewed_files_set = {}
+        self._incremental_kind = kind
         self._get_incremental_commits()
 
     def _get_incremental_commits(self):
@@ -427,9 +442,13 @@ class GitLabProvider(GitProvider):
             # gitlab returns commits newest-first; reverse to match PyGithub's oldest-first ordering
             self.mr_commits = list(self.mr.commits())[::-1]
 
-        self.previous_review = self.get_previous_review(full=True, incremental=True)
+        kind = getattr(self, '_incremental_kind', 'review')
+        prefixes = self._INCREMENTAL_ANCHOR_PREFIXES.get(kind, ())
+        self.previous_review = self._find_anchor_note(prefixes) if prefixes else None
         if not self.previous_review:
-            get_logger().info("No previous review found, will review the entire MR")
+            get_logger().info(
+                f"No previous {kind} comment found, will fall back to a full run"
+            )
             self.incremental.is_incremental = False
             return
 
@@ -515,6 +534,22 @@ class GitLabProvider(GitProvider):
     def get_previous_review(self, *, full: bool, incremental: bool):
         if not (full or incremental):
             raise ValueError("At least one of full or incremental must be True")
+        prefixes = []
+        if full:
+            prefixes.append(PRReviewHeader.REGULAR.value)
+        if incremental:
+            prefixes.append(PRReviewHeader.INCREMENTAL.value)
+        return self._find_anchor_note(prefixes)
+
+    def _find_anchor_note(self, prefixes):
+        """Return the most recent MR note whose body starts with any of `prefixes`.
+
+        Used by incremental flows (`/review -i`, `/improve -i`) to find the timestamp
+        we anchor the commit timeline on. Returns a `_GitlabIncrementalNote` adapter
+        with `.created_at` parsed to a naive UTC datetime, or `None` if no match.
+        """
+        if not prefixes:
+            return None
         # Use hasattr (not truthy) so a legitimately empty notes list still counts as cached;
         # otherwise we'd re-fetch from GitLab on every call for MRs that have no notes.
         if not hasattr(self, '_incremental_notes_cache'):
@@ -523,11 +558,6 @@ class GitLabProvider(GitProvider):
             except Exception as e:
                 get_logger().error(f"Failed to list MR notes for incremental review: {e}")
                 return None
-        prefixes = []
-        if full:
-            prefixes.append(PRReviewHeader.REGULAR.value)
-        if incremental:
-            prefixes.append(PRReviewHeader.INCREMENTAL.value)
         # gitlab returns notes newest-first; pick the most recent matching note
         notes_sorted = sorted(
             (n for n in self._incremental_notes_cache if getattr(n, 'body', None)),

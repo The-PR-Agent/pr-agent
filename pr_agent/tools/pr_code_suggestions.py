@@ -24,7 +24,7 @@ from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import (AzureDevopsProvider, GithubProvider,
                                     GitLabProvider, get_git_provider,
                                     get_git_provider_with_context)
-from pr_agent.git_providers.git_provider import get_main_pr_language, GitProvider
+from pr_agent.git_providers.git_provider import IncrementalPR, get_main_pr_language, GitProvider
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
 from pr_agent.tools.pr_description import insert_br_after_x_chars
@@ -36,6 +36,21 @@ class PRCodeSuggestions:
                  ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
 
         self.git_provider = get_git_provider_with_context(pr_url)
+        self.args = args
+        self.incremental = self._parse_incremental(args)
+        # When invoked as `/improve -i`, narrow `git_provider.get_diff_files()` to the files
+        # changed since the previous suggestions pass. Falls back to full when the provider
+        # doesn't support incremental scope or no prior suggestion comment exists.
+        if self.incremental.is_incremental and hasattr(self.git_provider, "get_incremental_commits"):
+            try:
+                self.git_provider.get_incremental_commits(self.incremental, kind="suggestions")
+            except TypeError:
+                # Older provider signature without the `kind` kwarg — skip incremental scope.
+                get_logger().info(
+                    "Provider does not support kind-based incremental commits; "
+                    "running /improve on the full MR diff"
+                )
+                self.incremental = IncrementalPR(False)
         self.main_language = get_main_pr_language(
             self.git_provider.get_languages(), self.git_provider.get_files()
         )
@@ -90,8 +105,26 @@ class PRCodeSuggestions:
         self.progress = build_progress_comment()
         self.progress_response = None
 
+    @staticmethod
+    def _parse_incremental(args):
+        """Parse the `-i` flag for `/improve` exactly like `PRReviewer.parse_incremental`."""
+        is_incremental = bool(args and len(args) >= 1 and args[0] == "-i")
+        return IncrementalPR(is_incremental)
+
     async def run(self):
         try:
+            if (self.incremental.is_incremental
+                    and hasattr(self.git_provider, "unreviewed_files_set")
+                    and not self.git_provider.unreviewed_files_set):
+                # Anchor note exists and the timeline walked cleanly, but no files changed in the
+                # commits added since the previous suggestions pass. Skip silently instead of
+                # re-running on the full MR (which would re-post identical suggestions).
+                get_logger().info(
+                    f"Incremental /improve for {self.pr_url}: no files changed since the previous "
+                    f"suggestions pass; skipping"
+                )
+                return None
+
             if not self.git_provider.get_files():
                 get_logger().info(f"PR has no files: {self.pr_url}, skipping code suggestions")
                 return None

@@ -506,6 +506,65 @@ class TestGitLabIncrementalReview:
         assert first is None and second is None
         assert gitlab_provider.mr.notes.list.call_count == 1
 
+    def test_incremental_kind_suggestions_anchors_on_suggestion_note(self, gitlab_provider, mock_project):
+        # When kind="suggestions", we anchor on the latest /improve output (either the
+        # "## PR Code Suggestions ✨" summary or an inline "**Suggestion:**" note),
+        # NOT on a /review note posted later in the same CI run.
+        gitlab_provider.mr.notes.list.return_value = [
+            # Most recent: a review-incremental note posted AFTER the last /improve run.
+            self._make_note(9, "## Incremental PR Reviewer Guide 🔍\nbody", "2026-05-15T10:05:00Z"),
+            # The actual /improve anchor we want to pick.
+            self._make_note(8, "**Suggestion:** Используйте Number вместо parseInt...", "2026-05-15T10:00:00Z"),
+            # An older /review note that should NOT win over the suggestion above.
+            self._make_note(5, "## PR Reviewer Guide 🔍\nold", "2026-05-15T09:00:00Z"),
+        ]
+        gitlab_provider.mr.commits.return_value = [
+            self._make_commit("c2", "2026-05-15T10:10:00Z"),  # after the suggestion note
+            self._make_commit("c0", "2026-05-15T09:30:00Z"),  # before the suggestion note
+        ]
+        mock_project.repository_compare.return_value = {
+            "diffs": [{"new_path": "a.py", "old_path": "a.py", "diff": "@@ ... @@",
+                       "new_file": False, "deleted_file": False, "renamed_file": False}],
+        }
+
+        gitlab_provider.get_incremental_commits(IncrementalPR(True), kind="suggestions")
+
+        assert gitlab_provider.incremental.is_incremental is True
+        assert gitlab_provider.incremental.first_new_commit_sha == "c2"
+        assert gitlab_provider.incremental.last_seen_commit_sha == "c0"
+        mock_project.repository_compare.assert_called_once_with("c0", "head")
+
+    def test_incremental_kind_suggestions_falls_back_when_no_prior_suggestion(self, gitlab_provider, mock_project):
+        # A /review note exists, but no /improve has ever run. /improve -i must fall back to
+        # a full pass, not anchor on the review note.
+        gitlab_provider.mr.notes.list.return_value = [
+            self._make_note(5, "## PR Reviewer Guide 🔍\nbody", "2026-05-15T09:00:00Z"),
+        ]
+        gitlab_provider.mr.commits.return_value = [
+            self._make_commit("c0", "2026-05-15T08:30:00Z"),
+        ]
+
+        gitlab_provider.get_incremental_commits(IncrementalPR(True), kind="suggestions")
+
+        assert gitlab_provider.incremental.is_incremental is False
+        mock_project.repository_compare.assert_not_called()
+
+    def test_get_incremental_commits_default_kind_is_review(self, gitlab_provider, mock_project):
+        # Sanity-check backward compatibility: no kind kwarg ⇒ behaves like a review run.
+        gitlab_provider.mr.notes.list.return_value = [
+            # A /improve note that must be IGNORED in default (review) mode.
+            self._make_note(8, "**Suggestion:** xyz", "2026-05-15T10:00:00Z"),
+        ]
+        gitlab_provider.mr.commits.return_value = [
+            self._make_commit("c0", "2026-05-15T09:30:00Z"),
+        ]
+
+        gitlab_provider.get_incremental_commits(IncrementalPR(True))
+
+        # No review note exists -> fallback to full review (NOT anchoring on the suggestion note).
+        assert gitlab_provider.incremental.is_incremental is False
+        mock_project.repository_compare.assert_not_called()
+
     def test_incremental_get_diff_files_expands_submodule_changes(self, gitlab_provider):
         # Set up incremental state directly to isolate get_diff_files behaviour.
         gitlab_provider.incremental = IncrementalPR(True)
