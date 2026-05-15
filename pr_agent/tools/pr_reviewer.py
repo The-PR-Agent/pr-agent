@@ -160,10 +160,10 @@ class PRReviewer:
             max_tokens = int(max_tokens)
         except (TypeError, ValueError):
             get_logger().warning(
-        "Invalid max_review_rules_tokens value; skipping token clipping",
-        artifacts={"max_review_rules_tokens": max_tokens},
-    )
-        max_tokens = 0
+            "Invalid max_review_rules_tokens value; skipping token clipping",
+            artifacts={"max_review_rules_tokens": max_tokens},
+            )
+            max_tokens = 0
 
         if max_tokens > 0:
             review_rules = clip_tokens(review_rules, max_tokens)
