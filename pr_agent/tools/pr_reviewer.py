@@ -156,9 +156,17 @@ class PRReviewer:
 
         review_rules = "\n\n---\n\n".join(loaded_rules)
         max_tokens = get_settings().pr_reviewer.get("max_review_rules_tokens", 0)
-        if max_tokens and int(max_tokens) > 0:
-            review_rules = clip_tokens(review_rules, int(max_tokens))
+        try:
+            max_tokens = int(max_tokens)
+        except (TypeError, ValueError):
+            get_logger().warning(
+        "Invalid max_review_rules_tokens value; skipping token clipping",
+        artifacts={"max_review_rules_tokens": max_tokens},
+    )
+        max_tokens = 0
 
+        if max_tokens > 0:
+            review_rules = clip_tokens(review_rules, max_tokens)
         get_logger().info("Loaded review rules for this PR", artifacts={"rule_files": loaded_rule_paths})
         return review_rules
 
