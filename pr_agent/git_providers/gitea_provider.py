@@ -581,6 +581,20 @@ class GiteaProvider(GitProvider):
     def get_pr_base_ref(self) -> str:
         return self.base_sha or self.base_ref or ""
 
+    def get_pr_file_content(self, file_path: str, branch: str) -> str:
+        try:
+            return self.repo_api.get_file_content(
+                owner=self.owner,
+                repo=self.repo,
+                commit_sha=branch,
+                filepath=file_path,
+            )
+        except Exception as e:
+            self.logger.warning(
+                f"Error retrieving file {file_path} from ref {branch}: {e}"
+            )
+            return ""
+
     def get_pr_description_full(self) -> str:
         """Get full PR description with metadata"""
         if not self.pr:
