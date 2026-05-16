@@ -1,3 +1,8 @@
+---
+title: "Usage Guide"
+sidebar_position: 1
+---
+
 # Usage guide
 
 This section provides a detailed guide on how to use PR-Agent.
@@ -19,6 +24,6 @@ It includes information on how to adjust PR-Agent configurations, define which t
 - [Additional Configurations](./additional_configurations.md)
     - [Ignoring files from analysis](./additional_configurations.md#ignoring-files-from-analysis)
     - [Extra instructions](./additional_configurations.md#extra-instructions)
-    - [Working with large PRs](./additional_configurations.md#working-with-large-prs)
+    - [Working with large PRs](./additional_configurations.md)
     - [Changing a model](./changing_a_model.md)
 - [FAQ](../faq/index.md)

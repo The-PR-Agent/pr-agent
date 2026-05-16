@@ -1,3 +1,8 @@
+---
+title: "Generate Labels"
+sidebar_position: 7
+---
+
 ## Overview
 
 The `generate_labels` tool scans the PR code changes and generates custom labels for the PR based on the content and context of the changes.
@@ -12,11 +17,11 @@ It can be invoked manually by commenting on any PR:
 
 Invoke the tool manually by commenting `/generate_labels` on any PR:
 
-![Generate Labels](https://codium.ai/images/pr_agent/generate_labels_comment.png){width=512}
+<img src="https://qodo.ai/images/pr_agent/generate_labels_comment.png" alt="Generate Labels" width="512" />
 
 The tool will analyze the PR and add appropriate labels:
 
-![Generate Labels Result](https://codium.ai/images/pr_agent/generate_labels_result.png){width=512}
+<img src="https://qodo.ai/images/pr_agent/generate_labels_result.png" alt="Generate Labels Result" width="512" />
 
 ## Configuration options
 

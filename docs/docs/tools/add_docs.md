@@ -1,3 +1,8 @@
+---
+title: "Add Docs"
+sidebar_position: 6
+---
+
 ## Overview
 
 The `add_docs` tool scans the PR code changes and suggests documentation for any code components that are missing documentation, such as functions, classes, and methods.
@@ -12,11 +17,11 @@ It can be invoked manually by commenting on any PR:
 
 Invoke the tool manually by commenting `/add_docs` on any PR:
 
-![Add Docs](https://codium.ai/images/pr_agent/add_docs_comment.png){width=512}
+<img src="https://qodo.ai/images/pr_agent/add_docs_comment.png" alt="Add Docs" width="512" />
 
 The tool will generate documentation suggestions as inline code suggestions:
 
-![Add Docs Result](https://codium.ai/images/pr_agent/add_docs_result.png){width=512}
+<img src="https://qodo.ai/images/pr_agent/add_docs_result.png" alt="Add Docs Result" width="512" />
 
 ### Language-specific documentation styles
 

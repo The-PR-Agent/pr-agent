@@ -1,3 +1,8 @@
+---
+title: "GitLab"
+sidebar_position: 5
+---
+
 ## Run as a GitLab Pipeline
 
 You can use a pre-built Action Docker image to run PR-Agent as a GitLab pipeline. This is a simple way to get started with PR-Agent without setting up your own server.

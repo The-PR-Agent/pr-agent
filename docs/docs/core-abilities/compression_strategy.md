@@ -1,3 +1,8 @@
+---
+title: "Compression Strategy"
+sidebar_position: 2
+---
+
 
 `Supported Git Platforms: GitHub, GitLab, Bitbucket`
 
@@ -54,4 +59,4 @@ We use [tiktoken](https://github.com/openai/tiktoken) to tokenize the patches af
 
 #### Example
 
-![Core Abilities](https://codium.ai/images/git_patch_logic.png){width=768}
+<img src="https://qodo.ai/images/git_patch_logic.png" alt="Core Abilities" width="768" />

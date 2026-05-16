@@ -1,3 +1,11 @@
+---
+title: "Improve"
+sidebar_position: 4
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
 ## Overview
 
 The `improve` tool scans the PR code changes, and automatically generates meaningful suggestions for improving the PR code.
@@ -9,11 +17,18 @@ The tool can be triggered automatically every time a new PR is [opened](../usage
 
 ## How it looks
 
-=== "Suggestions Overview"
-    ![code_suggestions_as_comment_closed](https://codium.ai/images/pr_agent/code_suggestions_as_comment_closed.png){width=512}
+<Tabs>
+<TabItem value="suggestions-overview" label="Suggestions Overview">
 
-=== "Selecting a specific suggestion"
-    ![code_suggestions_as_comment_open](https://codium.ai/images/pr_agent/code_suggestions_as_comment_open.png){width=512}
+<img src="https://qodo.ai/images/pr_agent/code_suggestions_as_comment_closed.png" alt="code_suggestions_as_comment_closed" width="512" />
+
+</TabItem>
+<TabItem value="selecting-a-specific-suggestion" label="Selecting a specific suggestion">
+
+<img src="https://qodo.ai/images/pr_agent/code_suggestions_as_comment_open.png" alt="code_suggestions_as_comment_open" width="512" />
+
+</TabItem>
+</Tabs>
 
 ___
 
@@ -35,7 +50,7 @@ For example, you can choose to present all the suggestions as committable code c
 /improve --pr_code_suggestions.commitable_code_suggestions=true
 ```
 
-![improve](https://codium.ai/images/pr_agent/improve.png){width=512}
+<img src="https://qodo.ai/images/pr_agent/improve.png" alt="improve" width="512" />
 
 ### Automatic triggering
 
@@ -60,9 +75,9 @@ num_code_suggestions_per_chunk = ...
 
 PR-Agent supports two modes for presenting code suggestions: 
 
-1) [Table](https://codium.ai/images/pr_agent/code_suggestions_as_comment_closed.png) mode 
+1) [Table](https://qodo.ai/images/pr_agent/code_suggestions_as_comment_closed.png) mode 
 
-2) [Inline Committable](https://codium.ai/images/pr_agent/improve.png) code comments mode.
+2) [Inline Committable](https://qodo.ai/images/pr_agent/improve.png) code comments mode.
 
 The table format offers several key advantages:
 
@@ -75,7 +90,7 @@ The table format offers several key advantages:
 
 Table mode is the default of PR-Agent, and is recommended approach for most users due to these benefits. 
 
-![code_suggestions_as_comment_closed.png](https://codium.ai/images/pr_agent/code_suggestions_as_comment_closed.png){width=512}
+<img src="https://qodo.ai/images/pr_agent/code_suggestions_as_comment_closed.png" alt="code_suggestions_as_comment_closed.png" width="512" />
 
 Teams with specific preferences can enable committable code comments mode in their local configuration, or use [dual publishing mode](#dual-publishing-mode).
 
@@ -111,61 +126,68 @@ Use triple quotes to write multi-line instructions. Use bullet points or numbers
 
 PR-Agent supports both simple and hierarchical best practices configurations to provide guidance to the AI model for generating relevant code suggestions.
 
-???- tip "Writing effective best practices files"
-    
-    The following guidelines apply to all best practices files:
-    
-    - Write clearly and concisely
-    - Include brief code examples when helpful with before/after patterns
-    - Focus on project-specific guidelines that will result in relevant suggestions you actually want to get
-    - Keep each file relatively short, under 800 lines, since:
-        - AI models may not process effectively very long documents
-        - Long files tend to contain generic guidelines already known to AI
-        - Maximum multiple file accumulated content is limited to 2000 lines.
-    - Use pattern-based structure rather than simple bullet points for better clarity
+<details>
+<summary>Writing effective best practices files</summary>
 
-???- tip "Example of a best practices file"
- 
-    Pattern 1: Add proper error handling with try-except blocks around external function calls.
-    
-    Example code before:
 
-    ```python
+The following guidelines apply to all best practices files:
+
+- Write clearly and concisely
+- Include brief code examples when helpful with before/after patterns
+- Focus on project-specific guidelines that will result in relevant suggestions you actually want to get
+- Keep each file relatively short, under 800 lines, since:
+    - AI models may not process effectively very long documents
+    - Long files tend to contain generic guidelines already known to AI
+    - Maximum multiple file accumulated content is limited to 2000 lines.
+- Use pattern-based structure rather than simple bullet points for better clarity
+
+</details>
+
+<details>
+<summary>Example of a best practices file</summary>
+
+Pattern 1: Add proper error handling with try-except blocks around external function calls.
+
+Example code before:
+
+```python
+# Some code that might raise an exception
+return process_pr_data(data)
+```
+
+Example code after:
+
+```python
+try:
     # Some code that might raise an exception
     return process_pr_data(data)
-    ```
+except Exception as e:
+    logger.exception("Failed to process request", extra={"error": e})
+```
 
-    Example code after:
+Pattern 2: Add defensive null/empty checks before accessing object properties or performing operations on potentially null variables to prevent runtime errors.
 
-    ```python
-    try:
-        # Some code that might raise an exception
-        return process_pr_data(data)
-    except Exception as e:
-        logger.exception("Failed to process request", extra={"error": e})
-    ```
+Example code before:
 
-    Pattern 2: Add defensive null/empty checks before accessing object properties or performing operations on potentially null variables to prevent runtime errors.
-    
-    Example code before:
+```python
+def get_pr_code(pr_data):
+    if "changed_code" in pr_data:
+        return pr_data.get("changed_code", "")
+    return ""
+```
 
-    ```python
-    def get_pr_code(pr_data):
-        if "changed_code" in pr_data:
-            return pr_data.get("changed_code", "")
+Example code after:
+
+```python
+def get_pr_code(pr_data):
+    if pr_data is None:
         return ""
-    ```
+    if "changed_code" in pr_data:
+        return pr_data.get("changed_code", "")
+    return ""
+```
 
-    Example code after:
-
-    ```python
-    def get_pr_code(pr_data):
-        if pr_data is None:
-            return ""
-        if "changed_code" in pr_data:
-            return pr_data.get("changed_code", "")
-        return ""
-    ```
+</details>
 
 #### Local best practices
 
@@ -197,7 +219,7 @@ In such cases, we recommend prioritizing the suggestion's detailed description, 
 
 ### Dual publishing mode
 
-Our recommended approach for presenting code suggestions is through a [table](./improve.md#overview) (`--pr_code_suggestions.commitable_code_suggestions=false`).
+Our recommended approach for presenting code suggestions is through a [table](./improve.mdx#overview) (`--pr_code_suggestions.commitable_code_suggestions=false`).
 This method significantly reduces the PR footprint and allows for quick and easy digestion of multiple suggestions.
 
 We also offer a complementary **dual publishing mode**. When enabled, suggestions exceeding a certain score threshold are not only displayed in the table, but also presented as committable PR comments.
@@ -231,32 +253,34 @@ You can set the content of the checkbox text via:
 code_suggestions_self_review_text = "... (your text here) ..."
 ```
 
-![self_review_1](https://codium.ai/images/pr_agent/self_review_1.png){width=512}
+<img src="https://qodo.ai/images/pr_agent/self_review_1.png" alt="self_review_1" width="512" />
 
-!!! tip "Tip - Reducing visual footprint after self-review"
+:::tip[Tip - Reducing visual footprint after self-review]
 
-    The configuration parameter `pr_code_suggestions.fold_suggestions_on_self_review` (default is True)
-    can be used to automatically fold the suggestions after the user clicks the self-review checkbox.
+The configuration parameter `pr_code_suggestions.fold_suggestions_on_self_review` (default is True)
+can be used to automatically fold the suggestions after the user clicks the self-review checkbox.
 
-    This reduces the visual footprint of the suggestions, and also indicates to the PR reviewer that the suggestions have been reviewed by the PR author, and don't require further attention.
+This reduces the visual footprint of the suggestions, and also indicates to the PR reviewer that the suggestions have been reviewed by the PR author, and don't require further attention.
+:::
 
-!!! tip "Tip - Demanding self-review from the PR author"
+:::tip[Tip - Demanding self-review from the PR author]
 
-    By setting:
-    ```toml
-    [pr_code_suggestions]
-    approve_pr_on_self_review = true
-    ```
-    the tool can automatically add an approval when the PR author clicks the self-review checkbox.
+By setting:
+```toml
+[pr_code_suggestions]
+approve_pr_on_self_review = true
+```
+the tool can automatically add an approval when the PR author clicks the self-review checkbox.
 
 
-    - If you set the number of required reviewers for a PR to 2, this effectively means that the PR author must click the self-review checkbox before the PR can be merged (in addition to a human reviewer).
+- If you set the number of required reviewers for a PR to 2, this effectively means that the PR author must click the self-review checkbox before the PR can be merged (in addition to a human reviewer).
 
-    ![self_review_2](https://codium.ai/images/pr_agent/self_review_2.png){width=512}
+<img src="https://qodo.ai/images/pr_agent/self_review_2.png" alt="self_review_2" width="512" />
 
-    - If you keep the number of required reviewers for a PR to 1 and enable this configuration, this effectively means that the PR author can approve the PR by actively clicking the self-review checkbox.
+- If you keep the number of required reviewers for a PR to 1 and enable this configuration, this effectively means that the PR author can approve the PR by actively clicking the self-review checkbox.
 
-        To prevent unauthorized approvals, this configuration defaults to false, and cannot be altered through online comments; enabling requires a direct update to the configuration file and a commit to the repository. This ensures that utilizing the feature demands a deliberate documented decision by the repository owner.
+    To prevent unauthorized approvals, this configuration defaults to false, and cannot be altered through online comments; enabling requires a direct update to the configuration file and a commit to the repository. This ensures that utilizing the feature demands a deliberate documented decision by the repository owner.
+:::
 
 
 ### How many code suggestions are generated?
@@ -281,59 +305,67 @@ Note: Chunking is primarily relevant for large PRs. For most PRs (up to 600 line
 
 ## Configuration options
 
-???+ example "General options"
+<details open>
+<summary>General options</summary>
 
-    <table>
-      <tr>
-        <td><b>extra_instructions</b></td>
-        <td>Optional extra instructions to the tool. For example: "focus on the changes in the file X. Ignore change in ...".</td>
-      </tr>
-      <tr>
-        <td><b>commitable_code_suggestions</b></td>
-        <td>If set to true, the tool will display the suggestions as committable code comments. Default is false.</td>
-      </tr>
-      <tr>
-        <td><b>dual_publishing_score_threshold</b></td>
-        <td>Minimum score threshold for suggestions to be presented as committable PR comments in addition to the table. Default is -1 (disabled).</td>
-      </tr>
-      <tr>
-        <td><b>focus_only_on_problems</b></td>
-        <td>If set to true, suggestions will focus primarily on identifying and fixing code problems, and less on style considerations like best practices, maintainability, or readability. Default is true.</td> 
-      </tr>
-      <tr>
-        <td><b>persistent_comment</b></td>
-        <td>If set to true, the improve comment will be persistent, meaning that every new improve request will edit the previous one. Default is true.</td>
-      </tr>
-      <tr>
-        <td><b>suggestions_score_threshold</b></td>
-        <td> Any suggestion with importance score less than this threshold will be removed. Default is 0. Highly recommend not to set this value above 7-8, since above it may clip relevant suggestions that can be useful. </td>
-      </tr>
-      <tr>
-        <td><b>enable_help_text</b></td>
-        <td>If set to true, the tool will display a help text in the comment. Default is false.</td>
-      </tr>
-      <tr>
-        <td><b>enable_chat_text</b></td>
-        <td>If set to true, the tool will display a reference to the PR chat in the comment. Default is false.</td>
-      </tr>
-      <tr>
-        <td><b>publish_output_no_suggestions</b></td>
-        <td>If set to true, the tool will publish a comment even if no suggestions were found. Default is true.</td>
-      </tr>
-    </table>
 
-???+ example "Params for number of suggestions and AI calls"
+<table>
+  <tr>
+    <td><b>extra_instructions</b></td>
+    <td>Optional extra instructions to the tool. For example: "focus on the changes in the file X. Ignore change in ...".</td>
+  </tr>
+  <tr>
+    <td><b>commitable_code_suggestions</b></td>
+    <td>If set to true, the tool will display the suggestions as committable code comments. Default is false.</td>
+  </tr>
+  <tr>
+    <td><b>dual_publishing_score_threshold</b></td>
+    <td>Minimum score threshold for suggestions to be presented as committable PR comments in addition to the table. Default is -1 (disabled).</td>
+  </tr>
+  <tr>
+    <td><b>focus_only_on_problems</b></td>
+    <td>If set to true, suggestions will focus primarily on identifying and fixing code problems, and less on style considerations like best practices, maintainability, or readability. Default is true.</td> 
+  </tr>
+  <tr>
+    <td><b>persistent_comment</b></td>
+    <td>If set to true, the improve comment will be persistent, meaning that every new improve request will edit the previous one. Default is true.</td>
+  </tr>
+  <tr>
+    <td><b>suggestions_score_threshold</b></td>
+    <td> Any suggestion with importance score less than this threshold will be removed. Default is 0. Highly recommend not to set this value above 7-8, since above it may clip relevant suggestions that can be useful. </td>
+  </tr>
+  <tr>
+    <td><b>enable_help_text</b></td>
+    <td>If set to true, the tool will display a help text in the comment. Default is false.</td>
+  </tr>
+  <tr>
+    <td><b>enable_chat_text</b></td>
+    <td>If set to true, the tool will display a reference to the PR chat in the comment. Default is false.</td>
+  </tr>
+  <tr>
+    <td><b>publish_output_no_suggestions</b></td>
+    <td>If set to true, the tool will publish a comment even if no suggestions were found. Default is true.</td>
+  </tr>
+</table>
 
-    <table>
-      <tr>
-        <td><b>num_code_suggestions_per_chunk</b></td>
-        <td>Number of code suggestions provided by the 'improve' tool, per chunk. Default is 3.</td>
-      </tr>
-      <tr>
-        <td><b>max_number_of_calls</b></td>
-        <td>Maximum number of chunks. Default is 3.</td>
-      </tr>
-    </table>
+</details>
+
+<details open>
+<summary>Params for number of suggestions and AI calls</summary>
+
+
+<table>
+  <tr>
+    <td><b>num_code_suggestions_per_chunk</b></td>
+    <td>Number of code suggestions provided by the 'improve' tool, per chunk. Default is 3.</td>
+  </tr>
+  <tr>
+    <td><b>max_number_of_calls</b></td>
+    <td>Maximum number of chunks. Default is 3.</td>
+  </tr>
+</table>
+
+</details>
 
 ## Understanding AI Code Suggestions
 
@@ -342,5 +374,5 @@ Note: Chunking is primarily relevant for large PRs. For most PRs (up to 600 line
     - **Self-reflection:** The suggestions aim to enable developers to _self-reflect_ and improve their pull requests. This process can help to identify blind spots, uncover missed edge cases, and enhance code readability and coherency. Even when a specific code suggestion isn't suitable, the underlying issue it highlights often reveals something important that might deserve attention.
     - **Bug detection:** The suggestions also alert on any _critical bugs_ that may have been identified during the analysis. This provides an additional safety net to catch potential issues before they make it into production. It's perfectly acceptable to implement only the suggestions you find valuable for your specific context.
 - **Hierarchy:** Presenting the suggestions in a structured hierarchical table enables the user to _quickly_ understand them, and to decide which ones are relevant and which are not.
-- **Customization:** To guide the model to suggestions that are more relevant to the specific needs of your project, we recommend using the [`extra_instructions`](./improve.md#extra-instructions-and-best-practices) and [`best practices`](./improve.md#best-practices) fields.
+- **Customization:** To guide the model to suggestions that are more relevant to the specific needs of your project, we recommend using the [`extra_instructions`](./improve.mdx#extra-instructions-and-best-practices) and [`best practices`](./improve.mdx#best-practices) fields.
 - **Model Selection:** For specific programming languages or use cases, some models may perform better than others.

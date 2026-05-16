@@ -1,111 +1,144 @@
+---
+title: "Frequently Asked Questions"
+sidebar_position: 9
+---
+
 # FAQ
 
-??? note "Q: Can PR-Agent serve as a substitute for a human reviewer?"
-    #### Answer:<span style="display:none;">1</span>
+<details open>
+<summary>Q: Can PR-Agent serve as a substitute for a human reviewer?</summary>
 
-    PR-Agent is designed to assist, not replace, human reviewers.
+#### Answer:<span style="display:none;">1</span>
 
-    Reviewing PRs is a tedious and time-consuming task often seen as a "chore". In addition, the longer the PR – the shorter the relative feedback, since long PRs can overwhelm reviewers, both in terms of technical difficulty, and the actual review time.
-    PR-Agent aims to address these pain points, and to assist and empower both the PR author and reviewer.
+PR-Agent is designed to assist, not replace, human reviewers.
 
-    However, PR-Agent has built-in safeguards to ensure the developer remains in the driver's seat. For example:
+Reviewing PRs is a tedious and time-consuming task often seen as a "chore". In addition, the longer the PR – the shorter the relative feedback, since long PRs can overwhelm reviewers, both in terms of technical difficulty, and the actual review time.
+PR-Agent aims to address these pain points, and to assist and empower both the PR author and reviewer.
 
-    1. Preserves user's original PR header
-    2. Places user's description above the AI-generated PR description
-    3. Won't approve PRs; approval remains reviewer's responsibility
-    4. The code suggestions are optional, and aim to:
-        - Encourage self-review and self-reflection
-        - Highlight potential bugs or oversights
-        - Enhance code quality and promote best practices
+However, PR-Agent has built-in safeguards to ensure the developer remains in the driver's seat. For example:
 
-    Read more about this issue in our [blog](https://www.qodo.ai/blog/understanding-the-challenges-and-pain-points-of-the-pull-request-cycle/)
+1. Preserves user's original PR header
+2. Places user's description above the AI-generated PR description
+3. Won't approve PRs; approval remains reviewer's responsibility
+4. The code suggestions are optional, and aim to:
+    - Encourage self-review and self-reflection
+    - Highlight potential bugs or oversights
+    - Enhance code quality and promote best practices
 
-___
+Read more about this issue in our [blog](https://www.qodo.ai/blog/understanding-the-challenges-and-pain-points-of-the-pull-request-cycle/)
 
-??? note "Q: I received an incorrect or irrelevant suggestion. Why?"
-
-    #### Answer:<span style="display:none;">2</span>
-
-    - Modern AI models, like Claude Sonnet and GPT-5, are improving rapidly but remain imperfect. Users should critically evaluate all suggestions rather than accepting them automatically.
-    - AI errors are rare, but possible. A main value from reviewing the code suggestions lies in their high probability of catching **mistakes or bugs made by the PR author**. We believe it's worth spending 30-60 seconds reviewing suggestions, even if some aren't relevant, as this practice can enhance code quality and prevent bugs in production.
-
-
-    - The hierarchical structure of the suggestions is designed to help the user _quickly_ understand them, and to decide which ones are relevant and which are not:
-
-        - Only if the `Category` header is relevant, the user should move to the summarized suggestion description.
-        - Only if the summarized suggestion description is relevant, the user should click on the collapsible, to read the full suggestion description with a code preview example.
-
-    - In addition, we recommend to use the [`extra_instructions`](../tools/improve.md#extra-instructions-and-best-practices) field to guide the model to suggestions that are more relevant to the specific needs of the project.
+</details>
 
 ___
 
-??? note "Q: How can I get more tailored suggestions?"
-    #### Answer:<span style="display:none;">3</span>
+<details open>
+<summary>Q: I received an incorrect or irrelevant suggestion. Why?</summary>
 
-    See [here](../tools/improve.md#extra-instructions-and-best-practices) for more information on how to use the `extra_instructions` and `best_practices` configuration options, to guide the model to more tailored suggestions.
 
-___
+#### Answer:<span style="display:none;">2</span>
 
-??? note "Q: Will you store my code? Are you using my code to train models?"
-    #### Answer:<span style="display:none;">4</span>
+- Modern AI models, like Claude Sonnet and GPT-5, are improving rapidly but remain imperfect. Users should critically evaluate all suggestions rather than accepting them automatically.
+- AI errors are rare, but possible. A main value from reviewing the code suggestions lies in their high probability of catching **mistakes or bugs made by the PR author**. We believe it's worth spending 30-60 seconds reviewing suggestions, even if some aren't relevant, as this practice can enhance code quality and prevent bugs in production.
 
-    No. PR-Agent strict privacy policy ensures that your code is not stored or used for training purposes.
 
-    For a detailed overview of our data privacy policy, please refer to [this link](../overview/data_privacy.md)
+- The hierarchical structure of the suggestions is designed to help the user _quickly_ understand them, and to decide which ones are relevant and which are not:
 
-___
+    - Only if the `Category` header is relevant, the user should move to the summarized suggestion description.
+    - Only if the summarized suggestion description is relevant, the user should click on the collapsible, to read the full suggestion description with a code preview example.
 
-??? note "Q: Can PR-Agent review draft/offline PRs?"
-    #### Answer:<span style="display:none;">6</span>
+- In addition, we recommend to use the [`extra_instructions`](../tools/improve.mdx#extra-instructions-and-best-practices) field to guide the model to suggestions that are more relevant to the specific needs of the project.
 
-    Yes. While PR-Agent won't automatically review draft PRs, you can still get feedback by manually requesting it through [online commenting](../usage-guide/automations_and_usage.md#online-usage).
-
-    For active PRs, you can customize the automatic feedback settings [here](../usage-guide/automations_and_usage.md#pr-agent-automatic-feedback) to match your team's workflow.
-___
-
-??? note "Q: Can the 'Review effort' feedback be calibrated or customized?"
-    #### Answer:<span style="display:none;">7</span>
-
-    Yes, you can customize review effort estimates using the `extra_instructions` configuration option (see [documentation](../tools/review.md#configuration-options)).
-    
-    Example mapping:
-
-    - Effort 1: < 30 minutes review time
-    - Effort 2: 30-60 minutes review time
-    - Effort 3: 60-90 minutes review time
-    - ...
-    
-    Note: The effort levels (1-5) are primarily meant for _comparative_ purposes, helping teams prioritize reviewing smaller PRs first. The actual review duration may vary, as the focus is on providing consistent relative effort estimates.
+</details>
 
 ___
 
-??? note "Q: How to reduce the noise generated by PR-Agent?"
-    #### Answer:<span style="display:none;">3</span>
+<details open>
+<summary>Q: How can I get more tailored suggestions?</summary>
 
-    The default configuration of PR-Agent is designed to balance helpful feedback with noise reduction. It reduces noise through several approaches:
+#### Answer:<span style="display:none;">3</span>
 
-    - Auto-feedback uses three highly structured tools (`/describe`, `/review`, and `/improve`), designed to be accessible at a glance without creating large visual overload
-    - Suggestions are presented in a table format rather than as committable comments, which are far noisier
-    - The 'File Walkthrough' section is folded by default, as it tends to be verbose
-    - Intermediate comments are avoided when creating new PRs (like "PR-Agent is now reviewing your PR..."), which would generate email noise
-    
-    From our experience, especially in large teams or organizations, complaints about "noise" sometimes stem from the following issues:
+See [here](../tools/improve.mdx#extra-instructions-and-best-practices) for more information on how to use the `extra_instructions` and `best_practices` configuration options, to guide the model to more tailored suggestions.
 
-    - **Feedback from multiple bots**: When multiple bots provide feedback on the same PR, it creates confusion and noise. We recommend using PR-Agent as the primary feedback tool to streamline the process and reduce redundancy.
-    - **Getting familiar with the tool**: Unlike many tools that provide feedback only on demand, PR-Agent automatically analyzes and suggests improvements for every code change. While this proactive approach can feel intimidating at first, it's designed to continuously enhance code quality and catch bugs and problems when they occur. We recommend reviewing [this guide](../tools/improve.md#understanding-ai-code-suggestions) to help align expectations and maximize the value of PR-Agent's auto-feedback.
+</details>
 
-    Therefore, at a global configuration level, we recommend using the default configuration, which is designed to reduce noise while providing valuable feedback.
-    
-    However, if you still find the feedback too noisy, you can adjust the configuration. Since each user and team has different needs, it's definitely possible - and even recommended - to adjust configurations for specific repos as needed.
-    Ways to adjust the configuration for noise reduction include for example:
+___
 
-    - [Score thresholds for code suggestions](../tools/improve.md#configuration-options)
-    - [Utilizing the `extra_instructions` field for more tailored feedback](../tools/improve.md#extra-instructions)
-    - [Controlling which tools run automatically](../usage-guide/automations_and_usage.md#github-app-automatic-tools-when-a-new-pr-is-opened)
+<details open>
+<summary>Q: Will you store my code? Are you using my code to train models?</summary>
 
-    Note that some users may prefer the opposite - more thorough and detailed feedback. PR-Agent is designed to be flexible and customizable, allowing you to tailor the feedback to your team's specific needs and preferences.
-    Examples of ways to increase feedback include:
+#### Answer:<span style="display:none;">4</span>
 
-    - [Dual-publishing mode](../tools/improve.md#dual-publishing-mode)
-    - [Interactive usage](../core-abilities/interactivity.md)
+No. PR-Agent strict privacy policy ensures that your code is not stored or used for training purposes.
+
+For a detailed overview of our data privacy policy, please refer to [this link](../overview/data_privacy.md)
+
+</details>
+
+___
+
+<details open>
+<summary>Q: Can PR-Agent review draft/offline PRs?</summary>
+
+#### Answer:<span style="display:none;">6</span>
+
+Yes. While PR-Agent won't automatically review draft PRs, you can still get feedback by manually requesting it through [online commenting](../usage-guide/automations_and_usage.md#online-usage).
+
+For active PRs, you can customize the automatic feedback settings [here](../usage-guide/automations_and_usage.md#pr-agent-automatic-feedback) to match your team's workflow.
+
+</details>
+___
+
+<details open>
+<summary>Q: Can the 'Review effort' feedback be calibrated or customized?</summary>
+
+#### Answer:<span style="display:none;">7</span>
+
+Yes, you can customize review effort estimates using the `extra_instructions` configuration option (see [documentation](../tools/review.md#configuration-options)).
+
+Example mapping:
+
+- Effort 1: < 30 minutes review time
+- Effort 2: 30-60 minutes review time
+- Effort 3: 60-90 minutes review time
+- ...
+
+Note: The effort levels (1-5) are primarily meant for _comparative_ purposes, helping teams prioritize reviewing smaller PRs first. The actual review duration may vary, as the focus is on providing consistent relative effort estimates.
+
+</details>
+
+___
+
+<details open>
+<summary>Q: How to reduce the noise generated by PR-Agent?</summary>
+
+#### Answer:<span style="display:none;">3</span>
+
+The default configuration of PR-Agent is designed to balance helpful feedback with noise reduction. It reduces noise through several approaches:
+
+- Auto-feedback uses three highly structured tools (`/describe`, `/review`, and `/improve`), designed to be accessible at a glance without creating large visual overload
+- Suggestions are presented in a table format rather than as committable comments, which are far noisier
+- The 'File Walkthrough' section is folded by default, as it tends to be verbose
+- Intermediate comments are avoided when creating new PRs (like "PR-Agent is now reviewing your PR..."), which would generate email noise
+
+From our experience, especially in large teams or organizations, complaints about "noise" sometimes stem from the following issues:
+
+- **Feedback from multiple bots**: When multiple bots provide feedback on the same PR, it creates confusion and noise. We recommend using PR-Agent as the primary feedback tool to streamline the process and reduce redundancy.
+- **Getting familiar with the tool**: Unlike many tools that provide feedback only on demand, PR-Agent automatically analyzes and suggests improvements for every code change. While this proactive approach can feel intimidating at first, it's designed to continuously enhance code quality and catch bugs and problems when they occur. We recommend reviewing [this guide](../tools/improve.mdx#understanding-ai-code-suggestions) to help align expectations and maximize the value of PR-Agent's auto-feedback.
+
+Therefore, at a global configuration level, we recommend using the default configuration, which is designed to reduce noise while providing valuable feedback.
+
+However, if you still find the feedback too noisy, you can adjust the configuration. Since each user and team has different needs, it's definitely possible - and even recommended - to adjust configurations for specific repos as needed.
+Ways to adjust the configuration for noise reduction include for example:
+
+- [Score thresholds for code suggestions](../tools/improve.mdx#configuration-options)
+- [Utilizing the `extra_instructions` field for more tailored feedback](../tools/improve.mdx#extra-instructions)
+- [Controlling which tools run automatically](../usage-guide/automations_and_usage.md#github-app-automatic-tools-when-a-new-pr-is-opened)
+
+Note that some users may prefer the opposite - more thorough and detailed feedback. PR-Agent is designed to be flexible and customizable, allowing you to tailor the feedback to your team's specific needs and preferences.
+Examples of ways to increase feedback include:
+
+- [Dual-publishing mode](../tools/improve.mdx#dual-publishing-mode)
+- [Interactive usage](../core-abilities/interactivity.md)
+
+</details>
 ___

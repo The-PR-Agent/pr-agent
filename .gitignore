@@ -11,5 +11,8 @@ dist/
 build/
 .DS_Store
 docs/.cache/
+docs/node_modules/
+docs/build/
+docs/.docusaurus/
 .qodo
 poetry.lock

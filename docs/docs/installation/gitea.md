@@ -1,3 +1,8 @@
+---
+title: "Gitea"
+sidebar_position: 8
+---
+
 ## Run a Gitea webhook server
 
 1. In Gitea create a new user and give it "Reporter" role for the intended group or project.

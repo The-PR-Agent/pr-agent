@@ -1,3 +1,8 @@
+---
+title: "Interactivity"
+sidebar_position: 5
+---
+
 # Interactivity
 
 `Supported Git Platforms: GitHub, GitLab`
@@ -14,7 +19,7 @@ The approach eliminates manual steps, provides clear visual indicators, and crea
 
 ### 1\. Interactive `/improve` Tool
 
-The [`/improve`](../tools/improve.md) command delivers a comprehensive interactive experience:
+The [`/improve`](../tools/improve.mdx) command delivers a comprehensive interactive experience:
 
 - _**Apply this suggestion**_: Clicking this checkbox instantly converts a suggestion into a committable code change. When committed to the PR, changes made to code that was flagged for improvement will be marked with a check mark, allowing developers to easily track and review implemented recommendations.
 
