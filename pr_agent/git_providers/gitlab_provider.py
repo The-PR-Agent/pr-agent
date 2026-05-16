@@ -797,6 +797,13 @@ class GitLabProvider(GitProvider):
         except Exception:
             return ""
 
+    def get_pr_agent_repo_custom_file(self, file_path: str) -> bytes:
+        try:
+            main_branch = self.gl.projects.get(self.id_project).default_branch
+            return self.gl.projects.get(self.id_project).files.get(file_path=file_path, ref=main_branch).decode()
+        except Exception:
+            return b""
+
     def get_workspace_name(self):
         return self.id_project.split('/')[0]
 

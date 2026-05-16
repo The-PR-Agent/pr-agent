@@ -740,6 +740,12 @@ class GithubProvider(GitProvider):
         except Exception:
             return ""
 
+    def get_pr_agent_repo_custom_file(self, file_path: str) -> bytes:
+        try:
+            return self.repo_obj.get_contents(file_path).decoded_content
+        except Exception:
+            return b""
+
     def get_workspace_name(self):
         return self.repo.split('/')[0]
 

@@ -150,6 +150,23 @@ class LocalGitProvider(GitProvider):
     def get_repo_settings(self):
         pass  # Not applicable to the local git provider, but required by the interface
 
+    def get_pr_agent_repo_custom_file(self, file_path: str) -> bytes:
+        try:
+            repo_root = Path(self.repo.working_tree_dir).resolve()
+            candidate = (repo_root / file_path).resolve()
+            try:
+                candidate.relative_to(repo_root)
+            except ValueError:
+                get_logger().warning(
+                    f"Refusing to read {file_path}: path escapes repo root"
+                )
+                return b""
+            if not candidate.is_file():
+                return b""
+            return candidate.read_bytes()
+        except Exception:
+            return b""
+
     def remove_reaction(self, comment):
         pass  # Not applicable to the local git provider, but required by the interface
 
