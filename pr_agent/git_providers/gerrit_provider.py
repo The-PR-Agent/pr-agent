@@ -165,7 +165,8 @@ def upload_patch(patch, path):
         headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {patch_server_token}",
-        }
+        },
+        timeout=30,
     )
     response.raise_for_status()
     patch_server_endpoint = patch_server_endpoint.rstrip("/")

@@ -61,12 +61,13 @@ async def get_bearer_token(shared_secret: str, client_key: str):
 @router.get("/")
 async def handle_manifest(request: Request, response: Response):
     cur_dir = os.path.dirname(os.path.abspath(__file__))
-    manifest = open(os.path.join(cur_dir, "atlassian-connect.json"), "rt").read()
+    with open(os.path.join(cur_dir, "atlassian-connect.json"), "rt") as f:
+        manifest = f.read()
     try:
         manifest = manifest.replace("app_key", get_settings().bitbucket.app_key)
         manifest = manifest.replace("base_url", get_settings().bitbucket.base_url)
-    except:
-        get_logger().error("Failed to replace api_key in Bitbucket manifest, trying to continue")
+    except Exception:
+        get_logger().error("Failed to replace api_key in Bitbucket manifest, trying to continue", exc_info=True)
     manifest_obj = json.loads(manifest)
     return JSONResponse(manifest_obj)
 
@@ -101,7 +102,7 @@ async def _validate_time_from_last_commit_to_pr_update(data: dict) -> bool:
             'Authorization': f'Bearer {bearer_token}',
             'Accept': 'application/json'
         }
-        response = requests.get(commits_api, headers=headers)
+        response = requests.get(commits_api, headers=headers, timeout=30)
         if response.status_code != 200:
             get_logger().warning(f"Bitbucket commits API returned {response.status_code} for {commits_api}")
             return False
