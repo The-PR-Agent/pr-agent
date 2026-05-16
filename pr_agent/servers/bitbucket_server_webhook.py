@@ -1,4 +1,5 @@
 import ast
+import copy
 import json
 import os
 import re
@@ -13,11 +14,12 @@ from starlette.background import BackgroundTasks
 from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+from starlette_context import context
 from starlette_context.middleware import RawContextMiddleware
 
 from pr_agent.agent.pr_agent import PRAgent
 from pr_agent.algo.utils import update_settings_from_args
-from pr_agent.config_loader import get_settings
+from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.servers.utils import verify_signature
@@ -45,22 +47,22 @@ def should_process_pr_logic(data) -> bool:
     try:
         pr_data = data.get("pullRequest", {})
         title = pr_data.get("title", "")
-        
+
         from_ref = pr_data.get("fromRef", {})
         source_branch = from_ref.get("displayId", "") if from_ref else ""
-        
+
         to_ref = pr_data.get("toRef", {})
         target_branch = to_ref.get("displayId", "") if to_ref else ""
-        
+
         author = pr_data.get("author", {})
         user = author.get("user", {}) if author else {}
         sender = user.get("name", "") if user else ""
-        
+
         repository = to_ref.get("repository", {}) if to_ref else {}
         project = repository.get("project", {}) if repository else {}
         project_key = project.get("key", "") if project else ""
         repo_slug = repository.get("slug", "") if repository else ""
-        
+
         repo_full_name = f"{project_key}/{repo_slug}" if project_key and repo_slug else ""
         pr_id = pr_data.get("id", None)
 
@@ -102,7 +104,8 @@ def should_process_pr_logic(data) -> bool:
         # Allow_only_specific_folders
         allowed_folders = get_settings().config.get("allow_only_specific_folders", [])
         if allowed_folders and pr_id and project_key and repo_slug:
-            from pr_agent.git_providers.bitbucket_server_provider import BitbucketServerProvider
+            from pr_agent.git_providers.bitbucket_server_provider import \
+                BitbucketServerProvider
             bitbucket_server_url = get_settings().get("BITBUCKET_SERVER.URL", "")
             pr_url = f"{bitbucket_server_url}/projects/{project_key}/repos/{repo_slug}/pull-requests/{pr_id}"
             provider = BitbucketServerProvider(pr_url=pr_url)
@@ -114,7 +117,7 @@ def should_process_pr_logic(data) -> bool:
                     if any(file_path.startswith(folder) for folder in allowed_folders):
                         all_files_outside = False
                         break
-                
+
                 if all_files_outside:
                     get_logger().info(f"Ignoring PR because all files {changed_files} are outside allowed folders {allowed_folders}")
                     return False
@@ -131,6 +134,7 @@ async def redirect_to_webhook():
 async def handle_webhook(background_tasks: BackgroundTasks, request: Request):
     log_context = {"server_type": "bitbucket_server"}
     data = await request.json()
+    context["settings"] = copy.deepcopy(global_settings)
     get_logger().info(json.dumps(data))
 
     webhook_secret = get_settings().get("BITBUCKET_SERVER.WEBHOOK_SECRET", None)
