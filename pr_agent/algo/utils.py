@@ -125,6 +125,16 @@ def unique_strings(input_list: List[str]) -> List[str]:
     return unique_list
 
 
+def _expand_minute_suffix(text: str) -> str:
+    """Replace minute abbreviations like '30m' with '30 minutes'.
+
+    Only replaces when 'm' appears at a word boundary after digits
+    (e.g. "30m" -> "30 minutes"), leaving partial-unit strings like
+    "30ms" or "30min" unchanged.
+    """
+    return re.sub(r'(\d+)m\b', r'\1 minutes', text)
+
+
 def convert_to_markdown_v2(output_data: dict,
                            gfm_supported: bool = True,
                            incremental_review=None,
@@ -214,11 +224,17 @@ def convert_to_markdown_v2(output_data: dict,
         elif 'contribution time cost estimate' in key_nice.lower():
             if gfm_supported:
                 markdown_text += f"<tr><td>{emoji}&nbsp;<strong>Contribution time estimate</strong> (best, average, worst case): "
-                markdown_text += f"{value['best_case'].replace('m', ' minutes')} | {value['average_case'].replace('m', ' minutes')} | {value['worst_case'].replace('m', ' minutes')}"
+                best = _expand_minute_suffix(value['best_case'])
+                avg = _expand_minute_suffix(value['average_case'])
+                worst = _expand_minute_suffix(value['worst_case'])
+                markdown_text += f"{best} | {avg} | {worst}"
                 markdown_text += f"</td></tr>\n"
             else:
                 markdown_text += f"### {emoji} Contribution time estimate (best, average, worst case): "
-                markdown_text += f"{value['best_case'].replace('m', ' minutes')} | {value['average_case'].replace('m', ' minutes')} | {value['worst_case'].replace('m', ' minutes')}\n\n"
+                best = _expand_minute_suffix(value['best_case'])
+                avg = _expand_minute_suffix(value['average_case'])
+                worst = _expand_minute_suffix(value['worst_case'])
+                markdown_text += f"{best} | {avg} | {worst}\n\n"
         elif 'security concerns' in key_nice.lower():
             if gfm_supported:
                 markdown_text += f"<tr><td>"
