@@ -97,10 +97,11 @@ class TokenHandler:
             return 0
 
     def _calc_claude_tokens(self, patch: str) -> int:
+        max_tokens = 0
         try:
             import anthropic
             from pr_agent.algo import MAX_TOKENS
-            
+
             client = anthropic.Anthropic(api_key=get_settings(use_context=False).get('anthropic.key'))
             max_tokens = MAX_TOKENS[get_settings().config.model]
 
