@@ -278,17 +278,33 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
 
 def handle_ask_line(body, data):
     try:
-        line_range_ = data['object_attributes']['position']['line_range']
-        # if line_range_['start']['type'] == 'new':
-        start_line = line_range_['start']['new_line']
-        end_line = line_range_['end']['new_line']
-        # else:
-        #     start_line = line_range_['start']['old_line']
-        #     end_line = line_range_['end']['old_line']
+        position = data.get('object_attributes', {}).get('position') or {}
+        line_range_ = position.get('line_range')
+
+        if line_range_:
+            range_type = line_range_.get('start', {}).get('type')
+            side = 'RIGHT' if range_type == 'new' else 'LEFT'
+            if range_type == 'new':
+                start_line = line_range_.get('start', {}).get('new_line')
+                end_line = line_range_.get('end', {}).get('new_line')
+                path = position.get('new_path')
+            else:
+                start_line = line_range_.get('start', {}).get('old_line')
+                end_line = line_range_.get('end', {}).get('old_line')
+                path = position.get('old_path')
+        else:
+            start_line = position.get('new_line') or position.get('old_line')
+            end_line = position.get('new_line') or position.get('old_line')
+            side = 'RIGHT' if position.get('new_line') is not None else 'LEFT'
+            path = position.get('new_path') or position.get('old_path')
+
+        if start_line is None or end_line is None:
+            raise ValueError("Missing line numbers in diff position")
+        if not path:
+            raise ValueError("Missing file path in diff position")
+
         question = body.replace('/ask', '').strip()
-        path = data['object_attributes']['position']['new_path']
-        side = 'RIGHT'  # if line_range_['start']['type'] == 'new' else 'LEFT'
-        comment_id = data['object_attributes']["discussion_id"]
+        comment_id = data.get('object_attributes', {}).get("discussion_id", "")
         get_logger().info("Handling line ")
         body = f"/ask_line --line_start={start_line} --line_end={end_line} --side={side} --file_name={path} --comment_id={comment_id} {question}"
     except Exception as e:
