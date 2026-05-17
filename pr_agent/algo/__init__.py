@@ -69,9 +69,10 @@ MAX_TOKENS = {
     # GLM models from Z.AI (OpenAI-compatible API)
     # Context window: ~200K tokens (204,800 for GLM-5.1, 202,752 for GLM-4.7/5-Turbo)
     # Max output: 128K tokens
-    'glm-5-turbo': 200000,  # ~200K context, but may be limited by config.max_model_tokens
-    'glm-4.7': 200000,  # ~200K context, but may be limited by config.max_model_tokens
-    'glm-5.1': 200000,  # ~200K context, but may be limited by config.max_model_tokens
+    # Note: Some tools may use MAX_TOKENS directly, bypassing config.max_model_tokens cap
+    "glm-5-turbo": 200000,  # ~200K context, but may be limited by config.max_model_tokens
+    "glm-4.7": 200000,  # ~200K context, but may be limited by config.max_model_tokens
+    "glm-5.1": 200000,  # ~200K context, but may be limited by config.max_model_tokens
     'deepseek/deepseek-chat': 128000,  # 128K, but may be limited by config.max_model_tokens
     'deepseek/deepseek-reasoner': 64000,  # 64K, but may be limited by config.max_model_tokens
     'openai/qwq-plus': 131072,  # 131K context length, but may be limited by config.max_model_tokens
