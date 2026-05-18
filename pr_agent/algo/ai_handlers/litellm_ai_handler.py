@@ -408,6 +408,10 @@ class LiteLLMAIHandler(BaseAiHandler):
             try:
                 resp, finish_reason = None, None
                 deployment_id = self.deployment_id
+                # Capture the original model string so an explicit provider prefix in the
+                # user config (e.g. "azure/gpt-5...") can be preserved when the GPT-5 branch
+                # rebuilds the routed model name below.
+                user_model = model
                 if self.azure:
                     model = 'azure/' + model
                 if 'claude' in model and not system:
@@ -431,11 +435,14 @@ class LiteLLMAIHandler(BaseAiHandler):
                                               {"type": "image_url", "image_url": {"url": img_path}}]
 
                 thinking_kwargs_gpt5 = None
-                # Detect GPT-5 family regardless of provider prefix users may put in config
-                # (e.g. "openai/gpt-5.1-codex-max"). Without this, prefixed model names skipped
-                # the reasoning_effort path and litellm rejected the request with
-                # UnsupportedParamsError for temperature=0.2.
-                model_base = model.removeprefix('openai/').removeprefix('azure/')
+                # Detect GPT-5 family regardless of provider prefix(es) on the model name.
+                # Users sometimes put a provider prefix in config (e.g. "openai/gpt-5.1-codex-max"),
+                # and Azure mode auto-prepends "azure/", which together can produce stacked prefixes
+                # like "azure/openai/gpt-5...". Without normalization the GPT-5 path is skipped and
+                # litellm rejects the request with UnsupportedParamsError for temperature=0.2.
+                model_base = model
+                while model_base.startswith(('openai/', 'azure/')):
+                    model_base = model_base.removeprefix('openai/').removeprefix('azure/')
                 if model_base.startswith('gpt-5'):
                     # Use configured reasoning_effort or default to MEDIUM
                     config_effort = get_settings().config.reasoning_effort
@@ -455,8 +462,17 @@ class LiteLLMAIHandler(BaseAiHandler):
                         "allowed_openai_params": ["reasoning_effort"],
                     }
                     get_logger().info(f"Using reasoning_effort='{effort}' for GPT-5 model")
-                    # Preserve azure/ routing if it was applied above; otherwise route via openai/
-                    provider_prefix = 'azure/' if self.azure else 'openai/'
+                    # Routing priority: Azure mode > explicit provider prefix in user config > openai/
+                    # default. This preserves an explicit "azure/" the user wrote in config even when
+                    # self.azure is false, and avoids stacking when self.azure already added "azure/".
+                    if self.azure:
+                        provider_prefix = 'azure/'
+                    elif user_model.startswith('azure/'):
+                        provider_prefix = 'azure/'
+                    elif user_model.startswith('openai/'):
+                        provider_prefix = 'openai/'
+                    else:
+                        provider_prefix = 'openai/'
                     model = provider_prefix + model_base.replace('_thinking', '')  # remove _thinking suffix
 
 

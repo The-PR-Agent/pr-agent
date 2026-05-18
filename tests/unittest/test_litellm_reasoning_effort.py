@@ -741,3 +741,60 @@ class TestLiteLLMReasoningEffort:
             call_kwargs = mock_completion.call_args[1]
             assert call_kwargs["model"] == "openai/gpt-5"
             assert call_kwargs["reasoning_effort"] == "low"
+
+    @pytest.mark.asyncio
+    async def test_gpt5_with_explicit_azure_prefix_preserves_routing(self, monkeypatch, mock_logger):
+        """Explicit `azure/` prefix in user config must be preserved (not silently rewritten to openai/)."""
+        fake_settings = create_mock_settings("medium")
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
+
+        with patch('pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion', new_callable=AsyncMock) as mock_completion:
+            mock_completion.return_value = create_mock_acompletion_response()
+
+            handler = LiteLLMAIHandler()
+            # self.azure is False by default (no Azure AD creds in test env)
+            await handler.chat_completion(
+                model="azure/gpt-5.1-codex-max",
+                system="test system",
+                user="test user"
+            )
+
+            call_kwargs = mock_completion.call_args[1]
+            assert call_kwargs["reasoning_effort"] == "medium"
+            assert "temperature" not in call_kwargs
+            # Provider prefix from user config must be preserved verbatim
+            assert call_kwargs["model"] == "azure/gpt-5.1-codex-max"
+
+    @pytest.mark.asyncio
+    async def test_gpt5_in_azure_mode_does_not_stack_prefixes(self, monkeypatch, mock_logger):
+        """Azure mode must produce exactly one `azure/` prefix, even if user config also has a prefix."""
+        fake_settings = create_mock_settings("medium")
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
+
+        # Cases: bare name, openai/-prefixed config, azure/-prefixed config — all in azure mode
+        cases = [
+            ("gpt-5.1-codex", "azure/gpt-5.1-codex"),
+            ("openai/gpt-5.1-codex", "azure/gpt-5.1-codex"),
+            ("azure/gpt-5.1-codex", "azure/gpt-5.1-codex"),
+        ]
+
+        for input_model, expected in cases:
+            with patch('pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion', new_callable=AsyncMock) as mock_completion:
+                mock_completion.return_value = create_mock_acompletion_response()
+
+                handler = LiteLLMAIHandler()
+                handler.azure = True  # simulate Azure-mode handler
+                await handler.chat_completion(
+                    model=input_model,
+                    system="test system",
+                    user="test user"
+                )
+
+                call_kwargs = mock_completion.call_args[1]
+                # GPT-5 path must trigger
+                assert call_kwargs["reasoning_effort"] == "medium", f"failed for {input_model}"
+                assert "temperature" not in call_kwargs, f"temperature leaked for {input_model}"
+                # Exactly one azure/ prefix, no stacked/duplicated provider segments
+                assert call_kwargs["model"] == expected, (
+                    f"wrong routing for {input_model}: got {call_kwargs['model']}, expected {expected}"
+                )
