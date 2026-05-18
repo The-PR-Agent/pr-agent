@@ -431,7 +431,12 @@ class LiteLLMAIHandler(BaseAiHandler):
                                               {"type": "image_url", "image_url": {"url": img_path}}]
 
                 thinking_kwargs_gpt5 = None
-                if model.startswith('gpt-5'):
+                # Detect GPT-5 family regardless of provider prefix users may put in config
+                # (e.g. "openai/gpt-5.1-codex-max"). Without this, prefixed model names skipped
+                # the reasoning_effort path and litellm rejected the request with
+                # UnsupportedParamsError for temperature=0.2.
+                model_base = model.removeprefix('openai/').removeprefix('azure/')
+                if model_base.startswith('gpt-5'):
                     # Use configured reasoning_effort or default to MEDIUM
                     config_effort = get_settings().config.reasoning_effort
                     try:
@@ -450,7 +455,9 @@ class LiteLLMAIHandler(BaseAiHandler):
                         "allowed_openai_params": ["reasoning_effort"],
                     }
                     get_logger().info(f"Using reasoning_effort='{effort}' for GPT-5 model")
-                    model = 'openai/'+model.replace('_thinking', '')  # remove _thinking suffix
+                    # Preserve azure/ routing if it was applied above; otherwise route via openai/
+                    provider_prefix = 'azure/' if self.azure else 'openai/'
+                    model = provider_prefix + model_base.replace('_thinking', '')  # remove _thinking suffix
 
 
                 # Currently, some models do not support a separate system and user prompts
