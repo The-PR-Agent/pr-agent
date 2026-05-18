@@ -695,6 +695,10 @@ class TestLiteLLMReasoningEffort:
         """
         fake_settings = create_mock_settings("medium")
         monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
+        # Isolate from runner env: LiteLLMAIHandler.__init__ branches on these vars.
+        for _var in ("AWS_USE_IMDS", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+                     "AWS_SESSION_TOKEN", "AWS_REGION_NAME", "OPENAI_API_KEY"):
+            monkeypatch.delenv(_var, raising=False)
 
         prefixed_models = [
             "openai/gpt-5",
@@ -730,6 +734,10 @@ class TestLiteLLMReasoningEffort:
         """Prefixed _thinking models must have the suffix removed without double-prefixing."""
         fake_settings = create_mock_settings("low")
         monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
+        # Isolate from runner env: LiteLLMAIHandler.__init__ branches on these vars.
+        for _var in ("AWS_USE_IMDS", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+                     "AWS_SESSION_TOKEN", "AWS_REGION_NAME", "OPENAI_API_KEY"):
+            monkeypatch.delenv(_var, raising=False)
 
         with patch(
             'pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion',
@@ -753,6 +761,10 @@ class TestLiteLLMReasoningEffort:
         """Explicit `azure/` prefix in user config must be preserved (not silently rewritten to openai/)."""
         fake_settings = create_mock_settings("medium")
         monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
+        # Isolate from runner env: LiteLLMAIHandler.__init__ branches on these vars.
+        for _var in ("AWS_USE_IMDS", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+                     "AWS_SESSION_TOKEN", "AWS_REGION_NAME", "OPENAI_API_KEY"):
+            monkeypatch.delenv(_var, raising=False)
 
         with patch(
             'pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion',
@@ -779,6 +791,10 @@ class TestLiteLLMReasoningEffort:
         """Azure mode must produce exactly one `azure/` prefix, even if user config also has a prefix."""
         fake_settings = create_mock_settings("medium")
         monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
+        # Isolate from runner env: LiteLLMAIHandler.__init__ branches on these vars.
+        for _var in ("AWS_USE_IMDS", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+                     "AWS_SESSION_TOKEN", "AWS_REGION_NAME", "OPENAI_API_KEY"):
+            monkeypatch.delenv(_var, raising=False)
 
         # Cases: bare name, openai/-prefixed config, azure/-prefixed config — all in azure mode
         cases = [
