@@ -704,7 +704,10 @@ class TestLiteLLMReasoningEffort:
         ]
 
         for model in prefixed_models:
-            with patch('pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion', new_callable=AsyncMock) as mock_completion:
+            with patch(
+                'pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion',
+                new_callable=AsyncMock,
+            ) as mock_completion:
                 mock_completion.return_value = create_mock_acompletion_response()
 
                 handler = LiteLLMAIHandler()
@@ -728,7 +731,10 @@ class TestLiteLLMReasoningEffort:
         fake_settings = create_mock_settings("low")
         monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
 
-        with patch('pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion', new_callable=AsyncMock) as mock_completion:
+        with patch(
+            'pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion',
+            new_callable=AsyncMock,
+        ) as mock_completion:
             mock_completion.return_value = create_mock_acompletion_response()
 
             handler = LiteLLMAIHandler()
@@ -748,7 +754,10 @@ class TestLiteLLMReasoningEffort:
         fake_settings = create_mock_settings("medium")
         monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
 
-        with patch('pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion', new_callable=AsyncMock) as mock_completion:
+        with patch(
+            'pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion',
+            new_callable=AsyncMock,
+        ) as mock_completion:
             mock_completion.return_value = create_mock_acompletion_response()
 
             handler = LiteLLMAIHandler()
@@ -779,7 +788,10 @@ class TestLiteLLMReasoningEffort:
         ]
 
         for input_model, expected in cases:
-            with patch('pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion', new_callable=AsyncMock) as mock_completion:
+            with patch(
+                'pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion',
+                new_callable=AsyncMock,
+            ) as mock_completion:
                 mock_completion.return_value = create_mock_acompletion_response()
 
                 handler = LiteLLMAIHandler()
