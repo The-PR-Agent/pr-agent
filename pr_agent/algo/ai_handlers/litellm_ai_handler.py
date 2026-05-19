@@ -459,15 +459,9 @@ class LiteLLMAIHandler(BaseAiHandler):
                     system = ""
                     get_logger().info(f"Using model {model}, combining system and user prompts")
                     messages = [{"role": "user", "content": user}]
-                    kwargs = {
-                        "model": model,
-                        "deployment_id": deployment_id,
-                        "messages": messages,
-                        "timeout": get_settings().config.ai_timeout,
-                        "api_base": self.api_base,
-                    }
-                else:
-                    kwargs = {
+
+                # Build request kwargs after normalizing messages for the target model.
+                kwargs = {
                         "model": model,
                         "deployment_id": deployment_id,
                         "messages": messages,
