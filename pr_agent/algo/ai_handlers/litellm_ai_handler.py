@@ -532,6 +532,18 @@ class LiteLLMAIHandler(BaseAiHandler):
                 # Support for custom OpenAI body fields (e.g., Flex Processing)
                 kwargs = _process_litellm_extra_body(kwargs)
 
+                # Support for Anthropic prompt caching via LiteLLM's cache_control_injection_points
+                # (https://docs.litellm.ai/docs/tutorials/prompt_caching). Configurable as a JSON
+                # array in [litellm] section of configuration.toml or .pr_agent.toml.
+                if get_settings().get("LITELLM.CACHE_CONTROL_INJECTION_POINTS", None):
+                    try:
+                        cache_points = json.loads(get_settings().litellm.cache_control_injection_points)
+                        if not isinstance(cache_points, list):
+                            raise ValueError("LITELLM.CACHE_CONTROL_INJECTION_POINTS must be a JSON array")
+                        kwargs["cache_control_injection_points"] = cache_points
+                    except json.JSONDecodeError as e:
+                        raise ValueError(f"LITELLM.CACHE_CONTROL_INJECTION_POINTS contains invalid JSON: {str(e)}")
+
                 # Support for Bedrock custom inference profile via model_id
                 model_id = get_settings().get("litellm.model_id")
                 if model_id and 'bedrock/' in model:

@@ -326,6 +326,9 @@ success_callback = []
 failure_callback = []
 service_callback = []
 # model_id = "" # Optional: Custom inference profile ID for Amazon Bedrock
+# cache_control_injection_points = "" # Optional: JSON array enabling Anthropic prompt caching via LiteLLM
+# Example: cache_control_injection_points = '[{"location": "message", "role": "system"}]'
+# See https://docs.litellm.ai/docs/tutorials/prompt_caching
 
 [pr_similar_issue]
 skip_comments = false
