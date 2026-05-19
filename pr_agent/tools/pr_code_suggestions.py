@@ -333,12 +333,13 @@ class PRCodeSuggestions:
                             pr_comment_updated += f"{prev_suggestion_table}\n"
 
                         get_logger().info(f"Persistent mode - updating comment {comment_url} to latest {name} message")
-                        if progress_response:  # publish to 'progress_response' comment, because it refreshes immediately
-                            git_provider.edit_comment(progress_response, pr_comment_updated)
-                            git_provider.remove_comment(comment)
-                            comment = progress_response
-                        else:
-                            git_provider.edit_comment(comment, pr_comment_updated)
+                        # Edit the previously-found persistent comment in place and remove the throwaway
+                        # progress note. Editing the persistent comment (rather than re-targeting to the
+                        # progress note and deleting the original) keeps the stable thread stable across
+                        # pushes on GitLab, where deleting a note with replies fails silently.
+                        git_provider.edit_comment(comment, pr_comment_updated)
+                        if progress_response:
+                            git_provider.remove_comment(progress_response)
                         return comment
             except Exception as e:
                 get_logger().exception(f"Failed to update persistent review, error: {e}")
