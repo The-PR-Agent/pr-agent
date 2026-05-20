@@ -1,6 +1,8 @@
 import copy
 import os
+import re
 import tempfile
+import tomllib
 import traceback
 from urllib.parse import urlparse
 from urllib.request import Request, url2pathname, urlopen
@@ -9,11 +11,15 @@ from dynaconf import Dynaconf
 from starlette_context import context
 
 from pr_agent.config_loader import get_settings
+from pr_agent.custom_merge_loader import validate_file_security
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.log import get_logger
 
 _MAX_EXTRA_CONFIG_BYTES = 1 * 1024 * 1024  # 1 MB cap for a remote .toml
 _FETCH_TIMEOUT_SECONDS = 10
+# Bare Windows drive-letter paths (e.g. "C:\\shared.toml", "D:/cfg.toml").
+# urlparse() would otherwise interpret the drive letter as a URL scheme.
+_WINDOWS_DRIVE_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
 
 
 def _safe_url_for_log(url: str) -> str:
@@ -56,6 +62,14 @@ def _resolve_extra_config_to_file(source):
         return None, False
     source = source.strip()
     if not source:
+        return None, False
+
+    # Bare Windows drive-letter paths must be handled before urlparse() — it
+    # would otherwise treat the drive letter as a URL scheme.
+    if _WINDOWS_DRIVE_PATH_RE.match(source):
+        if os.path.isfile(source):
+            return source, False
+        get_logger().warning(f"Extra config not found at local path: {source}")
         return None, False
 
     parsed = urlparse(source)
@@ -139,13 +153,26 @@ def _apply_settings_from_file(path: str, label: str):
             )
         except TypeError as e:
             # Older Dynaconf versions don't accept load_dotenv / merge_enabled.
-            # Mirror the fallback used by the repo-settings loader so the extra
-            # config still applies (without those security-hardening flags).
+            # The fallback Dynaconf(...) call below skips our custom_merge_loader,
+            # which is where validate_file_security() runs. Pre-validate the file
+            # explicitly here so forbidden directives (includes, preloads, custom
+            # loaders, ...) still cannot slip through on those older versions.
+            try:
+                with open(path, "rb") as f:
+                    parsed_toml = tomllib.load(f)
+                validate_file_security(parsed_toml, path)
+            except Exception as sec_err:
+                get_logger().warning(
+                    f"Extra config failed security pre-validation; skipping: {sec_err}"
+                )
+                return
+
             get_logger().warning(
                 "Your Dynaconf version does not support disabled "
                 "'load_dotenv'/'merge_enabled' parameters. Loading extra config "
-                "without these security features. Please upgrade Dynaconf for "
-                "better security.",
+                "after explicit security pre-validation; some Dynaconf-level "
+                "hardening flags are off. Please upgrade Dynaconf for better "
+                "security.",
                 artifact={"error": e, "traceback": traceback.format_exc()},
             )
             new_settings = Dynaconf(settings_files=[path])

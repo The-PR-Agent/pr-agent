@@ -535,6 +535,56 @@ repo_key = "still-applied"
 # Regression tests for review feedback (review round 2)
 # ---------------------------------------------------------------------------
 
+def test_resolve_accepts_windows_drive_letter_path(monkeypatch):
+    """A bare Windows path like 'C:\\\\shared.toml' must be treated as a local
+    path, not as a URL with scheme 'c:'. urlparse() would otherwise route it
+    into the unsupported-scheme branch."""
+    fake_win_path = r"C:\Users\dev\shared.toml"
+
+    # We can't create a real C:\ file on macOS/Linux CI, so stub the existence
+    # check just for that path.
+    real_isfile = os.path.isfile
+    monkeypatch.setattr(
+        "pr_agent.git_providers.utils.os.path.isfile",
+        lambda p: True if p == fake_win_path else real_isfile(p),
+    )
+
+    path, is_temp = _resolve_extra_config_to_file(fake_win_path)
+    assert path == fake_win_path, "Windows drive-letter path must be returned unchanged"
+    assert is_temp is False
+
+    # Forward-slash variant (D:/path/x.toml) must also be recognised
+    fake_fwd = "D:/cfg/shared.toml"
+    monkeypatch.setattr(
+        "pr_agent.git_providers.utils.os.path.isfile",
+        lambda p: True if p in (fake_win_path, fake_fwd) else real_isfile(p),
+    )
+    path, is_temp = _resolve_extra_config_to_file(fake_fwd)
+    assert path == fake_fwd
+    assert is_temp is False
+
+
+def test_resolve_warns_when_windows_path_missing(monkeypatch):
+    """If a Windows-style path doesn't exist, we warn (same as any local path)
+    instead of falling through to the unsupported-scheme branch."""
+    from loguru import logger as loguru_logger
+
+    captured = []
+    sink_id = loguru_logger.add(lambda m: captured.append(str(m)), level="DEBUG")
+    try:
+        path, is_temp = _resolve_extra_config_to_file(r"C:\does\not\exist.toml")
+    finally:
+        loguru_logger.remove(sink_id)
+
+    assert path is None
+    combined = "\n".join(captured)
+    assert "not found at local path" in combined, (
+        "Windows path miss must produce the local-path-not-found warning, not "
+        "the unsupported-scheme warning"
+    )
+    assert "Unsupported scheme" not in combined
+
+
 def test_resolve_rejects_non_string_source():
     """CONFIG.EXTRA_CONFIG_URL set to a non-string must be rejected at the
     boundary, not bubble up an exception from urlparse()."""
@@ -620,6 +670,54 @@ fallback_key = "from-old-dynaconf"
     assert call_log["strict"] == 1, "must first try the hardened Dynaconf kwargs"
     assert call_log["fallback"] == 1, "must fall back when TypeError is raised"
     assert get_settings().get(f"{_TEST_SECTION}.fallback_key") == "from-old-dynaconf"
+
+
+def test_apply_settings_file_security_check_runs_on_fallback_path(
+    tmp_path, settings_sandbox, monkeypatch
+):
+    """Regression: when the TypeError fallback fires, the bypass Dynaconf call
+    does not use custom_merge_loader, so validate_file_security() would not run
+    via the normal loader. The function must pre-validate the file explicitly
+    so forbidden directives (includes/preloads/loaders) still cannot slip
+    through on affected Dynaconf versions."""
+    import pr_agent.git_providers.utils as utils_mod
+
+    real_dynaconf = utils_mod.Dynaconf
+    call_log = {"strict": 0, "fallback": 0}
+
+    class _FakeDynaconf:
+        def __init__(self, *args, **kwargs):
+            if "load_dotenv" in kwargs or "envvar_prefix" in kwargs:
+                call_log["strict"] += 1
+                raise TypeError("simulated older Dynaconf")
+            call_log["fallback"] += 1
+            self._real = real_dynaconf(*args, **kwargs)
+
+        def as_dict(self):
+            return self._real.as_dict()
+
+    monkeypatch.setattr(utils_mod, "Dynaconf", _FakeDynaconf)
+
+    # A file containing a forbidden directive that custom_merge_loader's
+    # validate_file_security() must reject.
+    malicious = _write_toml(tmp_path, "evil.toml", f"""
+[{_TEST_SECTION}]
+includes = ["/etc/passwd"]
+benign_key = "should-not-be-applied"
+""")
+
+    sentinel = "PRE-FALLBACK-VALUE"
+    get_settings().set(f"{_TEST_SECTION}.benign_key", sentinel)
+    _apply_settings_from_file(malicious, label="extra")
+
+    assert call_log["strict"] == 1, "hardened Dynaconf path must be attempted first"
+    assert call_log["fallback"] == 0, (
+        "fallback must NOT run after security pre-validation rejects the file"
+    )
+    # The malicious file's keys must not have been applied
+    assert get_settings().get(f"{_TEST_SECTION}.benign_key") == sentinel, (
+        "values from a file with forbidden directives must not be merged"
+    )
 
 
 def test_extra_config_applied_before_git_provider(tmp_path, settings_sandbox, monkeypatch):
