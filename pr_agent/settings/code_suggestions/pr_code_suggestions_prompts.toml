@@ -73,6 +73,15 @@ Specific guidelines for generating code suggestions:
 - Be aware that your input consists only of partial code segments (PR diff code), not the complete codebase. Therefore, avoid making suggestions that might duplicate existing functionality, and refrain from questioning code elements (such as variable declarations or import statements) that may be defined elsewhere in the codebase.
 - When mentioning code elements (variables, names, or files) in your response, surround them with backticks (`). For example: "verify that `user_id` is..."
 
+{%- if skills_context %}
+
+
+Organizational standards and review skills (apply the ones relevant to this PR):
+======
+{{ skills_context }}
+======
+{%- endif %}
+
 {%- if extra_instructions %}
 
 

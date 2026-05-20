@@ -10,6 +10,12 @@ from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.log import get_logger
 
+# Sections whose values come from host-level configuration only. Repo-supplied
+# .pr_agent.toml MUST NOT be able to set these, because they expose
+# filesystem-touching capabilities (e.g. skills.paths) that a malicious repo
+# could otherwise abuse to read sensitive host files into the LLM prompt.
+_HOST_ONLY_SETTINGS_SECTIONS = frozenset({"skills"})
+
 
 def apply_repo_settings(pr_url):
     os.environ["AUTO_CAST_FOR_DYNACONF"] = "false"
@@ -63,6 +69,12 @@ def apply_repo_settings(pr_url):
                         if not contents:
                             # Skip excluded items, such as forbidden to load env.
                             get_logger().debug(f"Skipping a section: {section} which is not allowed")
+                            continue
+                        if section.lower() in _HOST_ONLY_SETTINGS_SECTIONS:
+                            get_logger().warning(
+                                f"Refusing to apply host-only section [{section}] from repo settings; "
+                                f"this section can only be configured at the host level"
+                            )
                             continue
                         section_dict = copy.deepcopy(get_settings().as_dict().get(section, {}))
                         for key, value in contents.items():

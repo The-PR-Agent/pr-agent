@@ -62,6 +62,15 @@ Specific guidelines for generating code suggestions:
 - Note that you will only see partial code segments that were changed (diff hunks in a PR code), and not the entire codebase. Avoid suggestions that might duplicate existing functionality of the outer codebase. In addition, the absence of a definition, declaration, import, or initialization for any entity in the PR code is NEVER a basis for a suggestion.
 - Also note that if the code ends at an opening brace or statement that begins a new scope (like 'if', 'for', 'try'), don't treat it as incomplete. Instead, acknowledge the visible scope boundary and analyze only the code shown.
 
+{%- if skills_context %}
+
+
+Organizational standards and review skills (apply the ones relevant to this PR):
+======
+{{ skills_context }}
+======
+{%- endif %}
+
 {%- if extra_instructions %}
 
 

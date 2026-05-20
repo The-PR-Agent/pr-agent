@@ -8,6 +8,14 @@ Your task is to provide a full description for the PR content: type, description
 - When quoting variables, names or file paths from the code, use backticks (`) instead of single quote (').
 - When needed, use '- ' as bullets
 
+{%- if skills_context %}
+
+Organizational standards and review skills (apply the ones relevant to this PR):
+=====
+{{ skills_context }}
+=====
+{%- endif %}
+
 {%- if extra_instructions %}
 
 Extra instructions from the user:
