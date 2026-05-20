@@ -3,7 +3,7 @@ import os
 import tempfile
 import traceback
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import Request, url2pathname, urlopen
 
 from dynaconf import Dynaconf
 from starlette_context import context
@@ -59,27 +59,36 @@ def _resolve_extra_config_to_file(source):
         return None, False
 
     parsed = urlparse(source)
-    scheme = (parsed.scheme or '').lower()
+    scheme = (parsed.scheme or "").lower()
 
     # Local path (bare or file://)
-    if scheme in ('', 'file'):
-        local_path = parsed.path if scheme == 'file' else source
+    if scheme in ("", "file"):
+        if scheme == "file":
+            # Preserve any non-localhost netloc (UNC-style file://host/share/...)
+            # and URL-decode percent-encoded path components via url2pathname.
+            netloc = parsed.netloc or ""
+            raw = parsed.path
+            if netloc and netloc.lower() != "localhost":
+                raw = f"//{netloc}{raw}"
+            local_path = url2pathname(raw)
+        else:
+            local_path = source
         if os.path.isfile(local_path):
             return local_path, False
         get_logger().warning(f"Extra config not found at local path: {local_path}")
         return None, False
 
-    if scheme not in ('http', 'https'):
+    if scheme not in ("http", "https"):
         get_logger().warning(f"Unsupported scheme for extra config: {scheme}")
         return None, False
 
     # Fetch over HTTP(S)
     safe_url = _safe_url_for_log(source)
-    headers = {'Accept': 'text/plain, application/toml, */*'}
-    auth_header = os.environ.get('PR_AGENT_EXTRA_CONFIG_AUTH_HEADER')
+    headers = {"Accept": "text/plain, application/toml, */*"}
+    auth_header = os.environ.get("PR_AGENT_EXTRA_CONFIG_AUTH_HEADER")
     if auth_header:
-        if ':' in auth_header:
-            name, value = auth_header.split(':', 1)
+        if ":" in auth_header:
+            name, value = auth_header.split(":", 1)
             headers[name.strip()] = value.strip()
         else:
             # Surface misconfiguration instead of silently dropping the header.
@@ -89,7 +98,7 @@ def _resolve_extra_config_to_file(source):
             )
 
     try:
-        req = Request(source, headers=headers, method='GET')
+        req = Request(source, headers=headers, method="GET")
         with urlopen(req, timeout=_FETCH_TIMEOUT_SECONDS) as resp:
             data = resp.read(_MAX_EXTRA_CONFIG_BYTES + 1)
         if len(data) > _MAX_EXTRA_CONFIG_BYTES:
@@ -97,8 +106,8 @@ def _resolve_extra_config_to_file(source):
                 f"Extra config exceeds {_MAX_EXTRA_CONFIG_BYTES} bytes, skipping: {safe_url}"
             )
             return None, False
-        fd, tmp_path = tempfile.mkstemp(suffix='.toml')
-        with os.fdopen(fd, 'wb') as f:
+        fd, tmp_path = tempfile.mkstemp(suffix=".toml")
+        with os.fdopen(fd, "wb") as f:
             f.write(data)
         get_logger().info(f"Fetched extra config from {safe_url} ({len(data)} bytes)")
         return tmp_path, True
@@ -117,9 +126,9 @@ def _apply_settings_from_file(path: str, label: str):
         return
     try:
         dynconf_kwargs = {
-            'core_loaders': [],
-            'loaders': ['pr_agent.custom_merge_loader'],
-            'merge_enabled': True,
+            "core_loaders": [],
+            "loaders": ["pr_agent.custom_merge_loader"],
+            "merge_enabled": True,
         }
         try:
             new_settings = Dynaconf(

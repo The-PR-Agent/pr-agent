@@ -15,7 +15,6 @@ from pr_agent.git_providers.utils import (
     apply_repo_settings,
 )
 
-
 SAMPLE_TOML = b'[config]\nmodel = "claude-sonnet-4-6"\n'
 
 
@@ -104,6 +103,23 @@ def test_resolve_returns_bare_local_path_without_tempfile(toml_on_disk):
 def test_resolve_accepts_file_url_scheme(toml_on_disk):
     path, is_temp = _resolve_extra_config_to_file(f"file://{toml_on_disk}")
     assert path == toml_on_disk
+    assert is_temp is False
+
+
+def test_resolve_accepts_file_url_with_localhost_netloc(toml_on_disk):
+    # file://localhost/<abs-path> is RFC 8089 form and must resolve same as file://
+    path, is_temp = _resolve_extra_config_to_file(f"file://localhost{toml_on_disk}")
+    assert path == toml_on_disk
+    assert is_temp is False
+
+
+def test_resolve_file_url_decodes_percent_encoded_path(tmp_path):
+    # A real file at a path containing a space — file:// URL must percent-encode it.
+    p = tmp_path / "name with space.toml"
+    p.write_bytes(SAMPLE_TOML)
+    url = f"file://{str(p).replace(' ', '%20')}"
+    path, is_temp = _resolve_extra_config_to_file(url)
+    assert path == str(p), "file:// percent-encoded path must be URL-decoded before stat()"
     assert is_temp is False
 
 
@@ -353,22 +369,24 @@ def test_apply_settings_file_does_not_log_secret_values(tmp_path, settings_sandb
     from the merged config, otherwise secrets in external .pr_agent.toml
     (openai.key, gitlab.personal_access_token, etc.) leak into CI logs.
 
+    Uses bespoke sandboxed section names instead of real [gitlab]/[openai]
+    sections so the test cannot pollute settings for sibling tests sharing the
+    process-wide Dynaconf singleton.
+
     pr-agent uses loguru; pytest's capsys/caplog don't capture it because the
     sink was bound to sys.stderr before pytest swapped it. Add a loguru sink
     directly so the test sees what would actually land in a real log.
     """
     from loguru import logger as loguru_logger
 
-    # Use sentinels that don't match real token prefixes (glpat-, sk-, ...)
-    # so secret scanners don't flag the test file itself.
+    # Sentinels that don't match real token prefixes (glpat-, sk-, ...) so
+    # secret scanners don't flag the test file itself.
     secret_token = "SENTINEL-EXTRA-CONFIG-PAT-SHOULD-NOT-LEAK"
     openai_secret = "SENTINEL-EXTRA-CONFIG-OPENAI-KEY-SHOULD-NOT-LEAK"
     path = _write_toml(tmp_path, "extra.toml", f"""
-[gitlab]
-personal_access_token = "{secret_token}"
-
-[openai]
-key = "{openai_secret}"
+[{_TEST_SECTION}]
+fake_personal_access_token = "{secret_token}"
+fake_api_key = "{openai_secret}"
 """)
 
     captured_lines = []
@@ -387,11 +405,11 @@ key = "{openai_secret}"
         "Secret value leaked into log output — _apply_settings_from_file must "
         "log section names only, never raw values."
     )
-    assert openai_secret not in combined, "OpenAI key leaked into log output"
+    assert openai_secret not in combined, "API-key-shaped value leaked into log output"
 
-    # Section names *are* safe and useful for debugging — confirm they're emitted
-    # (dynaconf upper-cases section keys, so accept either case).
-    assert "gitlab" in combined.lower(), \
+    # Section name *is* safe and useful for debugging — confirm it's emitted
+    # (dynaconf upper-cases section keys, so compare case-insensitively).
+    assert _TEST_SECTION.lower() in combined.lower(), \
         "Expected the section name to appear in the merged-sections log line"
 
 
