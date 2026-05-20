@@ -75,6 +75,8 @@ For example, if you want to edit the `review` tool configurations, you can run:
 
 Any configuration value in [configuration file](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) file can be similarly edited. Comment `/config` to see the list of available configurations.
 
+If you want PR-Agent to use MCP tools, mount a server-side MCP config file at `/etc/pr-agent/mcp.json` or point `MCP_CONFIG_PATH` at another JSON/JSONC file. The `/config` comment will show the active MCP runtime status when MCP is enabled.
+
 ## PR-Agent Automatic Feedback
 
 ### Disabling all automatic feedback

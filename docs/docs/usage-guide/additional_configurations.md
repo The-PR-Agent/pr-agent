@@ -9,6 +9,27 @@ To print all the available configurations as a comment on your PR, you can use t
 /config
 ```
 
+When MCP is enabled, the `/config` comment also includes a small MCP runtime status block showing whether MCP is enabled and which servers are configured and connected.
+
+## MCP runtime configuration
+
+PR-Agent can load MCP servers from a server-side JSON or JSONC file. By default, it reads `/etc/pr-agent/mcp.json`, and you can override that path with `MCP_CONFIG_PATH` or the `[mcp].config_path` setting.
+
+The file may use either the `servers` key, which matches the VS Code MCP schema, or `mcpServers`, which matches the Claude Desktop schema.
+
+For example, an AWS Knowledge MCP server can be configured like this:
+
+```json
+{
+    "servers": {
+        "AWS Knowledge": {
+            "url": "https://knowledge-mcp.global.api.aws",
+            "type": "http"
+        }
+    }
+}
+```
+
 ![possible_config1](https://codium.ai/images/pr_agent/possible_config1.png){width=512}
 
 To view the **actual** configurations used for a specific tool, after all the user settings are applied, you can add for each tool a `--config.output_relevant_configurations=true` suffix.
