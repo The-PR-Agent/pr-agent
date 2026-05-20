@@ -16,19 +16,45 @@ _MAX_EXTRA_CONFIG_BYTES = 1 * 1024 * 1024  # 1 MB cap for a remote .toml
 _FETCH_TIMEOUT_SECONDS = 10
 
 
-def _resolve_extra_config_to_file(source: str):
+def _safe_url_for_log(url: str) -> str:
+    """
+    Render a URL safe for logging: strip userinfo (user:pass@) and the query
+    string, both of which may carry credentials (e.g. ?private_token=...).
+    Falls back to a redacted placeholder on any parse error.
+    """
+    try:
+        parsed = urlparse(url)
+        netloc = parsed.hostname or ''
+        if parsed.port:
+            netloc = f"{netloc}:{parsed.port}"
+        return f"{parsed.scheme}://{netloc}{parsed.path}"
+    except Exception:
+        return "<extra config URL redacted>"
+
+
+def _resolve_extra_config_to_file(source):
     """
     Resolve --extra_config_url to a local readable .toml file.
 
     Accepts:
       - http:// or https:// URL: fetched via urllib (with optional auth header
-        from PR_AGENT_EXTRA_CONFIG_AUTH_HEADER, e.g. "PRIVATE-TOKEN: xxx").
+        from PR_AGENT_EXTRA_CONFIG_AUTH_HEADER, e.g. "PRIVATE-TOKEN: <token>").
       - file:// URL: treated as a local path.
       - bare local path: used directly.
 
     Returns (path, is_temp). Caller must remove path if is_temp is True.
     Returns (None, False) if source can't be resolved.
+
+    Logs never include the raw URL — `_safe_url_for_log()` strips userinfo and
+    query string so embedded credentials don't leak into CI logs.
     """
+    # Validate / normalise the input at the boundary
+    if not isinstance(source, str):
+        get_logger().warning(
+            f"Ignoring CONFIG.EXTRA_CONFIG_URL: expected str, got {type(source).__name__}"
+        )
+        return None, False
+    source = source.strip()
     if not source:
         return None, False
 
@@ -48,11 +74,19 @@ def _resolve_extra_config_to_file(source: str):
         return None, False
 
     # Fetch over HTTP(S)
+    safe_url = _safe_url_for_log(source)
     headers = {'Accept': 'text/plain, application/toml, */*'}
     auth_header = os.environ.get('PR_AGENT_EXTRA_CONFIG_AUTH_HEADER')
-    if auth_header and ':' in auth_header:
-        name, value = auth_header.split(':', 1)
-        headers[name.strip()] = value.strip()
+    if auth_header:
+        if ':' in auth_header:
+            name, value = auth_header.split(':', 1)
+            headers[name.strip()] = value.strip()
+        else:
+            # Surface misconfiguration instead of silently dropping the header.
+            get_logger().warning(
+                "PR_AGENT_EXTRA_CONFIG_AUTH_HEADER is set but malformed "
+                "(expected '<HeaderName>: <value>'); ignoring."
+            )
 
     try:
         req = Request(source, headers=headers, method='GET')
@@ -60,16 +94,16 @@ def _resolve_extra_config_to_file(source: str):
             data = resp.read(_MAX_EXTRA_CONFIG_BYTES + 1)
         if len(data) > _MAX_EXTRA_CONFIG_BYTES:
             get_logger().warning(
-                f"Extra config exceeds {_MAX_EXTRA_CONFIG_BYTES} bytes, skipping: {source}"
+                f"Extra config exceeds {_MAX_EXTRA_CONFIG_BYTES} bytes, skipping: {safe_url}"
             )
             return None, False
         fd, tmp_path = tempfile.mkstemp(suffix='.toml')
         with os.fdopen(fd, 'wb') as f:
             f.write(data)
-        get_logger().info(f"Fetched extra config from {source} ({len(data)} bytes)")
+        get_logger().info(f"Fetched extra config from {safe_url} ({len(data)} bytes)")
         return tmp_path, True
     except Exception as e:
-        get_logger().warning(f"Failed to fetch extra config from {source}: {e}")
+        get_logger().warning(f"Failed to fetch extra config from {safe_url}: {e}")
         return None, False
 
 
@@ -87,12 +121,26 @@ def _apply_settings_from_file(path: str, label: str):
             'loaders': ['pr_agent.custom_merge_loader'],
             'merge_enabled': True,
         }
-        new_settings = Dynaconf(
-            settings_files=[path],
-            load_dotenv=False,
-            envvar_prefix=False,
-            **dynconf_kwargs,
-        )
+        try:
+            new_settings = Dynaconf(
+                settings_files=[path],
+                load_dotenv=False,
+                envvar_prefix=False,
+                **dynconf_kwargs,
+            )
+        except TypeError as e:
+            # Older Dynaconf versions don't accept load_dotenv / merge_enabled.
+            # Mirror the fallback used by the repo-settings loader so the extra
+            # config still applies (without those security-hardening flags).
+            get_logger().warning(
+                "Your Dynaconf version does not support disabled "
+                "'load_dotenv'/'merge_enabled' parameters. Loading extra config "
+                "without these security features. Please upgrade Dynaconf for "
+                "better security.",
+                artifact={"error": e, "traceback": traceback.format_exc()},
+            )
+            new_settings = Dynaconf(settings_files=[path])
+
         merged_sections = []
         for section, contents in new_settings.as_dict().items():
             if not contents:
@@ -116,11 +164,14 @@ def _apply_settings_from_file(path: str, label: str):
 
 def apply_repo_settings(pr_url):
     os.environ["AUTO_CAST_FOR_DYNACONF"] = "false"
-    git_provider = get_git_provider_with_context(pr_url)
 
-    # Apply external/shared config first so repo-local .pr_agent.toml overrides it.
+    # Apply external/shared config FIRST, before constructing the git provider:
+    # provider initialisers (e.g. GitLabProvider reads GITLAB.PERSONAL_ACCESS_TOKEN
+    # at __init__) need to see any provider-critical settings that come from the
+    # extra file. Repo-local .pr_agent.toml is still applied later and overrides
+    # the extra file on conflicting keys.
     extra_source = get_settings().get("CONFIG.EXTRA_CONFIG_URL", None)
-    if extra_source:
+    if isinstance(extra_source, str) and extra_source.strip():
         extra_path, extra_is_temp = _resolve_extra_config_to_file(extra_source)
         if extra_path:
             try:
@@ -133,6 +184,13 @@ def apply_repo_settings(pr_url):
                         get_logger().error(
                             f"Failed to remove temp extra config {extra_path}: {e}"
                         )
+    elif extra_source is not None and not isinstance(extra_source, str):
+        get_logger().warning(
+            "Ignoring CONFIG.EXTRA_CONFIG_URL: expected str, got "
+            f"{type(extra_source).__name__}"
+        )
+
+    git_provider = get_git_provider_with_context(pr_url)
 
     if get_settings().config.use_repo_settings_file:
         repo_settings_file = None

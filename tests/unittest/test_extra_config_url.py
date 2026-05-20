@@ -1,5 +1,4 @@
 import os
-import socket
 import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -54,25 +53,22 @@ class _CapturingHandler(BaseHTTPRequestHandler):
         return
 
 
-def _free_port():
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
-    s.close()
-    return port
-
-
 @pytest.fixture
 def http_server():
-    """Spin up _CapturingHandler on a free port for the duration of one test."""
+    """Spin up _CapturingHandler on a free port for the duration of one test.
+
+    Bind directly to port 0 and read the assigned port from the server. This
+    avoids the race in "find a free port, close socket, bind HTTPServer to it"
+    where another process can claim the port in the gap.
+    """
     # Reset handler-level state so tests don't pollute each other.
     _CapturingHandler.body = SAMPLE_TOML
     _CapturingHandler.expected_path = "/shared.pr_agent.toml"
     _CapturingHandler.require_header = None
     _CapturingHandler.captured_headers = {}
 
-    port = _free_port()
-    server = HTTPServer(("127.0.0.1", port), _CapturingHandler)
+    server = HTTPServer(("127.0.0.1", 0), _CapturingHandler)
+    port = server.server_address[1]
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -145,8 +141,9 @@ def test_resolve_fetches_http_url_into_tempfile(http_server):
 
 
 def test_resolve_injects_auth_header_from_env(http_server, monkeypatch):
-    _CapturingHandler.require_header = ("Private-Token", "glpat-xxxx")
-    monkeypatch.setenv("PR_AGENT_EXTRA_CONFIG_AUTH_HEADER", "PRIVATE-TOKEN: glpat-xxxx")
+    fake_token = "TEST-AUTH-TOKEN-NOT-REAL"
+    _CapturingHandler.require_header = ("Private-Token", fake_token)
+    monkeypatch.setenv("PR_AGENT_EXTRA_CONFIG_AUTH_HEADER", f"PRIVATE-TOKEN: {fake_token}")
 
     url = f"{http_server}/shared.pr_agent.toml"
     path, is_temp = _resolve_extra_config_to_file(url)
@@ -154,14 +151,14 @@ def test_resolve_injects_auth_header_from_env(http_server, monkeypatch):
         assert path is not None, "fetch should succeed when auth header is provided"
         assert is_temp is True
         # http.server normalizes header names to title-case
-        assert _CapturingHandler.captured_headers.get("Private-Token") == "glpat-xxxx"
+        assert _CapturingHandler.captured_headers.get("Private-Token") == fake_token
     finally:
         if path and os.path.exists(path):
             os.remove(path)
 
 
 def test_resolve_returns_none_when_auth_header_missing(http_server, monkeypatch):
-    _CapturingHandler.require_header = ("Private-Token", "glpat-xxxx")
+    _CapturingHandler.require_header = ("Private-Token", "TEST-AUTH-TOKEN-NOT-REAL")
     monkeypatch.delenv("PR_AGENT_EXTRA_CONFIG_AUTH_HEADER", raising=False)
 
     url = f"{http_server}/shared.pr_agent.toml"
@@ -188,16 +185,34 @@ def test_resolve_rejects_oversized_response(http_server):
     assert is_temp is False
 
 
-def test_resolve_malformed_auth_header_is_ignored(http_server, monkeypatch):
-    # Header without ':' should be silently dropped, request proceeds without it
+def test_resolve_malformed_auth_header_warns_and_drops(http_server, monkeypatch):
+    """Header without ':' is dropped, but the misconfiguration MUST be surfaced
+    via a warning — silent fallthrough makes it impossible to diagnose why a
+    private endpoint kept returning 401."""
+    from loguru import logger as loguru_logger
+
     _CapturingHandler.require_header = None
     monkeypatch.setenv("PR_AGENT_EXTRA_CONFIG_AUTH_HEADER", "no-colon-here")
 
+    captured_lines = []
+    sink_id = loguru_logger.add(
+        lambda msg: captured_lines.append(str(msg)),
+        level="DEBUG",
+    )
+
     url = f"{http_server}/shared.pr_agent.toml"
-    path, is_temp = _resolve_extra_config_to_file(url)
     try:
-        assert path is not None
+        path, is_temp = _resolve_extra_config_to_file(url)
+    finally:
+        loguru_logger.remove(sink_id)
+
+    try:
+        assert path is not None, "request should proceed even with malformed auth header"
         assert is_temp is True
+        combined = "\n".join(captured_lines)
+        assert "PR_AGENT_EXTRA_CONFIG_AUTH_HEADER" in combined and "malformed" in combined.lower(), (
+            "Malformed auth header must produce a warning so misconfiguration is diagnosable"
+        )
     finally:
         if path and os.path.exists(path):
             os.remove(path)
@@ -344,8 +359,10 @@ def test_apply_settings_file_does_not_log_secret_values(tmp_path, settings_sandb
     """
     from loguru import logger as loguru_logger
 
-    secret_token = "glpat-supersecrettoken-shouldnotleak"
-    openai_secret = "sk-also-secret-1234567890"
+    # Use sentinels that don't match real token prefixes (glpat-, sk-, ...)
+    # so secret scanners don't flag the test file itself.
+    secret_token = "SENTINEL-EXTRA-CONFIG-PAT-SHOULD-NOT-LEAK"
+    openai_secret = "SENTINEL-EXTRA-CONFIG-OPENAI-KEY-SHOULD-NOT-LEAK"
     path = _write_toml(tmp_path, "extra.toml", f"""
 [gitlab]
 personal_access_token = "{secret_token}"
@@ -494,3 +511,138 @@ repo_key = "still-applied"
     apply_repo_settings("https://example.com/pr/1")
 
     assert get_settings().get(f"{_TEST_SECTION}.repo_key") == "still-applied"
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for review feedback (review round 2)
+# ---------------------------------------------------------------------------
+
+def test_resolve_rejects_non_string_source():
+    """CONFIG.EXTRA_CONFIG_URL set to a non-string must be rejected at the
+    boundary, not bubble up an exception from urlparse()."""
+    for bad in [42, ["https://x.example/y"], {"url": "x"}, True]:
+        path, is_temp = _resolve_extra_config_to_file(bad)
+        assert path is None and is_temp is False, (
+            f"non-string source {bad!r} must be rejected"
+        )
+
+
+def test_safe_url_for_log_strips_credentials():
+    """URLs containing userinfo or token-bearing query params must be
+    sanitised before going to the log."""
+    from pr_agent.git_providers.utils import _safe_url_for_log
+
+    raw = "https://alice:s3cret@config.example.com:8443/pr-agent/shared.toml?private_token=xyz"
+    safe = _safe_url_for_log(raw)
+    # Userinfo and query string must be stripped
+    assert "alice" not in safe
+    assert "s3cret" not in safe
+    assert "private_token" not in safe
+    assert "xyz" not in safe
+    # Scheme, host, port and path remain (useful for debugging)
+    assert safe == "https://config.example.com:8443/pr-agent/shared.toml"
+
+
+def test_resolve_does_not_log_url_credentials(http_server, monkeypatch):
+    """Regression: even when the URL embeds userinfo, the log lines emitted by
+    _resolve_extra_config_to_file must not contain those credentials."""
+    from loguru import logger as loguru_logger
+
+    secret_in_url = "userinfo-secret-xyz"
+    # http.server doesn't honor userinfo for auth, so we wire the path so the
+    # request 404s and triggers the failure-path log line — that's the one we
+    # want to assert never contains the secret.
+    base = http_server  # http://127.0.0.1:<port>
+    netloc = base.split("//", 1)[1]
+    url = f"http://baduser:{secret_in_url}@{netloc}/does-not-exist.toml"
+
+    captured = []
+    sink_id = loguru_logger.add(lambda msg: captured.append(str(msg)), level="DEBUG")
+    try:
+        path, is_temp = _resolve_extra_config_to_file(url)
+    finally:
+        loguru_logger.remove(sink_id)
+
+    assert path is None
+    combined = "\n".join(captured)
+    assert secret_in_url not in combined, "URL userinfo leaked into log output"
+    assert "baduser" not in combined, "URL username leaked into log output"
+
+
+def test_apply_settings_file_loads_when_dynaconf_lacks_security_flags(
+    tmp_path, settings_sandbox, monkeypatch
+):
+    """Regression: older Dynaconf versions reject load_dotenv/envvar_prefix
+    kwargs. _apply_settings_from_file must still load the file via the fallback
+    instead of dropping the merge entirely."""
+    import pr_agent.git_providers.utils as utils_mod
+
+    real_dynaconf = utils_mod.Dynaconf
+    call_log = {"strict": 0, "fallback": 0}
+
+    class _FakeDynaconf:
+        def __init__(self, *args, **kwargs):
+            if "load_dotenv" in kwargs or "envvar_prefix" in kwargs:
+                call_log["strict"] += 1
+                raise TypeError("simulated older Dynaconf — load_dotenv unsupported")
+            call_log["fallback"] += 1
+            self._real = real_dynaconf(*args, **kwargs)
+
+        def as_dict(self):
+            return self._real.as_dict()
+
+    monkeypatch.setattr(utils_mod, "Dynaconf", _FakeDynaconf)
+
+    path = _write_toml(tmp_path, "extra.toml", f"""
+[{_TEST_SECTION}]
+fallback_key = "from-old-dynaconf"
+""")
+    _apply_settings_from_file(path, label="extra")
+
+    assert call_log["strict"] == 1, "must first try the hardened Dynaconf kwargs"
+    assert call_log["fallback"] == 1, "must fall back when TypeError is raised"
+    assert get_settings().get(f"{_TEST_SECTION}.fallback_key") == "from-old-dynaconf"
+
+
+def test_extra_config_applied_before_git_provider(tmp_path, settings_sandbox, monkeypatch):
+    """Regression: provider __init__ may read settings (e.g. GITLAB token), so
+    the extra config must be merged BEFORE get_git_provider_with_context() is
+    called. We assert ordering by recording the order of side effects."""
+    import pr_agent.git_providers.utils as utils_mod
+
+    events = []
+
+    extra_path = _write_toml(tmp_path, "extra.toml", f"""
+[{_TEST_SECTION}]
+provider_critical = "from-extra"
+""")
+    get_settings().set("CONFIG.EXTRA_CONFIG_URL", extra_path)
+
+    # The fake provider records the setting value visible at construction time.
+    class _OrderRecordingProvider:
+        def __init__(self):
+            events.append(
+                (
+                    "provider_init_sees",
+                    get_settings().get(f"{_TEST_SECTION}.provider_critical"),
+                )
+            )
+
+        def get_repo_settings(self):
+            return b""
+
+    def _factory(_pr_url):
+        events.append(("get_git_provider_with_context",))
+        return _OrderRecordingProvider()
+
+    monkeypatch.setattr(utils_mod, "get_git_provider_with_context", _factory)
+
+    apply_repo_settings("https://example.com/pr/1")
+
+    # The provider must be constructed AFTER the extra config is applied, so
+    # the merged value is visible inside provider __init__.
+    init_event = next(e for e in events if e[0] == "provider_init_sees")
+    assert init_event[1] == "from-extra", (
+        "extra_config_url must be merged before the git provider is constructed; "
+        f"provider saw {init_event[1]!r}"
+    )

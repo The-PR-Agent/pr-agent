@@ -132,13 +132,13 @@ For private endpoints (e.g. a GitLab API URL pointing at a private `pr-agent-set
 
 ```bash
 # GitLab Personal Access Token
-export PR_AGENT_EXTRA_CONFIG_AUTH_HEADER="PRIVATE-TOKEN: glpat-xxxxxxxxxxxxxxxxxxxx"
+export PR_AGENT_EXTRA_CONFIG_AUTH_HEADER="PRIVATE-TOKEN: <your-personal-access-token>"
 
 # GitLab CI job token
 export PR_AGENT_EXTRA_CONFIG_AUTH_HEADER="JOB-TOKEN: $CI_JOB_TOKEN"
 
 # Generic bearer token
-export PR_AGENT_EXTRA_CONFIG_AUTH_HEADER="Authorization: Bearer xxxxx"
+export PR_AGENT_EXTRA_CONFIG_AUTH_HEADER="Authorization: Bearer <your-token>"
 ```
 
 ### Precedence
