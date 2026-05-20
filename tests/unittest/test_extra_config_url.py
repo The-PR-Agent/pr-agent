@@ -591,6 +591,101 @@ repo_key = "still-applied"
     assert get_settings().get(f"{_TEST_SECTION}.repo_key") == "still-applied"
 
 
+def test_env_var_overrides_extra_config(tmp_path, settings_sandbox, monkeypatch):
+    """Regression: env vars are the highest-precedence layer (per the docs'
+    precedence chain). The section-level overwrite inside
+    _apply_settings_from_file() must not silently clobber values originally
+    sourced from environment variables — otherwise env-supplied secrets
+    (provider tokens, API keys) get replaced by extra-config values."""
+    env_key = f"{_TEST_SECTION.upper()}__TOKEN"
+    monkeypatch.setenv(env_key, "from-env")
+
+    # Re-apply env so the sandbox's pristine state reflects the env value
+    # (Dynaconf only auto-loads at construction time).
+    from dynaconf.loaders import env_loader as _env_loader
+    _env_loader.load(get_settings())
+    assert get_settings().get(f"{_TEST_SECTION}.token") == "from-env", (
+        "precondition: env var must populate the section before the merge"
+    )
+
+    path = _write_toml(tmp_path, "extra.toml", f"""
+[{_TEST_SECTION}]
+token = "from-extra-file"
+other = "not-in-env"
+""")
+    _apply_settings_from_file(path, label="extra")
+
+    assert get_settings().get(f"{_TEST_SECTION}.token") == "from-env", (
+        "env-sourced value must survive an extra-config merge — otherwise a "
+        "provider token from PR_AGENT_<SECTION>__<KEY> can be silently "
+        "replaced by the external .toml"
+    )
+    # Non-overlapping keys from the file still take effect
+    assert get_settings().get(f"{_TEST_SECTION}.other") == "not-in-env"
+
+
+def test_env_var_overrides_repo_settings(tmp_path, settings_sandbox, mock_git_provider, monkeypatch):
+    """Same precedence rule applies to the repo-local .pr_agent.toml merge:
+    env vars must remain highest priority even after repo settings are merged
+    on top of the extra config."""
+    env_key = f"{_TEST_SECTION.upper()}__TOKEN"
+    monkeypatch.setenv(env_key, "from-env")
+    from dynaconf.loaders import env_loader as _env_loader
+    _env_loader.load(get_settings())
+
+    repo_toml = f"""
+[{_TEST_SECTION}]
+token = "from-repo-file"
+repo_only = "repo-value"
+""".encode()
+    mock_git_provider["provider"] = _FakeGitProvider(repo_toml)
+
+    apply_repo_settings("https://example.com/pr/1")
+
+    assert get_settings().get(f"{_TEST_SECTION}.token") == "from-env", (
+        "env-sourced value must survive a repo-local merge as well"
+    )
+    assert get_settings().get(f"{_TEST_SECTION}.repo_only") == "repo-value"
+
+
+def test_env_var_visible_to_git_provider_after_extra_merge(
+    tmp_path, settings_sandbox, monkeypatch
+):
+    """Provider __init__ may read auth settings (e.g. GITLAB.PERSONAL_ACCESS_TOKEN).
+    Env-sourced credentials must therefore be restored BEFORE the git provider
+    is constructed, even if the extra config tried to overwrite them."""
+    import pr_agent.git_providers.utils as utils_mod
+
+    env_key = f"{_TEST_SECTION.upper()}__TOKEN"
+    monkeypatch.setenv(env_key, "env-secret")
+    from dynaconf.loaders import env_loader as _env_loader
+    _env_loader.load(get_settings())
+
+    extra_path = _write_toml(tmp_path, "extra.toml", f"""
+[{_TEST_SECTION}]
+token = "extra-config-value"
+""")
+    get_settings().set("CONFIG.EXTRA_CONFIG_URL", extra_path)
+
+    seen = {}
+
+    class _Provider:
+        def __init__(self):
+            seen["token_at_init"] = get_settings().get(f"{_TEST_SECTION}.token")
+
+        def get_repo_settings(self):
+            return b""
+
+    monkeypatch.setattr(utils_mod, "get_git_provider_with_context", lambda _: _Provider())
+
+    apply_repo_settings("https://example.com/pr/1")
+
+    assert seen["token_at_init"] == "env-secret", (
+        "provider __init__ must see the env-sourced credential, not the value "
+        f"the extra config tried to inject; saw {seen['token_at_init']!r}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Regression tests for review feedback (review round 2)
 # ---------------------------------------------------------------------------
@@ -827,6 +922,76 @@ benign_key = "should-not-be-applied"
     # The malicious file's keys must not have been applied
     assert get_settings().get(f"{_TEST_SECTION}.benign_key") == sentinel, (
         "values from a file with forbidden directives must not be merged"
+    )
+
+
+def test_env_var_overrides_extra_config_when_default_exists(
+    tmp_path, settings_sandbox, monkeypatch
+):
+    """Regression: when a key has a baseline value (from configuration.toml),
+    the env_loader overwrites it case-insensitively at the EXISTING lowercase
+    key. _apply_settings_from_file() then sees that same lowercase key in the
+    file and was silently overwriting the env value — because as_dict().get()
+    on the section is case-sensitive (returns {} when section name comes from
+    a lowercase TOML header) and unset()+set() did the rest.
+
+    This case is what makes the bug observable in production: real secrets
+    (e.g. gitlab.url, openai.key) all have defaults in configuration.toml, so
+    they hit this code path."""
+    settings = get_settings()
+    section_dict_key = _TEST_SECTION.upper()
+
+    # Simulate a configuration.toml-like default at the lowercase key.
+    settings.set(_TEST_SECTION, {"endpoint": "default-endpoint"}, merge=False)
+    # Track the section for cleanup via the existing sandbox fixture.
+
+    # Env loader overwrites the lowercase 'endpoint' key in place.
+    env_key = f"{section_dict_key}__ENDPOINT"
+    monkeypatch.setenv(env_key, "from-env")
+    from dynaconf.loaders import env_loader as _env_loader
+    _env_loader.load(settings)
+    assert settings.get(f"{_TEST_SECTION}.endpoint") == "from-env", (
+        "precondition: env var must overwrite the default value"
+    )
+
+    path = _write_toml(tmp_path, "extra.toml", f"""
+[{_TEST_SECTION}]
+endpoint = "from-extra-file"
+""")
+    _apply_settings_from_file(path, label="extra")
+
+    assert settings.get(f"{_TEST_SECTION}.endpoint") == "from-env", (
+        "env-sourced value must survive an extra-config merge even when the "
+        "key has a baseline default; otherwise file values silently replace "
+        "env-supplied secrets (e.g. gitlab.url, openai.key)"
+    )
+
+
+def test_env_var_overrides_repo_settings_when_default_exists(
+    tmp_path, settings_sandbox, mock_git_provider, monkeypatch
+):
+    """Same fragility, but exercised through the full apply_repo_settings()
+    path: env vars must still win over repo-local .pr_agent.toml for keys
+    that have a baseline default."""
+    settings = get_settings()
+    settings.set(_TEST_SECTION, {"endpoint": "default-endpoint"}, merge=False)
+
+    env_key = f"{_TEST_SECTION.upper()}__ENDPOINT"
+    monkeypatch.setenv(env_key, "from-env")
+    from dynaconf.loaders import env_loader as _env_loader
+    _env_loader.load(settings)
+
+    repo_toml = f"""
+[{_TEST_SECTION}]
+endpoint = "from-repo-file"
+""".encode()
+    mock_git_provider["provider"] = _FakeGitProvider(repo_toml)
+
+    apply_repo_settings("https://example.com/pr/1")
+
+    assert settings.get(f"{_TEST_SECTION}.endpoint") == "from-env", (
+        "env-sourced value must survive a repo-local merge for keys with "
+        "baseline defaults too"
     )
 
 

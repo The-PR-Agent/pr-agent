@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 from urllib.request import Request, url2pathname, urlopen
 
 from dynaconf import Dynaconf
+from dynaconf.loaders import env_loader
 from starlette_context import context
 
 from pr_agent.config_loader import get_settings
@@ -130,6 +131,25 @@ def _resolve_extra_config_to_file(source):
         return None, False
 
 
+def _reapply_env_overrides():
+    """
+    Re-run dynaconf's env_loader against the global settings so env-sourced
+    values win over any keys just merged from a config file.
+
+    Why: _apply_settings_from_file() and the repo-local merge below both
+    overwrite section dicts wholesale. Without this re-application, an extra
+    config file or repo .pr_agent.toml can silently replace a secret supplied
+    via environment variable — breaking the documented precedence (env vars
+    are the highest layer; see docs/usage-guide/configuration_options.md).
+    """
+    try:
+        env_loader.load(get_settings())
+    except Exception as e:
+        # Never let a precedence-restoration error block apply_repo_settings;
+        # log and continue with whatever state the merge left.
+        get_logger().warning(f"Failed to re-apply env-var overrides: {e}")
+
+
 def _apply_settings_from_file(path: str, label: str):
     """
     Merge an external .toml settings file into the global settings, section-by-section.
@@ -187,6 +207,10 @@ def _apply_settings_from_file(path: str, label: str):
             get_settings().unset(section)
             get_settings().set(section, section_dict, merge=False)
             merged_sections.append(section)
+        # Restore env-var precedence: the section-level unset()/set() above can
+        # silently overwrite values originally sourced from env vars. Replay
+        # env_loader so the env layer remains the top of the precedence stack.
+        _reapply_env_overrides()
         # Do NOT log the merged dict: external/repo .pr_agent.toml may contain
         # secrets (e.g. openai.key, gitlab.personal_access_token) that would
         # otherwise leak into CI logs. Section names are safe and sufficient
@@ -211,6 +235,9 @@ def apply_repo_settings(pr_url):
         extra_path, extra_is_temp = _resolve_extra_config_to_file(extra_source)
         if extra_path:
             try:
+                # _apply_settings_from_file() re-applies env-var overrides
+                # itself, so env precedence is restored before the provider
+                # is constructed below.
                 _apply_settings_from_file(extra_path, label="extra")
             finally:
                 if extra_is_temp:
@@ -283,6 +310,9 @@ def apply_repo_settings(pr_url):
                             section_dict[key] = value
                         get_settings().unset(section)
                         get_settings().set(section, section_dict, merge=False)
+                    # Same precedence-restoration rationale as the extra-config
+                    # path: env-sourced values must remain the highest layer.
+                    _reapply_env_overrides()
                     get_logger().info(f"Applying repo settings:\n{new_settings.as_dict()}")
                 except Exception as e:
                     get_logger().warning(f"Failed to apply repo {category} settings, error: {str(e)}")
