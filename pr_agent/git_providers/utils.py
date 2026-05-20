@@ -2,6 +2,8 @@ import copy
 import os
 import tempfile
 import traceback
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 from dynaconf import Dynaconf
 from starlette_context import context
@@ -10,10 +12,120 @@ from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.log import get_logger
 
+_MAX_EXTRA_CONFIG_BYTES = 1 * 1024 * 1024  # 1 MB cap for a remote .toml
+_FETCH_TIMEOUT_SECONDS = 10
+
+
+def _resolve_extra_config_to_file(source: str):
+    """
+    Resolve --extra_config_url to a local readable .toml file.
+
+    Accepts:
+      - http:// or https:// URL: fetched via urllib (with optional auth header
+        from PR_AGENT_EXTRA_CONFIG_AUTH_HEADER, e.g. "PRIVATE-TOKEN: xxx").
+      - file:// URL: treated as a local path.
+      - bare local path: used directly.
+
+    Returns (path, is_temp). Caller must remove path if is_temp is True.
+    Returns (None, False) if source can't be resolved.
+    """
+    if not source:
+        return None, False
+
+    parsed = urlparse(source)
+    scheme = (parsed.scheme or '').lower()
+
+    # Local path (bare or file://)
+    if scheme in ('', 'file'):
+        local_path = parsed.path if scheme == 'file' else source
+        if os.path.isfile(local_path):
+            return local_path, False
+        get_logger().warning(f"Extra config not found at local path: {local_path}")
+        return None, False
+
+    if scheme not in ('http', 'https'):
+        get_logger().warning(f"Unsupported scheme for extra config: {scheme}")
+        return None, False
+
+    # Fetch over HTTP(S)
+    headers = {'Accept': 'text/plain, application/toml, */*'}
+    auth_header = os.environ.get('PR_AGENT_EXTRA_CONFIG_AUTH_HEADER')
+    if auth_header and ':' in auth_header:
+        name, value = auth_header.split(':', 1)
+        headers[name.strip()] = value.strip()
+
+    try:
+        req = Request(source, headers=headers, method='GET')
+        with urlopen(req, timeout=_FETCH_TIMEOUT_SECONDS) as resp:
+            data = resp.read(_MAX_EXTRA_CONFIG_BYTES + 1)
+        if len(data) > _MAX_EXTRA_CONFIG_BYTES:
+            get_logger().warning(
+                f"Extra config exceeds {_MAX_EXTRA_CONFIG_BYTES} bytes, skipping: {source}"
+            )
+            return None, False
+        fd, tmp_path = tempfile.mkstemp(suffix='.toml')
+        with os.fdopen(fd, 'wb') as f:
+            f.write(data)
+        get_logger().info(f"Fetched extra config from {source} ({len(data)} bytes)")
+        return tmp_path, True
+    except Exception as e:
+        get_logger().warning(f"Failed to fetch extra config from {source}: {e}")
+        return None, False
+
+
+def _apply_settings_from_file(path: str, label: str):
+    """
+    Merge an external .toml settings file into the global settings, section-by-section.
+    Uses the same custom_merge_loader as repo-local settings so security checks
+    (forbidden includes/preloads/loaders) apply consistently.
+    """
+    if not path or not os.path.isfile(path):
+        return
+    try:
+        dynconf_kwargs = {
+            'core_loaders': [],
+            'loaders': ['pr_agent.custom_merge_loader'],
+            'merge_enabled': True,
+        }
+        new_settings = Dynaconf(
+            settings_files=[path],
+            load_dotenv=False,
+            envvar_prefix=False,
+            **dynconf_kwargs,
+        )
+        for section, contents in new_settings.as_dict().items():
+            if not contents:
+                continue
+            section_dict = copy.deepcopy(get_settings().as_dict().get(section, {}))
+            for key, value in contents.items():
+                section_dict[key] = value
+            get_settings().unset(section)
+            get_settings().set(section, section_dict, merge=False)
+        get_logger().info(f"Applied {label} settings from {path}:\n{new_settings.as_dict()}")
+    except Exception as e:
+        get_logger().warning(f"Failed to apply {label} settings from {path}: {e}")
+
 
 def apply_repo_settings(pr_url):
     os.environ["AUTO_CAST_FOR_DYNACONF"] = "false"
     git_provider = get_git_provider_with_context(pr_url)
+
+    # Apply external/shared config first so repo-local .pr_agent.toml overrides it.
+    extra_source = get_settings().get("CONFIG.EXTRA_CONFIG_URL", None)
+    if extra_source:
+        extra_path, extra_is_temp = _resolve_extra_config_to_file(extra_source)
+        if extra_path:
+            try:
+                _apply_settings_from_file(extra_path, label="extra")
+            finally:
+                if extra_is_temp:
+                    try:
+                        os.remove(extra_path)
+                    except Exception as e:
+                        get_logger().error(
+                            f"Failed to remove temp extra config {extra_path}: {e}"
+                        )
+
     if get_settings().config.use_repo_settings_file:
         repo_settings_file = None
         try:
