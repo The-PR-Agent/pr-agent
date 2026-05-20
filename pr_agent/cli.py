@@ -88,8 +88,10 @@ def run(inargs=None, args=None):
 
     command = args.command.lower()
     get_settings().set("CONFIG.CLI_MODE", True)
-    if getattr(args, "extra_config_url", None):
-        get_settings().set("CONFIG.EXTRA_CONFIG_URL", args.extra_config_url)
+    # Always reconcile CONFIG.EXTRA_CONFIG_URL with the current invocation so a
+    # previously-set value from an earlier run() call in the same process can't
+    # leak into a later one (get_settings() is a process-wide singleton).
+    get_settings().set("CONFIG.EXTRA_CONFIG_URL", getattr(args, "extra_config_url", None))
 
     async def inner():
         if args.issue_url:

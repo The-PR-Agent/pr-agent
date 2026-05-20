@@ -275,6 +275,47 @@ def test_cli_parser_flag_takes_precedence_over_env_var(monkeypatch):
     assert args.extra_config_url == "/from/flag.toml"
 
 
+def test_cli_setting_reconciles_between_runs(settings_sandbox, monkeypatch):
+    """Regression: in long-lived processes that call run() multiple times,
+    a previously-set CONFIG.EXTRA_CONFIG_URL must not leak into the next call
+    that omits the flag/env var. get_settings() is a process-wide singleton."""
+    from argparse import Namespace
+
+    import pr_agent.cli as cli_mod
+
+    # Stub PRAgent so run() returns quickly without making network calls;
+    # we only care about the synchronous setting-reconciliation prologue.
+    class _StubAgent:
+        async def handle_request(self, *_args, **_kwargs):
+            return True
+
+    monkeypatch.setattr(cli_mod, "PRAgent", lambda: _StubAgent())
+    monkeypatch.delenv("PR_AGENT_EXTRA_CONFIG_URL", raising=False)
+
+    # First invocation: explicit URL — should populate the singleton key
+    cli_mod.run(args=Namespace(
+        pr_url="https://example.com/pr/1",
+        issue_url=None,
+        extra_config_url="/first/run.toml",
+        command="review",
+        rest=[],
+    ))
+    assert get_settings().get("CONFIG.EXTRA_CONFIG_URL") == "/first/run.toml"
+
+    # Second invocation: no URL — singleton key must be CLEARED, not carried over
+    cli_mod.run(args=Namespace(
+        pr_url="https://example.com/pr/1",
+        issue_url=None,
+        extra_config_url=None,
+        command="review",
+        rest=[],
+    ))
+    assert get_settings().get("CONFIG.EXTRA_CONFIG_URL") in (None, ""), (
+        "CONFIG.EXTRA_CONFIG_URL must be cleared when the flag/env var is "
+        f"absent; got {get_settings().get('CONFIG.EXTRA_CONFIG_URL')!r}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Merge / precedence tests
 #
@@ -293,9 +334,17 @@ _TEST_KEYS_TO_RESTORE = [
 ]
 
 
+_AUTO_CAST_ENV = "AUTO_CAST_FOR_DYNACONF"
+
+
 @pytest.fixture
 def settings_sandbox():
-    """Snapshot a few settings keys/sections, yield, restore on teardown."""
+    """Snapshot a few settings keys/sections AND the AUTO_CAST_FOR_DYNACONF env
+    var (which apply_repo_settings() mutates), yield, restore on teardown.
+
+    Both are process-global state — settings via the Dynaconf singleton and
+    env vars via os.environ — so any test that calls apply_repo_settings() can
+    otherwise leak state into sibling tests."""
     settings = get_settings()
     saved = {}
     for section, key in _TEST_KEYS_TO_RESTORE:
@@ -303,6 +352,11 @@ def settings_sandbox():
             saved[section] = settings.as_dict().get(section, None)
         else:
             saved[(section, key)] = settings.get(f"{section}.{key}", None)
+
+    # Snapshot the env var; use a sentinel to distinguish "unset" from "''"
+    _UNSET = object()
+    saved_env = os.environ.get(_AUTO_CAST_ENV, _UNSET)
+
     try:
         yield settings
     finally:
@@ -318,6 +372,12 @@ def settings_sandbox():
                     settings.unset(f"{section}.{key}")
                 else:
                     settings.set(f"{section}.{key}", val)
+
+        # Restore the env var
+        if saved_env is _UNSET:
+            os.environ.pop(_AUTO_CAST_ENV, None)
+        else:
+            os.environ[_AUTO_CAST_ENV] = saved_env
 
 
 def _write_toml(tmp_path, name, content):
@@ -670,6 +730,56 @@ fallback_key = "from-old-dynaconf"
     assert call_log["strict"] == 1, "must first try the hardened Dynaconf kwargs"
     assert call_log["fallback"] == 1, "must fall back when TypeError is raised"
     assert get_settings().get(f"{_TEST_SECTION}.fallback_key") == "from-old-dynaconf"
+
+
+def test_settings_sandbox_restores_auto_cast_env_var(monkeypatch):
+    """Regression: apply_repo_settings() sets os.environ['AUTO_CAST_FOR_DYNACONF']
+    as a side effect. The settings_sandbox fixture must restore that env var
+    to its prior state so it can't leak into sibling tests.
+
+    We exercise the fixture indirectly: build a fresh instance inline, call
+    apply_repo_settings inside it (with a stubbed provider), confirm the env
+    var is set during the test, and confirm it's restored after teardown.
+    """
+    import pr_agent.git_providers.utils as utils_mod
+
+    # Save what the outer process state actually is right now
+    _UNSET = object()
+    pre_state = os.environ.get(_AUTO_CAST_ENV, _UNSET)
+
+    class _FakeGP:
+        def get_repo_settings(self):
+            return b""
+
+    monkeypatch.setattr(utils_mod, "get_git_provider_with_context", lambda _: _FakeGP())
+
+    # Force a known pre-state we can check restoration against
+    if pre_state is _UNSET:
+        os.environ.pop(_AUTO_CAST_ENV, None)
+        expected_after = _UNSET
+    else:
+        expected_after = pre_state
+
+    # Manually drive the fixture's generator lifecycle so we can assert state
+    # both during and after.
+    gen = settings_sandbox.__wrapped__()
+    next(gen)  # equivalent to entering the with-block
+    try:
+        apply_repo_settings("https://example.com/pr/1")
+        assert os.environ.get(_AUTO_CAST_ENV) == "false", (
+            "apply_repo_settings must set AUTO_CAST_FOR_DYNACONF during the test"
+        )
+    finally:
+        try:
+            next(gen)
+        except StopIteration:
+            pass
+
+    after = os.environ.get(_AUTO_CAST_ENV, _UNSET)
+    assert after == expected_after, (
+        "settings_sandbox must restore AUTO_CAST_FOR_DYNACONF to its prior state "
+        f"(expected {expected_after!r}, got {after!r})"
+    )
 
 
 def test_apply_settings_file_security_check_runs_on_fallback_path(
