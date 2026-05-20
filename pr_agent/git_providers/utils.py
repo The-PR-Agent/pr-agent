@@ -93,6 +93,7 @@ def _apply_settings_from_file(path: str, label: str):
             envvar_prefix=False,
             **dynconf_kwargs,
         )
+        merged_sections = []
         for section, contents in new_settings.as_dict().items():
             if not contents:
                 continue
@@ -101,7 +102,14 @@ def _apply_settings_from_file(path: str, label: str):
                 section_dict[key] = value
             get_settings().unset(section)
             get_settings().set(section, section_dict, merge=False)
-        get_logger().info(f"Applied {label} settings from {path}:\n{new_settings.as_dict()}")
+            merged_sections.append(section)
+        # Do NOT log the merged dict: external/repo .pr_agent.toml may contain
+        # secrets (e.g. openai.key, gitlab.personal_access_token) that would
+        # otherwise leak into CI logs. Section names are safe and sufficient
+        # for debugging which file contributed what.
+        get_logger().info(
+            f"Applied {label} settings from {path} (sections merged: {sorted(merged_sections)})"
+        )
     except Exception as e:
         get_logger().warning(f"Failed to apply {label} settings from {path}: {e}")
 

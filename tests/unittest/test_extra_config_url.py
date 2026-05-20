@@ -332,6 +332,52 @@ def test_apply_settings_file_silently_skips_missing_path(settings_sandbox):
     assert get_settings().get(f"{_TEST_SECTION}.canary") == "untouched"
 
 
+def test_apply_settings_file_does_not_log_secret_values(tmp_path, settings_sandbox):
+    """
+    Regression: the info log emitted after a merge must not include raw values
+    from the merged config, otherwise secrets in external .pr_agent.toml
+    (openai.key, gitlab.personal_access_token, etc.) leak into CI logs.
+
+    pr-agent uses loguru; pytest's capsys/caplog don't capture it because the
+    sink was bound to sys.stderr before pytest swapped it. Add a loguru sink
+    directly so the test sees what would actually land in a real log.
+    """
+    from loguru import logger as loguru_logger
+
+    secret_token = "glpat-supersecrettoken-shouldnotleak"
+    openai_secret = "sk-also-secret-1234567890"
+    path = _write_toml(tmp_path, "extra.toml", f"""
+[gitlab]
+personal_access_token = "{secret_token}"
+
+[openai]
+key = "{openai_secret}"
+""")
+
+    captured_lines = []
+    sink_id = loguru_logger.add(
+        lambda msg: captured_lines.append(str(msg)),
+        level="DEBUG",
+    )
+    try:
+        _apply_settings_from_file(path, label="extra")
+    finally:
+        loguru_logger.remove(sink_id)
+
+    combined = "\n".join(captured_lines)
+
+    assert secret_token not in combined, (
+        "Secret value leaked into log output — _apply_settings_from_file must "
+        "log section names only, never raw values."
+    )
+    assert openai_secret not in combined, "OpenAI key leaked into log output"
+
+    # Section names *are* safe and useful for debugging — confirm they're emitted
+    # (dynaconf upper-cases section keys, so accept either case).
+    assert "gitlab" in combined.lower(), \
+        "Expected the section name to appear in the merged-sections log line"
+
+
 def test_apply_settings_file_silently_skips_invalid_toml(tmp_path, settings_sandbox):
     get_settings().set(f"{_TEST_SECTION}.canary", "untouched")
     path = _write_toml(tmp_path, "broken.toml", "this is = not valid toml = [[[")
