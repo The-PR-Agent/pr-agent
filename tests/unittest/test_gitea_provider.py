@@ -1,6 +1,8 @@
 from io import BytesIO
 from unittest.mock import MagicMock, patch
 
+from pr_agent.git_providers.gitea_provider import GiteaProvider
+
 
 class TestGiteaProvider:
     @patch('pr_agent.git_providers.gitea_provider.get_settings')
@@ -103,3 +105,66 @@ class TestGiteaProvider:
         args, kwargs = mock_api_client.call_api.call_args
         assert args[0] == '/repos/owner/repo/pulls/123/commits'
         assert kwargs.get('auth_settings') == ['AuthorizationHeaderToken']
+
+    def test_get_repo_file_content_loads_from_base_sha(self):
+        provider = GiteaProvider.__new__(GiteaProvider)
+        provider.owner = "owner"
+        provider.repo = "repo"
+        provider.sha = "head-sha"
+        provider.base_sha = "base-sha"
+        provider.base_ref = "main"
+        provider.logger = MagicMock()
+        provider.repo_api = MagicMock()
+        provider.repo_api.get_file_content.return_value = "repo context"
+
+        content = provider.get_repo_file_content("AGENTS.md")
+
+        assert content == "repo context"
+        provider.repo_api.get_file_content.assert_called_once_with(
+            owner="owner",
+            repo="repo",
+            commit_sha="base-sha",
+            filepath="AGENTS.md"
+        )
+
+    def test_get_repo_file_content_loads_from_base_ref_when_base_sha_missing(self):
+        provider = GiteaProvider.__new__(GiteaProvider)
+        provider.owner = "owner"
+        provider.repo = "repo"
+        provider.sha = "head-sha"
+        provider.base_sha = ""
+        provider.base_ref = "main"
+        provider.logger = MagicMock()
+        provider.repo_api = MagicMock()
+        provider.repo_api.get_file_content.return_value = "repo context"
+
+        content = provider.get_repo_file_content("AGENTS.md")
+
+        assert content == "repo context"
+        provider.repo_api.get_file_content.assert_called_once_with(
+            owner="owner",
+            repo="repo",
+            commit_sha="main",
+            filepath="AGENTS.md"
+        )
+
+    def test_get_repo_file_content_falls_back_to_head_sha_when_base_missing(self):
+        provider = GiteaProvider.__new__(GiteaProvider)
+        provider.owner = "owner"
+        provider.repo = "repo"
+        provider.sha = "head-sha"
+        provider.base_sha = ""
+        provider.base_ref = ""
+        provider.logger = MagicMock()
+        provider.repo_api = MagicMock()
+        provider.repo_api.get_file_content.return_value = "repo context"
+
+        content = provider.get_repo_file_content("AGENTS.md")
+
+        assert content == "repo context"
+        provider.repo_api.get_file_content.assert_called_once_with(
+            owner="owner",
+            repo="repo",
+            commit_sha="head-sha",
+            filepath="AGENTS.md"
+        )
