@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as _dt
 import os
 from typing import Optional, Tuple
 from urllib.parse import urlparse
@@ -8,12 +9,12 @@ from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 
 from ..algo.file_filter import filter_ignored
 from ..algo.language_handler import is_valid_file
-from ..algo.utils import (PRDescriptionHeader, clip_tokens,
+from ..algo.utils import (PRDescriptionHeader, PRReviewHeader, clip_tokens,
                           find_line_number_of_relevant_line_in_file,
                           load_large_diff)
 from ..config_loader import get_settings
 from ..log import get_logger
-from .git_provider import GitProvider
+from .git_provider import GitProvider, IncrementalPR
 
 AZURE_DEVOPS_AVAILABLE = True
 ADO_APP_CLIENT_DEFAULT_ID = "499b84ac-1321-427f-aa17-267ca6975798/.default"
@@ -30,6 +31,32 @@ try:
     from msrest.authentication import BasicAuthentication
 except ImportError:
     AZURE_DEVOPS_AVAILABLE = False
+
+
+def _to_naive_utc(dt):
+    if dt is None:
+        return None
+    if getattr(dt, "tzinfo", None) is not None:
+        return dt.astimezone(_dt.timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+class _AzureCommitInner:
+    def __init__(self, raw):
+        self.message = getattr(raw, "comment", "") or ""
+        author = getattr(raw, "author", None)
+        author_date = _to_naive_utc(getattr(author, "date", None)) if author else None
+        self.author = type("_AzureAuthor", (), {"date": author_date})()
+
+
+class _AzureCommitAdapter:
+    """Mimics PyGithub `Commit` shape (.sha, .commit.author.date, .commit.message, .parents)."""
+
+    def __init__(self, raw):
+        self.sha = raw.commit_id
+        self.commit_id = raw.commit_id
+        self.commit = _AzureCommitInner(raw)
+        self.parents = list(getattr(raw, "parents", None) or [])
 
 
 class AzureDevopsProvider(GitProvider):
@@ -51,6 +78,9 @@ class AzureDevopsProvider(GitProvider):
         self.pr = None
         self.temp_comments = []
         self.incremental = incremental
+        self.unreviewed_files_map = {}
+        self.pr_commits = None
+        self.previous_review = None
         if pr_url:
             self.set_pr(pr_url)
 
@@ -158,6 +188,135 @@ class AzureDevopsProvider(GitProvider):
         self.workspace_slug, self.repo_slug, self.pr_num = self._parse_pr_url(pr_url)
         self.pr = self._get_pr()
 
+    def get_incremental_commits(self, incremental=None):
+        if incremental is None:
+            incremental = IncrementalPR(False)
+        self.incremental = incremental
+        if self.incremental.is_incremental:
+            self.unreviewed_files_map = {}
+            self._get_incremental_commits()
+
+    def _get_incremental_commits(self):
+        if not self.pr_commits:
+            raw = list(self.azure_devops_client.get_pull_request_commits(
+                project=self.workspace_slug,
+                repository_id=self.repo_slug,
+                pull_request_id=self.pr_num,
+            ))
+            # Azure returns newest-first; oldest-first matches GitHub iteration order.
+            raw.reverse()
+            self.pr_commits = [_AzureCommitAdapter(c) for c in raw]
+
+        self.previous_review = self.get_previous_review(full=True, incremental=True)
+        if not self.previous_review:
+            get_logger().info("No previous review found, will review the entire PR")
+            self.incremental.is_incremental = False
+            return
+
+        self.incremental.commits_range = self._get_commit_range()
+        if self.incremental.commits_range is None:
+            return
+        candidate_paths = []
+        had_errors = False
+        non_merge_seen = False
+        for commit in self.incremental.commits_range:
+            if len(commit.parents) > 1:
+                get_logger().info(f"Skipping merge commit {commit.sha}")
+                continue
+            non_merge_seen = True
+            try:
+                changes_obj = self.azure_devops_client.get_changes(
+                    project=self.workspace_slug,
+                    repository_id=self.repo_slug,
+                    commit_id=commit.commit_id,
+                )
+            except Exception as e:
+                had_errors = True
+                get_logger().warning(f"Failed to fetch changes for {commit.commit_id}: {e}")
+                continue
+            for change in (getattr(changes_obj, "changes", None) or []):
+                try:
+                    item = change["item"]
+                except (KeyError, TypeError):
+                    additional = getattr(change, "additional_properties", None) or {}
+                    item = additional.get("item") or {}
+                if not isinstance(item, dict) or item.get("gitObjectType") == "tree":
+                    continue
+                path = item.get("path")
+                if path:
+                    candidate_paths.append(path)
+
+        if candidate_paths:
+            deduped = list(dict.fromkeys(candidate_paths))
+            filtered = filter_ignored(deduped, "azure")
+            for path in filtered:
+                if is_valid_file(path):
+                    self.unreviewed_files_map[path] = path
+        elif had_errors and self.incremental.commits_range:
+            get_logger().warning(
+                "Failed to fetch changes for incremental commits; falling back to full review."
+            )
+            self.incremental.is_incremental = False
+        elif self.incremental.commits_range and not non_merge_seen:
+            get_logger().info(
+                "Incremental range only contains merge commits; falling back to full review."
+            )
+            self.incremental.is_incremental = False
+
+    def _get_commit_range(self):
+        last_review_time = _to_naive_utc(getattr(self.previous_review, "created_at", None))
+        if last_review_time is None or not self.pr_commits:
+            get_logger().info(
+                "Cannot compute incremental commit range "
+                "(missing previous review timestamp or PR commits); falling back to full review."
+            )
+            self.incremental.is_incremental = False
+            return None
+        first_new_commit_index = None
+        saw_reliable_date = False
+        for index in range(len(self.pr_commits) - 1, -1, -1):
+            cdate = self.pr_commits[index].commit.author.date
+            if cdate is None:
+                continue
+            saw_reliable_date = True
+            if cdate > last_review_time:
+                self.incremental.first_new_commit = self.pr_commits[index]
+                first_new_commit_index = index
+            else:
+                self.incremental.last_seen_commit = self.pr_commits[index]
+                break
+        if not saw_reliable_date:
+            get_logger().info(
+                "All PR commit author dates are missing; cannot compute incremental range. "
+                "Falling back to full review."
+            )
+            self.incremental.is_incremental = False
+            return None
+        return self.pr_commits[first_new_commit_index:] if first_new_commit_index is not None else []
+
+    def get_previous_review(self, *, full: bool, incremental: bool):
+        if not (full or incremental):
+            raise ValueError("At least one of full or incremental must be True")
+        prefixes = []
+        if full:
+            prefixes.append(PRReviewHeader.REGULAR.value)
+        if incremental:
+            prefixes.append(PRReviewHeader.INCREMENTAL.value)
+        matches = []
+        for comment in self.get_issue_comments():
+            body = getattr(comment, "body", None)
+            if body and any(body.startswith(p) for p in prefixes):
+                matches.append(comment)
+        if not matches:
+            return None
+        latest = max(
+            matches,
+            key=lambda c: _to_naive_utc(getattr(c, "published_date", None)) or _dt.datetime.min,
+        )
+        latest.html_url = self.get_comment_url(latest)
+        latest.created_at = _to_naive_utc(getattr(latest, "published_date", None))
+        return latest
+
     def get_repo_settings(self):
         try:
             contents = self.azure_devops_client.get_item_content(
@@ -175,6 +334,13 @@ class AzureDevopsProvider(GitProvider):
             return ""
 
     def get_files(self):
+        if (isinstance(getattr(self, "incremental", None), IncrementalPR)
+                and self.incremental.is_incremental
+                and self.unreviewed_files_map):
+            return list(self.unreviewed_files_map.keys())
+        return self._get_files_full()
+
+    def _get_files_full(self):
         files = []
         for i in self.azure_devops_client.get_pull_request_commits(
                 project=self.workspace_slug,
@@ -194,8 +360,16 @@ class AzureDevopsProvider(GitProvider):
     def get_diff_files(self) -> list[FilePatchInfo]:
         try:
 
-            if self.diff_files:
+            if self.diff_files is not None:
                 return self.diff_files
+
+            if self.pr.last_merge_commit is None or self.pr.last_merge_target_commit is None:
+                get_logger().info(
+                    f"PR {self.pr_num} has no last_merge_commit/last_merge_target_commit; "
+                    f"cannot compute diff files."
+                )
+                self.diff_files = []
+                return []
 
             base_sha = self.pr.last_merge_target_commit
             head_sha = self.pr.last_merge_commit
@@ -254,7 +428,7 @@ class AzureDevopsProvider(GitProvider):
             # diffs = list(set(diffs))
 
             diffs_original = diffs
-            diffs = filter_ignored(diffs_original, 'azure')
+            diffs = filter_ignored(diffs_original, "azure")
             if diffs_original != diffs:
                 try:
                     get_logger().info(f"Filtered out [ignore] files for pull request:", extra=
@@ -262,6 +436,15 @@ class AzureDevopsProvider(GitProvider):
                      "filtered_files": diffs})
                 except Exception:
                     pass
+
+            incremental_active = (
+                isinstance(getattr(self, "incremental", None), IncrementalPR)
+                and self.incremental.is_incremental
+                and bool(self.unreviewed_files_map)
+                and self.incremental.last_seen_commit_sha
+            )
+            if incremental_active:
+                diffs = [f for f in diffs if f in self.unreviewed_files_map]
 
             invalid_files_names = []
             for file in diffs:
@@ -301,29 +484,53 @@ class AzureDevopsProvider(GitProvider):
                 elif "rename" in diff_types[file]: # diff_type can be `rename` | `edit, rename`
                     edit_type = EDIT_TYPE.RENAMED
 
-                version = GitVersionDescriptor(
-                    version=base_sha.commit_id, version_type="commit"
-                )
                 if edit_type == EDIT_TYPE.ADDED or edit_type == EDIT_TYPE.RENAMED:
                     original_file_content_str = ""
-                else:
+                elif incremental_active:
+                    inc_version = GitVersionDescriptor(
+                        version=self.incremental.last_seen_commit_sha, version_type="commit"
+                    )
                     try:
-                        original_file_content_str = self.azure_devops_client.get_item(
+                        inc_original = self.azure_devops_client.get_item(
                             repository_id=self.repo_slug,
                             path=file,
                             project=self.workspace_slug,
-                            version_descriptor=version,
+                            version_descriptor=inc_version,
                             download=False,
                             include_content=True,
                         )
-                        original_file_content_str = original_file_content_str.content
+                        original_file_content_str = inc_original.content or ""
                     except Exception as error:
-                        get_logger().error(f"Failed to retrieve original file content of {file} at version {version}", error=error)
+                        get_logger().warning(
+                            f"Failed to retrieve original of {file} at {self.incremental.last_seen_commit_sha}: {error}"
+                        )
+                        original_file_content_str = ""
+                else:
+                    base_version = GitVersionDescriptor(
+                        version=base_sha.commit_id, version_type="commit"
+                    )
+                    try:
+                        base_original = self.azure_devops_client.get_item(
+                            repository_id=self.repo_slug,
+                            path=file,
+                            project=self.workspace_slug,
+                            version_descriptor=base_version,
+                            download=False,
+                            include_content=True,
+                        )
+                        original_file_content_str = base_original.content
+                    except Exception as error:
+                        get_logger().error(
+                            f"Failed to retrieve original file content of {file} at version {base_version}",
+                            error=error,
+                        )
                         original_file_content_str = ""
 
                 patch = load_large_diff(
                     file, new_file_content_str, original_file_content_str, show_warning=False
                 ).rstrip()
+                if incremental_active:
+                    self.unreviewed_files_map[file] = patch
 
                 # count number of lines added and removed
                 patch_lines = patch.splitlines(keepends=True)
