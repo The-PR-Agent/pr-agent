@@ -139,7 +139,7 @@ class GiteaProvider(GitProvider):
                         file_patches[current_file] = '\n'.join(current_patch)
                         current_patch = []
                     current_file = line.split(' b/')[-1]
-                elif line.startswith('@@'):
+                elif line.startswith('@@') and not current_patch:
                     current_patch = [line]
                 elif current_patch:
                     current_patch.append(line)
