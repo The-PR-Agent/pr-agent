@@ -797,6 +797,19 @@ class GitLabProvider(GitProvider):
         except Exception:
             return ""
 
+    def get_repo_file(self, file_path: str) -> str:
+        try:
+            # Read from the MR's source branch so metadata files reflect the branch under review
+            contents = self.gl.projects.get(self.id_project).files.get(
+                file_path=file_path, ref=self.mr.source_branch).decode()
+            return contents.decode("utf-8") if isinstance(contents, bytes) else contents
+        except GitlabGetError:
+            # File not found or not accessible — expected when the metadata file doesn't exist
+            return ""
+        except Exception as e:
+            get_logger().debug(f"Failed to get repo file '{file_path}': {e}")
+            return ""
+
     def get_workspace_name(self):
         return self.id_project.split('/')[0]
 

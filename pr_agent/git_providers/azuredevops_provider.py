@@ -174,6 +174,29 @@ class AzureDevopsProvider(GitProvider):
                 get_logger().error(f"Failed to get repo settings, error: {e}")
             return ""
 
+    def get_repo_file(self, file_path: str) -> str:
+        try:
+            # Use the source commit (PR head), not the merge-preview commit,
+            # so metadata files reflect the branch under review
+            source_commit = self.pr.last_merge_source_commit
+            version = GitVersionDescriptor(
+                version=source_commit.commit_id, version_type="commit"
+            ) if source_commit else None
+            contents = self.azure_devops_client.get_item_content(
+                repository_id=self.repo_slug,
+                project=self.workspace_slug,
+                download=False,
+                include_content_metadata=False,
+                include_content=True,
+                path=file_path,
+                version_descriptor=version,
+            )
+            content = list(contents)[0]
+            return content.decode("utf-8") if isinstance(content, bytes) else content
+        except Exception as e:
+            get_logger().debug(f"Failed to get repo file '{file_path}': {e}")
+            return ""
+
     def get_files(self):
         files = []
         for i in self.azure_devops_client.get_pull_request_commits(
