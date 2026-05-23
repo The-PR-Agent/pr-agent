@@ -2,7 +2,7 @@ from threading import Lock
 from math import ceil
 import re
 
-from jinja2 import Environment, StrictUndefined
+from jinja2 import StrictUndefined
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 from tiktoken import encoding_for_model, get_encoding
 

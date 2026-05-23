@@ -8,7 +8,7 @@ from datetime import datetime
 from functools import partial
 from typing import Dict, List
 
-from jinja2 import Environment, StrictUndefined
+from jinja2 import StrictUndefined
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 from pr_agent.algo import MAX_TOKENS

@@ -1,7 +1,7 @@
 import copy
 from functools import partial
 
-from jinja2 import Environment, StrictUndefined
+from jinja2 import StrictUndefined
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 import math
 import os

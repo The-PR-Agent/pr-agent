@@ -4,7 +4,7 @@ from functools import partial
 from time import sleep
 from typing import Tuple
 
-from jinja2 import Environment, StrictUndefined
+from jinja2 import StrictUndefined
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
