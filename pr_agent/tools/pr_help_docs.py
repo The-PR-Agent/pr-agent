@@ -2,6 +2,7 @@ import copy
 from functools import partial
 
 from jinja2 import Environment, StrictUndefined
+from jinja2.sandbox import ImmutableSandboxedEnvironment
 import math
 import os
 import re
@@ -261,7 +262,7 @@ class PredictionPreparator:
         try:
             self.ai_handler = ai_handler
             variables = copy.deepcopy(vars)
-            environment = Environment(undefined=StrictUndefined)
+            environment = ImmutableSandboxedEnvironment(undefined=StrictUndefined)
             self.system_prompt = environment.from_string(system_prompt).render(variables)
             self.user_prompt = environment.from_string(user_prompt).render(variables)
         except Exception as e:

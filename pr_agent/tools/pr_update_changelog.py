@@ -5,6 +5,7 @@ from time import sleep
 from typing import Tuple
 
 from jinja2 import Environment, StrictUndefined
+from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
@@ -105,7 +106,7 @@ class PRUpdateChangelog:
         variables["diff"] = self.patches_diff  # update diff
         if get_settings().pr_update_changelog.add_pr_link:
             variables["pr_link"] = self.git_provider.get_pr_url()
-        environment = Environment(undefined=StrictUndefined)
+        environment = ImmutableSandboxedEnvironment(undefined=StrictUndefined)
         system_prompt = environment.from_string(get_settings().pr_update_changelog_prompt.system).render(variables)
         user_prompt = environment.from_string(get_settings().pr_update_changelog_prompt.user).render(variables)
         response, finish_reason = await self.ai_handler.chat_completion(

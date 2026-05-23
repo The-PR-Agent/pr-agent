@@ -4,6 +4,7 @@ from functools import partial
 from pathlib import Path
 
 from jinja2 import Environment, StrictUndefined
+from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 from pr_agent.algo import MAX_TOKENS
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
@@ -48,7 +49,7 @@ class PRHelpMessage:
     async def _prepare_prediction(self, model: str):
         try:
             variables = copy.deepcopy(self.vars)
-            environment = Environment(undefined=StrictUndefined)
+            environment = ImmutableSandboxedEnvironment(undefined=StrictUndefined)
             system_prompt = environment.from_string(get_settings().pr_help_prompts.system).render(variables)
             user_prompt = environment.from_string(get_settings().pr_help_prompts.user).render(variables)
             response, finish_reason = await self.ai_handler.chat_completion(
