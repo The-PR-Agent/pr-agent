@@ -1,12 +1,12 @@
 import copy
-from functools import partial
-
-from jinja2 import StrictUndefined
-from jinja2.sandbox import ImmutableSandboxedEnvironment
 import math
 import os
 import re
+from functools import partial
 from tempfile import TemporaryDirectory
+
+from jinja2 import StrictUndefined
+from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 from pr_agent.algo import MAX_TOKENS
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
