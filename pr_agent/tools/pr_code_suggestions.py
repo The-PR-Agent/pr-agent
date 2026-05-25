@@ -333,20 +333,9 @@ class PRCodeSuggestions:
                             pr_comment_updated += f"{prev_suggestion_table}\n"
 
                         get_logger().info(f"Persistent mode - updating comment {comment_url} to latest {name} message")
-                        # Edit the previously-found persistent comment in place and remove the throwaway
-                        # progress note. Editing the persistent comment (rather than re-targeting to the
-                        # progress note and deleting the original) keeps the stable thread stable across
-                        # pushes on GitLab, where deleting a note with replies fails silently.
                         git_provider.edit_comment(comment, pr_comment_updated)
                         if progress_response:
-                            # Cleanup is best-effort: isolate it from the outer try/except so a failure
-                            # here does not trigger the "no previous comment" fallback below, which
-                            # would publish a duplicate suggestions thread despite the persistent
-                            # comment update having already succeeded.
                             try:
-                                # Replace the WIP progress body with a benign final-state message
-                                # before deletion so that if remove_comment fails for any reason, the
-                                # leftover note does not keep displaying "Work in progress ...".
                                 git_provider.edit_comment(progress_response, "Code suggestions published in the persistent thread above.")
                                 git_provider.remove_comment(progress_response)
                             except Exception as cleanup_error:
