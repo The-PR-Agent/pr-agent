@@ -1,4 +1,6 @@
-from pr_agent.git_providers.utils import handle_configurations_errors
+from pr_agent.config_loader import get_settings
+from pr_agent.git_providers import utils
+from pr_agent.git_providers.utils import apply_repo_settings, handle_configurations_errors
 
 
 class FakeMarkdownProvider:
@@ -31,6 +33,30 @@ class FakePlainProvider:
 class FakeMarkdownCommentProvider(FakePlainProvider):
     def is_supported(self, capability):
         return capability == "gfm_markdown"
+
+
+class FakeSettingsProvider:
+    def get_repo_settings(self):
+        return [
+            ("global", b"[pr_reviewer]\nextra_instructions = \"global\"\nenable_intro_text = false\n"),
+            ("local", b"[pr_reviewer]\nextra_instructions = \"local\"\n"),
+        ]
+
+
+def test_apply_repo_settings_merges_global_before_local_settings(monkeypatch):
+    settings = get_settings()
+    original_extra_instructions = settings.pr_reviewer.extra_instructions
+    original_enable_intro_text = settings.pr_reviewer.enable_intro_text
+    monkeypatch.setattr(utils, "get_git_provider_with_context", lambda pr_url: FakeSettingsProvider())
+
+    try:
+        apply_repo_settings("https://github.example.com/org/service/pull/1")
+
+        assert settings.pr_reviewer.extra_instructions == "local"
+        assert settings.pr_reviewer.enable_intro_text is False
+    finally:
+        settings.pr_reviewer.extra_instructions = original_extra_instructions
+        settings.pr_reviewer.enable_intro_text = original_enable_intro_text
 
 
 def test_handle_configurations_errors_uses_persistent_comment_when_supported():
