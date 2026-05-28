@@ -286,7 +286,7 @@ class PRHelpDocs(object):
     def __init__(self, ctx_url, ai_handler:partial[BaseAiHandler,] = LiteLLMAIHandler, args: tuple[str]=None, return_as_string: bool=False):
         try:
             self.ctx_url = ctx_url
-            self.question = args[0] if args else None
+            self.question = self._parse_args(args)
             self.return_as_string = return_as_string
             self.repo_url_given_explicitly = True
             self.repo_url = get_settings().get('PR_HELP_DOCS.REPO_URL', '')
@@ -325,6 +325,12 @@ class PRHelpDocs(object):
         except Exception as e:
             get_logger().exception(f"Caught exception during init. Setting self.question to None to prevent run() to do anything.")
             self.question = None
+
+    @staticmethod
+    def _parse_args(args) -> str | None:
+        if not args:
+            return None
+        return " ".join(args).strip()
 
     async def run(self):
         if not self.question:
