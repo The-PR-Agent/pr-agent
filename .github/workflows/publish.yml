@@ -127,6 +127,10 @@ jobs:
             target: gitea_app
             suffix: gitea_app
             rolling: gitea_app
+          - dockerfile: docker/Dockerfile
+            target: mosaico_agent
+            suffix: mosaico_agent
+            rolling: mosaico_agent
           - dockerfile: Dockerfile.github_action
             target: ''
             suffix: github_action
