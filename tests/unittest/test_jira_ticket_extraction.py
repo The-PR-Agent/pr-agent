@@ -110,6 +110,15 @@ class TestExtractJiraTickets:
         self._disable_jira()
         assert extract_jira_tickets("bugfix/abc-123-x") == []
 
+    def test_no_client_built_when_no_keys(self):
+        """No Jira keys in the text -> return early without constructing a client, so a
+        keyless PR pays no client-init cost (or noisy init-failure log)."""
+        self._configure_jira()
+        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira") as jira_cls:
+            result = extract_jira_tickets("nothing ticket-like here")
+        assert result == []
+        jira_cls.assert_not_called()
+
     def test_fetches_lowercase_branch_key(self):
         """The whole point: a lowercased branch key is detected and fetched as upper."""
         self._configure_jira()

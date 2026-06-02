@@ -82,8 +82,15 @@ def extract_jira_tickets(text, max_characters=MAX_TICKET_CHARACTERS):
     """
     Find Jira ticket keys in the given text and fetch their content. Returns a list of
     ticket dicts in the same shape used by the rest of the ticket-analysis flow. Returns
-    an empty list when Jira is not configured or no keys are found.
+    an empty list when no keys are found or when Jira is not configured.
     """
+    # Look for keys before building a client: most PRs have none, and building the
+    # client first would do needless work (and log a noisy init failure if Jira is
+    # misconfigured) even when there is nothing to fetch.
+    keys = find_jira_tickets(text or "")
+    if not keys:
+        return []
+
     jira_client = _get_jira_client()
     if jira_client is None:
         return []
@@ -93,7 +100,6 @@ def extract_jira_tickets(text, max_characters=MAX_TICKET_CHARACTERS):
     # instance-specific (e.g. "customfield_10127"), so it must be configured; empty
     # means no requirements are extracted.
     requirements_field = get_settings().get("JIRA.JIRA_REQUIREMENTS_FIELD", "") or ""
-    keys = find_jira_tickets(text or "")
     if len(keys) > MAX_TICKETS:
         get_logger().info(f"Too many Jira tickets found: {len(keys)}; limiting to {MAX_TICKETS}")
         keys = keys[:MAX_TICKETS]
