@@ -245,8 +245,31 @@ class TestGetJiraClient:
 
     def test_returns_none_when_not_configured(self):
         get_settings().set("JIRA.JIRA_BASE_URL", "")
+        get_settings().set("JIRA.JIRA_API_EMAIL", "")
         get_settings().set("JIRA.JIRA_API_TOKEN", "")
         assert _get_jira_client() is None
+
+    def test_no_warning_when_nothing_configured(self):
+        """Jira simply not in use -> return None silently, no misconfiguration warning."""
+        get_settings().set("JIRA.JIRA_BASE_URL", "")
+        get_settings().set("JIRA.JIRA_API_EMAIL", "")
+        get_settings().set("JIRA.JIRA_API_TOKEN", "")
+        with patch("pr_agent.tools.ticket_pr_compliance_check.get_logger") as get_log:
+            assert _get_jira_client() is None
+        get_log.return_value.warning.assert_not_called()
+
+    def test_warns_when_partially_configured(self):
+        """Some [jira] value set but the required base_url + api_token pair is incomplete
+        -> warn (likely a misconfiguration) and return None."""
+        get_settings().set("JIRA.JIRA_BASE_URL", "")
+        get_settings().set("JIRA.JIRA_API_EMAIL", "me@acme.com")
+        get_settings().set("JIRA.JIRA_API_TOKEN", "token123")  # base_url missing
+        with patch("pr_agent.tools.ticket_pr_compliance_check.get_logger") as get_log:
+            assert _get_jira_client() is None
+        get_log.return_value.warning.assert_called_once()
+        msg = get_log.return_value.warning.call_args.args[0]
+        assert "jira_base_url" in msg
+        assert "jira_api_token" not in msg  # the one that IS set is not listed as missing
 
 
 class TestGetPrTitle:

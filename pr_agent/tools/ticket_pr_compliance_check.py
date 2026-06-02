@@ -66,6 +66,18 @@ def _get_jira_client():
     api_email = get_settings().get("JIRA.JIRA_API_EMAIL", None)
     api_token = get_settings().get("JIRA.JIRA_API_TOKEN", None)
     if not (base_url and api_token):
+        # Warn only when Jira is partially configured: some [jira] value is set but the
+        # required base_url + api_token pair is incomplete, which is likely a mistake.
+        # Stay silent when nothing is set, since that just means Jira is not in use.
+        if any([base_url, api_email, api_token]):
+            missing = [
+                name for name, value in (
+                    ("jira_base_url", base_url),
+                    ("jira_api_token", api_token),
+                ) if not value
+            ]
+            get_logger().warning(
+                f"Jira is partially configured; skipping Jira ticket lookup. Missing: {', '.join(missing)}")
         return None
     try:
         if api_email:
