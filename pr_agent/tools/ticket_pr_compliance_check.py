@@ -154,8 +154,14 @@ def add_jira_tickets(git_provider, tickets_content):
     Jira ticket keys and appends any found tickets to tickets_content (de-duplicated by
     ticket_url). No-op when Jira is not configured. Works for any git provider, since it
     only relies on get_user_description() and get_pr_branch().
+
+    MAX_TICKETS is the overall per-PR cap, so any provider-native tickets already in
+    tickets_content count against it: Jira tickets are appended only until the combined
+    total reaches MAX_TICKETS, keeping the existing tickets first.
     """
     try:
+        if len(tickets_content) >= MAX_TICKETS:
+            return tickets_content
         jira_context = "\n".join(filter(None, [
             _get_pr_title(git_provider),
             git_provider.get_user_description() or "",
@@ -163,6 +169,10 @@ def add_jira_tickets(git_provider, tickets_content):
         ]))
         existing_urls = {t.get("ticket_url") for t in tickets_content}
         for jira_ticket in extract_jira_tickets(jira_context, MAX_TICKET_CHARACTERS):
+            if len(tickets_content) >= MAX_TICKETS:
+                get_logger().info(
+                    f"Reached the per-PR cap of {MAX_TICKETS} tickets; skipping remaining Jira tickets")
+                break
             if jira_ticket.get("ticket_url") not in existing_urls:
                 tickets_content.append(jira_ticket)
     except Exception as e:

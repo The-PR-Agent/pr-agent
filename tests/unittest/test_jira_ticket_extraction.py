@@ -304,3 +304,28 @@ class TestAddJiraTickets:
         out = []
         add_jira_tickets(gp, out)
         assert out == []
+
+    def test_respects_overall_cap_with_existing_tickets(self):
+        """MAX_TICKETS is the combined per-PR cap: provider-native tickets already in
+        tickets_content count against it, and Jira is appended only up to the cap."""
+        from pr_agent.tools.ticket_pr_compliance_check import MAX_TICKETS
+        self._configure_jira()
+        client = MagicMock()
+        client.issue.return_value = {"fields": {"summary": "T", "description": "B", "labels": []}}
+        # Pre-fill with (MAX_TICKETS - 1) provider-native tickets, then offer several Jira keys.
+        existing = [{"ticket_url": f"https://example/issues/{i}"} for i in range(MAX_TICKETS - 1)]
+        gp = self._provider(description="ABC-1 DEF-2 GHI-3 JKL-4")
+        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client):
+            add_jira_tickets(gp, existing)
+        assert len(existing) == MAX_TICKETS  # only one Jira ticket was appended
+
+    def test_skips_jira_entirely_when_cap_already_reached(self):
+        """When provider-native tickets already fill the cap, no Jira client is built."""
+        from pr_agent.tools.ticket_pr_compliance_check import MAX_TICKETS
+        self._configure_jira()
+        existing = [{"ticket_url": f"https://example/issues/{i}"} for i in range(MAX_TICKETS)]
+        gp = self._provider(description="ABC-1 DEF-2")
+        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira") as jira_cls:
+            add_jira_tickets(gp, existing)
+        jira_cls.assert_not_called()
+        assert len(existing) == MAX_TICKETS
