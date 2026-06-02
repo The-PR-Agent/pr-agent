@@ -79,11 +79,12 @@ def _get_jira_client():
             get_logger().warning(
                 f"Jira is partially configured; skipping Jira ticket lookup. Missing: {', '.join(missing)}")
         return None
+    url = base_url.rstrip("/")
     try:
         if api_email:
-            return Jira(url=base_url.rstrip("/"), username=api_email, password=api_token, api_version=JIRA_API_VERSION)
+            return Jira(url=url, username=api_email, password=api_token, api_version=JIRA_API_VERSION)
         # No email/username: treat the token as a Server/Data Center PAT.
-        return Jira(url=base_url.rstrip("/"), token=api_token, api_version=JIRA_API_VERSION)
+        return Jira(url=url, token=api_token, api_version=JIRA_API_VERSION)
     except Exception as e:
         get_logger().error(f"Failed to initialize Jira client: {e}",
                            artifact={"traceback": traceback.format_exc()})
