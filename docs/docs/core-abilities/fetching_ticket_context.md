@@ -95,11 +95,11 @@ Since PR-Agent is integrated with GitHub, it doesn't require any additional conf
 
 ## Jira Integration
 
-Only **Jira Cloud** is supported. Jira Server / Data Center (self-hosted) is not yet
-supported: it requires a free-form base URL, and PR-Agent does not currently have a safe
-way to accept that URL from configuration without risking the credentials being sent to an
-unintended host. Jira Cloud avoids this because the URL is derived from a validated site
-name (see below). Server / Data Center support can be added later once that is addressed.
+Only **Jira Cloud** is supported. The base URL is derived from a validated site name
+(`jira_site` → `https://<site>.atlassian.net`) rather than taken as a free-form URL, so
+the configured destination is always an Atlassian Cloud host. Jira Server / Data Center
+(self-hosted) uses a free-form host and is not supported yet; it can be added once
+base-URL handling for the self-hosted case is settled.
 
 ### Jira Cloud
 
