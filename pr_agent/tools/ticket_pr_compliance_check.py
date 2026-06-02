@@ -25,6 +25,34 @@ MAX_TICKET_CHARACTERS = 10000
 # but pinning keeps the contract stable across dependency upgrades.
 JIRA_API_VERSION = "2"
 
+# Jira Cloud site name (the "<site>" in https://<site>.atlassian.net). Only Jira Cloud is
+# supported: the base URL is built from this name rather than taken as a free-form URL, so
+# repo-controlled config cannot redirect the authenticated request (and the token) to an
+# arbitrary host. The name must be a single DNS label (letters, digits, hyphens) so it
+# cannot contain '.', '/', ':', '@' etc. that would let it escape *.atlassian.net.
+JIRA_SITE_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$", re.IGNORECASE)
+
+
+def _jira_cloud_base_url():
+    """
+    Return the Jira Cloud base URL built from the configured site name, or None if the
+    site is missing or invalid. Building the URL from a validated site name (rather than
+    accepting a free-form base URL from settings) ensures the authenticated request can
+    only ever go to https://<site>.atlassian.net, even if settings were overridden by
+    untrusted repo configuration.
+    """
+    site = get_settings().get("JIRA.JIRA_SITE", None)
+    if not site:
+        return None
+    site = str(site).strip()
+    if not JIRA_SITE_PATTERN.match(site):
+        get_logger().warning(
+            f"Invalid jira_site '{site}'; expected a Jira Cloud site name like 'mycompany' "
+            f"(the '<site>' in https://<site>.atlassian.net). Skipping Jira ticket lookup.")
+        return None
+    return f"https://{site}.atlassian.net"
+
+
 def find_jira_tickets(text):
     # Regular expression patterns for JIRA tickets. Matching is case-insensitive so
     # lowercased branch names (e.g. bugfix/abc-123-description) are detected; keys are
@@ -57,34 +85,36 @@ def find_jira_tickets(text):
 
 def _get_jira_client():
     """
-    Build a Jira client from the [jira] settings. Returns None if Jira is not configured.
-    Cloud uses email + API token; Server/Data Center uses username + password, or a PAT
-    (passed as the token) together with a base url. The REST API version is pinned via
-    JIRA_API_VERSION (see its definition for why).
+    Build a Jira Cloud client from the [jira] settings. Returns None if Jira is not
+    configured. Only Jira Cloud is supported: the base URL is derived from a validated
+    site name (jira_site) so untrusted repo configuration cannot redirect the
+    authenticated request to an arbitrary host. Cloud authenticates with the account
+    email + API token. The REST API version is pinned via JIRA_API_VERSION (see its
+    definition for why).
     """
-    base_url = get_settings().get("JIRA.JIRA_BASE_URL", None)
+    site = get_settings().get("JIRA.JIRA_SITE", None)
     api_email = get_settings().get("JIRA.JIRA_API_EMAIL", None)
     api_token = get_settings().get("JIRA.JIRA_API_TOKEN", None)
-    if not (base_url and api_token):
-        # Warn only when Jira is partially configured: some [jira] value is set but the
-        # required base_url + api_token pair is incomplete, which is likely a mistake.
-        # Stay silent when nothing is set, since that just means Jira is not in use.
-        if any([base_url, api_email, api_token]):
+    base_url = _jira_cloud_base_url()  # None if site is missing or invalid (already warned if invalid)
+    if not (base_url and api_email and api_token):
+        # Warn when Jira is partially configured: some [jira] value is set but the required
+        # site + email + token are incomplete, which is likely a mistake. Stay silent when
+        # nothing is set (Jira simply not in use), and don't double-warn when the site was
+        # set but invalid (_jira_cloud_base_url already warned about that).
+        site_set_but_invalid = site and not base_url
+        if any([site, api_email, api_token]) and not site_set_but_invalid:
             missing = [
                 name for name, value in (
-                    ("jira_base_url", base_url),
+                    ("jira_site", site),
+                    ("jira_api_email", api_email),
                     ("jira_api_token", api_token),
                 ) if not value
             ]
             get_logger().warning(
                 f"Jira is partially configured; skipping Jira ticket lookup. Missing: {', '.join(missing)}")
         return None
-    url = base_url.rstrip("/")
     try:
-        if api_email:
-            return Jira(url=url, username=api_email, password=api_token, api_version=JIRA_API_VERSION)
-        # No email/username: treat the token as a Server/Data Center PAT.
-        return Jira(url=url, token=api_token, api_version=JIRA_API_VERSION)
+        return Jira(url=base_url, username=api_email, password=api_token, api_version=JIRA_API_VERSION)
     except Exception as e:
         get_logger().error(f"Failed to initialize Jira client: {e}",
                            artifact={"traceback": traceback.format_exc()})
@@ -108,7 +138,7 @@ def extract_jira_tickets(text, max_characters=MAX_TICKET_CHARACTERS):
     if jira_client is None:
         return []
 
-    base_url = get_settings().get("JIRA.JIRA_BASE_URL", "").rstrip("/")
+    base_url = _jira_cloud_base_url() or ""
     # Custom field that holds acceptance criteria / requirements. The field id is
     # instance-specific (e.g. "customfield_10127"), so it must be configured; empty
     # means no requirements are extracted.

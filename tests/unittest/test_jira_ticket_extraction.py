@@ -17,7 +17,7 @@ from pr_agent.tools.ticket_pr_compliance_check import (
 # Keys the tests mutate via get_settings().set(...). Snapshot and restore them around
 # every test so values (e.g. JIRA_REQUIREMENTS_FIELD) don't leak between tests.
 _JIRA_KEYS = (
-    "JIRA.JIRA_BASE_URL",
+    "JIRA.JIRA_SITE",
     "JIRA.JIRA_API_EMAIL",
     "JIRA.JIRA_API_TOKEN",
     "JIRA.JIRA_REQUIREMENTS_FIELD",
@@ -94,12 +94,12 @@ class TestExtractJiraTickets:
     """End-to-end extraction: find keys, fetch via the Jira client, map to ticket dicts."""
 
     def _configure_jira(self):
-        get_settings().set("JIRA.JIRA_BASE_URL", "https://acme.atlassian.net")
+        get_settings().set("JIRA.JIRA_SITE", "acme")
         get_settings().set("JIRA.JIRA_API_EMAIL", "me@acme.com")
         get_settings().set("JIRA.JIRA_API_TOKEN", "token123")
 
     def _disable_jira(self):
-        get_settings().set("JIRA.JIRA_BASE_URL", "")
+        get_settings().set("JIRA.JIRA_SITE", "")
         get_settings().set("JIRA.JIRA_API_EMAIL", "")
         get_settings().set("JIRA.JIRA_API_TOKEN", "")
 
@@ -221,13 +221,16 @@ class TestExtractJiraTickets:
 
 
 class TestGetJiraClient:
-    """Client construction: auth mode selection and the pinned REST API version."""
+    """Cloud client construction: site-name -> base URL, email+token auth, v2 pin."""
 
-    def test_cloud_uses_basic_auth_and_pins_v2(self):
-        """Email present -> username/password basic auth, REST v2 pinned."""
-        get_settings().set("JIRA.JIRA_BASE_URL", "https://acme.atlassian.net/")
-        get_settings().set("JIRA.JIRA_API_EMAIL", "me@acme.com")
-        get_settings().set("JIRA.JIRA_API_TOKEN", "token123")
+    def _set(self, site=None, email=None, token=None):
+        get_settings().set("JIRA.JIRA_SITE", site if site is not None else "")
+        get_settings().set("JIRA.JIRA_API_EMAIL", email if email is not None else "")
+        get_settings().set("JIRA.JIRA_API_TOKEN", token if token is not None else "")
+
+    def test_cloud_builds_url_from_site_and_pins_v2(self):
+        """site name -> https://<site>.atlassian.net, email/token basic auth, v2 pinned."""
+        self._set(site="acme", email="me@acme.com", token="token123")
         with patch("pr_agent.tools.ticket_pr_compliance_check.Jira") as jira_cls:
             _get_jira_client()
         jira_cls.assert_called_once_with(
@@ -235,44 +238,78 @@ class TestGetJiraClient:
             password="token123", api_version="2",
         )
 
-    def test_server_pat_uses_token_auth_and_pins_v2(self):
-        """No email -> token (PAT) auth, REST v2 pinned."""
-        get_settings().set("JIRA.JIRA_BASE_URL", "https://jira.example.com")
-        get_settings().set("JIRA.JIRA_API_EMAIL", "")
-        get_settings().set("JIRA.JIRA_API_TOKEN", "pat456")
-        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira") as jira_cls:
-            _get_jira_client()
-        jira_cls.assert_called_once_with(
-            url="https://jira.example.com", token="pat456", api_version="2",
-        )
-
     def test_returns_none_when_not_configured(self):
-        get_settings().set("JIRA.JIRA_BASE_URL", "")
-        get_settings().set("JIRA.JIRA_API_EMAIL", "")
-        get_settings().set("JIRA.JIRA_API_TOKEN", "")
+        self._set()
         assert _get_jira_client() is None
+
+    def test_returns_none_when_email_missing(self):
+        """Cloud requires email; site + token alone is incomplete."""
+        self._set(site="acme", token="token123")
+        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira") as jira_cls:
+            assert _get_jira_client() is None
+        jira_cls.assert_not_called()
 
     def test_no_warning_when_nothing_configured(self):
         """Jira simply not in use -> return None silently, no misconfiguration warning."""
-        get_settings().set("JIRA.JIRA_BASE_URL", "")
-        get_settings().set("JIRA.JIRA_API_EMAIL", "")
-        get_settings().set("JIRA.JIRA_API_TOKEN", "")
+        self._set()
         with patch("pr_agent.tools.ticket_pr_compliance_check.get_logger") as get_log:
             assert _get_jira_client() is None
         get_log.return_value.warning.assert_not_called()
 
     def test_warns_when_partially_configured(self):
-        """Some [jira] value set but the required base_url + api_token pair is incomplete
+        """Some [jira] value set but the required site + email + token are incomplete
         -> warn (likely a misconfiguration) and return None."""
-        get_settings().set("JIRA.JIRA_BASE_URL", "")
-        get_settings().set("JIRA.JIRA_API_EMAIL", "me@acme.com")
-        get_settings().set("JIRA.JIRA_API_TOKEN", "token123")  # base_url missing
+        self._set(email="me@acme.com", token="token123")  # site missing
         with patch("pr_agent.tools.ticket_pr_compliance_check.get_logger") as get_log:
             assert _get_jira_client() is None
         get_log.return_value.warning.assert_called_once()
         msg = get_log.return_value.warning.call_args.args[0]
-        assert "jira_base_url" in msg
+        assert "jira_site" in msg
         assert "jira_api_token" not in msg  # the one that IS set is not listed as missing
+
+
+class TestJiraSiteInjection:
+    """jira_site is validated so repo-controlled config can't redirect the authenticated
+    request (and token) off *.atlassian.net. Building the URL from the site name means a
+    malicious value cannot express a different host."""
+
+    # Values a malicious repo config might inject to try to escape *.atlassian.net.
+    INJECTION_ATTEMPTS = [
+        "evil.website.com?",   # query separator
+        "evil.com#",           # fragment
+        "evil.com/",           # path separator
+        "evil.com",            # dotted host
+        "evil.com:443",        # port
+        "x@evil.com",          # userinfo
+        "a.evil.com",          # subdomain prefix
+        "../../evil",          # path traversal
+        "evil%2ecom",          # encoded dot
+        "evil_underscore",     # underscore not allowed in DNS label
+        "evil .com",           # internal whitespace
+        "",                    # empty
+    ]
+
+    @pytest.mark.parametrize("bad_site", INJECTION_ATTEMPTS)
+    def test_injection_attempt_rejected(self, bad_site):
+        import pr_agent.tools.ticket_pr_compliance_check as m
+        get_settings().set("JIRA.JIRA_SITE", bad_site)
+        get_settings().set("JIRA.JIRA_API_EMAIL", "me@acme.com")
+        get_settings().set("JIRA.JIRA_API_TOKEN", "token123")
+        # No client is built, and no base URL is produced for an invalid site.
+        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira") as jira_cls:
+            assert _get_jira_client() is None
+        jira_cls.assert_not_called()
+        assert m._jira_cloud_base_url() is None
+
+    def test_valid_site_only_ever_targets_atlassian_net(self):
+        """Any accepted site name resolves to a host under .atlassian.net."""
+        from urllib.parse import urlparse
+        import pr_agent.tools.ticket_pr_compliance_check as m
+        for good in ("acme", "my-org", "a1b2", "x"):
+            get_settings().set("JIRA.JIRA_SITE", good)
+            url = m._jira_cloud_base_url()
+            assert url == f"https://{good}.atlassian.net"
+            assert urlparse(url).hostname.endswith(".atlassian.net")
 
 
 class TestGetPrTitle:
@@ -305,7 +342,7 @@ class TestAddJiraTickets:
         return gp
 
     def _configure_jira(self):
-        get_settings().set("JIRA.JIRA_BASE_URL", "https://acme.atlassian.net")
+        get_settings().set("JIRA.JIRA_SITE", "acme")
         get_settings().set("JIRA.JIRA_API_EMAIL", "me@acme.com")
         get_settings().set("JIRA.JIRA_API_TOKEN", "token123")
         get_settings().set("JIRA.JIRA_REQUIREMENTS_FIELD", "")
@@ -333,7 +370,7 @@ class TestAddJiraTickets:
         assert len(existing) == 1
 
     def test_noop_when_jira_not_configured(self):
-        get_settings().set("JIRA.JIRA_BASE_URL", "")
+        get_settings().set("JIRA.JIRA_SITE", "")
         get_settings().set("JIRA.JIRA_API_TOKEN", "")
         gp = self._provider(branch="feature/ABC-123-x")
         out = []
