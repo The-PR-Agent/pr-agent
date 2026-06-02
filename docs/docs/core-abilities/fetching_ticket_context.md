@@ -1,9 +1,10 @@
 # Fetching Ticket Context for PRs
 
-`Supported Git Platforms: GitHub, GitLab, Bitbucket`
+`Supported Git Platforms: GitHub, GitLab, Bitbucket, Azure DevOps`
 
-!!! note "Branch-name issue linking: GitHub only (for now)"
-    Extracting issue links from the **branch name** (and the optional `branch_issue_regex` setting) is currently implemented for **GitHub only**. Support for GitLab, Bitbucket, and other platforms is planned for a later release. The GitHub flow was the most relevant to implement first; other providers will follow.
+!!! note "Branch-name linking: Jira keys on all providers; numeric GitHub issues on GitHub only"
+    **Jira** ticket keys (e.g. `ABC-123`) are extracted from the branch name on **every git provider**.
+    Extracting **numeric GitHub issue** links from the branch name (and the optional `branch_issue_regex` setting) is currently implemented for **GitHub only**; support for other providers is planned for a later release.
 
 ## Overview
 
@@ -116,8 +117,20 @@ You can create an API token from your Atlassian account:
 
 ```toml
 [jira]
+jira_base_url = "https://<JIRA_ORG>.atlassian.net"
 jira_api_token = "YOUR_API_TOKEN"
 jira_api_email = "YOUR_EMAIL"
+```
+
+#### Acceptance criteria / requirements (optional)
+
+To include a ticket's acceptance criteria in the analysis, set `jira_requirements_field`
+to the id of the custom field that holds it. The field id is specific to your Jira
+instance (for example `customfield_10127`); leave it empty to skip requirements.
+
+```toml
+[jira]
+jira_requirements_field = "customfield_10127"
 ```
 
 ### Jira Data Center/Server
@@ -129,6 +142,8 @@ You can use your Jira username and password to authenticate with Jira Data Cente
 In your Configuration file/Environment variables/Secrets file, add the following lines:
 
 ```toml
+[jira]
+jira_base_url = "https://jira.example.com"
 jira_api_email = "your_username"
 jira_api_token = "your_password"
 ```
