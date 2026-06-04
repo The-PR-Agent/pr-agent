@@ -462,6 +462,14 @@ class GithubProvider(GitProvider):
         try:
             # publish all comments in a single message
             self.pr.create_review(commit=self.last_commit_id, comments=comments)
+            # The whole batch posted; record its fingerprints so the rest of this
+            # run dedups against them. Cross-run dedup relies on the markers in the
+            # posted bodies, so comments the fallback below drops stay unrecorded
+            # and can be retried on a later run.
+            if store is not None:
+                for body_fp, code_fp in pending_fingerprints:
+                    store.add(body_fp)
+                    store.add(code_fp)
         except Exception as e:
             get_logger().info(f"Initially failed to publish inline comments as committable")
 
@@ -475,13 +483,6 @@ class GithubProvider(GitProvider):
             except Exception as e:
                 get_logger().error(f"Failed to publish inline code comments fallback, error: {e}")
                 raise
-
-        # Record fingerprints only after a publish path has run without raising,
-        # so a failed publish does not block a retry of the same comment this run.
-        if store is not None:
-            for body_fp, code_fp in pending_fingerprints:
-                store.add(body_fp)
-                store.add(code_fp)
 
     def get_review_thread_comments(self, comment_id: int) -> list[dict]:
         """
