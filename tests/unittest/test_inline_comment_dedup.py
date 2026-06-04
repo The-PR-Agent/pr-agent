@@ -181,6 +181,7 @@ def _gl_provider(existing_bodies):
         disc.attributes = {"notes": [{"body": b}]}
         discs.append(disc)
     p.mr.discussions.list.return_value = discs
+    p.mr.notes.list.return_value = []
     p.get_relevant_diff = MagicMock(return_value=_FakeDiff())
     return p
 
@@ -302,5 +303,24 @@ def test_gitlab_fallback_note_carries_marker_and_records():
         # second identical send is skipped because the fallback recorded the fp
         _send_fb()
         assert p.mr.notes.create.call_count == 1
+    finally:
+        gs.stop()
+
+
+def test_gitlab_skips_when_fallback_note_has_marker():
+    # a prior run posted via the general-note fallback (mr.notes.create); its
+    # marker must be found by scanning notes, not only discussions.
+    body = "**Suggestion:** from fallback [possible issue, importance: 7]"
+    seen_fp = d.body_fingerprint("a.py", 10, body)
+    p = _gl_provider([])
+    note = MagicMock()
+    note.body = f"from fallback\n\n<!-- pr-agent-dedup: {seen_fp} -->"
+    p.mr.notes.list.return_value = [note]
+    gs = patch("pr_agent.git_providers.gitlab_provider.get_settings")
+    m = gs.start()
+    m.return_value.get.side_effect = lambda k, default=None: True if k == "config.persistent_inline_comments" else default
+    try:
+        _send(p, body)
+        p.mr.discussions.create.assert_not_called()
     finally:
         gs.stop()

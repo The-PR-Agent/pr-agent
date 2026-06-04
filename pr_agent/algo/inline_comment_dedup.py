@@ -95,6 +95,11 @@ def iter_existing_inline_comment_bodies(git_provider) -> Iterator[str]:
             for note in attrs.get("notes", []) or []:
                 if isinstance(note, dict):
                     yield note.get("body", "") or ""
+        # The committable-suggestion fallback posts via mr.notes.create, which
+        # may not surface as a discussion; scan plain notes too so their markers
+        # are seen on later runs.
+        for note in git_provider.mr.notes.list(get_all=True):
+            yield getattr(note, "body", "") or ""
     else:
         raise NotImplementedError(
             f"inline-comment dedup not implemented for {provider_name}"
