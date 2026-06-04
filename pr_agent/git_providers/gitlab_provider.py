@@ -19,6 +19,8 @@ from ..algo.utils import (clip_tokens,
                           find_line_number_of_relevant_line_in_file,
                           load_large_diff)
 from ..config_loader import get_settings
+from ..algo.inline_comment_dedup import (body_fingerprint, build_markers,
+                                         code_fingerprint, get_inline_comment_store)
 from ..log import get_logger
 from .git_provider import MAX_FILES_ALLOWED_FULL, GitProvider
 
@@ -559,6 +561,16 @@ class GitLabProvider(GitProvider):
         if not found:
             get_logger().info(f"Could not find position for {relevant_file} {relevant_line_in_file}")
         else:
+            store = None
+            body_fp = code_fp = None
+            if get_settings().get("config.persistent_inline_comments", False):
+                store = get_inline_comment_store(self)
+                body_fp = body_fingerprint(relevant_file, target_line_no, body)
+                code_fp = code_fingerprint(relevant_file, target_line_no, body)
+                if store.seen(body_fp) or store.seen(code_fp):
+                    get_logger().info(f"Persistent inline comments: skipping duplicate inline comment on {relevant_file}:{target_line_no}")
+                    return
+                body = f"{body}\n\n{build_markers(body_fp, code_fp)}"
             # in order to have exact sha's we have to find correct diff for this change
             diff = self.get_relevant_diff(relevant_file, relevant_line_in_file)
             if diff is None:
@@ -578,6 +590,9 @@ class GitLabProvider(GitProvider):
             get_logger().debug(f"Creating comment in MR {self.id_mr} with body {body} and position {pos_obj}")
             try:
                 self.mr.discussions.create({'body': body, 'position': pos_obj})
+                if store is not None:
+                    store.add(body_fp)
+                    store.add(code_fp)
             except Exception as e:
                 try:
                     # fallback - create a general note on the file in the MR
@@ -617,6 +632,8 @@ class GitLabProvider(GitProvider):
                     diff_code = f"\n\n```diff\n{patch.rstrip()}\n```"
                     body_fallback += diff_code
 
+                    if store is not None:
+                        body_fallback = f"{body_fallback}\n\n{build_markers(body_fp, code_fp)}"
                     # Create a general note on the file in the MR
                     self.mr.notes.create({
                         'body': body_fallback,
@@ -629,6 +646,9 @@ class GitLabProvider(GitProvider):
                         }
                     })
                     get_logger().debug(f"Created fallback comment in MR {self.id_mr} with position {pos_obj}")
+                    if store is not None:
+                        store.add(body_fp)
+                        store.add(code_fp)
 
                     # get_logger().debug(
                     #     f"Failed to create comment in MR {self.id_mr} with position {pos_obj} (probably not a '+' line)")

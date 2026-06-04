@@ -17,6 +17,9 @@ from starlette_context import context
 
 from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import extract_hunk_headers
+from ..algo.inline_comment_dedup import (body_fingerprint, build_markers,
+                                         code_fingerprint, get_inline_comment_store,
+                                         inline_comment_line)
 from ..algo.language_handler import is_valid_file
 from ..algo.types import EDIT_TYPE
 from ..algo.utils import (PRReviewHeader, Range, clip_tokens,
@@ -412,6 +415,29 @@ class GithubProvider(GitProvider):
         return dict(body=body, path=path, position=position) if subject_type == "LINE" else {}
 
     def publish_inline_comments(self, comments: list[dict], disable_fallback: bool = False):
+        if get_settings().get("config.persistent_inline_comments", False):
+            store = get_inline_comment_store(self)
+            deduped = []
+            for comment in comments:
+                if not comment:
+                    deduped.append(comment)
+                    continue
+                path = comment.get("path", "")
+                line = inline_comment_line(comment)
+                body = comment.get("body", "")
+                body_fp = body_fingerprint(path, line, body)
+                code_fp = code_fingerprint(path, line, body)
+                if store.seen(body_fp) or store.seen(code_fp):
+                    continue
+                marked = dict(comment)
+                marked["body"] = f"{body}\n\n{build_markers(body_fp, code_fp)}"
+                deduped.append(marked)
+                store.add(body_fp)
+                store.add(code_fp)
+            if not any(deduped):
+                get_logger().info("Persistent inline comments: all suggestions already posted; nothing to publish")
+                return
+            comments = deduped
         try:
             # publish all comments in a single message
             self.pr.create_review(commit=self.last_commit_id, comments=comments)

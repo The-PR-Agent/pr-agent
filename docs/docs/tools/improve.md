@@ -212,6 +212,19 @@ dual_publishing_score_threshold = x
 
 Where x represents the minimum score threshold (>=) for suggestions to be presented as committable PR comments in addition to the table. Default is -1 (disabled).
 
+### Persistent inline comments
+
+By default, PR-Agent re-posts identical inline code comments on every run, which clutters the discussion, particularly on GitLab. The persistent inline comments feature prevents this by skipping the re-posting of comments that are already present from an earlier run. This is achieved by embedding a hidden HTML-comment marker with a short fingerprint in each posted comment, allowing PR-Agent to scan existing comment bodies on later runs to identify and skip duplicates.
+
+Two fingerprints are used and matched with OR logic: one over the comment text (file, line, normalised text) and one over the proposed code block when present. This approach catches a re-emitted finding even when the model rephrases the prose or slightly changes the code. The feature is opt-in and off by default, and is implemented for the GitHub and GitLab providers; other providers are unaffected.
+
+To enable it, use the following setting:
+
+```toml
+[config]
+persistent_inline_comments = true
+```
+
 ### Self-review
 
 `Platforms supported: GitHub, GitLab`
