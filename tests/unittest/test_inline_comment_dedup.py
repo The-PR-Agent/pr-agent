@@ -17,7 +17,9 @@ def _flag_side_effect(value=True):
 # fingerprints + markers
 # --------------------------------------------------------------------------- #
 def test_body_fingerprint_strips_lead_and_tag():
-    a = d.body_fingerprint("f.py", 10, "**Suggestion:** Do the thing [possible issue, importance: 7]")
+    a = d.body_fingerprint(
+        "f.py", 10,
+        "**Suggestion:** Do the thing [possible issue, importance: 7]")
     b = d.body_fingerprint("f.py", 10, "Do the thing")
     assert a == b
     assert len(a) == 12
@@ -238,7 +240,9 @@ def test_gitlab_flag_off_posts_unmarked():
 def test_body_fingerprint_strips_non_standard_label():
     # hyphen/digit/capitalised labels must still be stripped so the body
     # fingerprint is stable across runs (review finding: tag regex too narrow)
-    a = d.body_fingerprint("f.py", 10, "**Suggestion:** Do the thing [best-practice, importance: 3]")
+    a = d.body_fingerprint(
+        "f.py", 10,
+        "**Suggestion:** Do the thing [best-practice, importance: 3]")
     b = d.body_fingerprint("f.py", 10, "Do the thing")
     assert a == b
 
@@ -252,7 +256,8 @@ def test_github_code_fingerprint_or_match_across_runs():
     gs = _patch_flag(True)
     try:
         p.publish_inline_comments([
-            {"path": "a.py", "line": 10, "body": "totally different wording\n```suggestion\nx = 1\n```"},
+            {"path": "a.py", "line": 10,
+             "body": "totally different wording\n```suggestion\nx = 1\n```"},
         ])
     finally:
         gs.stop()
@@ -349,7 +354,9 @@ def test_gitlab_deletion_anchored_on_source_line():
     try:
         _send(p, "**Suggestion:** drop it [possible issue, importance: 7]", edit_type="deletion")
         first = p.mr.discussions.create.call_args.args[0]
-        expected = d.body_fingerprint("a.py", 10, "**Suggestion:** drop it [possible issue, importance: 7]")
+        expected = d.body_fingerprint(
+            "a.py", 10,
+            "**Suggestion:** drop it [possible issue, importance: 7]")
         assert f"<!-- pr-agent-dedup: {expected} -->" in first["body"]
     finally:
         gs.stop()
