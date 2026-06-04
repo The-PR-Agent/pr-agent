@@ -392,3 +392,9 @@ def test_github_fallback_republish_marks_and_does_not_filter():
     published = p.pr.create_review.call_args.kwargs["comments"]
     assert len(published) == 1
     assert "<!-- pr-agent-dedup:" in published[0]["body"]
+
+
+def test_code_fingerprint_is_case_sensitive():
+    fp_lower = d.code_fingerprint("f.py", 1, "x\n```suggestion\nuserId = 1\n```")
+    fp_upper = d.code_fingerprint("f.py", 1, "x\n```suggestion\nUSERID = 1\n```")
+    assert fp_lower != fp_upper

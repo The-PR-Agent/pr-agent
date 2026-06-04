@@ -56,7 +56,9 @@ def code_fingerprint(relevant_file: str, target_line_no, body: str) -> Optional[
     m = _CODE_BLOCK_RE.search(body or "")
     if not m:
         return None
-    code = _WS_RE.sub(" ", m.group(1)).strip().lower()
+    # Do not lower-case: code is case-sensitive, so case-only differences
+    # must produce distinct fingerprints.
+    code = _WS_RE.sub(" ", m.group(1)).strip()
     if not code:
         return None
     key = f"{relevant_file}|{target_line_no}|code|{code}"
