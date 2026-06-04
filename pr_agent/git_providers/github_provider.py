@@ -417,10 +417,7 @@ class GithubProvider(GitProvider):
     def publish_inline_comments(self, comments: list[dict], disable_fallback: bool = False):
         store = None
         pending_fingerprints = []
-        # Dedup only on the top-level call. A fallback re-publish passes
-        # disable_fallback=True; it must not re-filter, or it could drop a
-        # comment that has not actually been posted yet.
-        if not disable_fallback and get_settings().get("config.persistent_inline_comments", False):
+        if get_settings().get("config.persistent_inline_comments", False):
             store = get_inline_comment_store(self)
             local_seen = set()
             deduped = []
@@ -436,20 +433,30 @@ class GithubProvider(GitProvider):
                 # path and comment content instead so it stays stable across runs.
                 body_fp = body_fingerprint(path, None, body)
                 code_fp = code_fingerprint(path, None, body)
-                if (store.seen(body_fp) or store.seen(code_fp)
+                # A fallback re-publish (disable_fallback=True) is for a comment
+                # that has not been posted yet, so do not filter it; only the
+                # top-level call drops duplicates. The fallback still gets marked
+                # and recorded below so it dedups on later runs.
+                if not disable_fallback and (
+                        store.seen(body_fp) or store.seen(code_fp)
                         or body_fp in local_seen or (code_fp and code_fp in local_seen)):
                     skipped += 1
                     continue
-                marked = dict(comment)
-                marked["body"] = body_with_markers(
-                    body, body_fp, code_fp, getattr(self, "max_comment_chars", None))
+                if "<!-- pr-agent-dedup:" in body:
+                    marked = comment  # already carries a marker from the first pass
+                else:
+                    marked = dict(comment)
+                    marked["body"] = body_with_markers(
+                        body, body_fp, code_fp, getattr(self, "max_comment_chars", None))
                 deduped.append(marked)
                 local_seen.add(body_fp)
                 if code_fp:
                     local_seen.add(code_fp)
                 pending_fingerprints.append((body_fp, code_fp))
             if skipped and not any(deduped):
-                get_logger().info(f"Persistent inline comments: all {skipped} suggestion(s) already posted; nothing to publish")
+                get_logger().info(
+                    f"Persistent inline comments: all {skipped} suggestion(s) "
+                    f"already posted; nothing to publish")
                 return
             comments = deduped
         try:
@@ -467,15 +474,15 @@ class GithubProvider(GitProvider):
                 self._publish_inline_comments_fallback_with_verification(comments)
             except Exception as e:
                 get_logger().error(f"Failed to publish inline code comments fallback, error: {e}")
-                raise e    
-    
+                raise e
+
         # Record fingerprints only after a publish path has run without raising,
         # so a failed publish does not block a retry of the same comment this run.
         if store is not None:
             for body_fp, code_fp in pending_fingerprints:
                 store.add(body_fp)
                 store.add(code_fp)
-    
+
     def get_review_thread_comments(self, comment_id: int) -> list[dict]:
         """
         Retrieves all comments in the same thread as the given comment.

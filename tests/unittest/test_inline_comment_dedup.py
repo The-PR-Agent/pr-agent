@@ -373,3 +373,22 @@ def test_gitlab_marker_survives_when_body_clipped():
         assert len(posted) <= 60
     finally:
         gs.stop()
+
+
+def test_github_fallback_republish_marks_and_does_not_filter():
+    # A fallback re-publish (disable_fallback=True) of an unmarked, "fixed"
+    # comment must still receive a marker and must not be filtered out, even if
+    # its fingerprint is already in the store, so it dedups on later runs.
+    p = _gh_provider([])
+    gs = _patch_flag(True)
+    try:
+        store = d.get_inline_comment_store(p)
+        body = "fixed comment with no code block"
+        store.add(d.body_fingerprint("a.py", None, body))  # pretend already seen
+        p.publish_inline_comments(
+            [{"path": "a.py", "line": 10, "body": body}], disable_fallback=True)
+    finally:
+        gs.stop()
+    published = p.pr.create_review.call_args.kwargs["comments"]
+    assert len(published) == 1
+    assert "<!-- pr-agent-dedup:" in published[0]["body"]
