@@ -224,3 +224,86 @@ def test_gitlab_flag_off_posts_unmarked():
         assert "pr-agent-dedup" not in body
     finally:
         gs.stop()
+
+
+# --------------------------------------------------------------------------- #
+# regression cases added after review
+# --------------------------------------------------------------------------- #
+def test_body_fingerprint_strips_non_standard_label():
+    # hyphen/digit/capitalised labels must still be stripped so the body
+    # fingerprint is stable across runs (review finding: tag regex too narrow)
+    a = d.body_fingerprint("f.py", 10, "**Suggestion:** Do the thing [best-practice, importance: 3]")
+    b = d.body_fingerprint("f.py", 10, "Do the thing")
+    assert a == b
+
+
+def test_github_code_fingerprint_or_match_across_runs():
+    # existing comment carries ONLY a code marker; a new comment with different
+    # prose but the same suggestion block must be dropped via the code fp even
+    # though its body fingerprint differs.
+    code_fp = d.code_fingerprint("a.py", 10, "p\n```suggestion\nx = 1\n```")
+    p = _gh_provider([f"earlier wording\n\n<!-- pr-agent-dedup-code: {code_fp} -->"])
+    gs = _patch_flag(True)
+    try:
+        p.publish_inline_comments([
+            {"path": "a.py", "line": 10, "body": "totally different wording\n```suggestion\nx = 1\n```"},
+        ])
+    finally:
+        gs.stop()
+    p.pr.create_review.assert_not_called()
+
+
+def test_store_unsupported_provider_degrades():
+    class FooProvider:
+        pass
+    store = d.InlineCommentStore(FooProvider())
+    assert store.load() == set()
+    assert store.seen("abcabcabcabc") is False
+
+
+def test_gitlab_skips_when_existing_discussion_has_marker():
+    body = "**Suggestion:** already here [possible issue, importance: 7]"
+    seen_fp = d.body_fingerprint("a.py", 10, body)
+    p = _gl_provider([f"already here\n\n<!-- pr-agent-dedup: {seen_fp} -->"])
+    gs = patch("pr_agent.git_providers.gitlab_provider.get_settings")
+    m = gs.start()
+    m.return_value.get.side_effect = lambda k, default=None: True if k == "config.persistent_inline_comments" else default
+    try:
+        _send(p, body)
+        p.mr.discussions.create.assert_not_called()
+    finally:
+        gs.stop()
+
+
+def test_gitlab_fallback_note_carries_marker_and_records():
+    p = _gl_provider([])
+    p.mr.discussions.create.side_effect = RuntimeError("position rejected")
+    p.get_line_link = MagicMock(return_value="http://link")
+    original = {
+        "relevant_lines_start": 10, "relevant_lines_end": 11,
+        "existing_code": "a = 1", "improved_code": "a = 2",
+        "suggestion_content": "fix it", "label": "possible issue", "score": 7,
+    }
+
+    def _send_fb():
+        p.send_inline_comment(
+            body="**Suggestion:** fix it [possible issue, importance: 7]",
+            edit_type="addition", found=True, relevant_file="a.py",
+            relevant_line_in_file="+a = 2", source_line_no=10,
+            target_file=_FakeTargetFile(), target_line_no=10,
+            original_suggestion=original,
+        )
+
+    gs = patch("pr_agent.git_providers.gitlab_provider.get_settings")
+    m = gs.start()
+    m.return_value.get.side_effect = lambda k, default=None: True if k == "config.persistent_inline_comments" else default
+    try:
+        _send_fb()
+        assert p.mr.notes.create.called
+        note_body = p.mr.notes.create.call_args.args[0]["body"]
+        assert "<!-- pr-agent-dedup:" in note_body
+        # second identical send is skipped because the fallback recorded the fp
+        _send_fb()
+        assert p.mr.notes.create.call_count == 1
+    finally:
+        gs.stop()
