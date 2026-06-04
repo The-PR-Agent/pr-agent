@@ -474,7 +474,7 @@ class GithubProvider(GitProvider):
                 self._publish_inline_comments_fallback_with_verification(comments)
             except Exception as e:
                 get_logger().error(f"Failed to publish inline code comments fallback, error: {e}")
-                raise e
+                raise
 
         # Record fingerprints only after a publish path has run without raising,
         # so a failed publish does not block a retry of the same comment this run.
