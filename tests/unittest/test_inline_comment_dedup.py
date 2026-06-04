@@ -4,6 +4,14 @@ from pr_agent.algo import inline_comment_dedup as d
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
 
+_FLAG = "config.persistent_inline_comments"
+
+
+def _flag_side_effect(value=True):
+    def _get(key, default=None):
+        return value if key == _FLAG else default
+    return _get
+
 
 # --------------------------------------------------------------------------- #
 # fingerprints + markers
@@ -98,7 +106,7 @@ def test_iter_unsupported_provider_raises():
 def _patch_flag(value):
     gs = patch("pr_agent.git_providers.github_provider.get_settings")
     m = gs.start()
-    m.return_value.get.side_effect = lambda k, default=None: value if k == "config.persistent_inline_comments" else default
+    m.return_value.get.side_effect = _flag_side_effect(value)
     return gs
 
 
@@ -199,7 +207,7 @@ def test_gitlab_posts_new_with_marker_and_skips_duplicate():
     p = _gl_provider([])
     gs = patch("pr_agent.git_providers.gitlab_provider.get_settings")
     m = gs.start()
-    m.return_value.get.side_effect = lambda k, default=None: True if k == "config.persistent_inline_comments" else default
+    m.return_value.get.side_effect = _flag_side_effect(True)
     try:
         _send(p, "**Suggestion:** fix it [possible issue, importance: 7]")
         first = p.mr.discussions.create.call_args.args[0]
@@ -215,7 +223,7 @@ def test_gitlab_flag_off_posts_unmarked():
     p = _gl_provider([])
     gs = patch("pr_agent.git_providers.gitlab_provider.get_settings")
     m = gs.start()
-    m.return_value.get.side_effect = lambda k, default=None: default
+    m.return_value.get.side_effect = _flag_side_effect(False)
     try:
         _send(p, "plain body")
         body = p.mr.discussions.create.call_args.args[0]["body"]
@@ -265,7 +273,7 @@ def test_gitlab_skips_when_existing_discussion_has_marker():
     p = _gl_provider([f"already here\n\n<!-- pr-agent-dedup: {seen_fp} -->"])
     gs = patch("pr_agent.git_providers.gitlab_provider.get_settings")
     m = gs.start()
-    m.return_value.get.side_effect = lambda k, default=None: True if k == "config.persistent_inline_comments" else default
+    m.return_value.get.side_effect = _flag_side_effect(True)
     try:
         _send(p, body)
         p.mr.discussions.create.assert_not_called()
@@ -294,7 +302,7 @@ def test_gitlab_fallback_note_carries_marker_and_records():
 
     gs = patch("pr_agent.git_providers.gitlab_provider.get_settings")
     m = gs.start()
-    m.return_value.get.side_effect = lambda k, default=None: True if k == "config.persistent_inline_comments" else default
+    m.return_value.get.side_effect = _flag_side_effect(True)
     try:
         _send_fb()
         assert p.mr.notes.create.called
@@ -318,7 +326,7 @@ def test_gitlab_skips_when_fallback_note_has_marker():
     p.mr.notes.list.return_value = [note]
     gs = patch("pr_agent.git_providers.gitlab_provider.get_settings")
     m = gs.start()
-    m.return_value.get.side_effect = lambda k, default=None: True if k == "config.persistent_inline_comments" else default
+    m.return_value.get.side_effect = _flag_side_effect(True)
     try:
         _send(p, body)
         p.mr.discussions.create.assert_not_called()
@@ -329,7 +337,7 @@ def test_gitlab_skips_when_fallback_note_has_marker():
 def _flag_on_gitlab():
     gs = patch("pr_agent.git_providers.gitlab_provider.get_settings")
     m = gs.start()
-    m.return_value.get.side_effect = lambda k, default=None: True if k == "config.persistent_inline_comments" else default
+    m.return_value.get.side_effect = _flag_side_effect(True)
     return gs
 
 
