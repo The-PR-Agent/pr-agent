@@ -35,8 +35,6 @@ import hashlib
 import re
 from typing import Iterator, Optional
 
-from pr_agent.log import get_logger
-
 BODY_MARKER_RE = re.compile(r"<!-- pr-agent-dedup: ([a-f0-9]{12}) -->")
 CODE_MARKER_RE = re.compile(r"<!-- pr-agent-dedup-code: ([a-f0-9]{12}) -->")
 
@@ -126,6 +124,7 @@ class InlineCommentStore:
                     for match in marker_re.finditer(body or ""):
                         self._keys.add(match.group(1))
         except Exception as e:
+            from pr_agent.log import get_logger
             get_logger().info(
                 f"Persistent inline comments: could not load existing comments, "
                 f"within-run dedup only. error={e}"

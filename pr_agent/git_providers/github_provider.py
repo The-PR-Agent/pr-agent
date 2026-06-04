@@ -18,8 +18,8 @@ from starlette_context import context
 from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import extract_hunk_headers
 from ..algo.inline_comment_dedup import (body_fingerprint, build_markers,
-                                         code_fingerprint, get_inline_comment_store,
-                                         inline_comment_line)
+                                         code_fingerprint,
+                                         get_inline_comment_store)
 from ..algo.language_handler import is_valid_file
 from ..algo.types import EDIT_TYPE
 from ..algo.utils import (PRReviewHeader, Range, clip_tokens,
@@ -415,25 +415,36 @@ class GithubProvider(GitProvider):
         return dict(body=body, path=path, position=position) if subject_type == "LINE" else {}
 
     def publish_inline_comments(self, comments: list[dict], disable_fallback: bool = False):
-        if get_settings().get("config.persistent_inline_comments", False):
+        store = None
+        pending_fingerprints = []
+        # Dedup only on the top-level call. A fallback re-publish passes
+        # disable_fallback=True; it must not re-filter, or it could drop a
+        # comment that has not actually been posted yet.
+        if not disable_fallback and get_settings().get("config.persistent_inline_comments", False):
             store = get_inline_comment_store(self)
+            local_seen = set()
             deduped = []
             for comment in comments:
                 if not comment:
                     deduped.append(comment)
                     continue
                 path = comment.get("path", "")
-                line = inline_comment_line(comment)
                 body = comment.get("body", "")
-                body_fp = body_fingerprint(path, line, body)
-                code_fp = code_fingerprint(path, line, body)
-                if store.seen(body_fp) or store.seen(code_fp):
+                # GitHub committable comments are anchored by diff position, which
+                # shifts as the PR gains commits; anchor the fingerprint on the file
+                # path and comment content instead so it stays stable across runs.
+                body_fp = body_fingerprint(path, None, body)
+                code_fp = code_fingerprint(path, None, body)
+                if (store.seen(body_fp) or store.seen(code_fp)
+                        or body_fp in local_seen or (code_fp and code_fp in local_seen)):
                     continue
                 marked = dict(comment)
                 marked["body"] = f"{body}\n\n{build_markers(body_fp, code_fp)}"
                 deduped.append(marked)
-                store.add(body_fp)
-                store.add(code_fp)
+                local_seen.add(body_fp)
+                if code_fp:
+                    local_seen.add(code_fp)
+                pending_fingerprints.append((body_fp, code_fp))
             if not any(deduped):
                 get_logger().info("Persistent inline comments: all suggestions already posted; nothing to publish")
                 return
@@ -454,6 +465,13 @@ class GithubProvider(GitProvider):
             except Exception as e:
                 get_logger().error(f"Failed to publish inline code comments fallback, error: {e}")
                 raise e    
+    
+        # Record fingerprints only after a publish path has run without raising,
+        # so a failed publish does not block a retry of the same comment this run.
+        if store is not None:
+            for body_fp, code_fp in pending_fingerprints:
+                store.add(body_fp)
+                store.add(code_fp)
     
     def get_review_thread_comments(self, comment_id: int) -> list[dict]:
         """

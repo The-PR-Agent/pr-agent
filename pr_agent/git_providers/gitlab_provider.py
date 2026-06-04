@@ -15,7 +15,8 @@ from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import decode_if_bytes
 from ..algo.inline_comment_dedup import (body_fingerprint, build_markers,
-                                         code_fingerprint, get_inline_comment_store)
+                                         code_fingerprint,
+                                         get_inline_comment_store)
 from ..algo.language_handler import is_valid_file
 from ..algo.utils import (clip_tokens,
                           find_line_number_of_relevant_line_in_file,

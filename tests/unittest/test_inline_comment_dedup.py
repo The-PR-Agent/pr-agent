@@ -1,11 +1,8 @@
 from unittest.mock import MagicMock, patch
 
-# Import a provider module first: it pulls in pr_agent.log via its transitive
-# imports before config load, avoiding the partially-initialised-module
-# circular import that triggers when pr_agent.log is the first pr_agent import.
+from pr_agent.algo import inline_comment_dedup as d
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
-from pr_agent.algo import inline_comment_dedup as d
 
 
 # --------------------------------------------------------------------------- #
@@ -106,7 +103,7 @@ def _patch_flag(value):
 
 
 def test_github_filters_seen_and_marks_new():
-    seen_fp = d.body_fingerprint("a.py", 10, "old body")
+    seen_fp = d.body_fingerprint("a.py", None, "old body")
     p = _gh_provider([f"old body\n\n<!-- pr-agent-dedup: {seen_fp} -->"])
     gs = _patch_flag(True)
     try:
@@ -123,7 +120,7 @@ def test_github_filters_seen_and_marks_new():
 
 
 def test_github_all_duplicates_skips_publish():
-    seen_fp = d.body_fingerprint("a.py", 10, "old body")
+    seen_fp = d.body_fingerprint("a.py", None, "old body")
     p = _gh_provider([f"old body\n\n<!-- pr-agent-dedup: {seen_fp} -->"])
     gs = _patch_flag(True)
     try:
@@ -241,7 +238,7 @@ def test_github_code_fingerprint_or_match_across_runs():
     # existing comment carries ONLY a code marker; a new comment with different
     # prose but the same suggestion block must be dropped via the code fp even
     # though its body fingerprint differs.
-    code_fp = d.code_fingerprint("a.py", 10, "p\n```suggestion\nx = 1\n```")
+    code_fp = d.code_fingerprint("a.py", None, "p\n```suggestion\nx = 1\n```")
     p = _gh_provider([f"earlier wording\n\n<!-- pr-agent-dedup-code: {code_fp} -->"])
     gs = _patch_flag(True)
     try:
