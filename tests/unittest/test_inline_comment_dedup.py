@@ -406,3 +406,9 @@ def test_fingerprints_are_marker_invariant():
         d.body_fingerprint("f.py", 1, plain), d.code_fingerprint("f.py", 1, plain))
     assert d.body_fingerprint("f.py", 1, plain) == d.body_fingerprint("f.py", 1, marked)
     assert d.code_fingerprint("f.py", 1, plain) == d.code_fingerprint("f.py", 1, marked)
+
+
+def test_has_marker_requires_wellformed_marker():
+    assert d.has_marker("body\n\n<!-- pr-agent-dedup: a1b2c3d4e5f6 -->")
+    assert not d.has_marker("a comment that merely mentions <!-- pr-agent-dedup: in prose")
+    assert not d.has_marker("no marker at all")

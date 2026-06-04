@@ -19,7 +19,7 @@ from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import extract_hunk_headers
 from ..algo.inline_comment_dedup import (body_fingerprint, body_with_markers,
                                          code_fingerprint,
-                                         get_inline_comment_store)
+                                         get_inline_comment_store, has_marker)
 from ..algo.language_handler import is_valid_file
 from ..algo.types import EDIT_TYPE
 from ..algo.utils import (PRReviewHeader, Range, clip_tokens,
@@ -442,7 +442,7 @@ class GithubProvider(GitProvider):
                         or body_fp in local_seen or (code_fp and code_fp in local_seen)):
                     skipped += 1
                     continue
-                if "<!-- pr-agent-dedup:" in body:
+                if has_marker(body):
                     marked = comment  # already carries a marker from the first pass
                 else:
                     marked = dict(comment)

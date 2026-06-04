@@ -44,6 +44,12 @@ _WS_RE = re.compile(r"\s+")
 _CODE_BLOCK_RE = re.compile(r"```suggestion[^\n]*\n(.*?)```", re.DOTALL)
 
 
+def has_marker(body: str) -> bool:
+    """True only if the body carries a well-formed dedup marker (12-hex),
+    so incidental text mentioning the marker syntax is not mistaken for one."""
+    return bool(BODY_MARKER_RE.search(body or "") or CODE_MARKER_RE.search(body or ""))
+
+
 def _strip_markers(body: str) -> str:
     """Remove embedded dedup markers so a pre-marked body fingerprints the
     same as its original (markers are appended after marking)."""
