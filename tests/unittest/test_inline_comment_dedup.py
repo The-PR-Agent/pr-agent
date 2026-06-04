@@ -186,9 +186,9 @@ def _gl_provider(existing_bodies):
     return p
 
 
-def _send(p, body):
+def _send(p, body, edit_type="addition"):
     p.send_inline_comment(
-        body=body, edit_type="addition", found=True,
+        body=body, edit_type=edit_type, found=True,
         relevant_file="a.py", relevant_line_in_file="+x = 1",
         source_line_no=10, target_file=_FakeTargetFile(), target_line_no=10,
         original_suggestion=None,
@@ -322,5 +322,39 @@ def test_gitlab_skips_when_fallback_note_has_marker():
     try:
         _send(p, body)
         p.mr.discussions.create.assert_not_called()
+    finally:
+        gs.stop()
+
+
+def _flag_on_gitlab():
+    gs = patch("pr_agent.git_providers.gitlab_provider.get_settings")
+    m = gs.start()
+    m.return_value.get.side_effect = lambda k, default=None: True if k == "config.persistent_inline_comments" else default
+    return gs
+
+
+def test_gitlab_deletion_anchored_on_source_line():
+    # deletions anchor on the old (source) line; two deletions sharing a
+    # target line but different source lines must not collide.
+    p = _gl_provider([])
+    gs = _flag_on_gitlab()
+    try:
+        _send(p, "**Suggestion:** drop it [possible issue, importance: 7]", edit_type="deletion")
+        first = p.mr.discussions.create.call_args.args[0]
+        expected = d.body_fingerprint("a.py", 10, "**Suggestion:** drop it [possible issue, importance: 7]")
+        assert f"<!-- pr-agent-dedup: {expected} -->" in first["body"]
+    finally:
+        gs.stop()
+
+
+def test_gitlab_marker_survives_when_body_clipped():
+    p = _gl_provider([])
+    p.max_comment_chars = 60
+    gs = _flag_on_gitlab()
+    try:
+        _send(p, "x" * 500)
+        posted = p.mr.discussions.create.call_args.args[0]["body"]
+        assert "<!-- pr-agent-dedup:" in posted
+        assert len(posted) <= 60
     finally:
         gs.stop()

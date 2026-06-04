@@ -14,7 +14,7 @@ from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 
 from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import decode_if_bytes
-from ..algo.inline_comment_dedup import (body_fingerprint, build_markers,
+from ..algo.inline_comment_dedup import (body_fingerprint, body_with_markers,
                                          code_fingerprint,
                                          get_inline_comment_store)
 from ..algo.language_handler import is_valid_file
@@ -566,12 +566,19 @@ class GitLabProvider(GitProvider):
             body_fp = code_fp = None
             if get_settings().get("config.persistent_inline_comments", False):
                 store = get_inline_comment_store(self)
-                body_fp = body_fingerprint(relevant_file, target_line_no, body)
-                code_fp = code_fingerprint(relevant_file, target_line_no, body)
+                # Anchor the fingerprint on the line the comment is actually
+                # attached to: deletions anchor on the old line (source), all
+                # other edits on the new line (target).
+                anchor_line = source_line_no if edit_type == "deletion" else target_line_no
+                body_fp = body_fingerprint(relevant_file, anchor_line, body)
+                code_fp = code_fingerprint(relevant_file, anchor_line, body)
                 if store.seen(body_fp) or store.seen(code_fp):
-                    get_logger().info(f"Persistent inline comments: skipping duplicate inline comment on {relevant_file}:{target_line_no}")
+                    get_logger().info(
+                        f"Persistent inline comments: skipping duplicate inline "
+                        f"comment on {relevant_file}:{anchor_line}")
                     return
-                body = f"{body}\n\n{build_markers(body_fp, code_fp)}"
+                body = body_with_markers(
+                    body, body_fp, code_fp, getattr(self, "max_comment_chars", None))
             # in order to have exact sha's we have to find correct diff for this change
             diff = self.get_relevant_diff(relevant_file, relevant_line_in_file)
             if diff is None:
@@ -634,7 +641,8 @@ class GitLabProvider(GitProvider):
                     body_fallback += diff_code
 
                     if store is not None:
-                        body_fallback = f"{body_fallback}\n\n{build_markers(body_fp, code_fp)}"
+                        body_fallback = body_with_markers(
+                            body_fallback, body_fp, code_fp, getattr(self, "max_comment_chars", None))
                     # Create a general note on the file in the MR
                     self.mr.notes.create({
                         'body': body_fallback,

@@ -70,6 +70,17 @@ def build_markers(body_fp: str, code_fp: Optional[str]) -> str:
     return "\n".join(markers)
 
 
+def body_with_markers(body: str, body_fp: str, code_fp: "Optional[str]",
+                      max_chars: "Optional[int]" = None) -> str:
+    """Append the dedup marker(s) to a comment body. If max_chars is given and
+    body + markers would exceed it, the body is clipped (never the markers) so
+    the fingerprint marker always survives for the next run's scan."""
+    suffix = f"\n\n{build_markers(body_fp, code_fp)}"
+    if max_chars and len(body) + len(suffix) > max_chars:
+        body = body[: max(0, max_chars - len(suffix))]
+    return f"{body}{suffix}"
+
+
 def inline_comment_line(comment: dict):
     """Best-effort anchor line for a GitHub inline-comment dict."""
     for key in ("line", "position", "start_line"):

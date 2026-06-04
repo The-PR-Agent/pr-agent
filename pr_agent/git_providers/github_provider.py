@@ -17,7 +17,7 @@ from starlette_context import context
 
 from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import extract_hunk_headers
-from ..algo.inline_comment_dedup import (body_fingerprint, build_markers,
+from ..algo.inline_comment_dedup import (body_fingerprint, body_with_markers,
                                          code_fingerprint,
                                          get_inline_comment_store)
 from ..algo.language_handler import is_valid_file
@@ -424,6 +424,7 @@ class GithubProvider(GitProvider):
             store = get_inline_comment_store(self)
             local_seen = set()
             deduped = []
+            skipped = 0
             for comment in comments:
                 if not comment:
                     deduped.append(comment)
@@ -437,16 +438,18 @@ class GithubProvider(GitProvider):
                 code_fp = code_fingerprint(path, None, body)
                 if (store.seen(body_fp) or store.seen(code_fp)
                         or body_fp in local_seen or (code_fp and code_fp in local_seen)):
+                    skipped += 1
                     continue
                 marked = dict(comment)
-                marked["body"] = f"{body}\n\n{build_markers(body_fp, code_fp)}"
+                marked["body"] = body_with_markers(
+                    body, body_fp, code_fp, getattr(self, "max_comment_chars", None))
                 deduped.append(marked)
                 local_seen.add(body_fp)
                 if code_fp:
                     local_seen.add(code_fp)
                 pending_fingerprints.append((body_fp, code_fp))
-            if not any(deduped):
-                get_logger().info("Persistent inline comments: all suggestions already posted; nothing to publish")
+            if skipped and not any(deduped):
+                get_logger().info(f"Persistent inline comments: all {skipped} suggestion(s) already posted; nothing to publish")
                 return
             comments = deduped
         try:
