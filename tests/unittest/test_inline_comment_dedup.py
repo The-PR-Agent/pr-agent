@@ -398,3 +398,11 @@ def test_code_fingerprint_is_case_sensitive():
     fp_lower = d.code_fingerprint("f.py", 1, "x\n```suggestion\nuserId = 1\n```")
     fp_upper = d.code_fingerprint("f.py", 1, "x\n```suggestion\nUSERID = 1\n```")
     assert fp_lower != fp_upper
+
+
+def test_fingerprints_are_marker_invariant():
+    plain = "**Suggestion:** fix it\n```suggestion\na = 1\n```"
+    marked = plain + "\n\n" + d.build_markers(
+        d.body_fingerprint("f.py", 1, plain), d.code_fingerprint("f.py", 1, plain))
+    assert d.body_fingerprint("f.py", 1, plain) == d.body_fingerprint("f.py", 1, marked)
+    assert d.code_fingerprint("f.py", 1, plain) == d.code_fingerprint("f.py", 1, marked)

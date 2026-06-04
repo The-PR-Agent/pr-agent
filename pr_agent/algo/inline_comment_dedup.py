@@ -44,8 +44,16 @@ _WS_RE = re.compile(r"\s+")
 _CODE_BLOCK_RE = re.compile(r"```suggestion[^\n]*\n(.*?)```", re.DOTALL)
 
 
+def _strip_markers(body: str) -> str:
+    """Remove embedded dedup markers so a pre-marked body fingerprints the
+    same as its original (markers are appended after marking)."""
+    body = BODY_MARKER_RE.sub("", body or "")
+    body = CODE_MARKER_RE.sub("", body)
+    return body
+
+
 def body_fingerprint(relevant_file: str, target_line_no, body: str) -> str:
-    normalised = _LEAD_RE.sub("", body or "")
+    normalised = _LEAD_RE.sub("", _strip_markers(body))
     normalised = _TAG_RE.sub("", normalised)
     normalised = _WS_RE.sub(" ", normalised).strip()[:80].lower()
     key = f"{relevant_file}|{target_line_no}|{normalised}"
@@ -53,7 +61,7 @@ def body_fingerprint(relevant_file: str, target_line_no, body: str) -> str:
 
 
 def code_fingerprint(relevant_file: str, target_line_no, body: str) -> Optional[str]:
-    m = _CODE_BLOCK_RE.search(body or "")
+    m = _CODE_BLOCK_RE.search(_strip_markers(body))
     if not m:
         return None
     # Do not lower-case: code is case-sensitive, so case-only differences
