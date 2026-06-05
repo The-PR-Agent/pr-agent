@@ -1,3 +1,8 @@
+---
+title: "Local and Global Metadata"
+sidebar_position: 6
+---
+
 # Local and global metadata injection with multi-stage analysis
 
 `Supported Git Platforms: GitHub, GitLab, Bitbucket`
@@ -11,8 +16,9 @@ PR-Agent initially retrieves for each PR the following data:
 - PR diff patches, in [hunk diff](https://loicpefferkorn.net/2014/02/diff-files-what-are-hunks-and-how-to-extract-them/) format
 - The entire content of the files that were modified in the PR
 
-!!! tip "Tip: Organization-level metadata"
-    In addition to the inputs above, PR-Agent can incorporate supplementary preferences provided by the user, like [`extra_instructions` and `organization best practices`](../tools/improve.md#extra-instructions-and-best-practices). This information can be used to enhance the PR analysis.
+:::tip[Tip: Organization-level metadata]
+In addition to the inputs above, PR-Agent can incorporate supplementary preferences provided by the user, like [`extra_instructions` and `organization best practices`](../tools/improve.mdx#extra-instructions-and-best-practices). This information can be used to enhance the PR analysis.
+:::
 
 2\.
 By default, the first command that PR-Agent executes is [`describe`](../tools/describe.md), which generates three types of outputs:

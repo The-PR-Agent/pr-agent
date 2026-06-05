@@ -1,3 +1,8 @@
+---
+title: "Describe"
+sidebar_position: 2
+---
+
 ## Overview
 
 The `describe` tool scans the PR code changes, and generates a description for the PR - title, type, summary, walkthrough and labels.
@@ -14,11 +19,11 @@ The tool can be triggered automatically every time a new PR is [opened](../usage
 
 Invoke the tool manually by commenting `/describe` on any PR:
 
-![Describe comment](https://codium.ai/images/pr_agent/describe_comment.png){width=512}
+<img src="https://qodo.ai/images/pr_agent/describe_comment.png" alt="Describe comment" width="512" />
 
 After ~30 seconds, the tool will generate a description for the PR:
 
-![Describe New](https://codium.ai/images/pr_agent/describe_new.png){width=512}
+<img src="https://qodo.ai/images/pr_agent/describe_new.png" alt="Describe New" width="512" />
 
 If you want to edit [configurations](#configuration-options), add the relevant ones to the command:
 
@@ -59,7 +64,7 @@ From our experience, there are two possible reasons:
 - When _updating_ PR descriptions, the `/describe` tool considers everything above the "PR Type" field as user content and will preserve it.
 Everything below this marker is treated as previously auto-generated content and will be replaced.
 
-![Describe comment](https://codium.ai/images/pr_agent/pr_description_user_description.png){width=512}
+<img src="https://qodo.ai/images/pr_agent/pr_description_user_description.png" alt="Describe comment" width="512" />
 
 ## Sequence Diagram Support 
 The `/describe` tool includes a Mermaid sequence diagram showing component/function interactions. 
@@ -85,70 +90,74 @@ This option is enabled by default via the `pr_description.enable_pr_diagram` par
 
 ## Configuration options
 
-???+ example "Possible configurations"
+<details open>
+<summary>Possible configurations</summary>
 
-    <table>
-      <tr>
-        <td><b>publish_labels</b></td>
-        <td>If set to true, the tool will publish labels to the PR. Default is false.</td>
-      </tr>
-      <tr>
-        <td><b>publish_description_as_comment</b></td>
-        <td>If set to true, the tool will publish the description as a comment to the PR. If false, it will overwrite the original description. Default is false.</td>
-      </tr>
-      <tr>
-        <td><b>publish_description_as_comment_persistent</b></td>
-        <td>If set to true and `publish_description_as_comment` is true, the tool will publish the description as a persistent comment to the PR. Default is true.</td>
-      </tr>
-      <tr>
-        <td><b>add_original_user_description</b></td>
-        <td>If set to true, the tool will add the original user description to the generated description. Default is true.</td>
-      </tr>
-      <tr>
-        <td><b>generate_ai_title</b></td>
-        <td>If set to true, the tool will also generate an AI title for the PR. Default is false.</td>
-      </tr>
-      <tr>
-        <td><b>extra_instructions</b></td>
-        <td>Optional extra instructions to the tool. For example: "focus on the changes in the file X. Ignore change in ..."</td>
-      </tr>
-      <tr>
-        <td><b>enable_pr_type</b></td>
-        <td>If set to false, it will not show the `PR type` as a text value in the description content. Default is true.</td>
-      </tr>
-      <tr>
-        <td><b>final_update_message</b></td>
-        <td>If set to true, it will add a comment message [`PR Description updated to latest commit...`](https://github.com/the-pr-agent/pr-agent/pull/499#issuecomment-1837412176) after finishing calling `/describe`. Default is true.</td>
-      </tr>
-      <tr>
-        <td><b>enable_semantic_files_types</b></td>
-        <td>If set to true, "Changes walkthrough" section will be generated. Default is true.</td>
-      </tr>
-      <tr>
-            <td><b>file_table_collapsible_open_by_default</b></td>
-            <td>If set to true, the file list in the "Changes walkthrough" section will be open by default. If set to false, it will be closed by default. Default is false.</td>
-      </tr>
-      <tr>
-        <td><b>collapsible_file_list</b></td>
-        <td>If set to true, the file list in the "Changes walkthrough" section will be collapsible. If set to "adaptive", the file list will be collapsible only if there are more than 8 files. Default is "adaptive".</td>
-      </tr>
-      <tr>
-        <td><b>enable_large_pr_handling</b></td>
-        <td>If set to true, in case of a large PR the tool will make several calls to the AI and combine them to be able to cover more files. Default is true.</td>
-      </tr>
-      <tr>
-        <td><b>enable_help_text</b></td>
-        <td>If set to true, the tool will display a help text in the comment. Default is false.</td>
-      </tr>
-      <tr>
-        <td><b>enable_pr_diagram</b></td>
-        <td>If set to true, the tool will generate a horizontal Mermaid flowchart summarizing the main pull request changes. This field remains empty if not applicable. Default is true.</td>
-      </tr>
-      <tr>
-        <td><b>auto_create_ticket</b></td>
-        <td>If set to true, this will automatically create a ticket in the ticketing system when a PR is opened. Default is false.</td>
-      </tr>
-    </table>
+
+<table>
+  <tr>
+    <td><b>publish_labels</b></td>
+    <td>If set to true, the tool will publish labels to the PR. Default is false.</td>
+  </tr>
+  <tr>
+    <td><b>publish_description_as_comment</b></td>
+    <td>If set to true, the tool will publish the description as a comment to the PR. If false, it will overwrite the original description. Default is false.</td>
+  </tr>
+  <tr>
+    <td><b>publish_description_as_comment_persistent</b></td>
+    <td>If set to true and `publish_description_as_comment` is true, the tool will publish the description as a persistent comment to the PR. Default is true.</td>
+  </tr>
+  <tr>
+    <td><b>add_original_user_description</b></td>
+    <td>If set to true, the tool will add the original user description to the generated description. Default is true.</td>
+  </tr>
+  <tr>
+    <td><b>generate_ai_title</b></td>
+    <td>If set to true, the tool will also generate an AI title for the PR. Default is false.</td>
+  </tr>
+  <tr>
+    <td><b>extra_instructions</b></td>
+    <td>Optional extra instructions to the tool. For example: "focus on the changes in the file X. Ignore change in ..."</td>
+  </tr>
+  <tr>
+    <td><b>enable_pr_type</b></td>
+    <td>If set to false, it will not show the `PR type` as a text value in the description content. Default is true.</td>
+  </tr>
+  <tr>
+    <td><b>final_update_message</b></td>
+    <td>If set to true, it will add a comment message [`PR Description updated to latest commit...`](https://github.com/the-pr-agent/pr-agent/pull/499#issuecomment-1837412176) after finishing calling `/describe`. Default is true.</td>
+  </tr>
+  <tr>
+    <td><b>enable_semantic_files_types</b></td>
+    <td>If set to true, "Changes walkthrough" section will be generated. Default is true.</td>
+  </tr>
+  <tr>
+        <td><b>file_table_collapsible_open_by_default</b></td>
+        <td>If set to true, the file list in the "Changes walkthrough" section will be open by default. If set to false, it will be closed by default. Default is false.</td>
+  </tr>
+  <tr>
+    <td><b>collapsible_file_list</b></td>
+    <td>If set to true, the file list in the "Changes walkthrough" section will be collapsible. If set to "adaptive", the file list will be collapsible only if there are more than 8 files. Default is "adaptive".</td>
+  </tr>
+  <tr>
+    <td><b>enable_large_pr_handling</b></td>
+    <td>If set to true, in case of a large PR the tool will make several calls to the AI and combine them to be able to cover more files. Default is true.</td>
+  </tr>
+  <tr>
+    <td><b>enable_help_text</b></td>
+    <td>If set to true, the tool will display a help text in the comment. Default is false.</td>
+  </tr>
+  <tr>
+    <td><b>enable_pr_diagram</b></td>
+    <td>If set to true, the tool will generate a horizontal Mermaid flowchart summarizing the main pull request changes. This field remains empty if not applicable. Default is true.</td>
+  </tr>
+  <tr>
+    <td><b>auto_create_ticket</b></td>
+    <td>If set to true, this will automatically create a ticket in the ticketing system when a PR is opened. Default is false.</td>
+  </tr>
+</table>
+
+</details>
 
 ## Markers template
 
@@ -175,11 +184,11 @@ pr_agent:diagram
 
 The marker `pr_agent:type` will be replaced with the PR type, `pr_agent:summary` will be replaced with the PR summary, `pr_agent:walkthrough` will be replaced with the PR walkthrough, and `pr_agent:diagram` will be replaced with the sequence diagram (if enabled).
 
-![Describe markers before](https://codium.ai/images/pr_agent/describe_markers_before.png){width=512}
+<img src="https://qodo.ai/images/pr_agent/describe_markers_before.png" alt="Describe markers before" width="512" />
 
 becomes
 
-![Describe markers after](https://codium.ai/images/pr_agent/describe_markers_after.png){width=512}
+<img src="https://qodo.ai/images/pr_agent/describe_markers_after.png" alt="Describe markers after" width="512" />
 
 **Configuration params**:
 
@@ -197,8 +206,12 @@ Custom labels can be defined in a configuration file, or directly in the repo's 
 Make sure to provide proper title, and a detailed and well-phrased description for each label, so the tool will know when to suggest it.
 Each label description should be a **conditional statement**, that indicates if to add the label to the PR or not, according to the PR content.
 
-???+ tip "Auto-remove custom label when no longer relevant"
-    If the custom label is no longer relevant, it will be automatically removed from the PR by running the `generate_labels` tool or the `describe` tool.
+<details open>
+<summary>Auto-remove custom label when no longer relevant</summary>
+
+If the custom label is no longer relevant, it will be automatically removed from the PR by running the `generate_labels` tool or the `describe` tool.
+
+</details>
 
 
 ### Handle custom labels from a configuration file
@@ -240,16 +253,17 @@ Examples for custom labels:
 - ...
 
 The description should be comprehensive and detailed, indicating when to add the desired label. For example:
-![Add native custom labels](https://codium.ai/images/pr_agent/add_native_custom_labels.png){width=768}
+<img src="https://qodo.ai/images/pr_agent/add_native_custom_labels.png" alt="Add native custom labels" width="768" />
 
 ## Usage Tips
 
-!!! tip "Automation"
-    - When you first install PR-Agent app, the [default mode](../usage-guide/automations_and_usage.md#github-app) for the describe tool is:
-    ```
-    pr_commands = ["/describe", ...]
-    ```
-    meaning the `describe` tool will run automatically on every PR, with the default configurations.
+:::tip[Automation]
+- When you first install PR-Agent app, the [default mode](../usage-guide/automations_and_usage.md#github-app) for the describe tool is:
+```
+pr_commands = ["/describe", ...]
+```
+meaning the `describe` tool will run automatically on every PR, with the default configurations.
+:::
 
 - Markers are an alternative way to control the generated description, to give maximal control to the user. If you set:
 

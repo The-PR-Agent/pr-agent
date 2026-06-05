@@ -1,3 +1,8 @@
+---
+title: "Example Best Practice"
+sidebar_position: 8
+---
+
 ## Recommend Python Best Practices
 
 This document outlines a series of recommended best practices for Python development. These guidelines aim to improve code quality, maintainability, and readability.

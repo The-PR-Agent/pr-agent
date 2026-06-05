@@ -1,3 +1,8 @@
+---
+title: "GitHub"
+sidebar_position: 4
+---
+
 In this page we will cover how to install and run PR-Agent as a GitHub Action or GitHub App, and how to configure it for your needs.
 
 ## Run as a GitHub Action
@@ -515,38 +520,40 @@ For more detailed configuration options, see:
 
 ### Using a specific release
 
-!!! tip ""
-    if you want to pin your action to a specific release (v0.34.2 for example) for stability reasons, use:
-    ```yaml
-    ...
-        steps:
-          - name: PR Agent action step
-            id: pragent
-            uses: docker://pragent/pr-agent:0.34.2-github_action
-    ...
-    ```
+:::tip
+if you want to pin your action to a specific release (v0.34.2 for example) for stability reasons, use:
+```yaml
+...
+    steps:
+      - name: PR Agent action step
+        id: pragent
+        uses: docker://pragent/pr-agent:0.34.2-github_action
+...
+```
 
-    For enhanced security, you can also specify the Docker image by its [digest](https://hub.docker.com/repository/docker/pragent/pr-agent/tags):
-    ```yaml
-    ...
-        steps:
-          - name: PR Agent action step
-            id: pragent
-            uses: docker://pragent/pr-agent@sha256:a0b36966ca3a197ca739fa1e65c16703076fc1c744cd423ca203b8c21707d71c
-    ...
-    ```
+For enhanced security, you can also specify the Docker image by its [digest](https://hub.docker.com/repository/docker/pragent/pr-agent/tags):
+```yaml
+...
+    steps:
+      - name: PR Agent action step
+        id: pragent
+        uses: docker://pragent/pr-agent@sha256:a0b36966ca3a197ca739fa1e65c16703076fc1c744cd423ca203b8c21707d71c
+...
+```
+:::
 
 ### Action for GitHub enterprise server
 
-!!! tip ""
-    To use the action with a GitHub enterprise server, add an environment variable `GITHUB.BASE_URL` with the API URL of your GitHub server.
+:::tip
+To use the action with a GitHub enterprise server, add an environment variable `GITHUB.BASE_URL` with the API URL of your GitHub server.
 
-    For example, if your GitHub server is at `https://github.mycompany.com`, add the following to your workflow file:
-    ```yaml
-          env:
-            # ... previous environment values
-            GITHUB.BASE_URL: "https://github.mycompany.com/api/v3"
-    ```
+For example, if your GitHub server is at `https://github.mycompany.com`, add the following to your workflow file:
+```yaml
+      env:
+        # ... previous environment values
+        GITHUB.BASE_URL: "https://github.mycompany.com/api/v3"
+```
+:::
 
 ---
 

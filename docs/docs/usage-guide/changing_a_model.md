@@ -1,3 +1,8 @@
+---
+title: "Changing a Model"
+sidebar_position: 6
+---
+
 ## Changing a model in PR-Agent
 
 See [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py) for a list of supported models in PR-Agent.
@@ -13,9 +18,10 @@ fallback_models = ["..."]
 For models and environments not from OpenAI, you might need to provide additional keys and other parameters.
 You can give parameters via a configuration file, or from environment variables.
 
-!!! note "Model-specific environment variables"
-    See [litellm documentation](https://litellm.vercel.app/docs/proxy/quick_start#supported-llms) for the environment variables needed per model, as they may vary and change over time. Our documentation per-model may not always be up-to-date with the latest changes.
-    Failing to set the needed keys of a specific model will usually result in litellm not identifying the model type, and failing to utilize it.
+:::note[Model-specific environment variables]
+See [litellm documentation](https://litellm.vercel.app/docs/proxy/quick_start#supported-llms) for the environment variables needed per model, as they may vary and change over time. Our documentation per-model may not always be up-to-date with the latest changes.
+Failing to set the needed keys of a specific model will usually result in litellm not identifying the model type, and failing to utilize it.
+:::
 
 ### OpenAI like API
 
@@ -106,14 +112,15 @@ By default, Ollama uses a context window size of 2048 tokens. In most cases this
 
 Please note that the `custom_model_max_tokens` setting should be configured in accordance with the `OLLAMA_CONTEXT_LENGTH`. Failure to do so may result in unexpected model output.
 
-!!! note "Local models vs commercial models"
-    PR-Agent is compatible with almost any AI model, but analyzing complex code repositories and pull requests requires a model specifically optimized for code analysis.
+:::note[Local models vs commercial models]
+PR-Agent is compatible with almost any AI model, but analyzing complex code repositories and pull requests requires a model specifically optimized for code analysis.
 
-    Commercial models such as GPT-5, Claude Sonnet, and Gemini have demonstrated robust capabilities in generating structured output for code analysis tasks with large input. In contrast, most open-source models currently available (as of January 2025) face challenges with these complex tasks.
+Commercial models such as GPT-5, Claude Sonnet, and Gemini have demonstrated robust capabilities in generating structured output for code analysis tasks with large input. In contrast, most open-source models currently available (as of January 2025) face challenges with these complex tasks.
 
-    Based on our testing, local open-source models are suitable for experimentation and learning purposes (mainly for the `ask` command), but they are not suitable for production-level code analysis tasks.
+Based on our testing, local open-source models are suitable for experimentation and learning purposes (mainly for the `ask` command), but they are not suitable for production-level code analysis tasks.
 
-    Hence, for production workflows and real-world usage, we recommend using commercial models.
+Hence, for production workflows and real-world usage, we recommend using commercial models.
+:::
 
 ### Hugging Face
 

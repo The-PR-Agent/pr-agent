@@ -1,3 +1,8 @@
+---
+title: "Help Docs"
+sidebar_position: 10
+---
+
 ## Overview
 
 The `help_docs` tool can answer a free-text question based on a git documentation folder.
@@ -8,7 +13,7 @@ It can be invoked manually by commenting on any PR or Issue:
 /help_docs "..."
 ```
 
-Or configured to be triggered automatically when a [new issue is opened](#run-as-a-github-action).
+Or configured to be triggered automatically when a [new issue is opened](#run-automatically-when-a-new-issue-is-opened).
 
 The tool assumes by default that the documentation is located in the root of the repository, at `/docs` folder.
 However, this can be customized by setting the `docs_path` configuration option:
@@ -27,15 +32,15 @@ See more configuration options in the [Configuration options](#configuration-opt
 
 [//]: # (#### Asking a question about this repository:)
 
-[//]: # (![help_docs on the documentation of this repository]&#40;https://codium.ai/images/pr_agent/help_docs_comment.png&#41;{width=512})
+[//]: # (![help_docs on the documentation of this repository]&#40;https://qodo.ai/images/pr_agent/help_docs_comment.png&#41;{width=512})
 
 **Asking a question about another repository**
 
-![help_docs on the documentation of another repository](https://codium.ai/images/pr_agent/help_docs_comment_explicit_git.png){width=512}
+<img src="https://qodo.ai/images/pr_agent/help_docs_comment_explicit_git.png" alt="help_docs on the documentation of another repository" width="512" />
 
 **Response**:
 
-![help_docs response](https://codium.ai/images/pr_agent/help_docs_response.png){width=512}
+<img src="https://qodo.ai/images/pr_agent/help_docs_response.png" alt="help_docs response" width="512" />
 
 ## Run automatically when a new issue is opened
 

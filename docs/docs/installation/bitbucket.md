@@ -1,3 +1,8 @@
+---
+title: "Bitbucket"
+sidebar_position: 6
+---
+
 ## Run as a Bitbucket Pipeline
 
 You can use the Bitbucket Pipeline system to run PR-Agent on every pull request open or update.

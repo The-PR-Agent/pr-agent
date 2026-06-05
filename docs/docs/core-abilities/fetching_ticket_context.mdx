@@ -1,9 +1,18 @@
+---
+title: "Fetching Ticket Context"
+sidebar_position: 4
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
 # Fetching Ticket Context for PRs
 
 `Supported Git Platforms: GitHub, GitLab, Bitbucket`
 
-!!! note "Branch-name issue linking: GitHub only (for now)"
-    Extracting issue links from the **branch name** (and the optional `branch_issue_regex` setting) is currently implemented for **GitHub only**. Support for GitLab, Bitbucket, and other platforms is planned for a later release. The GitHub flow was the most relevant to implement first; other providers will follow.
+:::note[Branch-name issue linking: GitHub only (for now)]
+Extracting issue links from the **branch name** (and the optional `branch_issue_regex` setting) is currently implemented for **GitHub only**. Support for GitLab, Bitbucket, and other platforms is planned for a later release. The GitHub flow was the most relevant to implement first; other providers will follow.
+:::
 
 ## Overview
 
@@ -48,7 +57,7 @@ Each ticket will be assigned a label (Compliance/Alignment level), Indicates the
 - Not Compliant
 - PR Code Verified
 
-![Ticket Compliance](https://www.qodo.ai/images/pr_agent/ticket_compliance_review.png){width=768}
+<img src="https://www.qodo.ai/images/pr_agent/ticket_compliance_review.png" alt="Ticket Compliance" width="768" />
 
 A `PR Code Verified` label indicates the PR code meets ticket requirements, but requires additional manual testing beyond the code scope. For example - validating UI display across different environments (Mac, Windows, mobile, etc.).
 
@@ -110,7 +119,7 @@ You can create an API token from your Atlassian account:
 
 4. Click Copy to clipboard.
 
-![Jira Cloud API Token](https://images.ctfassets.net/zsv3d0ugroxu/1RYvh9lqgeZjjNe5S3Hbfb/155e846a1cb38f30bf17512b6dfd2229/screenshot_NewAPIToken){width=384}
+<img src="https://images.ctfassets.net/zsv3d0ugroxu/1RYvh9lqgeZjjNe5S3Hbfb/155e846a1cb38f30bf17512b6dfd2229/screenshot_NewAPIToken" alt="Jira Cloud API Token" width="384" />
 
 5. In your [configuration file](../usage-guide/configuration_options.md) add the following lines:
 
@@ -144,41 +153,45 @@ This following steps will help you check if the basic auth is working correctly,
 
 2. run the following Python script (after replacing the placeholders with your actual values):
 
-???- example "Script to validate basic auth"
+<details>
+<summary>Script to validate basic auth</summary>
 
-    ```python
-    from jira import JIRA
-    
-    
-    if __name__ == "__main__":
-        try:
-            # Jira server URL
-            server = "https://..."
-            # Basic auth
-            username = "..."
-            password = "..."
-            # Jira ticket code (e.g. "PROJ-123")
-            ticket_id = "..."
-    
-            print("Initializing JiraServerTicketProvider with JIRA server")
-            # Initialize JIRA client
-            jira = JIRA(
-                server=server,
-                basic_auth=(username, password),
-                timeout=30
-            )
-            if jira:
-                print(f"JIRA client initialized successfully")
-            else:
-                print("Error initializing JIRA client")
-    
-            # Fetch ticket details
-            ticket = jira.issue(ticket_id)
-            print(f"Ticket title: {ticket.fields.summary}")
-    
-        except Exception as e:
-            print(f"Error fetching JIRA ticket details: {e}")
-    ```
+
+```python
+from jira import JIRA
+
+
+if __name__ == "__main__":
+    try:
+        # Jira server URL
+        server = "https://..."
+        # Basic auth
+        username = "..."
+        password = "..."
+        # Jira ticket code (e.g. "PROJ-123")
+        ticket_id = "..."
+
+        print("Initializing JiraServerTicketProvider with JIRA server")
+        # Initialize JIRA client
+        jira = JIRA(
+            server=server,
+            basic_auth=(username, password),
+            timeout=30
+        )
+        if jira:
+            print(f"JIRA client initialized successfully")
+        else:
+            print("Error initializing JIRA client")
+
+        # Fetch ticket details
+        ticket = jira.issue(ticket_id)
+        print(f"Ticket title: {ticket.fields.summary}")
+
+    except Exception as e:
+        print(f"Error fetching JIRA ticket details: {e}")
+```
+
+</details>
 
 #### Using a Personal Access Token (PAT) for Jira Data Center/Server
 
@@ -200,100 +213,110 @@ This following steps will help you check if the token is working correctly, and 
 
 2. run the following Python script (after replacing the placeholders with your actual values):
 
-??? example- "Script to validate PAT token"
+<details open>
+<summary>Script to validate PAT token</summary>
 
-    ```python
-    from jira import JIRA
-    
-    
-    if __name__ == "__main__":
-        try:
-            # Jira server URL
-            server = "https://..."
-            # Jira PAT token
-            token_auth = "..."
-            # Jira ticket code (e.g. "PROJ-123")
-            ticket_id = "..."
-    
-            print("Initializing JiraServerTicketProvider with JIRA server")
-            # Initialize JIRA client
-            jira = JIRA(
-                server=server,
-                token_auth=token_auth,
-                timeout=30
-            )
-            if jira:
-                print(f"JIRA client initialized successfully")
-            else:
-                print("Error initializing JIRA client")
-    
-            # Fetch ticket details
-            ticket = jira.issue(ticket_id)
-            print(f"Ticket title: {ticket.fields.summary}")
-    
-        except Exception as e:
-            print(f"Error fetching JIRA ticket details: {e}")
-    ```
+```python
+from jira import JIRA
+
+
+if __name__ == "__main__":
+    try:
+        # Jira server URL
+        server = "https://..."
+        # Jira PAT token
+        token_auth = "..."
+        # Jira ticket code (e.g. "PROJ-123")
+        ticket_id = "..."
+
+        print("Initializing JiraServerTicketProvider with JIRA server")
+        # Initialize JIRA client
+        jira = JIRA(
+            server=server,
+            token_auth=token_auth,
+            timeout=30
+        )
+        if jira:
+            print(f"JIRA client initialized successfully")
+        else:
+            print("Error initializing JIRA client")
+
+        # Fetch ticket details
+        ticket = jira.issue(ticket_id)
+        print(f"Ticket title: {ticket.fields.summary}")
+
+    except Exception as e:
+        print(f"Error fetching JIRA ticket details: {e}")
+```
+
+</details>
 
 
 ### Multi-JIRA Server Configuration
 
 PR-Agent supports connecting to multiple JIRA servers using different authentication methods.
 
-=== "Email/Token (Basic Auth)"
+<Tabs>
+<TabItem value="email-token-(basic-auth)" label="Email/Token (Basic Auth)">
 
-    Configure multiple servers using Email/Token authentication:
 
-    - `jira_servers`: List of JIRA server URLs
-    - `jira_api_token`: List of API tokens (for Cloud) or passwords (for Data Center)
-    - `jira_api_email`: List of emails (for Cloud) or usernames (for Data Center)
-    - `jira_base_url`: Default server for ticket IDs like `PROJ-123`, Each repository can configure (local config file) its own `jira_base_url` to choose which server to use by default.
+Configure multiple servers using Email/Token authentication:
 
-    **Example Configuration:**
-    ```toml
-    [jira]
-    # Server URLs
-    jira_servers = ["https://company.atlassian.net", "https://datacenter.jira.com"]
+- `jira_servers`: List of JIRA server URLs
+- `jira_api_token`: List of API tokens (for Cloud) or passwords (for Data Center)
+- `jira_api_email`: List of emails (for Cloud) or usernames (for Data Center)
+- `jira_base_url`: Default server for ticket IDs like `PROJ-123`, Each repository can configure (local config file) its own `jira_base_url` to choose which server to use by default.
 
-    # API tokens/passwords
-    jira_api_token = ["cloud_api_token_here", "datacenter_password"]
+**Example Configuration:**
+```toml
+[jira]
+# Server URLs
+jira_servers = ["https://company.atlassian.net", "https://datacenter.jira.com"]
 
-    # Emails/usernames (both required)
-    jira_api_email = ["user@company.com", "datacenter_username"]
+# API tokens/passwords
+jira_api_token = ["cloud_api_token_here", "datacenter_password"]
 
-    # Default server for ticket IDs
-    jira_base_url = "https://company.atlassian.net"
-    ```
+# Emails/usernames (both required)
+jira_api_email = ["user@company.com", "datacenter_username"]
 
-=== "PAT Auth"
+# Default server for ticket IDs
+jira_base_url = "https://company.atlassian.net"
+```
 
-    Configure multiple servers using Personal Access Token authentication:
+</TabItem>
+<TabItem value="pat-auth" label="PAT Auth">
 
-    - `jira_servers`: List of JIRA server URLs
-    - `jira_api_token`: List of PAT tokens
-    - `jira_api_email`: Not needed (can be omitted or left empty)
-    - `jira_base_url`: Default server for ticket IDs like `PROJ-123`, Each repository can configure (local config file) its own `jira_base_url` to choose which server to use by default.
 
-    **Example Configuration:**
-    ```toml
-    [jira]
-    # Server URLs
-    jira_servers = ["https://server1.jira.com", "https://server2.jira.com"]
+Configure multiple servers using Personal Access Token authentication:
 
-    # PAT tokens only
-    jira_api_token = ["pat_token_1", "pat_token_2"]
+- `jira_servers`: List of JIRA server URLs
+- `jira_api_token`: List of PAT tokens
+- `jira_api_email`: Not needed (can be omitted or left empty)
+- `jira_base_url`: Default server for ticket IDs like `PROJ-123`, Each repository can configure (local config file) its own `jira_base_url` to choose which server to use by default.
 
-    # Default server for ticket IDs
-    jira_base_url = "https://server1.jira.com"
-    ```
+**Example Configuration:**
+```toml
+[jira]
+# Server URLs
+jira_servers = ["https://server1.jira.com", "https://server2.jira.com"]
 
-    **Mixed Authentication (Email/Token + PAT):**
-    ```toml
-    [jira]
-    jira_servers = ["https://company.atlassian.net", "https://server.jira.com"]
-    jira_api_token = ["cloud_api_token", "server_pat_token"]
-    jira_api_email = ["user@company.com", ""]  # Empty for PAT
-    ```
+# PAT tokens only
+jira_api_token = ["pat_token_1", "pat_token_2"]
+
+# Default server for ticket IDs
+jira_base_url = "https://server1.jira.com"
+```
+
+**Mixed Authentication (Email/Token + PAT):**
+```toml
+[jira]
+jira_servers = ["https://company.atlassian.net", "https://server.jira.com"]
+jira_api_token = ["cloud_api_token", "server_pat_token"]
+jira_api_email = ["user@company.com", ""]  # Empty for PAT
+```
+
+</TabItem>
+</Tabs>
 
 
 
@@ -310,11 +333,12 @@ Include a ticket reference in your PR description, using either the complete URL
 
 Name your branch with the ticket ID as a prefix (e.g., `ISSUE-123-feature-description` or `ISSUE-123/feature-description`).
 
-!!! note "Jira Base URL"
-    For shortened ticket IDs or branch detection (method 2 for JIRA cloud), you must configure the Jira base URL in your configuration file under the [jira] section:
+:::note[Jira Base URL]
+For shortened ticket IDs or branch detection (method 2 for JIRA cloud), you must configure the Jira base URL in your configuration file under the [jira] section:
 
-    ```toml
-    [jira]
-    jira_base_url = "https://<JIRA_ORG>.atlassian.net"
-    ```
-    Where `<JIRA_ORG>` is your Jira organization identifier (e.g., `mycompany` for `https://mycompany.atlassian.net`).
+```toml
+[jira]
+jira_base_url = "https://<JIRA_ORG>.atlassian.net"
+```
+Where `<JIRA_ORG>` is your Jira organization identifier (e.g., `mycompany` for `https://mycompany.atlassian.net`).
+:::

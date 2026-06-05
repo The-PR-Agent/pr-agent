@@ -1,3 +1,8 @@
+---
+title: "Update Changelog"
+sidebar_position: 11
+---
+
 ## Overview
 
 The `update_changelog` tool automatically updates the CHANGELOG.md file with the PR changes.
@@ -9,9 +14,9 @@ It can be invoked manually by commenting on any PR:
 
 ## Example usage
 
-![update_changelog_comment](https://codium.ai/images/pr_agent/update_changelog_comment.png){width=768}
+<img src="https://qodo.ai/images/pr_agent/update_changelog_comment.png" alt="update_changelog_comment" width="768" />
 
-![update_changelog](https://codium.ai/images/pr_agent/update_changelog.png){width=768}
+<img src="https://qodo.ai/images/pr_agent/update_changelog.png" alt="update_changelog" width="768" />
 
 ## Configuration options
 

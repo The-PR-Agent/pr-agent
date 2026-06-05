@@ -1,3 +1,8 @@
+---
+title: "Dynamic Context"
+sidebar_position: 3
+---
+
 
 `Supported Git Platforms: GitHub, GitLab, Bitbucket`
 

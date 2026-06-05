@@ -1,0 +1,79 @@
+/* PR-Agent Docusaurus Theme */
+
+:root {
+  --ifm-color-primary: #0f172a;
+  --ifm-color-primary-dark: #0d1325;
+  --ifm-color-primary-darker: #0b1120;
+  --ifm-color-primary-darkest: #070b14;
+  --ifm-color-primary-light: #111b2f;
+  --ifm-color-primary-lighter: #131f34;
+  --ifm-color-primary-lightest: #172540;
+  --ifm-link-color: #1e40af;
+  --ifm-navbar-height: 64px;
+}
+
+[data-theme='dark'] {
+  --ifm-color-primary: #38bdf8;
+  --ifm-color-primary-dark: #19b3f7;
+  --ifm-color-primary-darker: #0aadf6;
+  --ifm-color-primary-darkest: #088ecb;
+  --ifm-color-primary-light: #57c7f9;
+  --ifm-color-primary-lighter: #66ccfa;
+  --ifm-color-primary-lightest: #94dbfb;
+  --ifm-link-color: #7dd3fc;
+  --ifm-background-color: #0b1220;
+  --ifm-background-surface-color: #0f172a;
+  --ifm-navbar-background-color: #0d1b36;
+  --ifm-footer-background-color: #1a202c;
+  --ifm-code-background: #0f172a;
+}
+
+/* Sidebar navigation font size */
+.menu__link {
+  font-size: 0.95rem;
+}
+
+/* Image borders */
+.markdown img {
+  border: 1px solid rgba(15, 23, 42, 0.2);
+  outline: 1px solid rgba(15, 23, 42, 0.25);
+}
+
+[data-theme='dark'] .markdown img {
+  border-color: rgba(226, 232, 240, 0.2);
+  outline-color: rgba(226, 232, 240, 0.3);
+}
+
+/* Announcement bar styling */
+div[class*='announcementBar'] {
+  background-color: #1d4ed8;
+  color: white;
+}
+
+[data-theme='dark'] div[class*='announcementBar'] {
+  background-color: #2563eb;
+}
+
+div[class*='announcementBar'] a {
+  color: currentColor;
+  text-decoration: underline;
+}
+
+/* Details/summary styling for collapsible sections */
+details {
+  border: 1px solid var(--ifm-color-emphasis-300);
+  border-radius: var(--ifm-global-radius);
+  padding: 0.75rem 1rem;
+  margin-bottom: 1rem;
+}
+
+details summary {
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0.25rem 0;
+}
+
+/* Navbar tabs font size */
+.navbar__link {
+  font-size: 1rem;
+}

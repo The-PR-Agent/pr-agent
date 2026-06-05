@@ -1,3 +1,8 @@
+---
+title: "Self-Reflection"
+sidebar_position: 7
+---
+
 `Supported Git Platforms: GitHub, GitLab, Bitbucket`
 
 PR-Agent implements a **self-reflection** process where the AI model reflects, scores, and re-ranks its own suggestions, eliminating irrelevant or incorrect ones.
@@ -14,8 +19,9 @@ To achieve this goal, PR-Agent offers a dedicated hierarchical structure when pr
 - Each suggestion is first described by a one-line summary, which can be expanded to a full description by clicking on a collapsible.
 - Upon expanding a suggestion, the user receives a more comprehensive description, and a code snippet demonstrating the recommendation.
 
-!!! note "Fast Review"
-    This hierarchical structure is designed to facilitate rapid review of each suggestion, with users spending an average of ~5-10 seconds per item.
+:::note[Fast Review]
+This hierarchical structure is designed to facilitate rapid review of each suggestion, with users spending an average of ~5-10 seconds per item.
+:::
 
 ## Self-reflection and Re-ranking
 
@@ -38,8 +44,8 @@ This results in a more refined and valuable set of suggestions for the user, sav
 
 ## Example Results
 
-![self_reflection](https://codium.ai/images/pr_agent/self_reflection1.png){width=768}
-![self_reflection](https://codium.ai/images/pr_agent/self_reflection2.png){width=768}
+<img src="https://qodo.ai/images/pr_agent/self_reflection1.png" alt="self_reflection" width="768" />
+<img src="https://qodo.ai/images/pr_agent/self_reflection2.png" alt="self_reflection" width="768" />
 
 ## Appendix - Relevant Configuration Options
 

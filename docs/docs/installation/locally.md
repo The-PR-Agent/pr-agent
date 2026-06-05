@@ -1,7 +1,12 @@
+---
+title: "Locally"
+sidebar_position: 3
+---
+
 To run PR-Agent locally, you first need to acquire two keys:
 
-1. An OpenAI key from [here](https://platform.openai.com/api-keys){:target="_blank"}, with access to GPT-5.5 and gpt-5.4-mini (or a key for other [language models](../usage-guide/changing_a_model.md), if you prefer).
-2. A personal access token from your Git platform (GitHub, GitLab, BitBucket, Gitea) with repo scope. GitHub token, for example, can be issued from [here](https://github.com/settings/tokens){:target="_blank"}
+1. An OpenAI key from [here](https://platform.openai.com/api-keys), with access to GPT-5.5 and gpt-5.4-mini (or a key for other [language models](../usage-guide/changing_a_model.md), if you prefer).
+2. A personal access token from your Git platform (GitHub, GitLab, BitBucket, Gitea) with repo scope. GitHub token, for example, can be issued from [here](https://github.com/settings/tokens)
 
 ## Using Docker image
 
@@ -88,7 +93,7 @@ Carefully check the api keys and tokens you provided and make sure they are corr
 Adjustments may be needed depending on your llm provider.
 
 For example, for Azure OpenAI, additional keys are [needed](../usage-guide/changing_a_model.md#azure).
-Same goes for other providers, make sure to check the [documentation](../usage-guide/changing_a_model.md#changing-a-model)
+Same goes for other providers, make sure to check the [documentation](../usage-guide/changing_a_model.md#changing-a-model-in-pr-agent)
 
 ## Using pip package
 

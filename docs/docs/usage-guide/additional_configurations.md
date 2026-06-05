@@ -1,6 +1,11 @@
+---
+title: "Additional Configurations"
+sidebar_position: 7
+---
+
 ## Show possible configurations
 
-The possible configurations of PR-Agent are stored in [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml){:target="_blank"}.
+The possible configurations of PR-Agent are stored in [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml).
 In the [tools](../tools/index.md) page you can find explanations on how to use these configurations for each tool.
 
 To print all the available configurations as a comment on your PR, you can use the following command:
@@ -9,7 +14,7 @@ To print all the available configurations as a comment on your PR, you can use t
 /config
 ```
 
-![possible_config1](https://codium.ai/images/pr_agent/possible_config1.png){width=512}
+<img src="https://qodo.ai/images/pr_agent/possible_config1.png" alt="possible_config1" width="512" />
 
 To view the **actual** configurations used for a specific tool, after all the user settings are applied, you can add for each tool a `--config.output_relevant_configurations=true` suffix.
 For example:
@@ -20,7 +25,7 @@ For example:
 
 Will output an additional field showing the actual configurations used for the `improve` tool.
 
-![possible_config2](https://codium.ai/images/pr_agent/possible_config2.png){width=512}
+<img src="https://qodo.ai/images/pr_agent/possible_config2.png" alt="possible_config2" width="512" />
 
 ## Ignoring files from analysis
 
@@ -93,7 +98,7 @@ This will set the response language globally for all the commands to Italian.
 
 [//]: # (1&#41; [Use a model]&#40;./changing_a_model.md&#41; with larger context, like GPT-32K, or claude-100K. This solution will be applicable for all the tools.)
 
-[//]: # (2&#41; For the `/improve` tool, there is an ['extended' mode]&#40;../tools/improve.md&#41; &#40;`/improve --extended`&#41;,)
+[//]: # (2&#41; For the `/improve` tool, there is an ['extended' mode]&#40;../tools/improve.mdx&#41; &#40;`/improve --extended`&#41;,)
 
 [//]: # (which divides the PR into chunks, and processes each chunk separately. With this mode, regardless of the model, no compression will be done &#40;but for large PRs, multiple model calls may occur&#41;)
 
@@ -154,7 +159,7 @@ add_repo_metadata = true
 ```
 
 PR-Agent automatically searches for repository metadata files in your PR's head branch root directory. By default, it looks for:
-[AGENTS.MD](https://agents.md/), [QODO.MD](https://docs.codium.ai/qodo-documentation/qodo-command/getting-started/setup-and-quickstart), [CLAUDE.MD](https://www.anthropic.com/engineering/claude-code-best-practices).
+[AGENTS.MD](https://agents.md/), [QODO.MD](https://docs.qodo.ai/qodo-documentation/qodo-command/getting-started/setup-and-quickstart), [CLAUDE.MD](https://www.anthropic.com/engineering/claude-code-best-practices).
 
 You can also specify custom filenames to search for:
 
@@ -253,8 +258,9 @@ ignore_pr_authors = ["my-special-bot-user", ...]
 
 Where the `ignore_pr_authors` is a regex list of usernames that you want to ignore.
 
-!!! note
-    There is one specific case where bots will receive an automatic response - when they generated a PR with a _failed test_.
+:::note
+There is one specific case where bots will receive an automatic response - when they generated a PR with a _failed test_.
+:::
 
 ### Ignoring Generated Files by Language/Framework
 
