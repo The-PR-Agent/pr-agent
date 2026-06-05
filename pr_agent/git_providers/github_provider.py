@@ -218,7 +218,7 @@ class GithubProvider(GitProvider):
                 return -1
 
     @retry(exceptions=RateLimitExceeded,
-           tries=get_settings().github.ratelimit_retries, delay=2, backoff=2, jitter=(1, 3))
+           tries=get_settings().get("GITHUB.RATELIMIT_RETRIES", 5), delay=2, backoff=2, jitter=(1, 3))
     def get_diff_files(self) -> list[FilePatchInfo]:
         """
         Retrieves the list of files that have been modified, added, deleted, or renamed in a pull request in GitHub,
