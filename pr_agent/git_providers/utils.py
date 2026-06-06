@@ -6,13 +6,16 @@ import traceback
 from dynaconf import Dynaconf
 from starlette_context import context
 
-from pr_agent.config_loader import get_settings
+from pr_agent.config_loader import get_settings, reset_to_startup_defaults
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.log import get_logger
 
 
 def apply_repo_settings(pr_url):
     os.environ["AUTO_CAST_FOR_DYNACONF"] = "false"
+    # Reset first so that .pr_agent.toml from a previously-reviewed repo
+    # cannot leak into this call via the module-level global_settings singleton.
+    reset_to_startup_defaults()
     git_provider = get_git_provider_with_context(pr_url)
     if get_settings().config.use_repo_settings_file:
         repo_settings_file = None
