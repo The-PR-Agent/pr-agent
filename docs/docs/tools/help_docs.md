@@ -79,7 +79,7 @@ jobs:
     steps:
       - name: Run PR Agent on Issues
         if: ${{ env.ISSUE_URL != '' }}
-        uses: docker://codiumai/pr-agent:latest
+        uses: docker://pragent/pr-agent:latest
         with:
           entrypoint: /bin/bash #Replace invoking cli.py directly with a shell
           args: |

@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 
 from github.Issue import Issue
 from github import AppAuthentication, Auth, Github, GithubException
-from retry import retry
+from retry.api import retry_call
 from starlette_context import context
 
 from ..algo.file_filter import filter_ignored
@@ -111,7 +111,7 @@ class GithubProvider(GitProvider):
         return f"{self.base_url_html}/{repo_path}.git" #https://github.com / <OWNER>/<REPO>.git
 
     # Given a git repo url, return prefix and suffix of the provider in order to view a given file belonging to that repo.
-    # Example: https://github.com/qodo-ai/pr-agent.git and branch: v0.8 -> prefix: "https://github.com/qodo-ai/pr-agent/blob/v0.8", suffix: ""
+    # Example: https://github.com/the-pr-agent/pr-agent.git and branch: v0.8 -> prefix: "https://github.com/the-pr-agent/pr-agent/blob/v0.8", suffix: ""
     # In case git url is not provided, provider will use PR context (which includes branch) to determine the prefix and suffix.
     def get_canonical_url_parts(self, repo_git_url:str, desired_branch:str) -> Tuple[str, str]:
         owner = None
@@ -217,8 +217,6 @@ class GithubProvider(GitProvider):
             except Exception as e:
                 return -1
 
-    @retry(exceptions=RateLimitExceeded,
-           tries=get_settings().github.ratelimit_retries, delay=2, backoff=2, jitter=(1, 3))
     def get_diff_files(self) -> list[FilePatchInfo]:
         """
         Retrieves the list of files that have been modified, added, deleted, or renamed in a pull request in GitHub,
@@ -228,6 +226,12 @@ class GithubProvider(GitProvider):
             diff_files (List[FilePatchInfo]): List of FilePatchInfo objects representing the modified, added, deleted,
             or renamed files in the merge request.
         """
+        # the retry settings are read at call time rather than in a decorator, so that importing this module
+        # does not require a [github] settings section (issue #2427)
+        return retry_call(self._get_diff_files, exceptions=RateLimitExceeded,
+                          tries=get_settings().get("GITHUB.RATELIMIT_RETRIES", 5), delay=2, backoff=2, jitter=(1, 3))
+
+    def _get_diff_files(self) -> list[FilePatchInfo]:
         try:
             try:
                 diff_files = context.get("diff_files", None)

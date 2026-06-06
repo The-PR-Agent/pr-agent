@@ -61,6 +61,19 @@ class TestGetMaxTokens:
 
         assert get_max_tokens(model) == 400000
 
+    @pytest.mark.parametrize("model", ["gpt-5.5", "gpt-5.5-2026-04-23"])
+    def test_gpt55_model_max_tokens(self, monkeypatch, model):
+        fake_settings = type('', (), {
+            'config': type('', (), {
+                'custom_model_max_tokens': 0,
+                'max_model_tokens': 0
+            })()
+        })()
+
+        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+
+        assert get_max_tokens(model) == 1050000
+
     # Test situations where the model is not registered and exists as a custom model
     def test_model_has_custom(self, monkeypatch):
         fake_settings = type('', (), {
@@ -145,6 +158,55 @@ class TestGetMaxTokens:
         })()
         monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
         assert get_max_tokens(model) == 1048576
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "anthropic/claude-opus-4-8",
+            "claude-opus-4-8",
+            "vertex_ai/claude-opus-4-8",
+            "bedrock/anthropic.claude-opus-4-8",
+            "bedrock/global.anthropic.claude-opus-4-8",
+            "bedrock/us.anthropic.claude-opus-4-8",
+            "bedrock/eu.anthropic.claude-opus-4-8",
+            "bedrock/au.anthropic.claude-opus-4-8",
+            "bedrock/jp.anthropic.claude-opus-4-8",
+        ],
+    )
+    def test_claude_opus_4_8_model_max_tokens(self, monkeypatch, model):
+        fake_settings = type("", (), {
+            "config": type("", (), {
+                "custom_model_max_tokens": 0,
+                "max_model_tokens": 0
+            })()
+        })()
+
+        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+
+        assert get_max_tokens(model) == 1000000
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "anthropic/claude-opus-4-7",
+            "claude-opus-4-7",
+            "vertex_ai/claude-opus-4-7",
+            "bedrock/anthropic.claude-opus-4-7",
+            "bedrock/global.anthropic.claude-opus-4-7",
+            "bedrock/us.anthropic.claude-opus-4-7",
+        ],
+    )
+    def test_claude_opus_4_7_model_max_tokens(self, monkeypatch, model):
+        fake_settings = type('', (), {
+            'config': type('', (), {
+                'custom_model_max_tokens': 0,
+                'max_model_tokens': 0
+            })()
+        })()
+
+        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+
+        assert get_max_tokens(model) == 1000000
 
     @pytest.mark.parametrize(
         "model",

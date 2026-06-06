@@ -28,7 +28,7 @@ stages:
     pool:
       vmImage: 'ubuntu-latest'
     container:
-      image: codiumai/pr-agent:latest
+      image: pragent/pr-agent:latest
       options: --entrypoint ""
     variables:
       - group: pr_agent
