@@ -740,6 +740,19 @@ class GithubProvider(GitProvider):
         except Exception:
             return ""
 
+    def get_repo_file(self, file_path: str) -> str:
+        try:
+            # Read from the PR's head branch so metadata files reflect the branch under review
+            contents = self.repo_obj.get_contents(file_path, ref=self.pr.head.sha).decoded_content
+            return contents.decode("utf-8") if isinstance(contents, bytes) else contents
+        except GithubException as e:
+            if e.status != 404:
+                get_logger().warning(f"Failed to get repo file '{file_path}': {e}")
+            return ""
+        except Exception as e:
+            get_logger().debug(f"Failed to get repo file '{file_path}': {e}")
+            return ""
+
     def get_workspace_name(self):
         return self.repo.split('/')[0]
 

@@ -89,6 +89,23 @@ class BitbucketProvider(GitProvider):
         except Exception:
             return ""
 
+    def get_repo_file(self, file_path: str) -> str:
+        try:
+            # Read from the PR's source branch so metadata files reflect the branch under review
+            url = (f"https://api.bitbucket.org/2.0/repositories/{self.workspace_slug}/{self.repo_slug}/src/"
+                   f"{self.pr.source_branch}/{file_path}")
+            response = requests.request("GET", url, headers=self.headers)
+            if response.status_code == 404:
+                return ""
+            response.raise_for_status()
+            return response.text
+        except requests.exceptions.HTTPError as e:
+            get_logger().warning(f"Failed to get repo file '{file_path}': {e}")
+            return ""
+        except requests.exceptions.ConnectionError as e:
+            get_logger().warning(f"Connection error getting repo file '{file_path}': {e}")
+            return ""
+
     def get_git_repo_url(self, pr_url: str=None) -> str: #bitbucket does not support issue url, so ignore param
         try:
             parsed_url = urlparse(self.pr_url)
