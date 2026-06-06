@@ -614,7 +614,18 @@ class PRCodeSuggestions:
                 if delta_spaces > 0:
                     new_code_snippet = textwrap.indent(new_code_snippet, delta_spaces * indent_char).rstrip('\n')
                 elif delta_spaces < 0:
-                    new_code_snippet = textwrap.dedent(new_code_snippet).rstrip('\n')
+                    # Remove exactly -delta_spaces leading spaces from each
+                    # non-empty line.  textwrap.dedent() strips the *common*
+                    # indent which may remove too much when lines have
+                    # varying indentation levels (Qodo bug #3).
+                    remove_count = -delta_spaces
+                    dedented_lines = []
+                    for dline in new_code_snippet.split('\n'):
+                        if dline.strip():
+                            dedented_lines.append(dline[remove_count:])
+                        else:
+                            dedented_lines.append(dline)
+                    new_code_snippet = '\n'.join(dedented_lines).rstrip('\n')
                 # Normalize all lines in the suggestion to use the original's
                 # indentation character. This fixes the bug where /improve
                 # replaces tabs with spaces in Go, Makefile, and other
@@ -625,7 +636,13 @@ class PRCodeSuggestions:
                         stripped = line.lstrip(' ')
                         leading_spaces = len(line) - len(stripped)
                         if leading_spaces > 0:
-                            new_lines.append('\t' * (leading_spaces // 4) + stripped)
+                            # Preserve remainder spaces when converting
+                            # to tabs.  e.g. 6 spaces → 1 tab + 2 spaces
+                            # instead of silently dropping 2 spaces
+                            # (Qodo bug #3).
+                            tabs = leading_spaces // 4
+                            remainder = leading_spaces % 4
+                            new_lines.append('\t' * tabs + ' ' * remainder + stripped)
                         else:
                             new_lines.append(line)
                     new_code_snippet = '\n'.join(new_lines)
