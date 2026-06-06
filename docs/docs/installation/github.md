@@ -539,7 +539,7 @@ For more detailed configuration options, see:
     Official Docker Hub release images also publish GitHub Artifact Attestations, so you can verify that a pinned digest was built from this repository before using it:
     ```sh
     gh attestation verify \
-      oci://index.docker.io/pragent/pr-agent@sha256:<digest> \
+      "oci://index.docker.io/pragent/pr-agent@sha256:<digest>" \
       --repo The-PR-Agent/pr-agent
     ```
 

@@ -59,7 +59,7 @@ Official Docker Hub release images also publish GitHub Artifact Attestations, so
 
 ```sh
 gh attestation verify \
-  oci://index.docker.io/pragent/pr-agent@sha256:<digest> \
+  "oci://index.docker.io/pragent/pr-agent@sha256:<digest>" \
   --repo The-PR-Agent/pr-agent
 ```
 

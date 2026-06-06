@@ -95,7 +95,6 @@ jobs:
       contents: read
       id-token: write
       attestations: write
-      packages: write
     strategy:
       fail-fast: false
       matrix:
