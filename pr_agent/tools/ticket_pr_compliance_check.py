@@ -175,10 +175,12 @@ async def extract_tickets(git_provider):
                     # included for visibility but cannot be fetched via GitHub API.
                     if "app.asana.com" in ticket:
                         tickets_content.append({
+                            "ticket_id": ticket,
+                            "ticket_url": ticket,
                             "title": f"Asana Task: {ticket}",
-                            "url": ticket,
                             "body": ("Asana task referenced in PR description. "
                                      "Fetch task details from Asana for full context."),
+                            "labels": "",
                         })
                         continue
 
