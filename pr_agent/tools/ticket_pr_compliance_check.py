@@ -40,8 +40,8 @@ _ASANA_TASK_URL_PATTERN = re.compile(
     r'https://app\.asana\.com/0/(\d+)/(\d+)'
 )
 _ASANA_TASK_SHORT_PATTERN = re.compile(
-    r'\b(?:ASANA|asana)[- ]?(\d{12,20})\b'
-    r'|https://app\.asana\.com/0/\d+/\d+'
+    r'(?:^|[^A-Za-z0-9])(?:ASANA|asana)[- ]?(\d{12,20})',
+    re.IGNORECASE,
 )
 
 
@@ -58,11 +58,12 @@ def find_asana_tickets(text: str) -> list:
         A list of Asana task URLs.
     """
     tickets = set()
-    for match in re.finditer(r'https://app\.asana\.com/0/(\d+)/(\d+)', text):
+    for match in _ASANA_TASK_URL_PATTERN.finditer(text):
         tickets.add(match.group(0))
-    for match in re.finditer(r'(?:^|[^A-Za-z0-9])(?:ASANA|asana)[- ]?(\d{12,20})', text):
+    for match in _ASANA_TASK_SHORT_PATTERN.finditer(text):
         task_id = match.group(1)
-        tickets.add(f"https://app.asana.com/0/0/{task_id}")
+        if task_id:
+            tickets.add(f"https://app.asana.com/0/0/{task_id}")
     return sorted(tickets)
 
 
@@ -161,9 +162,15 @@ async def extract_tickets(git_provider):
                 if link not in seen:
                     seen.add(link)
                     merged.append(link)
+            asana_links = [t for t in merged if t.startswith("https://app.asana.com/")]
+            github_like = [t for t in merged if not t.startswith("https://app.asana.com/")]
             if len(merged) > 3:
                 get_logger().info(f"Too many tickets (description + branch): {len(merged)}")
-                tickets = merged[:3]
+                # Reserve at least one slot for an Asana reference when
+                # present so it is not systematically dropped.
+                asana_slot = asana_links[:1]
+                gh_slots = 3 - len(asana_slot)
+                tickets = github_like[:gh_slots] + asana_slot
             else:
                 tickets = merged
             tickets_content = []
@@ -173,7 +180,7 @@ async def extract_tickets(git_provider):
                 for ticket in tickets:
                     # Skip Asana URLs — these are external references,
                     # included for visibility but cannot be fetched via GitHub API.
-                    if "app.asana.com" in ticket:
+                    if ticket.startswith("https://app.asana.com/"):
                         tickets_content.append({
                             "ticket_id": ticket,
                             "ticket_url": ticket,

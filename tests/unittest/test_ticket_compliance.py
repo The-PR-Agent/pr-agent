@@ -6,7 +6,6 @@ Tests cover:
 - Shorthand ASANA- prefix detection
 - Edge cases (mixed content, no tickets, duplicates)
 """
-import pytest
 from pr_agent.tools.ticket_pr_compliance_check import find_asana_tickets
 
 
@@ -64,6 +63,20 @@ class TestFindAsanaTickets:
         tickets = find_asana_tickets(text)
         assert len(tickets) == 1
         assert "999999999999" in tickets[0]
+
+    def test_shorthand_mixed_case_asana(self):
+        """Mixed-case shorthand like Asana-123... should also be detected."""
+        text = "Asana-888888888888 mixed case"
+        tickets = find_asana_tickets(text)
+        assert len(tickets) == 1
+        assert "888888888888" in tickets[0]
+
+    def test_shorthand_respects_word_boundary(self):
+        """Text preceding the shorthand must not be alphanumeric.
+        NOTASANA-123 (no delimiter before ASANA) should not match."""
+        text = "Check NOTASANA-123456789012 in logs"
+        tickets = find_asana_tickets(text)
+        assert tickets == []
 
     def test_tickets_are_sorted(self):
         """Returned list should be sorted alphabetically."""

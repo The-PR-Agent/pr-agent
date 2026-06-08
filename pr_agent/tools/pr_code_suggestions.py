@@ -622,7 +622,8 @@ class PRCodeSuggestions:
                     dedented_lines = []
                     for dline in new_code_snippet.split('\n'):
                         if dline.strip():
-                            dedented_lines.append(dline[remove_count:])
+                            leading = len(dline) - len(dline.lstrip())
+                            dedented_lines.append(dline[min(remove_count, leading):])
                         else:
                             dedented_lines.append(dline)
                     new_code_snippet = '\n'.join(dedented_lines).rstrip('\n')
