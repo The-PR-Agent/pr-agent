@@ -103,3 +103,48 @@ class TestGiteaProvider:
         args, kwargs = mock_api_client.call_api.call_args
         assert args[0] == '/repos/owner/repo/pulls/123/commits'
         assert kwargs.get('auth_settings') == ['AuthorizationHeaderToken']
+
+    def test_get_repo_settings_returns_bytes(self):
+        """Regression for #2347: get_repo_settings must return bytes so that
+        utils.apply_repo_settings can os.write() it and later .decode() it. The
+        Gitea raw-file API yields str (unlike GitHub/GitLab/Bitbucket, which hand
+        back bytes), so the provider must encode before returning."""
+        from pr_agent.git_providers.gitea_provider import GiteaProvider
+
+        toml = '[pr_reviewer]\nnum_code_suggestions = 4\n'
+        provider = GiteaProvider.__new__(GiteaProvider)
+        provider.logger = MagicMock()
+        provider.owner = 'owner'
+        provider.repo = 'repo'
+        provider.sha = 'sha1'
+        provider.repo_settings = '.pr_agent.toml'
+        provider.repo_api = MagicMock()
+        provider.repo_api.get_file_content.return_value = toml  # API decodes to str
+
+        result = provider.get_repo_settings()
+
+        assert isinstance(result, bytes)
+        assert result == toml.encode('utf-8')
+        # The bytes must survive the exact operations utils.py performs on them.
+        assert result.decode() == toml
+
+    def test_get_repo_settings_empty_bytes_when_unset_or_missing(self):
+        """No settings path configured, or empty/absent file: return empty
+        bytes, so every code path honours the -> bytes contract (not just the
+        success path) and a caller can never receive a str."""
+        from pr_agent.git_providers.gitea_provider import GiteaProvider
+
+        unset = GiteaProvider.__new__(GiteaProvider)
+        unset.logger = MagicMock()
+        unset.repo_settings = None
+        assert unset.get_repo_settings() == b""
+
+        empty = GiteaProvider.__new__(GiteaProvider)
+        empty.logger = MagicMock()
+        empty.owner = 'owner'
+        empty.repo = 'repo'
+        empty.sha = 'sha1'
+        empty.repo_settings = '.pr_agent.toml'
+        empty.repo_api = MagicMock()
+        empty.repo_api.get_file_content.return_value = ''
+        assert empty.get_repo_settings() == b""
