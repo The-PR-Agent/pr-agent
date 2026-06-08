@@ -125,7 +125,7 @@ def apply_repo_settings(pr_url):
 
     # Repository metadata: fetch well-known instruction files (AGENTS.md, QODO.md, CLAUDE.md, …)
     # from the PR's head branch root and inject their contents into every tool's extra_instructions.
-    # See: https://qodo-merge-docs.qodo.ai/usage-guide/additional_configurations/#bringing-additional-repository-metadata-to-pr-agent
+    # See: https://pr-agent.ai/usage-guide/additional_configurations/#bringing-additional-repository-metadata-to-pr-agent
     #
     # Guard: apply_repo_settings() can be called multiple times per request (e.g. once in the
     # server handler and again inside PRAgent.handle_request). The TOML settings are idempotent
