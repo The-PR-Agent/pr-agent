@@ -813,10 +813,10 @@ class RepoApi(giteapy.RepositoryApi):
 
             if hasattr(response, 'data'):
                 raw_data = response.data.read()
-                return raw_data.decode('utf-8')
+                return raw_data.decode('utf-8', errors='replace')
             elif isinstance(response, tuple):
                 raw_data = response[0].read()
-                return raw_data.decode('utf-8')
+                return raw_data.decode('utf-8', errors='replace')
             else:
                 error_msg = f"Unexpected response format received from API: {type(response)}"
                 self.logger.error(error_msg)
@@ -945,6 +945,11 @@ class RepoApi(giteapy.RepositoryApi):
 
         except ApiException as e:
             self.logger.error(f"Error getting file: {filepath}, content: {e}")
+            return ""
+        except UnicodeDecodeError as e:
+            self.logger.warning(
+                f"Skipping non-UTF-8 file content for {filepath}: {e}"
+            )
             return ""
         except Exception as e:
             self.logger.error(f"Unexpected error: {e}")
