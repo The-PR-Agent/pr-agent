@@ -1,15 +1,16 @@
 The different tools and sub-tools used by PR-Agent are adjustable via a Git configuration file.
-There are three main ways to set persistent configurations:
+There are four main ways to set persistent configurations:
 
 1. [Wiki](./configuration_options.md#wiki-configuration-file) configuration page
 2. [Local](./configuration_options.md#local-configuration-file) configuration file
 3. [Global](./configuration_options.md#global-configuration-file) configuration file
+4. [External configuration URL](./configuration_options.md#external-configuration-url) (CLI flag)
 
-In terms of precedence, wiki configurations will override local configurations, and local configurations will override global configurations.
+In terms of precedence, wiki configurations will override local configurations, local configurations will override global configurations, and global configurations will override an external configuration URL.
 
 
 For a list of all possible configurations, see the [configuration options](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) page.
-In addition to general configuration options, each tool has its own configurations. For example, the `review` tool will use parameters from the [pr_reviewer](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml#L66) section in the configuration file.
+In addition to general configuration options, each tool has its own configurations. For example, the `review` tool will use parameters from the [pr_reviewer](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml#L76) section in the configuration file.
 
 !!! tip "Tip1: Edit only what you need"
     Your configuration file should be minimal, and edit only the relevant values. Don't copy the entire configuration options, since it can lead to legacy problems when something changes.
@@ -97,3 +98,70 @@ Repositories across your entire Bitbucket organization will inherit the configur
 
 !!! note "Note"
     If both organization-level and project-level global settings are defined, the project-level settings will take precedence over the organization-level configuration. Additionally, parameters from a repository’s local .pr_agent.toml file will always override both global settings.
+
+## External configuration URL
+
+`Platforms supported: GitHub, GitLab, Bitbucket, Azure DevOps`
+
+When running PR-Agent from the CLI (or any wrapper that exposes its arguments), you can merge an additional `.pr_agent.toml` from any URL or local path before the repo-local and global configurations are applied. This is useful when:
+
+- You want a single shared configuration that applies to repositories nested deep inside subgroups, where the [project/group-level lookup](./configuration_options.md#projectgroup-level-configuration-file) only walks one level up.
+- The shared configuration is published outside of a Git host (a static site, an internal artifact server, an S3 bucket, etc.).
+- You want CI-time control over which defaults are layered in, without committing a file to the target repository.
+
+### Usage
+
+Pass `--extra_config_url` to the CLI, or set the `PR_AGENT_EXTRA_CONFIG_URL` environment variable:
+
+```bash
+python -m pr_agent.cli \
+  --pr_url=<MR/PR URL> \
+  --extra_config_url=https://config.example.com/pr-agent/shared.toml \
+  review
+```
+
+Accepted values:
+
+- `https://…` or `http://…` — fetched at runtime
+- `file:///path/to/shared.toml` — read from the local filesystem
+- A bare filesystem path — same as `file://`
+
+### Authentication for private endpoints
+
+For private endpoints (e.g. a GitLab API URL pointing at a private `pr-agent-settings` file), provide a single header via the `PR_AGENT_EXTRA_CONFIG_AUTH_HEADER` environment variable, formatted as `<HeaderName>: <value>`:
+
+```bash
+# GitLab Personal Access Token
+export PR_AGENT_EXTRA_CONFIG_AUTH_HEADER="PRIVATE-TOKEN: <your-personal-access-token>"
+
+# GitLab CI job token
+export PR_AGENT_EXTRA_CONFIG_AUTH_HEADER="JOB-TOKEN: $CI_JOB_TOKEN"
+
+# Generic bearer token
+export PR_AGENT_EXTRA_CONFIG_AUTH_HEADER="Authorization: Bearer <your-token>"
+```
+
+### Precedence
+
+External-URL settings are applied **first**, so every other layer overrides them:
+
+```
+built-in defaults
+  < --extra_config_url
+    < global pr-agent-settings
+      < local .pr_agent.toml (repo default branch)
+        < wiki .pr_agent.toml
+          < environment variables (PR_AGENT__SECTION__KEY)
+```
+
+This means an external URL acts as an organization-wide *default* that any team can still override with their own `pr-agent-settings` or repo-local `.pr_agent.toml`.
+
+### Security and limits
+
+The external file is loaded through the same secure loader as the repo-local `.pr_agent.toml`: includes, preloads, custom loaders, and other directives that could execute code or read arbitrary files are rejected. The fetcher additionally:
+
+- Limits the response size to **1 MB**
+- Uses a **10-second** request timeout
+- Only accepts `http`, `https`, `file` schemes (or a bare local path)
+
+If the fetch fails, the request is logged and PR-Agent continues with the remaining configuration layers.

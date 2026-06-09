@@ -168,7 +168,7 @@ class AzureDevopsProvider(GitProvider):
                 include_content=True,
                 path=".pr_agent.toml",
             )
-            return list(contents)[0]
+            return b"".join(list(contents))
         except Exception as e:
             if get_settings().config.verbosity_level >= 2:
                 get_logger().error(f"Failed to get repo settings, error: {e}")
