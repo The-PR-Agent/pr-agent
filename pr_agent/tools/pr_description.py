@@ -561,7 +561,7 @@ class PRDescription:
         if 'labels' in self.data and self.git_provider.is_supported("get_labels"):
             self.data.pop('labels')
         if not get_settings().pr_description.enable_pr_type:
-            self.data.pop('type')
+            self.data.pop('type', None)
 
         # Remove the 'PR Title' key from the dictionary
         ai_title = self.data.pop('title', self.vars["title"])

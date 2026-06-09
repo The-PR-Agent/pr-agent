@@ -156,6 +156,8 @@ class LiteLLMAIHandler(BaseAiHandler):
             litellm.cohere_key = get_settings().cohere.key
         if get_settings().get("GROQ.KEY", None):
             litellm.api_key = get_settings().groq.key
+        if get_settings().get("SAMBANOVA.KEY", None):
+            litellm.api_key = get_settings().sambanova.key
         if get_settings().get("REPLICATE.KEY", None):
             litellm.replicate_key = get_settings().replicate.key
         if get_settings().get("XAI.KEY", None):
@@ -457,15 +459,9 @@ class LiteLLMAIHandler(BaseAiHandler):
                     system = ""
                     get_logger().info(f"Using model {model}, combining system and user prompts")
                     messages = [{"role": "user", "content": user}]
-                    kwargs = {
-                        "model": model,
-                        "deployment_id": deployment_id,
-                        "messages": messages,
-                        "timeout": get_settings().config.ai_timeout,
-                        "api_base": self.api_base,
-                    }
-                else:
-                    kwargs = {
+
+                # Build request kwargs after normalizing messages for the target model.
+                kwargs = {
                         "model": model,
                         "deployment_id": deployment_id,
                         "messages": messages,
@@ -543,7 +539,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                     get_logger().info(f"\nUser prompt:\n{user}")
 
                 # Inject api_key to the call. This key is populated during init by providers
-                # like Groq, XAI, Azure AD, and OpenRouter. Skip if None or placeholder.
+                # like Groq, SambaNova, XAI, Azure AD, and OpenRouter. Skip if None or placeholder.
                 if litellm.api_key and litellm.api_key != DUMMY_LITELLM_API_KEY:
                     kwargs["api_key"] = litellm.api_key
 

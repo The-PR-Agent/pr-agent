@@ -62,7 +62,9 @@ What else changed:
 ### 🚀 Quick Start for PR-Agent
 
 #### 1. GitHub Action (Recommended)
+
 Add automated PR reviews to your repository with a simple workflow file:
+
 ```yaml
 # .github/workflows/pr-agent.yml
 name: PR Agent
@@ -82,6 +84,7 @@ jobs:
 [Full GitHub Action setup guide](https://docs.pr-agent.ai/installation/github/#run-as-a-github-action)
 
 #### 2. CLI Usage (Local Development)
+
 Run PR-Agent locally on your repository:
 ```bash
 pip install pr-agent
@@ -91,6 +94,7 @@ pr-agent --pr_url https://github.com/owner/repo/pull/123 review
 [Complete CLI setup guide](https://docs.pr-agent.ai/usage-guide/automations_and_usage/#local-repo-cli)
 
 #### 3. Other Platforms
+
 - [GitLab webhook setup](https://docs.pr-agent.ai/installation/gitlab/)
 - [BitBucket app installation](https://docs.pr-agent.ai/installation/bitbucket/)
 - [Azure DevOps setup](https://docs.pr-agent.ai/installation/azure/)
@@ -112,7 +116,7 @@ pr-agent --pr_url https://github.com/owner/repo/pull/123 review
 [//]: # (## Jun 21, 2025)
 
 [//]: # ()
-[//]: # (v0.30 was [released]&#40;https://github.com/qodo-ai/pr-agent/releases&#41;)
+[//]: # (v0.30 was [released]&#40;https://github.com/the-pr-agent/pr-agent/releases&#41;)
 
 [//]: # ()
 [//]: # ()
@@ -231,7 +235,7 @@ https://openai.com/enterprise-privacy
 
 ## Contributing
 
-To contribute to the project, get started by reading our [Contributing Guide](https://github.com/qodo-ai/pr-agent/blob/b09eec265ef7d36c232063f76553efb6b53979ff/CONTRIBUTING.md).
+To contribute to the project, get started by reading our [Contributing Guide](https://github.com/the-pr-agent/pr-agent/blob/b09eec265ef7d36c232063f76553efb6b53979ff/CONTRIBUTING.md).
 
 
 ## ❤️ Community

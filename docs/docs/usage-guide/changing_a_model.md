@@ -18,6 +18,7 @@ You can give parameters via a configuration file, or from environment variables.
     Failing to set the needed keys of a specific model will usually result in litellm not identifying the model type, and failing to utilize it.
 
 ### OpenAI like API
+
 To use an OpenAI like API, set the following in your `.secrets.toml` file:
 
 ```toml
@@ -160,6 +161,20 @@ key = ... # your Groq api key
 ```
 
 (you can obtain a Groq key from [here](https://console.groq.com/keys))
+
+### SambaNova
+
+To use MiniMax-M2.7 model with SambaNova, for example, set:
+
+```toml
+[config] # in configuration.toml
+model = "sambanova/MiniMax-M2.7"
+fallback_models = ["sambanova/MiniMax-M2.5"]
+[sambanova] # in .secrets.toml
+key = ... # your SambaNova api key
+```
+
+(you can obtain a SambaNova key from [here](https://cloud.sambanova.ai/apis))
 
 ### xAI
 
@@ -409,7 +424,7 @@ custom_model_max_tokens= ...
 3. Go to [litellm documentation](https://litellm.vercel.app/docs/proxy/quick_start#supported-llms), find the model you want to use, and set the relevant environment variables.
 
 4. Most reasoning models do not support chat-style inputs (`system` and `user` messages) or temperature settings.
-To bypass chat templates and temperature controls, set `config.custom_reasoning_model = true` in your configuration file.
+   To bypass chat templates and temperature controls, set `config.custom_reasoning_model = true` in your configuration file.
 
 ## Dedicated parameters
 

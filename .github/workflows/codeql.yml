@@ -31,14 +31,14 @@ jobs:
           - language: python
             build-mode: none
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
 
-      - uses: github/codeql-action/init@53e96ec3b35fce51c141c0d6f0e31028a448722d  # v3
+      - uses: github/codeql-action/init@7fd177fa680c9881b53cdab4d346d32574c9f7f4  # v3.35.4
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
           queries: security-extended,security-and-quality
 
-      - uses: github/codeql-action/analyze@53e96ec3b35fce51c141c0d6f0e31028a448722d  # v3
+      - uses: github/codeql-action/analyze@7fd177fa680c9881b53cdab4d346d32574c9f7f4  # v3.35.4
         with:
           category: "/language:${{ matrix.language }}"
