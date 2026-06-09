@@ -91,6 +91,10 @@ jobs:
     needs: prepare
     runs-on: ubuntu-latest
     environment: release
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -183,7 +187,8 @@ jobs:
           fi
           echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
 
-      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6.19.2
+      - id: push
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6.19.2
         with:
           context: .
           file: ${{ matrix.dockerfile }}
@@ -193,6 +198,12 @@ jobs:
           tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha,scope=${{ matrix.suffix || 'cli' }}
           cache-to: type=gha,mode=max,scope=${{ matrix.suffix || 'cli' }}
+
+      - uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a  # v3
+        with:
+          subject-name: index.docker.io/pragent/pr-agent
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
 
   finalize:
     needs: [prepare, publish-pypi, publish-docker]

@@ -55,6 +55,14 @@ steps:
     uses: docker://pragent/pr-agent@sha256:a0b36966ca3a197ca739fa1e65c16703076fc1c744cd423ca203b8c21707d71c
 ```
 
+Official Docker Hub release images also publish GitHub Artifact Attestations, so you can verify a pinned digest before using it:
+
+```sh
+gh attestation verify \
+  "oci://index.docker.io/pragent/pr-agent@sha256:<digest>" \
+  --repo The-PR-Agent/pr-agent
+```
+
 ## Reporting a Vulnerability
 
 We take the security of PR-Agent seriously. If you discover a security vulnerability, please report it immediately to:
