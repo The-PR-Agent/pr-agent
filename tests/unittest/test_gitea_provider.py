@@ -103,3 +103,65 @@ class TestGiteaProvider:
         args, kwargs = mock_api_client.call_api.call_args
         assert args[0] == '/repos/owner/repo/pulls/123/commits'
         assert kwargs.get('auth_settings') == ['AuthorizationHeaderToken']
+
+
+    @patch('pr_agent.git_providers.gitea_provider.get_settings')
+    @patch('pr_agent.git_providers.gitea_provider.giteapy.ApiClient')
+    def test_gitea_provider_skips_non_utf8_file_content(self, mock_api_client_cls, mock_get_settings):
+        settings = MagicMock()
+        settings.get.side_effect = lambda k, d=None: {
+            'GITEA.URL': 'https://gitea.example.com',
+            'GITEA.PERSONAL_ACCESS_TOKEN': 'test-token',
+            'GITEA.REPO_SETTING': None,
+            'GITEA.SKIP_SSL_VERIFICATION': False,
+            'GITEA.SSL_CA_CERT': None
+        }.get(k, d)
+        mock_get_settings.return_value = settings
+
+        mock_api_client = mock_api_client_cls.return_value
+        mock_api_client.configuration.api_key = {'Authorization': 'token test-token'}
+        mock_resp = MagicMock()
+        mock_resp.data = BytesIO(b'\xff\xfe\x00binary')
+        mock_api_client.call_api.return_value = mock_resp
+
+        from pr_agent.git_providers.gitea_provider import RepoApi
+
+        repo_api = RepoApi(mock_api_client)
+
+        assert repo_api.get_file_content('owner', 'repo', 'sha1', 'assets/image.webp') == ''
+        args, kwargs = mock_api_client.call_api.call_args
+        assert args[0] == '/repos/owner/repo/raw/assets/image.webp'
+        assert kwargs.get('query_params') == [('ref', 'sha1')]
+        assert kwargs.get('auth_settings') == ['AuthorizationHeaderToken']
+
+
+    @patch('pr_agent.git_providers.gitea_provider.get_settings')
+    @patch('pr_agent.git_providers.gitea_provider.giteapy.ApiClient')
+    def test_gitea_provider_decodes_non_utf8_diff_with_replacement(self, mock_api_client_cls, mock_get_settings):
+        settings = MagicMock()
+        settings.get.side_effect = lambda k, d=None: {
+            'GITEA.URL': 'https://gitea.example.com',
+            'GITEA.PERSONAL_ACCESS_TOKEN': 'test-token',
+            'GITEA.REPO_SETTING': None,
+            'GITEA.SKIP_SSL_VERIFICATION': False,
+            'GITEA.SSL_CA_CERT': None
+        }.get(k, d)
+        mock_get_settings.return_value = settings
+
+        mock_api_client = mock_api_client_cls.return_value
+        mock_api_client.configuration.api_key = {'Authorization': 'token test-token'}
+        mock_resp = MagicMock()
+        mock_resp.data = BytesIO(b'diff --git a/image.png b/image.webp\n+' + bytes([0xff]) + b'binary')
+        mock_api_client.call_api.return_value = mock_resp
+
+        from pr_agent.git_providers.gitea_provider import RepoApi
+
+        repo_api = RepoApi(mock_api_client)
+
+        diff = repo_api.get_pull_request_diff('owner', 'repo', 123)
+
+        assert 'diff --git a/image.png b/image.webp' in diff
+        assert '�' in diff
+        args, kwargs = mock_api_client.call_api.call_args
+        assert args[0] == '/repos/owner/repo/pulls/123.diff'
+        assert kwargs.get('auth_settings') == ['AuthorizationHeaderToken']
