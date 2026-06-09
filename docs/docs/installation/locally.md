@@ -12,48 +12,48 @@ To invoke a tool (for example `review`), you can run PR-Agent directly from the 
 - For GitHub:
 
     ```bash
-    docker run --rm -it -e OPENAI.KEY=<your_openai_key> -e GITHUB.USER_TOKEN=<your_github_token> pragent/pr-agent:latest --pr_url <pr_url> review
+    docker run --rm -it -e OPENAI__KEY=<your_openai_key> -e GITHUB__USER_TOKEN=<your_github_token> pragent/pr-agent:latest --pr_url <pr_url> review
     ```
 
     If you are using GitHub enterprise server, you need to specify the custom url as variable.
     For example, if your GitHub server is at `https://github.mycompany.com`, add the following to the command:
 
     ```bash
-    -e GITHUB.BASE_URL=https://github.mycompany.com/api/v3
+    -e GITHUB__BASE_URL=https://github.mycompany.com/api/v3
     ```
 
 - For GitLab:
 
     ```bash
-    docker run --rm -it -e OPENAI.KEY=<your key> -e CONFIG.GIT_PROVIDER=gitlab -e GITLAB.PERSONAL_ACCESS_TOKEN=<your token> pragent/pr-agent:latest --pr_url <pr_url> review
+    docker run --rm -it -e OPENAI__KEY=<your key> -e CONFIG__GIT_PROVIDER=gitlab -e GITLAB__PERSONAL_ACCESS_TOKEN=<your token> pragent/pr-agent:latest --pr_url <pr_url> review
     ```
 
     If you have a dedicated GitLab instance, you need to specify the custom url as variable:
 
     ```bash
-    -e GITLAB.URL=<your gitlab instance url>
+    -e GITLAB__URL=<your gitlab instance url>
     ```
 
 - For BitBucket:
 
     ```bash
-    docker run --rm -it -e CONFIG.GIT_PROVIDER=bitbucket -e OPENAI.KEY=$OPENAI_API_KEY -e BITBUCKET.BEARER_TOKEN=$BITBUCKET_BEARER_TOKEN pragent/pr-agent:latest --pr_url=<pr_url> review
+    docker run --rm -it -e CONFIG__GIT_PROVIDER=bitbucket -e OPENAI__KEY=$OPENAI_API_KEY -e BITBUCKET__BEARER_TOKEN=$BITBUCKET_BEARER_TOKEN pragent/pr-agent:latest --pr_url=<pr_url> review
     ```
 
 - For Gitea:
 
     ```bash
-    docker run --rm -it -e OPENAI.KEY=<your key> -e CONFIG.GIT_PROVIDER=gitea -e GITEA.PERSONAL_ACCESS_TOKEN=<your token> pragent/pr-agent:latest --pr_url <pr_url> review
+    docker run --rm -it -e OPENAI__KEY=<your key> -e CONFIG__GIT_PROVIDER=gitea -e GITEA__PERSONAL_ACCESS_TOKEN=<your token> pragent/pr-agent:latest --pr_url <pr_url> review
     ```
 
     If you have a dedicated Gitea instance, you need to specify the custom url as variable:
 
     ```bash
-    -e GITEA.URL=<your gitea instance url>
+    -e GITEA__URL=<your gitea instance url>
     ```
 
 
-For other git providers, update `CONFIG.GIT_PROVIDER` accordingly and check the [`pr_agent/settings/.secrets_template.toml`](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/.secrets_template.toml) file for environment variables expected names and values.
+For other git providers, update `CONFIG__GIT_PROVIDER` accordingly and check the [`pr_agent/settings/.secrets_template.toml`](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/.secrets_template.toml) file for environment variables expected names and values.
 
 ### Utilizing environment variables
 
