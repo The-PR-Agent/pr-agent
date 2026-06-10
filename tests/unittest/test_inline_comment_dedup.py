@@ -264,6 +264,76 @@ def test_github_code_fingerprint_or_match_across_runs():
     p.pr.create_review.assert_not_called()
 
 
+def test_github_preserves_code_fingerprint_when_hunk_validation_replaces_suggestion_block():
+    original_body = "**Suggestion:** fix it\n```suggestion\nx = 1\n```"
+    code_fp = d.code_fingerprint("a.py", None, original_body)
+    p = _gh_provider([f"earlier wording\n\n<!-- pr-agent-dedup-code: {code_fp} -->"])
+
+    def _replace_with_diff(suggestions):
+        transformed = suggestions[0].copy()
+        transformed["body"] = "**Suggestion:** fix it\n<details>\n```diff\n-x = 0\n+x = 1\n```\n</details>"
+        return [transformed]
+
+    p.validate_comments_inside_hunks = MagicMock(side_effect=_replace_with_diff)
+    gs = _patch_flag(True)
+    try:
+        assert p.publish_code_suggestions([{
+            "body": original_body,
+            "relevant_file": "a.py",
+            "relevant_lines_start": 10,
+            "relevant_lines_end": 10,
+        }])
+    finally:
+        gs.stop()
+
+    p.pr.create_review.assert_not_called()
+
+
+def test_github_does_not_send_pre_transform_fingerprint_to_api():
+    original_body = "**Suggestion:** fix it\n```suggestion\nx = 1\n```"
+    p = _gh_provider([])
+
+    def _replace_with_diff(suggestions):
+        transformed = suggestions[0].copy()
+        transformed["body"] = "**Suggestion:** fix it\n<details>\n```diff\n-x = 0\n+x = 1\n```\n</details>"
+        return [transformed]
+
+    p.validate_comments_inside_hunks = MagicMock(side_effect=_replace_with_diff)
+    gs = _patch_flag(True)
+    try:
+        assert p.publish_code_suggestions([{
+            "body": original_body,
+            "relevant_file": "a.py",
+            "relevant_lines_start": 10,
+            "relevant_lines_end": 10,
+        }])
+    finally:
+        gs.stop()
+
+    published = p.pr.create_review.call_args.kwargs["comments"]
+    assert "_dedup_code_fp" not in published[0]
+    assert "<!-- pr-agent-dedup-code:" in published[0]["body"]
+
+
+def test_github_strips_pre_transform_fingerprint_when_feature_is_disabled():
+    p = _gh_provider([])
+    p.validate_comments_inside_hunks = MagicMock(side_effect=lambda suggestions: suggestions)
+    gs = _patch_flag(False)
+    try:
+        assert p.publish_code_suggestions([{
+            "body": "**Suggestion:** fix it\n```suggestion\nx = 1\n```",
+            "relevant_file": "a.py",
+            "relevant_lines_start": 10,
+            "relevant_lines_end": 10,
+        }])
+    finally:
+        gs.stop()
+
+    published = p.pr.create_review.call_args.kwargs["comments"]
+    assert "_dedup_code_fp" not in published[0]
+    assert "pr-agent-dedup" not in published[0]["body"]
+
+
 def test_store_unsupported_provider_degrades():
     class FooProvider:
         pass

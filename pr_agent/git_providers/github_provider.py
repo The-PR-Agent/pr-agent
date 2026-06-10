@@ -421,6 +421,7 @@ class GithubProvider(GitProvider):
     def publish_inline_comments(self, comments: list[dict], disable_fallback: bool = False):
         store = None
         pending_fingerprints = []
+        dedup_code_fp_key = "_dedup_code_fp"
         if get_settings().get("config.persistent_inline_comments", False):
             store = get_inline_comment_store(self)
             local_seen = set()
@@ -436,7 +437,8 @@ class GithubProvider(GitProvider):
                 # shifts as the PR gains commits; anchor the fingerprint on the file
                 # path and comment content instead so it stays stable across runs.
                 body_fp = body_fingerprint(path, None, body)
-                code_fp = code_fingerprint(path, None, body)
+                pre_transform_code_fp = comment.get(dedup_code_fp_key)
+                code_fp = pre_transform_code_fp or code_fingerprint(path, None, body)
                 # A fallback re-publish (disable_fallback=True) is for a comment
                 # that has not been posted yet, so do not filter it; only the
                 # top-level call drops duplicates. The fallback still gets marked
@@ -446,10 +448,11 @@ class GithubProvider(GitProvider):
                         or body_fp in local_seen or (code_fp and code_fp in local_seen)):
                     skipped += 1
                     continue
+                marked = dict(comment)
+                marked.pop(dedup_code_fp_key, None)
                 if has_marker(body):
-                    marked = comment  # already carries a marker from the first pass
+                    pass  # already carries a marker from the first pass
                 else:
-                    marked = dict(comment)
                     marked["body"] = body_with_markers(
                         body, body_fp, code_fp, getattr(self, "max_comment_chars", None))
                 deduped.append(marked)
@@ -463,6 +466,12 @@ class GithubProvider(GitProvider):
                     f"already posted; nothing to publish")
                 return
             comments = deduped
+        else:
+            comments = [
+                {key: value for key, value in comment.items() if key != dedup_code_fp_key}
+                if comment else comment
+                for comment in comments
+            ]
         try:
             # publish all comments in a single message
             self.pr.create_review(commit=self.last_commit_id, comments=comments)
@@ -613,7 +622,11 @@ class GithubProvider(GitProvider):
         """
         post_parameters_list = []
 
-        code_suggestions_validated = self.validate_comments_inside_hunks(code_suggestions)
+        code_suggestions_with_fingerprints = copy.deepcopy(code_suggestions)
+        for suggestion in code_suggestions_with_fingerprints:
+            suggestion["_dedup_code_fp"] = code_fingerprint(
+                suggestion.get("relevant_file", ""), None, suggestion.get("body", ""))
+        code_suggestions_validated = self.validate_comments_inside_hunks(code_suggestions_with_fingerprints)
 
         for suggestion in code_suggestions_validated:
             body = suggestion['body']
@@ -639,6 +652,7 @@ class GithubProvider(GitProvider):
                     "line": relevant_lines_end,
                     "start_line": relevant_lines_start,
                     "start_side": "RIGHT",
+                    "_dedup_code_fp": suggestion.get("_dedup_code_fp"),
                 }
             else:  # API is different for single line comments
                 post_parameters = {
@@ -646,6 +660,7 @@ class GithubProvider(GitProvider):
                     "path": relevant_file,
                     "line": relevant_lines_start,
                     "side": "RIGHT",
+                    "_dedup_code_fp": suggestion.get("_dedup_code_fp"),
                 }
             post_parameters_list.append(post_parameters)
 
