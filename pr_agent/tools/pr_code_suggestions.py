@@ -335,6 +335,7 @@ class PRCodeSuggestions:
                         get_logger().info(f"Persistent mode - updating comment {comment_url} to latest {name} message")
                         git_provider.edit_comment(comment, pr_comment_updated)
                         if progress_response:
+                            # best-effort: propagating would re-trigger the duplicate-thread fallback below
                             try:
                                 git_provider.edit_comment(progress_response, "Code suggestions published in the persistent thread above.")
                                 git_provider.remove_comment(progress_response)
