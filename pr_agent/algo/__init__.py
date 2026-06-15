@@ -167,6 +167,7 @@ MAX_TOKENS = {
     'bedrock/anthropic.claude-opus-4-6-20260120-v1:0': 200000,
     'bedrock/anthropic.claude-opus-4-6-v1:0': 200000,
     'bedrock/anthropic.claude-opus-4-7': 1000000,
+    'bedrock/anthropic.claude-opus-4-7-v1:0': 1000000,
     'bedrock/anthropic.claude-opus-4-8': 1000000,
     'bedrock/anthropic.claude-3-haiku-20240307-v1:0': 100000,
     'bedrock/anthropic.claude-3-5-haiku-20241022-v1:0': 100000,
@@ -309,7 +310,15 @@ NO_SUPPORT_TEMPERATURE_MODELS = [
     "gpt-5.1-codex-mini",
     "gpt-5.2-codex",
     "gpt-5.3-codex",
-    "gpt-5-mini"
+    "gpt-5-mini",
+    # Anthropic Claude Opus 4-7 — temperature is deprecated (Issue #2400)
+    "claude-opus-4-7",
+    "vertex_ai/claude-opus-4-7",
+    "anthropic/claude-opus-4-7",
+    "bedrock/anthropic.claude-opus-4-7",
+    "bedrock/anthropic.claude-opus-4-7-v1:0",
+    "bedrock/us.anthropic.claude-opus-4-7",
+    "bedrock/global.anthropic.claude-opus-4-7",
 ]
 
 SUPPORT_REASONING_EFFORT_MODELS = [
