@@ -1207,23 +1207,18 @@ class GithubProvider(GitProvider):
         if not all([github_token, github_base_url]):
             get_logger().error("Either missing auth token or missing base url")
             return None
-        if scheme not in github_base_url:
-            get_logger().error(f"Base url: {github_base_url} is missing prefix: {scheme}")
-            return None
-        github_com = github_base_url.split(scheme)[1]  # e.g. 'github.com' or github.<org>.com
-        if not github_com:
-            get_logger().error(f"Base url: {github_base_url} has an empty base url")
-            return None
-        if github_com not in repo_url_to_clone:
-            get_logger().error(f"url to clone: {repo_url_to_clone} does not contain {github_com}")
-            return None
-        repo_full_name = repo_url_to_clone.split(github_com)[-1]
+
+        # Determine the single host we are allowed to clone from (e.g. 'github.com' or 'github.<org>.com')
+        # and validate the requested url against it, rather than a weak substring check (issue #2445).
+        base_parsed = urlparse(github_base_url)
+        repo_full_name = self._validate_clone_url_and_extract_path(repo_url_to_clone, base_parsed.hostname)
         if not repo_full_name:
-            get_logger().error(f"url to clone: {repo_url_to_clone} is malformed")
             return None
 
+        # Always rebuild the clone url from the trusted authority (host[:port]) so the token can never
+        # reach a different host, while preserving any non-standard port of the configured base url.
         clone_url = scheme
         if self.deployment_type == 'app':
             clone_url += "git:"
-        clone_url += f"{github_token}@{github_com}{repo_full_name}"
+        clone_url += f"{github_token}@{base_parsed.netloc}{repo_full_name}"
         return clone_url

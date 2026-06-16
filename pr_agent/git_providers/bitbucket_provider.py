@@ -624,24 +624,22 @@ class BitbucketProvider(GitProvider):
         pass
     #Clone related
     def _prepare_clone_url_with_token(self, repo_url_to_clone: str) -> str | None:
-        if "bitbucket.org" not in repo_url_to_clone:
-            get_logger().error("Repo URL is not a valid bitbucket URL.")
-            return None
-
-        (scheme, base_url) = repo_url_to_clone.split("bitbucket.org")
-        if not all([scheme, base_url]):
-            get_logger().error(f"repo_url_to_clone: {repo_url_to_clone} is not a valid bitbucket URL.")
+        # Validate the requested url against bitbucket.org exactly, rather than a weak substring
+        # check which would let 'bitbucket.org.attacker.tld' leak the token (issue #2445).
+        repo_path = self._validate_clone_url_and_extract_path(repo_url_to_clone, "bitbucket.org")
+        if not repo_path:
             return None
 
         if self.auth_type == "basic":
             # Basic auth with token
-            clone_url = f"{scheme}x-token-auth:{self.basic_token}@bitbucket.org{base_url}"
+            token = self.basic_token
         elif self.auth_type == "bearer":
             # Bearer token
-            clone_url = f"{scheme}x-token-auth:{self.bearer_token}@bitbucket.org{base_url}"
+            token = self.bearer_token
         else:
             # This case should ideally not be reached if __init__ validates auth_type
             get_logger().error(f"Unsupported or uninitialized auth_type: {getattr(self, 'auth_type', 'N/A')}. Returning None")
             return None
 
+        clone_url = f"https://x-token-auth:{token}@bitbucket.org{repo_path}"
         return clone_url
