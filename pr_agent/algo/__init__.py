@@ -311,8 +311,13 @@ NO_SUPPORT_TEMPERATURE_MODELS = [
     "gpt-5.2-codex",
     "gpt-5.3-codex",
     "gpt-5-mini",
-    # Anthropic Claude Opus 4-7 — temperature is deprecated (Issue #2400)
+    # Anthropic Claude Opus 4-7 — temperature is deprecated (Issue #2400), (Issue #2449)
     "claude-opus-4-7",
+    "anthropic/claude-opus-4-7",
+    "claude-opus-4-8",
+    "anthropic/claude-opus-4-8",
+    "claude-fable-5",  
+    "anthropic/claude-fable-5",
     "vertex_ai/claude-opus-4-7",
     "anthropic/claude-opus-4-7",
     "bedrock/anthropic.claude-opus-4-7",
