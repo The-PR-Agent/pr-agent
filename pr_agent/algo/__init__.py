@@ -316,7 +316,7 @@ NO_SUPPORT_TEMPERATURE_MODELS = [
     "anthropic/claude-opus-4-7",
     "claude-opus-4-8",
     "anthropic/claude-opus-4-8",
-    "claude-fable-5",  
+    "claude-fable-5",
     "anthropic/claude-fable-5",
     "vertex_ai/claude-opus-4-7",
     "bedrock/anthropic.claude-opus-4-7",
