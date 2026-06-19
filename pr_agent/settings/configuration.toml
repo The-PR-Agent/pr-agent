@@ -319,6 +319,19 @@ pr_commands = [
     "/improve --pr_code_suggestions.commitable_code_suggestions=true",
 ]
 
+[jira]
+# Jira Cloud ticket context. Only Jira Cloud is supported; the base URL is built as
+# https://<jira_site>.atlassian.net from the site name below, so repo configuration
+# cannot redirect the authenticated request to another host.
+# Credentials: fill and place in .secrets.toml, or set via environment variables
+# (e.g. jira__jira_api_token).
+# jira_site = "your-org"   # the "<site>" in https://<site>.atlassian.net
+# jira_api_email = "..."   # Atlassian account email
+# jira_api_token = "..."   # Atlassian API token
+# Custom field id holding acceptance criteria / requirements, mapped to the ticket
+# "requirements" section. Instance-specific (e.g. "customfield_10127"); empty disables it.
+jira_requirements_field = ""
+
 [litellm]
 # use_client = false
 # drop_params = false
