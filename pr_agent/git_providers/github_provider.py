@@ -743,17 +743,15 @@ class GithubProvider(GitProvider):
         env_branch = (os.environ.get("PR_AGENT_CONFIG_BRANCH") or "").strip()
         config_branch = settings_branch or env_branch
         if config_branch:
+            # Only treat a missing branch/file (GithubException) as an expected
+            # reason to fall back to the default branch. Unexpected errors are
+            # left to propagate so they aren't masked by a silent fallback.
             try:
                 return self.repo_obj.get_contents(".pr_agent.toml", ref=config_branch).decoded_content
             except GithubException as e:
                 get_logger().warning(
                     f"Failed to load .pr_agent.toml from branch '{config_branch}', falling back to default branch",
                     artifact={"status": e.status, "error": str(e)},
-                )
-            except Exception as e:
-                get_logger().warning(
-                    f"Failed to load .pr_agent.toml from branch '{config_branch}', falling back to default branch",
-                    artifact={"error": str(e)},
                 )
         try:
             contents = self.repo_obj.get_contents(".pr_agent.toml").decoded_content

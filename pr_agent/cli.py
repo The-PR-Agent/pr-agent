@@ -93,9 +93,10 @@ def run(inargs=None, args=None):
     # short-circuit the PR_AGENT_CONFIG_BRANCH env fallback before precedence.
     cli_branch = (getattr(args, "config_branch", None) or "").strip()
     env_branch = (os.environ.get("PR_AGENT_CONFIG_BRANCH") or "").strip()
-    config_branch = cli_branch or env_branch
-    if config_branch:
-        get_settings().set("CONFIG.CONFIG_BRANCH", config_branch)
+    # Always reconcile CONFIG.CONFIG_BRANCH with the current invocation so a value
+    # set by an earlier run() call in the same process can't leak into a later one
+    # (get_settings() is a process-wide singleton).
+    get_settings().set("CONFIG.CONFIG_BRANCH", cli_branch or env_branch or None)
     # Always reconcile CONFIG.EXTRA_CONFIG_URL with the current invocation so a
     # previously-set value from an earlier run() call in the same process can't
     # leak into a later one (get_settings() is a process-wide singleton).
