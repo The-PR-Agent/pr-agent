@@ -12,8 +12,12 @@ Three paths:
 Capture is DEFENSIVE everywhere: get_settings().get("data", {}).get("artifact", "")
 (several tool paths never set it, and handle_request swallows exceptions -> False).
 route_and_run NEVER raises; on failure/empty it returns an honest fallback string."""
+import asyncio
+import ipaddress
 import re
+import socket
 from typing import NamedTuple, Optional
+from urllib.parse import urljoin, urlparse
 
 import aiohttp
 
@@ -26,6 +30,7 @@ _DEFAULT_VERB = "review"
 
 _DIFF_FETCH_TIMEOUT_S = 20
 _DIFF_FETCH_MAX_BYTES = 4_000_000  # ~4 MB; larger diffs exceed model context anyway
+_DIFF_FETCH_MAX_REDIRECTS = 5
 
 # PR-URL detection: github/gitlab/bitbucket/azure-style hosts with a PR/MR path.
 _PR_URL_RE = re.compile(
@@ -113,32 +118,85 @@ def _ask_needs_context_fallback() -> str:
     return "PR-Agent requires a PR URL or a supplied diff."
 
 
+def _ip_is_blocked(addr) -> bool:
+    """Reject non-public IP ranges (SSRF guard): private/loopback/link-local (incl. cloud
+    metadata 169.254.0.0/16), reserved, multicast, unspecified."""
+    return (addr.is_private or addr.is_loopback or addr.is_link_local
+            or addr.is_reserved or addr.is_multicast or addr.is_unspecified)
+
+
+async def _host_resolves_public(host: str) -> bool:
+    """True only if `host` resolves and EVERY resolved IP is public. DNS runs in a thread
+    so it does not block the event loop. Any failure -> False (fail closed)."""
+    if not host:
+        return False
+    try:
+        infos = await asyncio.to_thread(socket.getaddrinfo, host, None)
+    except Exception:
+        return False
+    saw = False
+    for info in infos:
+        ip = info[4][0].split("%")[0]  # strip IPv6 zone id
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            return False
+        saw = True
+        if _ip_is_blocked(addr):
+            return False
+    return saw
+
+
+async def _url_is_safe(url: str) -> bool:
+    """SSRF gate for one URL: https scheme + a hostname that resolves only to public IPs."""
+    try:
+        u = urlparse(url)
+    except Exception:
+        return False
+    if u.scheme != "https" or not u.hostname:
+        return False
+    return await _host_resolves_public(u.hostname)
+
+
 async def _fetch_public_diff(pr_url: str) -> Optional[str]:
     """Fetch the public unified diff for a GitHub/GitLab PR/MR URL by appending '.diff'.
-    Returns the diff text, or None on any failure (private/404, network, non-200, oversize,
-    empty). No auth - public repos only; degrades to None so the caller fails honestly."""
+    Returns the diff text, or None on any failure. No auth - public repos only. SSRF-guarded:
+    https-only and the host (and every redirect hop) must resolve to public IPs; degrades to
+    None so the caller fails honestly."""
     diff_url = pr_url + ".diff"
     headers = {"User-Agent": "pr-agent-mosaico"}
     try:
         timeout = aiohttp.ClientTimeout(total=_DIFF_FETCH_TIMEOUT_S)
         async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-            async with session.get(diff_url, allow_redirects=True) as resp:
-                if resp.status != 200:
-                    get_logger().info(f"MOSAICO: diff fetch {diff_url} -> HTTP {resp.status}")
+            url = diff_url
+            for _ in range(_DIFF_FETCH_MAX_REDIRECTS + 1):
+                if not await _url_is_safe(url):
+                    get_logger().info(f"MOSAICO: diff fetch blocked unsafe/non-public URL: {url}")
                     return None
-                # StreamReader.read(n) returns only the currently-buffered bytes, so it
-                # cannot bound the body. Drain in chunks with a hard size cap instead.
-                chunks = []
-                total = 0
-                async for chunk in resp.content.iter_chunked(65536):
-                    total += len(chunk)
-                    if total > _DIFF_FETCH_MAX_BYTES:
-                        get_logger().info(f"MOSAICO: diff fetch {diff_url} exceeds size cap; skipping.")
+                async with session.get(url, allow_redirects=False) as resp:
+                    if resp.status in (301, 302, 303, 307, 308):
+                        loc = resp.headers.get("Location")
+                        if not loc:
+                            return None
+                        url = urljoin(url, loc)
+                        continue
+                    if resp.status != 200:
+                        get_logger().info(f"MOSAICO: diff fetch {url} -> HTTP {resp.status}")
                         return None
-                    chunks.append(chunk)
-        raw = b"".join(chunks)
-        text = raw.decode("utf-8", errors="replace")
-        return text if text.strip() else None
+                    # StreamReader.read(n) returns only buffered bytes; drain in chunks with a cap.
+                    chunks = []
+                    total = 0
+                    async for chunk in resp.content.iter_chunked(65536):
+                        total += len(chunk)
+                        if total > _DIFF_FETCH_MAX_BYTES:
+                            get_logger().info(f"MOSAICO: diff fetch {url} exceeds size cap; skipping.")
+                            return None
+                        chunks.append(chunk)
+                    raw = b"".join(chunks)
+                    text = raw.decode("utf-8", errors="replace")
+                    return text if text.strip() else None
+            get_logger().info(f"MOSAICO: diff fetch exceeded redirect limit: {diff_url}")
+            return None
     except Exception as e:
         get_logger().info(f"MOSAICO: diff fetch failed for {diff_url}: {e}")
         return None

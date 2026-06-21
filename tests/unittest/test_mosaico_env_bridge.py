@@ -94,6 +94,19 @@ class TestApplyMosaicoEnv:
         assert failure.count("langfuse_otel") == 1
         assert s.get("LITELLM.ENABLE_CALLBACKS") is True
 
+    def test_register_langfuse_callback_removes_legacy(self, restore_settings, clear_mosaico_env, monkeypatch):
+        """Legacy 'langfuse' entries must be stripped and replaced by exactly one 'langfuse_otel'."""
+        monkeypatch.setenv("LANGFUSE_HOST", "https://lf.example")
+        monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk")
+        monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk")
+        # Pre-seed legacy callback in both lists
+        global_settings.set("LITELLM.SUCCESS_CALLBACK", ["langfuse"])
+        global_settings.set("LITELLM.FAILURE_CALLBACK", ["langfuse"])
+        apply_mosaico_env()
+        s = get_settings()
+        assert list(s.get("LITELLM.SUCCESS_CALLBACK") or []) == ["langfuse_otel"]
+        assert list(s.get("LITELLM.FAILURE_CALLBACK") or []) == ["langfuse_otel"]
+
     def test_langfuse_not_registered_without_keys(self, restore_settings, clear_mosaico_env, monkeypatch):
         monkeypatch.setenv("API_BASE", "https://mosaico.example/v1")
         # snapshot/reset callbacks to empty so we observe no registration
