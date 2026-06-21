@@ -53,6 +53,18 @@ def set_parser():
     parser.add_argument('--pr_url', type=str, help='The URL of the PR to review', default=None)
     parser.add_argument('--issue_url', type=str, help='The URL of the Issue to review', default=None)
     parser.add_argument('--config-branch', type=str, help='Git branch to load .pr_agent.toml from', default=None)
+    parser.add_argument(
+        "--extra_config_url",
+        type=str,
+        default=os.environ.get("PR_AGENT_EXTRA_CONFIG_URL"),
+        help=(
+            "URL or local path of an additional .pr_agent.toml to merge before the "
+            "repo-local config (e.g. shared/org defaults). Accepts http(s):// URLs or "
+            "a filesystem path. For private endpoints, set PR_AGENT_EXTRA_CONFIG_AUTH_HEADER "
+            "(e.g. 'PRIVATE-TOKEN: <token>' or 'JOB-TOKEN: $CI_JOB_TOKEN'). "
+            "Repo-local .pr_agent.toml overrides values set here."
+        ),
+    )
     parser.add_argument('command', type=str, help='The', choices=commands, default='review')
     parser.add_argument('rest', nargs=argparse.REMAINDER, default=[])
     return parser
@@ -77,9 +89,13 @@ def run(inargs=None, args=None):
 
     command = args.command.lower()
     get_settings().set("CONFIG.CLI_MODE", True)
-    config_branch = (args.config_branch or os.environ.get("PR_AGENT_CONFIG_BRANCH") or "").strip()
+    config_branch = (getattr(args, "config_branch", None) or os.environ.get("PR_AGENT_CONFIG_BRANCH") or "").strip()
     if config_branch:
         get_settings().set("CONFIG.CONFIG_BRANCH", config_branch)
+    # Always reconcile CONFIG.EXTRA_CONFIG_URL with the current invocation so a
+    # previously-set value from an earlier run() call in the same process can't
+    # leak into a later one (get_settings() is a process-wide singleton).
+    get_settings().set("CONFIG.EXTRA_CONFIG_URL", getattr(args, "extra_config_url", None))
 
     async def inner():
         if args.issue_url:
