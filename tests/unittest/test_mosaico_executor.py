@@ -7,6 +7,7 @@ from a2a.types import Message, Part, Role, TextPart
 from starlette_context import request_cycle_context
 
 import pr_agent.mosaico.executor as executor_mod
+from pr_agent.mosaico.dispatch import RouteResult
 from pr_agent.mosaico.executor import PRAgentExecutor
 
 
@@ -77,10 +78,10 @@ def spy_updater(monkeypatch):
 class TestExecute:
     @pytest.mark.asyncio
     async def test_completes_with_rendered_markdown(self, monkeypatch, spy_updater):
-        async def fake_route_and_run(text):
-            return "RENDERED"
+        async def fake_route_and_run_result(text):
+            return RouteResult("RENDERED", True)
 
-        monkeypatch.setattr(executor_mod, "route_and_run", fake_route_and_run)
+        monkeypatch.setattr(executor_mod, "route_and_run_result", fake_route_and_run_result)
 
         eq = _RecordingEventQueue()
         ctx = _FakeRequestContext("review this", metadata={})
@@ -94,10 +95,10 @@ class TestExecute:
 
     @pytest.mark.asyncio
     async def test_empty_render_uses_placeholder(self, monkeypatch, spy_updater):
-        async def fake_route_and_run(text):
-            return ""
+        async def fake_route_and_run_result(text):
+            return RouteResult("", True)
 
-        monkeypatch.setattr(executor_mod, "route_and_run", fake_route_and_run)
+        monkeypatch.setattr(executor_mod, "route_and_run_result", fake_route_and_run_result)
         with request_cycle_context({}):
             await PRAgentExecutor().execute(_FakeRequestContext("x"), _RecordingEventQueue())
         assert spy_updater.last.completed_with == "(no output produced)"
@@ -107,7 +108,7 @@ class TestExecute:
         async def boom(text):
             raise RuntimeError("kaboom")
 
-        monkeypatch.setattr(executor_mod, "route_and_run", boom)
+        monkeypatch.setattr(executor_mod, "route_and_run_result", boom)
 
         eq = _RecordingEventQueue()
         # Must not raise out of execute.
@@ -119,10 +120,10 @@ class TestExecute:
 
     @pytest.mark.asyncio
     async def test_existing_task_not_re_enqueued(self, monkeypatch, spy_updater):
-        async def fake_route_and_run(text):
-            return "R"
+        async def fake_route_and_run_result(text):
+            return RouteResult("R", True)
 
-        monkeypatch.setattr(executor_mod, "route_and_run", fake_route_and_run)
+        monkeypatch.setattr(executor_mod, "route_and_run_result", fake_route_and_run_result)
 
         from a2a.utils import new_task
         existing = new_task(_make_message("hi"))
@@ -133,6 +134,18 @@ class TestExecute:
         # current_task present -> no new Task enqueued
         assert eq.events == []
         assert spy_updater.last.completed_with == "R"
+
+    @pytest.mark.asyncio
+    async def test_failed_result_marks_failed(self, monkeypatch, spy_updater):
+        async def fake_route_and_run_result(text):
+            return RouteResult("boom", ok=False)
+
+        monkeypatch.setattr(executor_mod, "route_and_run_result", fake_route_and_run_result)
+
+        with request_cycle_context({}):
+            await PRAgentExecutor().execute(_FakeRequestContext("z"), _RecordingEventQueue())
+        assert spy_updater.last.failed_with == "boom"
+        assert spy_updater.last.completed_with is None
 
     @pytest.mark.asyncio
     async def test_cancel_raises_not_implemented(self):

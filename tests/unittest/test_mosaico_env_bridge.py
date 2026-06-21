@@ -90,8 +90,8 @@ class TestApplyMosaicoEnv:
         s = get_settings()
         success = list(s.get("LITELLM.SUCCESS_CALLBACK") or [])
         failure = list(s.get("LITELLM.FAILURE_CALLBACK") or [])
-        assert success.count("langfuse") == 1
-        assert failure.count("langfuse") == 1
+        assert success.count("langfuse_otel") == 1
+        assert failure.count("langfuse_otel") == 1
         assert s.get("LITELLM.ENABLE_CALLBACKS") is True
 
     def test_langfuse_not_registered_without_keys(self, restore_settings, clear_mosaico_env, monkeypatch):
@@ -146,8 +146,8 @@ class TestApplyMosaicoEnv:
 
         from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
         LiteLLMAIHandler()
-        assert litellm.success_callback == ["langfuse"]
-        assert litellm.failure_callback == ["langfuse"]
+        assert litellm.success_callback == ["langfuse_otel"]
+        assert litellm.failure_callback == ["langfuse_otel"]
 
 
 class TestParseObservabilityMetadata:

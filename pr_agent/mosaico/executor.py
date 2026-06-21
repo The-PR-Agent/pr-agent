@@ -15,7 +15,7 @@ from starlette_context import context as sctx
 
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.log import get_logger
-from pr_agent.mosaico.dispatch import route_and_run
+from pr_agent.mosaico.dispatch import route_and_run_result
 from pr_agent.mosaico.observability import (langfuse_span,
                                             mosaico_log_context,
                                             parse_observability_metadata)
@@ -37,8 +37,12 @@ class PRAgentExecutor(AgentExecutor):
             user_text = context.get_user_input() or ""
             meta = parse_observability_metadata(context.metadata)
             with mosaico_log_context(meta, task.context_id), langfuse_span(meta, task.context_id):
-                markdown = await route_and_run(user_text)
-            await updater.complete(new_agent_text_message(markdown or "(no output produced)"))
+                result = await route_and_run_result(user_text)
+            message = new_agent_text_message(result.text or "(no output produced)")
+            if result.ok:
+                await updater.complete(message)
+            else:
+                await updater.failed(message)
         except Exception as e:
             get_logger().exception("MOSAICO task failed")
             await updater.failed(new_agent_text_message(f"Error: {e}"))

@@ -22,6 +22,7 @@ from starlette_context import request_cycle_context
 
 import pr_agent.mosaico.executor as executor_mod
 from pr_agent.config_loader import get_settings, global_settings
+from pr_agent.mosaico.dispatch import RouteResult
 from pr_agent.mosaico.executor import PRAgentExecutor
 
 
@@ -97,7 +98,7 @@ async def _distinct_route_and_run(user_text):
     assert read["model"] == profile["model"], f"{user_text} saw model {read['model']}"
     assert read["provider"] == profile["provider"], f"{user_text} saw provider {read['provider']}"
     assert read["artifact"] == profile["artifact"], f"{user_text} saw artifact {read['artifact']}"
-    return profile["artifact"]
+    return RouteResult(profile["artifact"], ok=True)
 
 
 async def _run_one(text):
@@ -128,7 +129,7 @@ def snapshot_global():
 class TestConcurrencyIsolation:
     @pytest.mark.asyncio
     async def test_no_bleed_between_concurrent_requests(self, monkeypatch, snapshot_global):
-        monkeypatch.setattr(executor_mod, "route_and_run", _distinct_route_and_run)
+        monkeypatch.setattr(executor_mod, "route_and_run_result", _distinct_route_and_run)
         monkeypatch.setattr(executor_mod, "TaskUpdater", _SpyTaskUpdater)
 
         # Capture global_settings BEFORE for the unmutated check.

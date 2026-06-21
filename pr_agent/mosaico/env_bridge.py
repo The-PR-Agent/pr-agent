@@ -16,6 +16,7 @@ ENV_LANGFUSE_HOST = "LANGFUSE_HOST"
 DEFAULT_CUSTOM_MODEL_MAX_TOKENS = 32000
 ENV_LANGFUSE_PUBLIC_KEY = "LANGFUSE_PUBLIC_KEY"
 ENV_LANGFUSE_SECRET_KEY = "LANGFUSE_SECRET_KEY"
+LANGFUSE_CALLBACK_NAME = "langfuse_otel"
 
 
 def langfuse_env_present() -> bool:
@@ -62,8 +63,8 @@ def apply_mosaico_env() -> None:
 def _register_langfuse_callback(settings) -> None:
     for key in ("LITELLM.SUCCESS_CALLBACK", "LITELLM.FAILURE_CALLBACK"):
         current = list(settings.get(key, []) or [])
-        if "langfuse" not in current:
-            current.append("langfuse")
+        if LANGFUSE_CALLBACK_NAME not in current:
+            current.append(LANGFUSE_CALLBACK_NAME)
             settings.set(key, current)
     settings.set("LITELLM.ENABLE_CALLBACKS", True)
     get_logger().info("MOSAICO: registered Langfuse litellm callback.")
