@@ -315,7 +315,7 @@ class TestApiKeyGuard:
 
             assert litellm.api_key == sambanova_key
             await handler.chat_completion(
-                model="sambanova/MiniMax-M2.7", system="sys", user="usr"
+                model="sambanova/MiniMax-M3", system="sys", user="usr"
             )
 
         assert mock_call.call_args[1].get("api_key") == sambanova_key
