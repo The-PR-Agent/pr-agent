@@ -261,12 +261,16 @@ def _simple_languages(files) -> dict:
     return langs
 
 
-async def _run_on_diff(diff_body: str, verb: str, text: str, title: str) -> "RouteResult":
+async def _run_on_diff(diff_body: str, verb: str, text: str, title: str, empty_ok: bool = True) -> "RouteResult":
     """Parse a unified diff, install it as MOSAICO.INPUT under the mosaico_diff provider,
-    and run the verb (token-free). Empty parse -> empty fallback (ok=True)."""
+    and run the verb (token-free). Empty parse -> empty fallback (ok=True) when empty_ok is
+    True (supplied-diff path); failure (ok=False) when empty_ok is False (PR-URL path, where
+    an empty parse indicates the fetched body was not a real diff)."""
     parsed = parse_unified_diff(diff_body)
     if not parsed:
-        return RouteResult(_empty_fallback(verb), ok=True)
+        if empty_ok:
+            return RouteResult(_empty_fallback(verb), ok=True)
+        return RouteResult(_pr_fetch_failed_fallback(title), ok=False)
     settings = get_settings()
     settings.set("MOSAICO.INPUT", {
         "files": parsed,
@@ -292,7 +296,7 @@ async def route_and_run_result(user_text: str) -> "RouteResult":
             diff_body = await _fetch_public_diff(pr_url)
             if not diff_body:
                 return RouteResult(_pr_fetch_failed_fallback(pr_url), ok=False)
-            return await _run_on_diff(diff_body, verb, text, title=pr_url)
+            return await _run_on_diff(diff_body, verb, text, title=pr_url, empty_ok=False)
 
         # Path (b): a supplied unified diff.
         if _looks_like_diff(text):

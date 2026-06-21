@@ -153,6 +153,21 @@ class TestPathPrUrl:
         await route_and_run(f"review {PR_URL}")
         assert global_settings.get("CONFIG.GIT_PROVIDER") == "mosaico_diff"
 
+    @pytest.mark.asyncio
+    async def test_pr_url_non_diff_body_marks_failed(self, monkeypatch, restore_settings):
+        """When _fetch_public_diff returns HTTP 200 but with non-diff content (e.g. an HTML
+        login page), parse_unified_diff yields [] and _run_on_diff must report ok=False with
+        the pr-fetch-failed fallback — NOT ok=True with the empty fallback."""
+
+        async def fake_fetch_public_diff(pr_url):
+            return "<html><body>Sign in</body></html>"
+
+        monkeypatch.setattr(dispatch, "_fetch_public_diff", fake_fetch_public_diff)
+
+        result = await route_and_run_result(f"review {PR_URL}")
+        assert result.ok is False
+        assert "could not fetch" in result.text
+
 
 # ---------------------------------------------------------------------------
 # Path (b): supplied diff
