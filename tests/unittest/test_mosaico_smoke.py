@@ -1,4 +1,4 @@
-"""Full-path smoke test.
+"""Full-path smoke test (A2A 1.0).
 
 Drives ONE message/send through the SDK via Starlette TestClient against build_app()
 (REAL RawContextMiddleware mounted), proving the full path:
@@ -13,9 +13,11 @@ This test passing is the end-to-end proof that the middleware->executor->dispatc
 provider->render chain works through the wire."""
 import uuid
 
+from google.protobuf.json_format import MessageToDict
 from starlette.testclient import TestClient
 
 import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_mod
+from a2a.types import Message, Part, Role, SendMessageRequest
 from pr_agent.mosaico.server import build_app
 
 REVIEW_DIFF = """```diff
@@ -45,28 +47,35 @@ review:
 
 
 def _send_message_payload(text: str) -> dict:
+    """Build a valid A2A 1.0 message/send JSON-RPC body from SDK types."""
+    msg = Message(
+        message_id=str(uuid.uuid4()),
+        role=Role.ROLE_USER,
+        parts=[Part(text=text)],
+    )
+    req = SendMessageRequest(message=msg)
     return {
         "id": "1",
         "jsonrpc": "2.0",
-        "method": "message/send",
-        "params": {
-            "message": {
-                "kind": "message",
-                "messageId": str(uuid.uuid4()),
-                "role": "user",
-                "parts": [{"kind": "text", "text": text}],
-            }
-        },
+        "method": "SendMessage",
+        "params": MessageToDict(req),
     }
 
 
+# A2A 1.0 requires the version header so the handler does not fall back to 0.3.
+_A2A_HEADERS = {"A2A-Version": "1.0"}
+
+
 def _extract_text(result: dict) -> str:
-    """Pull all text parts out of a message/send JSON-RPC result (Task or Message)."""
+    """Pull all text parts out of a message/send JSON-RPC result.
+
+    In A2A 1.0 the result is wrapped: {"task": {...}} with artifacts.
+    Harvest all text values recursively from the result envelope."""
     chunks = []
 
     def harvest(obj):
         if isinstance(obj, dict):
-            if obj.get("kind") == "text" and isinstance(obj.get("text"), str):
+            if isinstance(obj.get("text"), str):
                 chunks.append(obj["text"])
             for v in obj.values():
                 harvest(v)
@@ -86,19 +95,24 @@ class TestSmokeFullPath:
         monkeypatch.setattr(litellm_mod.LiteLLMAIHandler, "chat_completion", fake_chat_completion)
 
         client = TestClient(build_app())
-        resp = client.post("/", json=_send_message_payload(f"review this\n{REVIEW_DIFF}"))
+        resp = client.post("/", json=_send_message_payload(f"review this\n{REVIEW_DIFF}"),
+                           headers=_A2A_HEADERS)
         assert resp.status_code == 200, resp.text
         body = resp.json()
         assert "error" not in body, body
         result = body["result"]
 
-        # Completed task (or a final message) with non-empty rendered content over the wire.
-        status = result.get("status", {})
-        if status:
-            assert status.get("state") in ("completed", "failed")
-            assert status.get("state") == "completed", f"task failed: {result}"
-        text = _extract_text(result)
-        assert text.strip(), f"no text content returned: {result}"
+        # A2A 1.0: result is {"task": {...}}
+        task = result.get("task", result)
+        status = task.get("status", {})
+        state = status.get("state", "")
+        assert state == "TASK_STATE_COMPLETED", f"task not completed: {task}"
+
+        # Review text should be in artifacts.
+        artifacts = task.get("artifacts", [])
+        assert artifacts, f"no artifacts in completed task: {task}"
+        text = _extract_text({"artifacts": artifacts})
+        assert text.strip(), f"no text content in artifacts: {task}"
         # Must NOT be the executor's exception placeholder.
         assert not text.startswith("Error:"), text
 
@@ -112,15 +126,20 @@ class TestSmokeFullPath:
 
         client = TestClient(build_app())
         empty = "```diff\nnot actually a diff\n```"
-        resp = client.post("/", json=_send_message_payload(f"review\n{empty}"))
+        resp = client.post("/", json=_send_message_payload(f"review\n{empty}"),
+                           headers=_A2A_HEADERS)
         assert resp.status_code == 200, resp.text
         body = resp.json()
         assert "error" not in body, body
         result = body["result"]
-        status = result.get("status", {})
-        if status:
-            assert status.get("state") == "completed", f"task failed: {result}"
+
+        # A2A 1.0: result is {"task": {...}}
+        task = result.get("task", result)
+        status = task.get("status", {})
+        state = status.get("state", "")
+        assert state == "TASK_STATE_COMPLETED", f"task not completed: {task}"
+
+        # The defensive empty-fallback text is in the artifact.
         text = _extract_text(result)
-        # The defensive empty-fallback string, and no exception escaped.
         assert "no output produced" in text, text
         assert not text.startswith("Error:"), text

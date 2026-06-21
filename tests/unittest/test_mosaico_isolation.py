@@ -17,7 +17,7 @@ same interleaving WITHOUT the per-request deepcopy and asserting the bleed DOES 
 import asyncio
 
 import pytest
-from a2a.types import Message, Part, Role, TextPart
+from a2a.types import Message, Part, Role
 from starlette_context import request_cycle_context
 
 import pr_agent.mosaico.executor as executor_mod
@@ -27,8 +27,8 @@ from pr_agent.mosaico.executor import PRAgentExecutor
 
 
 def _make_message(text: str) -> Message:
-    return Message(message_id=f"m-{text}", role=Role.user,
-                   parts=[Part(root=TextPart(text=text))])
+    return Message(message_id=f"m-{text}", role=Role.ROLE_USER,
+                   parts=[Part(text=text)])
 
 
 class _RecordingEventQueue:
@@ -43,8 +43,9 @@ class _FakeRequestContext:
     def __init__(self, text):
         self._text = text
         self.metadata = {}
-        self.current_task = None
         self.message = _make_message(text)
+        self.task_id = f"task-{text}"
+        self.context_id = f"ctx-{text}"
 
     def get_user_input(self, delimiter: str = "\n") -> str:
         return self._text
@@ -55,11 +56,17 @@ class _SpyTaskUpdater:
         self.completed_with = None
         self.failed_with = None
 
+    async def add_artifact(self, parts, **kwargs):
+        pass
+
     async def complete(self, message=None):
         self.completed_with = message
 
     async def failed(self, message=None):
         self.failed_with = message
+
+    def new_agent_message(self, parts, metadata=None):
+        return None
 
 
 # Per-request distinct values keyed by the inbound text (== request id).
