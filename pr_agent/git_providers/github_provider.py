@@ -736,9 +736,12 @@ class GithubProvider(GitProvider):
         return self.pr.get_issue_comments()
 
     def get_repo_settings(self):
-        config_branch = get_settings().get("CONFIG.CONFIG_BRANCH", None) or os.environ.get("PR_AGENT_CONFIG_BRANCH")
-        if isinstance(config_branch, str):
-            config_branch = config_branch.strip()
+        # Normalize each candidate before applying precedence so a whitespace-only
+        # settings value doesn't short-circuit the PR_AGENT_CONFIG_BRANCH fallback.
+        settings_branch = get_settings().get("CONFIG.CONFIG_BRANCH", None)
+        settings_branch = settings_branch.strip() if isinstance(settings_branch, str) else ""
+        env_branch = (os.environ.get("PR_AGENT_CONFIG_BRANCH") or "").strip()
+        config_branch = settings_branch or env_branch
         if config_branch:
             try:
                 return self.repo_obj.get_contents(".pr_agent.toml", ref=config_branch).decoded_content

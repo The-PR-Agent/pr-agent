@@ -46,3 +46,25 @@ def test_run_sets_config_branch_from_env_var():
         cli.run(inargs=["--pr_url=https://github.com/a/b/pull/1", "review"])
 
     fake_settings.set.assert_any_call("CONFIG.CONFIG_BRANCH", "env-branch")
+
+
+def test_run_whitespace_cli_branch_falls_back_to_env_var():
+    """A whitespace-only --config-branch must not short-circuit the env fallback."""
+    fake_settings = SimpleNamespace(
+        litellm={},
+        set=MagicMock(),
+    )
+
+    async def fake_handle_request(*_args, **_kwargs):
+        return True
+
+    with patch.dict("os.environ", {"PR_AGENT_CONFIG_BRANCH": "env-branch"}, clear=False), patch(
+        "pr_agent.cli.get_settings",
+        return_value=fake_settings,
+    ), patch(
+        "pr_agent.cli.PRAgent",
+        return_value=SimpleNamespace(handle_request=fake_handle_request),
+    ):
+        cli.run(inargs=["--pr_url=https://github.com/a/b/pull/1", "--config-branch", "   ", "review"])
+
+    fake_settings.set.assert_any_call("CONFIG.CONFIG_BRANCH", "env-branch")

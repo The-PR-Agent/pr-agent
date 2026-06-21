@@ -89,7 +89,11 @@ def run(inargs=None, args=None):
 
     command = args.command.lower()
     get_settings().set("CONFIG.CLI_MODE", True)
-    config_branch = (getattr(args, "config_branch", None) or os.environ.get("PR_AGENT_CONFIG_BRANCH") or "").strip()
+    # Strip each candidate independently so a whitespace-only CLI value doesn't
+    # short-circuit the PR_AGENT_CONFIG_BRANCH env fallback before precedence.
+    cli_branch = (getattr(args, "config_branch", None) or "").strip()
+    env_branch = (os.environ.get("PR_AGENT_CONFIG_BRANCH") or "").strip()
+    config_branch = cli_branch or env_branch
     if config_branch:
         get_settings().set("CONFIG.CONFIG_BRANCH", config_branch)
     # Always reconcile CONFIG.EXTRA_CONFIG_URL with the current invocation so a

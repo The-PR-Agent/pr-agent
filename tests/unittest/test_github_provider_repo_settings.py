@@ -57,3 +57,21 @@ def test_get_repo_settings_uses_env_var_when_settings_are_missing():
 
     assert settings == b"[config]\nmodel='env'"
     repo_obj.get_contents.assert_called_once_with(".pr_agent.toml", ref="env-branch")
+
+
+def test_get_repo_settings_whitespace_settings_falls_back_to_env_var():
+    """A whitespace-only CONFIG.CONFIG_BRANCH must not short-circuit the env fallback."""
+    repo_obj = MagicMock()
+    repo_obj.get_contents.return_value = SimpleNamespace(decoded_content=b"[config]\nmodel='env'")
+    provider = _provider_with_repo(repo_obj)
+
+    with patch("pr_agent.git_providers.github_provider.get_settings") as mock_settings, patch.dict(
+        "os.environ",
+        {"PR_AGENT_CONFIG_BRANCH": "env-branch"},
+        clear=False,
+    ):
+        mock_settings.return_value.get.return_value = "   "
+        settings = provider.get_repo_settings()
+
+    assert settings == b"[config]\nmodel='env'"
+    repo_obj.get_contents.assert_called_once_with(".pr_agent.toml", ref="env-branch")
