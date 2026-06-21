@@ -200,6 +200,14 @@ class LiteLLMAIHandler(BaseAiHandler):
         if get_settings().get("CODESTRAL.KEY", None):
             os.environ["CODESTRAL_API_KEY"] = get_settings().get("CODESTRAL.KEY")
 
+        # Support Databricks-hosted models (e.g. Azure Databricks serving endpoints).
+        # Uses PAT/key authentication via LiteLLM's env vars.
+        # SEE https://docs.litellm.ai/docs/providers/databricks
+        if get_settings().get("DATABRICKS.API_KEY", None):
+            os.environ["DATABRICKS_API_KEY"] = get_settings().get("DATABRICKS.API_KEY")
+        if get_settings().get("DATABRICKS.API_BASE", None):
+            os.environ["DATABRICKS_API_BASE"] = get_settings().get("DATABRICKS.API_BASE")
+
         # Check for Azure AD configuration
         if get_settings().get("AZURE_AD.CLIENT_ID", None):
             self.azure = True

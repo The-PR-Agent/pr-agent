@@ -386,6 +386,21 @@ key = "..." # your Codestral api key
 
 (you can obtain a Codestral key from [here](https://console.mistral.ai/codestral))
 
+### Databricks
+
+To use a model hosted on Databricks (e.g. an Azure Databricks serving endpoint), set:
+
+```toml
+[config] # in configuration.toml
+model = "databricks/databricks-claude-sonnet-4"
+fallback_models = ["databricks/databricks-claude-sonnet-4"]
+[databricks] # in .secrets.toml
+api_key = "..." # your Databricks personal access token (PAT)
+api_base = "https://adb-xxxx.azuredatabricks.net/serving-endpoints" # your workspace serving-endpoints URL
+```
+
+The model name after the `databricks/` prefix is the name of your serving endpoint. See LiteLLM's [Databricks provider docs](https://docs.litellm.ai/docs/providers/databricks) for details.
+
 ### Openrouter
 
 To use model from Openrouter, for example, set:
