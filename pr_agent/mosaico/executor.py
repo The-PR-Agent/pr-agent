@@ -36,9 +36,17 @@ class PRAgentExecutor(AgentExecutor):
     """Turns a MOSAICO message/send into a pr-agent run and returns a Task."""
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
-        # In A2A 1.0 DefaultRequestHandler sets task_id/context_id on the context.
-        updater = TaskUpdater(event_queue, context.task_id, context.context_id)
+        # In A2A 1.0 DefaultRequestHandler sets task_id/context_id on the context before
+        # execute() is reached (the SDK also rejects non-1.0 requests upstream).  We still
+        # build the updater INSIDE the try and validate the fields explicitly: a context
+        # missing them surfaces as a controlled, logged failure here instead of an uncaught
+        # crash before any task event is emitted.
+        updater = None
         try:
+            if not context.task_id or not context.context_id:
+                raise ValueError("A2A 1.0 RequestContext missing task_id/context_id")
+            updater = TaskUpdater(event_queue, context.task_id, context.context_id)
+
             # Request-scoped settings: the tool run mutates ONLY this deepcopy, never the
             # shared global. get_settings() resolves to sctx["settings"] when present.
             sctx["settings"] = copy.deepcopy(global_settings)
@@ -63,6 +71,10 @@ class PRAgentExecutor(AgentExecutor):
                 await updater.failed(msg)
         except Exception as e:
             get_logger().exception("MOSAICO task failed")
+            if updater is None:
+                # task_id/context_id were missing, so we cannot create a Task to fail.
+                # Re-raise so the handler returns a controlled JSON-RPC error.
+                raise
             error_text = f"Error: {e}"
             # Must add_artifact first to initialise the task before failed().
             await updater.add_artifact([Part(text=error_text)])

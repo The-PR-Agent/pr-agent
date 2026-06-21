@@ -203,6 +203,27 @@ class TestExecute:
         )
         assert spy.failed_with is not None
 
+    @pytest.mark.parametrize("missing", ["task_id", "context_id"])
+    @pytest.mark.asyncio
+    async def test_missing_a2a_fields_raise_controlled_error(self, monkeypatch, spy_updater, missing):
+        """Defense in depth: a RequestContext lacking the A2A 1.0 task_id/context_id
+        fields raises a controlled error (logged) before any TaskUpdater is built —
+        not an uncaught crash, and never a silent complete()."""
+        async def fake_route_and_run_result(text):
+            return RouteResult("RENDERED", True)
+
+        monkeypatch.setattr(executor_mod, "route_and_run_result", fake_route_and_run_result)
+
+        ctx = _FakeRequestContext("review this")
+        setattr(ctx, missing, None)
+        with request_cycle_context({}):
+            with pytest.raises(ValueError):
+                await PRAgentExecutor().execute(ctx, _RecordingEventQueue())
+
+        # TaskUpdater was never constructed (validation fires first), so no task
+        # lifecycle events were emitted.
+        assert spy_updater.last is None
+
     @pytest.mark.asyncio
     async def test_cancel_raises_not_implemented(self):
         with pytest.raises(NotImplementedError):
