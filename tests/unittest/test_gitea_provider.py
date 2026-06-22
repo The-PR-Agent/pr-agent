@@ -148,3 +148,144 @@ class TestGiteaProvider:
         empty.repo_api = MagicMock()
         empty.repo_api.get_file_content.return_value = ''
         assert empty.get_repo_settings() == b""
+
+
+class TestGiteaProviderAddFileDiff:
+    """Tests for GiteaProvider.__add_file_diff diff parsing.
+
+    The provider parses the raw unified diff returned by Gitea into a
+    ``{file_path: patch}`` mapping. These tests exercise that parsing in
+    isolation, bypassing __init__ (which performs network calls) by building the
+    instance with ``__new__`` and wiring up only the attributes the method uses.
+    """
+
+    @staticmethod
+    def _parse_diff(diff_content):
+        from pr_agent.git_providers.gitea_provider import GiteaProvider
+
+        provider = GiteaProvider.__new__(GiteaProvider)
+        provider.logger = MagicMock()
+        provider.owner = 'owner'
+        provider.repo = 'repo'
+        provider.pr_number = 1
+        provider.file_diffs = {}
+        provider.repo_api = MagicMock()
+        provider.repo_api.get_pull_request_diff.return_value = diff_content
+        # Invoke the name-mangled private method.
+        provider._GiteaProvider__add_file_diff()
+        return provider.file_diffs
+
+    def test_single_hunk_is_parsed(self):
+        diff = (
+            'diff --git a/file1.py b/file1.py\n'
+            'index 1111111..2222222 100644\n'
+            '--- a/file1.py\n'
+            '+++ b/file1.py\n'
+            '@@ -1,3 +1,4 @@\n'
+            ' line1\n'
+            '+added line\n'
+            ' line2\n'
+            ' line3'
+        )
+        expected = (
+            '@@ -1,3 +1,4 @@\n'
+            ' line1\n'
+            '+added line\n'
+            ' line2\n'
+            ' line3'
+        )
+        assert self._parse_diff(diff) == {'file1.py': expected}
+
+    def test_multi_hunk_diff_keeps_all_hunks(self):
+        """Regression for multi-hunk diffs (#2137).
+
+        The previous implementation reset ``current_patch`` on every ``@@`` line,
+        so only the last hunk of a file survived. All hunks must be preserved.
+        """
+        diff = (
+            'diff --git a/file1.py b/file1.py\n'
+            'index 1111111..2222222 100644\n'
+            '--- a/file1.py\n'
+            '+++ b/file1.py\n'
+            '@@ -1,3 +1,4 @@\n'
+            ' line1\n'
+            '+added line\n'
+            ' line2\n'
+            ' line3\n'
+            '@@ -10,3 +11,4 @@\n'
+            ' line10\n'
+            '+another added\n'
+            ' line11\n'
+            ' line12'
+        )
+        expected = (
+            '@@ -1,3 +1,4 @@\n'
+            ' line1\n'
+            '+added line\n'
+            ' line2\n'
+            ' line3\n'
+            '@@ -10,3 +11,4 @@\n'
+            ' line10\n'
+            '+another added\n'
+            ' line11\n'
+            ' line12'
+        )
+        file_diffs = self._parse_diff(diff)
+        assert file_diffs == {'file1.py': expected}
+        # Both hunk headers must be present (the bug dropped the first one).
+        assert file_diffs['file1.py'].count('@@ -') == 2
+
+    def test_multiple_files_each_with_multiple_hunks(self):
+        diff = (
+            'diff --git a/file1.py b/file1.py\n'
+            'index 1111111..2222222 100644\n'
+            '--- a/file1.py\n'
+            '+++ b/file1.py\n'
+            '@@ -1,2 +1,3 @@\n'
+            ' a\n'
+            '+b\n'
+            ' c\n'
+            '@@ -20,2 +21,3 @@\n'
+            ' d\n'
+            '+e\n'
+            ' f\n'
+            'diff --git a/file2.py b/file2.py\n'
+            'index 3333333..4444444 100644\n'
+            '--- a/file2.py\n'
+            '+++ b/file2.py\n'
+            '@@ -5,2 +5,3 @@\n'
+            ' g\n'
+            '+h\n'
+            ' i\n'
+            '@@ -30,2 +31,3 @@\n'
+            ' j\n'
+            '+k\n'
+            ' l'
+        )
+        file_diffs = self._parse_diff(diff)
+        assert set(file_diffs.keys()) == {'file1.py', 'file2.py'}
+        assert file_diffs['file1.py'].count('@@ -') == 2
+        assert file_diffs['file2.py'].count('@@ -') == 2
+        assert file_diffs['file1.py'].startswith('@@ -1,2 +1,3 @@')
+        assert file_diffs['file2.py'].startswith('@@ -5,2 +5,3 @@')
+
+    def test_empty_diff_results_in_no_patches(self):
+        assert self._parse_diff('') == {}
+
+    def test_api_error_is_swallowed_and_logged(self):
+        from pr_agent.git_providers.gitea_provider import GiteaProvider
+
+        provider = GiteaProvider.__new__(GiteaProvider)
+        provider.logger = MagicMock()
+        provider.owner = 'owner'
+        provider.repo = 'repo'
+        provider.pr_number = 1
+        provider.file_diffs = {}
+        provider.repo_api = MagicMock()
+        provider.repo_api.get_pull_request_diff.side_effect = Exception('boom')
+
+        provider._GiteaProvider__add_file_diff()
+
+        provider.logger.error.assert_called_once()
+        # file_diffs is left untouched when the diff cannot be fetched.
+        assert provider.file_diffs == {}
