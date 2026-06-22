@@ -670,8 +670,17 @@ class GitLabProvider(GitProvider):
                 target_file = None
                 for file in diff_files:
                     if file.filename == relevant_file:
+<<<<<<< feat/improvements
                         target_file = file
                         break
+=======
+                        if file.filename == relevant_file:
+                            target_file = file
+                            break
+                if target_file is None:
+                    get_logger().warning(f"Skipping suggestion: file '{relevant_file}' not found in diff")
+                    continue
+>>>>>>> main
                 range = relevant_lines_end - relevant_lines_start # no need to add 1
                 body = body.replace('```suggestion', f'```suggestion:-0+{range}')
                 lines = target_file.head_file.splitlines()
