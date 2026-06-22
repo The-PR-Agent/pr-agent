@@ -2,6 +2,8 @@ import difflib
 import hashlib
 import re
 import urllib.parse
+from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any, Optional, Tuple, Union
 from urllib.parse import parse_qs, urlparse
 
@@ -15,17 +17,75 @@ from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import decode_if_bytes
 from ..algo.language_handler import is_valid_file
-from ..algo.utils import (clip_tokens,
+from ..algo.utils import (PRReviewHeader, clip_tokens,
                           find_line_number_of_relevant_line_in_file,
                           load_large_diff)
 from ..config_loader import get_settings
 from ..log import get_logger
-from .git_provider import MAX_FILES_ALLOWED_FULL, GitProvider
+from .git_provider import MAX_FILES_ALLOWED_FULL, GitProvider, IncrementalPR
 
 
 class DiffNotFoundError(Exception):
     """Raised when the diff for a merge request cannot be found."""
     pass
+
+
+def _parse_gitlab_iso_datetime(value) -> Optional[datetime]:
+    """Parse a GitLab ISO 8601 datetime string into a naive UTC datetime.
+
+    GitLab returns timestamps with timezone info (e.g. "2024-01-15T14:30:00.000+02:00").
+    We normalise to naive UTC so they can be compared with PyGithub-style naive datetimes
+    used in the shared incremental-review code path.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is not None:
+            return value.astimezone(timezone.utc).replace(tzinfo=None)
+        return value
+    if not isinstance(value, str):
+        return None
+    try:
+        s = value.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt
+    except (ValueError, AttributeError):
+        return None
+
+
+class _GitlabIncrementalCommit:
+    """Adapter exposing a GitLab ProjectCommit with the attribute shape PyGithub Commit objects use.
+
+    Shared incremental-review code reads `.sha` and `.commit.author.date`; we mimic that surface
+    so the provider can plug into `IncrementalPR.first_new_commit_sha` and the threshold checks
+    in `_can_run_incremental_review` without further branching.
+    """
+
+    def __init__(self, gl_commit):
+        self._gl_commit = gl_commit
+        self.sha = getattr(gl_commit, 'id', None)
+        date = _parse_gitlab_iso_datetime(
+            getattr(gl_commit, 'committed_date', None)
+            or getattr(gl_commit, 'authored_date', None)
+            or getattr(gl_commit, 'created_at', None)
+        )
+        self.commit = SimpleNamespace(author=SimpleNamespace(date=date))
+
+
+class _GitlabIncrementalNote:
+    """Adapter exposing a GitLab note (issue comment) with attributes the reviewer expects.
+
+    The reviewer reads `.created_at` (datetime) and `.html_url` from `previous_review`.
+    """
+
+    def __init__(self, note, mr_web_url: Optional[str] = None):
+        self._note = note
+        self.id = getattr(note, 'id', None)
+        self.body = getattr(note, 'body', '') or ''
+        self.created_at = _parse_gitlab_iso_datetime(getattr(note, 'created_at', None))
+        self.html_url = f"{mr_web_url}#note_{self.id}" if mr_web_url else ""
 
 class GitLabProvider(GitProvider):
 
@@ -347,6 +407,208 @@ class GitLabProvider(GitProvider):
             get_logger().error(f"Could not get diff for merge request {self.id_mr}")
             raise DiffNotFoundError(f"Could not get diff for merge request {self.id_mr}") from e
 
+    # Anchor-note prefixes per incremental "kind". An incremental run looks for the most recent
+    # prior note matching ANY of these prefixes and uses its timestamp as the timeline anchor.
+    _INCREMENTAL_ANCHOR_PREFIXES = {
+        "review": (
+            PRReviewHeader.REGULAR.value,         # "## PR Reviewer Guide"
+            PRReviewHeader.INCREMENTAL.value,     # "## Incremental PR Reviewer Guide"
+        ),
+        "suggestions": (
+            "## PR Code Suggestions ✨",           # summary-table mode
+            "**Suggestion:**",                     # commitable-suggestions inline mode
+        ),
+    }
+
+    def get_incremental_commits(self, incremental: Optional[IncrementalPR] = None, kind: str = "review"):
+        """Populate state needed for an incremental run.
+
+        Mirrors `GithubProvider.get_incremental_commits` for `/review -i`, and also supports
+        `/improve -i` via `kind="suggestions"` — in that case we anchor on the most recent prior
+        `## PR Code Suggestions` or inline `**Suggestion:**` note instead of a review note, so
+        re-runs of `/improve` only act on commits added since the last suggestions pass.
+        """
+        if incremental is None:
+            incremental = IncrementalPR(False)
+        self.incremental = incremental
+        if not self.incremental.is_incremental:
+            return
+        self.unreviewed_files_set = {}
+        self._incremental_kind = kind
+        self._get_incremental_commits()
+
+    def _get_incremental_commits(self):
+        if not getattr(self, 'mr_commits', None):
+            # gitlab returns commits newest-first; reverse to match PyGithub's oldest-first ordering
+            self.mr_commits = list(self.mr.commits())[::-1]
+
+        kind = getattr(self, '_incremental_kind', 'review')
+        prefixes = self._INCREMENTAL_ANCHOR_PREFIXES.get(kind, ())
+        self.previous_review = self._find_anchor_note(prefixes) if prefixes else None
+        if not self.previous_review:
+            get_logger().info(
+                f"No previous {kind} comment found, will fall back to a full run"
+            )
+            self.incremental.is_incremental = False
+            return
+
+        self.incremental.commits_range = self.get_commit_range()
+        if not self.incremental.commits_range:
+            # Disambiguate two cases:
+            # - last_seen_commit is set: we successfully walked the commit timeline and
+            #   found that all commits are at-or-before the previous review, i.e. legitimately
+            #   no new commits since the last review. Keep is_incremental=True so the reviewer
+            #   surfaces "Incremental Review Skipped — no files changed".
+            # - last_seen_commit is unset: we couldn't anchor any commit on the timeline
+            #   (the previous review's timestamp didn't parse, or every post-review commit was
+            #   dateless). Fall back to a full review rather than silently dropping the run.
+            if self.incremental.last_seen_commit is None:
+                get_logger().info(
+                    "Could not establish a commit timeline against the previous review "
+                    "(missing/unparseable timestamps); falling back to a full review"
+                )
+                self.incremental.is_incremental = False
+            return
+
+        last_seen_sha = self.incremental.last_seen_commit_sha
+        try:
+            head_sha = self.mr.diff_refs['head_sha']
+        except (KeyError, TypeError, AttributeError):
+            head_sha = None
+        self._incremental_head_sha = head_sha
+
+        if not last_seen_sha or not head_sha:
+            # The previous review predates every commit on the branch (or refs unavailable);
+            # nothing to anchor an incremental diff against, fall back to a full review.
+            get_logger().info(
+                "Incremental review cannot anchor a base commit (no last_seen_sha or head_sha); "
+                "falling back to a full review"
+            )
+            self.incremental.is_incremental = False
+            return
+
+        try:
+            project = self.gl.projects.get(self.id_project)
+            compare_result = project.repository_compare(last_seen_sha, head_sha)
+        except Exception as e:
+            get_logger().error(
+                f"Failed to compare commits {last_seen_sha}..{head_sha} for incremental review: {e}"
+            )
+            self.incremental.is_incremental = False
+            return
+
+        if isinstance(compare_result, dict):
+            diffs = compare_result.get('diffs', []) or []
+        else:
+            diffs = getattr(compare_result, 'diffs', []) or []
+
+        # `repository_compare(last_seen_sha, head_sha)` walks every commit on the path between
+        # the two SHAs, so if `git merge <target>` was run on the MR branch since the last
+        # incremental pass, files that only changed in the target branch (and were brought in
+        # via the merge) appear in `diffs` — even though they are not part of the MR's own
+        # contribution and would never appear in a full /review.
+        #
+        # `mr.changes()` is anchored on the MR's merge-base with target, so it correctly excludes
+        # target-side changes. Intersect file paths to drop "phantom" files brought in via merge.
+        mr_change_paths = None
+        try:
+            mr_change_paths = {
+                c.get('new_path')
+                for c in self.mr.changes().get('changes', [])
+                if c.get('new_path')
+            }
+        except Exception as e:
+            get_logger().warning(
+                f"Could not fetch mr.changes() to filter incremental scope; "
+                f"merge-from-target changes may leak into the review: {e}"
+            )
+
+        for diff in diffs:
+            # `repository_compare` normally yields dict entries, but defend against object-shaped
+            # responses too — otherwise a stricter library or stubbed client silently empties the
+            # incremental set and we degrade to "no new files".
+            if isinstance(diff, dict):
+                new_path = diff.get('new_path')
+            else:
+                new_path = getattr(diff, 'new_path', None)
+            if not new_path:
+                continue
+            if mr_change_paths is not None and new_path not in mr_change_paths:
+                get_logger().debug(
+                    f"Excluding {new_path} from incremental scope: not part of the MR diff "
+                    f"(likely brought in via a merge from the target branch)"
+                )
+                continue
+            self.unreviewed_files_set[new_path] = diff
+
+    def get_commit_range(self):
+        last_review_time = getattr(self.previous_review, 'created_at', None)
+        if last_review_time is None:
+            return []
+        first_new_commit_index = None
+        for index in range(len(self.mr_commits) - 1, -1, -1):
+            adapter = _GitlabIncrementalCommit(self.mr_commits[index])
+            commit_time = adapter.commit.author.date
+            if commit_time is None:
+                # A commit without a parseable timestamp cannot be placed on the timeline;
+                # skip it so it never lands in last_seen_commit (PRReviewer compares that
+                # date with `>`, which would TypeError against None).
+                get_logger().warning(
+                    f"Skipping commit {adapter.sha} with unparseable timestamp during incremental review"
+                )
+                continue
+            if commit_time > last_review_time:
+                self.incremental.first_new_commit = adapter
+                first_new_commit_index = index
+            else:
+                self.incremental.last_seen_commit = adapter
+                break
+        return self.mr_commits[first_new_commit_index:] if first_new_commit_index is not None else []
+
+    def get_previous_review(self, *, full: bool, incremental: bool):
+        if not (full or incremental):
+            raise ValueError("At least one of full or incremental must be True")
+        prefixes = []
+        if full:
+            prefixes.append(PRReviewHeader.REGULAR.value)
+        if incremental:
+            prefixes.append(PRReviewHeader.INCREMENTAL.value)
+        return self._find_anchor_note(prefixes)
+
+    def _find_anchor_note(self, prefixes):
+        """Return the most recent MR note whose body starts with any of `prefixes`.
+
+        Used by incremental flows (`/review -i`, `/improve -i`) to find the timestamp
+        we anchor the commit timeline on. Returns a `_GitlabIncrementalNote` adapter
+        with `.created_at` parsed to a naive UTC datetime (possibly `None` when the
+        GitLab payload had an unexpected shape), or `None` if no match.
+
+        We rely on GitLab returning notes in `created_at DESC` order (the API default)
+        and take the first match — re-sorting locally with a `datetime.min` fallback
+        for unparseable timestamps would silently demote the newest match in favour
+        of an older parseable one, leading to commits being re-reviewed. If the chosen
+        anchor's timestamp doesn't parse, `_get_incremental_commits` falls back to a
+        full run via the existing `last_seen_commit is None` branch.
+        """
+        if not prefixes:
+            return None
+        # Use hasattr (not truthy) so a legitimately empty notes list still counts as cached;
+        # otherwise we'd re-fetch from GitLab on every call for MRs that have no notes.
+        if not hasattr(self, '_incremental_notes_cache'):
+            try:
+                self._incremental_notes_cache = list(self.mr.notes.list(get_all=True))
+            except Exception as e:
+                get_logger().error(f"Failed to list MR notes for incremental review: {e}")
+                return None
+        mr_web_url = getattr(self.mr, 'web_url', None)
+        for note in self._incremental_notes_cache:
+            body = getattr(note, 'body', None)
+            if not isinstance(body, str):
+                continue
+            if any(body.startswith(prefix) for prefix in prefixes):
+                return _GitlabIncrementalNote(note, mr_web_url=mr_web_url)
+        return None
+
     def get_pr_file_content(self, file_path: str, branch: str) -> str:
         try:
             file_obj = self.gl.projects.get(self.id_project).files.get(file_path, branch)
@@ -405,9 +667,28 @@ class GitLabProvider(GitProvider):
         if self.diff_files:
             return self.diff_files
 
-        # filter files using [ignore] patterns
-        raw_changes = self.mr.changes().get('changes', [])
-        raw_changes = self._expand_submodule_changes(raw_changes)
+        incremental_active = bool(
+            getattr(self, 'incremental', None)
+            and getattr(self.incremental, 'is_incremental', False)
+            and getattr(self, 'unreviewed_files_set', None)
+        )
+
+        if incremental_active:
+            raw_changes = list(self.unreviewed_files_set.values())
+            # Apply submodule expansion symmetrically with the full-review path so that
+            # `GITLAB.EXPAND_SUBMODULE_DIFFS` keeps working under `/review -i`.
+            raw_changes = self._expand_submodule_changes(raw_changes)
+            base_sha_for_content = self.incremental.last_seen_commit_sha
+            # `_incremental_head_sha` is populated by `_get_incremental_commits()` whenever
+            # incremental_active is true; we still guard for defensive callers.
+            head_sha_for_content = getattr(self, '_incremental_head_sha', None)
+            if not head_sha_for_content:
+                head_sha_for_content = (self.mr.diff_refs or {}).get('head_sha')
+        else:
+            raw_changes = self.mr.changes().get('changes', [])
+            raw_changes = self._expand_submodule_changes(raw_changes)
+            base_sha_for_content = self.mr.diff_refs['base_sha']
+            head_sha_for_content = self.mr.diff_refs['head_sha']
         diffs_original = raw_changes
         diffs = filter_ignored(diffs_original, 'gitlab')
         if diffs != diffs_original:
@@ -432,8 +713,8 @@ class GitLabProvider(GitProvider):
             # allow only a limited number of files to be fully loaded. We can manage the rest with diffs only
             counter_valid += 1
             if counter_valid < MAX_FILES_ALLOWED_FULL or not diff['diff']:
-                original_file_content_str = self.get_pr_file_content(diff['old_path'], self.mr.diff_refs['base_sha'])
-                new_file_content_str = self.get_pr_file_content(diff['new_path'], self.mr.diff_refs['head_sha'])
+                original_file_content_str = self.get_pr_file_content(diff['old_path'], base_sha_for_content)
+                new_file_content_str = self.get_pr_file_content(diff['new_path'], head_sha_for_content)
             else:
                 if counter_valid == MAX_FILES_ALLOWED_FULL:
                     get_logger().info(f"Too many files in PR, will avoid loading full content for rest of files")
@@ -477,6 +758,10 @@ class GitLabProvider(GitProvider):
         return diff_files
 
     def get_files(self) -> list:
+        if (getattr(self, 'incremental', None)
+                and getattr(self.incremental, 'is_incremental', False)
+                and getattr(self, 'unreviewed_files_set', None)):
+            return list(self.unreviewed_files_set.keys())
         if not self.git_files:
             raw_changes = self.mr.changes().get('changes', [])
             raw_changes = self._expand_submodule_changes(raw_changes)
