@@ -112,7 +112,7 @@ def test_build_repo_context_refreshes_process_cache_after_ttl(repo_context_setti
     first_provider = FakeProvider({"AGENTS.md": "Repo purpose"}, pr_url="https://example.com/org/repo/pull/1")
     second_provider = FakeProvider({"AGENTS.md": "Changed repo purpose"}, pr_url="https://example.com/org/repo/pull/1")
 
-    with patch("pr_agent.algo.repo_context.time.monotonic", side_effect=[100, 100, 2000, 2000, 2000]):
+    with patch("pr_agent.algo.repo_context.time.monotonic", side_effect=[100, 100, 2000, 2000, 2000, 2000]):
         first_context = build_repo_context(first_provider)
         second_context = build_repo_context(second_provider)
 
@@ -128,7 +128,7 @@ def test_build_repo_context_refreshes_empty_process_cache_after_ttl(repo_context
     first_provider = FakeProvider({}, pr_url="https://example.com/org/repo/pull/1")
     second_provider = FakeProvider({"AGENTS.md": "Repo purpose"}, pr_url="https://example.com/org/repo/pull/1")
 
-    with patch("pr_agent.algo.repo_context.time.monotonic", side_effect=[100, 100, 2000, 2000, 2000]):
+    with patch("pr_agent.algo.repo_context.time.monotonic", side_effect=[100, 100, 2000, 2000, 2000, 2000]):
         first_context = build_repo_context(first_provider)
         second_context = build_repo_context(second_provider)
 

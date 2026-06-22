@@ -287,10 +287,11 @@ def apply_repo_settings(pr_url):
                             os.close(fd)
 
                     try:
-                        dynconf_kwargs = {'core_loaders': [],  # DISABLE default loaders, otherwise will load toml files more than once.
+                        dynconf_kwargs = {'core_loaders': [],
+                             # Disable default loaders, otherwise TOML files load more than once.
                              'loaders': ['pr_agent.custom_merge_loader'],
-                             # Use a custom loader to merge sections, but overwrite their overlapping values. Don't involve ENV variables.
-                             'merge_enabled': True  # Merge multiple files; ensures [XYZ] sections only overwrite overlapping keys, not whole sections.
+                             # Merge sections and overwrite overlapping values without involving environment variables.
+                             'merge_enabled': True
                          }
 
                         new_settings = Dynaconf(settings_files=repo_settings_files,
@@ -364,13 +365,21 @@ def handle_configurations_errors(config_errors, git_provider):
                 err_message = err['error']
                 config_type = err['category']
                 header = f"❌ **PR-Agent failed to apply '{config_type}' repo settings**"
-                body = f"{header}\n\nThe configuration file needs to be a valid [TOML](https://qodo-merge-docs.qodo.ai/usage-guide/configuration_options/), please fix it.\n\n"
+                body = (
+                    f"{header}\n\nThe configuration file needs to be a valid "
+                    "[TOML](https://qodo-merge-docs.qodo.ai/usage-guide/configuration_options/), please fix it.\n\n"
+                )
                 body += f"___\n\n**Error message:**\n`{err_message}`\n\n"
-                if git_provider.is_supported("gfm_markdown"):
-                    body += f"\n\n<details><summary>Configuration content:</summary>\n\n```toml\n{configuration_file_content}\n```\n\n</details>"
+                if config_type == "global":
+                    body += "\n\nThe invalid configuration came from the organization's global settings file."
+                elif git_provider.is_supported("gfm_markdown"):
+                    body += (
+                        "\n\n<details><summary>Configuration content:</summary>\n\n"
+                        f"```toml\n{configuration_file_content}\n```\n\n</details>"
+                    )
                 else:
                     body += f"\n\n**Configuration content:**\n\n```toml\n{configuration_file_content}\n```\n\n"
-                get_logger().warning(f"Sending a 'configuration error' comment to the PR", artifact={'body': body})
+                get_logger().warning("Sending a 'configuration error' comment to the PR", artifact={'body': body})
                 # git_provider.publish_comment(body)
                 if hasattr(git_provider, 'publish_persistent_comment'):
                     git_provider.publish_persistent_comment(body,
@@ -380,7 +389,7 @@ def handle_configurations_errors(config_errors, git_provider):
                 else:
                     git_provider.publish_comment(body)
     except Exception as e:
-        get_logger().exception(f"Failed to handle configurations errors", e)
+        get_logger().exception("Failed to handle configurations errors", e)
 
 
 def set_claude_model():

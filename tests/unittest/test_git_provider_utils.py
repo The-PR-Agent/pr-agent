@@ -48,6 +48,7 @@ def test_apply_repo_settings_merges_global_before_local_settings(monkeypatch):
     original_extra_instructions = settings.pr_reviewer.extra_instructions
     original_enable_intro_text = settings.pr_reviewer.enable_intro_text
     monkeypatch.setattr(utils, "get_git_provider_with_context", lambda pr_url: FakeSettingsProvider())
+    monkeypatch.delenv("AUTO_CAST_FOR_DYNACONF", raising=False)
 
     try:
         apply_repo_settings("https://github.example.com/org/service/pull/1")
@@ -129,7 +130,7 @@ def test_handle_configurations_errors_publishes_each_error():
             "category": "local",
         },
         {
-            "settings": b"[pr_reviewer]\nnum_max_findings =",
+            "settings": b"[github]\nuser_token = \"secret-token\"\n[pr_reviewer]\nnum_max_findings =",
             "error": "Second error",
             "category": "global",
         },
@@ -139,7 +140,9 @@ def test_handle_configurations_errors_publishes_each_error():
     assert "First error" in provider.comments[0]
     assert "[config]\nmodel =" in provider.comments[0]
     assert "Second error" in provider.comments[1]
-    assert "[pr_reviewer]\nnum_max_findings =" in provider.comments[1]
+    assert "organization's global settings file" in provider.comments[1]
+    assert "secret-token" not in provider.comments[1]
+    assert "num_max_findings" not in provider.comments[1]
 
 
 def test_handle_configurations_errors_ignores_empty_sentinel_entry():

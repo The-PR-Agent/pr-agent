@@ -241,7 +241,7 @@ class GiteaProvider(GitProvider):
     def publish_comment(self, comment: str,is_temporary: bool = False) -> None:
         """Publish a comment to the pull request"""
         if is_temporary and not get_settings().config.publish_output_progress:
-            get_logger().debug(f"Skipping publish_comment for temporary comment")
+            get_logger().debug("Skipping publish_comment for temporary comment")
             return None
 
         if self.enabled_issue:
@@ -753,12 +753,12 @@ class GiteaProvider(GitProvider):
         """
         try:
             if not self.owner or not self.repo:
-                self.logger.warning(f"Cannot get repo file content: owner or repo not set")
+                self.logger.warning("Cannot get repo file content: owner or repo not set")
                 return ""
 
             ref = self.base_sha or self.base_ref or self.sha
             if not ref:
-                self.logger.warning(f"Cannot get repo file content: ref not set")
+                self.logger.warning("Cannot get repo file content: ref not set")
                 return ""
 
             content = self.repo_api.get_file_content(
