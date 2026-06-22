@@ -41,14 +41,26 @@ class DiffGitProvider(GitProvider):
             files = parse_unified_diff(self.diff_text)
         except Exception as e:
             raise ValueError(f"Failed to parse the provided diff: {e}") from e
+        root = os.path.realpath(os.getcwd())
         for f in files:
             head = ""
-            if f.filename and os.path.isfile(f.filename):
-                try:
-                    with open(f.filename, "r", encoding="utf-8") as fh:
-                        head = fh.read()
-                except Exception as e:
-                    get_logger().info(f"Could not read working-tree file {f.filename}: {e}")
+            if f.filename:
+                if os.path.isabs(f.filename):
+                    get_logger().info(
+                        f"Skipping absolute path in diff (unsafe): {f.filename}"
+                    )
+                else:
+                    candidate = os.path.realpath(os.path.join(root, f.filename))
+                    if candidate != root and not candidate.startswith(root + os.sep):
+                        get_logger().info(
+                            f"Skipping path that escapes repo root (path traversal): {f.filename}"
+                        )
+                    elif os.path.isfile(candidate):
+                        try:
+                            with open(candidate, "r", encoding="utf-8") as fh:
+                                head = fh.read()
+                        except Exception as e:
+                            get_logger().info(f"Could not read working-tree file {f.filename}: {e}")
             f.head_file = head
             f.base_file = reconstruct_base_file(head, f.patch) if head else ""
         self.diff_files = files
@@ -76,7 +88,8 @@ class DiffGitProvider(GitProvider):
 
     def is_supported(self, capability: str) -> bool:
         if capability in ["get_issue_comments", "create_inline_comment",
-                          "publish_inline_comments", "get_labels"]:
+                          "publish_inline_comments", "publish_file_comments",
+                          "get_labels"]:
             return False
         return True
 

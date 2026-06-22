@@ -66,6 +66,33 @@ def test_temporary_comment_not_emitted(capsys):
     assert "Preparing review" not in captured.out
 
 
+def test_publish_file_comments_not_supported():
+    get_settings().set("diff.content", DIFF)
+    get_settings().set("diff.output_path", None)
+    provider = DiffGitProvider(None)
+    assert provider.is_supported("publish_file_comments") is False
+
+
+def test_path_traversal_file_not_read():
+    # A diff whose target path escapes the repo root must NOT be read from disk.
+    traversal_diff = (
+        "diff --git a/../../evil.txt b/../../evil.txt\n"
+        "index 0000000..1111111 100644\n"
+        "--- a/../../evil.txt\n"
+        "+++ b/../../evil.txt\n"
+        "@@ -1,1 +1,1 @@\n"
+        "-old\n"
+        "+new\n"
+    )
+    get_settings().set("diff.content", traversal_diff)
+    get_settings().set("diff.output_path", None)
+    provider = DiffGitProvider(None)
+    files = provider.get_diff_files()
+    assert len(files) == 1
+    assert files[0].head_file == ""
+    assert files[0].base_file == ""
+
+
 def test_malformed_diff_raises_valueerror():
     # A hunk with no file header triggers UnidiffParseError inside parse_unified_diff,
     # which the provider must re-raise as ValueError with a clear message.

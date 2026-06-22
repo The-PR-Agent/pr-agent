@@ -1,4 +1,4 @@
-## Tokenless local diff mode
+# Tokenless local diff mode
 
 Run PR-Agent against a raw unified diff with no platform API token and no PR URL.
 Results are printed to stdout (and optionally saved to a file). This suits security-first
@@ -69,7 +69,7 @@ The diff mode is different in the following ways:
 | Working tree required | Yes (clean) | No |
 | Platform token required | No | No |
 | Output | GitHub-style comment published locally | stdout (+ optional file) |
-| Inline comments | Supported | Not supported |
+| Inline comments | Not supported | Not supported |
 
 Use the `diff` provider when you already have a diff artifact (e.g. from a CI step or
 `git format-patch`) and want a zero-configuration, token-free review.
