@@ -4,7 +4,7 @@ from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.log import get_logger
 
 
-def _strip_prefix(path: str) -> str:
+def _strip_prefix(path: str | None) -> str | None:
     if path is None:
         return None
     if path.startswith(("a/", "b/")):
@@ -75,7 +75,7 @@ def reconstruct_base_file(head_file_str: str, patch_str: str) -> str:
         head_idx = hunk_head_start
 
         for line in hunk:
-            value = line.value.rstrip("\n")
+            value = line.value.rstrip("\r\n")
             if line.is_context:
                 if head_idx >= len(head_lines) or head_lines[head_idx] != value:
                     return ""
@@ -90,6 +90,6 @@ def reconstruct_base_file(head_file_str: str, patch_str: str) -> str:
 
     base_lines.extend(head_lines[head_idx:])
     result = "\n".join(base_lines)
-    if head_file_str.endswith("\n") and result:
+    if head_file_str.endswith("\n"):
         result += "\n"
     return result

@@ -1,5 +1,5 @@
 from pr_agent.algo.types import EDIT_TYPE
-from pr_agent.git_providers.diff_parsing import parse_unified_diff
+from pr_agent.git_providers.diff_parsing import parse_unified_diff, reconstruct_base_file
 
 MODIFY_DIFF = """diff --git a/foo.py b/foo.py
 index 1111111..2222222 100644
@@ -67,8 +67,6 @@ def test_parse_rename():
     assert f.old_filename == "old.py"
 
 
-from pr_agent.git_providers.diff_parsing import reconstruct_base_file
-
 _PATCH = """--- a/foo.py
 +++ b/foo.py
 @@ -1,3 +1,3 @@
@@ -89,3 +87,69 @@ def test_reconstruct_base_success():
 def test_reconstruct_base_drift_returns_empty():
     drifted_head = "completely\ndifferent\ncontent\n"
     assert reconstruct_base_file(drifted_head, _PATCH) == ""
+
+
+# --- new tests for reconstruct_base_file ---
+
+_MULTI_HUNK_PATCH = """--- a/bar.py
++++ b/bar.py
+@@ -1,3 +1,3 @@
+ alpha
+-beta
++beta-new
+ gamma
+@@ -5,3 +5,3 @@
+ delta
+-epsilon
++epsilon-new
+ zeta
+"""
+
+_MULTI_HUNK_HEAD = "alpha\nbeta-new\ngamma\n\ndelta\nepsilon-new\nzeta\n"
+_MULTI_HUNK_BASE = "alpha\nbeta\ngamma\n\ndelta\nepsilon\nzeta\n"
+
+
+def test_reconstruct_base_multi_hunk():
+    """Base is correctly reconstructed across two hunks."""
+    result = reconstruct_base_file(_MULTI_HUNK_HEAD, _MULTI_HUNK_PATCH)
+    assert result == _MULTI_HUNK_BASE
+
+
+_NO_TRAILING_NL_PATCH = """--- a/noeol.py
++++ b/noeol.py
+@@ -1,3 +1,3 @@
+ line1
+-line2
++line2-changed
+ line3
+"""
+
+_NO_TRAILING_NL_HEAD = "line1\nline2-changed\nline3"  # no trailing newline
+_NO_TRAILING_NL_BASE = "line1\nline2\nline3"  # no trailing newline expected
+
+
+def test_reconstruct_base_no_trailing_newline():
+    """Result has no trailing newline when head has none."""
+    result = reconstruct_base_file(_NO_TRAILING_NL_HEAD, _NO_TRAILING_NL_PATCH)
+    assert result == _NO_TRAILING_NL_BASE
+    assert not result.endswith("\n")
+
+
+# A diff that added a file (base was empty); reversed: head is the added content,
+# base should be empty.  Because head ends with "\n", our fix appends "\n" to the
+# empty join, so the result is "\n".
+_ADD_FILE_PATCH = """--- /dev/null
++++ b/new.py
+@@ -0,0 +1,2 @@
++hello
++world
+"""
+
+_ADD_FILE_HEAD = "hello\nworld\n"
+
+
+def test_reconstruct_base_add_to_empty():
+    """Reversing an add-file patch yields an empty (or lone-newline) base."""
+    result = reconstruct_base_file(_ADD_FILE_HEAD, _ADD_FILE_PATCH)
+    # head ends with "\n", so the trailing-newline guard appends "\n" to "".
+    assert result == "\n"
