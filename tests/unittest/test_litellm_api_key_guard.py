@@ -347,6 +347,34 @@ class TestApiKeyGuard:
         )
 
     @pytest.mark.asyncio
+    async def test_databricks_model_does_not_forward_foreign_api_base(self, monkeypatch):
+        """Databricks models select their endpoint via the DATABRICKS_API_BASE env var.
+
+        In a multi-provider config another provider (OpenRouter/Ollama/Azure AD/OpenAI) may
+        have set self.api_base during __init__. That base URL must NOT be forwarded for
+        databricks/* calls, otherwise it would route the request to the wrong host and
+        override the intended DATABRICKS_API_BASE endpoint. The Databricks base (or None,
+        which lets LiteLLM read the env var) must be used instead.
+        """
+        databricks_base = "https://adb-1234.azuredatabricks.net/serving-endpoints"
+        monkeypatch.setenv("DATABRICKS_API_BASE", databricks_base)
+
+        with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion",
+                   new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = _mock_response()
+            handler = LiteLLMAIHandler()
+            # Simulate another provider having set api_base during init
+            handler.api_base = "https://openrouter.ai/api/v1"
+            await handler.chat_completion(
+                model="databricks/databricks-claude-sonnet-4", system="sys", user="usr"
+            )
+
+        assert mock_call.call_args[1]["api_base"] == databricks_base, (
+            f"Databricks endpoint must come from DATABRICKS_API_BASE, not a foreign provider's "
+            f"api_base. kwargs had: {mock_call.call_args[1]}"
+        )
+
+    @pytest.mark.asyncio
     async def test_ollama_and_groq_coexist(self, monkeypatch):
         """Verify both Ollama and Groq keys can coexist and be forwarded correctly.
 

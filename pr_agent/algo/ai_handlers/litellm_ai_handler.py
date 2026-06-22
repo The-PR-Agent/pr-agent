@@ -469,12 +469,16 @@ class LiteLLMAIHandler(BaseAiHandler):
                     messages = [{"role": "user", "content": user}]
 
                 # Build request kwargs after normalizing messages for the target model.
+                # Databricks selects its endpoint via the DATABRICKS_API_BASE env var; don't let an
+                # api_base configured by another provider (OpenRouter/Ollama/Azure AD/OpenAI) during
+                # __init__ override it in multi-provider configs. None lets LiteLLM read the env var.
+                api_base = os.environ.get("DATABRICKS_API_BASE") if model.startswith("databricks/") else self.api_base
                 kwargs = {
                         "model": model,
                         "deployment_id": deployment_id,
                         "messages": messages,
                         "timeout": get_settings().config.ai_timeout,
-                        "api_base": self.api_base,
+                        "api_base": api_base,
                     }
 
                 # Add temperature only if model supports it
