@@ -2,8 +2,10 @@ import os
 from collections import Counter
 from typing import List, Optional
 
+from unidiff.errors import UnidiffParseError
+
 from pr_agent.algo.types import FilePatchInfo
-from pr_agent.config_loader import get_settings
+from pr_agent.config_loader import _find_repository_root, get_settings
 from pr_agent.git_providers.diff_parsing import (parse_unified_diff,
                                                  reconstruct_base_file)
 from pr_agent.git_providers.git_provider import GitProvider
@@ -39,9 +41,12 @@ class DiffGitProvider(GitProvider):
             return self.diff_files
         try:
             files = parse_unified_diff(self.diff_text)
-        except Exception as e:
+        except UnidiffParseError as e:
             raise ValueError(f"Failed to parse the provided diff: {e}") from e
-        root = os.path.realpath(os.getcwd())
+        # Resolve diff paths against the actual repository root (not the raw CWD)
+        # so working-tree enrichment still works when run from a subdirectory.
+        repo_root = _find_repository_root()
+        root = os.path.realpath(str(repo_root) if repo_root else os.getcwd())
         for f in files:
             head = ""
             if f.filename:
@@ -59,7 +64,7 @@ class DiffGitProvider(GitProvider):
                         try:
                             with open(candidate, "r", encoding="utf-8") as fh:
                                 head = fh.read()
-                        except Exception as e:
+                        except (OSError, UnicodeDecodeError) as e:
                             get_logger().info(f"Could not read working-tree file {f.filename}: {e}")
             f.head_file = head
             f.base_file = reconstruct_base_file(head, f.patch) if head else ""

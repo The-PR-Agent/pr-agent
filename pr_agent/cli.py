@@ -95,8 +95,13 @@ def run(inargs=None, args=None):
         if args.stdin and args.diff_file:
             parser.error("--stdin and --diff-file are mutually exclusive")
         if args.diff_file:
-            with open(args.diff_file, "r", encoding="utf-8") as fh:
-                diff_content = fh.read()
+            try:
+                with open(args.diff_file, "r", encoding="utf-8") as fh:
+                    diff_content = fh.read()
+            except OSError as e:
+                parser.error(f"Could not read --diff-file '{args.diff_file}': {e}")
+            except UnicodeDecodeError as e:
+                parser.error(f"--diff-file '{args.diff_file}' is not valid UTF-8 text: {e}")
         else:
             diff_content = sys.stdin.read()
         if not diff_content.strip():

@@ -136,8 +136,8 @@ def test_reconstruct_base_no_trailing_newline():
 
 
 # A diff that added a file (base was empty); reversed: head is the added content,
-# base should be empty.  Because head ends with "\n", our fix appends "\n" to the
-# empty join, so the result is "\n".
+# base must be exactly "" — never "\n" — so downstream extend_patch() correctly
+# treats the original file as non-existent.
 _ADD_FILE_PATCH = """--- /dev/null
 +++ b/new.py
 @@ -0,0 +1,2 @@
@@ -149,7 +149,8 @@ _ADD_FILE_HEAD = "hello\nworld\n"
 
 
 def test_reconstruct_base_add_to_empty():
-    """Reversing an add-file patch yields an empty (or lone-newline) base."""
+    """Reversing an add-file patch yields a truly empty base, not a lone newline."""
     result = reconstruct_base_file(_ADD_FILE_HEAD, _ADD_FILE_PATCH)
-    # head ends with "\n", so the trailing-newline guard appends "\n" to "".
-    assert result == "\n"
+    # Even though head ends with "\n", an empty base must stay "" (no trailing
+    # newline appended) so it is falsy for extend_patch().
+    assert result == ""

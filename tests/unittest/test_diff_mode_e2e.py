@@ -1,5 +1,4 @@
 import pytest
-from unittest.mock import AsyncMock, MagicMock
 
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.diff_provider import DiffGitProvider
@@ -38,6 +37,9 @@ def test_provider_end_to_end_files_and_output(capsys):
 def test_base_file_reconstructed_from_working_tree(tmp_path, monkeypatch):
     """When the working-tree file exists, head_file is populated and base_file
     is reconstructed from it by reversing the diff patch."""
+    # Mark tmp_path as a repository root so _find_repository_root() resolves
+    # diff paths against it.
+    (tmp_path / ".git").mkdir()
     # The HEAD (current) content of foo.py — line2 has already been changed
     head_content = "line1\nline2-changed\nline3\n"
     foo = tmp_path / "foo.py"
@@ -62,6 +64,31 @@ def test_base_file_reconstructed_from_working_tree(tmp_path, monkeypatch):
     # The original (pre-change) content must contain the old line, not the new one
     assert "line2" in files[0].base_file
     assert "line2-changed" not in files[0].base_file
+
+
+def test_base_file_reconstructed_when_run_from_subdirectory(tmp_path, monkeypatch):
+    """Regression for the CWD-vs-repo-root bug: enrichment must still find
+    working-tree files when the CLI is run from a subdirectory of the repo."""
+    # tmp_path is the repo root; foo.py lives at the root, matching the diff path.
+    (tmp_path / ".git").mkdir()
+    foo = tmp_path / "foo.py"
+    foo.write_text("line1\nline2-changed\nline3\n", encoding="utf-8")
+
+    # Run from a nested subdirectory, not the repo root.
+    subdir = tmp_path / "pkg" / "sub"
+    subdir.mkdir(parents=True)
+    monkeypatch.chdir(subdir)
+
+    get_settings().set("diff.content", DIFF)
+    get_settings().set("diff.output_path", None)
+    provider = DiffGitProvider(None)
+
+    files = provider.get_diff_files()
+    assert files[0].filename == "foo.py"
+    # Despite running from a subdir, the file is resolved against the repo root.
+    assert files[0].head_file != "", "head_file should be found via repo root, not CWD"
+    assert files[0].base_file != "", "base_file should be reconstructed from repo-root file"
+    assert "line2" in files[0].base_file
 
 
 @pytest.mark.asyncio

@@ -1,4 +1,5 @@
 from unidiff import PatchSet
+from unidiff.errors import UnidiffParseError
 
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.log import get_logger
@@ -57,7 +58,7 @@ def reconstruct_base_file(head_file_str: str, patch_str: str) -> str:
     base (original) content. Returns "" if the patch does not cleanly apply."""
     try:
         patch_set = PatchSet(patch_str)
-    except Exception as e:
+    except UnidiffParseError as e:
         get_logger().info(f"Could not parse patch for base reconstruction: {e}")
         return ""
     if len(patch_set) != 1:
@@ -90,6 +91,9 @@ def reconstruct_base_file(head_file_str: str, patch_str: str) -> str:
 
     base_lines.extend(head_lines[head_idx:])
     result = "\n".join(base_lines)
-    if head_file_str.endswith("\n"):
+    # Preserve a trailing newline only when the base actually has content; an
+    # empty base (e.g. reversing an add-file patch) must stay "" so downstream
+    # extend_patch() correctly treats it as having no original file.
+    if base_lines and head_file_str.endswith("\n"):
         result += "\n"
     return result
