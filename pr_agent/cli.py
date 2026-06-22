@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import os
+import sys
 
 from pr_agent.agent.pr_agent import PRAgent, commands
 from pr_agent.algo.utils import get_version
@@ -65,6 +66,12 @@ def set_parser():
             "Repo-local .pr_agent.toml overrides values set here."
         ),
     )
+    parser.add_argument('--diff-file', dest='diff_file', type=str, default=None,
+                        help='Path to a unified diff file to review (tokenless local mode)')
+    parser.add_argument('--stdin', action='store_true', default=False,
+                        help='Read a unified diff from stdin (tokenless local mode)')
+    parser.add_argument('--output', dest='output', type=str, default=None,
+                        help='Write the result to this file (in addition to stdout)')
     parser.add_argument('command', type=str, help='The', choices=commands, default='review')
     parser.add_argument('rest', nargs=argparse.REMAINDER, default=[])
     return parser
@@ -83,7 +90,21 @@ def run(inargs=None, args=None):
     parser = set_parser()
     if not args:
         args = parser.parse_args(inargs)
-    if not args.pr_url and not args.issue_url:
+    diff_mode = getattr(args, "stdin", False) or getattr(args, "diff_file", None)
+    if diff_mode:
+        if args.stdin and args.diff_file:
+            parser.error("--stdin and --diff-file are mutually exclusive")
+        if args.diff_file:
+            with open(args.diff_file, "r", encoding="utf-8") as fh:
+                diff_content = fh.read()
+        else:
+            diff_content = sys.stdin.read()
+        if not diff_content.strip():
+            parser.error("No diff content received (empty stdin/file)")
+        get_settings().set("config.git_provider", "diff")
+        get_settings().set("diff.content", diff_content)
+        get_settings().set("diff.output_path", getattr(args, "output", None))
+    elif not args.pr_url and not args.issue_url:
         parser.print_help()
         return
 
@@ -106,7 +127,8 @@ def run(inargs=None, args=None):
         if args.issue_url:
             result = await asyncio.create_task(PRAgent().handle_request(args.issue_url, [command] + args.rest))
         else:
-            result = await asyncio.create_task(PRAgent().handle_request(args.pr_url, [command] + args.rest))
+            target = args.pr_url if args.pr_url else "local_diff"
+            result = await asyncio.create_task(PRAgent().handle_request(target, [command] + args.rest))
 
         if get_settings().litellm.get("enable_callbacks", False):
             # There may be additional events on the event queue from the run above. If there are give them time to complete.
