@@ -37,7 +37,10 @@ class DiffGitProvider(GitProvider):
     def get_diff_files(self) -> List[FilePatchInfo]:
         if self.diff_files is not None:
             return self.diff_files
-        files = parse_unified_diff(self.diff_text)
+        try:
+            files = parse_unified_diff(self.diff_text)
+        except Exception as e:
+            raise ValueError(f"Failed to parse the provided diff: {e}") from e
         for f in files:
             head = ""
             if f.filename and os.path.isfile(f.filename):

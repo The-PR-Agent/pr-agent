@@ -55,3 +55,24 @@ def test_empty_diff_raises():
         assert False, "expected ValueError"
     except ValueError:
         pass
+
+
+def test_temporary_comment_not_emitted(capsys):
+    get_settings().set("diff.content", DIFF)
+    get_settings().set("diff.output_path", None)
+    provider = DiffGitProvider(None)
+    provider.publish_comment("Preparing review...", is_temporary=True)
+    captured = capsys.readouterr()
+    assert "Preparing review" not in captured.out
+
+
+def test_malformed_diff_raises_valueerror():
+    # A hunk with no file header triggers UnidiffParseError inside parse_unified_diff,
+    # which the provider must re-raise as ValueError with a clear message.
+    get_settings().set("diff.content", "@@ -1,3 +1,3 @@\n line1\n-line2\n+line2-changed\n line3\n")
+    get_settings().set("diff.output_path", None)
+    try:
+        DiffGitProvider(None)
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
