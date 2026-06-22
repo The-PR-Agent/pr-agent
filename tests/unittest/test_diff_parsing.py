@@ -65,3 +65,27 @@ def test_parse_rename():
     assert f.filename == "renamed.py"
     assert f.edit_type == EDIT_TYPE.RENAMED
     assert f.old_filename == "old.py"
+
+
+from pr_agent.git_providers.diff_parsing import reconstruct_base_file
+
+_PATCH = """--- a/foo.py
++++ b/foo.py
+@@ -1,3 +1,3 @@
+ line1
+-line2
++line2-changed
+ line3
+"""
+
+HEAD = "line1\nline2-changed\nline3\n"
+BASE = "line1\nline2\nline3\n"
+
+
+def test_reconstruct_base_success():
+    assert reconstruct_base_file(HEAD, _PATCH) == BASE
+
+
+def test_reconstruct_base_drift_returns_empty():
+    drifted_head = "completely\ndifferent\ncontent\n"
+    assert reconstruct_base_file(drifted_head, _PATCH) == ""
