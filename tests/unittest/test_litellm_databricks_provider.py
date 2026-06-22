@@ -10,7 +10,6 @@ import os
 import pytest
 
 import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_handler
-from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 
 # Env vars LiteLLMAIHandler.__init__ branches on — clear them so the handler
 # under test isn't influenced by (or leaking into) the runner environment.
@@ -63,7 +62,7 @@ def test_databricks_env_vars_exported_from_settings(monkeypatch):
     }
     monkeypatch.setattr(litellm_handler, "get_settings", lambda: _make_settings(overrides))
 
-    LiteLLMAIHandler()
+    litellm_handler.LiteLLMAIHandler()
 
     assert os.environ["DATABRICKS_API_KEY"] == "dapi-test-123"
     assert os.environ["DATABRICKS_API_BASE"] == "https://adb-1234.azuredatabricks.net/serving-endpoints"
@@ -72,7 +71,7 @@ def test_databricks_env_vars_exported_from_settings(monkeypatch):
 def test_databricks_env_vars_absent_when_unset(monkeypatch):
     monkeypatch.setattr(litellm_handler, "get_settings", lambda: _make_settings({}))
 
-    LiteLLMAIHandler()
+    litellm_handler.LiteLLMAIHandler()
 
     assert "DATABRICKS_API_KEY" not in os.environ
     assert "DATABRICKS_API_BASE" not in os.environ
@@ -83,7 +82,7 @@ def test_databricks_api_base_optional(monkeypatch):
     overrides = {"DATABRICKS.API_KEY": "dapi-only-key"}
     monkeypatch.setattr(litellm_handler, "get_settings", lambda: _make_settings(overrides))
 
-    LiteLLMAIHandler()
+    litellm_handler.LiteLLMAIHandler()
 
     assert os.environ["DATABRICKS_API_KEY"] == "dapi-only-key"
     assert "DATABRICKS_API_BASE" not in os.environ

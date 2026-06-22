@@ -321,6 +321,32 @@ class TestApiKeyGuard:
         assert mock_call.call_args[1].get("api_key") == sambanova_key
 
     @pytest.mark.asyncio
+    async def test_databricks_model_does_not_forward_foreign_key(self, monkeypatch):
+        """Databricks models authenticate via DATABRICKS_API_KEY/DATABRICKS_API_BASE env vars.
+
+        In a multi-provider config another provider (e.g. Groq/OpenRouter) may have stored
+        its key in litellm.api_key during __init__. That key must NOT be forwarded for
+        databricks/* calls, otherwise it would override the intended env-var auth and break
+        Databricks authentication.
+        """
+        foreign_key = "test-groq-key-shadowing-databricks"
+
+        with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion",
+                   new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = _mock_response()
+            handler = LiteLLMAIHandler()
+            # Simulate another provider having populated litellm.api_key during init
+            monkeypatch.setattr(litellm, "api_key", foreign_key)
+            await handler.chat_completion(
+                model="databricks/databricks-claude-sonnet-4", system="sys", user="usr"
+            )
+
+        assert "api_key" not in mock_call.call_args[1], (
+            f"Foreign provider key must not be forwarded for databricks/* models. "
+            f"kwargs had: {mock_call.call_args[1]}"
+        )
+
+    @pytest.mark.asyncio
     async def test_ollama_and_groq_coexist(self, monkeypatch):
         """Verify both Ollama and Groq keys can coexist and be forwarded correctly.
 

@@ -548,7 +548,10 @@ class LiteLLMAIHandler(BaseAiHandler):
 
                 # Inject api_key to the call. This key is populated during init by providers
                 # like Groq, SambaNova, XAI, Azure AD, and OpenRouter. Skip if None or placeholder.
-                if litellm.api_key and litellm.api_key != DUMMY_LITELLM_API_KEY:
+                # Databricks authenticates via the DATABRICKS_API_KEY/DATABRICKS_API_BASE env vars,
+                # so don't override it with another provider's key in multi-provider configs.
+                if (litellm.api_key and litellm.api_key != DUMMY_LITELLM_API_KEY
+                        and not model.startswith("databricks/")):
                     kwargs["api_key"] = litellm.api_key
 
                 # Get completion with automatic streaming detection
