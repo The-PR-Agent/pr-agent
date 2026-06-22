@@ -39,31 +39,40 @@ def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url
     """
     Extract all ticket links from PR description
     """
-    github_tickets = set()
+    # Preserve first-seen order while de-duplicating, so the cap below selects a
+    # deterministic subset (a plain set would slice an arbitrary, run-varying one).
+    seen = set()
+    github_tickets = []
+
+    def _add(url):
+        if url not in seen:
+            seen.add(url)
+            github_tickets.append(url)
+
     try:
         # Use the updated pattern to find matches
         matches = GITHUB_TICKET_PATTERN.findall(pr_description)
 
         for match in matches:
             if match[0]:  # Full URL match
-                github_tickets.add(match[0])
+                _add(match[0])
             elif match[1]:  # Shorthand notation match: owner/repo#issue_number
                 owner, repo, issue_number = match[2], match[3], match[4]
-                github_tickets.add(f'{base_url_html.strip("/")}/{owner}/{repo}/issues/{issue_number}')
+                _add(f"{base_url_html.strip('/')}/{owner}/{repo}/issues/{issue_number}")
             else:  # #123 format
                 issue_number = match[5][1:]  # remove #
                 if issue_number.isdigit() and len(issue_number) < 5 and repo_path:
-                    github_tickets.add(f'{base_url_html.strip("/")}/{repo_path}/issues/{issue_number}')
+                    _add(f"{base_url_html.strip('/')}/{repo_path}/issues/{issue_number}")
 
         if len(github_tickets) > 3:
             get_logger().info(f"Too many tickets found in PR description: {len(github_tickets)}")
             # Limit the number of tickets to 3
-            github_tickets = set(list(github_tickets)[:3])
+            github_tickets = github_tickets[:3]
     except Exception as e:
         get_logger().error(f"Error extracting tickets error= {e}",
                            artifact={"traceback": traceback.format_exc()})
 
-    return list(github_tickets)
+    return github_tickets
 
 def extract_ticket_links_from_branch_name(branch_name, repo_path, base_url_html="https://github.com"):
     """

@@ -7,6 +7,11 @@ from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
+# Optimized: Pre-compile the hunk header regex at the module level to avoid redundant compilation
+# in performance-critical patch processing functions.
+RE_HUNK_HEADER = re.compile(
+    r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@[ ]?(.*)")
+
 
 def extend_patch(original_file_str, patch_str, patch_extra_lines_before=0,
                  patch_extra_lines_after=0, filename: str = "", new_file_str="") -> str:
@@ -65,8 +70,6 @@ def process_patch_lines(patch_str, original_file_str, patch_extra_lines_before, 
 
     is_valid_hunk = True
     start1, size1, start2, size2 = -1, -1, -1, -1
-    RE_HUNK_HEADER = re.compile(
-        r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@[ ]?(.*)")
     try:
         for i,line in enumerate(patch_lines):
             if line.startswith('@@'):
@@ -114,7 +117,7 @@ def process_patch_lines(patch_str, original_file_str, patch_extra_lines_before, 
                                         found_header = True
                                         section_header = ''
                                     else:
-                                        pass  # its ok to be here. We cant apply dynamic context if the lines are different if 'old' and 'new' hunks
+                                        pass  # its ok to be here. We can't apply dynamic context if the lines are different if 'old' and 'new' hunks
                                     break
 
                             if not found_header:
@@ -238,8 +241,6 @@ def omit_deletion_hunks(patch_lines) -> str:
     added_patched = []
     add_hunk = False
     inside_hunk = False
-    RE_HUNK_HEADER = re.compile(
-        r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))?\ @@[ ]?(.*)")
 
     for line in patch_lines:
         if line.startswith('@@'):
@@ -341,8 +342,6 @@ __old hunk__
         patch_with_lines_str = ""
 
     patch_lines = patch.splitlines()
-    RE_HUNK_HEADER = re.compile(
-        r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@[ ]?(.*)")
     new_content_lines = []
     old_content_lines = []
     match = None
@@ -417,8 +416,6 @@ def extract_hunk_lines_from_patch(patch: str, file_name, line_start, line_end, s
         patch_with_lines_str = f"\n\n## File: '{file_name.strip()}'\n\n"
         selected_lines = ""
         patch_lines = patch.splitlines()
-        RE_HUNK_HEADER = re.compile(
-            r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@[ ]?(.*)")
         match = None
         start1, size1, start2, size2 = -1, -1, -1, -1
         skip_hunk = False

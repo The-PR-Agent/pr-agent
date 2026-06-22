@@ -243,11 +243,12 @@ def _to_list(command_string: str) -> list:
         raise ValueError(f"Invalid command string: {e}")
 
 
-def _get_commands_list_from_settings(setting_key:str ) -> list:
+def _get_commands_list_from_settings(setting_key: str) -> list:
     try:
         return get_settings().get(setting_key, [])
     except ValueError as e:
         get_logger().error(f"Failed to get commands list from settings {setting_key}: {e}")
+        return []
 
 
 @router.get("/")

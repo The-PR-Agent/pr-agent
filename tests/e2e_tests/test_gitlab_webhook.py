@@ -26,7 +26,7 @@ def test_e2e_run_github_app():
     GITLAB_URL = "https://gitlab.com"
     GITLAB_TOKEN = get_settings().gitlab.PERSONAL_ACCESS_TOKEN
     gl = gitlab.Gitlab(GITLAB_URL, private_token=GITLAB_TOKEN)
-    repo_url = 'codiumai/pr-agent-tests'
+    repo_url = 'pragent/pr-agent-tests'
     project = gl.projects.get(repo_url)
 
     base_branch = "main"  # or any base branch you want

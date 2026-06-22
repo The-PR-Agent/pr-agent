@@ -23,7 +23,7 @@ def load(obj, env=None, silent=True, key=None, filename=None):
         None
     """
 
-    MAX_TOML_SIZE_IN_BYTES = 100 * 1024 * 1024 # Prevent out of mem. exceptions by limiting to 100 MBs which is sufficient for upto 1M lines
+    MAX_TOML_SIZE_IN_BYTES = 100 * 1024 * 1024 # Prevent out of mem. exceptions by limiting to 100 MBs which is sufficient for up to 1M lines
 
     # Get the list of files to load
     # TODO: hasattr(obj, 'settings_files') for some reason returns False. Need to use 'settings_file'

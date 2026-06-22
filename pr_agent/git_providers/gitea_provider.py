@@ -605,11 +605,11 @@ class GiteaProvider(GitProvider):
 
         return [label.name for label in labels]
 
-    def get_repo_settings(self) -> str:
+    def get_repo_settings(self) -> bytes:
         """Get repository settings"""
         if not self.repo_settings:
             self.logger.error("Repository settings not found")
-            return ""
+            return b""
 
         response = self.repo_api.get_file_content(
             owner=self.owner,
@@ -619,9 +619,13 @@ class GiteaProvider(GitProvider):
         )
         if not response:
             self.logger.error("Failed to get repository settings")
-            return ""
+            return b""
 
-        return response
+        # utils.apply_repo_settings() writes this via os.write() and later
+        # calls .decode() on it, so it must be bytes to match the GitHub/
+        # GitLab/Bitbucket contract. get_file_content() decodes the raw bytes
+        # to str, so re-encode here (see issue #2347).
+        return response.encode('utf-8')
 
     def get_user_id(self) -> str:
         """Get the ID of the authenticated user"""

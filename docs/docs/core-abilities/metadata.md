@@ -24,7 +24,7 @@ By default, the first command that PR-Agent executes is [`describe`](../tools/de
 These AI-generated outputs are now considered as part of the PR metadata, and can be used in subsequent commands like `review` and `improve`.
 This effectively enables multi-stage chain-of-thought analysis, without doing any additional API calls which will cost time and money.
 
-For example, when generating code suggestions for different files, PR-Agent can inject the AI-generated ["Changes walkthrough"](https://github.com/qodo-ai/pr-agent/pull/1202#issue-2511546839) file summary in the prompt:
+For example, when generating code suggestions for different files, PR-Agent can inject the AI-generated ["Changes walkthrough"](https://github.com/the-pr-agent/pr-agent/pull/1202#issue-2511546839) file summary in the prompt:
 
 ```diff
 ## File: 'src/file1.py'
