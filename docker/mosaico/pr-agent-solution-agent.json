@@ -1,0 +1,6 @@
+{
+  "description": "PR-Agent solution agent for pull-request and unified-diff code review. Given a pull-request URL or a supplied git diff, it produces a structured code review (key issues, security concerns, effort estimate), inline code suggestions, a generated PR title and description, and answers to questions about that specific pull request or diff. Every action is anchored to a concrete pull request or git diff supplied in the request.",
+  "version": "0.35.0",
+  "role": "pull-request and git-diff code-review solver",
+  "objective": "given a pull-request URL or a supplied git diff, review the changes and produce a solution (code review, code suggestions, PR description, or scoped answer) with rationale"
+}

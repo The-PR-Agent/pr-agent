@@ -1,7 +1,7 @@
 ## Show possible configurations
 
-The possible configurations of Qodo Merge are stored in [here](https://github.com/Codium-ai/pr-agent/blob/main/pr_agent/settings/configuration.toml){:target="_blank"}.
-In the [tools](https://qodo-merge-docs.qodo.ai/tools/) page you can find explanations on how to use these configurations for each tool.
+The possible configurations of PR-Agent are stored in [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml){:target="_blank"}.
+In the [tools](../tools/index.md) page you can find explanations on how to use these configurations for each tool.
 
 To print all the available configurations as a comment on your PR, you can use the following command:
 
@@ -24,7 +24,7 @@ Will output an additional field showing the actual configurations used for the `
 
 ## Ignoring files from analysis
 
-In some cases, you may want to exclude specific files or directories from the analysis performed by Qodo Merge. This can be useful, for example, when you have files that are generated automatically or files that shouldn't be reviewed, like vendor code.
+In some cases, you may want to exclude specific files or directories from the analysis performed by PR-Agent. This can be useful, for example, when you have files that are generated automatically or files that shouldn't be reviewed, like vendor code.
 
 You can ignore files or folders using the following methods:
 
@@ -56,7 +56,7 @@ regex = ['.*\.py$']
 
 ## Extra instructions
 
-All Qodo Merge tools have a parameter called `extra_instructions`, that enables to add free-text extra instructions. Example usage:
+All PR-Agent tools have a parameter called `extra_instructions`, that enables to add free-text extra instructions. Example usage:
 
 ```
 /update_changelog --pr_update_changelog.extra_instructions="Make sure to update also the version ..."
@@ -64,7 +64,7 @@ All Qodo Merge tools have a parameter called `extra_instructions`, that enables 
 
 ## Language Settings
 
-The default response language for Qodo Merge is **U.S. English**. However, some development teams may prefer to display information in a different language. For example, your team's workflow might improve if PR descriptions and code suggestions are set to your country's native language.
+The default response language for PR-Agent is **U.S. English**. However, some development teams may prefer to display information in a different language. For example, your team's workflow might improve if PR descriptions and code suggestions are set to your country's native language.
 
 To configure this, set the `response_language` parameter in the configuration file. This will prompt the model to respond in the specified language. Use a **standard locale code** based on [ISO 3166](https://en.wikipedia.org/wiki/ISO_3166) (country codes) and [ISO 639](https://en.wikipedia.org/wiki/ISO_639) (language codes) to define a language-country pair. See this [comprehensive list of locale codes](https://simplelocalize.io/data/locales/).
 
@@ -91,27 +91,27 @@ This will set the response language globally for all the commands to Italian.
 [//]: # ()
 [//]: # (However, for very large PRs, or in case you want to emphasize quality over speed and cost, there are two possible solutions:)
 
-[//]: # (1&#41; [Use a model]&#40;https://qodo-merge-docs.qodo.ai/usage-guide/changing_a_model/&#41; with larger context, like GPT-32K, or claude-100K. This solution will be applicable for all the tools.)
+[//]: # (1&#41; [Use a model]&#40;./changing_a_model.md&#41; with larger context, like GPT-32K, or claude-100K. This solution will be applicable for all the tools.)
 
-[//]: # (2&#41; For the `/improve` tool, there is an ['extended' mode]&#40;https://qodo-merge-docs.qodo.ai/tools/improve/&#41; &#40;`/improve --extended`&#41;,)
+[//]: # (2&#41; For the `/improve` tool, there is an ['extended' mode]&#40;../tools/improve.md&#41; &#40;`/improve --extended`&#41;,)
 
 [//]: # (which divides the PR into chunks, and processes each chunk separately. With this mode, regardless of the model, no compression will be done &#40;but for large PRs, multiple model calls may occur&#41;)
 
 
 ## Expand GitLab submodule diffs
 
-By default, GitLab merge requests show submodule updates as `Subproject commit` lines. To include the actual file-level changes from those submodules in Qodo Merge analysis, enable:
+By default, GitLab merge requests show submodule updates as `Subproject commit` lines. To include the actual file-level changes from those submodules in PR-Agent analysis, enable:
 
 ```toml
 [gitlab]
 expand_submodule_diffs = true
 ```
 
-When enabled, Qodo Merge will fetch and attach diffs from the submodule repositories. The default is `false` to avoid extra GitLab API calls.
+When enabled, PR-Agent will fetch and attach diffs from the submodule repositories. The default is `false` to avoid extra GitLab API calls.
 
 ## Log Level
 
-Qodo Merge allows you to control the verbosity of logging by using the `log_level` configuration parameter. This is particularly useful for troubleshooting and debugging issues with your PR workflows.
+PR-Agent allows you to control the verbosity of logging by using the `log_level` configuration parameter. This is particularly useful for troubleshooting and debugging issues with your PR workflows.
 
 ```
 [config]
@@ -142,9 +142,9 @@ LANGSMITH_PROJECT=<project>
 LANGSMITH_BASE_URL=<url>
 ```
 
-## Bringing additional repository metadata to Qodo Merge 💎
+## Bringing additional repository metadata to PR-Agent
 
-To provide Qodo Merge tools with additional context about your project, you can enable automatic repository metadata detection. 
+To provide PR-Agent tools with additional context about your project, you can enable automatic repository metadata detection. 
 
 If you set:
 
@@ -153,8 +153,8 @@ If you set:
 add_repo_metadata = true
 ```
 
-Qodo Merge automatically searches for repository metadata files in your PR's head branch root directory. By default, it looks for:
-[AGENTS.MD](https://agents.md/), [QODO.MD](https://docs.qodo.ai/qodo-documentation/qodo-command/getting-started/setup-and-quickstart), [CLAUDE.MD](https://www.anthropic.com/engineering/claude-code-best-practices).
+PR-Agent automatically searches for repository metadata files in your PR's head branch root directory. By default, it looks for:
+[AGENTS.MD](https://agents.md/), [QODO.MD](https://docs.codium.ai/qodo-documentation/qodo-command/getting-started/setup-and-quickstart), [CLAUDE.MD](https://www.anthropic.com/engineering/claude-code-best-practices).
 
 You can also specify custom filenames to search for:
 
@@ -165,7 +165,7 @@ add_repo_metadata_file_list= ["file1.md", "file2.md", ...]
 
 ## Ignoring automatic commands in PRs
 
-Qodo Merge allows you to automatically ignore certain PRs based on various criteria:
+PR-Agent allows you to automatically ignore certain PRs based on various criteria:
 
 - PRs with specific titles (using regex matching)
 - PRs between specific branches (using regex matching)
@@ -234,7 +234,7 @@ Where the `ignore_pr_labels` is a list of labels that when present in the PR, th
 
 ### Ignoring PRs from specific users
 
-Qodo Merge tries to automatically identify and ignore pull requests created by bots using:
+PR-Agent tries to automatically identify and ignore pull requests created by bots using:
 
 - GitHub's native bot detection system
 - Name-based pattern matching
@@ -254,7 +254,7 @@ ignore_pr_authors = ["my-special-bot-user", ...]
 Where the `ignore_pr_authors` is a regex list of usernames that you want to ignore.
 
 !!! note
-    There is one specific case where bots will receive an automatic response - when they generated a PR with a _failed test_. In that case, the [`ci_feedback`](https://qodo-merge-docs.qodo.ai/tools/ci_feedback/) tool will be invoked.
+    There is one specific case where bots will receive an automatic response - when they generated a PR with a _failed test_.
 
 ### Ignoring Generated Files by Language/Framework
 
@@ -265,12 +265,12 @@ To automatically exclude files generated by specific languages or frameworks, yo
 ignore_language_framework = ['protobuf', ...]
 ```
 
-You can view the list of auto-generated file patterns in [`generated_code_ignore.toml`](https://github.com/qodo-ai/pr-agent/blob/main/pr_agent/settings/generated_code_ignore.toml).
+You can view the list of auto-generated file patterns in [`generated_code_ignore.toml`](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/generated_code_ignore.toml).
 Files matching these glob patterns will be automatically excluded from PR Agent analysis.
 
 ### Ignoring Tickets with Specific Labels
 
-When Qodo Merge analyzes tickets (JIRA, GitHub Issues, GitLab Issues, etc.) referenced in your PR, you may want to exclude tickets that have certain labels from the analysis. This is useful for filtering out tickets marked as "ignore-compliance", "skip-review", or other labels that indicate the ticket should not be considered during PR review.
+When PR-Agent analyzes tickets (JIRA, GitHub Issues, GitLab Issues, etc.) referenced in your PR, you may want to exclude tickets that have certain labels from the analysis. This is useful for filtering out tickets marked as "ignore-compliance", "skip-review", or other labels that indicate the ticket should not be considered during PR review.
 
 To ignore tickets with specific labels, add the following to your `configuration.toml` file:
 

@@ -1,7 +1,7 @@
 
 `Supported Git Platforms: GitHub, GitLab, Bitbucket`
 
-Qodo Merge uses an **asymmetric and dynamic context strategy** to improve AI analysis of code changes in pull requests.
+PR-Agent uses an **asymmetric and dynamic context strategy** to improve AI analysis of code changes in pull requests.
 It provides more context before changes than after, and dynamically adjusts the context based on code structure (e.g., enclosing functions or classes).
 This approach balances providing sufficient context for accurate analysis, while avoiding needle-in-the-haystack information overload that could degrade AI performance or exceed token limits.
 
@@ -45,14 +45,14 @@ Pull requests often encompass multiple changes across many files, potentially sp
 
 ## Asymmetric and dynamic context
 
-To address these challenges, Qodo Merge employs an **asymmetric** and **dynamic** context strategy, providing the model with more focused and relevant context information for each code change.
+To address these challenges, PR-Agent employs an **asymmetric** and **dynamic** context strategy, providing the model with more focused and relevant context information for each code change.
 
 **Asymmetric:**
 
 We start by recognizing that the context preceding a code change is typically more crucial for understanding the modification than the context following it.
-Consequently, Qodo Merge implements an asymmetric context policy, decoupling the context window into two distinct segments: one for the code before the change and another for the code after.
+Consequently, PR-Agent implements an asymmetric context policy, decoupling the context window into two distinct segments: one for the code before the change and another for the code after.
 
-By independently adjusting each context window, Qodo Merge can supply the model with a more tailored and pertinent context for individual code changes.
+By independently adjusting each context window, PR-Agent can supply the model with a more tailored and pertinent context for individual code changes.
 
 **Dynamic:**
 

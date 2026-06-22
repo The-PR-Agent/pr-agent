@@ -57,7 +57,8 @@ class GitLabProvider(GitProvider):
             else:  # private_token
                 self.gl = gitlab.Gitlab(
                     url=gitlab_url,
-                    private_token=gitlab_access_token
+                    private_token=gitlab_access_token,
+                    ssl_verify=ssl_verify
                 )
         except Exception as e:
             get_logger().error(f"Failed to create GitLab instance: {e}")
@@ -312,7 +313,7 @@ class GitLabProvider(GitProvider):
         return f"{issues_or_pr_url.split(repo_path)[0]}{repo_path}.git"
 
     # Given a git repo url, return prefix and suffix of the provider in order to view a given file belonging to that repo.
-    # Example: https://gitlab.com/codiumai/pr-agent.git and branch: t1 -> prefix: "https://gitlab.com/codiumai/pr-agent/-/blob/t1", suffix: "?ref_type=heads"
+    # Example: https://gitlab.com/pragent/pr-agent.git and branch: t1 -> prefix: "https://gitlab.com/pragent/pr-agent/-/blob/t1", suffix: "?ref_type=heads"
     # In case git url is not provided, provider will use PR context (which includes branch) to determine the prefix and suffix.
     def get_canonical_url_parts(self, repo_git_url:str=None, desired_branch:str=None) -> Tuple[str, str]:
         repo_path = ""
@@ -672,6 +673,9 @@ class GitLabProvider(GitProvider):
                         if file.filename == relevant_file:
                             target_file = file
                             break
+                if target_file is None:
+                    get_logger().warning(f"Skipping suggestion: file '{relevant_file}' not found in diff")
+                    continue
                 range = relevant_lines_end - relevant_lines_start # no need to add 1
                 body = body.replace('```suggestion', f'```suggestion:-0+{range}')
                 lines = target_file.head_file.splitlines()

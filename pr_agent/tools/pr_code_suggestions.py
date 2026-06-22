@@ -28,6 +28,7 @@ from pr_agent.git_providers.git_provider import get_main_pr_language, GitProvide
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
 from pr_agent.tools.pr_description import insert_br_after_x_chars
+from pr_agent.tools.progress_comment import build_progress_comment
 
 
 class PRCodeSuggestions:
@@ -86,8 +87,7 @@ class PRCodeSuggestions:
                                           self.pr_code_suggestions_prompt_system,
                                           self.pr_code_suggestions_prompt_user)
 
-        self.progress = f"## Generating PR code suggestions\n\n"
-        self.progress += f"""\nWork in progress ...<br>\n<img src="https://codium.ai/images/pr_agent/dual_ball_loading-crop.gif" width=48>"""
+        self.progress = build_progress_comment()
         self.progress_response = None
 
     async def run(self):
@@ -186,7 +186,7 @@ class PRCodeSuggestions:
                                artifact={"traceback": traceback.format_exc()})
             if get_settings().config.publish_output:
                 if self.progress_response:
-                    self.progress_response.delete()
+                    self.git_provider.remove_comment(self.progress_response)
                 else:
                     try:
                         self.git_provider.remove_initial_comment()
@@ -389,7 +389,7 @@ class PRCodeSuggestions:
         variables["diff_no_line_numbers"] = patches_diff_no_line_number  # update diff
         environment = Environment(undefined=StrictUndefined)
         system_prompt = environment.from_string(self.pr_code_suggestions_prompt_system).render(variables)
-        user_prompt = environment.from_string(get_settings().pr_code_suggestions_prompt.user).render(variables)
+        user_prompt = environment.from_string(self.pr_code_suggestions_prompt_user).render(variables)
         response, finish_reason = await self.ai_handler.chat_completion(
             model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
         if not get_settings().config.publish_output:

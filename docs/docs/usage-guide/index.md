@@ -1,10 +1,9 @@
 # Usage guide
 
-This section provides a detailed guide on how to use Qodo Merge.
-It includes information on how to adjust Qodo Merge configurations, define which tools will run automatically, and other advanced configurations.
+This section provides a detailed guide on how to use PR-Agent.
+It includes information on how to adjust PR-Agent configurations, define which tools will run automatically, and other advanced configurations.
 
 - [Introduction](./introduction.md)
-- [Enabling a Wiki](./enabling_a_wiki)
 - [Configuration File](./configuration_options.md)
 - [Usage and Automation](./automations_and_usage.md)
     - [Local Repo (CLI)](./automations_and_usage.md#local-repo-cli)
@@ -21,6 +20,5 @@ It includes information on how to adjust Qodo Merge configurations, define which
     - [Ignoring files from analysis](./additional_configurations.md#ignoring-files-from-analysis)
     - [Extra instructions](./additional_configurations.md#extra-instructions)
     - [Working with large PRs](./additional_configurations.md#working-with-large-prs)
-    - [Changing a model](https://qodo-merge-docs.qodo.ai/usage-guide/changing_a_model/)
-- [FAQ](https://qodo-merge-docs.qodo.ai/faq/)
-- [Qodo Merge Models](./qodo_merge_models)
+    - [Changing a model](./changing_a_model.md)
+- [FAQ](../faq/index.md)

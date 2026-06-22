@@ -17,12 +17,13 @@ MODEL = "text-embedding-ada-002"
 
 class PRSimilarIssue:
     def __init__(self, issue_url: str, ai_handler, args: list = None):
-        if get_settings().config.git_provider != "github":
-            raise Exception("Only github is supported for similar issue tool")
+        self.issue_url = issue_url
+        self.supported = get_settings().config.git_provider == "github"
+        if not self.supported:
+            return
 
         self.cli_mode = get_settings().CONFIG.CLI_MODE
         self.max_issues_to_scan = get_settings().pr_similar_issue.max_issues_to_scan
-        self.issue_url = issue_url
         self.git_provider = get_git_provider()()
         repo_name, issue_number = self.git_provider._parse_issue_url(issue_url.split('=')[-1])
         self.git_provider.repo = repo_name
@@ -257,6 +258,20 @@ class PRSimilarIssue:
 
 
     async def run(self):
+        if not self.supported:
+            message = "The /similar_issue tool is currently supported only for GitHub."
+            if get_settings().config.publish_output:
+                try:
+                    from pr_agent.git_providers import get_git_provider_with_context
+
+                    provider = get_git_provider_with_context(self.issue_url)
+                    provider.publish_comment(message)
+                except Exception as e:
+                    get_logger().warning(
+                        "Failed to publish /similar_issue unsupported message",
+                        artifact={"error": str(e)},
+                    )
+            return ""
         get_logger().info('Getting issue...')
         repo_name, original_issue_number = self.git_provider._parse_issue_url(self.issue_url.split('=')[-1])
         issue_main = self.git_provider.repo_obj.get_issue(original_issue_number)
@@ -438,7 +453,7 @@ class PRSimilarIssue:
                                                   level=IssueLevel.COMMENT)
                             )
                             corpus.append(comment_record)
-        df = pd.DataFrame(corpus.dict()["documents"])
+        df = pd.DataFrame(corpus.model_dump()["documents"])
         get_logger().info('Done')
 
         get_logger().info('Embedding...')
@@ -534,7 +549,7 @@ class PRSimilarIssue:
                                                     level=IssueLevel.COMMENT)
                             )
                             corpus.append(comment_record)
-        df = pd.DataFrame(corpus.dict()["documents"])
+        df = pd.DataFrame(corpus.model_dump()["documents"])
         get_logger().info('Done')
 
         get_logger().info('Embedding...')
@@ -633,7 +648,7 @@ class PRSimilarIssue:
                             )
                             corpus.append(comment_record)
 
-        df = pd.DataFrame(corpus.dict()["documents"])
+        df = pd.DataFrame(corpus.model_dump()["documents"])
         get_logger().info('Done')
 
         get_logger().info('Embedding...')

@@ -2,17 +2,18 @@ import copy
 import difflib
 import hashlib
 import itertools
+import json
+import os
 import re
 import time
 import traceback
-import json
 from datetime import datetime
 from typing import Optional, Tuple
 from urllib.parse import urlparse
 
 from github.Issue import Issue
 from github import AppAuthentication, Auth, Github, GithubException
-from retry import retry
+from retry.api import retry_call
 from starlette_context import context
 
 from ..algo.file_filter import filter_ignored
@@ -111,7 +112,7 @@ class GithubProvider(GitProvider):
         return f"{self.base_url_html}/{repo_path}.git" #https://github.com / <OWNER>/<REPO>.git
 
     # Given a git repo url, return prefix and suffix of the provider in order to view a given file belonging to that repo.
-    # Example: https://github.com/qodo-ai/pr-agent.git and branch: v0.8 -> prefix: "https://github.com/qodo-ai/pr-agent/blob/v0.8", suffix: ""
+    # Example: https://github.com/the-pr-agent/pr-agent.git and branch: v0.8 -> prefix: "https://github.com/the-pr-agent/pr-agent/blob/v0.8", suffix: ""
     # In case git url is not provided, provider will use PR context (which includes branch) to determine the prefix and suffix.
     def get_canonical_url_parts(self, repo_git_url:str, desired_branch:str) -> Tuple[str, str]:
         owner = None
@@ -217,8 +218,6 @@ class GithubProvider(GitProvider):
             except Exception as e:
                 return -1
 
-    @retry(exceptions=RateLimitExceeded,
-           tries=get_settings().github.ratelimit_retries, delay=2, backoff=2, jitter=(1, 3))
     def get_diff_files(self) -> list[FilePatchInfo]:
         """
         Retrieves the list of files that have been modified, added, deleted, or renamed in a pull request in GitHub,
@@ -228,6 +227,12 @@ class GithubProvider(GitProvider):
             diff_files (List[FilePatchInfo]): List of FilePatchInfo objects representing the modified, added, deleted,
             or renamed files in the merge request.
         """
+        # the retry settings are read at call time rather than in a decorator, so that importing this module
+        # does not require a [github] settings section (issue #2427)
+        return retry_call(self._get_diff_files, exceptions=RateLimitExceeded,
+                          tries=get_settings().get("GITHUB.RATELIMIT_RETRIES", 5), delay=2, backoff=2, jitter=(1, 3))
+
+    def _get_diff_files(self) -> list[FilePatchInfo]:
         try:
             try:
                 diff_files = context.get("diff_files", None)
@@ -731,10 +736,24 @@ class GithubProvider(GitProvider):
         return self.pr.get_issue_comments()
 
     def get_repo_settings(self):
+        # Normalize each candidate before applying precedence so a whitespace-only
+        # settings value doesn't short-circuit the PR_AGENT_CONFIG_BRANCH fallback.
+        settings_branch = get_settings().get("CONFIG.CONFIG_BRANCH", None)
+        settings_branch = settings_branch.strip() if isinstance(settings_branch, str) else ""
+        env_branch = (os.environ.get("PR_AGENT_CONFIG_BRANCH") or "").strip()
+        config_branch = settings_branch or env_branch
+        if config_branch:
+            # Only treat a missing branch/file (GithubException) as an expected
+            # reason to fall back to the default branch. Unexpected errors are
+            # left to propagate so they aren't masked by a silent fallback.
+            try:
+                return self.repo_obj.get_contents(".pr_agent.toml", ref=config_branch).decoded_content
+            except GithubException as e:
+                get_logger().warning(
+                    f"Failed to load .pr_agent.toml from branch '{config_branch}', falling back to default branch",
+                    artifact={"status": e.status, "error": str(e)},
+                )
         try:
-            # contents = self.repo_obj.get_contents(".pr_agent.toml", ref=self.pr.head.sha).decoded_content
-
-            # more logical to take 'pr_agent.toml' from the default branch
             contents = self.repo_obj.get_contents(".pr_agent.toml").decoded_content
             return contents
         except Exception:

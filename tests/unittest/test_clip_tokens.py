@@ -1,7 +1,9 @@
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
-from pr_agent.algo.utils import clip_tokens
+
 from pr_agent.algo.token_handler import TokenEncoder
+from pr_agent.algo.utils import clip_tokens
 
 
 class TestClipTokens:

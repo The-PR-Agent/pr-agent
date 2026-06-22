@@ -1,19 +1,19 @@
 # Important: This file contains all available configuration options.
 # Do not copy this entire file to your repository configuration.
 # Your repository configuration should only include options you wish to override from the defaults.
-#
-# Use this page: 'https://qodo-merge-docs.qodo.ai/ai_search/' to ask questions about the configuration options.
 
 [config]
 # models
-model="gpt-5-2025-08-07"
-fallback_models=["o4-mini"]
-#model_reasoning="o4-mini" # dedicated reasoning model for self-reflection
-#model_weak="gpt-4o" # optional, a weaker model to use for some easier tasks
+model="gpt-5.5-2026-04-23"
+fallback_models=["gpt-5.4-mini"]
+#model_reasoning="gpt-5.4-mini" # dedicated reasoning model for self-reflection
+#model_weak="gpt-5.4-nano" # optional, a weaker model to use for some easier tasks
 # CLI
 git_provider="github"
 publish_output=true
 publish_output_progress=true
+progress_gif_url="" # optional, override for the progress loading gif url (example: 'https://.../spinner.gif').
+progress_gif_width=48 # optional, width (in px) of the progress loading gif.
 verbosity_level=0 # 0,1,2
 use_extra_bad_extensions=false
 # Log
@@ -22,8 +22,9 @@ log_level="DEBUG"
 use_wiki_settings_file=true
 use_repo_settings_file=true
 use_global_settings_file=true
+extra_config_url="" # optional URL or path to an additional .pr_agent.toml merged before the repo-local config; also settable via --extra_config_url or PR_AGENT_EXTRA_CONFIG_URL. See docs/docs/usage-guide/configuration_options.md#external-configuration-url.
 disable_auto_feedback = false
-ai_timeout=120 # 2minutes
+ai_timeout=120 # 2 minutes
 skip_keys = []
 custom_reasoning_model = false # when true, disables system messages and temperature controls for models that don't support chat-style inputs
 response_language="en-US" # Language locales code for PR responses in ISO 3166 and ISO 639 format (e.g., "en-US", "it-IT", "zh-CN", ...)
@@ -41,17 +42,12 @@ patch_extra_lines_before = 5 # Number of extra lines (+3 default ones) to includ
 patch_extra_lines_after = 1 # Number of extra lines (+3 default ones) to include after each hunk in the patch
 secret_provider="" # "" (disabled), "google_cloud_storage", or "aws_secrets_manager" for secure secret management
 cli_mode=false
-ai_disclaimer_title=""  # Pro feature, title for a collapsible disclaimer to AI outputs
-ai_disclaimer=""  # Pro feature, full text for the AI disclaimer
 output_relevant_configurations=false
 large_patch_policy = "clip" # "clip", "skip"
 duplicate_prompt_examples = false
 # seed
 seed=-1 # set positive value to fix the seed (and ensure temperature=0)
 temperature=0.2
-# bring repo metadata 💎
-add_repo_metadata=false # if true, will try to add metadata from files like 'AGENTS.MD', 'CLAUDE.MD', 'QODO.MD'
-add_repo_metadata_file_list =["AGENTS.MD", "CLAUDE.MD", "QODO.MD"]
 # ignore logic
 ignore_pr_title = ["^\\[Auto\\]", "^Auto"] # a list of regular expressions to match against the PR title to ignore the PR agent
 ignore_pr_target_branches = [] # a list of regular expressions of target branches to ignore from PR agent when an PR is created
@@ -63,16 +59,19 @@ ignore_language_framework = [] # a list of code-generation languages or framewor
 #
 is_auto_command = false # will be auto-set to true if the command is triggered by an automation
 enable_ai_metadata = false # will enable adding ai metadata
-reasoning_effort = "medium" # "low", "medium", "high"
-# auto approval 💎
-enable_auto_approval=false # Set to true to enable auto-approval of PRs under certain conditions
-auto_approve_for_low_review_effort=-1 # -1 to disable, [1-5] to set the threshold for auto-approval
-auto_approve_for_no_suggestions=false # If true, the PR will be auto-approved if there are no suggestions
-ensure_ticket_compliance=false # Set to true to disable auto-approval of PRs if the ticket is not compliant
+reasoning_effort = "medium" # "none", "minimal", "low", "medium", "high", "xhigh"
 # extended thinking for Claude reasoning models
 enable_claude_extended_thinking = false # Set to true to enable extended thinking feature
 extended_thinking_budget_tokens = 2048
 extended_thinking_max_output_tokens = 4096
+# Extract issue number from PR source branch name (e.g. feature/1-auth-google -> issue #1). When true, branch-derived
+# issue URLs are merged with tickets from the PR description for compliance. Set to false to restore description-only behaviour.
+# Note: Branch-name extraction is GitHub-only for now; other providers planned for later.
+extract_issue_from_branch = true
+# Optional: custom regex with exactly one capturing group for the issue number (validated at runtime; falls back
+# to default if missing). If empty, uses default pattern: first 1-6 digits at start of branch or after a slash,
+# followed by hyphen or end (e.g. feature/1-test, 123-fix). GitHub only; other providers planned for later.
+branch_issue_regex = ""
 
 
 [pr_reviewer] # /review #
@@ -122,13 +121,11 @@ collapsible_file_list_threshold=6
 inline_file_summary=false # false, true, 'table'
 # markers
 use_description_markers=false
-include_generated_by_header=true
-# large pr mode 💎
 enable_large_pr_handling=true
+include_generated_by_header=true
+#custom_labels = ['Bug fix', 'Tests', 'Bug fix with tests', 'Enhancement', 'Documentation', 'Other']
 max_ai_calls=4
 async_ai_calls=true
-#custom_labels = ['Bug fix', 'Tests', 'Bug fix with tests', 'Enhancement', 'Documentation', 'Other']
-
 [pr_questions] # /ask #
 enable_help_text=false
 use_conversation_history=true
@@ -136,7 +133,7 @@ use_conversation_history=true
 
 [pr_code_suggestions] # /improve #
 commitable_code_suggestions = false
-dual_publishing_score_threshold=-1 # -1 to disable, [0-10] to set the threshold (>=) for publishing a code suggestion both in a table and as commitable
+dual_publishing_score_threshold=-1 # -1 to disable, [0-10] to set the threshold (>=) for publishing a code suggestion both in a table and as committable
 focus_only_on_problems=true
 #
 extra_instructions = ""
@@ -145,8 +142,6 @@ enable_chat_text=false
 persistent_comment=true
 max_history_len=4
 publish_output_no_suggestions=true
-# enable to apply suggestion 💎
-apply_suggestions_checkbox=true
 # suggestions scoring
 suggestions_score_threshold=0 # [0-10]| recommend not to set this value above 8, since above it may clip highly relevant suggestions
 new_score_mechanism=true
@@ -155,7 +150,6 @@ new_score_mechanism_th_medium=7
 # params for '/improve --extended' mode
 auto_extended_mode=true
 num_code_suggestions_per_chunk=3
-num_best_practice_suggestions=1 # 💎
 max_number_of_calls = 3
 parallel_calls = true
 
@@ -164,12 +158,8 @@ decouple_hunks = false
 # self-review checkbox
 demand_code_suggestions_self_review=false # add a checkbox for the author to self-review the code suggestions
 code_suggestions_self_review_text= "**Author self-review**: I have reviewed the PR code suggestions, and addressed the relevant ones."
-approve_pr_on_self_review=false # Pro feature. if true, the PR will be auto-approved after the author clicks on the self-review checkbox
-fold_suggestions_on_self_review=true # Pro feature. if true, the code suggestions will be folded after the author clicks on the self-review checkbox
-# Suggestion impact 💎
-publish_post_process_suggestion_impact=true
-wiki_page_accepted_suggestions=true
-allow_thumbs_up_down=false
+approve_pr_on_self_review=false # if true, the PR will be auto-approved after the author clicks on the self-review checkbox
+fold_suggestions_on_self_review=true # if true, the code suggestions will be folded after the author clicks on the self-review checkbox
 
 [pr_custom_prompt] # /custom_prompt #
 prompt = """\
@@ -213,13 +203,6 @@ num_code_suggestions=4
 extra_instructions = ""
 file = ""              # in case there are several components with the same name, you can specify the relevant file
 class_name = ""        # in case there are several methods with the same name in the same file, you can specify the relevant class name
-
-[checks] # /checks (pro feature) #
-enable_auto_checks_feedback=true
-excluded_checks_list=["lint"] # list of checks to exclude, for example: ["check1", "check2"]
-persistent_comment=true
-enable_help_text=true
-final_update_message = false
 
 [pr_help] # /help #
 force_local_db=false

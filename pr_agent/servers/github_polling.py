@@ -226,7 +226,7 @@ async def polling_loop():
                                     break
                             task_queue.clear()
 
-                            # Dont wait for all processes to complete. Move on to the next iteration
+                            # Don't wait for all processes to complete. Move on to the next iteration
                             # for p in processes:
                             #     p.join()
 

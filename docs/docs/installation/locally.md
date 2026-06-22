@@ -1,7 +1,7 @@
 To run PR-Agent locally, you first need to acquire two keys:
 
-1. An OpenAI key from [here](https://platform.openai.com/api-keys){:target="_blank"}, with access to GPT-4 and o4-mini (or a key for other [language models](https://qodo-merge-docs.qodo.ai/usage-guide/changing_a_model/), if you prefer).
-2. A personal access token from your Git platform (GitHub, GitLab, BitBucket,Gitea) with repo scope. GitHub token, for example, can be issued from [here](https://github.com/settings/tokens){:target="_blank"}
+1. An OpenAI key from [here](https://platform.openai.com/api-keys){:target="_blank"}, with access to GPT-5.5 and gpt-5.4-mini (or a key for other [language models](../usage-guide/changing_a_model.md), if you prefer).
+2. A personal access token from your Git platform (GitHub, GitLab, BitBucket, Gitea) with repo scope. GitHub token, for example, can be issued from [here](https://github.com/settings/tokens){:target="_blank"}
 
 ## Using Docker image
 
@@ -12,48 +12,48 @@ To invoke a tool (for example `review`), you can run PR-Agent directly from the 
 - For GitHub:
 
     ```bash
-    docker run --rm -it -e OPENAI.KEY=<your_openai_key> -e GITHUB.USER_TOKEN=<your_github_token> codiumai/pr-agent:latest --pr_url <pr_url> review
+    docker run --rm -it -e OPENAI__KEY=<your_openai_key> -e GITHUB__USER_TOKEN=<your_github_token> pragent/pr-agent:latest --pr_url <pr_url> review
     ```
 
     If you are using GitHub enterprise server, you need to specify the custom url as variable.
     For example, if your GitHub server is at `https://github.mycompany.com`, add the following to the command:
 
     ```bash
-    -e GITHUB.BASE_URL=https://github.mycompany.com/api/v3
+    -e GITHUB__BASE_URL=https://github.mycompany.com/api/v3
     ```
 
 - For GitLab:
 
     ```bash
-    docker run --rm -it -e OPENAI.KEY=<your key> -e CONFIG.GIT_PROVIDER=gitlab -e GITLAB.PERSONAL_ACCESS_TOKEN=<your token> codiumai/pr-agent:latest --pr_url <pr_url> review
+    docker run --rm -it -e OPENAI__KEY=<your key> -e CONFIG__GIT_PROVIDER=gitlab -e GITLAB__PERSONAL_ACCESS_TOKEN=<your token> pragent/pr-agent:latest --pr_url <pr_url> review
     ```
 
     If you have a dedicated GitLab instance, you need to specify the custom url as variable:
 
     ```bash
-    -e GITLAB.URL=<your gitlab instance url>
+    -e GITLAB__URL=<your gitlab instance url>
     ```
 
 - For BitBucket:
 
     ```bash
-    docker run --rm -it -e CONFIG.GIT_PROVIDER=bitbucket -e OPENAI.KEY=$OPENAI_API_KEY -e BITBUCKET.BEARER_TOKEN=$BITBUCKET_BEARER_TOKEN codiumai/pr-agent:latest --pr_url=<pr_url> review
+    docker run --rm -it -e CONFIG__GIT_PROVIDER=bitbucket -e OPENAI__KEY=$OPENAI_API_KEY -e BITBUCKET__BEARER_TOKEN=$BITBUCKET_BEARER_TOKEN pragent/pr-agent:latest --pr_url=<pr_url> review
     ```
 
 - For Gitea:
 
     ```bash
-    docker run --rm -it -e OPENAI.KEY=<your key> -e CONFIG.GIT_PROVIDER=gitea -e GITEA.PERSONAL_ACCESS_TOKEN=<your token> codiumai/pr-agent:latest --pr_url <pr_url> review
+    docker run --rm -it -e OPENAI__KEY=<your key> -e CONFIG__GIT_PROVIDER=gitea -e GITEA__PERSONAL_ACCESS_TOKEN=<your token> pragent/pr-agent:latest --pr_url <pr_url> review
     ```
 
     If you have a dedicated Gitea instance, you need to specify the custom url as variable:
 
     ```bash
-    -e GITEA.URL=<your gitea instance url>
+    -e GITEA__URL=<your gitea instance url>
     ```
 
 
-For other git providers, update `CONFIG.GIT_PROVIDER` accordingly and check the [`pr_agent/settings/.secrets_template.toml`](https://github.com/Codium-ai/pr-agent/blob/main/pr_agent/settings/.secrets_template.toml) file for environment variables expected names and values.
+For other git providers, update `CONFIG__GIT_PROVIDER` accordingly and check the [`pr_agent/settings/.secrets_template.toml`](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/.secrets_template.toml) file for environment variables expected names and values.
 
 ### Utilizing environment variables
 
@@ -74,7 +74,7 @@ OPENAI__KEY="<your key>"
 Then, you can run `pr_agent` using Docker with the following command:
 
 ```shell
-docker run --rm -it --env-file .env codiumai/pr-agent:latest <tool> <tool parameter>
+docker run --rm -it --env-file .env pragent/pr-agent:latest <tool> <tool parameter>
 ```
 
 ---
@@ -87,8 +87,8 @@ Note that litellm, which is used by pr-agent, sometimes returns non-informative 
 Carefully check the api keys and tokens you provided and make sure they are correct.
 Adjustments may be needed depending on your llm provider.
 
-For example, for Azure OpenAI, additional keys are [needed](https://qodo-merge-docs.qodo.ai/usage-guide/changing_a_model/#azure).
-Same goes for other providers, make sure to check the [documentation](https://qodo-merge-docs.qodo.ai/usage-guide/changing_a_model/#changing-a-model)
+For example, for Azure OpenAI, additional keys are [needed](../usage-guide/changing_a_model.md#azure).
+Same goes for other providers, make sure to check the [documentation](../usage-guide/changing_a_model.md#changing-a-model)
 
 ## Using pip package
 
@@ -111,7 +111,7 @@ def main():
     provider = "github" # github/gitlab/bitbucket/azure_devops
     user_token = "..."  #  user token
     openai_key = "..."  # OpenAI key
-    pr_url = "..."      # PR URL, for example 'https://github.com/Codium-ai/pr-agent/pull/809'
+    pr_url = "..."      # PR URL, for example 'https://github.com/the-pr-agent/pr-agent/pull/809'
     command = "/review" # Command to run (e.g. '/review', '/describe', '/ask="What is the purpose of this PR?"', ...)
 
     # Setting the configurations
@@ -132,7 +132,7 @@ if __name__ == '__main__':
 1. Clone this repository:
 
 ```bash
-git clone https://github.com/Codium-ai/pr-agent.git
+git clone https://github.com/the-pr-agent/pr-agent.git
 ```
 
 2. Navigate to the `/pr-agent` folder and install the requirements in your favorite virtual environment:
