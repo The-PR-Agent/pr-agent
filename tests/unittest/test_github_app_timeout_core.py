@@ -99,21 +99,17 @@ class TestDefaultDictWithTimeout:
         assert _key_times(d)["a"] == first + 3
 
     def test_expires_keys_older_than_ttl_when_refresh_runs(self, fake_clock):
-        # refresh_interval is wide enough that the cleanup branch runs on access.
+        # ttl < refresh_interval so we can advance past both: the throttle
+        # permits __refresh to run, and the stale keys are then evicted.
         d = DefaultDictWithTimeout(
-            lambda: 0, ttl=2, refresh_interval=1000, update_key_time_on_get=False
+            lambda: 0, ttl=2, refresh_interval=5, update_key_time_on_get=False
         )
         d["a"] = 1
         d["b"] = 2
 
-        # Warm-up access: __last_refresh is seeded in __init__ to (now -
-        # refresh_interval), so the very first __getitem__ in the same tick
-        # is required to bring it forward.  Without this, a later access can
-        # exceed refresh_interval and trip the early-return branch.
-        _ = d["warm"]
-
-        # Advance past TTL but not past refresh_interval.
-        fake_clock["t"] += 5
+        # Advance past both the TTL and the refresh interval so the throttled
+        # cleanup branch runs on the next access.
+        fake_clock["t"] += 10
 
         # Touching a different (new) key triggers __refresh which should
         # purge stale entries.  defaultdict.__missing__ will route through our
@@ -141,25 +137,14 @@ class TestDefaultDictWithTimeout:
         assert "a" not in d
         assert "a" not in _key_times(d)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Documents a behavior gap in DefaultDictWithTimeout.__refresh: when "
-            "the elapsed time since the last refresh exceeds refresh_interval, "
-            "the method returns early *before* expiring stale keys, so long "
-            "idle periods skip cleanup entirely.  Kept as strict xfail per "
-            "instructions to avoid changing production logic in test scope."
-        ),
-    )
     def test_refresh_runs_after_long_idle_period(self, fake_clock):
         d = DefaultDictWithTimeout(
             lambda: 0, ttl=2, refresh_interval=5, update_key_time_on_get=False
         )
         d["a"] = 1
-        # Idle long enough that delta > refresh_interval; current implementation
-        # skips cleanup in that case.  We assert the *intended* behavior:
-        # accessing/inserting any key should still trigger expiration of
-        # stale entries.
+        # Idle well past both the TTL and the refresh interval.  Accessing any
+        # key must trigger __refresh and expire stale entries, even after a
+        # long quiet period.
         fake_clock["t"] += 100
         _ = d["fresh"]
         assert "a" not in d
