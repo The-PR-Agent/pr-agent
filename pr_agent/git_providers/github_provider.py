@@ -763,7 +763,6 @@ class GithubProvider(GitProvider):
                     artifact={"status": e.status, "error": str(e)},
                 )
         try:
-            # contents = self.repo_obj.get_contents(".pr_agent.toml", ref=self.pr.head.sha).decoded_content
             # more logical to take 'pr_agent.toml' from the default branch
             contents = self.repo_obj.get_contents(".pr_agent.toml").decoded_content
             if config_branch and not settings_files:
