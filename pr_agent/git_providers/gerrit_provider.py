@@ -387,9 +387,30 @@ class GerritProvider(GitProvider):
         # but required by the interface
         pass
 
+    def cleanup(self):
+        """Remove the temporary cloned repository from disk."""
+        if self.repo_path and pathlib.Path(self.repo_path).exists():
+            try:
+                shutil.rmtree(self.repo_path, ignore_errors=True)
+                get_logger().info("Cleaned up temp repo at %s", self.repo_path)
+            except (OSError, PermissionError) as e:
+                get_logger().warning(
+                    "Failed to clean up temp repo at %s: %s",
+                    self.repo_path, e
+                )
+
+    def __del__(self):
+        """Safety net: clean up temp repo if cleanup() was not called."""
+        try:
+            self.cleanup()
+        except Exception:
+            pass
+
     def remove_initial_comment(self):
-        # remove repo, cloned in previous steps
-        # shutil.rmtree(self.repo_path)
+        # Do NOT call cleanup() here — this method is invoked during the
+        # request lifecycle while the cloned repo is still needed by
+        # subsequent commands.  Actual cleanup happens in the server's
+        # finally block and in __del__ as a safety net.
         pass
 
     def remove_comment(self, comment):
