@@ -66,12 +66,12 @@ def set_parser():
             "Repo-local .pr_agent.toml overrides values set here."
         ),
     )
-    parser.add_argument('--diff-file', dest='diff_file', type=str, default=None,
-                        help='Path to a unified diff file to review (tokenless local mode)')
-    parser.add_argument('--stdin', action='store_true', default=False,
-                        help='Read a unified diff from stdin (tokenless local mode)')
-    parser.add_argument('--output', dest='output', type=str, default=None,
-                        help='Write the result to this file (in addition to stdout)')
+    parser.add_argument("--diff-file", dest="diff_file", type=str, default=None,
+                        help="Path to a unified diff file to review (tokenless local mode)")
+    parser.add_argument("--stdin", action="store_true", default=False,
+                        help="Read a unified diff from stdin (tokenless local mode)")
+    parser.add_argument("--output", dest="output", type=str, default=None,
+                        help="Write the result to this file (in addition to stdout)")
     parser.add_argument('command', type=str, help='The', choices=commands, default='review')
     parser.add_argument('rest', nargs=argparse.REMAINDER, default=[])
     return parser

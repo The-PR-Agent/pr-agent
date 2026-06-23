@@ -33,9 +33,11 @@ enter tokenless diff mode; omitting both falls back to the normal `--pr_url` flo
 
 ### Supported commands
 
-`review`, `improve`, `describe`, and `ask` are supported. Commands that require live
-platform interaction (such as `update_changelog` or `similar_issue`) are not meaningful
-in this mode.
+`review`, `improve`, `describe`, and `ask` are supported. Because there is no hosting
+platform to push to, `improve` renders its code suggestions as a single markdown
+document to stdout (and to `--output`, if given) instead of as committable inline
+suggestions. Commands that require live platform interaction (such as
+`update_changelog` or `similar_issue`) are not meaningful in this mode.
 
 ## How it works
 

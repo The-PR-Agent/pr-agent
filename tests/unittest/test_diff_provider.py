@@ -82,10 +82,13 @@ def test_path_traversal_file_not_read(tmp_path, monkeypatch):
     # contents into head_file.  With the guard in place the path escapes
     # the repo root so it is rejected and head_file stays "".
     #
-    # Setup: an inner "repo" dir is the working directory; the secret file
-    # lives one level up (reachable via "../secret.txt" traversal).
+    # Setup: an inner "repo" dir is a real repo root (has .git) and is the
+    # working directory; the secret file lives one level up (reachable via
+    # "../secret.txt" traversal). The .git marker ensures working-tree
+    # enrichment is active, so this isolates the traversal guard itself.
     repo = tmp_path / "repo"
     repo.mkdir()
+    (repo / ".git").mkdir()
     secret = tmp_path / "secret.txt"
     secret.write_text("TOP SECRET\n", encoding="utf-8")
 
@@ -125,3 +128,46 @@ def test_malformed_diff_raises_valueerror():
         assert False, "expected ValueError"
     except ValueError:
         pass
+
+
+def test_no_repo_root_disables_enrichment(tmp_path, monkeypatch):
+    # When run outside any git repo (no .git ancestor), enrichment must be
+    # disabled and the provider must not read working-tree files even if a
+    # file with the diff's name happens to exist in the CWD.
+    decoy = tmp_path / "foo.py"
+    decoy.write_text("line1\nline2-changed\nline3\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    get_settings().set("diff.content", DIFF)
+    get_settings().set("diff.output_path", None)
+    provider = DiffGitProvider(None)
+    files = provider.get_diff_files()
+    assert files[0].head_file == "", (
+        "Enrichment must be disabled when no .git root is found (patch-only)"
+    )
+    assert files[0].base_file == ""
+
+
+def test_publish_code_suggestions_renders_to_stdout(capsys):
+    get_settings().set("diff.content", DIFF)
+    get_settings().set("diff.output_path", None)
+    provider = DiffGitProvider(None)
+    suggestions = [
+        {"body": "**Suggestion:** use a constant", "relevant_file": "foo.py",
+         "relevant_lines_start": 2, "relevant_lines_end": 2},
+    ]
+    # The 'improve' tool calls this unconditionally; it must not crash and must
+    # render the suggestions to stdout.
+    assert provider.publish_code_suggestions(suggestions) is True
+    out = capsys.readouterr().out
+    assert "Code suggestions" in out
+    assert "foo.py:2-2" in out
+    assert "use a constant" in out
+
+
+def test_publish_code_suggestions_empty_is_noop(capsys):
+    get_settings().set("diff.content", DIFF)
+    get_settings().set("diff.output_path", None)
+    provider = DiffGitProvider(None)
+    assert provider.publish_code_suggestions([]) is True
+    assert capsys.readouterr().out.strip() == ""

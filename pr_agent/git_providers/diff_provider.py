@@ -45,11 +45,19 @@ class DiffGitProvider(GitProvider):
             raise ValueError(f"Failed to parse the provided diff: {e}") from e
         # Resolve diff paths against the actual repository root (not the raw CWD)
         # so working-tree enrichment still works when run from a subdirectory.
+        # If there is no detectable .git root, disable enrichment entirely and
+        # run patch-only: reading files from an arbitrary CWD could disclose
+        # unrelated local files to the LLM.
         repo_root = _find_repository_root()
-        root = os.path.realpath(str(repo_root) if repo_root else os.getcwd())
+        root = os.path.realpath(str(repo_root)) if repo_root else None
+        if root is None:
+            get_logger().info(
+                "No repository root (.git) found; running in patch-only mode "
+                "(working-tree enrichment disabled)."
+            )
         for f in files:
             head = ""
-            if f.filename:
+            if root is not None and f.filename:
                 if os.path.isabs(f.filename):
                     get_logger().info(
                         f"Skipping absolute path in diff (unsafe): {f.filename}"
@@ -77,11 +85,14 @@ class DiffGitProvider(GitProvider):
     def _write_output(self, content: str):
         print(content)
         if self.output_path:
+            # --output is always an explicit user request, so a write failure
+            # must surface (fail fast) rather than be silently swallowed.
             try:
                 with open(self.output_path, "w", encoding="utf-8") as fh:
                     fh.write(content)
-            except Exception as e:
+            except (OSError, UnicodeError) as e:
                 get_logger().error(f"Failed to write output to {self.output_path}: {e}")
+                raise
 
     def publish_comment(self, pr_comment: str, is_temporary: bool = False):
         if is_temporary:
@@ -116,18 +127,38 @@ class DiffGitProvider(GitProvider):
     def get_pr_branch(self):
         return ""
 
+    # ---- code suggestions: rendered to stdout/--output (no hosting platform) ----
+    def publish_code_suggestion(self, body: str, relevant_file: str,
+                                relevant_lines_start: int, relevant_lines_end: int):
+        location = f"{relevant_file}:{relevant_lines_start}-{relevant_lines_end}"
+        self._write_output(f"### {location}\n\n{body}")
+
+    def publish_code_suggestions(self, code_suggestions: list) -> bool:
+        # The 'improve' tool calls this unconditionally; render the suggestions
+        # as a single markdown document to stdout/--output instead of pushing
+        # them to a (non-existent) hosting platform.
+        if not code_suggestions:
+            return True
+        sections = ["## Code suggestions", ""]
+        for s in code_suggestions:
+            relevant_file = s.get("relevant_file", "")
+            start = s.get("relevant_lines_start", "")
+            end = s.get("relevant_lines_end", "")
+            location = f"{relevant_file}:{start}-{end}".strip(":-")
+            if location:
+                sections.append(f"### {location}")
+            sections.append(s.get("body", ""))
+            sections.append("")
+        self._write_output("\n".join(sections).rstrip() + "\n")
+        return True
+
     # ---- unsupported publish operations (no-op or NotImplementedError) ----
-    def publish_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str, original_suggestion=None):
+    def publish_inline_comment(self, body: str, relevant_file: str,
+                               relevant_line_in_file: str, original_suggestion=None):
         raise NotImplementedError("Inline comments are not supported by the diff provider")
 
     def publish_inline_comments(self, comments: list):
         raise NotImplementedError("Inline comments are not supported by the diff provider")
-
-    def publish_code_suggestion(self, body: str, relevant_file: str, relevant_lines_start: int, relevant_lines_end: int):
-        raise NotImplementedError("Code suggestions are not supported by the diff provider")
-
-    def publish_code_suggestions(self, code_suggestions: list) -> bool:
-        raise NotImplementedError("Code suggestions are not supported by the diff provider")
 
     def publish_labels(self, labels):
         pass
