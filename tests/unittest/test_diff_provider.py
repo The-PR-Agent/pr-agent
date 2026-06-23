@@ -5,19 +5,25 @@ from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import _GIT_PROVIDERS
 from pr_agent.git_providers.diff_provider import DiffGitProvider
 
-# Keys these tests mutate on the process-wide settings singleton; saved and
-# restored around every test so global state never leaks between tests.
+# Diff-mode settings keys these tests mutate on the process-wide singleton.
 _SETTINGS_KEYS = ["diff.content", "diff.output_path",
                   "config.git_provider", "config.publish_output"]
 
 
 @pytest.fixture(autouse=True)
-def _restore_settings():
+def cfg():
+    """Restore all diff-mode settings keys after each test (autouse) and expose a
+    setter so tests mutate settings through the fixture rather than bare set()
+    calls. Keeps the process-wide settings singleton from leaking between tests."""
     s = get_settings()
     saved = {k: s.get(k, None) for k in _SETTINGS_KEYS}
-    yield
-    for k, v in saved.items():
-        s.set(k, v)
+
+    def _set(key, value):
+        s.set(key, value)
+
+    yield _set
+    for key, value in saved.items():
+        s.set(key, value)
 
 
 DIFF = """diff --git a/foo.py b/foo.py
@@ -36,9 +42,9 @@ def test_registered():
     assert _GIT_PROVIDERS["diff"] is DiffGitProvider
 
 
-def test_get_diff_files(monkeypatch):
-    get_settings().set("diff.content", DIFF)
-    get_settings().set("diff.output_path", None)
+def test_get_diff_files(cfg):
+    cfg("diff.content", DIFF)
+    cfg("diff.output_path", None)
     provider = DiffGitProvider(None)
     files = provider.get_diff_files()
     assert len(files) == 1
@@ -46,51 +52,60 @@ def test_get_diff_files(monkeypatch):
     assert files[0].edit_type == EDIT_TYPE.MODIFIED
 
 
-def test_publish_comment_to_stdout(capsys):
-    get_settings().set("diff.content", DIFF)
-    get_settings().set("diff.output_path", None)
+def test_get_diff_files_patch_is_hunk_only(cfg):
+    # The stored patch must not carry the 'diff --git'/'index'/'---'/'+++'
+    # headers, which the shared hunk converter would misparse as a bogus hunk.
+    cfg("diff.content", DIFF)
+    cfg("diff.output_path", None)
+    provider = DiffGitProvider(None)
+    patch = provider.get_diff_files()[0].patch
+    assert patch.startswith("@@")
+    assert "diff --git" not in patch
+    assert "+++ b/foo.py" not in patch
+
+
+def test_publish_comment_to_stdout(cfg, capsys):
+    cfg("diff.content", DIFF)
+    cfg("diff.output_path", None)
     provider = DiffGitProvider(None)
     provider.publish_comment("# Review\nlooks good")
     captured = capsys.readouterr()
     assert "looks good" in captured.out
 
 
-def test_publish_comment_to_file(tmp_path):
+def test_publish_comment_to_file(cfg, tmp_path):
     out = tmp_path / "review.md"
-    get_settings().set("diff.content", DIFF)
-    get_settings().set("diff.output_path", str(out))
+    cfg("diff.content", DIFF)
+    cfg("diff.output_path", str(out))
     provider = DiffGitProvider(None)
     provider.publish_comment("# Review\nsaved")
     assert "saved" in out.read_text(encoding="utf-8")
 
 
-def test_empty_diff_raises():
-    get_settings().set("diff.content", "")
-    get_settings().set("diff.output_path", None)
-    try:
+def test_empty_diff_raises(cfg):
+    cfg("diff.content", "")
+    cfg("diff.output_path", None)
+    with pytest.raises(ValueError):
         DiffGitProvider(None)
-        assert False, "expected ValueError"
-    except ValueError:
-        pass
 
 
-def test_temporary_comment_not_emitted(capsys):
-    get_settings().set("diff.content", DIFF)
-    get_settings().set("diff.output_path", None)
+def test_temporary_comment_not_emitted(cfg, capsys):
+    cfg("diff.content", DIFF)
+    cfg("diff.output_path", None)
     provider = DiffGitProvider(None)
     provider.publish_comment("Preparing review...", is_temporary=True)
     captured = capsys.readouterr()
     assert "Preparing review" not in captured.out
 
 
-def test_publish_file_comments_not_supported():
-    get_settings().set("diff.content", DIFF)
-    get_settings().set("diff.output_path", None)
+def test_publish_file_comments_not_supported(cfg):
+    cfg("diff.content", DIFF)
+    cfg("diff.output_path", None)
     provider = DiffGitProvider(None)
     assert provider.is_supported("publish_file_comments") is False
 
 
-def test_path_traversal_file_not_read(tmp_path, monkeypatch):
+def test_path_traversal_file_not_read(cfg, tmp_path, monkeypatch):
     # SENTINEL TEST: this test FAILS if the path-traversal guard in
     # DiffGitProvider.get_diff_files() is removed.
     #
@@ -121,8 +136,8 @@ def test_path_traversal_file_not_read(tmp_path, monkeypatch):
         "-TOP SECRET\n"
         "+REPLACED\n"
     )
-    get_settings().set("diff.content", traversal_diff)
-    get_settings().set("diff.output_path", None)
+    cfg("diff.content", traversal_diff)
+    cfg("diff.output_path", None)
     provider = DiffGitProvider(None)
     files = provider.get_diff_files()
     assert len(files) == 1
@@ -135,19 +150,16 @@ def test_path_traversal_file_not_read(tmp_path, monkeypatch):
     )
 
 
-def test_malformed_diff_raises_valueerror():
+def test_malformed_diff_raises_valueerror(cfg):
     # A hunk with no file header triggers UnidiffParseError inside parse_unified_diff,
     # which the provider must re-raise as ValueError with a clear message.
-    get_settings().set("diff.content", "@@ -1,3 +1,3 @@\n line1\n-line2\n+line2-changed\n line3\n")
-    get_settings().set("diff.output_path", None)
-    try:
+    cfg("diff.content", "@@ -1,3 +1,3 @@\n line1\n-line2\n+line2-changed\n line3\n")
+    cfg("diff.output_path", None)
+    with pytest.raises(ValueError):
         DiffGitProvider(None)
-        assert False, "expected ValueError"
-    except ValueError:
-        pass
 
 
-def test_no_repo_root_disables_enrichment(tmp_path, monkeypatch):
+def test_no_repo_root_disables_enrichment(cfg, tmp_path, monkeypatch):
     # When run outside any git repo (no .git ancestor), enrichment must be
     # disabled and the provider must not read working-tree files even if a
     # file with the diff's name happens to exist in the CWD.
@@ -155,8 +167,8 @@ def test_no_repo_root_disables_enrichment(tmp_path, monkeypatch):
     decoy.write_text("line1\nline2-changed\nline3\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 
-    get_settings().set("diff.content", DIFF)
-    get_settings().set("diff.output_path", None)
+    cfg("diff.content", DIFF)
+    cfg("diff.output_path", None)
     provider = DiffGitProvider(None)
     files = provider.get_diff_files()
     assert files[0].head_file == "", (
@@ -165,9 +177,9 @@ def test_no_repo_root_disables_enrichment(tmp_path, monkeypatch):
     assert files[0].base_file == ""
 
 
-def test_publish_code_suggestions_renders_to_stdout(capsys):
-    get_settings().set("diff.content", DIFF)
-    get_settings().set("diff.output_path", None)
+def test_publish_code_suggestions_renders_to_stdout(cfg, capsys):
+    cfg("diff.content", DIFF)
+    cfg("diff.output_path", None)
     provider = DiffGitProvider(None)
     suggestions = [
         {"body": "**Suggestion:** use a constant", "relevant_file": "foo.py",
@@ -182,32 +194,32 @@ def test_publish_code_suggestions_renders_to_stdout(capsys):
     assert "use a constant" in out
 
 
-def test_publish_code_suggestions_empty_is_noop(capsys):
-    get_settings().set("diff.content", DIFF)
-    get_settings().set("diff.output_path", None)
+def test_publish_code_suggestions_empty_is_noop(cfg, capsys):
+    cfg("diff.content", DIFF)
+    cfg("diff.output_path", None)
     provider = DiffGitProvider(None)
     assert provider.publish_code_suggestions([]) is True
     assert capsys.readouterr().out.strip() == ""
 
 
-def test_incremental_review_disabled():
+def test_incremental_review_disabled(cfg):
     # -i has no meaning for a standalone diff; the provider must disable it so
     # PRReviewer never takes the incremental path (which would TypeError).
     from pr_agent.git_providers.git_provider import IncrementalPR
-    get_settings().set("diff.content", DIFF)
-    get_settings().set("diff.output_path", None)
+    cfg("diff.content", DIFF)
+    cfg("diff.output_path", None)
     provider = DiffGitProvider(None)
     incremental = IncrementalPR(is_incremental=True)
     provider.get_incremental_commits(incremental)
     assert incremental.is_incremental is False
 
 
-def test_diff_content_forces_diff_provider():
+def test_diff_content_forces_diff_provider(cfg):
     # Even if config.git_provider points elsewhere (e.g. set by extra config),
     # the presence of loaded diff content must select the diff provider.
     from pr_agent.git_providers import get_git_provider_with_context
-    get_settings().set("config.git_provider", "github")
-    get_settings().set("diff.content", DIFF)
-    get_settings().set("diff.output_path", None)
+    cfg("config.git_provider", "github")
+    cfg("diff.content", DIFF)
+    cfg("diff.output_path", None)
     provider = get_git_provider_with_context("local_diff")
     assert isinstance(provider, DiffGitProvider)

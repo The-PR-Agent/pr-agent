@@ -1,22 +1,28 @@
 import pytest
 
+from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.diff_provider import DiffGitProvider
-from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 
-# Keys these tests mutate on the process-wide settings singleton; saved and
-# restored around every test so global state never leaks between tests.
+# Diff-mode settings keys these tests mutate on the process-wide singleton.
 _SETTINGS_KEYS = ["diff.content", "diff.output_path",
                   "config.git_provider", "config.publish_output"]
 
 
 @pytest.fixture(autouse=True)
-def _restore_settings():
+def cfg():
+    """Restore all diff-mode settings keys after each test (autouse) and expose a
+    setter so tests mutate settings through the fixture rather than bare set()
+    calls. Keeps the process-wide settings singleton from leaking between tests."""
     s = get_settings()
     saved = {k: s.get(k, None) for k in _SETTINGS_KEYS}
-    yield
-    for k, v in saved.items():
-        s.set(k, v)
+
+    def _set(key, value):
+        s.set(key, value)
+
+    yield _set
+    for key, value in saved.items():
+        s.set(key, value)
 
 
 DIFF = """diff --git a/foo.py b/foo.py
@@ -31,9 +37,9 @@ index 1111111..2222222 100644
 """
 
 
-def test_provider_end_to_end_files_and_output(capsys):
-    get_settings().set("diff.content", DIFF)
-    get_settings().set("diff.output_path", None)
+def test_provider_end_to_end_files_and_output(cfg, capsys):
+    cfg("diff.content", DIFF)
+    cfg("diff.output_path", None)
     provider = DiffGitProvider(None)
 
     # files parsed and content reconstructed where working tree is absent
@@ -49,7 +55,7 @@ def test_provider_end_to_end_files_and_output(capsys):
     assert "finding one" in capsys.readouterr().out
 
 
-def test_base_file_reconstructed_from_working_tree(tmp_path, monkeypatch):
+def test_base_file_reconstructed_from_working_tree(cfg, tmp_path, monkeypatch):
     """When the working-tree file exists, head_file is populated and base_file
     is reconstructed from it by reversing the diff patch."""
     # Mark tmp_path as a repository root so _find_repository_root() resolves
@@ -63,8 +69,8 @@ def test_base_file_reconstructed_from_working_tree(tmp_path, monkeypatch):
     # Change cwd so the provider's relative-path lookup resolves into tmp_path
     monkeypatch.chdir(tmp_path)
 
-    get_settings().set("diff.content", DIFF)
-    get_settings().set("diff.output_path", None)
+    cfg("diff.content", DIFF)
+    cfg("diff.output_path", None)
     provider = DiffGitProvider(None)
 
     files = provider.get_diff_files()
@@ -81,7 +87,7 @@ def test_base_file_reconstructed_from_working_tree(tmp_path, monkeypatch):
     assert "line2-changed" not in files[0].base_file
 
 
-def test_base_file_reconstructed_when_run_from_subdirectory(tmp_path, monkeypatch):
+def test_base_file_reconstructed_when_run_from_subdirectory(cfg, tmp_path, monkeypatch):
     """Regression for the CWD-vs-repo-root bug: enrichment must still find
     working-tree files when the CLI is run from a subdirectory of the repo."""
     # tmp_path is the repo root; foo.py lives at the root, matching the diff path.
@@ -94,8 +100,8 @@ def test_base_file_reconstructed_when_run_from_subdirectory(tmp_path, monkeypatc
     subdir.mkdir(parents=True)
     monkeypatch.chdir(subdir)
 
-    get_settings().set("diff.content", DIFF)
-    get_settings().set("diff.output_path", None)
+    cfg("diff.content", DIFF)
+    cfg("diff.output_path", None)
     provider = DiffGitProvider(None)
 
     files = provider.get_diff_files()
@@ -107,7 +113,7 @@ def test_base_file_reconstructed_when_run_from_subdirectory(tmp_path, monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_review_command_through_diff_provider_mocked_llm(monkeypatch):
+async def test_review_command_through_diff_provider_mocked_llm(cfg, monkeypatch):
     """Integration test: drives PRReviewer with a fake AI handler through the
     diff provider.  We assert that the AI handler is invoked with a prompt that
     contains the changed content from the diff, proving end-to-end wiring from
@@ -121,11 +127,11 @@ async def test_review_command_through_diff_provider_mocked_llm(monkeypatch):
     from pr_agent.tools.pr_reviewer import PRReviewer
 
     # --- configure provider ---
-    get_settings().set("config.git_provider", "diff")
-    get_settings().set("diff.content", DIFF)
-    get_settings().set("diff.output_path", None)
+    cfg("config.git_provider", "diff")
+    cfg("diff.content", DIFF)
+    cfg("diff.output_path", None)
     # Disable publish so we don't need a real comment sink
-    get_settings().set("config.publish_output", False)
+    cfg("config.publish_output", False)
 
     # --- fake AI handler ---
     # PRReviewer calls ai_handler() (a factory/partial), so we pass a class

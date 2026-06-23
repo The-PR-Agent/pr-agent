@@ -3,19 +3,26 @@ import pytest
 from pr_agent.cli import run, set_parser
 from pr_agent.config_loader import get_settings
 
-# Keys the run()-based test mutates on the process-wide settings singleton;
-# saved and restored around every test so global state never leaks.
+# Keys run() mutates on the process-wide settings singleton, directly or via the
+# diff-mode CLI path. Snapshotted and restored around every test (autouse) so
+# state never leaks, even when run() sets keys the test never touches itself.
 _SETTINGS_KEYS = ["diff.content", "diff.output_path",
                   "config.git_provider", "config.publish_output"]
 
 
 @pytest.fixture(autouse=True)
-def _restore_settings():
+def cfg():
+    """Restore all diff-mode settings keys after each test, and expose a setter
+    so tests mutate settings through the fixture rather than bare set() calls."""
     s = get_settings()
     saved = {k: s.get(k, None) for k in _SETTINGS_KEYS}
-    yield
-    for k, v in saved.items():
-        s.set(k, v)
+
+    def _set(key, value):
+        s.set(key, value)
+
+    yield _set
+    for key, value in saved.items():
+        s.set(key, value)
 
 
 def test_parser_has_diff_flags():
@@ -52,14 +59,14 @@ _DIFF = (
 )
 
 
-def test_diff_mode_forces_publish_output(monkeypatch):
+def test_diff_mode_forces_publish_output(cfg, monkeypatch):
     """Diff mode must force config.publish_output=True so stdout/--output is
     never suppressed by a config/env that disabled publishing."""
     import io
 
     import pr_agent.cli as cli
 
-    get_settings().set("config.publish_output", False)
+    cfg("config.publish_output", False)
     captured = {}
 
     class FakeAgent:

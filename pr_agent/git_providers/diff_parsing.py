@@ -13,6 +13,21 @@ def _strip_prefix(path: str | None) -> str | None:
     return path
 
 
+def to_hunk_only_patch(patch_str: str) -> str:
+    """Drop file-header lines ('diff --git', 'index', '---', '+++') that precede
+    the first '@@' hunk header.
+
+    Platform providers (GitHub, GitLab, ...) store hunk-only patches, and the
+    shared hunk/line-number converter treats any '+'/'-' line as content. Left
+    in, the '---'/'+++' headers would be emitted as a bogus leading hunk with
+    invalid line numbers. Returns "" when there is no hunk (e.g. rename-only)."""
+    lines = patch_str.splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        if line.startswith("@@"):
+            return "".join(lines[i:])
+    return ""
+
+
 def parse_unified_diff(diff_text: str) -> list[FilePatchInfo]:
     """Parse a unified diff into FilePatchInfo objects (patch + metadata only).
 

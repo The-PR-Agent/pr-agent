@@ -6,8 +6,7 @@ from unidiff.errors import UnidiffParseError
 
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import _find_repository_root, get_settings
-from pr_agent.git_providers.diff_parsing import (parse_unified_diff,
-                                                 reconstruct_base_file)
+from pr_agent.git_providers.diff_parsing import parse_unified_diff, reconstruct_base_file, to_hunk_only_patch
 from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.log import get_logger
 
@@ -74,6 +73,9 @@ class DiffGitProvider(GitProvider):
                             get_logger().info(f"Could not read working-tree file {f.filename}: {e}")
             f.head_file = head
             f.base_file = reconstruct_base_file(head, f.patch) if head else ""
+            # Reconstruction needs the full patch (with --- /+++ headers); the
+            # rest of the pipeline expects hunk-only patches, so normalize after.
+            f.patch = to_hunk_only_patch(f.patch)
         self.diff_files = files
         return files
 
