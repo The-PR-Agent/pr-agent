@@ -1,7 +1,8 @@
 import copy
 from functools import partial
 
-from jinja2 import Environment, StrictUndefined
+from jinja2 import StrictUndefined
+from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
@@ -103,7 +104,7 @@ class PRQuestions:
     async def _get_prediction(self, model: str):
         variables = copy.deepcopy(self.vars)
         variables["diff"] = self.patches_diff  # update diff
-        environment = Environment(undefined=StrictUndefined)
+        environment = ImmutableSandboxedEnvironment(undefined=StrictUndefined)
         system_prompt = environment.from_string(get_settings().pr_questions_prompt.system).render(variables)
         user_prompt = environment.from_string(get_settings().pr_questions_prompt.user).render(variables)
         if 'img_path' in variables:

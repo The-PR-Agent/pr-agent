@@ -1,11 +1,12 @@
 import copy
-from functools import partial
-
-from jinja2 import Environment, StrictUndefined
 import math
 import os
 import re
+from functools import partial
 from tempfile import TemporaryDirectory
+
+from jinja2 import StrictUndefined
+from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 from pr_agent.algo import MAX_TOKENS
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
@@ -261,7 +262,7 @@ class PredictionPreparator:
         try:
             self.ai_handler = ai_handler
             variables = copy.deepcopy(vars)
-            environment = Environment(undefined=StrictUndefined)
+            environment = ImmutableSandboxedEnvironment(undefined=StrictUndefined)
             self.system_prompt = environment.from_string(system_prompt).render(variables)
             self.user_prompt = environment.from_string(user_prompt).render(variables)
         except Exception as e:

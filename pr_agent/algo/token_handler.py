@@ -2,7 +2,8 @@ from threading import Lock
 from math import ceil
 import re
 
-from jinja2 import Environment, StrictUndefined
+from jinja2 import StrictUndefined
+from jinja2.sandbox import ImmutableSandboxedEnvironment
 from tiktoken import encoding_for_model, get_encoding
 
 from pr_agent.config_loader import get_settings
@@ -86,7 +87,7 @@ class TokenHandler:
         The sum of the number of tokens in the system and user strings.
         """
         try:
-            environment = Environment(undefined=StrictUndefined)
+            environment = ImmutableSandboxedEnvironment(undefined=StrictUndefined)
             system_prompt = environment.from_string(system).render(vars)
             user_prompt = environment.from_string(user).render(vars)
             system_prompt_tokens = len(encoder.encode(system_prompt))

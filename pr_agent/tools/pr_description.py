@@ -6,7 +6,8 @@ from functools import partial
 from typing import List, Tuple
 
 import yaml
-from jinja2 import Environment, StrictUndefined
+from jinja2 import StrictUndefined
+from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
@@ -426,7 +427,7 @@ class PRDescription:
         variables = copy.deepcopy(self.vars)
         variables["diff"] = patches_diff  # update diff
 
-        environment = Environment(undefined=StrictUndefined)
+        environment = ImmutableSandboxedEnvironment(undefined=StrictUndefined)
         set_custom_labels(variables, self.git_provider)
         self.variables = variables
 
