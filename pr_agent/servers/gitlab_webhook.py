@@ -78,7 +78,7 @@ def is_draft(data) -> bool:
             return data['object_attributes']['draft']
 
         # for gitlab server version before 16
-        elif 'Draft:' in data.get('object_attributes', {}).get('title'):
+        elif 'Draft:' in data.get('object_attributes', {}).get('title', ''):
             return True
     except Exception as e:
         get_logger().error(f"Failed 'is_draft' logic: {e}")
@@ -112,7 +112,7 @@ def should_process_pr_logic(data) -> bool:
     try:
         if not data.get('object_attributes', {}):
             return False
-        title = data['object_attributes'].get('title')
+        title = data['object_attributes'].get('title', '')
         sender = data.get("user", {}).get("username", "")
         repo_full_name = data.get('project', {}).get('path_with_namespace', "")
 
@@ -138,15 +138,15 @@ def should_process_pr_logic(data) -> bool:
 
         #
         if ignore_mr_source_branches:
-            source_branch = data['object_attributes'].get('source_branch')
-            if any(re.search(regex, source_branch) for regex in ignore_mr_source_branches):
+            source_branch = data['object_attributes'].get('source_branch', '')
+            if source_branch and any(re.search(regex, source_branch) for regex in ignore_mr_source_branches):
                 get_logger().info(
                     f"Ignoring MR with source branch '{source_branch}' due to gitlab.ignore_mr_source_branches settings")
                 return False
 
         if ignore_mr_target_branches:
-            target_branch = data['object_attributes'].get('target_branch')
-            if any(re.search(regex, target_branch) for regex in ignore_mr_target_branches):
+            target_branch = data['object_attributes'].get('target_branch', '')
+            if target_branch and any(re.search(regex, target_branch) for regex in ignore_mr_target_branches):
                 get_logger().info(
                     f"Ignoring MR with target branch '{target_branch}' due to gitlab.ignore_mr_target_branches settings")
                 return False
