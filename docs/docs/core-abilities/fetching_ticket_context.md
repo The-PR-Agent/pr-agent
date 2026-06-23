@@ -98,14 +98,13 @@ Since PR-Agent is integrated with GitHub, it doesn't require any additional conf
 
 PR-Agent can detect Asana task references in PR descriptions and include them in the ticket compliance check.
 
-**Supported reference formats:**
+**Supported reference format:**
 
 - Full Asana URLs: `https://app.asana.com/0/{project_id}/{task_id}`
-- Shorthand format: `ASANA-123456789012` (case-insensitive, with or without a hyphen between "ASANA" and the task ID)
 
 **How to link a PR to an Asana task:**
 
-Include an Asana task reference in your PR description using either the full URL or the shorthand format. PR-Agent will detect it automatically and include it in the related tickets list.
+Include an Asana task URL in your PR description. PR-Agent will detect it automatically and include it in the related tickets list.
 
 !!! note "Asana content fetching"
     Asana task references are included for visibility and ticket compliance checking, but PR-Agent does **not** fetch the full task details from Asana (unlike GitHub and Jira tickets, which are fetched via API). The compliance check will note the reference and suggest reviewing the task in Asana for full context.

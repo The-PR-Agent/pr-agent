@@ -35,21 +35,16 @@ def find_jira_tickets(text):
     return list(tickets)
 
 
-# Compiled Asana task patterns
 _ASANA_TASK_URL_PATTERN = re.compile(
     r'https://app\.asana\.com/0/(\d+)/(\d+)'
-)
-_ASANA_TASK_SHORT_PATTERN = re.compile(
-    r'(?:^|[^A-Za-z0-9])(?:ASANA|asana)[- ]?(\d{12,20})',
-    re.IGNORECASE,
 )
 
 
 def find_asana_tickets(text: str) -> list:
     """Extract Asana task references from text.
 
-    Supports both full Asana URLs and shorthand ``ASANA-123456789012``
-    format.  Returns a list of unique task URLs.
+    Supports full Asana URLs (``https://app.asana.com/0/{project_id}/{task_id}``).
+    Returns a list of unique task URLs.
 
     Args:
         text: The text to scan for Asana task references.
@@ -60,10 +55,6 @@ def find_asana_tickets(text: str) -> list:
     tickets = set()
     for match in _ASANA_TASK_URL_PATTERN.finditer(text):
         tickets.add(match.group(0))
-    for match in _ASANA_TASK_SHORT_PATTERN.finditer(text):
-        task_id = match.group(1)
-        if task_id:
-            tickets.add(f"https://app.asana.com/0/0/{task_id}")
     return sorted(tickets)
 
 
