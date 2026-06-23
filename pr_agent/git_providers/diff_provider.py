@@ -33,8 +33,6 @@ class DiffGitProvider(GitProvider):
         self.output_path = get_settings().get("diff.output_path", None)
         self.diff_files = None
         self.pr = PullRequestMimic(self.get_pr_title(), self.get_diff_files())
-        # inline code comments are not supported for the diff provider
-        get_settings().pr_reviewer.inline_code_comments = False
 
     def get_diff_files(self) -> List[FilePatchInfo]:
         if self.diff_files is not None:
@@ -81,6 +79,17 @@ class DiffGitProvider(GitProvider):
 
     def get_files(self) -> List[str]:
         return [f.filename for f in self.get_diff_files()]
+
+    def get_incremental_commits(self, incremental):
+        # A standalone diff has no commit history, so incremental review (-i) is
+        # not applicable. Disable it explicitly to avoid a TypeError downstream
+        # (PRReviewer would otherwise call len() on an unpopulated commits_range).
+        if getattr(incremental, "is_incremental", False):
+            get_logger().info(
+                "Incremental review is not supported in tokenless diff mode; "
+                "running a full review instead."
+            )
+        incremental.is_incremental = False
 
     def _write_output(self, content: str):
         print(content)

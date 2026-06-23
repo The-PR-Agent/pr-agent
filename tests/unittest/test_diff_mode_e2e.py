@@ -4,6 +4,21 @@ from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.diff_provider import DiffGitProvider
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 
+# Keys these tests mutate on the process-wide settings singleton; saved and
+# restored around every test so global state never leaks between tests.
+_SETTINGS_KEYS = ["diff.content", "diff.output_path",
+                  "config.git_provider", "config.publish_output"]
+
+
+@pytest.fixture(autouse=True)
+def _restore_settings():
+    s = get_settings()
+    saved = {k: s.get(k, None) for k in _SETTINGS_KEYS}
+    yield
+    for k, v in saved.items():
+        s.set(k, v)
+
+
 DIFF = """diff --git a/foo.py b/foo.py
 index 1111111..2222222 100644
 --- a/foo.py

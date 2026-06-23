@@ -1,7 +1,24 @@
+import pytest
+
 from pr_agent.algo.types import EDIT_TYPE
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import _GIT_PROVIDERS
 from pr_agent.git_providers.diff_provider import DiffGitProvider
+
+# Keys these tests mutate on the process-wide settings singleton; saved and
+# restored around every test so global state never leaks between tests.
+_SETTINGS_KEYS = ["diff.content", "diff.output_path",
+                  "config.git_provider", "config.publish_output"]
+
+
+@pytest.fixture(autouse=True)
+def _restore_settings():
+    s = get_settings()
+    saved = {k: s.get(k, None) for k in _SETTINGS_KEYS}
+    yield
+    for k, v in saved.items():
+        s.set(k, v)
+
 
 DIFF = """diff --git a/foo.py b/foo.py
 index 1111111..2222222 100644
@@ -171,3 +188,26 @@ def test_publish_code_suggestions_empty_is_noop(capsys):
     provider = DiffGitProvider(None)
     assert provider.publish_code_suggestions([]) is True
     assert capsys.readouterr().out.strip() == ""
+
+
+def test_incremental_review_disabled():
+    # -i has no meaning for a standalone diff; the provider must disable it so
+    # PRReviewer never takes the incremental path (which would TypeError).
+    from pr_agent.git_providers.git_provider import IncrementalPR
+    get_settings().set("diff.content", DIFF)
+    get_settings().set("diff.output_path", None)
+    provider = DiffGitProvider(None)
+    incremental = IncrementalPR(is_incremental=True)
+    provider.get_incremental_commits(incremental)
+    assert incremental.is_incremental is False
+
+
+def test_diff_content_forces_diff_provider():
+    # Even if config.git_provider points elsewhere (e.g. set by extra config),
+    # the presence of loaded diff content must select the diff provider.
+    from pr_agent.git_providers import get_git_provider_with_context
+    get_settings().set("config.git_provider", "github")
+    get_settings().set("diff.content", DIFF)
+    get_settings().set("diff.output_path", None)
+    provider = get_git_provider_with_context("local_diff")
+    assert isinstance(provider, DiffGitProvider)

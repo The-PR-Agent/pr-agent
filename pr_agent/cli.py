@@ -109,6 +109,9 @@ def run(inargs=None, args=None):
         get_settings().set("config.git_provider", "diff")
         get_settings().set("diff.content", diff_content)
         get_settings().set("diff.output_path", getattr(args, "output", None))
+        # Diff mode's whole purpose is to emit the result to stdout/--output, so
+        # force publishing on even if a config/env set publish_output=false.
+        get_settings().set("config.publish_output", True)
     elif not args.pr_url and not args.issue_url:
         parser.print_help()
         return

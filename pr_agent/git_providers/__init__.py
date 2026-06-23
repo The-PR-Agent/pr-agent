@@ -59,6 +59,11 @@ def get_git_provider_with_context(pr_url) -> GitProvider:
     else:
         try:
             provider_id = get_settings().config.git_provider
+            # Tokenless diff mode is keyed on loaded diff content; it must not be
+            # overridden by an extra/repo config file that sets a different
+            # git_provider (apply_repo_settings merges those before this call).
+            if get_settings().get("diff.content", None):
+                provider_id = "diff"
             if provider_id not in _GIT_PROVIDERS:
                 raise ValueError(f"Unknown git provider: {provider_id}")
             git_provider = _GIT_PROVIDERS[provider_id](pr_url)
