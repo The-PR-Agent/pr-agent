@@ -327,12 +327,12 @@ See [litellm](https://docs.litellm.ai/docs/providers/bedrock#usage) documentatio
 
 ### DeepSeek
 
-To use deepseek-chat model with DeepSeek, for example, set:
+To use deepseek-v4 model with DeepSeek, for example, set:
 
 ```toml
 [config] # in configuration.toml
-model = "deepseek/deepseek-chat"
-fallback_models=["deepseek/deepseek-chat"]
+model = "deepseek/deepseek-v4-pro"
+fallback_models=["deepseek/deepseek-v4-flash"]
 ```
 
 and fill up your key
@@ -342,7 +342,7 @@ and fill up your key
 key = ...
 ```
 
-(you can obtain a deepseek-chat key from [here](https://platform.deepseek.com))
+(you can obtain a deepseek-v4 key from [here](https://platform.deepseek.com/api_keys))
 
 ### DeepInfra
 
