@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from typing import Optional, Tuple
-from urllib.parse import unquote, urlparse
+from urllib.parse import quote, unquote, urlparse
 
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 
@@ -641,7 +641,11 @@ class AzureDevopsProvider(GitProvider):
     def get_latest_commit_url(self) -> str:
         commits = self.azure_devops_client.get_pull_request_commits(self.repo_slug, self.pr_num, self.workspace_slug)
         last = commits[0]
-        url = self.azure_devops_client.normalized_url + "/" + self.workspace_slug + "/_git/" + self.repo_slug + "/commit/" + last.commit_id
+        # workspace/repo slugs are stored decoded (e.g. "Dev Project") for the REST API,
+        # so re-encode them when building a web URL to avoid raw spaces in markdown output
+        workspace = quote(self.workspace_slug, safe='')
+        repo = quote(self.repo_slug, safe='')
+        url = self.azure_devops_client.normalized_url + "/" + workspace + "/_git/" + repo + "/commit/" + last.commit_id
         return url
 
     def get_linked_work_items(self) -> list:
