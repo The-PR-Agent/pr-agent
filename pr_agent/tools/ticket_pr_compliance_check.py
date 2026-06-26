@@ -168,11 +168,20 @@ async def extract_tickets(git_provider):
                                 if len(sub_body) > MAX_TICKET_CHARACTERS:
                                     sub_body = sub_body[:MAX_TICKET_CHARACTERS] + "..."
 
+                                # Extract sub-issue labels (sub-issues are regular issues and can have labels)
+                                sub_labels = []
+                                try:
+                                    for label in sub_issue.labels:
+                                        sub_labels.append(label.name if hasattr(label, 'name') else label)
+                                except Exception as e:
+                                    get_logger().error(f"Error extracting labels error= {e}",
+                                                       artifact={"traceback": traceback.format_exc()})
+
                                 sub_issues_content.append({
                                     'ticket_url': sub_issue_url,
                                     'title': sub_issue.title,
                                     'body': sub_body,
-                                    'labels': ""  # keep key present so StrictUndefined template render doesn't crash
+                                    'labels': ", ".join(sub_labels)  # keep key present so StrictUndefined render doesn't crash
                                 })
                             except Exception as e:
                                 get_logger().warning(f"Failed to fetch sub-issue content for {sub_issue_url}: {e}")
