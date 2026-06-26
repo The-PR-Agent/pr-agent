@@ -111,9 +111,10 @@ class LocalGitProvider(GitProvider):
 
     def publish_description(self, pr_title: str, pr_body: str):
         with open(self.description_path, "w") as file:
-            # Write the string to the file
-            content = pr_body if pr_title is None else pr_title + '\n' + pr_body
-            file.write(content)
+            # When pr_title is None (title not AI-generated) keep the existing
+            # title rather than dropping the title line from the output.
+            title = self.get_pr_title() if pr_title is None else pr_title
+            file.write(title + '\n' + pr_body)
 
     def publish_comment(self, pr_comment: str, is_temporary: bool = False):
         with open(self.review_path, "w") as file:
