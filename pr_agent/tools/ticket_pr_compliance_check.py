@@ -171,7 +171,8 @@ async def extract_tickets(git_provider):
                                 sub_issues_content.append({
                                     'ticket_url': sub_issue_url,
                                     'title': sub_issue.title,
-                                    'body': sub_body
+                                    'body': sub_body,
+                                    'labels': ""  # keep key present so StrictUndefined template render doesn't crash
                                 })
                             except Exception as e:
                                 get_logger().warning(f"Failed to fetch sub-issue content for {sub_issue_url}: {e}")

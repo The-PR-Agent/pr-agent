@@ -99,7 +99,7 @@ Related Ticket Info:
 {% for ticket in related_tickets %}
 =====
 Ticket Title: '{{ ticket.title }}'
-{%- if ticket.labels %}
+{%- if ticket.labels is defined and ticket.labels %}
 Ticket Labels: {{ ticket.labels }}
 {%- endif %}
 {%- if ticket.body %}
