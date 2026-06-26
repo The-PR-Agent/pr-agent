@@ -485,7 +485,8 @@ class GitLabProvider(GitProvider):
 
     def publish_description(self, pr_title: str, pr_body: str):
         try:
-            self.mr.title = pr_title
+            if pr_title is not None:
+                self.mr.title = pr_title
             self.mr.description = pr_body
             self.mr.save()
         except Exception as e:

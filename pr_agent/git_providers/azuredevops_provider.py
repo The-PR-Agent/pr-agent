@@ -396,7 +396,8 @@ class AzureDevopsProvider(GitProvider):
                 get_logger().warning("PR description was truncated due to length limit")
         try:
             updated_pr = GitPullRequest()
-            updated_pr.title = pr_title
+            if pr_title is not None:
+                updated_pr.title = pr_title
             updated_pr.description = pr_body
             self.azure_devops_client.update_pull_request(
                 project=self.workspace_slug,

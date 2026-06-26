@@ -368,7 +368,8 @@ class GerritProvider(GitProvider):
 
     def publish_description(self, pr_title: str, pr_body: str):
         msg = adopt_to_gerrit_message(pr_body)
-        add_comment(self.parsed_url, self.refspec, pr_title + '\n' + msg)
+        text = msg if pr_title is None else pr_title + '\n' + msg
+        add_comment(self.parsed_url, self.refspec, text)
 
     def publish_inline_comments(self, comments: list[dict]):
         raise NotImplementedError(

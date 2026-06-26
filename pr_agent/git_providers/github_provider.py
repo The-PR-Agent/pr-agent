@@ -358,7 +358,11 @@ class GithubProvider(GitProvider):
             raise RateLimitExceeded("Rate limit exceeded for GitHub API.") from e
 
     def publish_description(self, pr_title: str, pr_body: str):
-        self.pr.edit(title=pr_title, body=pr_body)
+        if pr_title is None:
+            # Leave the existing title unchanged; update only the body.
+            self.pr.edit(body=pr_body)
+        else:
+            self.pr.edit(title=pr_title, body=pr_body)
 
     def get_latest_commit_url(self) -> str:
         return self.last_commit_id.html_url

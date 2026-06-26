@@ -640,13 +640,16 @@ class GiteaProvider(GitProvider):
 
     def publish_description(self, pr_title: str, pr_body: str) -> None:
         """Publish PR description"""
-        response = self.repo_api.edit_pull_request(
+        edit_kwargs = dict(
             owner=self.owner,
             repo=self.repo,
             pr_number=self.pr_number if self.enabled_pr else self.issue_number,
-            title=pr_title,
-            body=pr_body
+            body=pr_body,
         )
+        # Leave the existing title unchanged when it was not AI-generated.
+        if pr_title is not None:
+            edit_kwargs["title"] = pr_title
+        response = self.repo_api.edit_pull_request(**edit_kwargs)
 
         if not response:
             self.logger.error("Failed to publish PR description")

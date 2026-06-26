@@ -516,7 +516,10 @@ class BitbucketServerProvider(GitProvider):
         payload = {
             "version": self.pr.version,
             "description": description,
-            "title": pr_title,
+            # The update replaces the PR, so omitted fields get wiped. When
+            # pr_title is None (title not AI-generated) keep the existing title
+            # rather than blanking it.
+            "title": pr_title if pr_title is not None else self.pr.title,
             "reviewers": self.pr.reviewers  # needs to be sent otherwise gets wiped
         }
         try:
