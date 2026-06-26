@@ -513,14 +513,19 @@ class BitbucketServerProvider(GitProvider):
 
     # bitbucket does not support labels
     def publish_description(self, pr_title: str, description: str):
+        pr = self.pr
+        if pr_title is None:
+            # The update replaces the PR, so an omitted title would be wiped.
+            # Re-fetch the latest PR so a title edited during the describe run is
+            # preserved instead of reverted to a stale cached value. This also
+            # refreshes version/reviewers, which the replace-style update needs.
+            pr = self._get_pr()
+            self.pr = pr
         payload = {
-            "version": self.pr.version,
+            "version": pr.version,
             "description": description,
-            # The update replaces the PR, so omitted fields get wiped. When
-            # pr_title is None (title not AI-generated) keep the existing title
-            # rather than blanking it.
-            "title": pr_title if pr_title is not None else self.pr.title,
-            "reviewers": self.pr.reviewers  # needs to be sent otherwise gets wiped
+            "title": pr_title if pr_title is not None else pr.title,
+            "reviewers": pr.reviewers  # needs to be sent otherwise gets wiped
         }
         try:
             self.bitbucket_client.update_pull_request(self.workspace_slug, self.repo_slug, str(self.pr_num), payload)
