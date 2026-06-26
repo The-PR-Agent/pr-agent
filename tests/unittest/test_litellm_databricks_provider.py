@@ -7,6 +7,7 @@ DATABRICKS_API_BASE), and that nothing is exported when they are unset.
 """
 import os
 
+import litellm
 import pytest
 
 import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_handler
@@ -48,7 +49,12 @@ def _make_settings(overrides):
 def _isolate_env(monkeypatch):
     for var in _ISOLATED_ENV:
         monkeypatch.delenv(var, raising=False)
+    # LiteLLMAIHandler.__init__ mutates the global litellm.api_key (sets the dummy
+    # fallback when OPENAI_API_KEY is absent, as it is here). Snapshot it so this
+    # file can't leak that global into order-dependent later tests.
+    saved_api_key = litellm.api_key
     yield
+    litellm.api_key = saved_api_key
     # Drop anything the handler wrote so it can't leak into other tests;
     # monkeypatch then restores any pre-existing originals.
     for var in ("DATABRICKS_API_KEY", "DATABRICKS_API_BASE"):
