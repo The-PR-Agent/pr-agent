@@ -515,10 +515,8 @@ class BitbucketServerProvider(GitProvider):
     def publish_description(self, pr_title: str, description: str):
         pr = self.pr
         if pr_title is None:
-            # The update replaces the PR, so an omitted title would be wiped.
-            # Re-fetch the latest PR so a title edited during the describe run is
-            # preserved instead of reverted to a stale cached value. This also
-            # refreshes version/reviewers, which the replace-style update needs.
+            # Replace-style update: an omitted/stale title would be lost, so
+            # re-fetch to preserve a title edited during the describe run.
             pr = self._get_pr()
             self.pr = pr
         payload = {

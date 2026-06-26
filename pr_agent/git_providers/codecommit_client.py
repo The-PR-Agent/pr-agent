@@ -200,7 +200,6 @@ class CodeCommitClient:
             self._connect_boto_client()
 
         try:
-            # pr_title is None when the title was not AI-generated: leave it unchanged.
             if pr_title is not None:
                 self.boto_client.update_pull_request_title(pullRequestId=str(pr_number), title=pr_title)
             self.boto_client.update_pull_request_description(pullRequestId=str(pr_number), description=pr_body)

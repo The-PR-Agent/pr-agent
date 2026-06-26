@@ -180,11 +180,8 @@ class PRDescription:
                     else:
                         self.git_provider.publish_comment(full_markdown_description)
                 else:
-                    # When the title was not AI-generated, pass None so the
-                    # provider leaves the existing title untouched. Re-writing the
-                    # original title on every run is normally a no-op, but it races
-                    # with a manual title edit made while describe is running and
-                    # reverts it. See issue #2474.
+                    # Pass None when the title is not AI-generated so the provider
+                    # leaves it untouched, avoiding reverting a manual edit (#2474).
                     title_to_publish = pr_title.strip() if get_settings().pr_description.generate_ai_title else None
                     self.git_provider.publish_description(title_to_publish, pr_body)
 

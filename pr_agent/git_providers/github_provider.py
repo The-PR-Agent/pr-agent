@@ -359,7 +359,6 @@ class GithubProvider(GitProvider):
 
     def publish_description(self, pr_title: str, pr_body: str):
         if pr_title is None:
-            # Leave the existing title unchanged; update only the body.
             self.pr.edit(body=pr_body)
         else:
             self.pr.edit(title=pr_title, body=pr_body)
