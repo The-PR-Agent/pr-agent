@@ -375,6 +375,46 @@ class TestApiKeyGuard:
         )
 
     @pytest.mark.asyncio
+    async def test_databricks_guards_survive_azure_mode(self, monkeypatch):
+        """Azure mode must not rewrite databricks/* models and bypass the Databricks guards.
+
+        When Azure is enabled in a multi-provider config (OPENAI.API_TYPE=azure or AZURE_AD),
+        chat_completion() prepends 'azure/' to the model. If that rewrite happened for a
+        databricks/* model the prefix-based guards would never trigger, routing the call to
+        Azure with a foreign key/base. The model must keep its 'databricks/' prefix, the foreign
+        key must not be forwarded, and api_base must come from DATABRICKS_API_BASE.
+        """
+        foreign_key = "test-azure-key-shadowing-databricks"
+        databricks_base = "https://adb-1234.azuredatabricks.net/serving-endpoints"
+        monkeypatch.setenv("DATABRICKS_API_BASE", databricks_base)
+
+        with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion",
+                   new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = _mock_response()
+            handler = LiteLLMAIHandler()
+            # Simulate Azure mode + a foreign key/base set by another provider during init
+            handler.azure = True
+            handler.api_base = "https://my-azure.openai.azure.com"
+            monkeypatch.setattr(litellm, "api_key", foreign_key)
+            await handler.chat_completion(
+                model="databricks/databricks-claude-sonnet-4", system="sys", user="usr"
+            )
+
+        forwarded = mock_call.call_args[1]
+        assert forwarded["model"] == "databricks/databricks-claude-sonnet-4", (
+            f"databricks/* model must not be rewritten with an 'azure/' prefix. "
+            f"kwargs had: {forwarded}"
+        )
+        assert "api_key" not in forwarded, (
+            f"Foreign provider key must not be forwarded for databricks/* models even in Azure "
+            f"mode. kwargs had: {forwarded}"
+        )
+        assert forwarded["api_base"] == databricks_base, (
+            f"Databricks endpoint must come from DATABRICKS_API_BASE even in Azure mode. "
+            f"kwargs had: {forwarded}"
+        )
+
+    @pytest.mark.asyncio
     async def test_ollama_and_groq_coexist(self, monkeypatch):
         """Verify both Ollama and Groq keys can coexist and be forwarded correctly.
 

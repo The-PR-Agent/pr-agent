@@ -416,7 +416,12 @@ class LiteLLMAIHandler(BaseAiHandler):
             try:
                 resp, finish_reason = None, None
                 deployment_id = self.deployment_id
-                if self.azure:
+                # Capture the provider prefix before any rewriting below. Databricks auth/endpoint
+                # selection keys off this; rewriting (e.g. 'azure/' + model when Azure is enabled in
+                # a multi-provider config) would otherwise hide the 'databricks/' prefix and bypass
+                # the guards that keep Databricks on its own DATABRICKS_API_KEY/DATABRICKS_API_BASE.
+                is_databricks = model.startswith("databricks/")
+                if self.azure and not is_databricks:
                     model = 'azure/' + model
                 if 'claude' in model and not system:
                     system = "No system prompt provided"
@@ -472,7 +477,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                 # Databricks selects its endpoint via the DATABRICKS_API_BASE env var; don't let an
                 # api_base configured by another provider (OpenRouter/Ollama/Azure AD/OpenAI) during
                 # __init__ override it in multi-provider configs. None lets LiteLLM read the env var.
-                api_base = os.environ.get("DATABRICKS_API_BASE") if model.startswith("databricks/") else self.api_base
+                api_base = os.environ.get("DATABRICKS_API_BASE") if is_databricks else self.api_base
                 kwargs = {
                         "model": model,
                         "deployment_id": deployment_id,
@@ -555,7 +560,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                 # Databricks authenticates via the DATABRICKS_API_KEY/DATABRICKS_API_BASE env vars,
                 # so don't override it with another provider's key in multi-provider configs.
                 if (litellm.api_key and litellm.api_key != DUMMY_LITELLM_API_KEY
-                        and not model.startswith("databricks/")):
+                        and not is_databricks):
                     kwargs["api_key"] = litellm.api_key
 
                 # Get completion with automatic streaming detection
