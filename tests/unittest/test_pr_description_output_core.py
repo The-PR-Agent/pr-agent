@@ -477,3 +477,70 @@ class TestPrepareFileLabelsEdgeCases:
 # Ensure SimpleNamespace import is used (kept for potential future fixtures);
 # referenced here to avoid an unused-import warning without changing semantics.
 _ = SimpleNamespace
+
+
+class TestSafePublishLabels:
+    """``PRDescription._safe_publish_labels`` must isolate label failures.
+
+    /describe wraps the entire publish flow in a single try/except; if the
+    label step raises, the description publish is aborted. The helper exists
+    so a transient refresh failure during ``get_pr_labels(update=True)``
+    degrades to a logged warning instead of skipping the description.
+    """
+
+    def _obj_with_provider(self, provider):
+        obj = _make_instance()
+        obj.git_provider = provider
+        return obj
+
+    def test_skips_publish_when_refresh_raises(self):
+        provider = MagicMock()
+        provider.get_pr_labels.side_effect = RuntimeError("transient gitlab error")
+
+        obj = self._obj_with_provider(provider)
+
+        # Must not raise.
+        obj._safe_publish_labels(["Bug fix"])
+
+        provider.publish_labels.assert_not_called()
+
+    def test_skips_publish_when_publish_raises(self):
+        provider = MagicMock()
+        provider.get_pr_labels.return_value = ["area/backend"]
+        provider.publish_labels.side_effect = RuntimeError("transient gitlab error")
+
+        obj = self._obj_with_provider(provider)
+
+        # Must not raise even though publish_labels itself failed.
+        obj._safe_publish_labels(["Bug fix"])
+
+        provider.publish_labels.assert_called_once()
+
+    def test_publishes_when_labels_differ(self):
+        provider = MagicMock()
+        provider.get_pr_labels.return_value = ["area/backend"]
+
+        with patch(
+            "pr_agent.tools.pr_description.get_user_labels",
+            return_value=["area/backend"],
+        ):
+            obj = self._obj_with_provider(provider)
+            obj._safe_publish_labels(["Bug fix"])
+
+        provider.publish_labels.assert_called_once()
+        published = provider.publish_labels.call_args[0][0]
+        assert "Bug fix" in published
+        assert "area/backend" in published
+
+    def test_no_publish_when_labels_unchanged(self):
+        provider = MagicMock()
+        provider.get_pr_labels.return_value = ["Bug fix", "area/backend"]
+
+        with patch(
+            "pr_agent.tools.pr_description.get_user_labels",
+            return_value=["area/backend"],
+        ):
+            obj = self._obj_with_provider(provider)
+            obj._safe_publish_labels(["Bug fix"])
+
+        provider.publish_labels.assert_not_called()

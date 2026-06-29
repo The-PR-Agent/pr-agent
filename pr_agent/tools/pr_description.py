@@ -157,16 +157,7 @@ class PRDescription:
 
                 # publish labels
                 if get_settings().pr_description.publish_labels and pr_labels and self.git_provider.is_supported("get_labels"):
-                    original_labels = self.git_provider.get_pr_labels(update=True)
-                    get_logger().debug(f"original labels", artifact=original_labels)
-                    user_labels = get_user_labels(original_labels)
-                    new_labels = pr_labels + user_labels
-                    get_logger().debug(f"published labels", artifact=new_labels)
-                    if set(new_labels) != set(original_labels):
-                        get_logger().info(f"Setting describe labels:\n{new_labels}")
-                        self.git_provider.publish_labels(new_labels)
-                    else:
-                        get_logger().debug(f"Labels are the same, not updating")
+                    self._safe_publish_labels(pr_labels)
 
                 # publish description
                 if get_settings().pr_description.publish_description_as_comment:
@@ -202,6 +193,32 @@ class PRDescription:
                                artifact={"traceback": traceback.format_exc()})
 
         return ""
+
+    def _safe_publish_labels(self, pr_labels: List[str]) -> None:
+        """Publish labels in a failure-isolated way.
+
+        ``get_pr_labels(update=True)`` may raise on a refresh failure (e.g.
+        transient GitLab API error). For ``/describe`` the description itself
+        is the primary artifact: a label-update failure must not block the
+        description publish. Catch any exception here, log a warning, and
+        return so the caller continues to publish the description.
+        """
+        try:
+            original_labels = self.git_provider.get_pr_labels(update=True)
+            get_logger().debug("original labels", artifact=original_labels)
+            user_labels = get_user_labels(original_labels)
+            new_labels = pr_labels + user_labels
+            get_logger().debug("published labels", artifact=new_labels)
+            if set(new_labels) != set(original_labels):
+                get_logger().info(f"Setting describe labels:\n{new_labels}")
+                self.git_provider.publish_labels(new_labels)
+            else:
+                get_logger().debug("Labels are the same, not updating")
+        except Exception as label_err:
+            get_logger().warning(
+                f"Failed to update labels during PR description; "
+                f"continuing with description publish. error: {label_err}"
+            )
 
     async def _prepare_prediction(self, model: str) -> None:
         if get_settings().pr_description.use_description_markers and 'pr_agent:' not in self.user_description:
