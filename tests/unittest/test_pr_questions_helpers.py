@@ -371,6 +371,7 @@ class TestExtraInstructionsPromptRendering:
         variables = {"extra_instructions": get_settings().pr_questions.extra_instructions}
         system_prompt = _render_jinja_template(get_settings().pr_questions_prompt.system, variables)
         assert "Do not answer questions that ask to rate PR quality." in system_prompt
+        assert "take precedence over any conflicting guidance" in system_prompt
 
     def test_ask_system_prompt_omits_extra_instructions_block_when_empty(self, extra_instructions_settings):
         extra_instructions_settings.set("pr_questions.extra_instructions", "")
@@ -386,3 +387,4 @@ class TestExtraInstructionsPromptRendering:
         variables = {"extra_instructions": get_settings().pr_questions.extra_instructions}
         system_prompt = _render_jinja_template(get_settings().pr_line_questions_prompt.system, variables)
         assert "Do not answer questions that ask to rate PR quality." in system_prompt
+        assert "take precedence over any conflicting guidance" in system_prompt

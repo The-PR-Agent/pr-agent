@@ -12,6 +12,7 @@ Extra instructions from the user:
 ======
 {{ extra_instructions }}
 ======
+Follow the extra instructions above; they take precedence over any conflicting guidance in this prompt.
 {%- endif %}
 
 Additional guidelines:
