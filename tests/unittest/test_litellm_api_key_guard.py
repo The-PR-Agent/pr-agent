@@ -4,7 +4,7 @@ Tests for the litellm.api_key guard in LiteLLMAIHandler.chat_completion.
 Verifies:
   - Placeholder key (DUMMY_LITELLM_API_KEY) is never injected into the call.
   - None is not injected (e.g. when OpenAI key is set via litellm.openai_key).
-  - Real provider keys (Groq, XAI, OpenRouter, Azure AD) ARE injected.
+  - Real provider keys (Groq, SambaNova, XAI, OpenRouter, Azure AD) ARE injected.
 """
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -272,6 +272,147 @@ class TestApiKeyGuard:
             await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
 
         assert mock_call.call_args[1].get("api_key") == xai_key
+
+    @pytest.mark.asyncio
+    async def test_sambanova_key_forwarded_for_non_ollama_model(self, monkeypatch):
+        """SambaNova key must be forwarded for non-Ollama models.
+
+        Like Groq and xAI, SambaNova sets litellm.api_key during __init__
+        (see litellm_ai_handler.py) and relies on it being forwarded via
+        kwargs["api_key"] to acompletion.
+        """
+        sambanova_key = "sambanova-test-key-67890"
+
+        sambanova_settings = type("Settings", (), {
+            "config": type("Config", (), {
+                "reasoning_effort": None,
+                "ai_timeout": 30,
+                "custom_reasoning_model": False,
+                "max_model_tokens": 32000,
+                "verbosity_level": 0,
+                "seed": -1,
+                "get": lambda self, key, default=None: default,
+            })(),
+            "litellm": type("LiteLLM", (), {
+                "get": lambda self, key, default=None: default,
+            })(),
+            "sambanova": type("SambaNova", (), {
+                "key": sambanova_key,
+            })(),
+            "get": lambda self, key, default=None: (
+                sambanova_key if key == "SAMBANOVA.KEY" else default
+            ),
+        })()
+
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: sambanova_settings)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr(litellm, "api_key", None)
+
+        with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion",
+                   new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = _mock_response()
+            handler = LiteLLMAIHandler()
+
+            assert litellm.api_key == sambanova_key
+            await handler.chat_completion(
+                model="sambanova/MiniMax-M3", system="sys", user="usr"
+            )
+
+        assert mock_call.call_args[1].get("api_key") == sambanova_key
+
+    @pytest.mark.asyncio
+    async def test_databricks_model_does_not_forward_foreign_key(self, monkeypatch):
+        """Databricks models authenticate via DATABRICKS_API_KEY/DATABRICKS_API_BASE env vars.
+
+        In a multi-provider config another provider (e.g. Groq/OpenRouter) may have stored
+        its key in litellm.api_key during __init__. That key must NOT be forwarded for
+        databricks/* calls, otherwise it would override the intended env-var auth and break
+        Databricks authentication.
+        """
+        foreign_key = "test-groq-key-shadowing-databricks"
+
+        with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion",
+                   new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = _mock_response()
+            handler = LiteLLMAIHandler()
+            # Simulate another provider having populated litellm.api_key during init
+            monkeypatch.setattr(litellm, "api_key", foreign_key)
+            await handler.chat_completion(
+                model="databricks/databricks-claude-sonnet-4", system="sys", user="usr"
+            )
+
+        assert "api_key" not in mock_call.call_args[1], (
+            f"Foreign provider key must not be forwarded for databricks/* models. "
+            f"kwargs had: {mock_call.call_args[1]}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_databricks_model_does_not_forward_foreign_api_base(self, monkeypatch):
+        """Databricks models select their endpoint via the DATABRICKS_API_BASE env var.
+
+        In a multi-provider config another provider (OpenRouter/Ollama/Azure AD/OpenAI) may
+        have set self.api_base during __init__. That base URL must NOT be forwarded for
+        databricks/* calls, otherwise it would route the request to the wrong host and
+        override the intended DATABRICKS_API_BASE endpoint. The Databricks base (or None,
+        which lets LiteLLM read the env var) must be used instead.
+        """
+        databricks_base = "https://adb-1234.azuredatabricks.net/serving-endpoints"
+        monkeypatch.setenv("DATABRICKS_API_BASE", databricks_base)
+
+        with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion",
+                   new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = _mock_response()
+            handler = LiteLLMAIHandler()
+            # Simulate another provider having set api_base during init
+            handler.api_base = "https://openrouter.ai/api/v1"
+            await handler.chat_completion(
+                model="databricks/databricks-claude-sonnet-4", system="sys", user="usr"
+            )
+
+        assert mock_call.call_args[1]["api_base"] == databricks_base, (
+            f"Databricks endpoint must come from DATABRICKS_API_BASE, not a foreign provider's "
+            f"api_base. kwargs had: {mock_call.call_args[1]}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_databricks_guards_survive_azure_mode(self, monkeypatch):
+        """Azure mode must not rewrite databricks/* models and bypass the Databricks guards.
+
+        When Azure is enabled in a multi-provider config (OPENAI.API_TYPE=azure or AZURE_AD),
+        chat_completion() prepends 'azure/' to the model. If that rewrite happened for a
+        databricks/* model the prefix-based guards would never trigger, routing the call to
+        Azure with a foreign key/base. The model must keep its 'databricks/' prefix, the foreign
+        key must not be forwarded, and api_base must come from DATABRICKS_API_BASE.
+        """
+        foreign_key = "test-azure-key-shadowing-databricks"
+        databricks_base = "https://adb-1234.azuredatabricks.net/serving-endpoints"
+        monkeypatch.setenv("DATABRICKS_API_BASE", databricks_base)
+
+        with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion",
+                   new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = _mock_response()
+            handler = LiteLLMAIHandler()
+            # Simulate Azure mode + a foreign key/base set by another provider during init
+            handler.azure = True
+            handler.api_base = "https://my-azure.openai.azure.com"
+            monkeypatch.setattr(litellm, "api_key", foreign_key)
+            await handler.chat_completion(
+                model="databricks/databricks-claude-sonnet-4", system="sys", user="usr"
+            )
+
+        forwarded = mock_call.call_args[1]
+        assert forwarded["model"] == "databricks/databricks-claude-sonnet-4", (
+            f"databricks/* model must not be rewritten with an 'azure/' prefix. "
+            f"kwargs had: {forwarded}"
+        )
+        assert "api_key" not in forwarded, (
+            f"Foreign provider key must not be forwarded for databricks/* models even in Azure "
+            f"mode. kwargs had: {forwarded}"
+        )
+        assert forwarded["api_base"] == databricks_base, (
+            f"Databricks endpoint must come from DATABRICKS_API_BASE even in Azure mode. "
+            f"kwargs had: {forwarded}"
+        )
 
     @pytest.mark.asyncio
     async def test_ollama_and_groq_coexist(self, monkeypatch):

@@ -98,7 +98,7 @@ class BitbucketProvider(GitProvider):
             return ""
 
     # Given a git repo url, return prefix and suffix of the provider in order to view a given file belonging to that repo.
-    # Example: git clone git clone https://bitbucket.org/codiumai/pr-agent.git and branch: main -> prefix: "https://bitbucket.org/codiumai/pr-agent/src/main", suffix: ""
+    # Example: git clone git clone https://bitbucket.org/pragent/pr-agent.git and branch: main -> prefix: "https://bitbucket.org/pragent/pr-agent/src/main", suffix: ""
     # In case git url is not provided, provider will use PR context (which includes branch) to determine the prefix and suffix.
     def get_canonical_url_parts(self, repo_git_url:str=None, desired_branch:str=None) -> Tuple[str, str]:
         scheme_and_netloc = None
@@ -601,11 +601,10 @@ class BitbucketProvider(GitProvider):
 
     # bitbucket does not support labels
     def publish_description(self, pr_title: str, description: str):
-        payload = json.dumps({
-            "description": description,
-            "title": pr_title
-
-        })
+        payload_dict = {"description": description}
+        if pr_title is not None:
+            payload_dict["title"] = pr_title
+        payload = json.dumps(payload_dict)
 
         response = requests.request("PUT", self.bitbucket_pull_request_api_url, headers=self.headers, data=payload)
         try:

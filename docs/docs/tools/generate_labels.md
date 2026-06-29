@@ -33,7 +33,7 @@ enable_custom_labels = true
 
 ### Defining custom labels
 
-You can define your own custom labels in the `[custom_labels]` section. See the [custom_labels.toml](https://github.com/qodo-ai/pr-agent/blob/main/pr_agent/settings/custom_labels.toml) file for examples.
+You can define your own custom labels in the `[custom_labels]` section. See the [custom_labels.toml](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/custom_labels.toml) file for examples.
 
 Example configuration:
 

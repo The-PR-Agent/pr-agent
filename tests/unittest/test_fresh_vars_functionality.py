@@ -6,7 +6,7 @@ particularly for the GitLab credentials use case where values should be reloaded
 on each access rather than being cached.
 
 The tests are designed to detect if fresh_vars is broken due to custom loader changes,
-such as those introduced in https://github.com/qodo-ai/pr-agent/pull/2087.
+such as those introduced in https://github.com/the-pr-agent/pr-agent/pull/2087.
 """
 
 import os

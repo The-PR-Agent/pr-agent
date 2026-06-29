@@ -13,3 +13,4 @@ build/
 docs/.cache/
 .qodo
 poetry.lock
+.log

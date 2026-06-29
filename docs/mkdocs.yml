@@ -1,6 +1,6 @@
 site_name: PR-Agent
-repo_url: https://github.com/qodo-ai/pr-agent
-repo_name: Qodo-ai/pr-agent
+repo_url: https://github.com/the-pr-agent/pr-agent
+repo_name: the-pr-agent/pr-agent
 
 nav:
   - Overview:
@@ -91,7 +91,7 @@ extra:
   generator: false
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/qodo-ai/pr-agent
+      link: https://github.com/the-pr-agent/pr-agent
 
 extra_css:
   - css/custom.css
