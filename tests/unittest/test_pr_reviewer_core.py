@@ -51,7 +51,14 @@ def test_set_review_labels_replaces_stale_review_labels_and_keeps_user_labels():
     settings.pr_reviewer.enable_review_labels_effort = True
     settings.pr_reviewer.enable_review_labels_security = True
     git_provider = MagicMock()
-    git_provider.get_pr_labels.return_value = ["Review effort 1/5", "Possible security concern", "keep-me"]
+    # Simulate publish_managed_labels' atomic refresh+filter+diff: it sees
+    # the stale "Review effort 1/5" + user label "keep-me", filters out the
+    # managed labels, and publishes the new managed set plus the user label.
+    git_provider.publish_managed_labels.return_value = [
+        "Review effort 3/5",
+        "Possible security concern",
+        "keep-me",
+    ]
     reviewer = _make_reviewer(git_provider)
     data = {
         "review": {
@@ -63,11 +70,20 @@ def test_set_review_labels_replaces_stale_review_labels_and_keeps_user_labels():
     try:
         reviewer.set_review_labels(data)
 
-        git_provider.publish_labels.assert_called_once_with([
-            "Review effort 3/5",
-            "Possible security concern",
-            "keep-me",
-        ])
+        # The new contract delegates filter+diff to the provider via
+        # publish_managed_labels(managed_labels, predicate). The caller no
+        # longer pre-reads labels or computes the merge itself.
+        git_provider.get_pr_labels.assert_not_called()
+        git_provider.publish_labels.assert_not_called()
+        assert git_provider.publish_managed_labels.call_count == 1
+        managed_arg, predicate_arg = git_provider.publish_managed_labels.call_args[0]
+        assert managed_arg == ["Review effort 3/5", "Possible security concern"]
+        # Predicate must classify review-managed labels as managed and leave
+        # user labels alone.
+        assert predicate_arg("Review effort 1/5") is True
+        assert predicate_arg("Possible security concern") is True
+        assert predicate_arg("keep-me") is False
+        assert predicate_arg(None) is False
     finally:
         settings.config.publish_output = original["publish_output"]
         settings.pr_reviewer.require_estimate_effort_to_review = original["require_estimate_effort_to_review"]

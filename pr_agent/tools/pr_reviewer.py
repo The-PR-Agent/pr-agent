@@ -395,22 +395,27 @@ class PRReviewer:
                     if security_concerns_bool:
                         review_labels.append('Possible security concern')
 
-                current_labels = self.git_provider.get_pr_labels(update=True)
-                if not current_labels:
-                    current_labels = []
-                get_logger().debug(f"Current labels:\n{current_labels}")
-                if current_labels:
-                    current_labels_filtered = [label for label in current_labels if
-                                               not label.lower().startswith('review effort') and not label.lower().startswith(
-                                                   'possible security concern')]
+                # The review-managed namespace is exactly the two prefixes
+                # below. Anything else (user-added labels like ``area/backend``
+                # or labels managed by /describe) must be preserved. Use
+                # ``publish_managed_labels`` so providers that support an
+                # atomic refresh+diff path (e.g. GitLab) can compute both the
+                # filter and the diff against a single MR snapshot, closing
+                # the cross-method race where a label added between the
+                # caller's read and ``publish_labels``'s internal refresh
+                # could be removed.
+                def _is_review_managed(label: str) -> bool:
+                    if label is None:
+                        return False
+                    lowered = label.lower()
+                    return (lowered.startswith('review effort')
+                            or lowered.startswith('possible security concern'))
+
+                published = self.git_provider.publish_managed_labels(review_labels, _is_review_managed)
+                if published is None:
+                    get_logger().info(f"Review labels are already set; managed set:\n{review_labels}")
                 else:
-                    current_labels_filtered = []
-                new_labels = review_labels + current_labels_filtered
-                if (current_labels or review_labels) and sorted(new_labels) != sorted(current_labels):
-                    get_logger().info(f"Setting review labels:\n{review_labels + current_labels_filtered}")
-                    self.git_provider.publish_labels(new_labels)
-                else:
-                    get_logger().info(f"Review labels are already set:\n{review_labels + current_labels_filtered}")
+                    get_logger().info(f"Setting review labels:\n{published}")
             except Exception as e:
                 get_logger().error(f"Failed to set review labels, error: {e}")
 

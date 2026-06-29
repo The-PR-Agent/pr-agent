@@ -901,7 +901,6 @@ class GitLabProvider(GitProvider):
             # ``PUT /projects/:id/merge_requests/:merge_request_iid`` so the
             # server applies an incremental set-diff and concurrent additions
             # outside the diff are preserved.
-            desired = set(pr_types)
             try:
                 self.mr = self._get_merge_request()
             except Exception as refresh_err:
@@ -913,34 +912,83 @@ class GitLabProvider(GitProvider):
                     f"publish_labels: aborting, failed to refresh MR before save. error: {refresh_err}"
                 )
                 return
-            current = set(self.mr.labels or [])
-            to_add = sorted(desired - current)
-            to_remove = sorted(current - desired)
-            if not to_add and not to_remove:
-                return
-            # GitLab accepts comma-separated strings for these attributes.
-            # Wrap the save in try/finally so the transient add_labels /
-            # remove_labels attributes are always cleared from ``self.mr``,
-            # even on save() failure. Otherwise a later self.mr.save() call
-            # in an unrelated tool (e.g. publish_description) would resend
-            # the prior label diff and cause unexpected churn.
-            try:
-                if to_add:
-                    self.mr.add_labels = ",".join(to_add)
-                if to_remove:
-                    self.mr.remove_labels = ",".join(to_remove)
-                self.mr.save()
-            finally:
-                for attr in ("add_labels", "remove_labels"):
-                    try:
-                        delattr(self.mr, attr)
-                    except (AttributeError, KeyError):
-                        # Already absent (e.g. only one side of the diff was
-                        # set, or python-gitlab cleared it on save). Safe to
-                        # ignore.
-                        pass
+            self._publish_labels_against(self.mr, pr_types)
         except Exception as e:
             get_logger().warning(f"Failed to publish labels, error: {e}")
+
+    def publish_managed_labels(self, managed_labels, is_managed_label):
+        """Atomic managed-label update.
+
+        Refresh the MR exactly once and compute both the user-label filter and
+        the add/remove diff against that single snapshot. This closes the
+        cross-method race where a caller's ``get_pr_labels(update=True)`` and
+        ``publish_labels()``'s internal refresh produced two different
+        snapshots, allowing a label added between them to be removed by
+        ``current - desired``.
+
+        Returns the new label set that would be on the server after the
+        publish, or ``None`` if nothing changed / the refresh failed.
+        """
+        try:
+            try:
+                self.mr = self._get_merge_request()
+            except Exception as refresh_err:
+                # Same strict policy as ``publish_labels``: a stale snapshot
+                # produces an incorrect diff. Abort and let the caller decide
+                # whether the run should continue.
+                get_logger().warning(
+                    f"publish_managed_labels: aborting, failed to refresh MR before save. "
+                    f"error: {refresh_err}"
+                )
+                return None
+            current_labels = list(self.mr.labels or [])
+            user_labels = [label for label in current_labels if not is_managed_label(label)]
+            new_labels = list(managed_labels or []) + user_labels
+            if sorted(new_labels) == sorted(current_labels):
+                return None
+            self._publish_labels_against(self.mr, new_labels)
+            return new_labels
+        except Exception as e:
+            get_logger().warning(f"Failed to publish managed labels, error: {e}")
+            return None
+
+    def _publish_labels_against(self, mr, desired_labels):
+        """Apply a set-diff publish against ``mr``'s already-refreshed snapshot.
+
+        Computes ``to_add`` / ``to_remove`` from ``mr.labels`` (the caller's
+        responsibility to have refreshed), writes the diff via
+        ``add_labels`` / ``remove_labels`` so the server applies an
+        incremental update, and clears the transient diff attributes in a
+        ``finally`` so a later unrelated ``mr.save()`` (e.g.
+        ``publish_description``) does not resend them.
+        """
+        desired = set(desired_labels)
+        current = set(mr.labels or [])
+        to_add = sorted(desired - current)
+        to_remove = sorted(current - desired)
+        if not to_add and not to_remove:
+            return
+        # GitLab accepts comma-separated strings for these attributes.
+        # Wrap the save in try/finally so the transient add_labels /
+        # remove_labels attributes are always cleared from ``mr``, even on
+        # save() failure. Otherwise a later mr.save() call in an unrelated
+        # tool (e.g. publish_description) would resend the prior label diff
+        # and cause unexpected churn.
+        try:
+            if to_add:
+                mr.add_labels = ",".join(to_add)
+            if to_remove:
+                mr.remove_labels = ",".join(to_remove)
+            mr.save()
+        finally:
+            for attr in ("add_labels", "remove_labels"):
+                try:
+                    delattr(mr, attr)
+                except (AttributeError, KeyError):
+                    # Already absent (e.g. only one side of the diff was
+                    # set, or python-gitlab cleared it on save). Safe to
+                    # ignore.
+                    pass
 
     def publish_inline_comments(self, comments: list[dict]):
         pass

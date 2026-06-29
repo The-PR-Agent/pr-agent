@@ -484,7 +484,7 @@ class TestSafePublishLabels:
 
     /describe wraps the entire publish flow in a single try/except; if the
     label step raises, the description publish is aborted. The helper exists
-    so a transient refresh failure during ``get_pr_labels(update=True)``
+    so a transient refresh failure during ``publish_managed_labels``
     degrades to a logged warning instead of skipping the description.
     """
 
@@ -493,54 +493,73 @@ class TestSafePublishLabels:
         obj.git_provider = provider
         return obj
 
-    def test_skips_publish_when_refresh_raises(self):
+    def test_swallows_expected_provider_errors(self):
         provider = MagicMock()
-        provider.get_pr_labels.side_effect = RuntimeError("transient gitlab error")
+        # Each of these is a failure mode we expect from the provider/network
+        # path and explicitly catch in _safe_publish_labels.
+        for err in (
+            ConnectionError("network down"),
+            TimeoutError("read timeout"),
+            OSError("socket closed"),
+            ValueError("bad payload"),
+            KeyError("missing key on MR"),
+            AttributeError("stale attr"),
+        ):
+            provider.reset_mock()
+            provider.publish_managed_labels.side_effect = err
+
+            obj = self._obj_with_provider(provider)
+            # Must not raise.
+            obj._safe_publish_labels(["Bug fix"])
+
+            provider.publish_managed_labels.assert_called_once()
+
+    def test_does_not_swallow_unexpected_errors(self):
+        # Programmer errors (e.g. a typo causing TypeError) must surface,
+        # not be silently logged. _safe_publish_labels catches only the
+        # narrow set above; anything else propagates so /describe's outer
+        # handler logs it with a traceback.
+        provider = MagicMock()
+        provider.publish_managed_labels.side_effect = TypeError("unexpected kwarg")
 
         obj = self._obj_with_provider(provider)
 
-        # Must not raise.
-        obj._safe_publish_labels(["Bug fix"])
+        try:
+            obj._safe_publish_labels(["Bug fix"])
+        except TypeError:
+            pass
+        else:
+            raise AssertionError("TypeError should not be swallowed by _safe_publish_labels")
 
-        provider.publish_labels.assert_not_called()
-
-    def test_skips_publish_when_publish_raises(self):
+    def test_passes_managed_labels_and_predicate(self):
         provider = MagicMock()
-        provider.get_pr_labels.return_value = ["area/backend"]
-        provider.publish_labels.side_effect = RuntimeError("transient gitlab error")
+        provider.publish_managed_labels.return_value = ["Bug fix", "area/backend"]
 
         obj = self._obj_with_provider(provider)
-
-        # Must not raise even though publish_labels itself failed.
         obj._safe_publish_labels(["Bug fix"])
 
-        provider.publish_labels.assert_called_once()
+        provider.publish_managed_labels.assert_called_once()
+        managed_arg, predicate_arg = provider.publish_managed_labels.call_args[0]
+        assert managed_arg == ["Bug fix"]
+        # Predicate must mirror get_user_labels' exclusion set so the standard
+        # /describe-managed names are classified as managed (and therefore
+        # eligible for removal) while user labels are preserved.
+        assert predicate_arg("Bug fix") is True
+        assert predicate_arg("BUG FIX") is True
+        assert predicate_arg("tests") is True
+        assert predicate_arg("Enhancement") is True
+        assert predicate_arg("Documentation") is True
+        assert predicate_arg("Other") is True
+        assert predicate_arg("area/backend") is False
+        assert predicate_arg(None) is False
 
-    def test_publishes_when_labels_differ(self):
+    def test_skips_log_when_no_change(self):
+        # publish_managed_labels returns None when nothing changed; the helper
+        # must treat that as a no-op rather than an error.
         provider = MagicMock()
-        provider.get_pr_labels.return_value = ["area/backend"]
+        provider.publish_managed_labels.return_value = None
 
-        with patch(
-            "pr_agent.tools.pr_description.get_user_labels",
-            return_value=["area/backend"],
-        ):
-            obj = self._obj_with_provider(provider)
-            obj._safe_publish_labels(["Bug fix"])
+        obj = self._obj_with_provider(provider)
+        obj._safe_publish_labels(["Bug fix"])
 
-        provider.publish_labels.assert_called_once()
-        published = provider.publish_labels.call_args[0][0]
-        assert "Bug fix" in published
-        assert "area/backend" in published
-
-    def test_no_publish_when_labels_unchanged(self):
-        provider = MagicMock()
-        provider.get_pr_labels.return_value = ["Bug fix", "area/backend"]
-
-        with patch(
-            "pr_agent.tools.pr_description.get_user_labels",
-            return_value=["area/backend"],
-        ):
-            obj = self._obj_with_provider(provider)
-            obj._safe_publish_labels(["Bug fix"])
-
-        provider.publish_labels.assert_not_called()
+        provider.publish_managed_labels.assert_called_once()

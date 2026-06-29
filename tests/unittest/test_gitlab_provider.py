@@ -265,13 +265,31 @@ class TestGitLabProvider:
         same label set, simulating a successful server refresh. spec=[...]
         keeps MagicMock from silently auto-creating add_labels /
         remove_labels attrs so tests can assert which side(s) of the diff
-        were written.
+        were written (or were cleared) after publish_labels returns.
         """
         mr = MagicMock(spec=["labels", "save"])
         mr.labels = list(server_labels)
         gitlab_provider.mr = mr
         gitlab_provider._get_merge_request = MagicMock(return_value=mr)
         return mr
+
+    def _capture_wire_payload_on_save(self, mr):
+        """Capture add_labels / remove_labels at the moment save() is called.
+
+        publish_labels deletes the transient diff attributes in a ``finally``
+        block, so asserting on them *after* the call returns is meaningless
+        (they will always be absent). This helper installs a save() side_effect
+        that records the diff payload that was actually written to the wire,
+        which is what we need to validate.
+        """
+        captured = {}
+
+        def _record_then_succeed(*_a, **_kw):
+            captured["add_labels"] = getattr(mr, "add_labels", None)
+            captured["remove_labels"] = getattr(mr, "remove_labels", None)
+
+        mr.save.side_effect = _record_then_succeed
+        return captured
 
     def test_publish_labels_noop_when_sets_equal(self, gitlab_provider):
         mr = self._prime_mr_for_labels(gitlab_provider, ["bug", "review effort 3/5"])
@@ -285,13 +303,16 @@ class TestGitLabProvider:
 
     def test_publish_labels_adds_only_missing(self, gitlab_provider):
         mr = self._prime_mr_for_labels(gitlab_provider, ["bug"])
+        captured = self._capture_wire_payload_on_save(mr)
 
         gitlab_provider.publish_labels(["bug", "review effort 3/5"])
 
-        # Server-side state is left to GitLab to compute; we only assert what
-        # we wrote on the wire.
         assert mr.save.call_count == 1
-        # ``add_labels`` is deleted on the finally branch after save().
+        # Only the missing label is in the add diff; nothing is being
+        # removed because every server label is still desired.
+        assert captured["add_labels"] == "review effort 3/5"
+        assert captured["remove_labels"] is None
+        # Diff attrs are cleared on the way out.
         assert not hasattr(mr, "add_labels")
         assert not hasattr(mr, "remove_labels")
 
@@ -299,11 +320,17 @@ class TestGitLabProvider:
         mr = self._prime_mr_for_labels(
             gitlab_provider, ["review effort 5/5", "Possible security concern"]
         )
+        captured = self._capture_wire_payload_on_save(mr)
 
         # Caller wants to switch the managed labels to a fresh set.
         gitlab_provider.publish_labels(["review effort 2/5"])
 
         assert mr.save.call_count == 1
+        # "review effort 2/5" is added; both prior managed labels are removed.
+        # sorted() determinism is part of the contract so we can assert the
+        # exact comma-separated payload sent on the wire.
+        assert captured["add_labels"] == "review effort 2/5"
+        assert captured["remove_labels"] == "Possible security concern,review effort 5/5"
         assert not hasattr(mr, "add_labels")
         assert not hasattr(mr, "remove_labels")
 
@@ -314,13 +341,16 @@ class TestGitLabProvider:
         mr = self._prime_mr_for_labels(
             gitlab_provider, ["area/backend", "review effort 3/5"]
         )
+        captured = self._capture_wire_payload_on_save(mr)
 
         # Caller flipped the managed label only; ``area/backend`` stays.
         gitlab_provider.publish_labels(["area/backend", "review effort 4/5"])
 
+        # Wire-level diff: only the managed label is updated.
+        assert captured["add_labels"] == "review effort 4/5"
+        assert captured["remove_labels"] == "review effort 3/5"
         # We wrote exactly one save and never reassigned ``mr.labels`` (the
-        # pre-fix bug). The server-side set-diff is what preserves the user
-        # label; here we just confirm we did not perform a full overwrite.
+        # pre-fix bug).
         assert mr.save.call_count == 1
         assert mr.labels == ["area/backend", "review effort 3/5"]
         # Diff attrs cleared on the way out.
@@ -387,3 +417,107 @@ class TestGitLabProvider:
 
         with pytest.raises(RuntimeError):
             gitlab_provider.get_pr_labels(update=True)
+
+    # ---- publish_managed_labels (atomic refresh+filter+diff) tests ----
+
+    @staticmethod
+    def _is_review_managed(label):
+        if label is None:
+            return False
+        lowered = label.lower()
+        return (lowered.startswith("review effort")
+                or lowered.startswith("possible security concern"))
+
+    def test_publish_managed_labels_refreshes_once(self, gitlab_provider):
+        # The whole point of this method: a single refresh feeds both the
+        # filter (managed vs user) and the diff (add/remove). Two refreshes
+        # would re-introduce the cross-snapshot race the reviewer flagged.
+        mr = self._prime_mr_for_labels(gitlab_provider, ["review effort 1/5", "area/backend"])
+        self._capture_wire_payload_on_save(mr)
+
+        gitlab_provider.publish_managed_labels(["review effort 3/5"], self._is_review_managed)
+
+        gitlab_provider._get_merge_request.assert_called_once()
+
+    def test_publish_managed_labels_preserves_user_labels(self, gitlab_provider):
+        mr = self._prime_mr_for_labels(
+            gitlab_provider, ["review effort 1/5", "area/backend", "team/security"]
+        )
+        captured = self._capture_wire_payload_on_save(mr)
+
+        result = gitlab_provider.publish_managed_labels(
+            ["review effort 3/5"], self._is_review_managed
+        )
+
+        # The returned "new labels" set is what would exist server-side after
+        # the publish: the managed set plus every user label.
+        assert sorted(result) == sorted([
+            "review effort 3/5", "area/backend", "team/security"
+        ])
+        # Wire payload: only the managed labels are diffed. The user labels
+        # are not in to_add (already present) and not in to_remove (not
+        # managed, so filter kept them).
+        assert captured["add_labels"] == "review effort 3/5"
+        assert captured["remove_labels"] == "review effort 1/5"
+        assert mr.save.call_count == 1
+
+    def test_publish_managed_labels_noop_when_nothing_changes(self, gitlab_provider):
+        # If the desired managed set already matches what's on the server,
+        # publish_managed_labels returns None without calling save().
+        mr = self._prime_mr_for_labels(
+            gitlab_provider, ["review effort 3/5", "area/backend"]
+        )
+
+        result = gitlab_provider.publish_managed_labels(
+            ["review effort 3/5"], self._is_review_managed
+        )
+
+        assert result is None
+        mr.save.assert_not_called()
+        assert not hasattr(mr, "add_labels")
+        assert not hasattr(mr, "remove_labels")
+
+    def test_publish_managed_labels_removes_managed_when_desired_empty(self, gitlab_provider):
+        # /review may decide no managed labels apply this run (e.g. effort
+        # disabled). The provider must remove every label classified as
+        # managed and leave user labels alone.
+        mr = self._prime_mr_for_labels(
+            gitlab_provider,
+            ["review effort 1/5", "Possible security concern", "area/backend"],
+        )
+        captured = self._capture_wire_payload_on_save(mr)
+
+        result = gitlab_provider.publish_managed_labels([], self._is_review_managed)
+
+        assert sorted(result) == ["area/backend"]
+        assert captured["add_labels"] is None
+        assert captured["remove_labels"] == "Possible security concern,review effort 1/5"
+        assert mr.save.call_count == 1
+
+    def test_publish_managed_labels_aborts_when_refresh_fails(self, gitlab_provider):
+        # Strict policy: a stale snapshot would produce an incorrect diff and
+        # could clobber user labels. Abort and return None instead.
+        cached_mr = MagicMock(spec=["labels", "save"])
+        cached_mr.labels = ["stale"]
+        gitlab_provider.mr = cached_mr
+        gitlab_provider._get_merge_request = MagicMock(side_effect=RuntimeError("boom"))
+
+        result = gitlab_provider.publish_managed_labels(
+            ["review effort 3/5"], self._is_review_managed
+        )
+
+        assert result is None
+        cached_mr.save.assert_not_called()
+
+    def test_publish_managed_labels_clears_diff_attrs_on_save_failure(self, gitlab_provider):
+        # The transient add_labels / remove_labels must never leak into a
+        # later unrelated mr.save() (e.g. publish_description).
+        mr = self._prime_mr_for_labels(gitlab_provider, ["review effort 1/5"])
+        mr.save.side_effect = RuntimeError("network blip")
+
+        gitlab_provider.publish_managed_labels(
+            ["review effort 3/5"], self._is_review_managed
+        )
+
+        assert not hasattr(mr, "add_labels")
+        assert not hasattr(mr, "remove_labels")

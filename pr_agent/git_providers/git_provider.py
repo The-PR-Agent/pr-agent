@@ -371,6 +371,42 @@ class GitProvider(ABC):
     def get_repo_labels(self):
         pass
 
+    def publish_managed_labels(self, managed_labels, is_managed_label):
+        """Atomically update the agent-managed labels while preserving user labels.
+
+        ``managed_labels`` is the desired set of agent-managed labels for this run
+        (e.g. ``["Review effort 3/5"]``). ``is_managed_label`` is a callable that
+        returns ``True`` for any label that belongs to the agent's managed
+        namespace and should therefore be considered for removal when no longer
+        present in ``managed_labels``.
+
+        The default implementation performs the historical read-modify-write:
+        read the current labels (with refresh), keep everything that is **not**
+        managed, union with ``managed_labels``, and republish via
+        ``publish_labels``. This preserves existing behavior for providers that
+        do not support a server-side set-diff.
+
+        Providers that support an incremental label update (e.g. GitLab's
+        ``add_labels`` / ``remove_labels``) should override this to avoid the
+        cross-method snapshot race: refresh once, derive ``current`` from that
+        single snapshot, compute the add/remove diff against
+        ``managed_labels + user_labels``, and write the diff under the same
+        snapshot.
+
+        Returns the list of labels that were (or would be) published, or
+        ``None`` if the publish was skipped because nothing changed. Errors
+        from the underlying ``publish_labels`` are not caught here; callers
+        decide whether label failures should propagate.
+        """
+        managed = list(managed_labels or [])
+        current = self.get_pr_labels(update=True) or []
+        user_labels = [label for label in current if not is_managed_label(label)]
+        new_labels = managed + user_labels
+        if sorted(new_labels) == sorted(current):
+            return None
+        self.publish_labels(new_labels)
+        return new_labels
+
     @abstractmethod
     def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
         pass

@@ -16,7 +16,7 @@ from pr_agent.algo.pr_processing import (OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
                                          retry_with_fallback_models)
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (ModelType, PRDescriptionHeader, clip_tokens,
-                                 get_max_tokens, get_user_labels, load_yaml,
+                                 get_max_tokens, load_yaml,
                                  set_custom_labels,
                                  show_relevant_configurations)
 from pr_agent.config_loader import get_settings
@@ -197,24 +197,46 @@ class PRDescription:
     def _safe_publish_labels(self, pr_labels: List[str]) -> None:
         """Publish labels in a failure-isolated way.
 
-        ``get_pr_labels(update=True)`` may raise on a refresh failure (e.g.
-        transient GitLab API error). For ``/describe`` the description itself
-        is the primary artifact: a label-update failure must not block the
-        description publish. Catch any exception here, log a warning, and
-        return so the caller continues to publish the description.
+        For ``/describe`` the description itself is the primary artifact: a
+        label-update failure must not block the description publish. Catch the
+        narrow set of expected provider/network errors here, log a warning,
+        and return so the caller continues to publish the description.
+
+        Uses ``publish_managed_labels`` so the provider (notably
+        ``GitLabProvider``) can refresh the MR exactly once and compute both
+        the user-label filter and the add/remove diff against a single
+        snapshot, eliminating the cross-method snapshot race where a label
+        added between the caller's read and ``publish_labels``'s internal
+        refresh could be removed.
         """
+        # ``get_user_labels`` defines "user label" as anything outside the
+        # /describe-managed namespace (the standard description labels and any
+        # configured custom_labels). The managed predicate must mirror that
+        # exclusion list so user-added labels stay on the MR.
+        enable_custom_labels = get_settings().config.get("enable_custom_labels", False)
+        custom_labels = get_settings().get("custom_labels", []) if enable_custom_labels else []
+        managed_default = {"bug fix", "tests", "enhancement", "documentation", "other"}
+
+        def _is_managed(label: str) -> bool:
+            if label is None:
+                return False
+            if label.lower() in managed_default:
+                return True
+            if enable_custom_labels and label in custom_labels:
+                return True
+            return False
+
         try:
-            original_labels = self.git_provider.get_pr_labels(update=True)
-            get_logger().debug("original labels", artifact=original_labels)
-            user_labels = get_user_labels(original_labels)
-            new_labels = pr_labels + user_labels
-            get_logger().debug("published labels", artifact=new_labels)
-            if set(new_labels) != set(original_labels):
-                get_logger().info(f"Setting describe labels:\n{new_labels}")
-                self.git_provider.publish_labels(new_labels)
+            get_logger().debug("describe labels", artifact={"managed": pr_labels})
+            new_labels = self.git_provider.publish_managed_labels(pr_labels, _is_managed)
+            if new_labels is None:
+                get_logger().debug("Labels unchanged, not updating")
             else:
-                get_logger().debug("Labels are the same, not updating")
-        except Exception as label_err:
+                get_logger().info(f"Setting describe labels:\n{new_labels}")
+        except (ConnectionError, TimeoutError, OSError, ValueError, KeyError, AttributeError) as label_err:
+            # Narrow set of expected failure modes from provider/network calls
+            # and predictable shape errors on the MR object. Anything else
+            # (e.g. programmer errors) should surface, not be swallowed.
             get_logger().warning(
                 f"Failed to update labels during PR description; "
                 f"continuing with description publish. error: {label_err}"
