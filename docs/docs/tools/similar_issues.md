@@ -65,7 +65,7 @@ You can get a free managed Qdrant instance from [Qdrant Cloud](https://cloud.qdr
 - To invoke the 'similar issue' tool from **CLI**, run:
 `python3 cli.py --issue_url=... similar_issue`
 
-- To invoke the 'similar' issue tool via online usage, [comment](https://github.com/qodo-ai/pr-agent/issues/178#issuecomment-1716934893) on a PR:
+- To invoke the 'similar' issue tool via online usage, [comment](https://github.com/the-pr-agent/pr-agent/issues/178#issuecomment-1716934893) on a PR:
 `/similar_issue`
 
-- You can also enable the 'similar issue' tool to run automatically when a new issue is opened, by adding it to the [pr_commands list in the github_app section](https://github.com/qodo-ai/pr-agent/blob/main/pr_agent/settings/configuration.toml#L229)
+- You can also enable the 'similar issue' tool to run automatically when a new issue is opened, by adding it to the [pr_commands list in the github_app section](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml#L229)

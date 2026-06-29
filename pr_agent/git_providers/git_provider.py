@@ -167,6 +167,9 @@ class GitProvider(ABC):
 
     @abstractmethod
     def publish_description(self, pr_title: str, pr_body: str):
+        # pr_title may be None, which means "leave the existing title unchanged"
+        # and update only the description. Implementations must not write the
+        # title in that case.
         pass
 
     @abstractmethod

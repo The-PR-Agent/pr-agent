@@ -61,6 +61,8 @@ async def run_action():
     get_settings().set("GITHUB.USER_TOKEN", GITHUB_TOKEN)
     get_settings().set("GITHUB.DEPLOYMENT_TYPE", "user")
     enable_output = get_setting_or_env("GITHUB_ACTION_CONFIG.ENABLE_OUTPUT", True)
+    if isinstance(enable_output, str):
+        enable_output = enable_output.lower().strip() not in ("false", "0", "no", "")
     get_settings().set("GITHUB_ACTION_CONFIG.ENABLE_OUTPUT", enable_output)
 
     # Load the event payload
@@ -144,6 +146,14 @@ async def run_action():
     elif GITHUB_EVENT_NAME == "issue_comment" or GITHUB_EVENT_NAME == "pull_request_review_comment":
         action = event_payload.get("action")
         if action in ["created", "edited"]:
+            # Skip comments authored by bots (including pr-agent's own
+            # "Preparing review..." messages), which would otherwise re-fire
+            # the action and be parsed as a command, causing a feedback loop.
+            # Mirrors the `if: github.event.sender.type != 'Bot'` workflow
+            # guard so users don't have to add it themselves. See issue #2398.
+            if event_payload.get("sender", {}).get("type") == "Bot":
+                get_logger().info("Skipping comment event from a bot sender to avoid a feedback loop")
+                return
             comment_body = event_payload.get("comment", {}).get("body")
             try:
                 if GITHUB_EVENT_NAME == "pull_request_review_comment":

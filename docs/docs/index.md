@@ -1,6 +1,6 @@
 # Overview
 
-[PR-Agent](https://github.com/qodo-ai/pr-agent) is an open-source, AI-powered code review agent and a community-maintained legacy project of Qodo. It is distinct from Qodo's primary AI code review offering, which provides a feature-rich, context-aware experience. Qodo now offers a free tier that integrates seamlessly with GitHub, GitLab, Bitbucket, and Azure DevOps for high-quality automated reviews.
+[PR-Agent](https://github.com/the-pr-agent/pr-agent) is an open-source, AI-powered code review agent and a community-maintained legacy project of Qodo. It is distinct from Qodo's primary AI code review offering, which provides a feature-rich, context-aware experience. Qodo now offers a free tier that integrates seamlessly with GitHub, GitLab, Bitbucket, and Azure DevOps for high-quality automated reviews.
 
 - See the [Installation Guide](./installation/index.md) for instructions on installing and running the tool on different git platforms.
 
@@ -14,7 +14,7 @@ To search the documentation site using natural language:
 
 1) Comment `/help "your question"` in a pull request where PR-Agent is installed
 
-2) The bot will respond with an [answer](https://github.com/qodo-ai/pr-agent/pull/1241#issuecomment-2365259334) that includes relevant documentation links.
+2) The bot will respond with an [answer](https://github.com/the-pr-agent/pr-agent/pull/1241#issuecomment-2365259334) that includes relevant documentation links.
 
 ## Features
 
@@ -36,7 +36,7 @@ PR-Agent offers comprehensive pull request functionalities integrated with vario
 |       |                                                                                       |        |        |           |              |       |
 | [USAGE](./usage-guide/index.md) | [CLI](./usage-guide/automations_and_usage.md#local-repo-cli)      |   ✅   |   ✅   |    ✅     |      ✅       |  ✅   |
 |       | [App / webhook](./usage-guide/automations_and_usage.md#github-app)                    |   ✅   |   ✅   |    ✅     |      ✅       |  ✅   |
-|       | [Tagging bot](https://github.com/qodo-ai/pr-agent#try-it-now)                       |   ✅   |        |           |              |       |
+|       | [Tagging bot](https://github.com/the-pr-agent/pr-agent#try-it-now)                       |   ✅   |        |           |              |       |
 |       | [Actions](./installation/github.md#run-as-a-github-action)                            |   ✅   |   ✅   |    ✅     |      ✅       |       |
 |       |                                                                                       |        |        |           |              |       |
 | [CORE](./core-abilities/index.md) | [Adaptive and token-aware file patch fitting](./core-abilities/compression_strategy.md) |   ✅   |   ✅   |    ✅     |      ✅       |       |
@@ -53,21 +53,21 @@ PR-Agent offers comprehensive pull request functionalities integrated with vario
 
 <hr>
 
-#### [/describe](https://github.com/qodo-ai/pr-agent/pull/530)
+#### [/describe](https://github.com/the-pr-agent/pr-agent/pull/530)
 
 <figure markdown="1">
 ![/describe](https://www.codium.ai/images/pr_agent/describe_new_short_main.png){width=512}
 </figure>
 <hr>
 
-#### [/review](https://github.com/qodo-ai/pr-agent/pull/732#issuecomment-1975099151)
+#### [/review](https://github.com/the-pr-agent/pr-agent/pull/732#issuecomment-1975099151)
 
 <figure markdown="1">
 ![/review](https://www.codium.ai/images/pr_agent/review_new_short_main.png){width=512}
 </figure>
 <hr>
 
-#### [/improve](https://github.com/qodo-ai/pr-agent/pull/732#issuecomment-1975099159)
+#### [/improve](https://github.com/the-pr-agent/pr-agent/pull/732#issuecomment-1975099159)
 
 <figure markdown="1">
 ![/improve](https://www.codium.ai/images/pr_agent/improve_new_short_main.png){width=512}

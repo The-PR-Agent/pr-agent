@@ -1,0 +1,89 @@
+name-template: 'v$RESOLVED_VERSION'
+tag-template: 'v$RESOLVED_VERSION'
+
+template: |
+  ## What's Changed
+
+  $CHANGES
+
+  **Full Changelog**: https://github.com/$OWNER/$REPOSITORY/compare/$PREVIOUS_TAG...v$RESOLVED_VERSION
+
+categories:
+  - title: '🚀 Features'
+    labels:
+      - feature
+      - enhancement
+  - title: '🐛 Bug Fixes'
+    labels:
+      - bug
+      - 'Bug fix'
+      - 'Bug fix with tests'
+  - title: '⚡ Performance'
+    labels:
+      - performance
+  - title: '📚 Documentation'
+    labels:
+      - documentation
+      - 'Includes Documentation'
+  - title: '🧹 Maintenance'
+    labels:
+      - chore
+      - Refactoring
+      - Configuration
+      - 'Configuration changes'
+  - title: '⬆️ Dependencies'
+    labels:
+      - dependencies
+
+change-template: '- $TITLE by @$AUTHOR in #$NUMBER'
+change-title-escapes: '\<*_&'
+
+autolabeler:
+  - label: feature
+    title:
+      - '/^feat(\(.+\))?!?:/i'
+  - label: bug
+    title:
+      - '/^fix(\(.+\))?!?:/i'
+  - label: documentation
+    title:
+      - '/^docs(\(.+\))?!?:/i'
+  - label: performance
+    title:
+      - '/^perf(\(.+\))?!?:/i'
+  - label: Refactoring
+    title:
+      - '/^refactor(\(.+\))?!?:/i'
+  - label: chore
+    title:
+      - '/^chore(\(.+\))?!?:/i'
+  - label: dependencies
+    title:
+      - '/^build\(deps/i'
+      - '/^deps(\(.+\))?!?:/i'
+  - label: breaking
+    title:
+      - '/^[a-z]+(\(.+\))?!:/i'
+
+version-resolver:
+  major:
+    labels:
+      - breaking
+  minor:
+    labels:
+      - feature
+      - enhancement
+  patch:
+    labels:
+      - bug
+      - 'Bug fix'
+      - 'Bug fix with tests'
+      - documentation
+      - 'Includes Documentation'
+      - chore
+      - Refactoring
+      - Configuration
+      - 'Configuration changes'
+      - performance
+      - dependencies
+  default: patch

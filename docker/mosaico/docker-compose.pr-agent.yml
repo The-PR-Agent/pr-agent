@@ -1,0 +1,38 @@
+# PR-Agent MOSAICO solution-agent overlay (canonical source; versioned with the agent).
+# Copy into the demonstrator's `compose/` dir, next to `base-definitions.yml`, so the
+# `extends:` refs resolve; see ./README.md for the full wiring steps.
+#
+# Mirrors the demonstrator's `ip-solution-agent` pair: in-process A2A server on container
+# port 9000 + ENDPOINT registration, so PR-Agent is treated like any other task agent.
+services:
+  pr-agent-solution-agent:
+    extends:
+      file: base-definitions.yml
+      service: agent
+    # Build: docker build --target mosaico_agent -t pr-agent-solution-agent:local -f docker/Dockerfile .
+    image: pr-agent-solution-agent:local
+    ports:
+      - ${PR_AGENT_PORT:-22000}:9000
+    environment:
+      AGENT_CARD_HOST: ${PR_AGENT_HOST:-${DEFAULT_TASK_AGENT_HOST}}
+      AGENT_CARD_PORT: ${PR_AGENT_PORT:-22000}
+      MODEL_NAME: ${PR_AGENT_MODEL}
+    # Gate registration on card/HTTP readiness, not /health (a live LLM probe).
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:9000/.well-known/agent-card.json')\""]
+
+  pr-agent-solution-agent-registration:
+    extends:
+      file: base-definitions.yml
+      service: agent-registration
+    environment:
+      AGENT_NAME: PR-Agent Solution Agent
+      AGENT_JSON: /app/pr-agent-solution-agent.json
+      # Fetched container-to-container: use the service name and in-container port 9000.
+      AGENT_CARD_URL: http://pr-agent-solution-agent:9000/.well-known/agent-card.json
+    depends_on:
+      pr-agent-solution-agent:
+        condition: service_healthy
+
+networks:
+  agents_net:

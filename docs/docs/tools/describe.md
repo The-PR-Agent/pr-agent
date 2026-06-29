@@ -118,7 +118,7 @@ This option is enabled by default via the `pr_description.enable_pr_diagram` par
       </tr>
       <tr>
         <td><b>final_update_message</b></td>
-        <td>If set to true, it will add a comment message [`PR Description updated to latest commit...`](https://github.com/qodo-ai/pr-agent/pull/499#issuecomment-1837412176) after finishing calling `/describe`. Default is true.</td>
+        <td>If set to true, it will add a comment message [`PR Description updated to latest commit...`](https://github.com/the-pr-agent/pr-agent/pull/499#issuecomment-1837412176) after finishing calling `/describe`. Default is true.</td>
       </tr>
       <tr>
         <td><b>enable_semantic_files_types</b></td>
