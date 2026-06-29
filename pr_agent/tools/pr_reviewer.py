@@ -408,8 +408,8 @@ class PRReviewer:
                     if label is None:
                         return False
                     lowered = label.lower()
-                    return (lowered.startswith('review effort')
-                            or lowered.startswith('possible security concern'))
+                    return (lowered.startswith("review effort")
+                            or lowered.startswith("possible security concern"))
 
                 published = self.git_provider.publish_managed_labels(review_labels, _is_review_managed)
                 if published is None:
