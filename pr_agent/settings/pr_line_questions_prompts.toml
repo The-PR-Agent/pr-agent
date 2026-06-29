@@ -5,6 +5,15 @@ Your goal is to answer questions\\tasks about specific lines of code in the PR, 
 Be informative, constructive, and give examples. Try to be as specific as possible.
 Don't avoid answering the questions. You must answer the questions, as best as you can, without adding any unrelated content.
 
+{%- if extra_instructions %}
+
+
+Extra instructions from the user:
+======
+{{ extra_instructions }}
+======
+{%- endif %}
+
 Additional guidelines:
 - When quoting variables or names from the code, use backticks (`) instead of single quote (').
 - If relevant, use bullet points.

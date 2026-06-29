@@ -340,3 +340,51 @@ def test_line_question_settings_teardown_restores_sentinel_for_missing_keys():
         restore_settings(saved)
 
     assert settings.get(key, SENTINEL) is SENTINEL
+
+
+# ---------------------------------------------------------------------------
+# extra_instructions prompt rendering
+# ---------------------------------------------------------------------------
+
+class TestExtraInstructionsPromptRendering:
+    @pytest.fixture
+    def extra_instructions_settings(self):
+        keys = ("pr_questions.extra_instructions",)
+        saved = snapshot_settings(keys)
+        try:
+            yield get_settings()
+        finally:
+            restore_settings(saved)
+
+    def test_ask_system_prompt_includes_extra_instructions_when_set(self, extra_instructions_settings):
+        from jinja2 import Environment, StrictUndefined
+
+        extra_instructions_settings.set(
+            "pr_questions.extra_instructions",
+            "Do not answer questions that ask to rate PR quality.",
+        )
+        environment = Environment(undefined=StrictUndefined)
+        variables = {"extra_instructions": get_settings().pr_questions.extra_instructions}
+        system_prompt = environment.from_string(get_settings().pr_questions_prompt.system).render(variables)
+        assert "Do not answer questions that ask to rate PR quality." in system_prompt
+
+    def test_ask_system_prompt_omits_extra_instructions_block_when_empty(self, extra_instructions_settings):
+        from jinja2 import Environment, StrictUndefined
+
+        extra_instructions_settings.set("pr_questions.extra_instructions", "")
+        environment = Environment(undefined=StrictUndefined)
+        variables = {"extra_instructions": get_settings().pr_questions.extra_instructions}
+        system_prompt = environment.from_string(get_settings().pr_questions_prompt.system).render(variables)
+        assert "Extra instructions from the user" not in system_prompt
+
+    def test_ask_line_system_prompt_includes_extra_instructions_when_set(self, extra_instructions_settings):
+        from jinja2 import Environment, StrictUndefined
+
+        extra_instructions_settings.set(
+            "pr_questions.extra_instructions",
+            "Do not answer questions that ask to rate PR quality.",
+        )
+        environment = Environment(undefined=StrictUndefined)
+        variables = {"extra_instructions": get_settings().pr_questions.extra_instructions}
+        system_prompt = environment.from_string(get_settings().pr_line_questions_prompt.system).render(variables)
+        assert "Do not answer questions that ask to rate PR quality." in system_prompt
