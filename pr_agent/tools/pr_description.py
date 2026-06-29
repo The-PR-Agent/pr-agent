@@ -16,13 +16,13 @@ from pr_agent.algo.pr_processing import (OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
                                          retry_with_fallback_models)
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (ModelType, PRDescriptionHeader, clip_tokens,
-                                 get_max_tokens, load_yaml,
-                                 set_custom_labels,
+                                 get_max_tokens, is_describe_managed_label,
+                                 load_yaml, set_custom_labels,
                                  show_relevant_configurations)
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import (GithubProvider, get_git_provider,
                                     get_git_provider_with_context)
-from pr_agent.git_providers.git_provider import get_main_pr_language
+from pr_agent.git_providers.git_provider import LabelRefreshError, get_main_pr_language
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
 from pr_agent.tools.ticket_pr_compliance_check import (
@@ -208,31 +208,30 @@ class PRDescription:
         snapshot, eliminating the cross-method snapshot race where a label
         added between the caller's read and ``publish_labels``'s internal
         refresh could be removed.
+
+        The managed-label predicate is sourced from
+        ``is_describe_managed_label`` so the namespace is computed in exactly
+        one place (alongside ``get_user_labels``) and stays correct for every
+        configuration mode -- including the ``enable_custom_labels=True`` /
+        no-``custom_labels`` case where ``set_custom_labels`` injects defaults
+        such as ``Bug fix with tests``.
         """
-        # ``get_user_labels`` defines "user label" as anything outside the
-        # /describe-managed namespace (the standard description labels and any
-        # configured custom_labels). The managed predicate must mirror that
-        # exclusion list so user-added labels stay on the MR.
-        enable_custom_labels = get_settings().config.get("enable_custom_labels", False)
-        custom_labels = get_settings().get("custom_labels", []) if enable_custom_labels else []
-        managed_default = {"bug fix", "tests", "enhancement", "documentation", "other"}
-
-        def _is_managed(label: str) -> bool:
-            if label is None:
-                return False
-            if label.lower() in managed_default:
-                return True
-            if enable_custom_labels and label in custom_labels:
-                return True
-            return False
-
         try:
             get_logger().debug("describe labels", artifact={"managed": pr_labels})
-            new_labels = self.git_provider.publish_managed_labels(pr_labels, _is_managed)
+            new_labels = self.git_provider.publish_managed_labels(
+                pr_labels, is_describe_managed_label
+            )
             if new_labels is None:
                 get_logger().debug("Labels unchanged, not updating")
             else:
                 get_logger().info(f"Setting describe labels:\n{new_labels}")
+        except LabelRefreshError as refresh_err:
+            # Distinguish a real refresh failure from a no-op so the run
+            # can be diagnosed. /describe still continues to publish the
+            # description; only the label update is skipped.
+            get_logger().warning(
+                f"Skipping describe label update; MR refresh failed. error: {refresh_err}"
+            )
         except (ConnectionError, TimeoutError, OSError, ValueError, KeyError, AttributeError) as label_err:
             # Narrow set of expected failure modes from provider/network calls
             # and predictable shape errors on the MR object. Anything else

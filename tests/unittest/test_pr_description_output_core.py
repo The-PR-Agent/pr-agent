@@ -541,9 +541,9 @@ class TestSafePublishLabels:
         provider.publish_managed_labels.assert_called_once()
         managed_arg, predicate_arg = provider.publish_managed_labels.call_args[0]
         assert managed_arg == ["Bug fix"]
-        # Predicate must mirror get_user_labels' exclusion set so the standard
-        # /describe-managed names are classified as managed (and therefore
-        # eligible for removal) while user labels are preserved.
+        # Predicate is the shared ``is_describe_managed_label`` so the
+        # classification stays in one place alongside ``get_user_labels``.
+        # The base set is always managed; user labels stay user.
         assert predicate_arg("Bug fix") is True
         assert predicate_arg("BUG FIX") is True
         assert predicate_arg("tests") is True
@@ -552,6 +552,57 @@ class TestSafePublishLabels:
         assert predicate_arg("Other") is True
         assert predicate_arg("area/backend") is False
         assert predicate_arg(None) is False
+
+    def test_predicate_includes_bug_fix_with_tests_when_custom_labels_default(self):
+        # Reproduces Qodo #3: when enable_custom_labels=True and no
+        # custom_labels are configured, set_custom_labels injects defaults
+        # that include "Bug fix with tests". The managed predicate must
+        # classify that label as managed so it can be removed later;
+        # otherwise it gets stuck on the MR forever.
+        from pr_agent.config_loader import get_settings
+        settings = get_settings()
+        original_enable = settings.config.get("enable_custom_labels", False)
+        original_custom = settings.get("custom_labels", None)
+        try:
+            settings.config.enable_custom_labels = True
+            # Clear any pre-existing custom_labels; we want the
+            # default-injection branch of set_custom_labels.
+            settings.set("custom_labels", [])
+
+            provider = MagicMock()
+            provider.publish_managed_labels.return_value = ["Bug fix"]
+            obj = self._obj_with_provider(provider)
+            obj._safe_publish_labels(["Bug fix"])
+
+            _, predicate_arg = provider.publish_managed_labels.call_args[0]
+            assert predicate_arg("Bug fix with tests") is True
+            assert predicate_arg("bug fix with tests") is True
+            # Base set still managed.
+            assert predicate_arg("Tests") is True
+            # User labels still user.
+            assert predicate_arg("area/backend") is False
+        finally:
+            settings.config.enable_custom_labels = original_enable
+            if original_custom is not None:
+                settings.set("custom_labels", original_custom)
+
+    def test_logs_distinctly_on_refresh_failure(self):
+        # Qodo #4: a refresh failure must not be misreported as
+        # "labels unchanged". The provider signals refresh failure via
+        # LabelRefreshError; _safe_publish_labels catches it specifically
+        # and logs a warning rather than treating None as success.
+        from pr_agent.git_providers.git_provider import LabelRefreshError
+
+        provider = MagicMock()
+        provider.publish_managed_labels.side_effect = LabelRefreshError(
+            "refresh failed: gitlab 5xx"
+        )
+
+        obj = self._obj_with_provider(provider)
+        # Must not raise (failure is isolated to the label step).
+        obj._safe_publish_labels(["Bug fix"])
+
+        provider.publish_managed_labels.assert_called_once()
 
     def test_skips_log_when_no_change(self):
         # publish_managed_labels returns None when nothing changed; the helper
@@ -563,3 +614,83 @@ class TestSafePublishLabels:
         obj._safe_publish_labels(["Bug fix"])
 
         provider.publish_managed_labels.assert_called_once()
+
+
+class TestDescribeManagedLabelNamespace:
+    """Lock the ``/describe``-managed label classification in one place.
+
+    ``is_describe_managed_label`` and ``get_user_labels`` must agree: a label
+    classified as managed is **never** a user label, and vice versa. The
+    classification has to match ``set_custom_labels``' default-injection
+    behavior so labels like ``Bug fix with tests`` (Qodo #3) can be removed
+    by ``/describe`` once they are no longer recommended.
+    """
+
+    def _with_settings(self, enable_custom_labels, custom_labels):
+        from pr_agent.config_loader import get_settings
+        settings = get_settings()
+        snap = (
+            settings.config.get("enable_custom_labels", False),
+            settings.get("custom_labels", None),
+        )
+        settings.config.enable_custom_labels = enable_custom_labels
+        if custom_labels is not None:
+            settings.set("custom_labels", custom_labels)
+        return settings, snap
+
+    def _restore(self, settings, snap):
+        original_enable, original_custom = snap
+        settings.config.enable_custom_labels = original_enable
+        if original_custom is not None:
+            settings.set("custom_labels", original_custom)
+
+    def test_default_set_classified_as_managed(self):
+        from pr_agent.algo.utils import is_describe_managed_label
+        settings, snap = self._with_settings(False, None)
+        try:
+            for label in ("Bug fix", "Tests", "Enhancement", "Documentation", "Other",
+                          "bug fix", "TESTS", "enhancement"):
+                assert is_describe_managed_label(label) is True
+            assert is_describe_managed_label("area/backend") is False
+            assert is_describe_managed_label("") is False
+            assert is_describe_managed_label(None) is False
+        finally:
+            self._restore(settings, snap)
+
+    def test_custom_labels_default_includes_bug_fix_with_tests(self):
+        # Reproduces Qodo #3: when enable_custom_labels=True and
+        # custom_labels is empty, set_custom_labels injects defaults that
+        # include "Bug fix with tests". That label must be classified as
+        # managed so /describe can remove it once it is no longer
+        # recommended.
+        from pr_agent.algo.utils import is_describe_managed_label
+        settings, snap = self._with_settings(True, [])
+        try:
+            assert is_describe_managed_label("Bug fix with tests") is True
+            assert is_describe_managed_label("bug fix with tests") is True
+            # Base set still managed.
+            assert is_describe_managed_label("Tests") is True
+            # User labels still user.
+            assert is_describe_managed_label("area/backend") is False
+        finally:
+            self._restore(settings, snap)
+
+    def test_get_user_labels_and_is_managed_are_disjoint(self):
+        # Any label classified as managed must be filtered out of
+        # get_user_labels' output, and vice versa. This is what keeps the
+        # /describe-managed namespace in one place.
+        from pr_agent.algo.utils import get_user_labels, is_describe_managed_label
+        settings, snap = self._with_settings(True, [])
+        try:
+            current = [
+                "Bug fix", "Bug fix with tests", "Tests",
+                "area/backend", "team/security",
+            ]
+            user = get_user_labels(current)
+            for label in current:
+                if is_describe_managed_label(label):
+                    assert label not in user, f"{label} leaked into user labels"
+                else:
+                    assert label in user, f"{label} dropped from user labels"
+        finally:
+            self._restore(settings, snap)

@@ -71,6 +71,19 @@ def get_git_ssl_env() -> dict[str, str]:
     return returned_env
 
 
+
+class LabelRefreshError(RuntimeError):
+    """Raised when a managed-label refresh fails before a label diff is computed.
+
+    Callers (notably ``/describe`` and ``/review``) use this to log
+    refresh-failure-skipped runs distinctly from genuine no-ops where the
+    server-side label set already matches the desired set. The provider must
+    raise this *before* any ``save()`` is attempted; on save() failure the
+    provider remains free to raise the underlying transport exception or to
+    log-and-swallow as it does today.
+    """
+
+
 class GitProvider(ABC):
     @abstractmethod
     def is_supported(self, capability: str) -> bool:
@@ -393,13 +406,23 @@ class GitProvider(ABC):
         ``managed_labels + user_labels``, and write the diff under the same
         snapshot.
 
-        Returns the list of labels that were (or would be) published, or
-        ``None`` if the publish was skipped because nothing changed. Errors
-        from the underlying ``publish_labels`` are not caught here; callers
-        decide whether label failures should propagate.
+        Return value semantics:
+
+        * Returns the list of labels that were (or would be) published.
+        * Returns ``None`` *only* when nothing changed (desired set already
+          matches current).
+        * Raises ``LabelRefreshError`` if the pre-write refresh fails so
+          callers can log refresh failures distinctly from no-ops. Other
+          errors from ``publish_labels`` propagate unchanged so providers
+          can decide whether label failures should bubble up.
         """
         managed = list(managed_labels or [])
-        current = self.get_pr_labels(update=True) or []
+        try:
+            current = self.get_pr_labels(update=True) or []
+        except Exception as refresh_err:
+            raise LabelRefreshError(
+                f"failed to refresh labels before managed-label publish: {refresh_err}"
+            ) from refresh_err
         user_labels = [label for label in current if not is_managed_label(label)]
         new_labels = managed + user_labels
         if sorted(new_labels) == sorted(current):

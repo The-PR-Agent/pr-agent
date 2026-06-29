@@ -20,6 +20,7 @@ from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import (get_git_provider,
                                     get_git_provider_with_context)
 from pr_agent.git_providers.git_provider import (IncrementalPR,
+                                                 LabelRefreshError,
                                                  get_main_pr_language)
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
@@ -411,11 +412,22 @@ class PRReviewer:
                     return (lowered.startswith("review effort")
                             or lowered.startswith("possible security concern"))
 
-                published = self.git_provider.publish_managed_labels(review_labels, _is_review_managed)
-                if published is None:
-                    get_logger().info(f"Review labels are already set; managed set:\n{review_labels}")
+                try:
+                    published = self.git_provider.publish_managed_labels(
+                        review_labels, _is_review_managed
+                    )
+                except LabelRefreshError as refresh_err:
+                    # Distinguish a refresh failure from a no-op so the run
+                    # can be diagnosed instead of being mis-logged as
+                    # "already set / unchanged".
+                    get_logger().warning(
+                        f"Skipping review label update; MR refresh failed. error: {refresh_err}"
+                    )
                 else:
-                    get_logger().info(f"Setting review labels:\n{published}")
+                    if published is None:
+                        get_logger().info(f"Review labels are already set; managed set:\n{review_labels}")
+                    else:
+                        get_logger().info(f"Setting review labels:\n{published}")
             except Exception as e:
                 get_logger().error(f"Failed to set review labels, error: {e}")
 

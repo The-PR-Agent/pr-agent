@@ -964,23 +964,69 @@ def set_custom_labels(variables, git_provider=None):
         counter += 1
     variables["labels_minimal_to_labels_dict"] = labels_minimal_to_labels_dict
 
+def _describe_managed_label_names():
+    """Return the lowercase set of label names that ``/describe`` manages.
+
+    Centralized so callers in tools, providers, and helpers stay aligned. The
+    rules mirror ``set_custom_labels``:
+
+    * Always include the five base labels emitted by the default prompt
+      (``bug fix``, ``tests``, ``enhancement``, ``documentation``, ``other``).
+    * When ``enable_custom_labels`` is on and a ``custom_labels`` mapping is
+      configured, include its keys.
+    * When ``enable_custom_labels`` is on but no ``custom_labels`` are
+      configured, include the same default list that ``set_custom_labels``
+      injects in that case (notably ``Bug fix with tests``), otherwise that
+      label is published by ``/describe`` once and then sticks forever
+      because it gets misclassified as a user label.
+
+    All comparisons are case-insensitive; callers should call ``.lower()`` on
+    the label they are testing.
+    """
+    base = {"bug fix", "tests", "enhancement", "documentation", "other"}
+    try:
+        if not get_settings().config.get("enable_custom_labels", False):
+            return base
+        custom_labels = get_settings().get("custom_labels", [])
+        if not custom_labels:
+            # Mirror the default list injected by ``set_custom_labels`` when
+            # custom labels are enabled but none are configured.
+            base = base | {
+                "bug fix", "tests", "bug fix with tests",
+                "enhancement", "documentation", "other",
+            }
+            return base
+        # ``custom_labels`` may be a dict (the documented shape) or a list.
+        if isinstance(custom_labels, dict):
+            return base | {str(k).lower() for k in custom_labels.keys()}
+        return base | {str(label).lower() for label in custom_labels}
+    except Exception as e:
+        get_logger().exception(f"Failed to compute describe-managed label set: {e}")
+        return base
+
+
+def is_describe_managed_label(label):
+    """Return True when ``label`` belongs to the ``/describe``-managed namespace.
+
+    See :func:`_describe_managed_label_names` for the namespace definition.
+    """
+    if label is None:
+        return False
+    return label.lower() in _describe_managed_label_names()
+
+
 def get_user_labels(current_labels: List[str] = None):
     """
-    Only keep labels that has been added by the user
+    Only keep labels that have been added by the user.
+
+    A user label is any current label that is *not* in the ``/describe``-
+    managed namespace (see :func:`is_describe_managed_label`).
     """
     try:
-        enable_custom_labels = get_settings().config.get('enable_custom_labels', False)
-        custom_labels = get_settings().get('custom_labels', [])
         if current_labels is None:
             current_labels = []
-        user_labels = []
-        for label in current_labels:
-            if label.lower() in ['bug fix', 'tests', 'enhancement', 'documentation', 'other']:
-                continue
-            if enable_custom_labels:
-                if label in custom_labels:
-                    continue
-            user_labels.append(label)
+        managed = _describe_managed_label_names()
+        user_labels = [label for label in current_labels if label.lower() not in managed]
         if user_labels:
             get_logger().debug(f"Keeping user labels: {user_labels}")
     except Exception as e:

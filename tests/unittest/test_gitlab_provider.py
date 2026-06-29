@@ -494,19 +494,23 @@ class TestGitLabProvider:
         assert captured["remove_labels"] == "Possible security concern,review effort 1/5"
         assert mr.save.call_count == 1
 
-    def test_publish_managed_labels_aborts_when_refresh_fails(self, gitlab_provider):
+    def test_publish_managed_labels_raises_when_refresh_fails(self, gitlab_provider):
         # Strict policy: a stale snapshot would produce an incorrect diff and
-        # could clobber user labels. Abort and return None instead.
+        # could clobber user labels. Raise LabelRefreshError so callers can
+        # log refresh failures distinctly from genuine no-ops, then leave
+        # server state untouched.
+        from pr_agent.git_providers.git_provider import LabelRefreshError
+
         cached_mr = MagicMock(spec=["labels", "save"])
         cached_mr.labels = ["stale"]
         gitlab_provider.mr = cached_mr
         gitlab_provider._get_merge_request = MagicMock(side_effect=RuntimeError("boom"))
 
-        result = gitlab_provider.publish_managed_labels(
-            ["review effort 3/5"], self._is_review_managed
-        )
+        with pytest.raises(LabelRefreshError):
+            gitlab_provider.publish_managed_labels(
+                ["review effort 3/5"], self._is_review_managed
+            )
 
-        assert result is None
         cached_mr.save.assert_not_called()
 
     def test_publish_managed_labels_clears_diff_attrs_on_save_failure(self, gitlab_provider):

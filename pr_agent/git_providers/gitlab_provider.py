@@ -20,7 +20,7 @@ from ..algo.utils import (clip_tokens,
                           load_large_diff)
 from ..config_loader import get_settings
 from ..log import get_logger
-from .git_provider import MAX_FILES_ALLOWED_FULL, GitProvider
+from .git_provider import MAX_FILES_ALLOWED_FULL, GitProvider, LabelRefreshError
 
 
 class DiffNotFoundError(Exception):
@@ -926,21 +926,36 @@ class GitLabProvider(GitProvider):
         snapshots, allowing a label added between them to be removed by
         ``current - desired``.
 
-        Returns the new label set that would be on the server after the
-        publish, or ``None`` if nothing changed / the refresh failed.
+        Return value semantics (intentionally distinct from earlier revisions
+        of this method so callers can log refresh failures separately from
+        no-ops):
+
+        * Returns the new label set that would be on the server after the
+          publish.
+        * Returns ``None`` *only* when the desired set already matches the
+          server snapshot, i.e. nothing needs to change.
+        * Raises ``LabelRefreshError`` when the pre-save MR refresh fails.
+          Callers should isolate the failure (log + continue) rather than
+          letting it abort the surrounding tool.
+        * Swallows downstream ``save()`` failures and logs a warning,
+          matching ``publish_labels`` semantics so a transient save failure
+          does not bubble up either.
         """
         try:
-            try:
-                self.mr = self._get_merge_request()
-            except Exception as refresh_err:
-                # Same strict policy as ``publish_labels``: a stale snapshot
-                # produces an incorrect diff. Abort and let the caller decide
-                # whether the run should continue.
-                get_logger().warning(
-                    f"publish_managed_labels: aborting, failed to refresh MR before save. "
-                    f"error: {refresh_err}"
-                )
-                return None
+            self.mr = self._get_merge_request()
+        except Exception as refresh_err:
+            # Strict policy: a stale snapshot would produce an incorrect diff
+            # and could clobber user labels. Surface the failure to the
+            # caller via a typed exception so it can be logged distinctly
+            # from a genuine no-op.
+            get_logger().warning(
+                f"publish_managed_labels: aborting, failed to refresh MR before save. "
+                f"error: {refresh_err}"
+            )
+            raise LabelRefreshError(
+                f"failed to refresh MR before managed-label publish: {refresh_err}"
+            ) from refresh_err
+        try:
             current_labels = list(self.mr.labels or [])
             user_labels = [label for label in current_labels if not is_managed_label(label)]
             new_labels = list(managed_labels or []) + user_labels
@@ -949,6 +964,10 @@ class GitLabProvider(GitProvider):
             self._publish_labels_against(self.mr, new_labels)
             return new_labels
         except Exception as e:
+            # Refresh succeeded but save() / diff computation failed. Match
+            # publish_labels semantics: log and continue without raising, so a
+            # transient post-refresh failure does not abort the surrounding
+            # tool. The refresh-failure path above is handled separately.
             get_logger().warning(f"Failed to publish managed labels, error: {e}")
             return None
 
