@@ -333,6 +333,15 @@ NO_SUPPORT_TEMPERATURE_MODELS = [
     "bedrock/anthropic.claude-opus-4-7-v1:0",
     "bedrock/us.anthropic.claude-opus-4-7",
     "bedrock/global.anthropic.claude-opus-4-7",
+    "claude-sonnet-5",
+    "anthropic/claude-sonnet-5",
+    "vertex_ai/claude-sonnet-5",
+    "bedrock/anthropic.claude-sonnet-5",
+    "bedrock/global.anthropic.claude-sonnet-5",
+    "bedrock/us.anthropic.claude-sonnet-5",
+    "bedrock/eu.anthropic.claude-sonnet-5",
+    "bedrock/au.anthropic.claude-sonnet-5",
+    "bedrock/jp.anthropic.claude-sonnet-5",
 ]
 
 SUPPORT_REASONING_EFFORT_MODELS = [
