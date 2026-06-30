@@ -169,3 +169,134 @@ pr_files:
 
         assert [file["filename"].strip() for file in loaded["pr_files"]] == ["shown.py", "missing.py"]
         assert loaded["pr_files"][1]["label"].strip() == "additional files"
+
+
+class TestRunLabelFailureIsolation:
+    """``PRDescription.run`` must not abort when label refresh/publish fails.
+
+    GitLabProvider.get_pr_labels(update=True) now raises on a refresh failure
+    (PR #2484). Without isolation, that would bubble up to ``run``'s outer
+    try/except and skip the description publish too. The labels block has an
+    inline try/except so /describe degrades to "skip the label update".
+    """
+
+    def _instance_ready_for_publish(self, provider):
+        """Build a PRDescription positioned at the publish step in ``run``.
+
+        Bypasses __init__, the LLM call (_prepare_prediction), and the answer
+        rendering (_prepare_pr_answer). Tests can mock the provider's
+        get_pr_labels / publish_labels / publish_description behaviors.
+        """
+        with patch.object(PRDescription, "__init__", lambda self, *a, **kw: None):
+            obj = PRDescription.__new__(PRDescription)
+        obj.pr_id = "1"
+        obj.prediction = "stub"  # truthy so the run() empty-prediction guard is skipped
+        obj.user_description = ""
+        obj.keys_fix = KEYS_FIX
+        obj.vars = {}
+        obj.data = {"type": ["Bug fix"]}
+        obj.file_label_dict = {}
+        obj.git_provider = provider
+        # _prepare_prediction does nothing, _prepare_pr_answer returns a stub.
+        obj._prepare_prediction = MagicMock(return_value=None)
+
+        async def _async_noop(*_a, **_kw):
+            return None
+
+        # retry_with_fallback_models will be patched to call our _prepare_prediction stub
+        obj._prepare_data = MagicMock(return_value=None)
+        obj._prepare_file_labels = MagicMock(return_value={})
+        obj._prepare_labels = MagicMock(return_value=["Bug fix"])
+        obj._prepare_pr_answer = MagicMock(
+            return_value=("AI title", "PR body", "", [])
+        )
+        obj._prepare_pr_answer_with_markers = MagicMock(
+            return_value=("AI title", "PR body", "", [])
+        )
+        return obj, _async_noop
+
+    @pytest.mark.asyncio
+    async def test_run_publishes_description_when_label_refresh_raises(self):
+        provider = MagicMock()
+        provider.is_supported.return_value = True
+        provider.get_pr_labels.side_effect = RuntimeError("transient gitlab error")
+        provider.get_pr_url.return_value = "https://example.com/mr/1"
+
+        obj, _async_noop = self._instance_ready_for_publish(provider)
+
+        with patch(
+            "pr_agent.tools.pr_description.get_settings"
+        ) as mock_settings, patch(
+            "pr_agent.tools.pr_description.retry_with_fallback_models", side_effect=_async_noop
+        ), patch(
+            "pr_agent.tools.pr_description.extract_and_cache_pr_tickets", side_effect=_async_noop
+        ), patch(
+            "pr_agent.tools.pr_description.get_user_labels", return_value=[]
+        ):
+            cfg = mock_settings.return_value
+            cfg.config.publish_output = True
+            cfg.config.get.side_effect = lambda key, default=None: {
+                "is_auto_command": False,
+                "output_relevant_configurations": False,
+            }.get(key, default)
+            cfg.pr_description.publish_labels = True
+            cfg.pr_description.enable_semantic_files_types = False
+            cfg.pr_description.use_description_markers = False
+            cfg.pr_description.inline_file_summary = False
+            cfg.pr_description.enable_help_text = False
+            cfg.pr_description.enable_help_comment = False
+            cfg.pr_description.publish_description_as_comment = False
+            cfg.pr_description.generate_ai_title = True
+            cfg.pr_description.final_update_message = False
+            cfg.get.side_effect = lambda key, default=None: {
+                "config": {"output_relevant_configurations": False},
+            }.get(key, default)
+
+            await obj.run()
+
+        # The label step raised; the description publish must still happen.
+        provider.publish_labels.assert_not_called()
+        provider.publish_description.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_run_publishes_description_when_publish_labels_raises(self):
+        provider = MagicMock()
+        provider.is_supported.return_value = True
+        provider.get_pr_labels.return_value = ["area/backend"]
+        provider.publish_labels.side_effect = RuntimeError("transient gitlab error")
+        provider.get_pr_url.return_value = "https://example.com/mr/1"
+
+        obj, _async_noop = self._instance_ready_for_publish(provider)
+
+        with patch(
+            "pr_agent.tools.pr_description.get_settings"
+        ) as mock_settings, patch(
+            "pr_agent.tools.pr_description.retry_with_fallback_models", side_effect=_async_noop
+        ), patch(
+            "pr_agent.tools.pr_description.extract_and_cache_pr_tickets", side_effect=_async_noop
+        ), patch(
+            "pr_agent.tools.pr_description.get_user_labels", return_value=["area/backend"]
+        ):
+            cfg = mock_settings.return_value
+            cfg.config.publish_output = True
+            cfg.config.get.side_effect = lambda key, default=None: {
+                "is_auto_command": False,
+                "output_relevant_configurations": False,
+            }.get(key, default)
+            cfg.pr_description.publish_labels = True
+            cfg.pr_description.enable_semantic_files_types = False
+            cfg.pr_description.use_description_markers = False
+            cfg.pr_description.inline_file_summary = False
+            cfg.pr_description.enable_help_text = False
+            cfg.pr_description.enable_help_comment = False
+            cfg.pr_description.publish_description_as_comment = False
+            cfg.pr_description.generate_ai_title = True
+            cfg.pr_description.final_update_message = False
+            cfg.get.side_effect = lambda key, default=None: {
+                "config": {"output_relevant_configurations": False},
+            }.get(key, default)
+
+            await obj.run()
+
+        provider.publish_labels.assert_called_once()
+        provider.publish_description.assert_called_once()
