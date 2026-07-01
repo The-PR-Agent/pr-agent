@@ -84,6 +84,12 @@ require_security_review=true
 require_estimate_contribution_time_cost=false
 require_todo_scan=false
 require_ticket_analysis_review=true
+require_risk_assessment=false
+require_merge_recommendation=false
+require_priority_files=false
+enable_review_rules=true
+review_rules_paths=[".pr_agent/review_rules.md",".github/review_rules.md","docs/review_rules.md"]
+max_review_rules_tokens=1200
 # general options
 publish_output_no_suggestions=true # Set to "false" if you only need the reviewer's remarks (not labels, not "security audit", etc.) and want to avoid noisy "No major issues detected" comments.
 persistent_comment=true

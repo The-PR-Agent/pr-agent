@@ -709,6 +709,9 @@ class GithubProvider(GitProvider):
     def get_pr_branch(self):
         return self.pr.head.ref
 
+    def get_pr_base_ref(self) -> str:
+        return self.pr.base.sha or self.pr.base.ref or ""
+
     def get_pr_owner_id(self) -> str | None:
         if not self.repo:
             return None

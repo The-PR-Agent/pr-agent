@@ -778,6 +778,9 @@ class GitLabProvider(GitProvider):
     def get_pr_branch(self):
         return self.mr.source_branch
 
+    def get_pr_base_ref(self) -> str:
+        return getattr(self.mr, "target_branch", "") or ""
+
     def get_pr_owner_id(self) -> str | None:
         if not self.gitlab_url or 'gitlab.com' in self.gitlab_url:
             if not self.id_project:

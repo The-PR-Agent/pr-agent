@@ -489,6 +489,9 @@ class BitbucketProvider(GitProvider):
     def get_pr_branch(self):
         return self.pr.source_branch
 
+    def get_pr_base_ref(self) -> str:
+        return self.pr.destination_branch or ""
+
     # This function attempts to get the default branch of the repository. As a fallback, uses the PR destination branch.
     # Note: Must be running from a PR context.
     def get_repo_default_branch(self):

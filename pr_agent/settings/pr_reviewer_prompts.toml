@@ -68,7 +68,16 @@ Extra instructions from the user:
 {{ extra_instructions }}
 ======
 {% endif %}
+{%- if review_rules %}
 
+Repository/team review rules:
+======
+{{ review_rules }}
+======
+- Apply these repository rules in addition to the general review criteria.
+- When a repository rule conflicts with a generic style preference, prioritize the repository rule.
+- Use the repository rules to decide what deserves extra attention, but do not invent violations that are not supported by the diff.
+{% endif %}
 
 The output must be a YAML object equivalent to type $PRReview, according to the following Pydantic definitions:
 =====
@@ -117,6 +126,15 @@ class Review(BaseModel):
 {%- if require_estimate_effort_to_review %}
     estimated_effort_to_review_[1-5]: int = Field(description="Estimate, on a scale of 1-5 (inclusive), the time and effort required to review this PR by an experienced and knowledgeable developer. 1 means short and easy review, 5 means long and hard review. Take into account the size, complexity, quality, and the needed changes of the PR code diff.")
 {%- endif %}
+{%- if require_risk_assessment %}
+    risk_level: str = Field(description="Overall risk level of this PR. Answer with exactly one of: low, medium, high. Use high only when the PR introduces a clear bug, security concern, or major logic risk. Use medium when the PR is not clearly broken but contains non-trivial areas that require careful human verification. Use low when the PR is small, low-impact, and no important issues are identified.")
+{%- endif %}
+{%- if require_merge_recommendation %}
+    merge_recommendation: str = Field(description="Overall merge recommendation for this PR. Answer with exactly one of: safe_to_merge, merge_with_caution, changes_required. Use changes_required when there are clear issues that should be fixed before merge. Use merge_with_caution when the PR seems acceptable but still deserves focused reviewer attention. Use safe_to_merge when no important blockers or risks are identified.")
+{%- endif %}
+{%- if require_priority_files %}
+    review_priority_files: List[str] = Field(description="A short list of the most important files a human reviewer should inspect first. Return an empty list if the PR is too small or no file deserves special attention.")
+{%- endif %}
 {%- if require_estimate_contribution_time_cost %}
     contribution_time_cost_estimate: ContributionTimeCostEstimate = Field(description="An estimate of the time required to implement the changes, based on the quantity, quality, and complexity of the contribution, as well as the context from the PR description and commit messages.")
 {%- endif %}
@@ -164,6 +182,19 @@ review:
 {%- if require_estimate_effort_to_review %}
   estimated_effort_to_review_[1-5]: |
     3
+{%- endif %}
+{%- if require_risk_assessment %}
+  risk_level: |
+    low
+{%- endif %}
+{%- if require_merge_recommendation %}
+  merge_recommendation: |
+    safe_to_merge
+{%- endif %}
+{%- if require_priority_files %}
+  review_priority_files:
+    - |
+      src/example.py
 {%- endif %}
 {%- if require_score %}
   score: 89
@@ -302,6 +333,19 @@ review:
 {%- if require_estimate_effort_to_review %}
   estimated_effort_to_review_[1-5]: |
     3
+{%- endif %}
+{%- if require_risk_assessment %}
+  risk_level: |
+    low
+{%- endif %}
+{%- if require_merge_recommendation %}
+  merge_recommendation: |
+    safe_to_merge
+{%- endif %}
+{%- if require_priority_files %}
+  review_priority_files:
+    - |
+      src/example.py
 {%- endif %}
 {%- if require_score %}
   score: 89
