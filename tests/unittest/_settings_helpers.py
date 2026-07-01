@@ -53,14 +53,10 @@ def _remove_key(settings, key):
 
 
 def restore_settings(snapshot):
-    """Restore ``snapshot``; truly remove entries whose snapshot is SENTINEL.
-
-    Because ``merge_enabled=True`` causes ``settings.set()`` to *append* list
-    values rather than replace them, the key is always removed first via
-    ``_remove_key`` before setting the restored value.
-    """
+    """Restore ``snapshot``; truly remove entries whose snapshot is SENTINEL."""
     settings = get_settings()
     for key, value in snapshot.items():
-        _remove_key(settings, key)
-        if value is not SENTINEL:
+        if value is SENTINEL:
+            _remove_key(settings, key)
+        else:
             settings.set(key, value)

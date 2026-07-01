@@ -4,7 +4,6 @@ from pr_agent.config_loader import get_settings
 from pr_agent.servers.bitbucket_app import should_process_pr_logic as bitbucket_should_process_pr_logic
 from pr_agent.servers.github_app import should_process_pr_logic as github_should_process_pr_logic
 from pr_agent.servers.gitlab_webhook import should_process_pr_logic as gitlab_should_process_pr_logic
-from tests.unittest._settings_helpers import _remove_key
 
 
 def make_bitbucket_payload(full_name):
@@ -43,15 +42,11 @@ PROVIDERS = [
 
 class TestIgnoreRepositories:
     def setup_method(self):
-        settings = get_settings()
-        _remove_key(settings, "CONFIG.IGNORE_REPOSITORIES")
-        settings.set("CONFIG.IGNORE_REPOSITORIES", [])
+        get_settings().set("CONFIG.IGNORE_REPOSITORIES", [])
 
     @pytest.mark.parametrize("provider_name, provider_func, body_func", PROVIDERS)
     def test_should_ignore_matching_repository(self, provider_name, provider_func, body_func):
-        settings = get_settings()
-        _remove_key(settings, "CONFIG.IGNORE_REPOSITORIES")
-        settings.set("CONFIG.IGNORE_REPOSITORIES", ["org/repo-to-ignore"])
+        get_settings().set("CONFIG.IGNORE_REPOSITORIES", ["org/repo-to-ignore"])
         body = {
             "pull_request": {},
             "repository": {"full_name": "org/repo-to-ignore"},
@@ -63,9 +58,7 @@ class TestIgnoreRepositories:
 
     @pytest.mark.parametrize("provider_name, provider_func, body_func", PROVIDERS)
     def test_should_not_ignore_non_matching_repository(self, provider_name, provider_func, body_func):
-        settings = get_settings()
-        _remove_key(settings, "CONFIG.IGNORE_REPOSITORIES")
-        settings.set("CONFIG.IGNORE_REPOSITORIES", ["org/repo-to-ignore"])
+        get_settings().set("CONFIG.IGNORE_REPOSITORIES", ["org/repo-to-ignore"])
         body = {
             "pull_request": {},
             "repository": {"full_name": "org/other-repo"},
