@@ -80,7 +80,7 @@ class GithubProvider(GitProvider):
     def get_incremental_commits(self, incremental=IncrementalPR(False)):
         self.incremental = incremental
         if self.incremental.is_incremental:
-            self.unreviewed_files_set = dict()
+            self.unreviewed_files_map = dict()
             self._get_incremental_commits()
 
     def is_supported(self, capability: str) -> bool:
@@ -163,7 +163,7 @@ class GithubProvider(GitProvider):
                 if commit.commit.message.startswith(f"Merge branch '{self._get_repo().default_branch}'"):
                     get_logger().info(f"Skipping merge commit {commit.commit.message}")
                     continue
-                self.unreviewed_files_set.update({file.filename: file for file in commit.files})
+                self.unreviewed_files_map.update({file.filename: file for file in commit.files})
         else:
             get_logger().info("No previous review found, will review the entire PR")
             self.incremental.is_incremental = False
@@ -195,8 +195,8 @@ class GithubProvider(GitProvider):
                 return self.comments[index]
 
     def get_files(self):
-        if self.incremental.is_incremental and self.unreviewed_files_set:
-            return self.unreviewed_files_set.values()
+        if self.incremental.is_incremental and self.unreviewed_files_map:
+            return self.unreviewed_files_map.values()
         try:
             git_files = context.get("git_files", None)
             if git_files:
@@ -301,10 +301,10 @@ class GithubProvider(GitProvider):
                     else:
                         new_file_content_str = self._get_pr_file_content(file, self.pr.head.sha)  # communication with GitHub
 
-                    if self.incremental.is_incremental and self.unreviewed_files_set:
+                    if self.incremental.is_incremental and self.unreviewed_files_map:
                         original_file_content_str = self._get_pr_file_content(file, self.incremental.last_seen_commit_sha)
                         patch = load_large_diff(file.filename, new_file_content_str, original_file_content_str)
-                        self.unreviewed_files_set[file.filename] = patch
+                        self.unreviewed_files_map[file.filename] = patch
                     else:
                         if avoid_load:
                             original_file_content_str = ""
