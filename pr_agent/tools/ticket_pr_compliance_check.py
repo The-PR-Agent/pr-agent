@@ -35,6 +35,29 @@ def find_jira_tickets(text):
     return list(tickets)
 
 
+_ASANA_TASK_URL_PATTERN = re.compile(
+    r'https://app\.asana\.com/0/(\d+)/(\d+)'
+)
+
+
+def find_asana_tickets(text: str) -> list:
+    """Extract Asana task references from text.
+
+    Supports full Asana URLs (``https://app.asana.com/0/{project_id}/{task_id}``).
+    Returns a list of unique task URLs.
+
+    Args:
+        text: The text to scan for Asana task references.
+
+    Returns:
+        A list of Asana task URLs.
+    """
+    tickets = set()
+    for match in _ASANA_TASK_URL_PATTERN.finditer(text):
+        tickets.add(match.group(0))
+    return sorted(tickets)
+
+
 def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url_html='https://github.com'):
     """
     Extract all ticket links from PR description
@@ -132,9 +155,22 @@ async def extract_tickets(git_provider):
                 if link not in seen:
                     seen.add(link)
                     merged.append(link)
+
+            # Also detect Asana ticket references in the PR description
+            asana_tickets = find_asana_tickets(user_description)
+            for link in asana_tickets:
+                if link not in seen:
+                    seen.add(link)
+                    merged.append(link)
+            asana_links = [t for t in merged if t.startswith("https://app.asana.com/")]
+            github_like = [t for t in merged if not t.startswith("https://app.asana.com/")]
             if len(merged) > 3:
                 get_logger().info(f"Too many tickets (description + branch): {len(merged)}")
-                tickets = merged[:3]
+                # Reserve at least one slot for an Asana reference when
+                # present so it is not systematically dropped.
+                asana_slot = asana_links[:1]
+                gh_slots = 3 - len(asana_slot)
+                tickets = github_like[:gh_slots] + asana_slot
             else:
                 tickets = merged
             tickets_content = []
@@ -142,6 +178,19 @@ async def extract_tickets(git_provider):
             if tickets:
 
                 for ticket in tickets:
+                    # Skip Asana URLs — these are external references,
+                    # included for visibility but cannot be fetched via GitHub API.
+                    if ticket.startswith("https://app.asana.com/"):
+                        tickets_content.append({
+                            "ticket_id": ticket,
+                            "ticket_url": ticket,
+                            "title": f"Asana Task: {ticket}",
+                            "body": ("Asana task referenced in PR description. "
+                                     "Fetch task details from Asana for full context."),
+                            "labels": "",
+                        })
+                        continue
+
                     repo_name, original_issue_number = git_provider._parse_issue_url(ticket)
 
                     try:
