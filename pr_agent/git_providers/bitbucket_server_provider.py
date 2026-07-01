@@ -546,15 +546,25 @@ class BitbucketServerProvider(GitProvider):
         return f"rest/api/latest/projects/{self.workspace_slug}/repos/{self.repo_slug}/pull-requests/{self.pr_num}/merge-base"
     # Clone related
     def _prepare_clone_url_with_token(self, repo_url_to_clone: str) -> str | None:
-        if 'bitbucket.' not in repo_url_to_clone:
-            get_logger().error("Repo URL is not a valid bitbucket URL.")
-            return None
         bearer_token = self.bearer_token
         if not bearer_token:
             get_logger().error("No bearer token provided. Returning None")
             return None
-        # Return unmodified URL as the token is passed via HTTP headers in _clone_inner, as seen below.
-        return repo_url_to_clone
+
+        # The bearer token is sent as an Authorization header to whatever host this URL points at
+        # (see _clone_inner). A weak substring check ("bitbucket." in url) would let
+        # 'bitbucket.attacker.tld' receive the token (issue #2445), so validate the host exactly
+        # against the configured Bitbucket Server and rebuild the URL from its trusted authority.
+        base_parsed = urlparse(self.bitbucket_server_url) if self.bitbucket_server_url else None
+        if not base_parsed or not base_parsed.hostname:
+            get_logger().error("Missing or unparseable bitbucket server url. Returning None")
+            return None
+        repo_path = self._validate_clone_url_and_extract_path(repo_url_to_clone, base_parsed.hostname)
+        if not repo_path:
+            return None
+
+        scheme = (base_parsed.scheme or "https") + "://"
+        return f"{scheme}{base_parsed.netloc}{repo_path}"
 
     #Overriding the shell command, since for some reason usage of x-token-auth doesn't work, as mentioned here:
     # https://stackoverflow.com/questions/56760396/cloning-bitbucket-server-repo-with-access-tokens
@@ -564,8 +574,14 @@ class BitbucketServerProvider(GitProvider):
             #Shouldn't happen since this is checked in _prepare_clone, therefore - throwing an exception.
             raise RuntimeError(f"Bearer token is required!")
 
-        cli_args = shlex.split(f"git clone -c http.extraHeader='Authorization: Bearer {bearer_token}' "
-                               f"--filter=blob:none --depth 1 {repo_url} {dest_folder}")
+        # Build argv as a list (not shlex.split of an f-string) so neither the token nor the repo url
+        # can be re-parsed into extra git arguments (issue #2445 hardening).
+        cli_args = [
+            "git", "clone",
+            "-c", f"http.extraHeader=Authorization: Bearer {bearer_token}",
+            "--filter=blob:none", "--depth", "1",
+            repo_url, dest_folder,
+        ]
 
         ssl_env = get_git_ssl_env()
 
