@@ -671,9 +671,8 @@ class GitLabProvider(GitProvider):
                 target_file = None
                 for file in diff_files:
                     if file.filename == relevant_file:
-                        if file.filename == relevant_file:
-                            target_file = file
-                            break
+                        target_file = file
+                        break
                 if target_file is None:
                     get_logger().warning(f"Skipping suggestion: file '{relevant_file}' not found in diff")
                     continue
@@ -799,6 +798,17 @@ class GitLabProvider(GitProvider):
             contents = self.gl.projects.get(self.id_project).files.get(file_path='.pr_agent.toml', ref=main_branch).decode()
             return contents
         except Exception:
+            return ""
+
+    def get_repo_file_content(self, file_path: str):
+        try:
+            project = self.gl.projects.get(self.id_project)
+            contents = project.files.get(file_path=file_path, ref=project.default_branch).decode()
+            return decode_if_bytes(contents)
+        except GitlabGetError:
+            return ""
+        except Exception as e:
+            get_logger().warning(f"Failed to load repo file: {file_path}, error: {e}")
             return ""
 
     def get_workspace_name(self):

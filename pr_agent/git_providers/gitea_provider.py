@@ -61,6 +61,8 @@ class GiteaProvider(GitProvider):
         self.file_contents = {}
         self.file_diffs = {}
         self.sha = None
+        self.base_sha = ""
+        self.base_ref = ""
         self.diff_files = []
         self.incremental = IncrementalPR(False)
         self.comments_list = []
@@ -239,7 +241,7 @@ class GiteaProvider(GitProvider):
     def publish_comment(self, comment: str,is_temporary: bool = False) -> None:
         """Publish a comment to the pull request"""
         if is_temporary and not get_settings().config.publish_output_progress:
-            get_logger().debug(f"Skipping publish_comment for temporary comment")
+            get_logger().debug("Skipping publish_comment for temporary comment")
             return None
 
         if self.enabled_issue:
@@ -743,6 +745,34 @@ class GiteaProvider(GitProvider):
         clone_url = scheme
         clone_url += f"{gitea_token}@{base_url}{repo_full_name}"
         return clone_url
+
+    def get_repo_file_content(self, file_path: str) -> str:
+        """Get content of a file from the repository target branch.
+
+        This method implements the interface required by PR #2387 repo_context feature.
+        It retrieves file content from the PR target when available, falling back to
+        the PR head commit for non-PR contexts.
+        """
+        try:
+            if not self.owner or not self.repo:
+                self.logger.warning("Cannot get repo file content: owner or repo not set")
+                return ""
+
+            ref = self.base_sha or self.base_ref or self.sha
+            if not ref:
+                self.logger.warning("Cannot get repo file content: ref not set")
+                return ""
+
+            content = self.repo_api.get_file_content(
+                owner=self.owner,
+                repo=self.repo,
+                commit_sha=ref,
+                filepath=file_path
+            )
+            return content
+        except Exception as e:
+            self.logger.debug(f"Failed to load repo file: {file_path}, error: {e}")
+            return ""
 
 class RepoApi(giteapy.RepositoryApi):
     def __init__(self, client: giteapy.ApiClient):

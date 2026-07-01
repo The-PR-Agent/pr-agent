@@ -256,7 +256,7 @@ def apply_repo_settings(pr_url):
     git_provider = get_git_provider_with_context(pr_url)
 
     if get_settings().config.use_repo_settings_file:
-        repo_settings_file = None
+        repo_settings_files = []
         try:
             try:
                 repo_settings = context.get("repo_settings", None)
@@ -272,23 +272,29 @@ def apply_repo_settings(pr_url):
 
             error_local = None
             if repo_settings:
-                repo_settings_file = None
-                category = 'local'
+                repo_settings_files = []
+                normalized_repo_settings = []
                 try:
-                    fd, repo_settings_file = tempfile.mkstemp(suffix='.toml')
-                    try:
-                        os.write(fd, repo_settings)
-                    finally:
-                        os.close(fd)
+                    normalized_repo_settings = _normalize_repo_settings(repo_settings)
+                    for _category, settings_content in normalized_repo_settings:
+                        fd, repo_settings_file = tempfile.mkstemp(suffix='.toml')
+                        repo_settings_files.append(repo_settings_file)
+                        try:
+                            if isinstance(settings_content, str):
+                                settings_content = settings_content.encode("utf-8")
+                            os.write(fd, settings_content)
+                        finally:
+                            os.close(fd)
 
                     try:
-                        dynconf_kwargs = {'core_loaders': [],  # DISABLE default loaders, otherwise will load toml files more than once.
+                        dynconf_kwargs = {'core_loaders': [],
+                             # Disable default loaders, otherwise TOML files load more than once.
                              'loaders': ['pr_agent.custom_merge_loader'],
-                             # Use a custom loader to merge sections, but overwrite their overlapping values. Don't involve ENV variables.
-                             'merge_enabled': True  # Merge multiple files; ensures [XYZ] sections only overwrite overlapping keys, not whole sections.
+                             # Merge sections and overwrite overlapping values without involving environment variables.
+                             'merge_enabled': True
                          }
 
-                        new_settings = Dynaconf(settings_files=[repo_settings_file],
+                        new_settings = Dynaconf(settings_files=repo_settings_files,
                                                 # Disable all dynamic loading features
                                                 load_dotenv=False,  # Don't load .env files
                                                 envvar_prefix=False,  # Drop DYNACONF for env. variables
@@ -301,7 +307,7 @@ def apply_repo_settings(pr_url):
                             "Loading repo settings without these security features. "
                             "Please upgrade Dynaconf for better security.",
                             artifact={"error": e, "traceback": traceback.format_exc()})
-                        new_settings = Dynaconf(settings_files=[repo_settings_file])
+                        new_settings = Dynaconf(settings_files=repo_settings_files)
 
                     for section, contents in new_settings.as_dict().items():
                         if not contents:
@@ -318,15 +324,17 @@ def apply_repo_settings(pr_url):
                     _reapply_env_overrides()
                     get_logger().info(f"Applying repo settings:\n{new_settings.as_dict()}")
                 except Exception as e:
+                    category = normalized_repo_settings[-1][0] if normalized_repo_settings else "local"
+                    settings_content = normalized_repo_settings[-1][1] if normalized_repo_settings else repo_settings
                     get_logger().warning(f"Failed to apply repo {category} settings, error: {str(e)}")
-                    error_local = {'error': str(e), 'settings': repo_settings, 'category': category}
+                    error_local = {'error': str(e), 'settings': settings_content, 'category': category}
 
                 if error_local:
                     handle_configurations_errors([error_local], git_provider)
         except Exception as e:
             get_logger().exception("Failed to apply repo settings", e)
         finally:
-            if repo_settings_file:
+            for repo_settings_file in repo_settings_files:
                 try:
                     os.remove(repo_settings_file)
                 except Exception as e:
@@ -337,6 +345,12 @@ def apply_repo_settings(pr_url):
         set_claude_model()
 
 
+def _normalize_repo_settings(repo_settings):
+    if isinstance(repo_settings, (bytes, str)):
+        return [("local", repo_settings)]
+    return repo_settings
+
+
 def handle_configurations_errors(config_errors, git_provider):
     try:
         if not any(config_errors):
@@ -344,17 +358,28 @@ def handle_configurations_errors(config_errors, git_provider):
 
         for err in config_errors:
             if err:
-                configuration_file_content = err['settings'].decode()
+                settings_content = err['settings']
+                configuration_file_content = (
+                    settings_content.decode() if isinstance(settings_content, bytes) else settings_content
+                )
                 err_message = err['error']
                 config_type = err['category']
                 header = f"❌ **PR-Agent failed to apply '{config_type}' repo settings**"
-                body = f"{header}\n\nThe configuration file needs to be a valid [TOML](https://qodo-merge-docs.qodo.ai/usage-guide/configuration_options/), please fix it.\n\n"
+                body = (
+                    f"{header}\n\nThe configuration file needs to be a valid "
+                    "[TOML](https://qodo-merge-docs.qodo.ai/usage-guide/configuration_options/), please fix it.\n\n"
+                )
                 body += f"___\n\n**Error message:**\n`{err_message}`\n\n"
-                if git_provider.is_supported("gfm_markdown"):
-                    body += f"\n\n<details><summary>Configuration content:</summary>\n\n```toml\n{configuration_file_content}\n```\n\n</details>"
+                if config_type == "global":
+                    body += "\n\nThe invalid configuration came from the organization's global settings file."
+                elif git_provider.is_supported("gfm_markdown"):
+                    body += (
+                        "\n\n<details><summary>Configuration content:</summary>\n\n"
+                        f"```toml\n{configuration_file_content}\n```\n\n</details>"
+                    )
                 else:
                     body += f"\n\n**Configuration content:**\n\n```toml\n{configuration_file_content}\n```\n\n"
-                get_logger().warning(f"Sending a 'configuration error' comment to the PR", artifact={'body': body})
+                get_logger().warning("Sending a 'configuration error' comment to the PR", artifact={'body': body})
                 # git_provider.publish_comment(body)
                 if hasattr(git_provider, 'publish_persistent_comment'):
                     git_provider.publish_persistent_comment(body,
@@ -364,7 +389,7 @@ def handle_configurations_errors(config_errors, git_provider):
                 else:
                     git_provider.publish_comment(body)
     except Exception as e:
-        get_logger().exception(f"Failed to handle configurations errors", e)
+        get_logger().exception("Failed to handle configurations errors", e)
 
 
 def set_claude_model():
