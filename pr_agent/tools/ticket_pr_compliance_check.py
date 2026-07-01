@@ -1,3 +1,4 @@
+import hashlib
 import re
 import traceback
 
@@ -244,7 +245,11 @@ async def extract_and_cache_pr_tickets(git_provider, vars):
     if not get_settings().get('pr_reviewer.require_ticket_analysis_review', False):
         return
 
-    related_tickets = get_settings().get('related_tickets', [])
+    use_cache = get_settings().get('pr_reviewer.cache_tickets', True)
+    pr_url = getattr(git_provider, 'pr_url', None)
+    cache_key = f'related_tickets_{hashlib.md5(pr_url.encode()).hexdigest()}' if pr_url else 'related_tickets'
+
+    related_tickets = get_settings().get(cache_key, []) if use_cache else []
 
     if not related_tickets:
         tickets_content = await extract_tickets(git_provider)
@@ -262,7 +267,8 @@ async def extract_and_cache_pr_tickets(git_provider, vars):
                               artifact={"tickets": related_tickets})
 
             vars['related_tickets'] = related_tickets
-            get_settings().set('related_tickets', related_tickets)
+            if use_cache:
+                get_settings().set(cache_key, related_tickets)
     else:
         get_logger().info("Using cached tickets", artifact={"tickets": related_tickets})
         vars['related_tickets'] = related_tickets

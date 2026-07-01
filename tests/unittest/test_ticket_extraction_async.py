@@ -100,11 +100,16 @@ def settings_snapshot():
     """
     s = get_settings()
     snapshot = snapshot_settings(
-        ["related_tickets", "pr_reviewer.require_ticket_analysis_review"]
+        [
+            "related_tickets",
+            "pr_reviewer.require_ticket_analysis_review",
+            "pr_reviewer.cache_tickets",
+        ]
     )
     # Reset to known defaults for each test
     s.set("related_tickets", [])
     s.set("pr_reviewer.require_ticket_analysis_review", False)
+    s.set("pr_reviewer.cache_tickets", True)
     try:
         yield s
     finally:
@@ -483,3 +488,74 @@ class TestExtractAndCachePrTickets:
         vars_ = {}
         asyncio.run(extract_and_cache_pr_tickets(object(), vars_))
         assert "related_tickets" not in vars_
+
+    def test_per_pr_cache_isolation(
+        self, settings_snapshot, monkeypatch
+    ):
+        settings_snapshot.set("pr_reviewer.require_ticket_analysis_review", True)
+
+        tickets_pr_a = [{"ticket_id": 11111, "title": "PR A ticket"}]
+        tickets_pr_b = [{"ticket_id": 22222, "title": "PR B ticket"}]
+
+        call_count = {"n": 0}
+
+        async def _side_effect(git_provider):
+            call_count["n"] += 1
+            if "11111" in (getattr(git_provider, "pr_url", "") or ""):
+                return tickets_pr_a
+            return tickets_pr_b
+
+        monkeypatch.setattr(tpc, "extract_tickets", _side_effect)
+
+        class _Provider:
+            pass
+
+        provider_a = _Provider()
+        provider_a.pr_url = "https://dev.azure.com/org/project/_git/repo/pullrequest/11111"
+        provider_b = _Provider()
+        provider_b.pr_url = "https://dev.azure.com/org/project/_git/repo/pullrequest/22222"
+
+        # First PR — should fetch
+        vars_a = {}
+        asyncio.run(extract_and_cache_pr_tickets(provider_a, vars_a))
+        assert vars_a["related_tickets"] == tickets_pr_a
+        assert call_count["n"] == 1
+
+        # Second PR — different URL, should fetch fresh
+        vars_b = {}
+        asyncio.run(extract_and_cache_pr_tickets(provider_b, vars_b))
+        assert vars_b["related_tickets"] == tickets_pr_b
+        assert call_count["n"] == 2
+
+        # Repeat first PR — should use cache, not fetch
+        vars_a2 = {}
+        asyncio.run(extract_and_cache_pr_tickets(provider_a, vars_a2))
+        assert vars_a2["related_tickets"] == tickets_pr_a
+        assert call_count["n"] == 2  # no additional fetch
+
+    def test_cache_tickets_disabled_always_fetches(
+        self, settings_snapshot, monkeypatch
+    ):
+        settings_snapshot.set("pr_reviewer.require_ticket_analysis_review", True)
+        settings_snapshot.set("pr_reviewer.cache_tickets", False)
+
+        call_count = {"n": 0}
+
+        async def _side_effect(_):
+            call_count["n"] += 1
+            return [{"ticket_id": call_count["n"], "title": f"fetch {call_count['n']}"}]
+
+        monkeypatch.setattr(tpc, "extract_tickets", _side_effect)
+
+        provider = object()
+
+        vars1 = {}
+        asyncio.run(extract_and_cache_pr_tickets(provider, vars1))
+        assert vars1["related_tickets"] == [{"ticket_id": 1, "title": "fetch 1"}]
+        assert call_count["n"] == 1
+
+        # Second call should also fetch (no cache)
+        vars2 = {}
+        asyncio.run(extract_and_cache_pr_tickets(provider, vars2))
+        assert vars2["related_tickets"] == [{"ticket_id": 2, "title": "fetch 2"}]
+        assert call_count["n"] == 2

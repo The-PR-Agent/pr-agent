@@ -13,6 +13,7 @@ from pr_agent.mosaico.env_bridge import (apply_mosaico_env,
                                          langfuse_env_present)
 from pr_agent.mosaico.observability import (mosaico_log_context,
                                             parse_observability_metadata)
+from tests.unittest._settings_helpers import _remove_key
 
 _SNAPSHOT_KEYS = [
     "OPENAI.API_BASE",
@@ -41,10 +42,8 @@ def restore_settings():
     litellm_failure = litellm.failure_callback
     yield
     for k, v in snapshot.items():
-        if v is _SENTINEL:
-            # Key was absent before; best-effort reset to empty so the global is not polluted.
-            global_settings.set(k, [] if k.endswith("CALLBACK") or k == "CONFIG.FALLBACK_MODELS" else None)
-        else:
+        _remove_key(global_settings, k)
+        if v is not _SENTINEL:
             global_settings.set(k, v)
     litellm.success_callback = litellm_success
     litellm.failure_callback = litellm_failure

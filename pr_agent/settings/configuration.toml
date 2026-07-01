@@ -84,6 +84,7 @@ require_security_review=true
 require_estimate_contribution_time_cost=false
 require_todo_scan=false
 require_ticket_analysis_review=true
+cache_tickets=true
 # general options
 publish_output_no_suggestions=true # Set to "false" if you only need the reviewer's remarks (not labels, not "security audit", etc.) and want to avoid noisy "No major issues detected" comments.
 persistent_comment=true
