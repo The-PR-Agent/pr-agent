@@ -186,3 +186,98 @@ async def test_issue_comment_from_user_is_processed(monkeypatch, tmp_path, resto
     await github_action_runner.run_action()
 
     assert handled == [("https://api.github.com/repos/org/repo/pulls/1", "/review")]
+
+
+def _write_workflow_run_event(tmp_path, originating_event="pull_request", pull_requests=None):
+    if pull_requests is None:
+        pull_requests = [{"url": "https://api.github.com/repos/org/repo/pulls/42", "number": 42}]
+    event_path = tmp_path / "event.json"
+    event_path.write_text(json.dumps({
+        "action": "completed",
+        "workflow_run": {
+            "id": 9999,
+            "event": originating_event,
+            "conclusion": "success",
+            "pull_requests": pull_requests,
+        },
+    }))
+    return event_path
+
+
+def _patch_workflow_run_deps(monkeypatch, runs):
+    monkeypatch.setattr(github_action_runner, "apply_repo_settings", lambda pr_url: None)
+
+    class FakeTool:
+        name = "base"
+
+        def __init__(self, pr_url):
+            self.pr_url = pr_url
+
+        async def run(self):
+            runs.append((self.name, self.pr_url))
+
+    class FakeDescription(FakeTool):
+        name = "describe"
+
+    class FakeReviewer(FakeTool):
+        name = "review"
+
+    class FakeSuggestions(FakeTool):
+        name = "improve"
+
+    monkeypatch.setattr(github_action_runner, "PRDescription", FakeDescription)
+    monkeypatch.setattr(github_action_runner, "PRReviewer", FakeReviewer)
+    monkeypatch.setattr(github_action_runner, "PRCodeSuggestions", FakeSuggestions)
+
+
+@pytest.mark.asyncio
+async def test_workflow_run_runs_auto_tools(monkeypatch, tmp_path, restore_github_settings):
+    runs = []
+    _patch_workflow_run_deps(monkeypatch, runs)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_run")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_workflow_run_event(tmp_path)))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    def fake_get_setting_or_env(key, default=None):
+        values = {
+            "GITHUB_ACTION.AUTO_DESCRIBE": True,
+            "GITHUB_ACTION.AUTO_REVIEW": True,
+            "GITHUB_ACTION.AUTO_IMPROVE": False,
+            "GITHUB_ACTION_CONFIG.ENABLE_OUTPUT": True,
+        }
+        return values.get(key, default)
+
+    monkeypatch.setattr(github_action_runner, "get_setting_or_env", fake_get_setting_or_env)
+
+    await github_action_runner.run_action()
+
+    assert runs == [
+        ("describe", "https://api.github.com/repos/org/repo/pulls/42"),
+        ("review", "https://api.github.com/repos/org/repo/pulls/42"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_workflow_run_skips_non_pull_request_origin(monkeypatch, tmp_path, restore_github_settings):
+    runs = []
+    _patch_workflow_run_deps(monkeypatch, runs)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_run")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_workflow_run_event(tmp_path, originating_event="push")))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    await github_action_runner.run_action()
+
+    assert runs == []
+
+
+@pytest.mark.asyncio
+async def test_workflow_run_skips_when_pull_requests_empty(monkeypatch, tmp_path, restore_github_settings):
+    runs = []
+    _patch_workflow_run_deps(monkeypatch, runs)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_run")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_workflow_run_event(tmp_path, pull_requests=[])))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    await github_action_runner.run_action()
+
+    assert runs == []

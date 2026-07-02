@@ -106,6 +106,40 @@ async def run_action():
                                 setting.extra_instructions = updated_instructions
     except Exception as e:
         get_logger().info(f"github action: failed to apply language-specific instructions: {e}")
+
+    # Inject artifact content into extra_instructions for configured tools
+    try:
+        ARTIFACT_PATH = os.environ.get('ARTIFACT_PATH') or os.environ.get('PR_AGENT_ARTIFACT_PATH')
+        ARTIFACT_TYPE = os.environ.get('ARTIFACT_TYPE') or os.environ.get('PR_AGENT_ARTIFACT_TYPE')
+        if ARTIFACT_PATH:
+            get_settings().set("ARTIFACTS.ENABLE", True)
+            get_settings().set("ARTIFACTS.ARTIFACT_PATH", ARTIFACT_PATH)
+            if ARTIFACT_TYPE:
+                get_settings().set("ARTIFACTS.ARTIFACT_TYPE", ARTIFACT_TYPE)
+
+        artifacts_enabled = get_settings().get("ARTIFACTS.ENABLE", False)
+        if is_true(artifacts_enabled):
+            from pr_agent.algo.artifacts import load_artifact_content
+
+            get_logger().info("Artifact injection enabled, processing artifacts")
+            for key in get_settings():
+                setting = get_settings().get(key)
+                if str(type(setting)) == "<class 'dynaconf.utils.boxing.DynaBox'>":
+                    if key.lower() in ['pr_description', 'pr_code_suggestions', 'pr_reviewer']:
+                        artifact_text = load_artifact_content(key.lower())
+                        if artifact_text:
+                            if hasattr(setting, 'extra_instructions'):
+                                extra_instructions = setting.extra_instructions
+                                separator = "\n======\n\nCI Artifact Context:\n"
+                                updated_instructions = (
+                                    str(extra_instructions) + separator + artifact_text
+                                    if extra_instructions else artifact_text
+                                )
+                                setting.extra_instructions = updated_instructions
+                                get_logger().info(f"Injected artifact context into {key}")
+    except Exception as e:
+        get_logger().info(f"github action: failed to process artifacts: {e}")
+
     # Handle pull request opened event
     if GITHUB_EVENT_NAME == "pull_request" or GITHUB_EVENT_NAME == "pull_request_target":
         action = event_payload.get("action")
@@ -188,6 +222,49 @@ async def run_action():
                         )
                     else:
                         await PRAgent().handle_request(url, body)
+
+    # Handle workflow_run event (triggered after another workflow completes, e.g. after a terraform plan)
+    elif GITHUB_EVENT_NAME == "workflow_run":
+        workflow_run = event_payload.get("workflow_run", {})
+        if workflow_run.get("event") != "pull_request":
+            get_logger().info(f"Skipping workflow_run: originating event is '{workflow_run.get('event')}', not 'pull_request'")
+            return
+
+        pull_requests = workflow_run.get("pull_requests", [])
+        if not pull_requests:
+            get_logger().info("Skipping workflow_run: no pull_requests found in payload (fork PRs are not supported)")
+            return
+
+        pr_url = pull_requests[0].get("url")
+        if not pr_url:
+            get_logger().info("Skipping workflow_run: pull_requests[0] has no url")
+            return
+
+        try:
+            apply_repo_settings(pr_url)
+        except Exception as e:
+            get_logger().info(f"github action: failed to apply repo settings for workflow_run: {e}")
+
+        auto_review = get_setting_or_env("GITHUB_ACTION.AUTO_REVIEW", None)
+        if auto_review is None:
+            auto_review = get_setting_or_env("GITHUB_ACTION_CONFIG.AUTO_REVIEW", None)
+        auto_describe = get_setting_or_env("GITHUB_ACTION.AUTO_DESCRIBE", None)
+        if auto_describe is None:
+            auto_describe = get_setting_or_env("GITHUB_ACTION_CONFIG.AUTO_DESCRIBE", None)
+        auto_improve = get_setting_or_env("GITHUB_ACTION.AUTO_IMPROVE", None)
+        if auto_improve is None:
+            auto_improve = get_setting_or_env("GITHUB_ACTION_CONFIG.AUTO_IMPROVE", None)
+
+        get_settings().config.is_auto_command = True
+        get_settings().pr_description.final_update_message = False
+        get_logger().info(f"Running auto actions for workflow_run: auto_describe={auto_describe}, auto_review={auto_review}, auto_improve={auto_improve}")
+
+        if auto_describe is None or is_true(auto_describe):
+            await PRDescription(pr_url).run()
+        if auto_review is None or is_true(auto_review):
+            await PRReviewer(pr_url).run()
+        if auto_improve is None or is_true(auto_improve):
+            await PRCodeSuggestions(pr_url).run()
 
 
 if __name__ == '__main__':
