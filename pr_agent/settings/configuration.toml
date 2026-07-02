@@ -227,6 +227,7 @@ publish_inline_comments_fallback_with_verification = true
 try_fix_invalid_inline_comments = true
 app_name = "pr-agent"
 ignore_bot_pr = true
+publish_as_check_run = false # when true, publish review/description/improve output as GitHub Checks instead of PR comments
 
 [github_action_config]
 # auto_review = true    # set as env var in .github/workflows/pr-agent.yaml

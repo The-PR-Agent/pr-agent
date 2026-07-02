@@ -369,12 +369,57 @@ class GithubProvider(GitProvider):
     def get_comment_url(self, comment) -> str:
         return comment.html_url
 
+    _check_run_ids: dict = {}
+
     def publish_persistent_comment(self, pr_comment: str,
                                    initial_header: str,
                                    update_header: bool = True,
                                    name='review',
                                    final_update_message=True):
+        if get_settings().github.publish_as_check_run:
+            self._publish_check_run(pr_comment, name)
+            return
         self.publish_persistent_comment_full(pr_comment, initial_header, update_header, name, final_update_message)
+
+    def _publish_check_run(self, text: str, name: str):
+        if not self.last_commit_id:
+            get_logger().error("Cannot publish check run without a commit SHA")
+            return
+        conclusion = "neutral"
+        check_run_name = f"PR Agent - {name.capitalize()}"
+        summary = text.split("\n\n")[0] if "\n\n" in text else text[:200]
+        summary = summary.strip(" #")
+        body = {
+            "name": check_run_name,
+            "head_sha": self.last_commit_id,
+            "status": "completed",
+            "conclusion": conclusion,
+            "output": {
+                "title": check_run_name,
+                "summary": summary[:300],
+                "text": text,
+            },
+        }
+        existing_id = self._check_run_ids.get(name)
+        if existing_id:
+            try:
+                self.pr._requester.requestJsonAndCheck(
+                    "PATCH",
+                    f"{self.base_url}/repos/{self.repo}/check-runs/{existing_id}",
+                    input=body,
+                )
+                return
+            except Exception as e:
+                get_logger().warning(f"Failed to update check run {existing_id}, creating new one: {e}")
+        try:
+            headers, data = self.pr._requester.requestJsonAndCheck(
+                "POST",
+                f"{self.base_url}/repos/{self.repo}/check-runs",
+                input=body,
+            )
+            self._check_run_ids[name] = data["id"]
+        except Exception as e:
+            get_logger().warning(f"Failed to create check run: {e}")
 
     def publish_comment(self, pr_comment: str, is_temporary: bool = False):
         if not self.pr and not self.issue_main:
