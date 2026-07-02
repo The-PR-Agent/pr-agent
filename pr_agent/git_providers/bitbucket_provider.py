@@ -192,6 +192,8 @@ class BitbucketProvider(GitProvider):
         if capability in ['get_issue_comments', 'publish_inline_comments', 'get_labels', 'gfm_markdown',
                             'publish_file_comments']:
             return False
+        if capability == "push_code" and get_settings().config.restricted_mode:
+            return False
         return True
 
     def set_pr(self, pr_url: str):

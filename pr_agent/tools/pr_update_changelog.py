@@ -59,17 +59,25 @@ class PRUpdateChangelog:
         get_logger().debug("Relevant configs", artifacts=relevant_configs)
 
         # check if the git provider supports pushing changelog changes
-        if get_settings().pr_update_changelog.push_changelog_changes and not hasattr(
-            self.git_provider, "create_or_update_pr_file"
-        ):
-            get_logger().error(
-                "Pushing changelog changes is not currently supported for this code platform"
-            )
-            if get_settings().config.publish_output:
-                self.git_provider.publish_comment(
+        if get_settings().pr_update_changelog.push_changelog_changes:
+            if not hasattr(self.git_provider, "create_or_update_pr_file"):
+                get_logger().error(
                     "Pushing changelog changes is not currently supported for this code platform"
                 )
-            return
+                if get_settings().config.publish_output:
+                    self.git_provider.publish_comment(
+                        "Pushing changelog changes is not currently supported for this code platform"
+                    )
+                return
+            if not self.git_provider.is_supported("push_code"):
+                get_logger().error(
+                    "Pushing changelog changes is restricted by configuration"
+                )
+                if get_settings().config.publish_output:
+                    self.git_provider.publish_comment(
+                        "Pushing changelog changes is restricted by configuration"
+                    )
+                return
 
         if get_settings().config.publish_output:
             self.git_provider.publish_comment("Preparing changelog updates...", is_temporary=True)

@@ -290,6 +290,8 @@ class GitLabProvider(GitProvider):
         if capability in ['get_issue_comments', 'create_inline_comment', 'publish_inline_comments',
             'publish_file_comments']: # gfm_markdown is supported in gitlab !
             return False
+        if capability == "push_code" and get_settings().config.restricted_mode:
+            return False
         return True
 
     def _get_project_path_from_pr_or_issue_url(self, pr_or_issue_url: str) -> str:

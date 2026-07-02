@@ -84,6 +84,8 @@ class GithubProvider(GitProvider):
             self._get_incremental_commits()
 
     def is_supported(self, capability: str) -> bool:
+        if capability == "push_code" and get_settings().config.restricted_mode:
+            return False
         return True
 
     def _get_owner_and_repo_path(self, given_url: str) -> str:
