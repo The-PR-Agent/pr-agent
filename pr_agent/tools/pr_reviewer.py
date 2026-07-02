@@ -110,12 +110,19 @@ class PRReviewer:
         )
 
     def _load_related_tickets(self):
+        if not get_settings().get('pr_reviewer.cache_tickets', True):
+            return []
         pr_url = getattr(self.git_provider, 'pr_url', None)
         if pr_url:
             cache_key = f'related_tickets_{hashlib.md5(pr_url.encode()).hexdigest()}'
-            tickets = get_settings().get(cache_key, None)
-            if tickets is not None:
-                return tickets
+            from pr_agent.tools.ticket_pr_compliance_check import _tickets_cache, _TICKETS_CACHE_TTL
+            import time
+            cached = _tickets_cache.get(cache_key)
+            if cached is not None:
+                ts, tickets = cached
+                if time.time() - ts < _TICKETS_CACHE_TTL:
+                    return tickets
+                del _tickets_cache[cache_key]
         return get_settings().get('related_tickets', [])
 
     def parse_incremental(self, args: List[str]):

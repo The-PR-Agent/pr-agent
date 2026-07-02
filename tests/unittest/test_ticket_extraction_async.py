@@ -430,6 +430,7 @@ class TestExtractAndCachePrTickets:
     def test_uses_existing_related_tickets_cache_without_extract(
         self, settings_snapshot, monkeypatch
     ):
+        import time
         settings_snapshot.set("pr_reviewer.require_ticket_analysis_review", True)
         cached = [{"ticket_id": 42, "title": "cached"}]
         settings_snapshot.set("pr_reviewer.cache_tickets", True)
@@ -440,7 +441,7 @@ class TestExtractAndCachePrTickets:
         provider = _Provider()
 
         cache_key = f'related_tickets_{hashlib.md5(provider.pr_url.encode()).hexdigest()}'
-        settings_snapshot.set(cache_key, cached)
+        tpc._tickets_cache[cache_key] = (time.time(), cached)
 
         async def _boom(_):
             raise AssertionError("extract_tickets should not be called when cache is set")
@@ -484,11 +485,12 @@ class TestExtractAndCachePrTickets:
         # Per current production order: sub-issues are appended first, then main.
         stored = vars_["related_tickets"]
         assert stored == [sub_a, sub_b, main_ticket]
-        # Settings cache is also populated under the PR-scoped key
+        # In-memory cache is also populated under the PR-scoped key
         cache_key = f'related_tickets_{hashlib.md5(provider.pr_url.encode()).hexdigest()}'
-        assert get_settings().get(cache_key) == stored
+        _, cached = tpc._tickets_cache[cache_key]
+        assert cached == stored
 
-    def test_no_tickets_extracted_leaves_vars_untouched(
+    def test_no_tickets_extracted_sets_empty_list_in_vars(
         self, settings_snapshot, monkeypatch
     ):
         settings_snapshot.set("pr_reviewer.require_ticket_analysis_review", True)
@@ -501,7 +503,7 @@ class TestExtractAndCachePrTickets:
 
         vars_ = {}
         asyncio.run(extract_and_cache_pr_tickets(object(), vars_))
-        assert "related_tickets" not in vars_
+        assert vars_["related_tickets"] == []
 
     def test_per_pr_cache_isolation(
         self, settings_snapshot, monkeypatch

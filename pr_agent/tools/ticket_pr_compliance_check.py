@@ -1,11 +1,17 @@
 import hashlib
 import re
+import time
 import traceback
 
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import GithubProvider
 from pr_agent.git_providers import AzureDevopsProvider
 from pr_agent.log import get_logger
+
+# In-memory ticket cache with TTL to avoid unbounded Dynaconf key accumulation.
+# Keys: md5(pr_url), values: (timestamp, ticket_list)
+_tickets_cache: dict = {}
+_TICKETS_CACHE_TTL = 3600  # 1 hour
 
 # Compile the regex pattern once, outside the function
 GITHUB_TICKET_PATTERN = re.compile(
@@ -255,7 +261,19 @@ async def extract_and_cache_pr_tickets(git_provider, vars):
         cache_key = (
             f'related_tickets_{hashlib.md5(pr_url.encode()).hexdigest()}'
         )
-        related_tickets = get_settings().get(cache_key, []) if use_cache else []
+        if use_cache:
+            cached = _tickets_cache.get(cache_key)
+            if cached is not None:
+                ts, tickets = cached
+                if time.time() - ts < _TICKETS_CACHE_TTL:
+                    related_tickets = tickets
+                else:
+                    del _tickets_cache[cache_key]
+                    related_tickets = []
+            else:
+                related_tickets = []
+        else:
+            related_tickets = []
 
     if not related_tickets:
         tickets_content = await extract_tickets(git_provider)
@@ -272,9 +290,9 @@ async def extract_and_cache_pr_tickets(git_provider, vars):
             get_logger().info("Extracted tickets and sub-issues from PR description",
                               artifact={"tickets": related_tickets})
 
-            vars['related_tickets'] = related_tickets
-            if use_cache:
-                get_settings().set(cache_key, related_tickets)
+        vars['related_tickets'] = related_tickets
+        if use_cache:
+            _tickets_cache[cache_key] = (time.time(), related_tickets)
     else:
         get_logger().info("Using cached tickets", artifact={"tickets": related_tickets})
         vars['related_tickets'] = related_tickets
