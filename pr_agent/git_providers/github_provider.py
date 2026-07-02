@@ -388,9 +388,22 @@ class GithubProvider(GitProvider):
         check_run_name = f"PR Agent - {name.capitalize()}"
         summary = text.split("\n\n")[0] if "\n\n" in text else text[:200]
         summary = summary.strip(" #")
-        body = {
+        # GitHub Checks API limits: text 65535 chars, summary 65535 chars
+        max_text = 65535
+        if len(text) > max_text:
+            text = text[:max_text]
+        create_body = {
             "name": check_run_name,
             "head_sha": self.last_commit_id.sha,
+            "status": "completed",
+            "conclusion": conclusion,
+            "output": {
+                "title": check_run_name,
+                "summary": summary[:300],
+                "text": text,
+            },
+        }
+        update_body = {
             "status": "completed",
             "conclusion": conclusion,
             "output": {
@@ -405,7 +418,7 @@ class GithubProvider(GitProvider):
                 self.pr._requester.requestJsonAndCheck(
                     "PATCH",
                     f"{self.base_url}/repos/{self.repo}/check-runs/{existing_id}",
-                    input=body,
+                    input=update_body,
                 )
                 return True
             except Exception as e:
@@ -414,7 +427,7 @@ class GithubProvider(GitProvider):
             data = self.pr._requester.requestJsonAndCheck(
                 "POST",
                 f"{self.base_url}/repos/{self.repo}/check-runs",
-                input=body,
+                input=create_body,
             )
             self._check_run_ids[name] = data["id"]
             return True
