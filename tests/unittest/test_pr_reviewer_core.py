@@ -90,3 +90,36 @@ def test_get_user_answers_collects_question_and_answer_from_issue_comments():
 
     assert question == "Questions to better understand the PR:\n- Why?"
     assert answer == "/answer Because it fixes production."
+
+
+def test_get_user_answers_return_order_matches_init_destructuring():
+    """Regression: PRReviewer.__init__ destructures as `question_str, answer_str = self._get_user_answers()`.
+
+    If _get_user_answers ever changes its return order, or __init__ ever swaps
+    the destructuring again, this test will fail loudly. This guards against a
+    silent bug where the LLM prompt would receive the question as the answer
+    (and vice versa) whenever the `answer` command is invoked.
+    """
+    import inspect
+
+    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+
+    source = inspect.getsource(pr_reviewer_module.PRReviewer.__init__)
+    assert "question_str, answer_str = self._get_user_answers()" in source, (
+        "PRReviewer.__init__ must destructure _get_user_answers() as "
+        "(question_str, answer_str). See _get_user_answers docstring: "
+        "'Returns: A tuple containing the question and answer strings.'"
+    )
+
+    git_provider = MagicMock()
+    git_provider.get_issue_comments.return_value = SimpleNamespace(reversed=[
+        SimpleNamespace(body="Questions to better understand the PR:\n- Why?"),
+        SimpleNamespace(body="/answer Because it fixes production."),
+    ])
+    reviewer = _make_reviewer(git_provider)
+    reviewer.is_answer = True
+
+    first, second = reviewer._get_user_answers()
+
+    assert "Questions to better understand the PR:" in first
+    assert "/answer" in second
