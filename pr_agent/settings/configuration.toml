@@ -360,6 +360,11 @@ content = ""
 organization_name = ""
 max_lines_allowed = 800
 enable_global_best_practices = false
+# OSS: load best_practices.md from the repo and pass it to the 'improve' tool prompt.
+# Default ON to match the public docs; set to false in your .pr_agent.toml to opt out.
+# See docs/docs/tools/improve.md.
+enable_repo_best_practices_md = true
+repo_best_practices_md_path = "best_practices.md"
 
 [auto_best_practices]
 enable_auto_best_practices = true # public - general flag to disable all auto best practices usage
