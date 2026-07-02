@@ -49,6 +49,7 @@ class GithubProvider(GitProvider):
         self.diff_files = None
         self.git_files = None
         self.incremental = IncrementalPR(False)
+        self._check_run_ids: dict = {}
         if pr_url and 'pull' in pr_url:
             self.set_pr(pr_url)
             self.pr_commits = list(self.pr.get_commits())
@@ -374,7 +375,65 @@ class GithubProvider(GitProvider):
                                    update_header: bool = True,
                                    name='review',
                                    final_update_message=True):
+        if get_settings().github.publish_as_check_run:
+            if self._publish_check_run(pr_comment, name):
+                return
         self.publish_persistent_comment_full(pr_comment, initial_header, update_header, name, final_update_message)
+
+    def _publish_check_run(self, text: str, name: str) -> bool:
+        if not self.last_commit_id:
+            get_logger().error("Cannot publish check run without a commit SHA")
+            return False
+        conclusion = "neutral"
+        check_run_name = f"PR Agent - {name.capitalize()}"
+        summary = text.split("\n\n")[0] if "\n\n" in text else text[:200]
+        summary = summary.strip(" #")
+        # GitHub Checks API limits: text 65535 chars, summary 65535 chars
+        max_text = 65535
+        if len(text) > max_text:
+            text = text[:max_text]
+        create_body = {
+            "name": check_run_name,
+            "head_sha": self.last_commit_id.sha,
+            "status": "completed",
+            "conclusion": conclusion,
+            "output": {
+                "title": check_run_name,
+                "summary": summary[:300],
+                "text": text,
+            },
+        }
+        update_body = {
+            "status": "completed",
+            "conclusion": conclusion,
+            "output": {
+                "title": check_run_name,
+                "summary": summary[:300],
+                "text": text,
+            },
+        }
+        existing_id = self._check_run_ids.get(name)
+        if existing_id:
+            try:
+                self.pr._requester.requestJsonAndCheck(
+                    "PATCH",
+                    f"{self.base_url}/repos/{self.repo}/check-runs/{existing_id}",
+                    input=update_body,
+                )
+                return True
+            except Exception:
+                get_logger().warning(f"Failed to update check run {existing_id}, creating new one")
+        try:
+            data = self.pr._requester.requestJsonAndCheck(
+                "POST",
+                f"{self.base_url}/repos/{self.repo}/check-runs",
+                input=create_body,
+            )
+            self._check_run_ids[name] = data["id"]
+            return True
+        except Exception:
+            get_logger().warning(f"Failed to create check run, falling back to comment")
+            return False
 
     def publish_comment(self, pr_comment: str, is_temporary: bool = False):
         if not self.pr and not self.issue_main:
