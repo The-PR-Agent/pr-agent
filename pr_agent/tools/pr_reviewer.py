@@ -1,5 +1,6 @@
 import copy
 import datetime
+import hashlib
 import traceback
 from collections import OrderedDict
 from functools import partial
@@ -96,7 +97,7 @@ class PRReviewer:
             "custom_labels": "",
             "enable_custom_labels": get_settings().config.enable_custom_labels,
             "is_ai_metadata":  get_settings().get("config.enable_ai_metadata", False),
-            "related_tickets": get_settings().get('related_tickets', []),
+            "related_tickets": self._load_related_tickets(),
             'duplicate_prompt_examples': get_settings().config.get('duplicate_prompt_examples', False),
             "date": datetime.datetime.now().strftime('%Y-%m-%d'),
         }
@@ -107,6 +108,22 @@ class PRReviewer:
             get_settings().pr_review_prompt.system,
             get_settings().pr_review_prompt.user
         )
+
+    def _load_related_tickets(self):
+        if not get_settings().get('pr_reviewer.cache_tickets', True):
+            return []
+        pr_url = getattr(self.git_provider, 'pr_url', None)
+        if pr_url:
+            cache_key = f'related_tickets_{hashlib.md5(pr_url.encode()).hexdigest()}'
+            from pr_agent.tools.ticket_pr_compliance_check import _tickets_cache, _TICKETS_CACHE_TTL
+            import time
+            cached = _tickets_cache.get(cache_key)
+            if cached is not None:
+                ts, tickets = cached
+                if time.time() - ts < _TICKETS_CACHE_TTL:
+                    return tickets
+                del _tickets_cache[cache_key]
+        return get_settings().get('related_tickets', [])
 
     def parse_incremental(self, args: List[str]):
         is_incremental = False
