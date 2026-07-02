@@ -126,6 +126,9 @@ include_generated_by_header=true
 #custom_labels = ['Bug fix', 'Tests', 'Bug fix with tests', 'Enhancement', 'Documentation', 'Other']
 max_ai_calls=4
 async_ai_calls=true
+# --- fork: org MR enhancements (default off; see docs/fork/org-mr-enhancements.md) ---
+enable_conventional_title=false
+enable_org_template=false
 [pr_questions] # /ask #
 enable_help_text=false
 use_conversation_history=true
