@@ -14,6 +14,7 @@ Requirements for this milestone. Each maps to roadmap phases. All new behavior i
 - [ ] **CFG-03**: The org template body is stored in a fork-owned location (separate file or constant), not inlined into the shared upstream prompt file, to minimize upstream merge conflicts
 - [ ] **CFG-04**: When `enable_conventional_title` is on, AI title publishing is auto-forced so the rewritten title actually reaches GitLab (no need to also set `generate_ai_title`)
 - [ ] **CFG-05**: When toggles are off, `describe` output is byte-identical to upstream PR-Agent behavior
+- [ ] **CFG-06**: Both toggles can be enabled via environment variable through PR-Agent's existing dynaconf env override (`envvar_prefix=False` + `env_loader`), e.g. `PR_DESCRIPTION__ENABLE_CONVENTIONAL_TITLE=true` / `PR_DESCRIPTION__ENABLE_ORG_TEMPLATE=true`, so they can be set per-CI-invocation without editing a config file. Verified and documented.
 
 ### Title (Angular Commit Convention)
 
@@ -30,7 +31,7 @@ Requirements for this milestone. Each maps to roadmap phases. All new behavior i
 - [ ] **TMPL-02**: The AI fills the "What does this MR do? Why?" and "Note / Risk" sections
 - [ ] **TMPL-03**: The checklist renders as empty checkboxes; the AI never ticks them
 - [ ] **TMPL-04**: PR-Agent's existing generated walkthrough/file-summary is retained below the org template
-- [ ] **TMPL-05**: PR-Agent's own default `## PR Description` section is removed when the org template is on (the org template's What/Why supersedes it); the walkthrough and other sections remain
+- [ ] **TMPL-05**: PR-Agent's own default description output (including its `## PR Description` section) is retained unchanged — the org template is purely additive (prepended above), nothing is removed
 - [ ] **TMPL-06**: Re-running `describe` is idempotent — the org template is not duplicated (HTML-comment sentinel markers wrap the block and are detected/replaced)
 - [ ] **TMPL-07**: Human-ticked checkbox state is preserved verbatim across re-runs
 - [ ] **TMPL-08**: When `use_description_markers` mode is active, the org-template feature is skipped with a WARN log rather than corrupting the marker flow
@@ -73,32 +74,38 @@ Which phases cover which requirements. Populated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CFG-01 | TBD | Pending |
-| CFG-02 | TBD | Pending |
-| CFG-03 | TBD | Pending |
-| CFG-04 | TBD | Pending |
-| CFG-05 | TBD | Pending |
-| TITLE-01 | TBD | Pending |
-| TITLE-02 | TBD | Pending |
-| TITLE-03 | TBD | Pending |
-| TITLE-04 | TBD | Pending |
-| TITLE-05 | TBD | Pending |
-| TITLE-06 | TBD | Pending |
-| TMPL-01 | TBD | Pending |
-| TMPL-02 | TBD | Pending |
-| TMPL-03 | TBD | Pending |
-| TMPL-04 | TBD | Pending |
-| TMPL-05 | TBD | Pending |
-| TMPL-06 | TBD | Pending |
-| TMPL-07 | TBD | Pending |
-| TMPL-08 | TBD | Pending |
-| TMPL-09 | TBD | Pending |
+| CFG-01 | Phase 1 | Pending |
+| CFG-02 | Phase 1 | Pending |
+| CFG-03 | Phase 1 | Pending |
+| CFG-04 | Phase 2 | Pending |
+| CFG-05 | Phase 1 | Pending |
+| CFG-06 | Phase 1 | Pending |
+| TITLE-01 | Phase 2 | Pending |
+| TITLE-02 | Phase 2 | Pending |
+| TITLE-03 | Phase 2 | Pending |
+| TITLE-04 | Phase 2 | Pending |
+| TITLE-05 | Phase 2 | Pending |
+| TITLE-06 | Phase 2 | Pending |
+| TMPL-01 | Phase 3 | Pending |
+| TMPL-02 | Phase 3 | Pending |
+| TMPL-03 | Phase 3 | Pending |
+| TMPL-04 | Phase 3 | Pending |
+| TMPL-05 | Phase 3 | Pending |
+| TMPL-06 | Phase 3 | Pending |
+| TMPL-07 | Phase 3 | Pending |
+| TMPL-08 | Phase 3 | Pending |
+| TMPL-09 | Phase 3 | Pending |
 
 **Coverage:**
-- v1 requirements: 20 total
-- Mapped to phases: 0 (roadmap pending)
-- Unmapped: 20 ⚠️
+- v1 requirements: 21 total
+- Mapped to phases: 21 (100%)
+- Unmapped: 0
+
+**Per-phase totals:**
+- Phase 1 (Config skeleton and fork-safe seam): 5 (CFG-01, CFG-02, CFG-03, CFG-05, CFG-06)
+- Phase 2 (Angular-convention title rewriting): 7 (CFG-04, TITLE-01..06)
+- Phase 3 (Org template prepend with idempotency): 9 (TMPL-01..09)
 
 ---
 *Requirements defined: 2026-07-02*
-*Last updated: 2026-07-02 after initial definition*
+*Last updated: 2026-07-02 after roadmap creation (traceability populated)*
