@@ -3,6 +3,7 @@ import copy
 import re
 import traceback
 from functools import partial
+from pathlib import Path
 from typing import List, Tuple
 
 import yaml
@@ -28,6 +29,24 @@ from pr_agent.servers.help import HelpMessage
 from pr_agent.tools.ticket_pr_compliance_check import (
     extract_and_cache_pr_tickets, extract_ticket_links_from_pr_description,
     extract_tickets)
+
+# --- fork: org MR enhancements ---
+# Fork-owned org description template body. Loaded from Python (not inlined into
+# pr_description_prompts.toml) so upstream rebases stay clean (CFG-03). The loader
+# is defined here but intentionally NOT wired into any output path this phase —
+# it is consumed by Phase 3 (TMPL-01..09).
+_ORG_TEMPLATE_PATH = Path(__file__).parent.parent / "settings" / "org_template.md"
+
+
+def load_org_template() -> str:
+    """Return the fork-owned org description template body as a string.
+
+    Reads `pr_agent/settings/org_template.md` via a package-relative path derived
+    from this module's location. Inert this phase (defined, not called from any
+    output path) so `describe` behavior stays byte-identical when both toggles are
+    off (CFG-05 precondition).
+    """
+    return _ORG_TEMPLATE_PATH.read_text(encoding="utf-8")
 
 
 class PRDescription:
