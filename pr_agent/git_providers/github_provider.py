@@ -421,8 +421,8 @@ class GithubProvider(GitProvider):
                     input=update_body,
                 )
                 return True
-            except Exception as e:
-                get_logger().warning(f"Failed to update check run {existing_id}, creating new one: {e}")
+            except Exception:
+                get_logger().warning(f"Failed to update check run {existing_id}, creating new one")
         try:
             data = self.pr._requester.requestJsonAndCheck(
                 "POST",
@@ -431,8 +431,8 @@ class GithubProvider(GitProvider):
             )
             self._check_run_ids[name] = data["id"]
             return True
-        except Exception as e:
-            get_logger().warning(f"Failed to create check run: {e}")
+        except Exception:
+            get_logger().warning(f"Failed to create check run, falling back to comment")
             return False
 
     def publish_comment(self, pr_comment: str, is_temporary: bool = False):
