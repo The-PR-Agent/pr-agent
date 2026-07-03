@@ -53,9 +53,13 @@
   5. When the toggle is off, title behavior is identical to Phase 1 (upstream default) — verified against the same byte-diff fixture.
 
 **Plans:** 2 plans
-
 Plans:
+**Wave 1**
+
 - [ ] 02-01-PLAN.md — Pure `_normalize_angular_title` validator/repair helper + 25-row adversarial fixture test (TITLE-02..06)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 02-02-PLAN.md — CFG-04 publish-seam auto-force wiring + `self.ai_title` stash + Angular `extra_instructions` steering + behavior matrix (CFG-04, TITLE-01)
 
 ### Phase 3: Org template prepend with idempotency
