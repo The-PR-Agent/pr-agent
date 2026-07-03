@@ -79,7 +79,7 @@ async def _noop_retry(*_args, **_kwargs):
         (False, True, "Feature(auth): add SSO support", "Human supplied title",
          "feat(auth): add SSO support", 1),
         (False, True, "WIP: whatever", "Human supplied title", None, 1),
-        (True, True, "Feature(auth): add SSO support", "  Feature(auth): add SSO support  ",
+        (True, True, "Feature(auth): add SSO support", "Human supplied title",
          "feat(auth): add SSO support", 1),
     ],
 )
@@ -162,6 +162,7 @@ def test_conventional_title_augments_effective_extra_instructions(
     assert settings.pr_description.extra_instructions == "Keep existing guidance."
 
 
+@pytest.mark.parametrize("generate_ai_title", [False, True])
 @pytest.mark.parametrize("ai_title", [_MISSING, "", "   ", ["bad"]])
 @patch("pr_agent.tools.pr_description.retry_with_fallback_models", side_effect=_noop_retry)
 @patch("pr_agent.tools.pr_description.extract_and_cache_pr_tickets", side_effect=_noop_extract_tickets)
@@ -170,10 +171,11 @@ async def test_conventional_title_missing_or_malformed_ai_title_publishes_body_w
     mock_get_settings,
     _mock_extract_tickets,
     _mock_retry,
+    generate_ai_title,
     ai_title,
 ):
     mock_get_settings.return_value = _settings(
-        generate_ai_title=False,
+        generate_ai_title=generate_ai_title,
         enable_conventional_title=True,
     )
     obj = _make_instance(ai_title=ai_title, pr_title="Human supplied title")

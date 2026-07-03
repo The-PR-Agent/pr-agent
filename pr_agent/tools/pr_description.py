@@ -301,10 +301,10 @@ class PRDescription:
                     # leaves it untouched, avoiding reverting a manual edit (#2474).
                     _pd = get_settings().pr_description
                     _conv_on = _pd.get('enable_conventional_title', False)
-                    if _pd.generate_ai_title:
-                        title_to_publish = pr_title.strip()
-                    elif _conv_on:
+                    if _conv_on:
                         title_to_publish = self.ai_title
+                    elif _pd.generate_ai_title:
+                        title_to_publish = pr_title.strip()
                     else:
                         title_to_publish = None
                     if _conv_on and title_to_publish:
