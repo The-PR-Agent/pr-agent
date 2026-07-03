@@ -1,6 +1,7 @@
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from atlassian.bitbucket import Bitbucket
+from requests.exceptions import HTTPError
 
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.git_providers import BitbucketServerProvider
@@ -30,6 +31,51 @@ class TestBitbucketServerProvider:
         assert workspace_slug == "~username"
         assert repo_slug == "my-repo"
         assert pr_number == 1
+
+    def _make_provider_for_repo_settings(self, get_content_side_effect):
+        # Bypass __init__ (which performs live API calls) and only wire up the
+        # attributes get_repo_settings() relies on.
+        provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
+        provider.workspace_slug = "AAA"
+        provider.repo_slug = "my-repo"
+        provider.bitbucket_client = MagicMock(Bitbucket)
+        provider.bitbucket_client.get_content_of_file.side_effect = get_content_side_effect
+        return provider
+
+    def test_get_repo_settings_missing_file_not_logged_as_error(self):
+        # A missing .pr_agent.toml is expected/optional and must not be logged as an
+        # error, matching the other git providers (issue #2481).
+        def raise_not_found(*args, **kwargs):
+            raise Exception("File not found")
+
+        provider = self._make_provider_for_repo_settings(raise_not_found)
+
+        with patch("pr_agent.git_providers.bitbucket_server_provider.get_logger") as mock_get_logger:
+            logger = mock_get_logger.return_value
+            result = provider.get_repo_settings()
+
+        assert result == ""
+        logger.error.assert_not_called()
+        logger.info.assert_called_once()
+
+    def test_get_repo_settings_404_returns_empty_silently(self):
+        response = MagicMock()
+        response.status_code = 404
+        http_error = HTTPError("404 Not Found")
+        http_error.response = response
+
+        def raise_http_404(*args, **kwargs):
+            raise http_error
+
+        provider = self._make_provider_for_repo_settings(raise_http_404)
+
+        with patch("pr_agent.git_providers.bitbucket_server_provider.get_logger") as mock_get_logger:
+            logger = mock_get_logger.return_value
+            result = provider.get_repo_settings()
+
+        assert result == ""
+        logger.error.assert_not_called()
+        logger.info.assert_not_called()
 
     def mock_get_content_of_file(self, project_key, repository_slug, filename, at=None, markup=None):
         content_map = {

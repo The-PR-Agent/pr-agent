@@ -113,7 +113,10 @@ class BitbucketServerProvider(GitProvider):
                 if e.response.status_code == 404:  # not found
                     return ""
 
-            get_logger().error(f"Failed to load .pr_agent.toml file, error: {e}")
+            # A missing .pr_agent.toml is an expected, optional case (like the other
+            # git providers), so don't report it as an error. Log at info level to keep
+            # visibility for genuinely unexpected failures without alarming users.
+            get_logger().info(f"Failed to load .pr_agent.toml file, error: {e}")
             return ""
 
     def get_pr_id(self):
