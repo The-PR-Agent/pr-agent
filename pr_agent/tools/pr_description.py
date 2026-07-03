@@ -62,6 +62,14 @@ _ANGULAR_TITLE_RE = re.compile(
     r"^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)"
     r"(\([a-z0-9\-]+\))?: [a-z].{1,70}[^.]$"
 )
+_ANGULAR_TITLE_INSTRUCTIONS = (
+    "\n\n<!-- fork: conventional-title instructions -->\n"
+    "The `title` field MUST follow `type(scope): summary`.\n"
+    "`type` MUST be one of: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert.\n"
+    "`scope` is optional and MUST be a single kebab-case token; omit parentheses entirely if unknown.\n"
+    "`summary` MUST be lowercase imperative, no trailing period, and no more than 70 characters.\n"
+    "<!-- /fork: conventional-title instructions -->"
+)
 
 
 def load_org_template() -> str:
@@ -186,6 +194,11 @@ class PRDescription:
             "duplicate_prompt_examples": get_settings().config.get("duplicate_prompt_examples", False),
             "enable_pr_diagram": enable_pr_diagram,
         }
+        if get_settings().pr_description.get('enable_conventional_title', False):
+            extra_instructions = get_settings().pr_description.get('extra_instructions', '') or ''
+            extra_instructions += _ANGULAR_TITLE_INSTRUCTIONS
+            get_settings().pr_description.extra_instructions = extra_instructions
+            self.vars["extra_instructions"] = extra_instructions
 
         self.user_description = self.git_provider.get_user_description()
 
@@ -218,6 +231,7 @@ class PRDescription:
 
             if self.prediction:
                 self._prepare_data()
+                self.ai_title = (self.data.get('title') or self.vars.get('title') or '').strip()
             else:
                 get_logger().warning(f"Empty prediction, PR: {self.pr_id}")
                 self.git_provider.remove_initial_comment()
@@ -292,7 +306,16 @@ class PRDescription:
                 else:
                     # Pass None when the title is not AI-generated so the provider
                     # leaves it untouched, avoiding reverting a manual edit (#2474).
-                    title_to_publish = pr_title.strip() if get_settings().pr_description.generate_ai_title else None
+                    _pd = get_settings().pr_description
+                    _conv_on = _pd.get('enable_conventional_title', False)
+                    if _pd.generate_ai_title:
+                        title_to_publish = pr_title.strip()
+                    elif _conv_on:
+                        title_to_publish = self.ai_title
+                    else:
+                        title_to_publish = None
+                    if _conv_on and title_to_publish:
+                        title_to_publish = _normalize_angular_title(title_to_publish)
                     self.git_provider.publish_description(title_to_publish, pr_body)
 
                     # publish final update message
