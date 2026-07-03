@@ -6,6 +6,7 @@ import giteapy
 from giteapy.rest import ApiException
 
 from pr_agent.algo.file_filter import filter_ignored
+from pr_agent.algo.git_patch_processing import decode_if_bytes
 from pr_agent.algo.language_handler import is_valid_file
 from pr_agent.algo.types import EDIT_TYPE
 from pr_agent.algo.utils import (clip_tokens,
@@ -934,22 +935,22 @@ class RepoApi(giteapy.RepositoryApi):
                 auth_settings=['AuthorizationHeaderToken']
             )
 
+            # Decode via the shared fallback chain (utf-8, then iso-8859-1/latin-1/
+            # ascii/utf-16) so legitimate non-UTF-8 *text* (e.g. UTF-16) is preserved
+            # rather than dropped, while binary payloads no longer crash the provider.
+            # decode_if_bytes returns "" only if every encoding fails; binary files are
+            # filtered downstream by extension (should_skip_patch).
             if hasattr(response, 'data'):
                 raw_data = response.data.read()
-                return raw_data.decode('utf-8')
+                return decode_if_bytes(raw_data)
             elif isinstance(response, tuple):
                 raw_data = response[0].read()
-                return raw_data.decode('utf-8')
+                return decode_if_bytes(raw_data)
 
             return ""
 
         except ApiException as e:
             self.logger.error(f"Error getting file: {filepath}, content: {e}")
-            return ""
-        except UnicodeDecodeError as e:
-            self.logger.warning(
-                f"Skipping non-UTF-8 file content for {filepath}: {e}"
-            )
             return ""
         except Exception as e:
             self.logger.error(f"Unexpected error: {e}")

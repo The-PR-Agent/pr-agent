@@ -107,7 +107,11 @@ class TestGiteaProvider:
 
     @patch('pr_agent.git_providers.gitea_provider.get_settings')
     @patch('pr_agent.git_providers.gitea_provider.giteapy.ApiClient')
-    def test_gitea_provider_skips_non_utf8_file_content(self, mock_api_client_cls, mock_get_settings):
+    def test_gitea_provider_preserves_non_utf8_text_file_content(self, mock_api_client_cls, mock_get_settings):
+        # Regression for the Qodo review on #2440: non-UTF-8 *text* (e.g. UTF-16)
+        # must not be dropped to "" (which is indistinguishable from an empty file
+        # and loses real content downstream). It is decoded via the shared
+        # decode_if_bytes fallback chain instead of crashing or returning "".
         settings = MagicMock()
         settings.get.side_effect = lambda k, d=None: {
             'GITEA.URL': 'https://gitea.example.com',
@@ -121,18 +125,50 @@ class TestGiteaProvider:
         mock_api_client = mock_api_client_cls.return_value
         mock_api_client.configuration.api_key = {'Authorization': 'token test-token'}
         mock_resp = MagicMock()
-        mock_resp.data = BytesIO(b'\xff\xfe\x00binary')
+        # UTF-16-LE encoded text — not valid UTF-8, but legitimate text content.
+        mock_resp.data = BytesIO("hello world".encode("utf-16"))
         mock_api_client.call_api.return_value = mock_resp
 
         from pr_agent.git_providers.gitea_provider import RepoApi
 
         repo_api = RepoApi(mock_api_client)
 
-        assert repo_api.get_file_content('owner', 'repo', 'sha1', 'assets/image.webp') == ''
+        content = repo_api.get_file_content('owner', 'repo', 'sha1', 'notes.txt')
+        assert content != '', "non-UTF-8 text must not be dropped to an empty string"
+        assert all(ch in content for ch in "hello world"), "the underlying text should survive the fallback decode"
         args, kwargs = mock_api_client.call_api.call_args
-        assert args[0] == '/repos/owner/repo/raw/assets/image.webp'
+        assert args[0] == '/repos/owner/repo/raw/notes.txt'
         assert kwargs.get('query_params') == [('ref', 'sha1')]
         assert kwargs.get('auth_settings') == ['AuthorizationHeaderToken']
+
+    @patch('pr_agent.git_providers.gitea_provider.get_settings')
+    @patch('pr_agent.git_providers.gitea_provider.giteapy.ApiClient')
+    def test_gitea_provider_does_not_crash_on_binary_file_content(self, mock_api_client_cls, mock_get_settings):
+        # The original #2380 crash path: raw binary bytes must not raise
+        # UnicodeDecodeError. decode_if_bytes yields a best-effort string; binary
+        # files are filtered downstream by extension, so this only needs to not crash.
+        settings = MagicMock()
+        settings.get.side_effect = lambda k, d=None: {
+            'GITEA.URL': 'https://gitea.example.com',
+            'GITEA.PERSONAL_ACCESS_TOKEN': 'test-token',
+            'GITEA.REPO_SETTING': None,
+            'GITEA.SKIP_SSL_VERIFICATION': False,
+            'GITEA.SSL_CA_CERT': None
+        }.get(k, d)
+        mock_get_settings.return_value = settings
+
+        mock_api_client = mock_api_client_cls.return_value
+        mock_api_client.configuration.api_key = {'Authorization': 'token test-token'}
+        mock_resp = MagicMock()
+        mock_resp.data = BytesIO(b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01')  # JPEG header bytes
+        mock_api_client.call_api.return_value = mock_resp
+
+        from pr_agent.git_providers.gitea_provider import RepoApi
+
+        repo_api = RepoApi(mock_api_client)
+
+        # Must not raise; result is a string (content filtered by extension downstream).
+        assert isinstance(repo_api.get_file_content('owner', 'repo', 'sha1', 'assets/image.webp'), str)
 
 
     @patch('pr_agent.git_providers.gitea_provider.get_settings')
