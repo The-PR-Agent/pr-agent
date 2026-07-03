@@ -25,16 +25,16 @@ current_phase_name: Config skeleton and fork-safe seam
 
 **Core Value:** When a GitLab MR opens, `describe` produces a conventionally-formatted title and an org-standard description body (What/Risk AI-filled, checklist for the human) on top of the existing PR-Agent walkthrough — with zero manual formatting by the author.
 
-**Current Focus:** Phase 01 — Config skeleton and fork-safe seam
+**Current Focus:** Phase 2 — Angular-convention title rewriting
 
 ## Current Position
 
 **Phase:** 2
 **Plan:** Not started
 **Status:** Ready to plan
-**Progress:** [███████░░░] 67%
+**Progress:** [██████░░░░] 33% (1/3 phases complete)
 
-**Next action:** Run `/gsd-plan-phase 1` to decompose Phase 1 into executable plans.
+**Next action:** Run `/gsd-plan-phase 2` to decompose Phase 2 into executable plans.
 
 ## Roadmap Snapshot
 
