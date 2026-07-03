@@ -9,7 +9,7 @@
 ## Phases
 
 - [x] **Phase 1: Config skeleton and fork-safe seam** - Add gated toggles (defaults off, env-overridable) and fork-owned template storage; describe output is byte-identical when off (completed 2026-07-03)
-- [ ] **Phase 2: Angular-convention title rewriting** - Prompt-side title generation with Python validator/repair and safe fallback; auto-force publishing when enabled
+- [x] **Phase 2: Angular-convention title rewriting** - Prompt-side title generation with Python validator/repair and safe fallback; auto-force publishing when enabled (completed 2026-07-03)
 - [ ] **Phase 3: Org template prepend with idempotency** - AI-filled What/Risk sections prepended above PR-Agent's default output, sentinel-bounded, checkbox-preserving on re-runs
 
 ## Phase Details
@@ -52,7 +52,7 @@
   4. The validator is a pure helper (`_normalize_angular_title`) unit-tested in isolation with adversarial cases and does not mutate `_prepare_pr_answer` inline logic.
   5. When the toggle is off, title behavior is identical to Phase 1 (upstream default) — verified against the same byte-diff fixture.
 
-**Plans:** 1/2 plans executed
+**Plans:** 2/2 plans complete
 Plans:
 **Wave 1**
 
@@ -60,7 +60,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 02-02-PLAN.md — CFG-04 publish-seam auto-force wiring + `self.ai_title` stash + Angular `extra_instructions` steering + behavior matrix (CFG-04, TITLE-01)
+- [x] 02-02-PLAN.md — CFG-04 publish-seam auto-force wiring + `self.ai_title` stash + Angular `extra_instructions` steering + behavior matrix (CFG-04, TITLE-01)
 
 ### Phase 3: Org template prepend with idempotency
 
@@ -83,7 +83,7 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Config skeleton and fork-safe seam | 3/3 | Complete    | 2026-07-03 |
-| 2. Angular-convention title rewriting | 1/2 | In Progress|  |
+| 2. Angular-convention title rewriting | 2/2 | Complete   | 2026-07-03 |
 | 3. Org template prepend with idempotency | 0/0 | Not started | - |
 
 ## Coverage

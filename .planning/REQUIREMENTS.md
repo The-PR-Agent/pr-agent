@@ -12,13 +12,13 @@ Requirements for this milestone. Each maps to roadmap phases. All new behavior i
 - [x] **CFG-01**: `enable_conventional_title` toggle exists in `[pr_description]` config, defaults to `false`
 - [x] **CFG-02**: `enable_org_template` toggle exists in `[pr_description]` config, defaults to `false`
 - [x] **CFG-03**: The org template body is stored in a fork-owned location (separate file or constant), not inlined into the shared upstream prompt file, to minimize upstream merge conflicts
-- [ ] **CFG-04**: When `enable_conventional_title` is on, AI title publishing is auto-forced so the rewritten title actually reaches GitLab (no need to also set `generate_ai_title`)
+- [x] **CFG-04**: When `enable_conventional_title` is on, AI title publishing is auto-forced so the rewritten title actually reaches GitLab (no need to also set `generate_ai_title`)
 - [x] **CFG-05**: When toggles are off, `describe` output is byte-identical to upstream PR-Agent behavior
 - [x] **CFG-06**: Both toggles can be enabled via environment variable through PR-Agent's existing dynaconf env override (`envvar_prefix=False` + `env_loader`), e.g. `PR_DESCRIPTION__ENABLE_CONVENTIONAL_TITLE=true` / `PR_DESCRIPTION__ENABLE_ORG_TEMPLATE=true`, so they can be set per-CI-invocation without editing a config file. Verified and documented.
 
 ### Title (Angular Commit Convention)
 
-- [ ] **TITLE-01**: `describe` rewrites the MR title to `type(scope): summary`, with type and scope inferred from the diff by the AI
+- [x] **TITLE-01**: `describe` rewrites the MR title to `type(scope): summary`, with type and scope inferred from the diff by the AI
 - [x] **TITLE-02**: Commit type is constrained to the Angular set (`feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`)
 - [x] **TITLE-03**: Subject follows Angular rules — imperative present tense, lowercase first letter, no trailing period
 - [x] **TITLE-04**: Scope is a single kebab-case token inferred from the diff; parens are omitted entirely when scope is unknown (never emit empty `()`)
@@ -77,10 +77,10 @@ Which phases cover which requirements. Populated during roadmap creation.
 | CFG-01 | Phase 1 | Complete |
 | CFG-02 | Phase 1 | Complete |
 | CFG-03 | Phase 1 | Complete |
-| CFG-04 | Phase 2 | Pending |
+| CFG-04 | Phase 2 | Complete |
 | CFG-05 | Phase 1 | Complete |
 | CFG-06 | Phase 1 | Complete |
-| TITLE-01 | Phase 2 | Pending |
+| TITLE-01 | Phase 2 | Complete |
 | TITLE-02 | Phase 2 | Complete |
 | TITLE-03 | Phase 2 | Complete |
 | TITLE-04 | Phase 2 | Complete |

@@ -4,15 +4,15 @@ milestone: v1.0
 milestone_name: milestone
 current_phase: 02
 current_phase_name: angular-convention-title-rewriting
-status: executing
-stopped_at: Completed 02-01-PLAN.md
-last_updated: "2026-07-03T03:30:46.099Z"
+status: verifying
+stopped_at: Completed 02-02-PLAN.md
+last_updated: "2026-07-03T03:44:08.765Z"
 progress:
   total_phases: 3
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 5
-  completed_plans: 4
-  percent: 33
+  completed_plans: 5
+  percent: 67
 ---
 
 # Project State
@@ -32,8 +32,8 @@ progress:
 
 **Phase:** 02 (angular-convention-title-rewriting) — EXECUTING
 **Plan:** 2 of 2
-**Status:** Ready to execute
-**Progress:** [████████░░] 80%
+**Status:** Phase complete — ready for verification
+**Progress:** [██████████] 100%
 
 **Next action:** Run `/gsd-plan-phase 2` to decompose Phase 2 into executable plans.
 
@@ -57,6 +57,7 @@ _Populated as phases complete._
 | Plans complete | 0/0 |
 | v1 requirements shipped | 0/21 |
 | Phase 02 P01 | 8min | 2 tasks | 2 files |
+| Phase 02 P02 | 10min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -85,10 +86,10 @@ _None._
 
 ## Session Continuity
 
-**Stopped at:** Completed 02-01-PLAN.md
+**Stopped at:** Completed 02-02-PLAN.md
 **Resume file:** None
 
-**Last session:** 2026-07-03T03:30:46.087Z
+**Last session:** 2026-07-03T03:44:08.750Z
 **Files updated:**
 
 - `.planning/ROADMAP.md` (revised: Phase 1 requirements/success criteria updated, Phase 3 success criterion #1 reversed, Locked Design Decisions table updated, coverage 21/21)
@@ -104,3 +105,5 @@ _None._
 ## Decisions
 
 - [Phase 02]: Plan 02-01 preserved the required two-character summary repair feat: AB -> feat: aB despite the generated target regex rejecting that edge.
+- [Phase 02]: Plan 02-02 kept _prepare_pr_answer and _prepare_pr_answer_with_markers title-selection blocks untouched; publish seam sources self.ai_title instead. — Plan prohibited editing inline title selection blocks and CFG-04 needs the AI title after those helpers consume self.data['title'].
+- [Phase 02]: Plan 02-02 steered Angular title generation through runtime extra_instructions instead of editing pr_description_prompts.toml. — Project decision keeps prompt TOML byte-stable; extra_instructions is the supported runtime steering seam.
