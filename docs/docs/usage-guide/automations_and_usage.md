@@ -187,6 +187,12 @@ If not set, the default configuration is for all three tools to run automaticall
 `github_action_config.pr_actions` is used to configure which `pull_requests` events will trigger the enabled auto flags
 If not set, the default configuration is `["opened", "reopened", "ready_for_review", "review_requested"]`
 
+Adding `"synchronize"` to `pr_actions` enables automatic tools on new commits pushed to an open PR. You must also add `synchronize` to the workflow `pull_request: types:` list.
+
+`github_action_config.handle_push_trigger` controls whether push events trigger tools when `"synchronize"` is in `pr_actions` (default `false`). Settings fall back to `github_app.*` if not set under `github_action_config`.
+
+`github_action_config.push_commands` defines which tools run on push events (fallback to `github_app.push_commands`).
+
 `github_action_config.enable_output` are used to enable/disable github actions [output parameter](https://docs.github.com/en/actions/creating-actions/metadata-syntax-for-github-actions#outputs-for-docker-container-and-javascript-actions) (default is `true`).
 Review result is output as JSON to `steps.{step-id}.outputs.review` property.
 The JSON structure is equivalent to the yaml data structure defined in [pr_reviewer_prompts.toml](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/pr_reviewer_prompts.toml).
