@@ -5,7 +5,7 @@ atlassian-python-api==3.41.4
 azure-devops==7.1.0b4
 azure-identity==1.25.0
 boto3==1.40.45
-certifi==2024.8.30
+certifi==2026.6.17
 dynaconf==3.2.4
 fastapi==0.118.0
 GitPython==3.1.41
@@ -27,7 +27,8 @@ python-gitlab==8.3.0
 starlette-context==0.3.6
 tiktoken==0.12.0
 ujson==5.8.0
-uvicorn==0.22.0
+uvicorn==0.49.0
+uvicorn-worker==0.4.0  # gunicorn worker class; uvicorn.workers is deprecated upstream
 tenacity==8.2.3
 a2a-sdk[http-server]==1.0.3
 langfuse==3.14.5
