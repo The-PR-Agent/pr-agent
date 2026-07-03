@@ -467,7 +467,13 @@ If you encounter rate limiting:
     pull-requests: write
     contents: write
   ```
-  If you cannot grant `contents: write`, set `config.restricted_mode = true` to gracefully skip operations that need elevated access (e.g., pushing changelog changes). See the [Restricted Mode guide](../usage-guide/additional_configurations.md#restricted-mode) for details.
+  If you cannot grant `contents: write`, set `config.restricted_mode = true` in your configuration. In that case you only need:
+  ```yaml
+  permissions:
+    issues: write
+    pull-requests: write
+  ```
+  See the [Restricted Mode guide](../usage-guide/additional_configurations.md#restricted-mode) for details.
 
 **Error: "Invalid JSON format"**
 

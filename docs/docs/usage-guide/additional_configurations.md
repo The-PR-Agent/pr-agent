@@ -283,11 +283,20 @@ Where `ignore_ticket_labels` is a list of label names that should be ignored dur
 
 ### Restricted Mode
 
-When running PR-Agent with limited GitHub/GitLab permissions (e.g., without `contents: write`), set `restricted_mode` to `true` to gracefully skip operations that require elevated access, like pushing changelog changes to the repository:
+When running PR-Agent with limited GitHub/GitLab permissions, set `restricted_mode` to `true` to gracefully skip operations that require elevated access (e.g., pushing changelog changes):
 
 ```toml
 [config]
 restricted_mode = true
 ```
 
-When enabled, any tool that needs code-push access (currently only `/update_changelog` with `push_changelog_changes=true`) will skip the operation and post a clear comment instead of failing with a 403 error. All other tools (`/review`, `/describe`, `/improve`, etc.) continue to work normally.
+With restricted mode, the minimum workflow permissions are:
+
+```yaml
+permissions:
+  issues: write
+  pull-requests: write
+  contents: read   # or just omit contents (defaults to read)
+```
+
+`contents: write` is not needed — any tool needing it (`/update_changelog` with `push_changelog_changes=true`) will skip the operation and post a clear comment instead of failing with a 403. All other tools (`/review`, `/describe`, `/improve`, etc.) continue to work normally.
