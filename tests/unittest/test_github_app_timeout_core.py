@@ -137,6 +137,36 @@ class TestDefaultDictWithTimeout:
         assert "a" not in d
         assert "a" not in _key_times(d)
 
+    def test_pop_removes_key_time(self, fake_clock):
+        d = DefaultDictWithTimeout(lambda: 0, ttl=10, refresh_interval=1000)
+        d["a"] = 1
+        assert d.pop("a") == 1
+        assert "a" not in d
+        assert "a" not in _key_times(d)
+
+    def test_pop_missing_key_with_default_does_not_raise(self, fake_clock):
+        d = DefaultDictWithTimeout(lambda: 0, ttl=10, refresh_interval=1000)
+        assert d.pop("missing", "fallback") == "fallback"
+        assert "missing" not in _key_times(d)
+
+    def test_pop_then_refresh_does_not_raise(self, fake_clock):
+        # Regression: pop() must drop the key-time too. Otherwise a later
+        # __refresh() builds `to_delete` from a stale key-time and runs
+        # `del self[key]` for a key already gone, raising KeyError.
+        d = DefaultDictWithTimeout(
+            lambda: 0, ttl=2, refresh_interval=5, update_key_time_on_get=False
+        )
+        d["a"] = 1
+        d.pop("a")
+
+        # Advance past both the TTL and the refresh interval so __refresh runs
+        # its deletion pass on the next access.
+        fake_clock["t"] += 10
+
+        # Must not raise while refreshing.
+        _ = d["fresh"]
+        assert "fresh" in d
+
     def test_refresh_runs_after_long_idle_period(self, fake_clock):
         d = DefaultDictWithTimeout(
             lambda: 0, ttl=2, refresh_interval=5, update_key_time_on_get=False

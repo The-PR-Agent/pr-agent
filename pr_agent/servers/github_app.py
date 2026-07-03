@@ -200,19 +200,28 @@ async def handle_push_trigger_for_new_commits(body: Dict[str, Any],
             await _perform_auto_commands_github("push_commands", agent, body, api_url, log_context)
 
     finally:
-        # release the waiting task block, then clean up if no tasks remain
-        should_cleanup = False
-        try:
-            async with _pending_task_duplicate_push_conditions[api_url]:
-                _pending_task_duplicate_push_conditions[api_url].notify(1)
+        # Release the next waiting task, then remove the shared per-PR state once
+        # no task remains. The decrement, the "is anyone left?" decision, and the
+        # removal all run under the same condition lock so a newly admitted task
+        # cannot interleave between the decision and the removal.
+        condition = _pending_task_duplicate_push_conditions[api_url]
+        async with condition:
+            condition.notify(1)
+            try:
                 _duplicate_push_triggers[api_url] -= 1
-                should_cleanup = _duplicate_push_triggers[api_url] <= 0
-        except KeyError:
-            # TTL eviction already cleaned up this entry
-            pass
-        if should_cleanup:
-            _duplicate_push_triggers.pop(api_url, None)
-            _pending_task_duplicate_push_conditions.pop(api_url, None)
+                no_tasks_left = _duplicate_push_triggers[api_url] <= 0
+            except KeyError:
+                # The counter was already evicted (e.g. by the TTL sweep while
+                # this task was processing). Leave any stray condition entry for
+                # the TTL sweep rather than removing state a concurrent task may
+                # still rely on.
+                get_logger().debug(f"Push trigger counter already removed for {api_url=}")
+                no_tasks_left = False
+            if no_tasks_left:
+                # pop() (not del) tolerates an already-missing key and keeps
+                # DefaultDictWithTimeout's internal key-time map in sync.
+                _duplicate_push_triggers.pop(api_url, None)
+                _pending_task_duplicate_push_conditions.pop(api_url, None)
 
     return {}
 

@@ -84,3 +84,10 @@ class DefaultDictWithTimeout(defaultdict):
     def __delitem__(self, __key):
         del self.__key_times[__key]
         return super().__delitem__(__key)
+
+    def pop(self, __key, *args):
+        # Keep the internal key-time map in sync. Unlike __delitem__, pop must
+        # tolerate a missing key (callers rely on the ``default`` argument), so
+        # the timestamp is discarded with pop(..., None) rather than del.
+        self.__key_times.pop(__key, None)
+        return super().pop(__key, *args)
