@@ -8,7 +8,7 @@
 
 ## Phases
 
-- [ ] **Phase 1: Config skeleton and fork-safe seam** - Add gated toggles (defaults off, env-overridable) and fork-owned template storage; describe output is byte-identical when off
+- [x] **Phase 1: Config skeleton and fork-safe seam** - Add gated toggles (defaults off, env-overridable) and fork-owned template storage; describe output is byte-identical when off (completed 2026-07-03)
 - [ ] **Phase 2: Angular-convention title rewriting** - Prompt-side title generation with Python validator/repair and safe fallback; auto-force publishing when enabled
 - [ ] **Phase 3: Org template prepend with idempotency** - AI-filled What/Risk sections prepended above PR-Agent's default output, sentinel-bounded, checkbox-preserving on re-runs
 
@@ -28,7 +28,7 @@
   4. Fork-added code paths in `pr_description.py` are all guarded by `if get_settings().pr_description.get(<flag>, False):` so upstream rebases only conflict on toggle-reading lines, not on `_prepare_pr_answer` internals.
   5. Setting `PR_DESCRIPTION__ENABLE_CONVENTIONAL_TITLE=true` (or `PR_DESCRIPTION__ENABLE_ORG_TEMPLATE=true`) in the environment enables that toggle for the invocation without editing `configuration.toml` — verified via the existing `config_loader.py:12-18` dynaconf `env_loader` (`envvar_prefix=False`, `merge_enabled=True`) and documented in the fork README / config notes.
 
-**Plans:** 2/3 plans executed
+**Plans:** 3/3 plans complete
 **Wave 1**
 
 - [x] 01-01-PLAN.md — Config toggles (default off) + fork-owned org_template.md + inert Python loader helper (CFG-01, CFG-02, CFG-03)
@@ -36,7 +36,7 @@
 **Wave 2** *(blocked on Wave 1 completion)*
 
 - [x] 01-02-PLAN.md — Env-override verification test (fresh Dynaconf) + fork docs page (CFG-06)
-- [ ] 01-03-PLAN.md — Golden-output characterization + fork-seam guard-audit + describe suite regression (CFG-05)
+- [x] 01-03-PLAN.md — Golden-output characterization + fork-seam guard-audit + describe suite regression (CFG-05)
 
 ### Phase 2: Angular-convention title rewriting
 
@@ -74,7 +74,7 @@
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Config skeleton and fork-safe seam | 2/3 | In Progress|  |
+| 1. Config skeleton and fork-safe seam | 3/3 | Complete    | 2026-07-03 |
 | 2. Angular-convention title rewriting | 0/0 | Not started | - |
 | 3. Org template prepend with idempotency | 0/0 | Not started | - |
 
