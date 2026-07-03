@@ -27,15 +27,15 @@ Requirements for this milestone. Each maps to roadmap phases. All new behavior i
 
 ### Template (Org Description Prepend)
 
-- [ ] **TMPL-01**: `describe` prepends the org template (What does this MR do?/Why, Note/Risk, Checklist) at the start of the MR description
-- [ ] **TMPL-02**: The AI fills the "What does this MR do? Why?" and "Note / Risk" sections
-- [ ] **TMPL-03**: The checklist renders as empty checkboxes; the AI never ticks them
-- [ ] **TMPL-04**: PR-Agent's existing generated walkthrough/file-summary is retained below the org template
-- [ ] **TMPL-05**: PR-Agent's own default description output (including its `## PR Description` section) is retained unchanged — the org template is purely additive (prepended above), nothing is removed
-- [ ] **TMPL-06**: Re-running `describe` is idempotent — the org template is not duplicated (HTML-comment sentinel markers wrap the block and are detected/replaced)
-- [ ] **TMPL-07**: Human-ticked checkbox state is preserved verbatim across re-runs
-- [ ] **TMPL-08**: When `use_description_markers` mode is active, the org-template feature is skipped with a WARN log rather than corrupting the marker flow
-- [ ] **TMPL-09**: New AI-filled values are emitted as YAML block scalars and `keys_fix` is extended so `load_yaml` does not break on colons/markdown in the content
+- [x] **TMPL-01**: `describe` prepends the org template (What does this MR do?/Why, Note/Risk, Checklist) at the start of the MR description
+- [x] **TMPL-02**: The AI fills the "What does this MR do? Why?" and "Note / Risk" sections
+- [x] **TMPL-03**: The checklist renders as empty checkboxes; the AI never ticks them
+- [x] **TMPL-04**: PR-Agent's existing generated walkthrough/file-summary is retained below the org template
+- [x] **TMPL-05**: PR-Agent's own default description output (including its `## PR Description` section) is retained unchanged — the org template is purely additive (prepended above), nothing is removed
+- [x] **TMPL-06**: Re-running `describe` is idempotent — the org template is not duplicated (HTML-comment sentinel markers wrap the block and are detected/replaced)
+- [x] **TMPL-07**: Human-ticked checkbox state is preserved verbatim across re-runs
+- [x] **TMPL-08**: When `use_description_markers` mode is active, the org-template feature is skipped with a WARN log rather than corrupting the marker flow
+- [x] **TMPL-09**: New AI-filled values are emitted as YAML block scalars and `keys_fix` is extended so `load_yaml` does not break on colons/markdown in the content
 
 ## v2 Requirements
 
@@ -86,15 +86,15 @@ Which phases cover which requirements. Populated during roadmap creation.
 | TITLE-04 | Phase 2 | Complete |
 | TITLE-05 | Phase 2 | Complete |
 | TITLE-06 | Phase 2 | Complete |
-| TMPL-01 | Phase 3 | Pending |
-| TMPL-02 | Phase 3 | Pending |
-| TMPL-03 | Phase 3 | Pending |
-| TMPL-04 | Phase 3 | Pending |
-| TMPL-05 | Phase 3 | Pending |
-| TMPL-06 | Phase 3 | Pending |
-| TMPL-07 | Phase 3 | Pending |
-| TMPL-08 | Phase 3 | Pending |
-| TMPL-09 | Phase 3 | Pending |
+| TMPL-01 | Phase 3 | Complete |
+| TMPL-02 | Phase 3 | Complete |
+| TMPL-03 | Phase 3 | Complete |
+| TMPL-04 | Phase 3 | Complete |
+| TMPL-05 | Phase 3 | Complete |
+| TMPL-06 | Phase 3 | Complete |
+| TMPL-07 | Phase 3 | Complete |
+| TMPL-08 | Phase 3 | Complete |
+| TMPL-09 | Phase 3 | Complete |
 
 **Coverage:**
 
@@ -110,4 +110,4 @@ Which phases cover which requirements. Populated during roadmap creation.
 
 ---
 *Requirements defined: 2026-07-02*
-*Last updated: 2026-07-02 after roadmap creation (traceability populated)*
+*Last updated: 2026-07-03 after Phase 3 completion*
