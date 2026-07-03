@@ -15,6 +15,7 @@ from pr_agent.config_loader import get_settings
 from pr_agent.custom_merge_loader import validate_file_security
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.log import get_logger
+from pr_agent.settings_validator import validate_settings_overrides
 
 # Sections that touch host-level capabilities and so cannot be fully configured
 # from a repo's .pr_agent.toml. For each section listed here, only the keys in
@@ -211,6 +212,7 @@ def _apply_settings_from_file(path: str, label: str):
             )
             new_settings = Dynaconf(settings_files=[path])
 
+        validate_settings_overrides(new_settings.as_dict(), get_settings(), source=f"{label} config")
         merged_sections = []
         for section, contents in new_settings.as_dict().items():
             if not contents:
@@ -317,6 +319,7 @@ def apply_repo_settings(pr_url):
                             artifact={"error": e, "traceback": traceback.format_exc()})
                         new_settings = Dynaconf(settings_files=[repo_settings_file])
 
+                    validate_settings_overrides(new_settings.as_dict(), get_settings(), source=".pr_agent.toml")
                     for section, contents in new_settings.as_dict().items():
                         if not contents:
                             # Skip excluded items, such as forbidden to load env.

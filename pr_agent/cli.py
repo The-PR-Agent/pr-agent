@@ -65,9 +65,31 @@ def set_parser():
             "Repo-local .pr_agent.toml overrides values set here."
         ),
     )
-    parser.add_argument('command', type=str, help='The', choices=commands, default='review')
+    parser.add_argument(
+        '--validate_config', action='store_true',
+        help='Check the loaded configuration for coherence (known git provider, resolvable models, '
+             'credentials present) and exit without contacting a PR.',
+    )
+    # nargs='?' so --validate_config can run without a command; run() still requires
+    # a command (printing help otherwise), preserving the old CLI behavior.
+    parser.add_argument('command', type=str, help='The', choices=commands, default=None, nargs='?')
     parser.add_argument('rest', nargs=argparse.REMAINDER, default=[])
     return parser
+
+
+def validate_config() -> bool:
+    """Run the configuration doctor and print the results. Returns True when no errors."""
+    from pr_agent.settings_validator import validate_current_config
+
+    result = validate_current_config(get_settings())
+    for error in result["errors"]:
+        print(f"ERROR: {error}")
+    for warning in result["warnings"]:
+        print(f"warning: {warning}")
+    if not result["errors"]:
+        print("Configuration OK"
+              + (f" ({len(result['warnings'])} warning(s))" if result["warnings"] else ""))
+    return not result["errors"]
 
 
 def run_command(pr_url, command):
@@ -83,7 +105,12 @@ def run(inargs=None, args=None):
     parser = set_parser()
     if not args:
         args = parser.parse_args(inargs)
-    if not args.pr_url and not args.issue_url:
+    if getattr(args, "validate_config", False):
+        ok = validate_config()
+        if not ok:
+            exit(1)
+        return
+    if not args.command or (not args.pr_url and not args.issue_url):
         parser.print_help()
         return
 
