@@ -417,7 +417,7 @@ def _push_body():
 
 
 class TestPushTriggerDedupe:
-    def test_first_event_runs_perform_and_decrements_counter(self, push_trigger_env):
+    def test_first_event_runs_perform_and_cleans_up_entries(self, push_trigger_env):
         body = _push_body()
         api_url = body["pull_request"]["url"]
 
@@ -428,8 +428,10 @@ class TestPushTriggerDedupe:
         )
 
         assert push_trigger_env["count"] == 1
-        # Counter incremented then decremented back to 0.
-        assert github_app._duplicate_push_triggers[api_url] == 0
+        # Counter incremented to 1, decremented back to 0, then both dedupe
+        # entries are removed so the caches don't grow without bound.
+        assert api_url not in github_app._duplicate_push_triggers
+        assert api_url not in github_app._pending_task_duplicate_push_conditions
 
     def test_skips_when_before_equals_after(self, push_trigger_env):
         body = _push_body()
@@ -495,3 +497,59 @@ class TestPushTriggerDedupe:
         )
 
         assert push_trigger_env["count"] == 0
+
+    def test_does_not_clean_up_while_another_task_active(
+        self, push_trigger_env, monkeypatch
+    ):
+        # A second push arriving mid-processing bumps the counter to 2. When the
+        # first task finishes, the counter decrements to 1 (still active), so the
+        # cleanup must be skipped and the dedupe entries preserved for the waiter.
+        body = _push_body()
+        api_url = body["pull_request"]["url"]
+
+        async def perform_then_simulate_concurrent(*args, **kwargs):
+            push_trigger_env["count"] += 1
+            github_app._duplicate_push_triggers[api_url] += 1
+
+        monkeypatch.setattr(
+            github_app, "_perform_auto_commands_github", perform_then_simulate_concurrent
+        )
+
+        asyncio.run(
+            github_app.handle_push_trigger_for_new_commits(
+                body, "push", "alice", "1", "synchronize", {}, agent=None
+            )
+        )
+
+        assert push_trigger_env["count"] == 1
+        # Counter left at 1 (the still-active concurrent task); nothing evicted.
+        assert github_app._duplicate_push_triggers[api_url] == 1
+        assert api_url in github_app._pending_task_duplicate_push_conditions
+
+    def test_cleanup_tolerates_ttl_evicted_counter(
+        self, push_trigger_env, monkeypatch
+    ):
+        # If TTL eviction removes the counter entry while the task is processing,
+        # the finally block's `-= 1` hits a missing key. The guarded KeyError must
+        # be swallowed so webhook handling does not blow up.
+        body = _push_body()
+        api_url = body["pull_request"]["url"]
+
+        async def perform_then_evict(*args, **kwargs):
+            push_trigger_env["count"] += 1
+            # Simulate TTL eviction of the counter entry mid-processing.
+            github_app._duplicate_push_triggers.pop(api_url, None)
+
+        monkeypatch.setattr(
+            github_app, "_perform_auto_commands_github", perform_then_evict
+        )
+
+        # Must complete without raising despite the missing-key decrement.
+        asyncio.run(
+            github_app.handle_push_trigger_for_new_commits(
+                body, "push", "alice", "1", "synchronize", {}, agent=None
+            )
+        )
+
+        assert push_trigger_env["count"] == 1
+        assert api_url not in github_app._duplicate_push_triggers
