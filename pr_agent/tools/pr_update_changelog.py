@@ -24,36 +24,25 @@ class PRUpdateChangelog:
 
         self.git_provider = get_git_provider()(pr_url)
 
-        # Skip expensive provider reads when push is disabled or restricted
+        # Determine whether pushing the changelog to the repo is both requested and possible.
+        # If a push is requested but not possible — the provider has no push support, or
+        # restricted_mode disables the "push_code" capability — degrade gracefully: still
+        # generate the changelog and publish it as a comment (which only needs
+        # pull-requests: write) instead of skipping the tool and dropping the output entirely.
         self.push_changelog_changes = get_settings().pr_update_changelog.push_changelog_changes
+        self.push_skipped_reason = None
         if self.push_changelog_changes:
             if not hasattr(self.git_provider, "create_or_update_pr_file"):
-                self._skip_push = "not supported"
+                self.push_skipped_reason = "not supported for this git provider"
             elif not self.git_provider.is_supported("push_code"):
-                self._skip_push = "restricted"
-            else:
-                self._skip_push = None
-        else:
-            self._skip_push = None
-
-        if self._skip_push:
-            self.main_language = None
-            self.changelog_file_str = ""
-            self.commit_changelog = self.push_changelog_changes
-            self.patches_diff = None
-            self.prediction = None
-            self.cli_mode = cli_mode
-            self.vars = {}
-            self.token_handler = None
-            self.ai_handler = ai_handler()
-            return
+                self.push_skipped_reason = "restricted by configuration (restricted_mode)"
+        # Push only when it was requested AND is possible; otherwise fall back to a comment.
+        self.commit_changelog = self.push_changelog_changes and self.push_skipped_reason is None
 
         self.main_language = get_main_pr_language(
             self.git_provider.get_languages(), self.git_provider.get_files()
         )
         self._get_changelog_file()  # self.changelog_file_str
-
-        self.commit_changelog = self.push_changelog_changes
 
         self.ai_handler = ai_handler()
         self.ai_handler.main_pr_language = self.main_language
@@ -81,15 +70,14 @@ class PRUpdateChangelog:
     async def run(self):
         get_logger().info('Updating the changelog...')
 
-        # check if the git provider supports pushing changelog changes
-        if self._skip_push:
-            reason = "not supported" if self._skip_push == "not supported" else "restricted by configuration"
-            get_logger().error(f"Pushing changelog changes is {reason}")
-            if get_settings().config.publish_output:
-                self.git_provider.publish_comment(
-                    f"Pushing changelog changes is {reason}"
-                )
-            return
+        # If a push was requested but isn't possible (unsupported provider or restricted_mode),
+        # the changelog is still generated and published as a comment below (commit_changelog is
+        # already False in that case), so the output is not dropped.
+        if self.push_skipped_reason:
+            get_logger().info(
+                f"Pushing changelog changes is {self.push_skipped_reason}; "
+                f"publishing the changelog as a comment instead"
+            )
 
         if get_settings().config.publish_output:
             self.git_provider.publish_comment("Preparing changelog updates...", is_temporary=True)
@@ -109,7 +97,13 @@ class PRUpdateChangelog:
             if self.commit_changelog:
                 self._push_changelog_update(new_file_content, answer)
             else:
-                self.git_provider.publish_comment(f"**Changelog updates:** 🔄\n\n{answer}")
+                changelog_comment = f"**Changelog updates:** 🔄\n\n{answer}"
+                if self.push_skipped_reason:
+                    changelog_comment += (
+                        f"\n\n> ℹ️ These changes were not pushed to the repository "
+                        f"({self.push_skipped_reason})."
+                    )
+                self.git_provider.publish_comment(changelog_comment)
 
     async def _prepare_prediction(self, model: str):
         self.patches_diff = get_pr_diff(self.git_provider, self.token_handler, model)
