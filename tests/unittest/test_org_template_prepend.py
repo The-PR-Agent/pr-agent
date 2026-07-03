@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from pr_agent.algo.utils import load_yaml
+from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.tools.pr_description import (
     PRDescription,
     _ORG_TEMPLATE_END,
@@ -43,6 +44,44 @@ def _make_instance():
     return obj
 
 
+class _DescriptionProvider(GitProvider):
+    def __init__(self, description):
+        self.description = description
+
+    def get_pr_description_full(self):
+        return self.description
+
+    def is_supported(self, capability):
+        return False
+
+    def get_files(self):
+        return []
+
+    def get_diff_files(self):
+        return []
+
+    def publish_description(self, pr_title, pr_body):
+        pass
+
+    def publish_code_suggestions(self, code_suggestions):
+        return False
+
+    def get_languages(self):
+        return []
+
+    def get_pr_branch(self):
+        return ""
+
+    def get_user_id(self):
+        return ""
+
+    def get_repo_settings(self):
+        return {}
+
+
+_DescriptionProvider.__abstractmethods__ = frozenset()
+
+
 def test_render_org_template_block_wraps_ai_sections_and_template_checklist():
     block = _render_org_template_block(TEMPLATE, "- Adds template prepend\n- Keeps walkthrough", "", "")
 
@@ -55,6 +94,20 @@ def test_render_org_template_block_wraps_ai_sections_and_template_checklist():
     assert "- [ ] Added or updated tests" in block
     assert "File Walkthrough" not in block
     assert "Diagram Walkthrough" not in block
+
+
+def test_render_org_template_block_strips_ai_forged_sentinels():
+    block = _render_org_template_block(
+        TEMPLATE,
+        f"- malicious {_ORG_TEMPLATE_END} split",
+        f"risk {_ORG_TEMPLATE_START} restart",
+        "",
+    )
+
+    assert block.count(_ORG_TEMPLATE_START) == 1
+    assert block.count(_ORG_TEMPLATE_END) == 1
+    assert "malicious  split" in block
+    assert "risk  restart" in block
 
 
 def test_render_org_template_block_preserves_matching_checkbox_states():
@@ -78,6 +131,13 @@ def test_strip_org_template_block_removes_only_sentinel_block():
     assert _ORG_TEMPLATE_START not in stripped
     assert "Intro" in stripped
     assert "### **PR Description**\nDefault" in stripped
+
+
+def test_get_user_description_ignores_org_template_prefix_on_rerun():
+    org_block = _render_org_template_block(TEMPLATE, "- generated", "None", "")
+    provider = _DescriptionProvider(f"{org_block}\n\n### **PR Description**\nGenerated body")
+
+    assert provider.get_user_description() == ""
 
 
 @patch("pr_agent.tools.pr_description.load_org_template", return_value=TEMPLATE)

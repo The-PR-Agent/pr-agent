@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 # enum EDIT_TYPE (ADDED, DELETED, MODIFIED, RENAMED)
 import os
+import re
 import shutil
 import subprocess
 from typing import Optional, Tuple
@@ -11,6 +12,12 @@ from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
 MAX_FILES_ALLOWED_FULL = 50
+_ORG_TEMPLATE_START = "<!-- pr_agent:org_template:start -->"
+_ORG_TEMPLATE_END = "<!-- pr_agent:org_template:end -->"
+_ORG_TEMPLATE_RE = re.compile(
+    rf"{re.escape(_ORG_TEMPLATE_START)}.*?{re.escape(_ORG_TEMPLATE_END)}",
+    re.DOTALL,
+)
 
 def get_git_ssl_env() -> dict[str, str]:
     """
@@ -224,6 +231,7 @@ class GitProvider(ABC):
             return self.user_description
 
         description = (self.get_pr_description_full() or "").strip()
+        description = _ORG_TEMPLATE_RE.sub("", description).strip()
         description_lowercase = description.lower()
         get_logger().debug(f"Existing description", description=description_lowercase)
 
@@ -271,6 +279,8 @@ class GitProvider(ABC):
 
     def _is_generated_by_pr_agent(self, description_lowercase: str) -> bool:
         possible_headers = self._possible_headers()
+        if description_lowercase.startswith(_ORG_TEMPLATE_START):
+            return True
         return any(description_lowercase.startswith(header) for header in possible_headers)
 
     @abstractmethod

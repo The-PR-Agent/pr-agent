@@ -131,6 +131,10 @@ def _format_org_template_value(value) -> str:
     return value or "None"
 
 
+def _sanitize_org_template_value(value) -> str:
+    return _format_org_template_value(value).replace(_ORG_TEMPLATE_START, "").replace(_ORG_TEMPLATE_END, "")
+
+
 def _template_checklist(template: str) -> str:
     marker = "## Checklist"
     index = template.find(marker)
@@ -181,9 +185,9 @@ def _render_org_template_block(template: str, what_why, note_risk, existing_desc
     block = (
         f"{_ORG_TEMPLATE_START}\n\n"
         "## What does this MR do? Why?\n\n"
-        f"{_format_org_template_value(what_why)}\n\n"
+        f"{_sanitize_org_template_value(what_why)}\n\n"
         "## Note / Risk\n\n"
-        f"{_format_org_template_value(note_risk)}\n\n"
+        f"{_sanitize_org_template_value(note_risk)}\n\n"
         f"{_template_checklist(template)}\n\n"
         f"{_ORG_TEMPLATE_END}"
     )
