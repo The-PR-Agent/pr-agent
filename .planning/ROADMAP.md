@@ -10,7 +10,7 @@
 
 - [x] **Phase 1: Config skeleton and fork-safe seam** - Add gated toggles (defaults off, env-overridable) and fork-owned template storage; describe output is byte-identical when off (completed 2026-07-03)
 - [x] **Phase 2: Angular-convention title rewriting** - Prompt-side title generation with Python validator/repair and safe fallback; auto-force publishing when enabled (completed 2026-07-03)
-- [ ] **Phase 3: Org template prepend with idempotency** - AI-filled What/Risk sections prepended above PR-Agent's default output, sentinel-bounded, checkbox-preserving on re-runs
+- [x] **Phase 3: Org template prepend with idempotency** - AI-filled What/Risk sections prepended above PR-Agent's default output, sentinel-bounded, checkbox-preserving on re-runs (completed 2026-07-03)
 
 ## Phase Details
 
@@ -76,7 +76,11 @@ Plans:
   4. When `use_description_markers` mode is active on an MR, the org-template feature emits a WARN log and skips the prepend — the marker flow's placeholder replacement is uncorrupted and produces the same output as if `enable_org_template` were off.
   5. The `File Walkthrough` collapsible `<details>` block still renders correctly and `process_description` in `utils.py` continues to split the file list from the description body — the org template does not contain the literal strings `File Walkthrough` or `Diagram Walkthrough`.
 
-**Plans:** TBD
+**Plans:** 1/1 plans complete
+Plans:
+**Wave 1**
+
+- [x] 03-01-PLAN.md — Org template prompt keys + sentinel prepend + rerun idempotency + checkbox preservation + marker-mode skip (TMPL-01..09)
 
 ## Progress
 
@@ -84,7 +88,7 @@ Plans:
 |-------|----------------|--------|-----------|
 | 1. Config skeleton and fork-safe seam | 3/3 | Complete    | 2026-07-03 |
 | 2. Angular-convention title rewriting | 2/2 | Complete    | 2026-07-03 |
-| 3. Org template prepend with idempotency | 0/0 | Not started | - |
+| 3. Org template prepend with idempotency | 1/1 | Complete    | 2026-07-03 |
 
 ## Coverage
 
