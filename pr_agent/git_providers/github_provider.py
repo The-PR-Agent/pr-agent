@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 
 from github.Issue import Issue
 from github import AppAuthentication, Auth, Github, GithubException
-from retry.api import retry_call
+from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential, wait_random
 from starlette_context import context
 
 from ..algo.file_filter import filter_ignored
@@ -243,8 +243,11 @@ class GithubProvider(GitProvider):
         """
         # the retry settings are read at call time rather than in a decorator, so that importing this module
         # does not require a [github] settings section (issue #2427)
-        return retry_call(self._get_diff_files, exceptions=RateLimitExceeded,
-                          tries=get_settings().get("GITHUB.RATELIMIT_RETRIES", 5), delay=2, backoff=2, jitter=(1, 3))
+        retryer = Retrying(retry=retry_if_exception_type(RateLimitExceeded),
+                           stop=stop_after_attempt(get_settings().get("GITHUB.RATELIMIT_RETRIES", 5)),
+                           wait=wait_exponential(multiplier=2, exp_base=2) + wait_random(1, 3),
+                           reraise=True)
+        return retryer(self._get_diff_files)
 
     def _get_diff_files(self) -> list[FilePatchInfo]:
         try:
