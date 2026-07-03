@@ -92,34 +92,38 @@ def test_get_user_answers_collects_question_and_answer_from_issue_comments():
     assert answer == "/answer Because it fixes production."
 
 
-def test_get_user_answers_return_order_matches_init_destructuring():
-    """Regression: PRReviewer.__init__ destructures as `question_str, answer_str = self._get_user_answers()`.
+def test_init_maps_user_question_and_answer_to_correct_prompt_vars(monkeypatch):
+    """Behavioral regression for the swapped-unpacking bug (#2496).
 
-    If _get_user_answers ever changes its return order, or __init__ ever swaps
-    the destructuring again, this test will fail loudly. This guards against a
-    silent bug where the LLM prompt would receive the question as the answer
-    (and vice versa) whenever the `answer` command is invoked.
+    The bug lived in ``PRReviewer.__init__``: ``_get_user_answers()`` returns
+    ``(question, answer)`` but the tuple was unpacked as ``answer, question``,
+    so the review prompt rendered the user's answer under ``{{ question_str }}``
+    and the question under ``{{ answer_str }}``. This drives the real ``__init__``
+    (external collaborators stubbed) and asserts each value lands in ``self.vars``
+    under the correct key — so it fails if the unpack is ever swapped again,
+    regardless of how the line is formatted.
     """
-    import inspect
-
     from pr_agent.tools import pr_reviewer as pr_reviewer_module
 
-    source = inspect.getsource(pr_reviewer_module.PRReviewer.__init__)
-    assert "question_str, answer_str = self._get_user_answers()" in source, (
-        "PRReviewer.__init__ must destructure _get_user_answers() as "
-        "(question_str, answer_str). See _get_user_answers docstring: "
-        "'Returns: A tuple containing the question and answer strings.'"
-    )
-
-    git_provider = MagicMock()
-    git_provider.get_issue_comments.return_value = SimpleNamespace(reversed=[
+    provider = MagicMock()
+    provider.is_supported.return_value = True
+    provider.get_languages.return_value = {}
+    provider.get_files.return_value = []
+    provider.get_issue_comments.return_value = SimpleNamespace(reversed=[
         SimpleNamespace(body="Questions to better understand the PR:\n- Why?"),
         SimpleNamespace(body="/answer Because it fixes production."),
     ])
-    reviewer = _make_reviewer(git_provider)
-    reviewer.is_answer = True
+    provider.get_pr_description.return_value = ("desc", [])
 
-    first, second = reviewer._get_user_answers()
+    monkeypatch.setattr(pr_reviewer_module, "get_git_provider_with_context", lambda pr_url: provider)
+    monkeypatch.setattr(pr_reviewer_module, "get_main_pr_language", lambda languages, files: "Python")
+    monkeypatch.setattr(pr_reviewer_module, "TokenHandler", MagicMock())
 
-    assert "Questions to better understand the PR:" in first
-    assert "/answer" in second
+    reviewer = PRReviewer(
+        "https://example/pr/1",
+        is_answer=True,
+        ai_handler=lambda: SimpleNamespace(main_pr_language=None),
+    )
+
+    assert reviewer.vars["question_str"] == "Questions to better understand the PR:\n- Why?"
+    assert reviewer.vars["answer_str"] == "/answer Because it fixes production."
