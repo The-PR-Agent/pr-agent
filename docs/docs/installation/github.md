@@ -75,11 +75,6 @@ jobs:
       pull-requests: write
       contents: write
     steps:
-      - name: Checkout PR code
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          allow-unsafe-pr-checkout: true
       - name: PR Agent action step
         uses: the-pr-agent/pr-agent@main
         env:
@@ -88,11 +83,11 @@ jobs:
           github_action_config.pr_actions: '["opened", "reopened", "synchronize", "ready_for_review", "review_requested"]'
 ```
 
+!!! tip "No local checkout needed"
+    PR-Agent uses the GitHub API to fetch PR data directly from the event payload — it does not require a local checkout of the PR code. This means you can safely omit the `actions/checkout` step entirely, avoiding common pitfalls with `pull_request_target` like the `issue_comment` event lacking a `pull_request.head.sha` ref.
+
 !!! warning "Security considerations"
-    Using `pull_request_target` requires extra care. The `actions/checkout` step with `allow-unsafe-pr-checkout: true` checks out the PR's code, which could contain modified workflows. To mitigate risks, consider:
-    - Using `pull_request_target` only when you need fork support
-    - Reviewing the [GitHub security guide on pull_request_target](https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target)
-    - Avoiding running additional build steps from the checked-out PR code
+    Using `pull_request_target` gives the workflow access to repository secrets. Unlike the `pull_request` event, the PR code is not automatically checked out, which is a security feature. Avoid adding an `actions/checkout` step unless you have a specific need for the local files — if you do add one, review the [GitHub security guide on pull_request_target](https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target).
 
 ### Configuration Examples
 
