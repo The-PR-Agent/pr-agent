@@ -1,6 +1,12 @@
 import pytest
 
-from pr_agent.tools.ticket_pr_compliance_check import extract_ticket_links_from_branch_name
+from pr_agent.tools.ticket_pr_compliance_check import (
+    extract_ticket_links_from_branch_name,
+    extract_ticket_links_from_pr_description,
+)
+
+# The PR-description extractor caps results at 3 (hardcoded in the function).
+MAX_TICKETS = 3
 
 
 class TestExtractTicketsLinkFromBranchName:
@@ -110,3 +116,36 @@ class TestExtractTicketsLinkFromBranchName:
             "https://github.com/org/repo/issues/1",
             "https://github.com/org/repo/issues/2",
         }
+
+
+class TestExtractTicketLinksFromPrDescription:
+    """GitHub issue extraction from the PR description."""
+
+    def test_preserves_first_seen_order(self):
+        """Issues are returned in first-seen order, de-duplicated.
+
+        Note: this documents the intended ordered behaviour. It does not reliably fail
+        against the old set-based code, because set iteration order is randomised per
+        process (PYTHONHASHSEED) and may coincidentally match insertion order for a
+        small input. test_cap_selects_deterministic_first_seen_subset is the reliable
+        regression guard (see its note)."""
+        desc = "Fixes #3, relates to #1, also #3 again and #2"
+        result = extract_ticket_links_from_pr_description(desc, "org/repo", "https://github.com")
+        assert result == [
+            "https://github.com/org/repo/issues/3",
+            "https://github.com/org/repo/issues/1",
+            "https://github.com/org/repo/issues/2",
+        ]
+
+    def test_cap_selects_deterministic_first_seen_subset(self):
+        """When more than MAX_TICKETS issues are present, the first MAX_TICKETS in
+        first-seen order are kept (not an arbitrary subset from a set).
+
+        This is the reliable regression guard for the bug: with > MAX_TICKETS issues,
+        the old code sliced list(set)[:MAX_TICKETS], so it returned an arbitrary subset
+        that (essentially) never equals the first-seen subset, on any hash seed."""
+        nums = list(range(1, MAX_TICKETS + 4))
+        desc = " ".join(f"#{n}" for n in nums)
+        result = extract_ticket_links_from_pr_description(desc, "org/repo", "https://github.com")
+        expected = [f"https://github.com/org/repo/issues/{n}" for n in nums[:MAX_TICKETS]]
+        assert result == expected

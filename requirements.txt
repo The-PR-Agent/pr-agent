@@ -9,9 +9,9 @@ certifi==2024.8.30
 dynaconf==3.2.4
 fastapi==0.118.0
 GitPython==3.1.41
-google-cloud-aiplatform==1.38.0
-google-generativeai==0.8.3
+google-cloud-aiplatform==1.154.0
 google-cloud-storage==2.10.0
+protobuf==6.33.6  # grpcio-status 1.80.0 forces >=6.31.1,<7; pinned to lock the resolved transitive version
 Jinja2==3.1.6
 litellm==1.84.0
 loguru==0.7.2
@@ -29,6 +29,8 @@ tiktoken==0.12.0
 ujson==5.8.0
 uvicorn==0.22.0
 tenacity==8.2.3
+a2a-sdk[http-server]==1.0.3
+langfuse==3.14.5
 gunicorn==23.0.0
 pytest-cov==7.0.0
 pydantic==2.13.3

@@ -389,7 +389,7 @@ class PRCodeSuggestions:
         variables["diff_no_line_numbers"] = patches_diff_no_line_number  # update diff
         environment = Environment(undefined=StrictUndefined)
         system_prompt = environment.from_string(self.pr_code_suggestions_prompt_system).render(variables)
-        user_prompt = environment.from_string(get_settings().pr_code_suggestions_prompt.user).render(variables)
+        user_prompt = environment.from_string(self.pr_code_suggestions_prompt_user).render(variables)
         response, finish_reason = await self.ai_handler.chat_completion(
             model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
         if not get_settings().config.publish_output:

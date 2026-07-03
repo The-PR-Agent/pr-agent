@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from typing import Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import quote, unquote, urlparse
 
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 
@@ -168,7 +168,7 @@ class AzureDevopsProvider(GitProvider):
                 include_content=True,
                 path=".pr_agent.toml",
             )
-            return list(contents)[0]
+            return b"".join(list(contents))
         except Exception as e:
             if get_settings().config.verbosity_level >= 2:
                 get_logger().error(f"Failed to get repo settings, error: {e}")
@@ -396,7 +396,8 @@ class AzureDevopsProvider(GitProvider):
                 get_logger().warning("PR description was truncated due to length limit")
         try:
             updated_pr = GitPullRequest()
-            updated_pr.title = pr_title
+            if pr_title is not None:
+                updated_pr.title = pr_title
             updated_pr.description = pr_body
             self.azure_devops_client.update_pull_request(
                 project=self.workspace_slug,
@@ -562,8 +563,10 @@ class AzureDevopsProvider(GitProvider):
         if path_parts[num_parts - 2] != "pullrequest":
             raise ValueError("The provided URL does not follow the expected Azure DevOps PR URL format")
 
-        workspace_slug = path_parts[num_parts - 5]
-        repo_slug = path_parts[num_parts - 3]
+        # Decode percent-encoding (e.g. %20) so project/repo names with spaces
+        # match what the Azure DevOps REST client expects (e.g. "Dev Project")
+        workspace_slug = unquote(path_parts[num_parts - 5])
+        repo_slug = unquote(path_parts[num_parts - 3])
         try:
             pr_number = int(path_parts[num_parts - 1])
         except ValueError as e:
@@ -638,7 +641,11 @@ class AzureDevopsProvider(GitProvider):
     def get_latest_commit_url(self) -> str:
         commits = self.azure_devops_client.get_pull_request_commits(self.repo_slug, self.pr_num, self.workspace_slug)
         last = commits[0]
-        url = self.azure_devops_client.normalized_url + "/" + self.workspace_slug + "/_git/" + self.repo_slug + "/commit/" + last.commit_id
+        # workspace/repo slugs are stored decoded (e.g. "Dev Project") for the REST API,
+        # so re-encode them when building a web URL to avoid raw spaces in markdown output
+        workspace = quote(self.workspace_slug, safe='')
+        repo = quote(self.repo_slug, safe='')
+        url = self.azure_devops_client.normalized_url + "/" + workspace + "/_git/" + repo + "/commit/" + last.commit_id
         return url
 
     def get_linked_work_items(self) -> list:

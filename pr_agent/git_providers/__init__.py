@@ -48,9 +48,9 @@ def get_git_provider_with_context(pr_url) -> GitProvider:
     except Exception:
         pass  # we are not in a context environment (CLI)
 
-    # check if context["git_provider"]["pr_url"] exists
-    if is_context_env and context.get("git_provider", {}).get("pr_url", {}):
-        git_provider = context["git_provider"]["pr_url"]
+    # check if context["git_provider"][pr_url] exists
+    if is_context_env and context.get("git_provider", {}).get(pr_url):
+        git_provider = context["git_provider"][pr_url]
         # possibly check if the git_provider is still valid, or if some reset is needed
         # ...
         return git_provider

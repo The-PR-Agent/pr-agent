@@ -24,24 +24,26 @@ The Original Open-Source PR Reviewer
  This repository contains the open-source PR Agent Project. 
  It is not the Qodo free tier.
  
-Try the free version on our website.
-
-👉[Get Started Now](https://www.qodo.ai/get-started/)
-
 PR-Agent is an open-source, AI-powered code review agent and a community-maintained legacy project of Qodo. It is distinct from Qodo’s primary AI code review offering, which provides a feature-rich, context-aware experience. Qodo now offers a free tier that integrates seamlessly with GitHub, GitLab, Bitbucket, and Azure DevOps for high-quality automated reviews.
 
 
-## Big News for PR-Agent
+## Sponsors
 
-PR-Agent has a new home!
+PR-Agent is a community-maintained open-source project, with its ongoing development supported by our sponsors. If you'd like to support the project, consider [becoming a sponsor](https://github.com/sponsors/naorpeled).
 
-After years of building this tool alongside the community, Qodo has donated PR-Agent to the open-source community - and we couldn't be more excited about what comes next.
+<p align="center">
+  <h3 align="center">🥇 Gold Sponsor</h3>
+</p>
 
-The project now lives in the PR-Agent org on GitHub, is fully community-owned, and is open for contributions and additional maintainers.
+<p align="center">
+  <a target="_blank" href="https://www.qodo.ai/">
+    <img alt="Qodo — Gold sponsor" src="https://www.qodo.ai/wp-content/uploads/2025/03/qodo-logo.svg" width="300">
+  </a>
+</p>
 
-What else changed: 
-- Docs moved to - www.pr-agent.ai
-- Qodo Merge (Qodo 1.0), the hosted URL, which was the enterprise version of PR-Agent, has been rebranded and evolved into Qodo (Qodo 2.0), a full AI code review platform.
+<p align="center">
+  <a target="_blank" href="https://www.qodo.ai/get-started/">Try the free version of Qodo</a>
+</p>
 
 
 ## Table of Contents
@@ -62,7 +64,9 @@ What else changed:
 ### 🚀 Quick Start for PR-Agent
 
 #### 1. GitHub Action (Recommended)
+
 Add automated PR reviews to your repository with a simple workflow file:
+
 ```yaml
 # .github/workflows/pr-agent.yml
 name: PR Agent
@@ -82,6 +86,7 @@ jobs:
 [Full GitHub Action setup guide](https://docs.pr-agent.ai/installation/github/#run-as-a-github-action)
 
 #### 2. CLI Usage (Local Development)
+
 Run PR-Agent locally on your repository:
 ```bash
 pip install pr-agent
@@ -91,6 +96,7 @@ pr-agent --pr_url https://github.com/owner/repo/pull/123 review
 [Complete CLI setup guide](https://docs.pr-agent.ai/usage-guide/automations_and_usage/#local-repo-cli)
 
 #### 3. Other Platforms
+
 - [GitLab webhook setup](https://docs.pr-agent.ai/installation/gitlab/)
 - [BitBucket app installation](https://docs.pr-agent.ai/installation/bitbucket/)
 - [Azure DevOps setup](https://docs.pr-agent.ai/installation/azure/)
@@ -233,6 +239,18 @@ https://openai.com/enterprise-privacy
 
 To contribute to the project, get started by reading our [Contributing Guide](https://github.com/the-pr-agent/pr-agent/blob/b09eec265ef7d36c232063f76553efb6b53979ff/CONTRIBUTING.md).
 
+
+## Big News for PR-Agent
+
+PR-Agent has a new home!
+
+After years of building this tool alongside the community, Qodo has donated PR-Agent to the open-source community - and we couldn't be more excited about what comes next.
+
+The project now lives in the PR-Agent org on GitHub, is fully community-owned, and is open for contributions and additional maintainers.
+
+What else changed: 
+- Docs moved to - www.pr-agent.ai
+- Qodo Merge (Qodo 1.0), the hosted URL, which was the enterprise version of PR-Agent, has been rebranded and evolved into Qodo (Qodo 2.0), a full AI code review platform.
 
 ## ❤️ Community
 

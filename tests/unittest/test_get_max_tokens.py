@@ -146,10 +146,18 @@ class TestGetMaxTokens:
         "vertex_ai/gemini-3-pro-preview",
         "gemini/gemini-3.1-pro-preview",
         "vertex_ai/gemini-3.1-pro-preview",
+        "gemini/gemini-3.1-flash",
+        "vertex_ai/gemini-3.1-flash",
+        "gemini/gemini-3.1-pro",
+        "vertex_ai/gemini-3.1-pro",
         "gemini/gemini-3.1-flash-lite-preview",
         "vertex_ai/gemini-3.1-flash-lite-preview",
+        "gemini/gemini-3.5-flash",
+        "vertex_ai/gemini-3.5-flash",
+        "gemini/gemini-3.5-pro",
+        "vertex_ai/gemini-3.5-pro",
     ])
-    def test_gemini_3_and_3_1_pro_preview(self, monkeypatch, model):
+    def test_gemini_3_3_1_and_3_5_models_max_tokens(self, monkeypatch, model):
         fake_settings = type("", (), {
             "config": type("", (), {
                 "custom_model_max_tokens": 0,
@@ -158,6 +166,32 @@ class TestGetMaxTokens:
         })()
         monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
         assert get_max_tokens(model) == 1048576
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "anthropic/claude-opus-4-8",
+            "claude-opus-4-8",
+            "vertex_ai/claude-opus-4-8",
+            "bedrock/anthropic.claude-opus-4-8",
+            "bedrock/global.anthropic.claude-opus-4-8",
+            "bedrock/us.anthropic.claude-opus-4-8",
+            "bedrock/eu.anthropic.claude-opus-4-8",
+            "bedrock/au.anthropic.claude-opus-4-8",
+            "bedrock/jp.anthropic.claude-opus-4-8",
+        ],
+    )
+    def test_claude_opus_4_8_model_max_tokens(self, monkeypatch, model):
+        fake_settings = type("", (), {
+            "config": type("", (), {
+                "custom_model_max_tokens": 0,
+                "max_model_tokens": 0
+            })()
+        })()
+
+        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+
+        assert get_max_tokens(model) == 1000000
 
     @pytest.mark.parametrize(
         "model",
@@ -204,6 +238,32 @@ class TestGetMaxTokens:
         monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
 
         assert get_max_tokens(model) == 200000
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "anthropic/claude-sonnet-5",
+            "claude-sonnet-5",
+            "vertex_ai/claude-sonnet-5",
+            "bedrock/anthropic.claude-sonnet-5",
+            "bedrock/global.anthropic.claude-sonnet-5",
+            "bedrock/us.anthropic.claude-sonnet-5",
+            "bedrock/au.anthropic.claude-sonnet-5",
+            "bedrock/eu.anthropic.claude-sonnet-5",
+            "bedrock/jp.anthropic.claude-sonnet-5",
+        ],
+    )
+    def test_claude_sonnet_5_model_max_tokens(self, monkeypatch, model):
+        fake_settings = type('', (), {
+            'config': type('', (), {
+                'custom_model_max_tokens': 0,
+                'max_model_tokens': 0
+            })()
+        })()
+
+        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+
+        assert get_max_tokens(model) == 1000000
 
     @pytest.mark.parametrize(
         "model",

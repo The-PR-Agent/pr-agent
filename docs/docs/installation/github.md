@@ -536,16 +536,23 @@ For more detailed configuration options, see:
     ...
     ```
 
+    Official Docker Hub release images also publish GitHub Artifact Attestations, so you can verify that a pinned digest was built from this repository before using it:
+    ```sh
+    gh attestation verify \
+      "oci://index.docker.io/pragent/pr-agent@sha256:<digest>" \
+      --repo The-PR-Agent/pr-agent
+    ```
+
 ### Action for GitHub enterprise server
 
 !!! tip ""
-    To use the action with a GitHub enterprise server, add an environment variable `GITHUB.BASE_URL` with the API URL of your GitHub server.
+    To use the action with a GitHub enterprise server, add an environment variable `GITHUB__BASE_URL` with the API URL of your GitHub server.
 
     For example, if your GitHub server is at `https://github.mycompany.com`, add the following to your workflow file:
     ```yaml
           env:
             # ... previous environment values
-            GITHUB.BASE_URL: "https://github.mycompany.com/api/v3"
+            GITHUB__BASE_URL: "https://github.mycompany.com/api/v3"
     ```
 
 ---

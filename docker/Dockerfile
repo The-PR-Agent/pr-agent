@@ -27,7 +27,7 @@ CMD ["python", "pr_agent/servers/github_polling.py"]
 
 FROM base AS gitlab_webhook
 ADD pr_agent pr_agent
-CMD ["python", "pr_agent/servers/gitlab_webhook.py"]
+CMD ["python", "-m", "gunicorn", "-k", "uvicorn.workers.UvicornWorker", "-c", "pr_agent/servers/gunicorn_config.py", "--forwarded-allow-ips", "*", "pr_agent.servers.gitlab_webhook:app"]
 
 FROM base AS azure_devops_webhook
 ADD pr_agent pr_agent
@@ -37,12 +37,18 @@ FROM base AS gitea_app
 ADD pr_agent pr_agent
 CMD ["python", "-m", "gunicorn", "-k", "uvicorn.workers.UvicornWorker", "-c", "pr_agent/servers/gunicorn_config.py","pr_agent.servers.gitea_app:app"]
 
+FROM base AS mosaico_agent
+ADD pr_agent pr_agent
+EXPOSE 9000
+CMD ["python", "pr_agent/mosaico/server.py"]
+
 
 FROM base AS test
 ADD requirements-dev.txt .
 RUN pip install --no-cache-dir -r requirements-dev.txt && rm requirements-dev.txt
 ADD pr_agent pr_agent
 ADD tests tests
+ADD docker/mosaico docker/mosaico
 
 FROM base AS cli
 ADD pr_agent pr_agent

@@ -22,6 +22,7 @@ log_level="DEBUG"
 use_wiki_settings_file=true
 use_repo_settings_file=true
 use_global_settings_file=true
+extra_config_url="" # optional URL or path to an additional .pr_agent.toml merged before the repo-local config; also settable via --extra_config_url or PR_AGENT_EXTRA_CONFIG_URL. See docs/docs/usage-guide/configuration_options.md#external-configuration-url.
 disable_auto_feedback = false
 ai_timeout=120 # 2 minutes
 skip_keys = []
@@ -128,6 +129,7 @@ async_ai_calls=true
 [pr_questions] # /ask #
 enable_help_text=false
 use_conversation_history=true
+extra_instructions = ""
 
 
 [pr_code_suggestions] # /improve #

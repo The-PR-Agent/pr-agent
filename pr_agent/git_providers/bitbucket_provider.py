@@ -601,11 +601,10 @@ class BitbucketProvider(GitProvider):
 
     # bitbucket does not support labels
     def publish_description(self, pr_title: str, description: str):
-        payload = json.dumps({
-            "description": description,
-            "title": pr_title
-
-        })
+        payload_dict = {"description": description}
+        if pr_title is not None:
+            payload_dict["title"] = pr_title
+        payload = json.dumps(payload_dict)
 
         response = requests.request("PUT", self.bitbucket_pull_request_api_url, headers=self.headers, data=payload)
         try:

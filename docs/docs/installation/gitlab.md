@@ -47,7 +47,9 @@ Note that if your base branches are not protected, don't set the variables as `p
 
 ## Run a GitLab webhook server
 
-1. In GitLab create a new user and give it "Reporter" role for the intended group or project.
+1. In GitLab create a new user and give it "Developer" role for the intended group or project.
+   > **Note:** "Reporter" role is sufficient for adding comments for `/improve` or `/review` for example,
+   > but "Developer" role is required to update the Merge Request description when using the `/describe` command.
 
 2. For the user from step 1, generate a `personal_access_token` with `api` access.
 
