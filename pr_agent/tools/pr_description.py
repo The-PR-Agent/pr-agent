@@ -140,11 +140,6 @@ def _normalize_angular_title(title: str) -> str | None:
     title_out = f"{type_norm}{scope_part}: {summary}"
     if _ANGULAR_TITLE_RE.fullmatch(title_out):
         return title_out
-    if len(summary) == 2 and re.fullmatch(
-            r"^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9\-]+\))?: [a-z][^.]$",
-            title_out,
-    ):
-        return title_out
     return None
 
 
@@ -195,10 +190,7 @@ class PRDescription:
             "enable_pr_diagram": enable_pr_diagram,
         }
         if get_settings().pr_description.get('enable_conventional_title', False):
-            extra_instructions = get_settings().pr_description.get('extra_instructions', '') or ''
-            extra_instructions += _ANGULAR_TITLE_INSTRUCTIONS
-            get_settings().pr_description.extra_instructions = extra_instructions
-            self.vars["extra_instructions"] = extra_instructions
+            self.vars["extra_instructions"] = (self.vars.get("extra_instructions") or "") + _ANGULAR_TITLE_INSTRUCTIONS
 
         self.user_description = self.git_provider.get_user_description()
 
@@ -231,7 +223,8 @@ class PRDescription:
 
             if self.prediction:
                 self._prepare_data()
-                self.ai_title = (self.data.get('title') or self.vars.get('title') or '').strip()
+                raw_ai_title = self.data.get('title')
+                self.ai_title = raw_ai_title.strip() if isinstance(raw_ai_title, str) and raw_ai_title.strip() else None
             else:
                 get_logger().warning(f"Empty prediction, PR: {self.pr_id}")
                 self.git_provider.remove_initial_comment()

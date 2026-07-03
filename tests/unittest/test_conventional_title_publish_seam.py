@@ -4,7 +4,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from pr_agent.tools import pr_description as pr_description_module
-from pr_agent.tools.pr_description import PRDescription
+from pr_agent.tools.pr_description import PRDescription, _ANGULAR_TITLE_INSTRUCTIONS
+
+_MISSING = object()
 
 
 class _Config(dict):
@@ -43,13 +45,15 @@ def _settings(*, generate_ai_title: bool, enable_conventional_title: bool, extra
     return settings
 
 
-def _make_instance(*, ai_title: str, pr_title: str) -> PRDescription:
+def _make_instance(*, ai_title=_MISSING, pr_title: str) -> PRDescription:
     obj = PRDescription.__new__(PRDescription)
     obj.pr_id = "1"
     obj.prediction = "title: x"
     obj.vars = {"title": "Human supplied title"}
-    obj.data = {"title": ai_title}
-    obj.ai_title = ai_title
+    obj.data = {}
+    if ai_title is not _MISSING:
+        obj.data["title"] = ai_title
+    obj.ai_title = ai_title if ai_title is not _MISSING else None
     obj.git_provider = MagicMock()
     obj.git_provider.is_supported.return_value = False
     obj._prepare_data = MagicMock()
@@ -147,3 +151,34 @@ def test_conventional_title_augments_effective_extra_instructions(
     assert "Keep existing guidance." in effective_extra_instructions
     assert "type(scope): summary" in effective_extra_instructions
     assert "feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert" in effective_extra_instructions
+    assert settings.pr_description.extra_instructions == "Keep existing guidance."
+
+    second_obj = PRDescription(
+        "https://gitlab.example/org/repo/-/merge_requests/1",
+        ai_handler=lambda: SimpleNamespace(),
+    )
+    assert obj.vars["extra_instructions"].count(_ANGULAR_TITLE_INSTRUCTIONS) == 1
+    assert second_obj.vars["extra_instructions"].count(_ANGULAR_TITLE_INSTRUCTIONS) == 1
+    assert settings.pr_description.extra_instructions == "Keep existing guidance."
+
+
+@pytest.mark.parametrize("ai_title", [_MISSING, "", "   ", ["bad"]])
+@patch("pr_agent.tools.pr_description.retry_with_fallback_models", side_effect=_noop_retry)
+@patch("pr_agent.tools.pr_description.extract_and_cache_pr_tickets", side_effect=_noop_extract_tickets)
+@patch("pr_agent.tools.pr_description.get_settings")
+async def test_conventional_title_missing_or_malformed_ai_title_publishes_body_without_title(
+    mock_get_settings,
+    _mock_extract_tickets,
+    _mock_retry,
+    ai_title,
+):
+    mock_get_settings.return_value = _settings(
+        generate_ai_title=False,
+        enable_conventional_title=True,
+    )
+    obj = _make_instance(ai_title=ai_title, pr_title="Human supplied title")
+
+    await obj.run()
+
+    assert obj.git_provider.publish_description.call_args[0][0] is None
+    assert obj.git_provider.publish_description.call_args[0][1].startswith("body")

@@ -31,7 +31,7 @@ ANGULAR_TITLE_CASES = [
     ("feat: hello?", "feat: hello?"),
     ("feat: hello!", "feat: hello!"),
     ("feat: A", None),
-    ("feat: AB", "feat: aB"),
+    ("feat: AB", None),
     ("feat: Update API endpoints", "feat: update API endpoints"),
     ("feat:\nadd\nSSO", "feat: add SSO"),
     ("feat:add SSO", "feat: add SSO"),
@@ -58,7 +58,5 @@ def test_normalize_angular_title_adversarial_fixtures(raw, expected):
 def test_normalize_angular_title_outputs_match_target_regex():
     for _, expected in ANGULAR_TITLE_CASES:
         if expected is None:
-            continue
-        if expected == "feat: aB":
             continue
         assert TARGET_TITLE_RE.fullmatch(expected) is not None
