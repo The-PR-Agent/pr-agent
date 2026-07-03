@@ -139,10 +139,21 @@ class TestPRUpdateChangelog:
         assert "to commit the new content" in answer
 
     @pytest.mark.asyncio
-    async def test_run_without_push_support(self, mock_git_provider, mock_ai_handler):
+    async def test_run_without_push_support(self, mock_ai_handler):
         """Test running changelog update when git provider doesn't support pushing."""
-        delattr(mock_git_provider, 'create_or_update_pr_file')
-        with patch('pr_agent.tools.pr_update_changelog.get_git_provider', return_value=lambda url: mock_git_provider), \
+        provider = MagicMock(spec=["publish_comment", "get_pr_branch", "get_pr_description",
+                                   "get_commit_messages", "get_languages", "get_files",
+                                   "is_supported", "pr"])
+        provider.pr = MagicMock()
+        provider.pr.title = "Test PR"
+        provider.get_pr_branch.return_value = "feature-branch"
+        provider.get_pr_description.return_value = "Test description"
+        provider.get_commit_messages.return_value = "fix: test commit"
+        provider.get_languages.return_value = {"Python": 80, "JavaScript": 20}
+        provider.get_files.return_value = ["test.py", "test.js"]
+        provider.is_supported.return_value = True
+
+        with patch('pr_agent.tools.pr_update_changelog.get_git_provider', return_value=lambda url: provider), \
              patch('pr_agent.tools.pr_update_changelog.get_settings') as mock_settings:
             mock_settings.return_value.pr_update_changelog.push_changelog_changes = True
             mock_settings.return_value.config.publish_output = True
@@ -151,10 +162,11 @@ class TestPRUpdateChangelog:
             mock_settings.return_value.pr_update_changelog_prompt.user = ""
             tool = PRUpdateChangelog("https://example.com/pr/123", ai_handler=lambda: mock_ai_handler)
 
+            assert tool._skip_push == "not supported"
             await tool.run()
 
-            mock_git_provider.publish_comment.assert_called_once()
-            assert "not supported" in str(mock_git_provider.publish_comment.call_args)
+            provider.publish_comment.assert_called_once()
+            assert "not supported" in str(provider.publish_comment.call_args)
 
     @pytest.mark.asyncio
     async def test_run_with_push_support(self, changelog_tool, mock_git_provider):

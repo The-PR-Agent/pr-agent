@@ -296,7 +296,6 @@ With restricted mode, the minimum workflow permissions are:
 permissions:
   issues: write
   pull-requests: write
-  contents: read   # or just omit contents (defaults to read)
 ```
 
-`contents: write` is not needed — any tool needing it (`/update_changelog` with `push_changelog_changes=true`) will skip the operation and post a clear comment instead of failing with a 403. All other tools (`/review`, `/describe`, `/improve`, etc.) continue to work normally.
+`contents` is not required at all — omitting it defaults to `none`, which is sufficient since restricted mode skips any operation needing `contents: write`. All tools (`/review`, `/describe`, `/improve`, etc.) continue to work normally with just `pull-requests: write`.
