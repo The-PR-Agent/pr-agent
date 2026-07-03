@@ -200,17 +200,17 @@ async def test_issue_comment_from_bot_sender_is_skipped(monkeypatch, tmp_path, r
 
 def _patch_synchronize_deps(monkeypatch, handled, push_commands, handle_push_trigger=True):
     monkeypatch.setattr(github_action_runner, "apply_repo_settings", lambda pr_url: None)
-    # Directly modify Dynaconf's store to bypass merge_enabled=True list concat
+    # Use monkeypatch.setitem on store entries for automatic cleanup
     settings = get_settings()
-    settings.store["github_app"]["push_commands"] = list(push_commands)
+    monkeypatch.setitem(settings.store["github_app"], "push_commands", list(push_commands))
     # The code reads github_action_config.handle_push_trigger first (line 143),
     # so we set it there too.
     if "github_action_config" not in settings.store:
         settings.store["github_action_config"] = {}
-    settings.store["github_action_config"]["handle_push_trigger"] = handle_push_trigger
+    monkeypatch.setitem(settings.store["github_action_config"], "handle_push_trigger", handle_push_trigger)
     # Disable merge-commit and bot guards by default so existing tests pass
-    settings.store["github_action_config"]["push_trigger_ignore_merge_commits"] = False
-    settings.store["github_action_config"]["push_trigger_ignore_bot_commits"] = False
+    monkeypatch.setitem(settings.store["github_action_config"], "push_trigger_ignore_merge_commits", False)
+    monkeypatch.setitem(settings.store["github_action_config"], "push_trigger_ignore_bot_commits", False)
 
     class FakeAgent:
         async def handle_request(self, url, body, notify=None):

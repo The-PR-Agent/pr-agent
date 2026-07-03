@@ -113,33 +113,8 @@ async def run_action():
         # Retrieve the list of actions from the configuration
         pr_actions = get_settings().get("GITHUB_ACTION_CONFIG.PR_ACTIONS", ["opened", "reopened", "ready_for_review", "review_requested"])
 
-        if action in pr_actions:
-            pr_url = event_payload.get("pull_request", {}).get("url")
-            if pr_url:
-                # legacy - supporting both GITHUB_ACTION and GITHUB_ACTION_CONFIG
-                auto_review = get_setting_or_env("GITHUB_ACTION.AUTO_REVIEW", None)
-                if auto_review is None:
-                    auto_review = get_setting_or_env("GITHUB_ACTION_CONFIG.AUTO_REVIEW", None)
-                auto_describe = get_setting_or_env("GITHUB_ACTION.AUTO_DESCRIBE", None)
-                if auto_describe is None:
-                    auto_describe = get_setting_or_env("GITHUB_ACTION_CONFIG.AUTO_DESCRIBE", None)
-                auto_improve = get_setting_or_env("GITHUB_ACTION.AUTO_IMPROVE", None)
-                if auto_improve is None:
-                    auto_improve = get_setting_or_env("GITHUB_ACTION_CONFIG.AUTO_IMPROVE", None)
-
-                # Set the configuration for auto actions
-                get_settings().config.is_auto_command = True  # Set the flag to indicate that the command is auto
-                get_settings().pr_description.final_update_message = False  # No final update message when auto_describe is enabled
-                get_logger().info(f"Running auto actions: auto_describe={auto_describe}, auto_review={auto_review}, auto_improve={auto_improve}")
-
-                # invoke by default all three tools
-                if auto_describe is None or is_true(auto_describe):
-                    await PRDescription(pr_url).run()
-                if auto_review is None or is_true(auto_review):
-                    await PRReviewer(pr_url).run()
-                if auto_improve is None or is_true(auto_improve):
-                    await PRCodeSuggestions(pr_url).run()
-        elif action == "synchronize":
+        # Handle synchronize first so it is not captured by pr_actions
+        if action == "synchronize":
             push_trigger = get_settings().get(
                 "github_action_config.handle_push_trigger",
                 get_settings().get("github_app.handle_push_trigger", False),
@@ -175,6 +150,8 @@ async def run_action():
                 "github_action_config.push_commands",
                 get_settings().get("github_app.push_commands", []),
             )
+            if isinstance(push_commands, str):
+                push_commands = [push_commands]
             if not push_commands:
                 get_logger().info("No push_commands configured, skipping synchronize")
                 return
@@ -183,6 +160,32 @@ async def run_action():
             get_logger().info(f"Running push commands: {push_commands}")
             for command in push_commands:
                 await PRAgent().handle_request(pr_url, command)
+        elif action in pr_actions:
+            pr_url = event_payload.get("pull_request", {}).get("url")
+            if pr_url:
+                # legacy - supporting both GITHUB_ACTION and GITHUB_ACTION_CONFIG
+                auto_review = get_setting_or_env("GITHUB_ACTION.AUTO_REVIEW", None)
+                if auto_review is None:
+                    auto_review = get_setting_or_env("GITHUB_ACTION_CONFIG.AUTO_REVIEW", None)
+                auto_describe = get_setting_or_env("GITHUB_ACTION.AUTO_DESCRIBE", None)
+                if auto_describe is None:
+                    auto_describe = get_setting_or_env("GITHUB_ACTION_CONFIG.AUTO_DESCRIBE", None)
+                auto_improve = get_setting_or_env("GITHUB_ACTION.AUTO_IMPROVE", None)
+                if auto_improve is None:
+                    auto_improve = get_setting_or_env("GITHUB_ACTION_CONFIG.AUTO_IMPROVE", None)
+
+                # Set the configuration for auto actions
+                get_settings().config.is_auto_command = True  # Set the flag to indicate that the command is auto
+                get_settings().pr_description.final_update_message = False  # No final update message when auto_describe is enabled
+                get_logger().info(f"Running auto actions: auto_describe={auto_describe}, auto_review={auto_review}, auto_improve={auto_improve}")
+
+                # invoke by default all three tools
+                if auto_describe is None or is_true(auto_describe):
+                    await PRDescription(pr_url).run()
+                if auto_review is None or is_true(auto_review):
+                    await PRReviewer(pr_url).run()
+                if auto_improve is None or is_true(auto_improve):
+                    await PRCodeSuggestions(pr_url).run()
         else:
             get_logger().info(f"Skipping action: {action}")
 

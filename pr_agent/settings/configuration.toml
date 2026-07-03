@@ -234,6 +234,9 @@ ignore_bot_pr = true
 # auto_improve = true   # set as env var in .github/workflows/pr-agent.yaml
 # pr_actions = ['opened', 'reopened', 'ready_for_review', 'review_requested']
 handle_push_trigger = false # when true, handle synchronize events using push_commands
+# push_trigger_ignore_bot_commits = true
+# push_trigger_ignore_merge_commits = true
+# push_commands = ['/describe', '/review']  # defaults mirror github_app.push_commands
 
 [github_app]
 # these toggles allows running the github app from custom deployments
