@@ -52,6 +52,7 @@ def set_parser():
     parser.add_argument('--version', action='version', version=f'pr-agent {get_version()}')
     parser.add_argument('--pr_url', type=str, help='The URL of the PR to review', default=None)
     parser.add_argument('--issue_url', type=str, help='The URL of the Issue to review', default=None)
+    parser.add_argument('--config-branch', type=str, help='Git branch to load .pr_agent.toml from', default=None)
     parser.add_argument(
         "--extra_config_url",
         type=str,
@@ -88,6 +89,14 @@ def run(inargs=None, args=None):
 
     command = args.command.lower()
     get_settings().set("CONFIG.CLI_MODE", True)
+    # Strip each candidate independently so a whitespace-only CLI value doesn't
+    # short-circuit the PR_AGENT_CONFIG_BRANCH env fallback before precedence.
+    cli_branch = (getattr(args, "config_branch", None) or "").strip()
+    env_branch = (os.environ.get("PR_AGENT_CONFIG_BRANCH") or "").strip()
+    # Always reconcile CONFIG.CONFIG_BRANCH with the current invocation so a value
+    # set by an earlier run() call in the same process can't leak into a later one
+    # (get_settings() is a process-wide singleton).
+    get_settings().set("CONFIG.CONFIG_BRANCH", cli_branch or env_branch or None)
     # Always reconcile CONFIG.EXTRA_CONFIG_URL with the current invocation so a
     # previously-set value from an earlier run() call in the same process can't
     # leak into a later one (get_settings() is a process-wide singleton).

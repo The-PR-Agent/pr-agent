@@ -129,6 +129,7 @@ async_ai_calls=true
 [pr_questions] # /ask #
 enable_help_text=false
 use_conversation_history=true
+extra_instructions = ""
 
 
 [pr_code_suggestions] # /improve #

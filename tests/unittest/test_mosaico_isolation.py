@@ -17,17 +17,18 @@ same interleaving WITHOUT the per-request deepcopy and asserting the bleed DOES 
 import asyncio
 
 import pytest
-from a2a.types import Message, Part, Role, TextPart
+from a2a.types import Message, Part, Role
 from starlette_context import request_cycle_context
 
 import pr_agent.mosaico.executor as executor_mod
 from pr_agent.config_loader import get_settings, global_settings
+from pr_agent.mosaico.dispatch import RouteResult
 from pr_agent.mosaico.executor import PRAgentExecutor
 
 
 def _make_message(text: str) -> Message:
-    return Message(message_id=f"m-{text}", role=Role.user,
-                   parts=[Part(root=TextPart(text=text))])
+    return Message(message_id=f"m-{text}", role=Role.ROLE_USER,
+                   parts=[Part(text=text)])
 
 
 class _RecordingEventQueue:
@@ -42,8 +43,9 @@ class _FakeRequestContext:
     def __init__(self, text):
         self._text = text
         self.metadata = {}
-        self.current_task = None
         self.message = _make_message(text)
+        self.task_id = f"task-{text}"
+        self.context_id = f"ctx-{text}"
 
     def get_user_input(self, delimiter: str = "\n") -> str:
         return self._text
@@ -54,11 +56,17 @@ class _SpyTaskUpdater:
         self.completed_with = None
         self.failed_with = None
 
+    async def add_artifact(self, parts, **kwargs):
+        pass
+
     async def complete(self, message=None):
         self.completed_with = message
 
     async def failed(self, message=None):
         self.failed_with = message
+
+    def new_agent_message(self, parts, metadata=None):
+        return None
 
 
 # Per-request distinct values keyed by the inbound text (== request id).
@@ -97,7 +105,7 @@ async def _distinct_route_and_run(user_text):
     assert read["model"] == profile["model"], f"{user_text} saw model {read['model']}"
     assert read["provider"] == profile["provider"], f"{user_text} saw provider {read['provider']}"
     assert read["artifact"] == profile["artifact"], f"{user_text} saw artifact {read['artifact']}"
-    return profile["artifact"]
+    return RouteResult(profile["artifact"], ok=True)
 
 
 async def _run_one(text):
@@ -128,7 +136,7 @@ def snapshot_global():
 class TestConcurrencyIsolation:
     @pytest.mark.asyncio
     async def test_no_bleed_between_concurrent_requests(self, monkeypatch, snapshot_global):
-        monkeypatch.setattr(executor_mod, "route_and_run", _distinct_route_and_run)
+        monkeypatch.setattr(executor_mod, "route_and_run_result", _distinct_route_and_run)
         monkeypatch.setattr(executor_mod, "TaskUpdater", _SpyTaskUpdater)
 
         # Capture global_settings BEFORE for the unmutated check.

@@ -140,7 +140,7 @@ class GiteaProvider(GitProvider):
                         file_patches[current_file] = '\n'.join(current_patch)
                         current_patch = []
                     current_file = line.split(' b/')[-1]
-                elif line.startswith('@@'):
+                elif line.startswith('@@') and not current_patch:
                     current_patch = [line]
                 elif current_patch:
                     current_patch.append(line)
@@ -606,11 +606,11 @@ class GiteaProvider(GitProvider):
 
         return [label.name for label in labels]
 
-    def get_repo_settings(self) -> str:
+    def get_repo_settings(self) -> bytes:
         """Get repository settings"""
         if not self.repo_settings:
             self.logger.error("Repository settings not found")
-            return ""
+            return b""
 
         response = self.repo_api.get_file_content(
             owner=self.owner,
@@ -620,9 +620,13 @@ class GiteaProvider(GitProvider):
         )
         if not response:
             self.logger.error("Failed to get repository settings")
-            return ""
+            return b""
 
-        return response
+        # utils.apply_repo_settings() writes this via os.write() and later
+        # calls .decode() on it, so it must be bytes to match the GitHub/
+        # GitLab/Bitbucket contract. get_file_content() decodes the raw bytes
+        # to str, so re-encode here (see issue #2347).
+        return response.encode('utf-8')
 
     def get_user_id(self) -> str:
         """Get the ID of the authenticated user"""
@@ -637,13 +641,15 @@ class GiteaProvider(GitProvider):
 
     def publish_description(self, pr_title: str, pr_body: str) -> None:
         """Publish PR description"""
-        response = self.repo_api.edit_pull_request(
+        edit_kwargs = dict(
             owner=self.owner,
             repo=self.repo,
             pr_number=self.pr_number if self.enabled_pr else self.issue_number,
-            title=pr_title,
-            body=pr_body
+            body=pr_body,
         )
+        if pr_title is not None:
+            edit_kwargs["title"] = pr_title
+        response = self.repo_api.edit_pull_request(**edit_kwargs)
 
         if not response:
             self.logger.error("Failed to publish PR description")

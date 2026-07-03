@@ -2,10 +2,11 @@ import copy
 import difflib
 import hashlib
 import itertools
+import json
+import os
 import re
 import time
 import traceback
-import json
 from datetime import datetime
 from typing import Optional, Tuple
 from urllib.parse import urlparse
@@ -357,7 +358,10 @@ class GithubProvider(GitProvider):
             raise RateLimitExceeded("Rate limit exceeded for GitHub API.") from e
 
     def publish_description(self, pr_title: str, pr_body: str):
-        self.pr.edit(title=pr_title, body=pr_body)
+        if pr_title is None:
+            self.pr.edit(body=pr_body)
+        else:
+            self.pr.edit(title=pr_title, body=pr_body)
 
     def get_latest_commit_url(self) -> str:
         return self.last_commit_id.html_url
@@ -735,10 +739,24 @@ class GithubProvider(GitProvider):
         return self.pr.get_issue_comments()
 
     def get_repo_settings(self):
+        # Normalize each candidate before applying precedence so a whitespace-only
+        # settings value doesn't short-circuit the PR_AGENT_CONFIG_BRANCH fallback.
+        settings_branch = get_settings().get("CONFIG.CONFIG_BRANCH", None)
+        settings_branch = settings_branch.strip() if isinstance(settings_branch, str) else ""
+        env_branch = (os.environ.get("PR_AGENT_CONFIG_BRANCH") or "").strip()
+        config_branch = settings_branch or env_branch
+        if config_branch:
+            # Only treat a missing branch/file (GithubException) as an expected
+            # reason to fall back to the default branch. Unexpected errors are
+            # left to propagate so they aren't masked by a silent fallback.
+            try:
+                return self.repo_obj.get_contents(".pr_agent.toml", ref=config_branch).decoded_content
+            except GithubException as e:
+                get_logger().warning(
+                    f"Failed to load .pr_agent.toml from branch '{config_branch}', falling back to default branch",
+                    artifact={"status": e.status, "error": str(e)},
+                )
         try:
-            # contents = self.repo_obj.get_contents(".pr_agent.toml", ref=self.pr.head.sha).decoded_content
-
-            # more logical to take 'pr_agent.toml' from the default branch
             contents = self.repo_obj.get_contents(".pr_agent.toml").decoded_content
             return contents
         except Exception:

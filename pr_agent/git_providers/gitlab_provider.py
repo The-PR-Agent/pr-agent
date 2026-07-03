@@ -485,7 +485,8 @@ class GitLabProvider(GitProvider):
 
     def publish_description(self, pr_title: str, pr_body: str):
         try:
-            self.mr.title = pr_title
+            if pr_title is not None:
+                self.mr.title = pr_title
             self.mr.description = pr_body
             self.mr.save()
         except Exception as e:
@@ -673,6 +674,9 @@ class GitLabProvider(GitProvider):
                         if file.filename == relevant_file:
                             target_file = file
                             break
+                if target_file is None:
+                    get_logger().warning(f"Skipping suggestion: file '{relevant_file}' not found in diff")
+                    continue
                 range = relevant_lines_end - relevant_lines_start # no need to add 1
                 body = body.replace('```suggestion', f'```suggestion:-0+{range}')
                 lines = target_file.head_file.splitlines()

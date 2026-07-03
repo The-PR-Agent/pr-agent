@@ -164,12 +164,12 @@ key = ... # your Groq api key
 
 ### SambaNova
 
-To use MiniMax-M2.7 model with SambaNova, for example, set:
+To use MiniMax-M3 model with SambaNova, for example, set:
 
 ```toml
 [config] # in configuration.toml
-model = "sambanova/MiniMax-M2.7"
-fallback_models = ["sambanova/MiniMax-M2.5"]
+model = "sambanova/MiniMax-M3"
+fallback_models = ["sambanova/MiniMax-M2.7"]
 [sambanova] # in .secrets.toml
 key = ... # your SambaNova api key
 ```
@@ -327,12 +327,12 @@ See [litellm](https://docs.litellm.ai/docs/providers/bedrock#usage) documentatio
 
 ### DeepSeek
 
-To use deepseek-chat model with DeepSeek, for example, set:
+To use deepseek-v4 model with DeepSeek, for example, set:
 
 ```toml
 [config] # in configuration.toml
-model = "deepseek/deepseek-chat"
-fallback_models=["deepseek/deepseek-chat"]
+model = "deepseek/deepseek-v4-pro"
+fallback_models=["deepseek/deepseek-v4-flash"]
 ```
 
 and fill up your key
@@ -342,7 +342,7 @@ and fill up your key
 key = ...
 ```
 
-(you can obtain a deepseek-chat key from [here](https://platform.deepseek.com))
+(you can obtain a deepseek-v4 key from [here](https://platform.deepseek.com/api_keys))
 
 ### DeepInfra
 
@@ -385,6 +385,21 @@ key = "..." # your Codestral api key
 ```
 
 (you can obtain a Codestral key from [here](https://console.mistral.ai/codestral))
+
+### Databricks
+
+To use a model hosted on Databricks (e.g. an Azure Databricks serving endpoint), set:
+
+```toml
+[config] # in configuration.toml
+model = "databricks/databricks-claude-sonnet-4"
+fallback_models = ["databricks/databricks-claude-sonnet-4"]
+[databricks] # in .secrets.toml
+api_key = "..." # your Databricks personal access token (PAT)
+api_base = "https://adb-xxxx.azuredatabricks.net/serving-endpoints" # your workspace serving-endpoints URL
+```
+
+The model name after the `databricks/` prefix is the name of your serving endpoint. See LiteLLM's [Databricks provider docs](https://docs.litellm.ai/docs/providers/databricks) for details.
 
 ### Openrouter
 

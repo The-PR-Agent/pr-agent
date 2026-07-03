@@ -200,7 +200,8 @@ class CodeCommitClient:
             self._connect_boto_client()
 
         try:
-            self.boto_client.update_pull_request_title(pullRequestId=str(pr_number), title=pr_title)
+            if pr_title is not None:
+                self.boto_client.update_pull_request_title(pullRequestId=str(pr_number), title=pr_title)
             self.boto_client.update_pull_request_description(pullRequestId=str(pr_number), description=pr_body)
         except botocore.exceptions.ClientError as e:
             if e.response["Error"]["Code"] == 'PullRequestDoesNotExistException':

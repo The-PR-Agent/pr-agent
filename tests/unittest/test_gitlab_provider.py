@@ -232,3 +232,26 @@ class TestGitLabProvider:
         assert gitlab_provider.get_line_link("src/app.py", 10, 12) == (
             "https://gitlab.com/group/repo/-/blob/feature/cache/src/app.py?ref_type=heads#L10-12"
         )
+
+    def test_publish_description_with_none_title_leaves_title_unchanged(self, gitlab_provider):
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.title = "Original title"
+        gitlab_provider.id_mr = 1
+
+        gitlab_provider.publish_description(None, "Updated description")
+
+        # Title must not be overwritten when pr_title is None; only the body updates.
+        assert gitlab_provider.mr.title == "Original title"
+        assert gitlab_provider.mr.description == "Updated description"
+        gitlab_provider.mr.save.assert_called_once()
+
+    def test_publish_description_with_title_updates_both(self, gitlab_provider):
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.title = "Original title"
+        gitlab_provider.id_mr = 1
+
+        gitlab_provider.publish_description("AI title", "Updated description")
+
+        assert gitlab_provider.mr.title == "AI title"
+        assert gitlab_provider.mr.description == "Updated description"
+        gitlab_provider.mr.save.assert_called_once()

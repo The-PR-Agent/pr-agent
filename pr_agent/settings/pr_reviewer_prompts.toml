@@ -217,7 +217,7 @@ Ticket URL: '{{ ticket.ticket_url }}'
 
 Ticket Title: '{{ ticket.title }}'
 
-{%- if ticket.labels %}
+{%- if ticket.labels is defined and ticket.labels %}
 
 Ticket Labels: {{ ticket.labels }}
 

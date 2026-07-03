@@ -13,7 +13,6 @@ from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.tools.pr_config import PRConfig
 from pr_agent.tools.pr_description import PRDescription
 from pr_agent.tools.pr_generate_labels import PRGenerateLabels
-from pr_agent.tools.pr_help_docs import PRHelpDocs
 from pr_agent.tools.pr_help_message import PRHelpMessage
 from pr_agent.tools.pr_line_questions import PR_LineQuestions
 from pr_agent.tools.pr_questions import PRQuestions
@@ -40,7 +39,9 @@ command2class = {
     "similar_issue": PRSimilarIssue,
     "add_docs": PRAddDocs,
     "generate_labels": PRGenerateLabels,
-    "help_docs": PRHelpDocs,
+    # SECURITY: "/help_docs" is temporarily disabled while the clone-target validation
+    # fix is reviewed (see issue #2445). Re-enable by restoring `"help_docs": PRHelpDocs`
+    # and its import once the hardening PR is merged.
 }
 
 commands = list(command2class.keys())

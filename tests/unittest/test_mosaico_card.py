@@ -1,6 +1,8 @@
-"""Tests for the MOSAICO agent card."""
+"""Tests for the MOSAICO agent card (A2A 1.0)."""
 import json
 import os
+
+from google.protobuf.json_format import MessageToDict
 
 from pr_agent.mosaico.card import (OBSERVABILITY_EXTENSION_URI,
                                    build_agent_card)
@@ -12,9 +14,29 @@ _REGISTRATION_JSON = os.path.join(
 
 
 class TestAgentCard:
-    def test_protocol_version_0_3_0(self):
+    def test_supported_interfaces_present(self):
+        """A2A 1.0: url+protocol_version moved into supported_interfaces."""
         card = build_agent_card()
-        assert card.protocol_version == "0.3.0"
+        assert len(card.supported_interfaces) == 1
+        iface = card.supported_interfaces[0]
+        assert iface.protocol_binding == "JSONRPC"
+        assert iface.protocol_version == "1.0"
+        assert iface.url.endswith("/")
+
+    def test_url_absent_from_card_top_level(self):
+        """Non-vacuity: the old 0.3 top-level url= field MUST NOT appear in the 1.0 card."""
+        d = MessageToDict(build_agent_card())
+        assert "url" not in d, f"top-level 'url' must not appear in 1.0 card: {d}"
+        assert "protocolVersion" not in d, f"top-level 'protocolVersion' must not appear: {d}"
+
+    def test_supported_interfaces_serialise(self):
+        """Serialised card carries supportedInterfaces (camelCase) with the interface URL."""
+        d = MessageToDict(build_agent_card())
+        assert "supportedInterfaces" in d
+        ifaces = d["supportedInterfaces"]
+        assert len(ifaces) == 1
+        assert ifaces[0]["protocolBinding"] == "JSONRPC"
+        assert ifaces[0]["protocolVersion"] == "1.0"
 
     def test_streaming_false(self):
         card = build_agent_card()
@@ -22,7 +44,7 @@ class TestAgentCard:
 
     def test_observability_extension_required(self):
         card = build_agent_card()
-        exts = card.capabilities.extensions
+        exts = list(card.capabilities.extensions)
         assert exts, "no extensions advertised"
         obs = [e for e in exts if e.uri == OBSERVABILITY_EXTENSION_URI]
         assert len(obs) == 1, "observability extension not found exactly once"
@@ -32,19 +54,23 @@ class TestAgentCard:
         assert OBSERVABILITY_EXTENSION_URI == \
             "https://mosaico-project.eu/extensions/mosaico-observability"
 
+    def test_observability_extension_serialises(self):
+        """Extension must survive MessageToDict round-trip (regression vs broken toml)."""
+        d = MessageToDict(build_agent_card())
+        exts = d["capabilities"]["extensions"]
+        obs = [e for e in exts if e["uri"] == OBSERVABILITY_EXTENSION_URI]
+        assert len(obs) == 1
+        assert obs[0]["required"] is True
+
     def test_four_skills(self):
         card = build_agent_card()
         skill_ids = {s.id for s in card.skills}
         assert skill_ids == {"review", "improve", "describe", "ask"}
 
-    def test_url_ends_with_slash(self):
-        card = build_agent_card()
-        assert card.url.endswith("/")
-
     def test_input_output_modes(self):
         card = build_agent_card()
-        assert card.default_input_modes == ["text", "text/plain"]
-        assert "text/markdown" in card.default_output_modes
+        assert list(card.default_input_modes) == ["text", "text/plain"]
+        assert "text/markdown" in list(card.default_output_modes)
 
     def test_version_is_nonempty(self):
         card = build_agent_card()

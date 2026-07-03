@@ -180,7 +180,10 @@ class PRDescription:
                     else:
                         self.git_provider.publish_comment(full_markdown_description)
                 else:
-                    self.git_provider.publish_description(pr_title.strip(), pr_body)
+                    # Pass None when the title is not AI-generated so the provider
+                    # leaves it untouched, avoiding reverting a manual edit (#2474).
+                    title_to_publish = pr_title.strip() if get_settings().pr_description.generate_ai_title else None
+                    self.git_provider.publish_description(title_to_publish, pr_body)
 
                     # publish final update message
                     if (get_settings().pr_description.final_update_message and not get_settings().config.get('is_auto_command', False)):
@@ -205,7 +208,7 @@ class PRDescription:
             get_logger().info("Markers were enabled, but user description does not contain markers. Skipping AI prediction")
             return None
 
-        large_pr_handling = get_settings().pr_description.enable_large_pr_handling and "pr_description_only_files_prompts" in get_settings()
+        large_pr_handling = get_settings().pr_description.get("enable_large_pr_handling", True) and "pr_description_only_files_prompts" in get_settings()
         output = get_pr_diff(self.git_provider, self.token_handler, model, large_pr_handling=large_pr_handling, return_remaining_files=True)
         if isinstance(output, tuple):
             patches_diff, remaining_files_list = output
@@ -241,7 +244,7 @@ class PRDescription:
                 self.git_provider, token_handler_only_files_prompt, model)
 
             # get the files prediction for each patch
-            if not get_settings().pr_description.async_ai_calls:
+            if not get_settings().pr_description.get("async_ai_calls", True):
                 results = []
                 for i, patches in enumerate(patches_compressed_list):  # sync calls
                     patches_diff = "\n".join(patches)
