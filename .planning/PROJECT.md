@@ -21,12 +21,12 @@ When a GitLab MR opens, the `describe` command produces a conventionally-formatt
 - ✓ CLI entry point (`python -m pr_agent.cli --pr_url=... <command>`) — existing
 - ✓ Dynaconf hierarchical config with TOML defaults + per-repo overrides — existing
 - ✓ Jinja2 prompt templating with YAML-parsed LLM responses — existing
+- ✓ `describe` rewrites GitLab MR titles to Angular Commit Convention when `enable_conventional_title=true`, with safe `None` fallback — Phase 2
 
 ### Active
 
 <!-- New scope for this milestone. Hypotheses until shipped and validated. -->
 
-- [ ] `describe` rewrites the MR title to follow Angular Commit Convention (`type(scope): summary`), with type and scope inferred from the diff by the AI
 - [ ] `describe` prepends the org's legacy description template (What does this MR do / Note-Risk / Checklist) at the start of the description body
 - [ ] AI fills the "What does this MR do? Why?" and "Note / Risk" sections of the org template
 - [ ] The org template checklist is preserved as empty checkboxes for the human author
@@ -72,7 +72,7 @@ When a GitLab MR opens, the `describe` command produces a conventionally-formatt
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Angular title type/scope inferred by AI from diff | No reliable convention in branch/commit names; AI already reads the diff | — Pending |
+| Angular title type/scope inferred by AI from diff | No reliable convention in branch/commit names; AI already reads the diff | ✓ Phase 2 — AI is steered with `extra_instructions`; Python validator repairs or falls back to `None` |
 | AI fills What/Risk; checklist stays manual | Checklist items require human judgment (self-reviewed, tested) | — Pending |
 | Keep PR-Agent walkthrough below org template | Retains existing value; org template is additive context at the top | — Pending |
 | GitLab-only for v1 | Matches current MR workflow; avoids multi-provider complexity | — Pending |
@@ -96,4 +96,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-03 — Phase 1 complete (config skeleton and fork-safe seam)*
+*Last updated: 2026-07-03 — Phase 2 complete (Angular-convention title rewriting)*

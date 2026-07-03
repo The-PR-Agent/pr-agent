@@ -83,7 +83,7 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Config skeleton and fork-safe seam | 3/3 | Complete    | 2026-07-03 |
-| 2. Angular-convention title rewriting | 2/2 | Complete   | 2026-07-03 |
+| 2. Angular-convention title rewriting | 2/2 | Complete    | 2026-07-03 |
 | 3. Org template prepend with idempotency | 0/0 | Not started | - |
 
 ## Coverage
