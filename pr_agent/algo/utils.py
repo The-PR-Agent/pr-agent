@@ -424,7 +424,7 @@ def get_rate_limit_status(github_token) -> dict:
         "Authorization": f"token {github_token}"
     }
 
-    response = requests.get(RATE_LIMIT_URL, headers=HEADERS)
+    response = requests.get(RATE_LIMIT_URL, headers=HEADERS, timeout=10)
     try:
         rate_limit_info = response.json()
         if rate_limit_info.get('message') == 'Rate limiting is not enabled.':  # for github enterprise
@@ -432,7 +432,7 @@ def get_rate_limit_status(github_token) -> dict:
         response.raise_for_status()  # Check for HTTP errors
     except:  # retry
         time.sleep(0.1)
-        response = requests.get(RATE_LIMIT_URL, headers=HEADERS)
+        response = requests.get(RATE_LIMIT_URL, headers=HEADERS, timeout=10)
         return response.json()
     return rate_limit_info
 

@@ -101,7 +101,7 @@ async def _validate_time_from_last_commit_to_pr_update(data: dict) -> bool:
             'Authorization': f'Bearer {bearer_token}',
             'Accept': 'application/json'
         }
-        response = requests.get(commits_api, headers=headers)
+        response = requests.get(commits_api, headers=headers, timeout=30)
         if response.status_code != 200:
             get_logger().warning(f"Bitbucket commits API returned {response.status_code} for {commits_api}")
             return False

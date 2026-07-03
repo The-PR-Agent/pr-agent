@@ -116,7 +116,14 @@ disable_error_code = ["var-annotated", "assignment", "arg-type"]
 
 [tool.bandit]
 exclude_dirs = ["tests"]
-skips = ["B101"]
+# B101: assert usage (fine outside production asserts)
+# B104: webhook servers intentionally bind 0.0.0.0 inside containers
+# B105: flagged constants are env-var names / placeholders, not passwords
+# B110: try/except/pass is used pervasively for best-effort fallbacks
+# B310: extra-config urlopen validates allowed schemes before fetching
+# B404/B603/B607: subprocess usage is fixed-args git commands, no shell
+# B701: jinja2 templates render LLM prompts, not HTML - autoescape is irrelevant
+skips = ["B101", "B104", "B105", "B110", "B310", "B404", "B603", "B607", "B701"]
 tests = []
 
 [tool.pytest.ini_options]
