@@ -360,7 +360,8 @@ def handle_configurations_errors(config_errors, git_provider):
                     git_provider.publish_persistent_comment(body,
                                                             initial_header=header,
                                                             update_header=False,
-                                                            final_update_message=False)
+                                                            final_update_message=False,
+                                                            name="config-errors")
                 else:
                     git_provider.publish_comment(body)
     except Exception as e:

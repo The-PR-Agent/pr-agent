@@ -30,6 +30,17 @@ from .git_provider import (MAX_FILES_ALLOWED_FULL, FilePatchInfo, GitProvider,
                            IncrementalPR)
 
 
+def _next_page_url(headers: dict) -> str:
+    link = headers.get("Link", "")
+    if not link:
+        return ""
+    for part in link.split(","):
+        match = re.search(r'<([^>]+)>\s*;\s*rel="next"', part.strip())
+        if match:
+            return match.group(1)
+    return ""
+
+
 class GithubProvider(GitProvider):
     def __init__(self, pr_url: Optional[str] = None):
         self.repo_obj = None
@@ -443,13 +454,13 @@ class GithubProvider(GitProvider):
         if not pr:
             return None
         try:
-            headers, data = pr._requester.requestJsonAndCheck(
-                "GET",
-                f"{self.base_url}/repos/{self.repo}/commits/{head_sha}/check-runs",
-            )
-            for run in data.get("check_runs", []):
-                if run.get("name") == check_run_name:
-                    return run["id"]
+            url = f"{self.base_url}/repos/{self.repo}/commits/{head_sha}/check-runs"
+            while url:
+                headers, data = pr._requester.requestJsonAndCheck("GET", url)
+                for run in data.get("check_runs", []):
+                    if run.get("name") == check_run_name:
+                        return run["id"]
+                url = _next_page_url(headers)
         except Exception:
             get_logger().warning("Failed to look up existing check runs")
         return None

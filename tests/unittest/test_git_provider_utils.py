@@ -8,12 +8,13 @@ class FakeMarkdownProvider:
     def is_supported(self, capability):
         return capability == "gfm_markdown"
 
-    def publish_persistent_comment(self, body, initial_header, update_header, final_update_message):
+    def publish_persistent_comment(self, body, initial_header, update_header, final_update_message, name='review'):
         self.persistent_comments.append({
             "body": body,
             "initial_header": initial_header,
             "update_header": update_header,
             "final_update_message": final_update_message,
+            "name": name,
         })
 
 
