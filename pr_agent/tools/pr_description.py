@@ -36,6 +36,32 @@ from pr_agent.tools.ticket_pr_compliance_check import (
 # is defined here but intentionally NOT wired into any output path this phase —
 # it is consumed by Phase 3 (TMPL-01..09).
 _ORG_TEMPLATE_PATH = Path(__file__).parent.parent / "settings" / "org_template.md"
+_ANGULAR_TYPES = frozenset({
+    "feat", "fix", "docs", "style", "refactor", "perf", "test", "build", "ci", "chore", "revert",
+})
+_TYPE_SYNONYMS = {
+    "feature": "feat",
+    "features": "feat",
+    "bug": "fix",
+    "bugfix": "fix",
+    "hotfix": "fix",
+    "doc": "docs",
+    "documentation": "docs",
+    "misc": "chore",
+    "chores": "chore",
+    "reverts": "revert",
+    "tests": "test",
+    "testing": "test",
+    "refactoring": "refactor",
+    "performance": "perf",
+    "styles": "style",
+    "builds": "build",
+}
+_MAX_SUMMARY = 70
+_ANGULAR_TITLE_RE = re.compile(
+    r"^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)"
+    r"(\([a-z0-9\-]+\))?: [a-z].{1,70}[^.]$"
+)
 
 
 def load_org_template() -> str:
@@ -55,6 +81,63 @@ def load_org_template() -> str:
     except OSError as e:
         get_logger().warning(f"Could not load org template at {_ORG_TEMPLATE_PATH}: {e}")
         return ""
+
+
+def _normalize_angular_title(title: str) -> str | None:
+    if title is None or not title.strip():
+        return None
+
+    title = " ".join(title.split()).strip()
+    title = title.removeprefix("#").strip().strip("`\"'")
+    title = title.removeprefix("#").strip()
+    if ":" not in title:
+        return None
+
+    header, summary = title.split(":", 1)
+    header_match = re.match(r"^([a-zA-Z]+)(?:\(([^)]*)\))?\s*$", header.strip())
+    if not header_match:
+        return None
+
+    type_norm = header_match.group(1).lower()
+    if type_norm not in _ANGULAR_TYPES:
+        type_norm = _TYPE_SYNONYMS.get(type_norm)
+        if type_norm is None:
+            return None
+
+    scope_raw = header_match.group(2)
+    scope_norm = ""
+    if scope_raw and scope_raw.strip():
+        scope_candidate = "-".join(scope_raw.strip().lower().split())
+        if re.fullmatch(r"^[a-z0-9\-]+$", scope_candidate):
+            scope_norm = scope_candidate
+
+    summary = summary.strip()
+    if not summary:
+        return None
+    if summary.endswith("."):
+        summary = summary[:-1]
+    if not summary:
+        return None
+
+    summary = summary[0].lower() + summary[1:]
+    if len(summary) > _MAX_SUMMARY:
+        truncated = summary[:_MAX_SUMMARY]
+        if " " in truncated:
+            truncated = truncated.rsplit(" ", 1)[0]
+        summary = truncated.rstrip().rstrip(".")
+    if len(summary) < 2:
+        return None
+
+    scope_part = f"({scope_norm})" if scope_norm else ""
+    title_out = f"{type_norm}{scope_part}: {summary}"
+    if _ANGULAR_TITLE_RE.fullmatch(title_out):
+        return title_out
+    if len(summary) == 2 and re.fullmatch(
+            r"^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9\-]+\))?: [a-z][^.]$",
+            title_out,
+    ):
+        return title_out
+    return None
 
 
 class PRDescription:
