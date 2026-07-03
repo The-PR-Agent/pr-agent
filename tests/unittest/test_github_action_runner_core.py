@@ -200,17 +200,13 @@ async def test_issue_comment_from_bot_sender_is_skipped(monkeypatch, tmp_path, r
 
 def _patch_synchronize_deps(monkeypatch, handled, push_commands, handle_push_trigger=True):
     monkeypatch.setattr(github_action_runner, "apply_repo_settings", lambda pr_url: None)
-    # Use monkeypatch.setitem on store entries for automatic cleanup
     settings = get_settings()
     monkeypatch.setitem(settings.store["github_app"], "push_commands", list(push_commands))
-    # The code reads github_action_config.handle_push_trigger first (line 143),
-    # so we set it there too.
-    if "github_action_config" not in settings.store:
-        settings.store["github_action_config"] = {}
-    monkeypatch.setitem(settings.store["github_action_config"], "handle_push_trigger", handle_push_trigger)
-    # Disable merge-commit and bot guards by default so existing tests pass
-    monkeypatch.setitem(settings.store["github_action_config"], "push_trigger_ignore_merge_commits", False)
-    monkeypatch.setitem(settings.store["github_action_config"], "push_trigger_ignore_bot_commits", False)
+    settings.set("github_action_config", {
+        "handle_push_trigger": handle_push_trigger,
+        "push_trigger_ignore_merge_commits": False,
+        "push_trigger_ignore_bot_commits": False,
+    }, merge=False)
 
     class FakeAgent:
         async def handle_request(self, url, body, notify=None):
@@ -253,7 +249,8 @@ async def test_synchronize_skips_equal_before_after_sha(monkeypatch, tmp_path, r
     handled = []
     _patch_synchronize_deps(monkeypatch, handled, ["/describe"])
     monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
-    monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_synchronize_event(tmp_path, before_sha="same", after_sha="same")))
+    event_path = _write_synchronize_event(tmp_path, before_sha="same", after_sha="same")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
     monkeypatch.setenv("GITHUB_TOKEN", "token")
 
     await github_action_runner.run_action()
@@ -282,7 +279,7 @@ async def test_synchronize_skips_merge_commit(monkeypatch, tmp_path, restore_git
     handled = []
     _patch_synchronize_deps(monkeypatch, handled, ["/describe"])
     settings = get_settings()
-    settings.store["github_action_config"]["push_trigger_ignore_merge_commits"] = True
+    monkeypatch.setitem(settings.store["github_action_config"], "push_trigger_ignore_merge_commits", True)
     monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_synchronize_event(
         tmp_path, before_sha="abc", after_sha="merge123", merge_commit_sha="merge123"
@@ -299,7 +296,7 @@ async def test_synchronize_skips_bot_commit(monkeypatch, tmp_path, restore_githu
     handled = []
     _patch_synchronize_deps(monkeypatch, handled, ["/describe"])
     settings = get_settings()
-    settings.store["github_action_config"]["push_trigger_ignore_bot_commits"] = True
+    monkeypatch.setitem(settings.store["github_action_config"], "push_trigger_ignore_bot_commits", True)
     monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_synchronize_event(
         tmp_path, sender_type="Bot"
@@ -316,8 +313,7 @@ async def test_synchronize_uses_github_action_config_push_commands(monkeypatch, 
     handled = []
     _patch_synchronize_deps(monkeypatch, handled, ["/review"], handle_push_trigger=True)
     settings = get_settings()
-    # Override with github_action_config push_commands; should take precedence
-    settings.store["github_action_config"]["push_commands"] = ["/describe"]
+    monkeypatch.setitem(settings.store["github_action_config"], "push_commands", ["/describe"])
     monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_synchronize_event(tmp_path)))
     monkeypatch.setenv("GITHUB_TOKEN", "token")
