@@ -174,6 +174,21 @@ class AzureDevopsProvider(GitProvider):
                 get_logger().error(f"Failed to get repo settings, error: {e}")
             return ""
 
+    def get_pr_agent_repo_custom_file(self, file_path: str) -> bytes:
+        try:
+            contents = self.azure_devops_client.get_item_content(
+                repository_id=self.repo_slug,
+                project=self.workspace_slug,
+                download=False,
+                include_content_metadata=False,
+                include_content=True,
+                path=file_path,
+            )
+            chunks = [c if isinstance(c, (bytes, bytearray)) else str(c).encode("utf-8") for c in contents]
+            return b"".join(chunks)
+        except Exception:
+            return b""
+
     def get_files(self):
         files = []
         for i in self.azure_devops_client.get_pull_request_commits(

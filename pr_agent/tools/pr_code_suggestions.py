@@ -11,6 +11,7 @@ from typing import Dict, List
 from jinja2 import Environment, StrictUndefined
 
 from pr_agent.algo import MAX_TOKENS
+from pr_agent.algo.best_practices import load_repo_best_practices_md
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.git_patch_processing import decouple_and_convert_to_hunks_with_lines_numbers
@@ -68,7 +69,7 @@ class PRCodeSuggestions:
             "num_code_suggestions": num_code_suggestions,
             "extra_instructions": get_settings().pr_code_suggestions.extra_instructions,
             "commit_messages_str": self.git_provider.get_commit_messages(),
-            "relevant_best_practices": "",
+            "relevant_best_practices": load_repo_best_practices_md(self.git_provider, tool_name="improve"),
             "is_ai_metadata": get_settings().get("config.enable_ai_metadata", False),
             "focus_only_on_problems": get_settings().get("pr_code_suggestions.focus_only_on_problems", False),
             "date": datetime.now().strftime('%Y-%m-%d'),

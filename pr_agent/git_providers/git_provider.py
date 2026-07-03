@@ -277,6 +277,10 @@ class GitProvider(ABC):
     def get_repo_settings(self):
         pass
 
+    def get_pr_agent_repo_custom_file(self, file_path: str) -> bytes:
+        """Fetch a file from the repo (default branch). Empty bytes if missing or unsupported."""
+        return b""
+
     def get_workspace_name(self):
         return ""
 

@@ -9,6 +9,7 @@ from jinja2 import Environment, StrictUndefined
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
+from pr_agent.algo.best_practices import load_repo_best_practices_md
 from pr_agent.algo.pr_processing import (add_ai_metadata_to_diff_files,
                                          get_pr_diff,
                                          retry_with_fallback_models)
@@ -92,6 +93,7 @@ class PRReviewer:
             'question_str': question_str,
             'answer_str': answer_str,
             "extra_instructions": get_settings().pr_reviewer.extra_instructions,
+            "relevant_best_practices": load_repo_best_practices_md(self.git_provider, tool_name="review"),
             "commit_messages_str": self.git_provider.get_commit_messages(),
             "custom_labels": "",
             "enable_custom_labels": get_settings().config.enable_custom_labels,
