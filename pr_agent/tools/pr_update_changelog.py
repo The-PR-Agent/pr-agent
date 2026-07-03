@@ -39,11 +39,19 @@ class PRUpdateChangelog:
         if self._skip_push:
             self.main_language = None
             self.changelog_file_str = ""
-        else:
-            self.main_language = get_main_pr_language(
-                self.git_provider.get_languages(), self.git_provider.get_files()
-            )
-            self._get_changelog_file()  # self.changelog_file_str
+            self.commit_changelog = self.push_changelog_changes
+            self.patches_diff = None
+            self.prediction = None
+            self.cli_mode = cli_mode
+            self.vars = {}
+            self.token_handler = None
+            self.ai_handler = ai_handler()
+            return
+
+        self.main_language = get_main_pr_language(
+            self.git_provider.get_languages(), self.git_provider.get_files()
+        )
+        self._get_changelog_file()  # self.changelog_file_str
 
         self.commit_changelog = self.push_changelog_changes
 
@@ -60,7 +68,7 @@ class PRUpdateChangelog:
             "language": self.main_language,
             "diff": "",  # empty diff for initial calculation
             "pr_link": "",
-            "changelog_file_str": self.changelog_file_str if not self._skip_push else "",
+            "changelog_file_str": self.changelog_file_str,
             "today": date.today(),
             "extra_instructions": get_settings().pr_update_changelog.extra_instructions,
             "commit_messages_str": self.git_provider.get_commit_messages(),
