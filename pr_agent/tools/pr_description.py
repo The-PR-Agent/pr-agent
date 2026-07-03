@@ -21,7 +21,7 @@ from pr_agent.algo.utils import (ModelType, PRDescriptionHeader, clip_tokens,
                                  set_custom_labels,
                                  show_relevant_configurations)
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers import (GithubProvider, get_git_provider,
+from pr_agent.git_providers import (GitLabProvider, GithubProvider, get_git_provider,
                                     get_git_provider_with_context)
 from pr_agent.git_providers.git_provider import get_main_pr_language
 from pr_agent.log import get_logger
@@ -114,12 +114,20 @@ def load_org_template() -> str:
         return ""
 
 
-def _org_template_enabled() -> bool:
-    return get_settings().pr_description.get("enable_org_template", False)
+def _is_gitlab_provider(git_provider) -> bool:
+    return isinstance(git_provider, GitLabProvider)
 
 
-def _org_template_active() -> bool:
-    return _org_template_enabled() and not get_settings().pr_description.use_description_markers
+def _conventional_title_enabled(git_provider) -> bool:
+    return _is_gitlab_provider(git_provider) and get_settings().pr_description.get("enable_conventional_title", False)
+
+
+def _org_template_enabled(git_provider) -> bool:
+    return _is_gitlab_provider(git_provider) and get_settings().pr_description.get("enable_org_template", False)
+
+
+def _org_template_active(git_provider) -> bool:
+    return _org_template_enabled(git_provider) and not get_settings().pr_description.use_description_markers
 
 
 def _format_org_template_value(value) -> str:
@@ -263,7 +271,7 @@ class PRDescription:
         )
         self.pr_id = self.git_provider.get_pr_id()
         self.keys_fix = ["filename:", "language:", "changes_summary:", "changes_title:", "description:", "title:"]
-        if _org_template_active():
+        if _org_template_active(self.git_provider):
             self.keys_fix.extend(["what_why:", "note_risk:"])
 
         if get_settings().pr_description.enable_semantic_files_types and not self.git_provider.is_supported(
@@ -294,9 +302,9 @@ class PRDescription:
             "duplicate_prompt_examples": get_settings().config.get("duplicate_prompt_examples", False),
             "enable_pr_diagram": enable_pr_diagram,
         }
-        if get_settings().pr_description.get('enable_conventional_title', False):
+        if _conventional_title_enabled(self.git_provider):
             self.vars["extra_instructions"] = (self.vars.get("extra_instructions") or "") + _ANGULAR_TITLE_INSTRUCTIONS
-        if _org_template_active():
+        if _org_template_active(self.git_provider):
             self.vars["extra_instructions"] = (self.vars.get("extra_instructions") or "") + _ORG_TEMPLATE_INSTRUCTIONS
 
         self.user_description = self.git_provider.get_user_description()
@@ -348,7 +356,7 @@ class PRDescription:
                 get_logger().debug(f"Publishing labels disabled")
 
             if get_settings().pr_description.use_description_markers:
-                if _org_template_enabled():
+                if _org_template_enabled(self.git_provider):
                     get_logger().warning("Skipping org template prepend because description markers are enabled")
                 pr_title, pr_body, changes_walkthrough, pr_file_changes = self._prepare_pr_answer_with_markers()
             else:
@@ -398,7 +406,7 @@ class PRDescription:
 
                 # publish description
                 _pd = get_settings().pr_description
-                _conv_on = _pd.get('enable_conventional_title', False)
+                _conv_on = _conventional_title_enabled(self.git_provider)
                 if _conv_on:
                     title_to_publish = self.ai_title
                 elif _pd.generate_ai_title:
@@ -710,7 +718,7 @@ class PRDescription:
 
     def _stash_org_template_fields(self):
         self.org_template_fields = {}
-        if not _org_template_active() or not isinstance(self.data, dict):
+        if not _org_template_active(self.git_provider) or not isinstance(self.data, dict):
             return
         self.org_template_fields = {
             "what_why": self.data.pop("what_why", None),
@@ -718,7 +726,7 @@ class PRDescription:
         }
 
     def _prepend_org_template(self, pr_body: str) -> str:
-        if not _org_template_active():
+        if not _org_template_active(self.git_provider):
             return pr_body
 
         template = load_org_template()

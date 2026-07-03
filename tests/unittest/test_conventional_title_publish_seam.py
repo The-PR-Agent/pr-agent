@@ -92,9 +92,11 @@ async def _noop_retry(*_args, **_kwargs):
 )
 @patch("pr_agent.tools.pr_description.retry_with_fallback_models", side_effect=_noop_retry)
 @patch("pr_agent.tools.pr_description.extract_and_cache_pr_tickets", side_effect=_noop_extract_tickets)
+@patch("pr_agent.tools.pr_description._is_gitlab_provider", return_value=True)
 @patch("pr_agent.tools.pr_description.get_settings")
 async def test_publish_description_title_argument_matrix(
     mock_get_settings,
+    _mock_is_gitlab_provider,
     _mock_extract_tickets,
     _mock_retry,
     generate_ai_title,
@@ -127,9 +129,11 @@ async def test_publish_description_title_argument_matrix(
 @patch("pr_agent.tools.pr_description.TokenHandler")
 @patch("pr_agent.tools.pr_description.get_main_pr_language", return_value="Python")
 @patch("pr_agent.tools.pr_description.get_git_provider_with_context")
+@patch("pr_agent.tools.pr_description._is_gitlab_provider", return_value=True)
 @patch("pr_agent.tools.pr_description.get_settings")
 def test_conventional_title_augments_effective_extra_instructions(
     mock_get_settings,
+    _mock_is_gitlab_provider,
     mock_get_git_provider,
     _mock_get_main_pr_language,
     _mock_token_handler,
@@ -173,9 +177,11 @@ def test_conventional_title_augments_effective_extra_instructions(
 @pytest.mark.parametrize("ai_title", [_MISSING, "", "   ", ["bad"]])
 @patch("pr_agent.tools.pr_description.retry_with_fallback_models", side_effect=_noop_retry)
 @patch("pr_agent.tools.pr_description.extract_and_cache_pr_tickets", side_effect=_noop_extract_tickets)
+@patch("pr_agent.tools.pr_description._is_gitlab_provider", return_value=True)
 @patch("pr_agent.tools.pr_description.get_settings")
 async def test_conventional_title_missing_or_malformed_ai_title_publishes_body_without_title(
     mock_get_settings,
+    _mock_is_gitlab_provider,
     _mock_extract_tickets,
     _mock_retry,
     generate_ai_title,
@@ -196,9 +202,11 @@ async def test_conventional_title_missing_or_malformed_ai_title_publishes_body_w
 @pytest.mark.parametrize("ai_title", [_MISSING, "", ["bad"]])
 @patch("pr_agent.tools.pr_description.retry_with_fallback_models", side_effect=_noop_retry)
 @patch("pr_agent.tools.pr_description.extract_and_cache_pr_tickets", side_effect=_noop_extract_tickets)
+@patch("pr_agent.tools.pr_description._is_gitlab_provider", return_value=True)
 @patch("pr_agent.tools.pr_description.get_settings")
 async def test_conventional_title_comment_mode_uses_sanitized_ai_title(
     mock_get_settings,
+    _mock_is_gitlab_provider,
     _mock_extract_tickets,
     _mock_retry,
     ai_title,
@@ -217,3 +225,24 @@ async def test_conventional_title_comment_mode_uses_sanitized_ai_title(
     comment_body = obj.git_provider.publish_comment.call_args[0][0]
     assert comment_body.startswith("## Title\n\n\n\n___\nbody")
     obj.git_provider.publish_description.assert_not_called()
+
+
+@patch("pr_agent.tools.pr_description.retry_with_fallback_models", side_effect=_noop_retry)
+@patch("pr_agent.tools.pr_description.extract_and_cache_pr_tickets", side_effect=_noop_extract_tickets)
+@patch("pr_agent.tools.pr_description._is_gitlab_provider", return_value=False)
+@patch("pr_agent.tools.pr_description.get_settings")
+async def test_conventional_title_toggle_is_gitlab_only(
+    mock_get_settings,
+    _mock_is_gitlab_provider,
+    _mock_extract_tickets,
+    _mock_retry,
+):
+    mock_get_settings.return_value = _settings(
+        generate_ai_title=False,
+        enable_conventional_title=True,
+    )
+    obj = _make_instance(ai_title="Feature(auth): add SSO support", pr_title="Human supplied title")
+
+    await obj.run()
+
+    assert obj.git_provider.publish_description.call_args[0][0] is None

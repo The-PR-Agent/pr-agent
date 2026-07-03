@@ -141,8 +141,13 @@ def test_get_user_description_ignores_org_template_prefix_on_rerun():
 
 
 @patch("pr_agent.tools.pr_description.load_org_template", return_value=TEMPLATE)
+@patch("pr_agent.tools.pr_description._is_gitlab_provider", return_value=True)
 @patch("pr_agent.tools.pr_description.get_settings")
-def test_prepend_org_template_replaces_existing_block_and_preserves_checkboxes(mock_get_settings, _):
+def test_prepend_org_template_replaces_existing_block_and_preserves_checkboxes(
+    mock_get_settings,
+    _mock_is_gitlab_provider,
+    _mock_load_template,
+):
     mock_get_settings.return_value = _settings()
     old_block = _render_org_template_block(TEMPLATE, "- old", "None", "")
     old_block = old_block.replace("- [ ] Added or updated tests", "- [x] Added or updated tests")
@@ -161,7 +166,8 @@ def test_prepend_org_template_replaces_existing_block_and_preserves_checkboxes(m
 
 
 @patch("pr_agent.tools.pr_description.get_settings")
-def test_stash_org_template_fields_consumes_ai_keys(mock_get_settings):
+@patch("pr_agent.tools.pr_description._is_gitlab_provider", return_value=True)
+def test_stash_org_template_fields_consumes_ai_keys(_mock_is_gitlab_provider, mock_get_settings):
     mock_get_settings.return_value = _settings()
     obj = _make_instance()
     obj.data = {
@@ -183,13 +189,25 @@ def test_stash_org_template_fields_consumes_ai_keys(mock_get_settings):
 
 
 @patch("pr_agent.tools.pr_description.load_org_template", return_value=TEMPLATE)
+@patch("pr_agent.tools.pr_description._is_gitlab_provider", return_value=True)
 @patch("pr_agent.tools.pr_description.get_settings")
-def test_marker_mode_skips_prepend(mock_get_settings, _):
+def test_marker_mode_skips_prepend(mock_get_settings, _mock_is_gitlab_provider, _mock_load_template):
     mock_get_settings.return_value = _settings(use_description_markers=True)
     obj = _make_instance()
     obj.org_template_fields = {"what_why": "- fresh", "note_risk": "None"}
 
     assert obj._prepend_org_template("marker body") == "marker body"
+
+
+@patch("pr_agent.tools.pr_description.load_org_template", return_value=TEMPLATE)
+@patch("pr_agent.tools.pr_description._is_gitlab_provider", return_value=False)
+@patch("pr_agent.tools.pr_description.get_settings")
+def test_org_template_toggle_is_gitlab_only(mock_get_settings, _mock_is_gitlab_provider, _mock_load_template):
+    mock_get_settings.return_value = _settings()
+    obj = _make_instance()
+    obj.org_template_fields = {"what_why": "- fresh", "note_risk": "None"}
+
+    assert obj._prepend_org_template("body") == "body"
 
 
 @pytest.mark.parametrize(

@@ -161,7 +161,7 @@ class TestForkSeamsAreToggleGatedOrInert:
         method_start = source.rfind("def _prepend_org_template", 0, call_index)
         gated_slice = source[method_start:call_index]
 
-        assert "if not _org_template_active():" in gated_slice
+        assert "if not _org_template_active(self.git_provider):" in gated_slice
 
     def test_fork_flags_never_use_bare_attribute_access(self):
         """Every reference to a fork flag in ``pr_description.py`` must use the
