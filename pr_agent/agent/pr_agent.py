@@ -69,12 +69,20 @@ class PRAgent:
             )
             return False
 
-        # Update settings from args before apply_repo_settings,
-        # so that --config.git_provider=gitlab is effective for provider creation
+        # Extract CLI --key=value overrides so they can be applied before
+        # apply_repo_settings (needed for --config.git_provider=gitlab etc.)
+        # and re-applied afterward to maintain CLI > repo precedence.
+        cli_key_values = [a for a in args if a.startswith('--') and '=' in a]
+
+        # Apply CLI overrides before repo settings, so provider creation
+        # (e.g. --config.git_provider=gitlab) can see them.
         args = update_settings_from_args(args)
 
         # First, apply repo specific settings if exists
         apply_repo_settings(pr_url)
+
+        # Re-apply CLI overrides so they take precedence over repo .pr_agent.toml
+        update_settings_from_args(cli_key_values)
 
         # Append the response language in the extra instructions
         response_language = get_settings().config.get('response_language', 'en-us')
