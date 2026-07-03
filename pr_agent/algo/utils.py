@@ -15,7 +15,7 @@ import traceback
 from datetime import datetime
 from enum import Enum
 from importlib.metadata import PackageNotFoundError, version
-from typing import Any, List, Tuple, TypedDict
+from typing import Any, List, Optional, Tuple, TypedDict
 
 import html2text
 import requests
@@ -989,14 +989,29 @@ def get_user_labels(current_labels: List[str] = None):
     return user_labels
 
 
+def _get_litellm_max_input_tokens(model: str) -> Optional[int]:
+    """Look up a model's context window from litellm's model metadata, or None if unknown."""
+    try:
+        import litellm
+        info = litellm.get_model_info(model)
+        max_input = info.get("max_input_tokens") or info.get("max_tokens")
+        if max_input and int(max_input) > 0:
+            return int(max_input)
+    except Exception:
+        return None
+    return None
+
+
 def get_max_tokens(model):
     """
     Get the maximum number of tokens allowed for a model.
     logic:
     (1) If the model is in './pr_agent/algo/__init__.py', use the value from there.
-    (2) else, the user needs to define explicitly 'config.custom_model_max_tokens'
+    (2) else, if the user defined explicitly 'config.custom_model_max_tokens', use that.
+    (3) else, fall back to litellm's model metadata, so newly released models work
+        without waiting for a MAX_TOKENS entry.
 
-    For both cases, we further limit the number of tokens to 'config.max_model_tokens' if it is set.
+    For all cases, we further limit the number of tokens to 'config.max_model_tokens' if it is set.
     This aims to improve the algorithmic quality, as the AI model degrades in performance when the input is too long.
     """
     settings = get_settings()
@@ -1004,9 +1019,15 @@ def get_max_tokens(model):
         max_tokens_model = MAX_TOKENS[model]
     elif settings.config.custom_model_max_tokens > 0:
         max_tokens_model = settings.config.custom_model_max_tokens
+    elif (litellm_max_tokens := _get_litellm_max_input_tokens(model)):
+        get_logger().info(f"Model {model} is not in MAX_TOKENS; using max_input_tokens={litellm_max_tokens} "
+                          f"from litellm model metadata")
+        max_tokens_model = litellm_max_tokens
     else:
-        get_logger().error(f"Model {model} is not defined in MAX_TOKENS in ./pr_agent/algo/__init__.py and no custom_model_max_tokens is set")
-        raise Exception(f"Ensure {model} is defined in MAX_TOKENS in ./pr_agent/algo/__init__.py or set a positive value for it in config.custom_model_max_tokens")
+        get_logger().error(f"Model {model} is not defined in MAX_TOKENS in ./pr_agent/algo/__init__.py, "
+                           f"no custom_model_max_tokens is set, and litellm has no metadata for it")
+        raise Exception(f"Ensure {model} is defined in MAX_TOKENS in ./pr_agent/algo/__init__.py, or set a "
+                        f"positive value for it in config.custom_model_max_tokens")
 
     if settings.config.max_model_tokens and settings.config.max_model_tokens > 0:
         max_tokens_model = min(settings.config.max_model_tokens, max_tokens_model)

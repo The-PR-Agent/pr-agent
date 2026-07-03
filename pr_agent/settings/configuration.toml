@@ -32,7 +32,7 @@ response_language="en-US" # Language locales code for PR responses in ISO 3166 a
 max_description_tokens = 500
 max_commits_tokens = 500
 max_model_tokens = 32000 # Limits the maximum number of tokens that can be used by any model, regardless of the model's default capabilities.
-custom_model_max_tokens=-1 # for models not in the default list
+custom_model_max_tokens=-1 # for models not in the default list; when unset, litellm model metadata is used as a final fallback
 model_token_count_estimate_factor=0.3 # factor to increase the token count estimate, in order to reduce likelihood of model failure due to too many tokens - applicable only when requesting an accurate estimate.
 # patch extension logic
 patch_extension_skip_types =[".md",".txt"]

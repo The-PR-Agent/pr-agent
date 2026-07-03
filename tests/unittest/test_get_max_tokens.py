@@ -124,6 +124,52 @@ class TestGetMaxTokens:
         with pytest.raises(Exception):
             get_max_tokens(model)
 
+    # Test the litellm metadata fallback for models missing from MAX_TOKENS
+    def test_unknown_model_falls_back_to_litellm_metadata(self, monkeypatch):
+        import litellm
+
+        fake_settings = type('', (), {
+            'config': type('', (), {
+                'custom_model_max_tokens': 0,
+                'max_model_tokens': 0
+            })()
+        })()
+
+        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(litellm, "get_model_info", lambda model: {"max_input_tokens": 123000})
+
+        assert get_max_tokens("brand-new-model") == 123000
+
+    def test_custom_model_max_tokens_beats_litellm_metadata(self, monkeypatch):
+        import litellm
+
+        fake_settings = type('', (), {
+            'config': type('', (), {
+                'custom_model_max_tokens': 5000,
+                'max_model_tokens': 0
+            })()
+        })()
+
+        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(litellm, "get_model_info", lambda model: {"max_input_tokens": 123000})
+
+        assert get_max_tokens("brand-new-model") == 5000
+
+    def test_litellm_metadata_fallback_respects_max_model_tokens_cap(self, monkeypatch):
+        import litellm
+
+        fake_settings = type('', (), {
+            'config': type('', (), {
+                'custom_model_max_tokens': 0,
+                'max_model_tokens': 10000
+            })()
+        })()
+
+        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(litellm, "get_model_info", lambda model: {"max_input_tokens": 123000})
+
+        assert get_max_tokens("brand-new-model") == 10000
+
     def test_model_max_tokens_with__limit(self, monkeypatch):
         fake_settings = type('', (), {
             'config': type('', (), {
