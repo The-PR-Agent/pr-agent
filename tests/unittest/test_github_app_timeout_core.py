@@ -140,13 +140,17 @@ class TestDefaultDictWithTimeout:
     def test_pop_removes_key_time(self, fake_clock):
         d = DefaultDictWithTimeout(lambda: 0, ttl=10, refresh_interval=1000)
         d["a"] = 1
-        assert d.pop("a") == 1
+        # Call pop() outside the assert: an assert expression must be
+        # side-effect free (it is skipped entirely under `python -O`).
+        popped = d.pop("a")
+        assert popped == 1
         assert "a" not in d
         assert "a" not in _key_times(d)
 
     def test_pop_missing_key_with_default_does_not_raise(self, fake_clock):
         d = DefaultDictWithTimeout(lambda: 0, ttl=10, refresh_interval=1000)
-        assert d.pop("missing", "fallback") == "fallback"
+        result = d.pop("missing", "fallback")
+        assert result == "fallback"
         assert "missing" not in _key_times(d)
 
     def test_pop_then_refresh_does_not_raise(self, fake_clock):
