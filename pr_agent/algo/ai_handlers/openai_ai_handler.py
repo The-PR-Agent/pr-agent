@@ -1,10 +1,9 @@
 from os import environ
-from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 import openai
 from openai import AsyncOpenAI
 from tenacity import retry, retry_if_exception_type, retry_if_not_exception_type, stop_after_attempt
 
-from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
+from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler, make_api_error
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
@@ -69,4 +68,4 @@ class OpenAIHandler(BaseAiHandler):
             raise
         except Exception as e:
             get_logger().warning(f"Unknown error during LLM inference: {e}")
-            raise openai.APIError from e
+            raise make_api_error(f"Unknown error during LLM inference: {e}") from e

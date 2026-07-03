@@ -2,6 +2,7 @@ import json
 
 import openai
 
+from pr_agent.algo.ai_handlers.base_ai_handler import make_api_error
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
@@ -35,10 +36,10 @@ async def _handle_streaming_response(response):
 
     if not full_response and finish_reason is None:
         get_logger().warning("Streaming response resulted in empty content with no finish reason")
-        raise openai.APIError("Empty streaming response received without proper completion")
+        raise make_api_error("Empty streaming response received without proper completion")
     elif not full_response and finish_reason:
         get_logger().debug(f"Streaming response resulted in empty content but completed with finish_reason: {finish_reason}")
-        raise openai.APIError(f"Streaming response completed with finish_reason '{finish_reason}' but no content received")
+        raise make_api_error(f"Streaming response completed with finish_reason '{finish_reason}' but no content received")
     return full_response, finish_reason
 
 

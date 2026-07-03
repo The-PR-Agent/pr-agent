@@ -3,7 +3,7 @@
 import copy
 import json
 import re
-from typing import List
+from typing import List, Optional
 
 import yaml
 
@@ -117,7 +117,7 @@ def try_fix_yaml(response_text: str,
                  keys_fix_yaml: List[str] = [],
                  first_key="",
                  last_key="",
-                 response_text_original="") -> dict:
+                 response_text_original="") -> Optional[dict]:
     response_text_lines = response_text.split('\n')
 
     keys_yaml = ['relevant line:', 'suggestion content:', 'relevant file:', 'existing code:',
@@ -282,3 +282,5 @@ def try_fix_yaml(response_text: str,
     #     except:
     #         pass
 
+
+    return None

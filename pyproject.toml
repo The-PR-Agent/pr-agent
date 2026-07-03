@@ -96,6 +96,24 @@ lint.ignore = ["E999", "B008"]
   "E402",
 ] # Ignore `E402` (import violations) in all `__init__.py` files, and in `path/to/file.py`.
 
+[tool.mypy]
+# Gradual-typing baseline: only pr_agent/algo is checked for now, permissively.
+# Run with: ./.venv/bin/mypy
+# Tighten (more paths, fewer disabled codes) as modules get annotated.
+files = ["pr_agent/algo"]
+follow_imports = "silent"
+ignore_missing_imports = true
+no_strict_optional = true
+
+[[tool.mypy.overrides]]
+# Baseline exemptions for pre-existing findings; remove as they get fixed.
+module = [
+  "pr_agent.algo.git_patch_processing",
+  "pr_agent.algo.pr_processing",
+  "pr_agent.algo.ai_handlers.*",
+]
+disable_error_code = ["var-annotated", "assignment", "arg-type"]
+
 [tool.bandit]
 exclude_dirs = ["tests"]
 skips = ["B101"]

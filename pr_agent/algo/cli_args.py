@@ -1,9 +1,10 @@
-from base64 import b64decode, encode, b64encode
 import hashlib
+from base64 import b64decode, b64encode, encode
+
 
 class CliArgs:
     @staticmethod
-    def validate_user_args(args: list) -> (bool, str):
+    def validate_user_args(args: list) -> tuple[bool, str]:
         try:
             if not args:
                 return True, ""
