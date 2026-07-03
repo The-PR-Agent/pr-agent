@@ -381,7 +381,7 @@ class GithubProvider(GitProvider):
         self.publish_persistent_comment_full(pr_comment, initial_header, update_header, name, final_update_message)
 
     def _publish_check_run(self, text: str, name: str) -> bool:
-        if not self.last_commit_id:
+        if not getattr(self, 'last_commit_id', None):
             get_logger().error("Cannot publish check run without a commit SHA")
             return False
         conclusion = "neutral"
@@ -439,8 +439,11 @@ class GithubProvider(GitProvider):
             return False
 
     def _find_existing_check_run(self, check_run_name: str, head_sha: str) -> Optional[int]:
+        pr = getattr(self, 'pr', None)
+        if not pr:
+            return None
         try:
-            headers, data = self.pr._requester.requestJsonAndCheck(
+            headers, data = pr._requester.requestJsonAndCheck(
                 "GET",
                 f"{self.base_url}/repos/{self.repo}/commits/{head_sha}/check-runs",
             )

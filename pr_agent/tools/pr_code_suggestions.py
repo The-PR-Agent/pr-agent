@@ -249,6 +249,9 @@ class PRCodeSuggestions:
                                                 max_previous_comments=4,
                                                 progress_response=None,
                                                 only_fold=False):
+        if hasattr(git_provider, '_publish_check_run') and get_settings().github.publish_as_check_run:
+            if git_provider._publish_check_run(pr_comment, name):
+                return
 
         def _extract_link(comment_text: str):
             r = re.compile(r"<!--.*?-->")
