@@ -45,7 +45,8 @@ class PRUpdateChangelog:
         self._get_changelog_file()  # self.changelog_file_str
 
         self.ai_handler = ai_handler()
-        self.ai_handler.main_pr_language = self.main_language
+        if self.main_language:
+            self.ai_handler.main_pr_language = self.main_language
 
         self.patches_diff = None
         self.prediction = None
