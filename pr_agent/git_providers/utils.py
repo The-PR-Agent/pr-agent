@@ -16,11 +16,19 @@ from pr_agent.custom_merge_loader import validate_file_security
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.log import get_logger
 
-# Sections whose values come from host-level configuration only. Repo-supplied
-# .pr_agent.toml MUST NOT be able to set these, because they expose
-# filesystem-touching capabilities (e.g. skills.paths) that a malicious repo
-# could otherwise abuse to read sensitive host files into the LLM prompt.
-_HOST_ONLY_SETTINGS_SECTIONS = frozenset({"skills"})
+# Sections that touch host-level capabilities and so cannot be fully configured
+# from a repo's .pr_agent.toml. For each section listed here, only the keys in
+# its allowlist may be overridden by repo settings; every other key is dropped
+# with a warning.
+#
+# skills: `enabled` and `max_skills_tokens` are safe per-repo preferences (a repo
+# can opt in to, or size, the host's admin-curated skill library). `paths` is NOT
+# overridable: it points at the PR-Agent host's filesystem, so letting a repo set
+# it would allow a malicious repo to read sensitive host files (e.g. ~/.ssh/*)
+# into the LLM prompt. `paths` therefore stays host-only.
+_REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION = {
+    "skills": frozenset({"enabled", "max_skills_tokens"}),
+}
 
 _MAX_EXTRA_CONFIG_BYTES = 1 * 1024 * 1024  # 1 MB cap for a remote .toml
 _FETCH_TIMEOUT_SECONDS = 10
@@ -311,12 +319,17 @@ def apply_repo_settings(pr_url):
                             # Skip excluded items, such as forbidden to load env.
                             get_logger().debug(f"Skipping a section: {section} which is not allowed")
                             continue
-                        if section.lower() in _HOST_ONLY_SETTINGS_SECTIONS:
-                            get_logger().warning(
-                                f"Refusing to apply host-only section [{section}] from repo settings; "
-                                f"this section can only be configured at the host level"
-                            )
-                            continue
+                        allowed_keys = _REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION.get(section.lower())
+                        if allowed_keys is not None:
+                            rejected = [k for k in contents if k.lower() not in allowed_keys]
+                            if rejected:
+                                get_logger().warning(
+                                    f"Ignoring host-only key(s) {rejected} in section [{section}] from repo "
+                                    f"settings; only {sorted(allowed_keys)} may be set per-repo for this section"
+                                )
+                            contents = {k: v for k, v in contents.items() if k.lower() in allowed_keys}
+                            if not contents:
+                                continue
                         section_dict = copy.deepcopy(get_settings().as_dict().get(section, {}))
                         for key, value in contents.items():
                             section_dict[key] = value

@@ -203,8 +203,11 @@ class TestJinjaSafety:
         out = format_skills_context(skills, max_tokens=4000)
 
         # Mirror the prompt-template injection site: a guarded {{ skills_context }}.
+        # autoescape is enabled here so the test doesn't rely on Jinja's insecure
+        # default; the property under test (a substituted value is never re-parsed
+        # as a template) holds regardless of the autoescape setting.
         template = "before\n{%- if skills_context %}{{ skills_context }}{% endif %}\nafter"
-        env = Environment(undefined=StrictUndefined)
+        env = Environment(undefined=StrictUndefined, autoescape=True)
         rendered = env.from_string(template).render(skills_context=out)
 
         assert "{{ unknown_var }}" in rendered
@@ -290,10 +293,7 @@ class TestResourceGathering:
         inner_rels = [r.relative_path for r in by_name["inner"].resources]
         assert inner_rels == ["extra.md"]
 
-    def test_repo_settings_cannot_override_host_only_skills_section(self, monkeypatch):
-        """A malicious repo's .pr_agent.toml must not be able to enable skills
-        or set skills.paths — that would allow host-file exfiltration to the LLM.
-        """
+    def _apply_repo_skills_toml(self, monkeypatch, repo_toml: bytes):
         from pr_agent.config_loader import get_settings
         from pr_agent.git_providers import utils as gp_utils
 
@@ -301,8 +301,6 @@ class TestResourceGathering:
         get_settings().set("skills", {"enabled": False, "paths": [],
                                        "max_skills_tokens": 8000})
         get_settings().config.use_repo_settings_file = True
-
-        repo_toml = b'[skills]\nenabled = true\npaths = ["/etc/pwned"]\n'
 
         class FakeGitProvider:
             def __init__(self, *a, **kw):
@@ -314,11 +312,30 @@ class TestResourceGathering:
         monkeypatch.setattr(gp_utils, "get_git_provider_with_context",
                             lambda _url: FakeGitProvider())
         gp_utils.apply_repo_settings("https://example.com/owner/repo/pull/1")
+        return get_settings()
 
-        assert get_settings().skills.enabled is False, \
-            "Repo settings must not be able to enable skills"
-        assert "/etc/pwned" not in list(get_settings().skills.paths), \
-            "Repo settings must not be able to inject paths"
+    def test_repo_settings_cannot_override_skills_paths(self, monkeypatch):
+        """A malicious repo's .pr_agent.toml must not be able to set skills.paths —
+        that points at the host filesystem and would allow host-file exfiltration
+        to the LLM. The rejected key must not sneak in alongside allowed ones.
+        """
+        repo_toml = b'[skills]\nenabled = true\npaths = ["/etc/pwned"]\n'
+        settings = self._apply_repo_skills_toml(monkeypatch, repo_toml)
+
+        assert "/etc/pwned" not in list(settings.skills.paths), \
+            "Repo settings must not be able to inject skills.paths"
+
+    def test_repo_settings_can_override_safe_skills_keys(self, monkeypatch):
+        """Safe per-repo preferences (enabled, max_skills_tokens) may be set from a
+        repo's .pr_agent.toml; only the host-only skills.paths is refused.
+        """
+        repo_toml = b'[skills]\nenabled = true\nmax_skills_tokens = 1234\n'
+        settings = self._apply_repo_skills_toml(monkeypatch, repo_toml)
+
+        assert settings.skills.enabled is True, \
+            "Repo settings should be able to toggle skills.enabled"
+        assert int(settings.skills.max_skills_tokens) == 1234, \
+            "Repo settings should be able to set skills.max_skills_tokens"
 
     def test_format_skills_context_includes_resource_content(self, tmp_path):
         _write_skill(tmp_path, "doc")

@@ -43,6 +43,7 @@ from typing import List, Optional, Tuple
 
 import yaml
 from starlette_context import context
+from starlette_context.errors import ContextDoesNotExistError
 
 from pr_agent.algo.token_handler import TokenEncoder
 from pr_agent.algo.utils import clip_tokens
@@ -277,15 +278,19 @@ def format_skills_context(skills: List[Skill], max_tokens: int) -> str:
 def _get_cached_context() -> Optional[str]:
     try:
         return context.get(_CONTEXT_CACHE_KEY, None)
-    except Exception:
+    except ContextDoesNotExistError:
+        # No request-scoped context (e.g. CLI runs): nothing is memoised, so
+        # report a cache miss and let the caller compute the value.
         return None
 
 
 def _set_cached_context(value: str) -> None:
     try:
         context[_CONTEXT_CACHE_KEY] = value
-    except Exception:
-        pass
+    except ContextDoesNotExistError:
+        # No request-scoped context (e.g. CLI runs): skip memoisation. The value
+        # is recomputed on each call, which is harmless for a single CLI command.
+        return
 
 
 def get_skills_context() -> str:

@@ -32,6 +32,7 @@ nav:
      - Update Changelog: 'tools/update_changelog.md'
   - Core Abilities:
       - 'core-abilities/index.md'
+      - Agent skills: 'core-abilities/agent_skills.md'
       - Compression strategy: 'core-abilities/compression_strategy.md'
       - Dynamic context: 'core-abilities/dynamic_context.md'
       - Fetching ticket context: 'core-abilities/fetching_ticket_context.md'
