@@ -191,6 +191,8 @@ If not set, the default configuration is `["opened", "reopened", "ready_for_revi
 Review result is output as JSON to `steps.{step-id}.outputs.review` property.
 The JSON structure is equivalent to the yaml data structure defined in [pr_reviewer_prompts.toml](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/pr_reviewer_prompts.toml).
 
+`github.publish_as_check_run` controls whether tool output (review, describe, improve) is published as a GitHub Check Run instead of a PR comment (default is `false`). When enabled, results appear in the "Checks" tab of the PR. Requires `checks: write` permission in the workflow YAML.
+
 Note that you can give additional config parameters by adding environment variables to `.github/workflows/pr_agent.yml`, or by using a `.pr_agent.toml` [configuration file](./configuration_options.md#global-configuration-file) in the root of your repo
 
 For example, you can set an environment variable: `pr_description.publish_labels=false`, or add a `.pr_agent.toml` file with the following content:
