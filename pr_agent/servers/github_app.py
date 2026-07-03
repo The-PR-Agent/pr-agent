@@ -214,6 +214,8 @@ async def handle_push_trigger_for_new_commits(body: Dict[str, Any],
             _duplicate_push_triggers.pop(api_url, None)
             _pending_task_duplicate_push_conditions.pop(api_url, None)
 
+    return {}
+
 
 def handle_closed_pr(body, event, action, log_context):
     pull_request = body.get("pull_request", {})
