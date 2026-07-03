@@ -76,7 +76,7 @@ When a GitLab MR opens, the `describe` command produces a conventionally-formatt
 | AI fills What/Risk; checklist stays manual | Checklist items require human judgment (self-reviewed, tested) | — Pending |
 | Keep PR-Agent walkthrough below org template | Retains existing value; org template is additive context at the top | — Pending |
 | GitLab-only for v1 | Matches current MR workflow; avoids multi-provider complexity | — Pending |
-| Config-gated toggles | Fork should be able to turn features on/off and stay mergeable with upstream | — Pending |
+| Config-gated toggles | Fork should be able to turn features on/off and stay mergeable with upstream | ✓ Phase 1 — `enable_conventional_title` / `enable_org_template` ship default-off; `describe` byte-identical when off |
 
 ## Evolution
 
@@ -96,4 +96,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-02 after initialization*
+*Last updated: 2026-07-03 — Phase 1 complete (config skeleton and fork-safe seam)*
