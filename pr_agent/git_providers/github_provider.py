@@ -11,10 +11,11 @@ from datetime import datetime
 from typing import Optional, Tuple
 from urllib.parse import urlparse
 
-from github.Issue import Issue
 from github import AppAuthentication, Auth, Github, GithubException
-from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential, wait_random
+from github.Issue import Issue
 from starlette_context import context
+from tenacity import (Retrying, retry_if_exception_type, stop_after_attempt,
+                      wait_exponential, wait_random)
 
 from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import extract_hunk_headers

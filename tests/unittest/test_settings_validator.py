@@ -1,5 +1,6 @@
 from pr_agent.config_loader import global_settings
-from pr_agent.settings_validator import validate_current_config, validate_settings_overrides
+from pr_agent.settings_validator import (validate_current_config,
+                                         validate_settings_overrides)
 
 
 class TestValidateSettingsOverrides:
