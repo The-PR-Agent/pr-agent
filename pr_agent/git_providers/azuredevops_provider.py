@@ -276,17 +276,20 @@ class AzureDevopsProvider(GitProvider):
             )
             self.incremental.is_incremental = False
             return None
-        first_new_commit_index = None
+        # Walk newest -> oldest to find the newest commit that predates the previous review
+        # (the "last seen" baseline). The new range is then everything positioned after that
+        # baseline, sliced by index — not by re-testing each commit's date — so that commits
+        # with a missing author date (the adapter allows author.date to be None) are still
+        # included rather than silently dropped from the incremental scope.
+        last_seen_index = None
         saw_reliable_date = False
         for index in range(len(self.pr_commits) - 1, -1, -1):
             cdate = self.pr_commits[index].commit.author.date
             if cdate is None:
                 continue
             saw_reliable_date = True
-            if cdate > last_review_time:
-                self.incremental.first_new_commit = self.pr_commits[index]
-                first_new_commit_index = index
-            else:
+            if cdate <= last_review_time:
+                last_seen_index = index
                 self.incremental.last_seen_commit = self.pr_commits[index]
                 break
         if not saw_reliable_date:
@@ -296,18 +299,21 @@ class AzureDevopsProvider(GitProvider):
             )
             self.incremental.is_incremental = False
             return None
-        # If every commit is newer than the previous review, no "last seen" baseline commit
-        # was found. Without it get_diff_files() cannot rebuild the incremental diff and would
-        # silently fall back to the full PR diff while still claiming to be incremental — so
-        # degrade explicitly to a full review instead.
-        if first_new_commit_index is not None and self.incremental.last_seen_commit is None:
+        # No commit predates the previous review, so there is no baseline to diff against.
+        # Without it get_diff_files() cannot rebuild the incremental diff and would silently
+        # fall back to the full PR diff while still claiming to be incremental — so degrade
+        # explicitly to a full review instead.
+        if last_seen_index is None:
             get_logger().info(
-                "All PR commits are newer than the previous review (no last-seen baseline commit); "
+                "No PR commit predates the previous review (no last-seen baseline commit); "
                 "falling back to full review."
             )
             self.incremental.is_incremental = False
             return None
-        return self.pr_commits[first_new_commit_index:] if first_new_commit_index is not None else []
+        commits_range = self.pr_commits[last_seen_index + 1:]
+        if commits_range:
+            self.incremental.first_new_commit = commits_range[0]
+        return commits_range
 
     def get_previous_review(self, *, full: bool, incremental: bool):
         if not (full or incremental):

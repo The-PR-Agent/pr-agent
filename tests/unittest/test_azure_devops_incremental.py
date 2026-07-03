@@ -196,6 +196,36 @@ class TestGetIncrementalCommits:
         assert provider.incremental.last_seen_commit is None
         provider.azure_devops_client.get_changes.assert_not_called()
 
+    def test_missing_date_commit_after_baseline_is_included(self):
+        # Regression for Qodo #1 (discussion r3518938542): a new commit whose author date is
+        # None must still be included in commits_range when it is positioned after the last-seen
+        # baseline, instead of being dropped by a per-commit date comparison.
+        provider = self._make_provider()
+        review_time = _dt.datetime(2024, 6, 1, tzinfo=_dt.timezone.utc)
+        old = _raw_commit("old1", "seen", _dt.datetime(2024, 5, 1, tzinfo=_dt.timezone.utc), parents=["p0"])
+        # A missing-date commit positioned BETWEEN the baseline and a later dated commit is the
+        # case the old date-comparison logic dropped (it kept only the dated-new commit's index).
+        mid_nodate = _raw_commit("mid", "no date", None, parents=["old1"])
+        newest_dated = _raw_commit("new", "dated", _dt.datetime(2024, 6, 2, tzinfo=_dt.timezone.utc), parents=["mid"])
+        # Azure returns newest-first.
+        provider.azure_devops_client.get_pull_request_commits = MagicMock(
+            return_value=[newest_dated, mid_nodate, old]
+        )
+        provider.get_issue_comments = MagicMock(
+            return_value=[_comment("## PR Reviewer Guide", review_time)]
+        )
+        changes_obj = MagicMock()
+        changes_obj.changes = [{"item": {"path": "/x.py", "gitObjectType": "blob"}}]
+        provider.azure_devops_client.get_changes = MagicMock(return_value=changes_obj)
+
+        provider.get_incremental_commits(IncrementalPR(True))
+
+        assert provider.incremental.is_incremental
+        # Both the missing-date commit and the later dated commit must be in range.
+        assert [c.sha for c in provider.incremental.commits_range] == ["mid", "new"]
+        assert provider.incremental.last_seen_commit.sha == "old1"
+        assert provider.incremental.first_new_commit.sha == "mid"
+
     def test_incremental_resets_stale_diff_cache(self):
         # Regression for Qodo #1: switching a reused provider into incremental mode must
         # invalidate any diff_files cached by a prior full get_diff_files(), so the incremental
