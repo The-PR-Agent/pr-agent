@@ -147,9 +147,9 @@ pr_commands = [
 ]
 ```
 
-#### GitHub app automatic tools for push actions (commits to an open PR)
+#### Automatic tools for push actions (commits to an open PR)
 
-In addition to running automatic tools when a PR is opened, the GitHub app can also respond to new code that is pushed to an open PR.
+In addition to running automatic tools when a PR is opened, PR-Agent can also respond to new code that is pushed to an open PR. This works for both **GitHub App** and **GitHub Action** deployments.
 
 The configuration toggle `handle_push_trigger` can be used to enable this feature.
 The configuration parameter `push_commands` defines the list of tools that will be **run automatically** when new code is pushed to the PR.
@@ -162,6 +162,8 @@ push_commands = [
     "/review",
 ]
 ```
+
+For GitHub Action, settings fall back from `github_action_config.*` to `github_app.*`, so you can set either section.
 
 This means that when new code is pushed to the PR, PR-Agent will run the `describe` and `review` tools, with the specified parameters.
 
@@ -189,9 +191,18 @@ If not set, the default configuration is `["opened", "reopened", "ready_for_revi
 
 Adding `"synchronize"` to `pr_actions` enables automatic tools on new commits pushed to an open PR. You must also add `synchronize` to the workflow `pull_request: types:` list.
 
-`github_action_config.handle_push_trigger` controls whether push events trigger tools when `"synchronize"` is in `pr_actions` (default `false`). Settings fall back to `github_app.*` if not set under `github_action_config`.
+`github_action_config.pr_actions` is used to configure which `pull_requests` events will trigger the enabled auto flags
+If not set, the default configuration is `["opened", "reopened", "ready_for_review", "review_requested"]`
 
-`github_action_config.push_commands` defines which tools run on push events (fallback to `github_app.push_commands`).
+Adding `"synchronize"` to `pr_actions` enables automatic tools on new commits pushed to an open PR. You must also add `synchronize` to the workflow `pull_request: types:` list.
+
+`github_action_config.handle_push_trigger` controls whether synchronize events run the push commands (default `false`). Settings fall back to `github_app.*` if not set under `github_action_config`.
+
+`github_action_config.push_commands` defines which tools run on synchronize events when `handle_push_trigger` is enabled (fallback to `github_app.push_commands`).
+
+`github_action_config.push_trigger_ignore_merge_commits` (default `true`) skips processing when the push contains a merge commit, avoiding duplicate reviews on "Update branch" clicks.
+
+`github_action_config.push_trigger_ignore_bot_commits` (default `true`) skips processing when the push author is a bot, avoiding redundant runs on automated commits.
 
 `github_action_config.enable_output` are used to enable/disable github actions [output parameter](https://docs.github.com/en/actions/creating-actions/metadata-syntax-for-github-actions#outputs-for-docker-container-and-javascript-actions) (default is `true`).
 Review result is output as JSON to `steps.{step-id}.outputs.review` property.
