@@ -45,8 +45,16 @@ def load_org_template() -> str:
     from this module's location. Inert this phase (defined, not called from any
     output path) so `describe` behavior stays byte-identical when both toggles are
     off (CFG-05 precondition).
+
+    Follows the project's graceful-fallback convention: on a missing or unreadable
+    template, logs a warning and returns "" rather than raising, so a downstream
+    caller (Phase 3) degrades observably instead of crashing.
     """
-    return _ORG_TEMPLATE_PATH.read_text(encoding="utf-8")
+    try:
+        return _ORG_TEMPLATE_PATH.read_text(encoding="utf-8")
+    except OSError as e:
+        get_logger().warning(f"Could not load org template at {_ORG_TEMPLATE_PATH}: {e}")
+        return ""
 
 
 class PRDescription:
