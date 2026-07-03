@@ -36,6 +36,14 @@ from pr_agent.tools.ticket_pr_compliance_check import (
 # is defined here but intentionally NOT wired into any output path this phase —
 # it is consumed by Phase 3 (TMPL-01..09).
 _ORG_TEMPLATE_PATH = Path(__file__).parent.parent / "settings" / "org_template.md"
+_ORG_TEMPLATE_START = "<!-- pr_agent:org_template:start -->"
+_ORG_TEMPLATE_END = "<!-- pr_agent:org_template:end -->"
+_ORG_TEMPLATE_FALLBACK_CHECKLIST = (
+    "## Checklist\n"
+    "- [ ] Self-reviewed the changes\n"
+    "- [ ] Added or updated tests\n"
+    "- [ ] Updated documentation where needed"
+)
 _ANGULAR_TYPES = frozenset({
     "feat", "fix", "docs", "style", "refactor", "perf", "test", "build", "ci", "chore", "revert",
 })
@@ -70,6 +78,21 @@ _ANGULAR_TITLE_INSTRUCTIONS = (
     "`summary` MUST be lowercase imperative, no trailing period, and no more than 70 characters.\n"
     "<!-- /fork: conventional-title instructions -->"
 )
+_ORG_TEMPLATE_INSTRUCTIONS = (
+    "\n\n<!-- fork: org-template instructions -->\n"
+    "Include these YAML keys in the response when relevant:\n"
+    "what_why: |\n"
+    "  - One bullet per key change, explaining what changed and why.\n"
+    "note_risk: |\n"
+    "  Note material rollout, testing, or operational risk. Use `None` if no material note or risk exists.\n"
+    "Do not put checklist items in these keys.\n"
+    "<!-- /fork: org-template instructions -->"
+)
+_ORG_TEMPLATE_RE = re.compile(
+    rf"{re.escape(_ORG_TEMPLATE_START)}.*?{re.escape(_ORG_TEMPLATE_END)}",
+    re.DOTALL,
+)
+_CHECKBOX_RE = re.compile(r"^(?P<prefix>\s*[-*]\s+\[)(?P<state>[ xX])(?P<suffix>\]\s+.+?)\s*$")
 
 
 def load_org_template() -> str:
@@ -89,6 +112,82 @@ def load_org_template() -> str:
     except OSError as e:
         get_logger().warning(f"Could not load org template at {_ORG_TEMPLATE_PATH}: {e}")
         return ""
+
+
+def _org_template_enabled() -> bool:
+    return get_settings().pr_description.get("enable_org_template", False)
+
+
+def _org_template_active() -> bool:
+    return _org_template_enabled() and not get_settings().pr_description.use_description_markers
+
+
+def _format_org_template_value(value) -> str:
+    if value is None:
+        return "None"
+    if isinstance(value, list):
+        value = "\n".join(f"- {str(item).strip().lstrip('- ').strip()}" for item in value if str(item).strip())
+    value = str(value).strip()
+    return value or "None"
+
+
+def _template_checklist(template: str) -> str:
+    marker = "## Checklist"
+    index = template.find(marker)
+    if index == -1:
+        return _ORG_TEMPLATE_FALLBACK_CHECKLIST
+    return template[index:].strip()
+
+
+def _extract_org_template_block(description: str) -> str:
+    if not description:
+        return ""
+    match = _ORG_TEMPLATE_RE.search(description)
+    return match.group(0) if match else ""
+
+
+def _strip_org_template_block(description: str) -> str:
+    if not description:
+        return ""
+    return _ORG_TEMPLATE_RE.sub("", description).strip()
+
+
+def _checkbox_states(description: str) -> dict[str, str]:
+    states = {}
+    for line in _extract_org_template_block(description).splitlines():
+        match = _CHECKBOX_RE.match(line)
+        if match:
+            states[match.group("suffix").strip().lower()] = match.group("state")
+    return states
+
+
+def _apply_checkbox_states(block: str, existing_description: str) -> str:
+    states = _checkbox_states(existing_description)
+    if not states:
+        return block
+
+    lines = []
+    for line in block.splitlines():
+        match = _CHECKBOX_RE.match(line)
+        if match:
+            label = match.group("suffix").strip().lower()
+            if label in states:
+                line = f"{match.group('prefix')}{states[label]}{match.group('suffix')}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _render_org_template_block(template: str, what_why, note_risk, existing_description: str = "") -> str:
+    block = (
+        f"{_ORG_TEMPLATE_START}\n\n"
+        "## What does this MR do? Why?\n\n"
+        f"{_format_org_template_value(what_why)}\n\n"
+        "## Note / Risk\n\n"
+        f"{_format_org_template_value(note_risk)}\n\n"
+        f"{_template_checklist(template)}\n\n"
+        f"{_ORG_TEMPLATE_END}"
+    )
+    return _apply_checkbox_states(block, existing_description)
 
 
 def _normalize_angular_title(title: str) -> str | None:
@@ -160,6 +259,8 @@ class PRDescription:
         )
         self.pr_id = self.git_provider.get_pr_id()
         self.keys_fix = ["filename:", "language:", "changes_summary:", "changes_title:", "description:", "title:"]
+        if _org_template_active():
+            self.keys_fix.extend(["what_why:", "note_risk:"])
 
         if get_settings().pr_description.enable_semantic_files_types and not self.git_provider.is_supported(
                 "gfm_markdown"):
@@ -191,6 +292,8 @@ class PRDescription:
         }
         if get_settings().pr_description.get('enable_conventional_title', False):
             self.vars["extra_instructions"] = (self.vars.get("extra_instructions") or "") + _ANGULAR_TITLE_INSTRUCTIONS
+        if _org_template_active():
+            self.vars["extra_instructions"] = (self.vars.get("extra_instructions") or "") + _ORG_TEMPLATE_INSTRUCTIONS
 
         self.user_description = self.git_provider.get_user_description()
 
@@ -225,6 +328,7 @@ class PRDescription:
                 self._prepare_data()
                 raw_ai_title = self.data.get('title')
                 self.ai_title = raw_ai_title.strip() if isinstance(raw_ai_title, str) and raw_ai_title.strip() else None
+                self._stash_org_template_fields()
             else:
                 get_logger().warning(f"Empty prediction, PR: {self.pr_id}")
                 self.git_provider.remove_initial_comment()
@@ -240,6 +344,8 @@ class PRDescription:
                 get_logger().debug(f"Publishing labels disabled")
 
             if get_settings().pr_description.use_description_markers:
+                if _org_template_enabled():
+                    get_logger().warning("Skipping org template prepend because description markers are enabled")
                 pr_title, pr_body, changes_walkthrough, pr_file_changes = self._prepare_pr_answer_with_markers()
             else:
                 pr_title, pr_body, changes_walkthrough, pr_file_changes = self._prepare_pr_answer()
@@ -271,6 +377,7 @@ class PRDescription:
                 pr_body += show_relevant_configurations(relevant_section='pr_description')
 
             if get_settings().config.publish_output:
+                pr_body = self._prepend_org_template(pr_body)
 
                 # publish labels
                 if get_settings().pr_description.publish_labels and pr_labels and self.git_provider.is_supported("get_labels"):
@@ -596,6 +703,39 @@ class PRDescription:
                 self.data['changes_diagram'] = sanitized
         if 'pr_files' in self.data:
             self.data['pr_files'] = self.data.pop('pr_files')
+
+    def _stash_org_template_fields(self):
+        self.org_template_fields = {}
+        if not _org_template_active() or not isinstance(self.data, dict):
+            return
+        self.org_template_fields = {
+            "what_why": self.data.pop("what_why", None),
+            "note_risk": self.data.pop("note_risk", None),
+        }
+
+    def _prepend_org_template(self, pr_body: str) -> str:
+        if not _org_template_active():
+            return pr_body
+
+        template = load_org_template()
+        if not template:
+            return pr_body
+
+        existing_description = ""
+        try:
+            existing_description = self.git_provider.get_pr_description(full=True) or ""
+        except Exception as e:
+            get_logger().warning(f"Could not read current PR description for org template preservation: {e}")
+
+        fields = getattr(self, "org_template_fields", {})
+        block = _render_org_template_block(
+            template,
+            fields.get("what_why"),
+            fields.get("note_risk"),
+            existing_description,
+        )
+        clean_body = _strip_org_template_block(pr_body)
+        return f"{block}\n\n{clean_body}" if clean_body else block
 
     def _prepare_labels(self) -> List[str]:
         pr_labels = []

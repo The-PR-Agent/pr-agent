@@ -147,20 +147,21 @@ class TestForkSeamsAreToggleGatedOrInert:
     def _source() -> str:
         return Path(pr_description_module.__file__).read_text(encoding="utf-8")
 
-    def test_load_org_template_is_defined_but_not_called_this_phase(self):
-        """Phase 1 wires no feature behavior — the loader must not be invoked
-        anywhere in the module body. The token ``load_org_template(`` should
-        appear exactly once: the ``def`` line.
-        """
+    def test_load_org_template_call_is_org_template_gated(self):
+        """Phase 3 may call the loader, but only behind enable_org_template."""
         source = self._source()
 
         occurrences = source.count("load_org_template(")
 
-        assert occurrences == 1, (
-            f"Expected `load_org_template(` to appear exactly once (the `def` "
-            f"line) so the loader stays inert this phase. Found {occurrences} "
-            f"occurrence(s) — a call may have been added prematurely."
+        assert occurrences == 2, (
+            f"Expected `load_org_template(` to appear twice (the `def` line and "
+            f"the Phase 3 guarded call). Found {occurrences} occurrence(s)."
         )
+        call_index = source.index("template = load_org_template()")
+        method_start = source.rfind("def _prepend_org_template", 0, call_index)
+        gated_slice = source[method_start:call_index]
+
+        assert "if not _org_template_active():" in gated_slice
 
     def test_fork_flags_never_use_bare_attribute_access(self):
         """Every reference to a fork flag in ``pr_description.py`` must use the
