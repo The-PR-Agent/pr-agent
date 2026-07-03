@@ -46,7 +46,8 @@
     "security_enforcement": true,
     "security_asvs_level": 1,
     "security_block_on": "high",
-    "ui_review": false
+    "ui_review": false,
+    "_auto_chain_active": false
   },
   "ship": {
     "pr_body_sections": []

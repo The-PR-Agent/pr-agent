@@ -28,10 +28,10 @@
   4. Fork-added code paths in `pr_description.py` are all guarded by `if get_settings().pr_description.get(<flag>, False):` so upstream rebases only conflict on toggle-reading lines, not on `_prepare_pr_answer` internals.
   5. Setting `PR_DESCRIPTION__ENABLE_CONVENTIONAL_TITLE=true` (or `PR_DESCRIPTION__ENABLE_ORG_TEMPLATE=true`) in the environment enables that toggle for the invocation without editing `configuration.toml` — verified via the existing `config_loader.py:12-18` dynaconf `env_loader` (`envvar_prefix=False`, `merge_enabled=True`) and documented in the fork README / config notes.
 
-**Plans:** 3 plans
+**Plans:** 1/3 plans executed
 **Wave 1**
 
-- [ ] 01-01-PLAN.md — Config toggles (default off) + fork-owned org_template.md + inert Python loader helper (CFG-01, CFG-02, CFG-03)
+- [x] 01-01-PLAN.md — Config toggles (default off) + fork-owned org_template.md + inert Python loader helper (CFG-01, CFG-02, CFG-03)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -74,7 +74,7 @@
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Config skeleton and fork-safe seam | 0/0 | Not started | - |
+| 1. Config skeleton and fork-safe seam | 1/3 | In Progress|  |
 | 2. Angular-convention title rewriting | 0/0 | Not started | - |
 | 3. Org template prepend with idempotency | 0/0 | Not started | - |
 
