@@ -174,6 +174,41 @@ class TestGetIncrementalCommits:
         assert provider.incremental.is_incremental is False
         provider.azure_devops_client.get_changes.assert_not_called()
 
+    def test_all_commits_newer_than_review_falls_back_to_full(self):
+        # Regression for Qodo #7: when every commit is newer than the previous review there is
+        # no last-seen baseline commit, so incremental must degrade to a full review rather than
+        # silently running with full diffs (which happens if commits_range is non-empty but
+        # last_seen_commit_sha is None).
+        provider = self._make_provider()
+        review_time = _dt.datetime(2024, 6, 1, tzinfo=_dt.timezone.utc)
+        new1 = _raw_commit("n1", "c1", _dt.datetime(2024, 6, 2, tzinfo=_dt.timezone.utc), parents=["p"])
+        new2 = _raw_commit("n2", "c2", _dt.datetime(2024, 6, 3, tzinfo=_dt.timezone.utc), parents=["n1"])
+        provider.azure_devops_client.get_pull_request_commits = MagicMock(return_value=[new2, new1])
+        provider.get_issue_comments = MagicMock(
+            return_value=[_comment("## PR Reviewer Guide", review_time)]
+        )
+        provider.azure_devops_client.get_changes = MagicMock()
+
+        provider.get_incremental_commits(IncrementalPR(True))
+
+        assert provider.incremental.is_incremental is False
+        assert provider.incremental.commits_range is None
+        assert provider.incremental.last_seen_commit is None
+        provider.azure_devops_client.get_changes.assert_not_called()
+
+    def test_incremental_resets_stale_diff_cache(self):
+        # Regression for Qodo #1: switching a reused provider into incremental mode must
+        # invalidate any diff_files cached by a prior full get_diff_files(), so the incremental
+        # filtering/rebuild is recomputed instead of returning the full-PR diff.
+        provider = self._make_provider()
+        provider.diff_files = ["stale-full-diff"]
+        provider.azure_devops_client.get_pull_request_commits = MagicMock(return_value=[])
+        provider.get_issue_comments = MagicMock(return_value=[])
+
+        provider.get_incremental_commits(IncrementalPR(True))
+
+        assert provider.diff_files is None
+
 
 class TestPrReviewerGuard:
     def test_can_run_returns_false_when_commits_range_none(self):

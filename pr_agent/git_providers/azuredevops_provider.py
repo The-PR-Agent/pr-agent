@@ -193,6 +193,10 @@ class AzureDevopsProvider(GitProvider):
             incremental = IncrementalPR(False)
         self.incremental = incremental
         if self.incremental.is_incremental:
+            # Invalidate any diff cache from a prior (full) get_diff_files() on a reused
+            # provider instance, so incremental filtering/rebuild is recomputed rather than
+            # returning the full-PR diff.
+            self.diff_files = None
             self.unreviewed_files_map = {}
             self._get_incremental_commits()
 
@@ -289,6 +293,17 @@ class AzureDevopsProvider(GitProvider):
             get_logger().info(
                 "All PR commit author dates are missing; cannot compute incremental range. "
                 "Falling back to full review."
+            )
+            self.incremental.is_incremental = False
+            return None
+        # If every commit is newer than the previous review, no "last seen" baseline commit
+        # was found. Without it get_diff_files() cannot rebuild the incremental diff and would
+        # silently fall back to the full PR diff while still claiming to be incremental — so
+        # degrade explicitly to a full review instead.
+        if first_new_commit_index is not None and self.incremental.last_seen_commit is None:
+            get_logger().info(
+                "All PR commits are newer than the previous review (no last-seen baseline commit); "
+                "falling back to full review."
             )
             self.incremental.is_incremental = False
             return None
