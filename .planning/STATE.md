@@ -2,17 +2,19 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_phase: 3
-current_phase_name: Org template prepend with idempotency
-status: planning
-stopped_at: Phase 3 complete; ready for milestone audit
-last_updated: "2026-07-03T07:26:00Z"
+current_phase: null
+status: Awaiting next milestone
+stopped_at: Milestone 1.0 complete and archived
+last_updated: "2026-07-03T07:48:33.778Z"
+last_activity: 2026-07-03
+last_activity_desc: Milestone 1.0 completed and archived
 progress:
   total_phases: 3
   completed_phases: 3
   total_plans: 6
   completed_plans: 6
   percent: 100
+current_phase_name: null
 ---
 
 # Project State
@@ -26,16 +28,14 @@ progress:
 
 **Core Value:** When a GitLab MR opens, `describe` produces a conventionally-formatted title and an org-standard description body (What/Risk AI-filled, checklist for the human) on top of the existing PR-Agent walkthrough — with zero manual formatting by the author.
 
-**Current Focus:** Phase 3 — Org template prepend with idempotency
+**Current Focus:** Planning next milestone
 
 ## Current Position
 
-**Phase:** 3 — Org template prepend with idempotency
-**Plan:** 03-01 complete
-**Status:** Complete
-**Progress:** [██████████] 100%
-
-**Next action:** Run `/gsd-audit-milestone` to audit the completed milestone.
+Phase: Milestone 1.0 complete
+Plan: —
+Status: Awaiting next milestone
+Last activity: 2026-07-03 — Milestone 1.0 completed and archived
 
 ## Roadmap Snapshot
 
@@ -45,7 +45,7 @@ progress:
 | 2. Angular-convention title rewriting | Prompt-side title generation + Python validator/repair + safe fallback; auto-force publishing | CFG-04, TITLE-01, TITLE-02, TITLE-03, TITLE-04, TITLE-05, TITLE-06 | Complete |
 | 3. Org template prepend with idempotency | AI-filled What/Risk prepended above PR-Agent's default output (unchanged), sentinel-bounded, checkbox-preserving on re-runs | TMPL-01..09 | Complete |
 
-**Coverage:** 21/21 v1 requirements mapped (100%).
+**Coverage:** 21/21 v1 requirements shipped and audited (100%).
 
 ## Performance Metrics
 
@@ -86,7 +86,7 @@ _None._
 
 ## Session Continuity
 
-**Stopped at:** Phase 3 complete; milestone ready for audit
+**Stopped at:** Milestone 1.0 complete and archived
 **Resume file:** None
 
 **Last session:** 2026-07-03T07:26:00Z
@@ -96,7 +96,7 @@ _None._
 - `.planning/STATE.md` (revised: Roadmap Snapshot, Coverage, Performance Metrics, Key Decisions, Open Design Gates updated)
 - `.planning/REQUIREMENTS.md` (already updated upstream: CFG-06 added, TMPL-05 reversed, traceability 21/21)
 
-**Resume from:** `/gsd-audit-milestone`
+**Resume from:** `/gsd-new-milestone`
 
 ---
 *State initialized: 2026-07-02*
@@ -111,3 +111,7 @@ _None._
 - [Phase 03]: Empty `note_risk` renders as `None` under a stable Note / Risk header.
 - [Phase 03]: Org template is prepended above the entire PR-Agent generated body, then old sentinel blocks are stripped from rerun bodies to avoid duplication.
 - [Phase 03]: Existing MR description is read through `git_provider.get_pr_description(full=True)` to preserve checklist tick states by matching checklist label.
+
+## Operator Next Steps
+
+- Start the next milestone with /gsd-new-milestone
