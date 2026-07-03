@@ -14,7 +14,7 @@ Requirements for this milestone. Each maps to roadmap phases. All new behavior i
 - [ ] **CFG-03**: The org template body is stored in a fork-owned location (separate file or constant), not inlined into the shared upstream prompt file, to minimize upstream merge conflicts
 - [ ] **CFG-04**: When `enable_conventional_title` is on, AI title publishing is auto-forced so the rewritten title actually reaches GitLab (no need to also set `generate_ai_title`)
 - [ ] **CFG-05**: When toggles are off, `describe` output is byte-identical to upstream PR-Agent behavior
-- [ ] **CFG-06**: Both toggles can be enabled via environment variable through PR-Agent's existing dynaconf env override (`envvar_prefix=False` + `env_loader`), e.g. `PR_DESCRIPTION__ENABLE_CONVENTIONAL_TITLE=true` / `PR_DESCRIPTION__ENABLE_ORG_TEMPLATE=true`, so they can be set per-CI-invocation without editing a config file. Verified and documented.
+- [x] **CFG-06**: Both toggles can be enabled via environment variable through PR-Agent's existing dynaconf env override (`envvar_prefix=False` + `env_loader`), e.g. `PR_DESCRIPTION__ENABLE_CONVENTIONAL_TITLE=true` / `PR_DESCRIPTION__ENABLE_ORG_TEMPLATE=true`, so they can be set per-CI-invocation without editing a config file. Verified and documented.
 
 ### Title (Angular Commit Convention)
 
@@ -79,7 +79,7 @@ Which phases cover which requirements. Populated during roadmap creation.
 | CFG-03 | Phase 1 | Pending |
 | CFG-04 | Phase 2 | Pending |
 | CFG-05 | Phase 1 | Pending |
-| CFG-06 | Phase 1 | Pending |
+| CFG-06 | Phase 1 | Complete |
 | TITLE-01 | Phase 2 | Pending |
 | TITLE-02 | Phase 2 | Pending |
 | TITLE-03 | Phase 2 | Pending |
@@ -97,11 +97,13 @@ Which phases cover which requirements. Populated during roadmap creation.
 | TMPL-09 | Phase 3 | Pending |
 
 **Coverage:**
+
 - v1 requirements: 21 total
 - Mapped to phases: 21 (100%)
 - Unmapped: 0
 
 **Per-phase totals:**
+
 - Phase 1 (Config skeleton and fork-safe seam): 5 (CFG-01, CFG-02, CFG-03, CFG-05, CFG-06)
 - Phase 2 (Angular-convention title rewriting): 7 (CFG-04, TITLE-01..06)
 - Phase 3 (Org template prepend with idempotency): 9 (TMPL-01..09)
