@@ -38,7 +38,6 @@ class CliArgs:
                 'YXBpX2Jhc2U=',  # api_base
                 'YXBpX3R5cGU=',  # api_type
                 'YXBpX3ZlcnNpb24=',  # api_version
-                'c2tpcF9rZXlz',  # skip_keys
             ]
             _encoded_args = ':'.join(_encoded_parts)
 
