@@ -1,2 +1,3 @@
 recursive-include pr_agent *.toml
+include pr_agent/settings/org_template.md
 recursive-exclude pr_agent *.secrets.toml
