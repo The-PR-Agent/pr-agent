@@ -52,11 +52,11 @@
   4. The validator is a pure helper (`_normalize_angular_title`) unit-tested in isolation with adversarial cases and does not mutate `_prepare_pr_answer` inline logic.
   5. When the toggle is off, title behavior is identical to Phase 1 (upstream default) — verified against the same byte-diff fixture.
 
-**Plans:** 2 plans
+**Plans:** 1/2 plans executed
 Plans:
 **Wave 1**
 
-- [ ] 02-01-PLAN.md — Pure `_normalize_angular_title` validator/repair helper + 25-row adversarial fixture test (TITLE-02..06)
+- [x] 02-01-PLAN.md — Pure `_normalize_angular_title` validator/repair helper + 25-row adversarial fixture test (TITLE-02..06)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -83,7 +83,7 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Config skeleton and fork-safe seam | 3/3 | Complete    | 2026-07-03 |
-| 2. Angular-convention title rewriting | 0/0 | Not started | - |
+| 2. Angular-convention title rewriting | 1/2 | In Progress|  |
 | 3. Org template prepend with idempotency | 0/0 | Not started | - |
 
 ## Coverage

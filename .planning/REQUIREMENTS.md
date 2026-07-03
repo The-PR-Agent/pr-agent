@@ -19,11 +19,11 @@ Requirements for this milestone. Each maps to roadmap phases. All new behavior i
 ### Title (Angular Commit Convention)
 
 - [ ] **TITLE-01**: `describe` rewrites the MR title to `type(scope): summary`, with type and scope inferred from the diff by the AI
-- [ ] **TITLE-02**: Commit type is constrained to the Angular set (`feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`)
-- [ ] **TITLE-03**: Subject follows Angular rules — imperative present tense, lowercase first letter, no trailing period
-- [ ] **TITLE-04**: Scope is a single kebab-case token inferred from the diff; parens are omitted entirely when scope is unknown (never emit empty `()`)
-- [ ] **TITLE-05**: A Python validator checks the AI title and repairs common defects (lowercase type, strip trailing period, truncate over-length, drop empty scope); if it cannot produce a valid title, it falls back to leaving the original MR title untouched
-- [ ] **TITLE-06**: An empty or whitespace-only AI title is coerced to "leave title untouched" (never set an empty GitLab title)
+- [x] **TITLE-02**: Commit type is constrained to the Angular set (`feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`)
+- [x] **TITLE-03**: Subject follows Angular rules — imperative present tense, lowercase first letter, no trailing period
+- [x] **TITLE-04**: Scope is a single kebab-case token inferred from the diff; parens are omitted entirely when scope is unknown (never emit empty `()`)
+- [x] **TITLE-05**: A Python validator checks the AI title and repairs common defects (lowercase type, strip trailing period, truncate over-length, drop empty scope); if it cannot produce a valid title, it falls back to leaving the original MR title untouched
+- [x] **TITLE-06**: An empty or whitespace-only AI title is coerced to "leave title untouched" (never set an empty GitLab title)
 
 ### Template (Org Description Prepend)
 
@@ -81,11 +81,11 @@ Which phases cover which requirements. Populated during roadmap creation.
 | CFG-05 | Phase 1 | Complete |
 | CFG-06 | Phase 1 | Complete |
 | TITLE-01 | Phase 2 | Pending |
-| TITLE-02 | Phase 2 | Pending |
-| TITLE-03 | Phase 2 | Pending |
-| TITLE-04 | Phase 2 | Pending |
-| TITLE-05 | Phase 2 | Pending |
-| TITLE-06 | Phase 2 | Pending |
+| TITLE-02 | Phase 2 | Complete |
+| TITLE-03 | Phase 2 | Complete |
+| TITLE-04 | Phase 2 | Complete |
+| TITLE-05 | Phase 2 | Complete |
+| TITLE-06 | Phase 2 | Complete |
 | TMPL-01 | Phase 3 | Pending |
 | TMPL-02 | Phase 3 | Pending |
 | TMPL-03 | Phase 3 | Pending |
