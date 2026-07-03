@@ -24,8 +24,8 @@ from pr_agent.algo.markdown_render import (  # noqa: F401
     convert_to_markdown_v2, emphasize_header, extract_relevant_lines_str,
     format_todo_item, format_todo_items, is_value_no, parse_code_suggestion,
     process_can_be_split, replace_code_tags, ticket_markdown_logic)
-from pr_agent.algo.output_repair import (fix_json_escape_char,  # noqa: F401
-                                         load_yaml, try_fix_json, try_fix_yaml)
+from pr_agent.algo.output_repair import fix_json_escape_char  # noqa: F401
+from pr_agent.algo.output_repair import load_yaml, try_fix_json, try_fix_yaml
 from pr_agent.algo.token_handler import TokenEncoder
 from pr_agent.algo.types import (FilePatchInfo, ModelType,  # noqa: F401
                                  PRDescriptionHeader, PRReviewHeader, Range,

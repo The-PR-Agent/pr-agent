@@ -15,7 +15,8 @@ from pr_agent.algo import (CLAUDE_EXTENDED_THINKING_MODELS,
                            STREAMING_REQUIRED_MODELS,
                            SUPPORT_REASONING_EFFORT_MODELS,
                            USER_MESSAGE_ONLY_MODELS)
-from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler, make_api_error
+from pr_agent.algo.ai_handlers.base_ai_handler import (BaseAiHandler,
+                                                       make_api_error)
 from pr_agent.algo.ai_handlers.litellm_helpers import (
     MockResponse, _get_azure_ad_token, _handle_streaming_response,
     _process_litellm_extra_body)
