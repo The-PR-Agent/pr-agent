@@ -286,8 +286,19 @@ class PRDescription:
                         get_logger().debug(f"Labels are the same, not updating")
 
                 # publish description
-                if get_settings().pr_description.publish_description_as_comment:
-                    full_markdown_description = f"## Title\n\n{pr_title.strip()}\n\n___\n{pr_body}"
+                _pd = get_settings().pr_description
+                _conv_on = _pd.get('enable_conventional_title', False)
+                if _conv_on:
+                    title_to_publish = self.ai_title
+                elif _pd.generate_ai_title:
+                    title_to_publish = pr_title.strip()
+                else:
+                    title_to_publish = pr_title.strip() if _pd.publish_description_as_comment else None
+                if _conv_on and title_to_publish:
+                    title_to_publish = _normalize_angular_title(title_to_publish)
+
+                if _pd.publish_description_as_comment:
+                    full_markdown_description = f"## Title\n\n{title_to_publish or ''}\n\n___\n{pr_body}"
                     if get_settings().pr_description.publish_description_as_comment_persistent:
                         self.git_provider.publish_persistent_comment(full_markdown_description,
                                                                      initial_header="## Title",
@@ -299,16 +310,6 @@ class PRDescription:
                 else:
                     # Pass None when the title is not AI-generated so the provider
                     # leaves it untouched, avoiding reverting a manual edit (#2474).
-                    _pd = get_settings().pr_description
-                    _conv_on = _pd.get('enable_conventional_title', False)
-                    if _conv_on:
-                        title_to_publish = self.ai_title
-                    elif _pd.generate_ai_title:
-                        title_to_publish = pr_title.strip()
-                    else:
-                        title_to_publish = None
-                    if _conv_on and title_to_publish:
-                        title_to_publish = _normalize_angular_title(title_to_publish)
                     self.git_provider.publish_description(title_to_publish, pr_body)
 
                     # publish final update message

@@ -20,7 +20,13 @@ class _Config(dict):
         self[name] = value
 
 
-def _settings(*, generate_ai_title: bool, enable_conventional_title: bool, extra_instructions: str = ""):
+def _settings(
+    *,
+    generate_ai_title: bool,
+    enable_conventional_title: bool,
+    extra_instructions: str = "",
+    publish_description_as_comment: bool = False,
+):
     settings = _Config()
     settings.config = _Config(
         publish_output=True,
@@ -38,7 +44,8 @@ def _settings(*, generate_ai_title: bool, enable_conventional_title: bool, extra
         inline_file_summary=False,
         enable_help_text=False,
         enable_help_comment=False,
-        publish_description_as_comment=False,
+        publish_description_as_comment=publish_description_as_comment,
+        publish_description_as_comment_persistent=False,
         final_update_message=False,
     )
     settings.pr_description_prompt = SimpleNamespace(system="", user="")
@@ -184,3 +191,29 @@ async def test_conventional_title_missing_or_malformed_ai_title_publishes_body_w
 
     assert obj.git_provider.publish_description.call_args[0][0] is None
     assert obj.git_provider.publish_description.call_args[0][1].startswith("body")
+
+
+@pytest.mark.parametrize("ai_title", [_MISSING, "", ["bad"]])
+@patch("pr_agent.tools.pr_description.retry_with_fallback_models", side_effect=_noop_retry)
+@patch("pr_agent.tools.pr_description.extract_and_cache_pr_tickets", side_effect=_noop_extract_tickets)
+@patch("pr_agent.tools.pr_description.get_settings")
+async def test_conventional_title_comment_mode_uses_sanitized_ai_title(
+    mock_get_settings,
+    _mock_extract_tickets,
+    _mock_retry,
+    ai_title,
+):
+    mock_get_settings.return_value = _settings(
+        generate_ai_title=True,
+        enable_conventional_title=True,
+        publish_description_as_comment=True,
+    )
+    mock_get_settings.return_value.config.is_auto_command = True
+    obj = _make_instance(ai_title=ai_title, pr_title="Human supplied title")
+
+    await obj.run()
+
+    obj.git_provider.publish_comment.assert_called_once()
+    comment_body = obj.git_provider.publish_comment.call_args[0][0]
+    assert comment_body.startswith("## Title\n\n\n\n___\nbody")
+    obj.git_provider.publish_description.assert_not_called()
