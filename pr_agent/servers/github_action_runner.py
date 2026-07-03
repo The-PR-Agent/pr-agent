@@ -142,7 +142,7 @@ async def run_action():
         elif action == "synchronize":
             push_trigger = get_settings().get(
                 "github_action_config.handle_push_trigger",
-                get_settings().get("github_app.handle_push_trigger", True),
+                get_settings().get("github_app.handle_push_trigger", False),
             )
             if not is_true(push_trigger):
                 get_logger().info("Skipping action: synchronize (handle_push_trigger is disabled)")
@@ -154,7 +154,27 @@ async def run_action():
             after_sha = event_payload.get("after")
             if before_sha is not None and before_sha == after_sha:
                 return
-            push_commands = get_settings().get("github_app.push_commands", [])
+            pull_request = event_payload.get("pull_request", {})
+            merge_commit_sha = pull_request.get("merge_commit_sha")
+            ignore_merge_commits = get_settings().get(
+                "github_action_config.push_trigger_ignore_merge_commits",
+                get_settings().get("github_app.push_trigger_ignore_merge_commits", True),
+            )
+            if is_true(ignore_merge_commits) and after_sha is not None and after_sha == merge_commit_sha:
+                get_logger().info("Skipping synchronize: merge commit detected")
+                return
+            sender_type = event_payload.get("sender", {}).get("type")
+            ignore_bot_commits = get_settings().get(
+                "github_action_config.push_trigger_ignore_bot_commits",
+                get_settings().get("github_app.push_trigger_ignore_bot_commits", True),
+            )
+            if is_true(ignore_bot_commits) and sender_type == "Bot":
+                get_logger().info("Skipping synchronize: bot commit detected")
+                return
+            push_commands = get_settings().get(
+                "github_action_config.push_commands",
+                get_settings().get("github_app.push_commands", []),
+            )
             if not push_commands:
                 get_logger().info("No push_commands configured, skipping synchronize")
                 return
