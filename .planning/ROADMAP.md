@@ -52,7 +52,11 @@
   4. The validator is a pure helper (`_normalize_angular_title`) unit-tested in isolation with adversarial cases and does not mutate `_prepare_pr_answer` inline logic.
   5. When the toggle is off, title behavior is identical to Phase 1 (upstream default) — verified against the same byte-diff fixture.
 
-**Plans:** TBD
+**Plans:** 2 plans
+
+Plans:
+- [ ] 02-01-PLAN.md — Pure `_normalize_angular_title` validator/repair helper + 25-row adversarial fixture test (TITLE-02..06)
+- [ ] 02-02-PLAN.md — CFG-04 publish-seam auto-force wiring + `self.ai_title` stash + Angular `extra_instructions` steering + behavior matrix (CFG-04, TITLE-01)
 
 ### Phase 3: Org template prepend with idempotency
 
