@@ -64,7 +64,7 @@ class GiteaProvider(GitProvider):
         self.diff_files = []
         self.incremental = IncrementalPR(False)
         self.comments_list = []
-        self.unreviewed_files_set = dict()
+        self.unreviewed_files_map = dict()
 
         if "pulls" in url:
             self.pr_url = url
@@ -475,9 +475,9 @@ class GiteaProvider(GitProvider):
                 # Get file content from this pr
                 head_file = self.file_contents.get(filename,"")
 
-            if self.incremental.is_incremental and self.unreviewed_files_set:
+            if self.incremental.is_incremental and self.unreviewed_files_map:
                 base_file = self._get_file_content_from_latest_commit(filename)
-                self.unreviewed_files_set[filename] = patch
+                self.unreviewed_files_map[filename] = patch
             else:
                 if avoid_load:
                     base_file = ""
