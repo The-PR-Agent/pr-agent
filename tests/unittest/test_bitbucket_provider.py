@@ -433,6 +433,17 @@ class TestBitbucketGlobalSettings:
         assert "myws/pr-agent-settings" in rq.call_args_list[0].args[1]
         assert "src/main/.pr_agent.toml" in rq.call_args_list[1].args[1]
 
+    def test_no_access_403_returns_empty_and_caches(self):
+        # A 403 (no access) is a stable/expected condition like 404: return "" AND cache it.
+        provider = self._provider()
+        repo_resp = MagicMock(status_code=403)
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request", return_value=repo_resp) as rq, \
+             patch("pr_agent.git_providers.bitbucket_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = True
+            assert provider._get_global_repo_settings() == ""
+            assert provider._get_global_repo_settings() == ""  # served from cache
+        assert rq.call_count == 1
+
     def test_missing_settings_repo_returns_empty(self):
         provider = self._provider()
         repo_resp = MagicMock(status_code=404)

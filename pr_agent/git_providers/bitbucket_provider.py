@@ -110,7 +110,7 @@ class BitbucketProvider(GitProvider):
         # errors raise (via raise_for_status) so the caller does not cache a transient failure.
         repo_url = f"https://api.bitbucket.org/2.0/repositories/{workspace}/pr-agent-settings"
         repo_resp = requests.request("GET", repo_url, headers=self.headers)
-        if repo_resp.status_code == 404:  # no global settings repo
+        if repo_resp.status_code in (403, 404):  # missing repo or no access -> expected, cacheable
             return ""
         repo_resp.raise_for_status()
         main_branch = (repo_resp.json().get('mainbranch') or {}).get('name')
@@ -118,7 +118,7 @@ class BitbucketProvider(GitProvider):
             return ""
         file_resp = requests.request(
             "GET", f"{repo_url}/src/{main_branch}/.pr_agent.toml", headers=self.headers)
-        if file_resp.status_code == 404:  # repo exists but no .pr_agent.toml
+        if file_resp.status_code in (403, 404):  # missing file or no access -> expected, cacheable
             return ""
         file_resp.raise_for_status()
         return file_resp.text.encode('utf-8')
