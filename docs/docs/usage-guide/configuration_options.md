@@ -84,10 +84,10 @@ If `.pr_agent.toml` cannot be loaded from the requested branch (e.g. the branch 
 
 ## Global configuration file
 
-`Platforms supported: GitHub, GitLab (cloud), Bitbucket (cloud)`
+`Platforms supported: GitHub`
 
-If you create a repo called `pr-agent-settings` in your **organization**, its configuration file `.pr_agent.toml` will be used as a global configuration file for any other repo that belongs to the same organization.
-Parameters from a local `.pr_agent.toml` file, in a specific repo, will override the global configuration parameters.
+If you create a repo called `pr-agent-settings` in your **organization**, its configuration file `.pr_agent.toml` (read from that repo's default branch) will be used as a global configuration file for any other repo that belongs to the same organization.
+Parameters from a local `.pr_agent.toml` file, in a specific repo, will override the global configuration parameters (the global file is merged *beneath* the repo-local one).
 For GitHub Enterprise Server, use the same organization-level repository on your GHES host.
 The GitHub App installation or user token used by PR-Agent must have read access to both the pull request repository and the `<organization>/pr-agent-settings` repository; otherwise, PR-Agent will skip the global configuration and continue with repository-local settings.
 
