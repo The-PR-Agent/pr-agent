@@ -776,9 +776,13 @@ class GiteaProvider(GitProvider):
                 filepath=file_path
             )
             return content
-        except Exception as e:
-            self.logger.debug(f"Failed to load repo file: {file_path}, error: {e}")
-            return ""
+        except ApiException as e:
+            # A missing file is an expected "no context" outcome. Let transient/unexpected
+            # errors propagate so build_repo_context() treats them as a fetch error and does
+            # not cache an empty result until the TTL expires.
+            if getattr(e, "status", None) == 404:
+                return ""
+            raise
 
 class RepoApi(giteapy.RepositoryApi):
     def __init__(self, client: giteapy.ApiClient):

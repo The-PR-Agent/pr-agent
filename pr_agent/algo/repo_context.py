@@ -149,8 +149,24 @@ def _store_repo_context(git_provider, context_files: list, max_lines: int, repo_
         _repo_context_process_cache[process_cache_key] = repo_context
 
 
+def _read_bool_setting(key: str, default: bool) -> bool:
+    # Robustly interpret a boolean config value that may arrive as a real bool (TOML) or a
+    # string (e.g. env-var overrides). Fall back to the secure default for missing/unparseable
+    # values rather than relying on bool("false") == True.
+    value = get_settings().config.get(key, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in ("true", "1", "yes", "on"):
+            return True
+        if normalized in ("false", "0", "no", "off"):
+            return False
+    return default
+
+
 def _load_repo_context_files(git_provider, context_files: list) -> tuple[dict[str, str], bool]:
-    from_default_branch = bool(get_settings().config.get("repo_context_from_default_branch", False))
+    from_default_branch = _read_bool_setting("repo_context_from_default_branch", default=True)
     files = {}
     had_fetch_error = False
     for file_path in context_files:
@@ -255,13 +271,11 @@ def build_repo_context(git_provider) -> str:
         return cached_repo_context
 
     files, had_fetch_error = _load_repo_context_files(git_provider, context_files)
-    if not files and had_fetch_error:
-        return ""
 
-    if not files:
-        _store_repo_context(git_provider, context_files, max_lines, "")
-        return ""
+    repo_context = render_instruction_files_with_line_budget(files, max_lines) if files else ""
 
-    repo_context = render_instruction_files_with_line_budget(files, max_lines)
-    _store_repo_context(git_provider, context_files, max_lines, repo_context)
+    # Only cache when every file was fetched successfully. A transient/unexpected fetch error must
+    # not be cached as a real result, so it is retried instead of being served until the TTL expires.
+    if not had_fetch_error:
+        _store_repo_context(git_provider, context_files, max_lines, repo_context)
     return repo_context

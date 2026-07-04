@@ -1,6 +1,9 @@
 from io import BytesIO
 from unittest.mock import MagicMock, patch
 
+import pytest
+from giteapy.rest import ApiException
+
 from pr_agent.git_providers.gitea_provider import GiteaProvider
 
 
@@ -311,6 +314,33 @@ class TestGiteaProvider:
             commit_sha="main",
             filepath="AGENTS.md"
         )
+
+    def test_get_repo_file_content_treats_404_as_missing(self):
+        provider = GiteaProvider.__new__(GiteaProvider)
+        provider.owner = "owner"
+        provider.repo = "repo"
+        provider.base_sha = "base-sha"
+        provider.base_ref = "main"
+        provider.logger = MagicMock()
+        provider.repo_api = MagicMock()
+        provider.repo_api.get_file_content.side_effect = ApiException(status=404)
+
+        assert provider.get_repo_file_content("MISSING.md") == ""
+
+    def test_get_repo_file_content_propagates_transient_error(self):
+        # Transient/unexpected errors must propagate so the repo-context loader flags a fetch
+        # error and does not cache an empty result.
+        provider = GiteaProvider.__new__(GiteaProvider)
+        provider.owner = "owner"
+        provider.repo = "repo"
+        provider.base_sha = "base-sha"
+        provider.base_ref = "main"
+        provider.logger = MagicMock()
+        provider.repo_api = MagicMock()
+        provider.repo_api.get_file_content.side_effect = ApiException(status=500)
+
+        with pytest.raises(ApiException):
+            provider.get_repo_file_content("AGENTS.md")
 
     def test_get_repo_file_content_never_reads_from_pr_head_when_base_missing(self):
         # Security: when no target/base ref is available, the provider must NOT fall back

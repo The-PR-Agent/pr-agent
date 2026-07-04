@@ -868,9 +868,13 @@ class GithubProvider(GitProvider):
             if isinstance(contents, bytes):
                 return contents.decode("utf-8", errors="replace")
             return contents
-        except Exception as e:
-            get_logger().warning(f"Failed to load repo file: {file_path}, error: {e}")
-            return ""
+        except GithubException as e:
+            # A missing file is an expected "no context" outcome. Let transient/unexpected
+            # errors propagate so build_repo_context() treats them as a fetch error and does
+            # not cache an empty result until the TTL expires.
+            if e.status == 404:
+                return ""
+            raise
 
     def get_workspace_name(self):
         return self.repo.split('/')[0]

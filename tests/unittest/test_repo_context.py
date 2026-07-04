@@ -1,6 +1,7 @@
 from unittest.mock import Mock, patch
 
 import pytest
+from github import GithubException
 from jinja2 import Environment, StrictUndefined, select_autoescape
 
 from pr_agent.algo import repo_context
@@ -83,6 +84,27 @@ def test_build_repo_context_reads_from_target_branch_when_disabled(repo_context_
     build_repo_context(provider)
 
     assert provider.from_default_branch_calls == [False]
+
+
+@pytest.mark.parametrize(
+    "config_value,expected",
+    [
+        ("false", False),
+        ("False", False),
+        ("0", False),
+        ("true", True),
+        ("1", True),
+        ("maybe", True),  # unparseable -> secure default
+    ],
+)
+def test_build_repo_context_parses_string_default_branch_flag(repo_context_settings, config_value, expected):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["AGENTS.md"])
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FROM_DEFAULT_BRANCH", config_value)
+    provider = FakeProvider({"AGENTS.md": "Repo purpose"})
+
+    build_repo_context(provider)
+
+    assert provider.from_default_branch_calls == [expected]
 
 
 def test_build_repo_context_fetches_and_formats_configured_files(repo_context_settings):
@@ -463,16 +485,28 @@ def test_build_repo_context_warns_once_for_provider_without_repo_file_fetching(r
     )
 
 
-def test_github_provider_decodes_repo_context_files_and_treats_failures_as_missing():
+def test_github_provider_decodes_repo_context_files_and_treats_404_as_missing():
     provider = GithubProvider.__new__(GithubProvider)
     provider.repo_obj = Mock()
     provider.repo_obj.get_contents.return_value.decoded_content = b"repo context"
 
     assert provider.get_repo_file_content("AGENTS.md") == "repo context"
 
-    provider.repo_obj.get_contents.side_effect = Exception("not found")
+    # A genuine 404 (missing file) is treated as "no context".
+    provider.repo_obj.get_contents.side_effect = GithubException(404, {"message": "Not Found"}, {})
 
     assert provider.get_repo_file_content("MISSING.md") == ""
+
+
+def test_github_provider_propagates_transient_fetch_errors():
+    # Transient/unexpected errors must propagate (not be swallowed as "missing"), so the
+    # repo-context loader flags a fetch error and does not cache an empty result.
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.repo_obj = Mock()
+    provider.repo_obj.get_contents.side_effect = GithubException(500, {"message": "Server Error"}, {})
+
+    with pytest.raises(GithubException):
+        provider.get_repo_file_content("AGENTS.md")
 
 
 def test_github_provider_reads_repo_context_files_from_pr_base_ref():
