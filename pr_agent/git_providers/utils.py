@@ -284,84 +284,29 @@ def apply_repo_settings(pr_url):
                 except Exception:
                     pass
 
-            error_local = None
+            config_errors = []
             if repo_settings:
-                repo_settings_files = []
-                normalized_repo_settings = []
-                try:
-                    normalized_repo_settings = _normalize_repo_settings(repo_settings)
-                    for _category, settings_content in normalized_repo_settings:
-                        fd, repo_settings_file = tempfile.mkstemp(suffix='.toml')
-                        repo_settings_files.append(repo_settings_file)
-                        try:
-                            if isinstance(settings_content, str):
-                                settings_content = settings_content.encode("utf-8")
-                            os.write(fd, settings_content)
-                        finally:
-                            os.close(fd)
-
+                # Apply each settings source (e.g. global then local) independently and in order.
+                # Loading them in a single Dynaconf call would fail all sources on one bad file and
+                # misattribute the error to the last source; applying per-scope keeps error reporting
+                # (and redaction) accurate and lets valid sources still take effect.
+                for category, settings_content in _normalize_repo_settings(repo_settings):
+                    fd, repo_settings_file = tempfile.mkstemp(suffix='.toml')
+                    repo_settings_files.append(repo_settings_file)
                     try:
-                        dynconf_kwargs = {'core_loaders': [],
-                             # Disable default loaders, otherwise TOML files load more than once.
-                             'loaders': ['pr_agent.custom_merge_loader'],
-                             # Merge sections and overwrite overlapping values without involving environment variables.
-                             'merge_enabled': True
-                         }
+                        if isinstance(settings_content, str):
+                            settings_content = settings_content.encode("utf-8")
+                        os.write(fd, settings_content)
+                    finally:
+                        os.close(fd)
+                    try:
+                        _apply_repo_settings_file(repo_settings_file)
+                    except Exception as e:
+                        get_logger().warning(f"Failed to apply repo {category} settings, error: {str(e)}")
+                        config_errors.append({'error': str(e), 'settings': settings_content, 'category': category})
 
-                        new_settings = Dynaconf(settings_files=repo_settings_files,
-                                                # Disable all dynamic loading features
-                                                load_dotenv=False,  # Don't load .env files
-                                                envvar_prefix=False,  # Drop DYNACONF for env. variables
-                                                **dynconf_kwargs
-                                                )
-                    except TypeError as e:
-                        # Fallback for older Dynaconf versions that don't support these parameters
-                        get_logger().warning(
-                            "Your Dynaconf version does not support disabled 'load_dotenv'/'merge_enabled' parameters. "
-                            "Loading repo settings without these security features. "
-                            "Please upgrade Dynaconf for better security.",
-                            artifact={"error": e, "traceback": traceback.format_exc()})
-                        new_settings = Dynaconf(settings_files=repo_settings_files)
-
-                    for section, contents in new_settings.as_dict().items():
-                        if not contents:
-                            # Skip excluded items, such as forbidden to load env.
-                            get_logger().debug(f"Skipping a section: {section} which is not allowed")
-                            continue
-                        allowed_keys = _REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION.get(section.lower())
-                        if allowed_keys is not None:
-                            rejected = [k for k in contents if k.lower() not in allowed_keys]
-                            if rejected:
-                                get_logger().warning(
-                                    f"Ignoring host-only key(s) {rejected} in section [{section}] from repo "
-                                    f"settings; only {sorted(allowed_keys)} may be set per-repo for this section"
-                                )
-                            contents = {k: v for k, v in contents.items() if k.lower() in allowed_keys}
-                            if not contents:
-                                continue
-                        section_dict = copy.deepcopy(get_settings().as_dict().get(section, {}))
-                        for key, value in contents.items():
-                            section_dict[key] = value
-                        get_settings().unset(section)
-                        get_settings().set(section, section_dict, merge=False)
-                    # Same precedence-restoration rationale as the extra-config
-                    # path: env-sourced values must remain the highest layer.
-                    _reapply_env_overrides()
-                    # Do NOT log the merged dict: repo/global .pr_agent.toml may contain secrets
-                    # (e.g. openai.key, gitlab.personal_access_token) that would otherwise leak into
-                    # CI logs. Section names are safe and sufficient for debugging (same rationale as
-                    # the extra-config path above).
-                    get_logger().info(
-                        f"Applying repo settings (sections: {sorted(new_settings.as_dict().keys())})"
-                    )
-                except Exception as e:
-                    category = normalized_repo_settings[-1][0] if normalized_repo_settings else "local"
-                    settings_content = normalized_repo_settings[-1][1] if normalized_repo_settings else repo_settings
-                    get_logger().warning(f"Failed to apply repo {category} settings, error: {str(e)}")
-                    error_local = {'error': str(e), 'settings': settings_content, 'category': category}
-
-                if error_local:
-                    handle_configurations_errors([error_local], git_provider)
+                if config_errors:
+                    handle_configurations_errors(config_errors, git_provider)
         except Exception as e:
             get_logger().exception("Failed to apply repo settings", e)
         finally:
@@ -374,6 +319,67 @@ def apply_repo_settings(pr_url):
     # enable switching models with a short definition
     if get_settings().config.model.lower() == 'claude-3-5-sonnet':
         set_claude_model()
+
+
+def _apply_repo_settings_file(repo_settings_file):
+    """Load a single repo settings file and merge its allowed keys into the global settings.
+
+    Enforces the per-repo host-key restrictions and logs only section names (values may contain
+    secrets). Raises on load/parse failure so the caller can attribute the error to the correct
+    settings scope (e.g. 'global' vs 'local').
+    """
+    try:
+        dynconf_kwargs = {'core_loaders': [],
+             # Disable default loaders, otherwise TOML files load more than once.
+             'loaders': ['pr_agent.custom_merge_loader'],
+             # Merge sections and overwrite overlapping values without involving environment variables.
+             'merge_enabled': True
+         }
+        new_settings = Dynaconf(settings_files=[repo_settings_file],
+                                # Disable all dynamic loading features
+                                load_dotenv=False,  # Don't load .env files
+                                envvar_prefix=False,  # Drop DYNACONF for env. variables
+                                **dynconf_kwargs
+                                )
+    except TypeError as e:
+        # Fallback for older Dynaconf versions that don't support these parameters
+        get_logger().warning(
+            "Your Dynaconf version does not support disabled 'load_dotenv'/'merge_enabled' parameters. "
+            "Loading repo settings without these security features. "
+            "Please upgrade Dynaconf for better security.",
+            artifact={"error": e, "traceback": traceback.format_exc()})
+        new_settings = Dynaconf(settings_files=[repo_settings_file])
+
+    for section, contents in new_settings.as_dict().items():
+        if not contents:
+            # Skip excluded items, such as forbidden to load env.
+            get_logger().debug(f"Skipping a section: {section} which is not allowed")
+            continue
+        allowed_keys = _REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION.get(section.lower())
+        if allowed_keys is not None:
+            rejected = [k for k in contents if k.lower() not in allowed_keys]
+            if rejected:
+                get_logger().warning(
+                    f"Ignoring host-only key(s) {rejected} in section [{section}] from repo "
+                    f"settings; only {sorted(allowed_keys)} may be set per-repo for this section"
+                )
+            contents = {k: v for k, v in contents.items() if k.lower() in allowed_keys}
+            if not contents:
+                continue
+        section_dict = copy.deepcopy(get_settings().as_dict().get(section, {}))
+        for key, value in contents.items():
+            section_dict[key] = value
+        get_settings().unset(section)
+        get_settings().set(section, section_dict, merge=False)
+    # Same precedence-restoration rationale as the extra-config path: env-sourced values
+    # must remain the highest layer.
+    _reapply_env_overrides()
+    # Do NOT log the merged dict: repo/global .pr_agent.toml may contain secrets
+    # (e.g. openai.key, gitlab.personal_access_token) that would otherwise leak into
+    # CI logs. Section names are safe and sufficient for debugging.
+    get_logger().info(
+        f"Applying repo settings (sections: {sorted(new_settings.as_dict().keys())})"
+    )
 
 
 def _normalize_repo_settings(repo_settings):

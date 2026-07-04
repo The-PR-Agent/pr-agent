@@ -61,6 +61,54 @@ def test_apply_repo_settings_merges_global_before_local_settings(monkeypatch):
         settings.pr_reviewer.enable_intro_text = original_enable_intro_text
 
 
+class FakeErrorReportingProvider(FakePlainProvider):
+    def __init__(self, settings_list):
+        super().__init__()
+        self._settings_list = settings_list
+
+    def get_repo_settings(self):
+        return self._settings_list
+
+
+def test_apply_repo_settings_attributes_global_error_and_still_applies_local(monkeypatch):
+    # When applying the global settings file fails, the error must be reported against the
+    # *global* scope (redacted, no content leaked) while a valid local file still takes effect.
+    # Sources are applied independently, so one failing source neither blocks the others nor
+    # misattributes its error to another scope.
+    settings = get_settings()
+    original_extra_instructions = settings.pr_reviewer.extra_instructions
+    provider = FakeErrorReportingProvider([
+        ("global", b"[pr_reviewer]\nnum_max_findings = 3\n"),
+        ("local", b"[pr_reviewer]\nextra_instructions = \"local-applied\"\n"),
+    ])
+    monkeypatch.setattr(utils, "get_git_provider_with_context", lambda pr_url: provider)
+    monkeypatch.delenv("AUTO_CAST_FOR_DYNACONF", raising=False)
+
+    # Fail applying the first source (global), apply the rest (local) for real.
+    real_apply = utils._apply_repo_settings_file
+    state = {"n": 0}
+
+    def flaky_apply(path):
+        state["n"] += 1
+        if state["n"] == 1:
+            raise ValueError("bad global settings")
+        return real_apply(path)
+
+    monkeypatch.setattr(utils, "_apply_repo_settings_file", flaky_apply)
+
+    try:
+        apply_repo_settings("https://github.example.com/org/service/pull/1")
+
+        # Local settings still applied despite the global failure.
+        assert settings.pr_reviewer.extra_instructions == "local-applied"
+        # One error comment, attributed to global, with the global content redacted (not echoed).
+        assert len(provider.comments) == 1
+        assert "organization's global settings file" in provider.comments[0]
+        assert "num_max_findings" not in provider.comments[0]
+    finally:
+        settings.pr_reviewer.extra_instructions = original_extra_instructions
+
+
 def test_handle_configurations_errors_uses_persistent_comment_when_supported():
     provider = FakeMarkdownProvider()
 
