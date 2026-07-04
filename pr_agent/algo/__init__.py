@@ -362,9 +362,62 @@ SUPPORT_REASONING_EFFORT_MODELS = [
     "o4-mini-2025-04-16",
 ]
 
+# Claude models that support "extended thinking" through the manual
+# thinking={"type": "enabled", "budget_tokens": ...} request built by
+# LiteLLMAIHandler._configure_claude_extended_thinking(). Only models that
+# accept budget_tokens belong here. Adaptive-only models (Claude Opus 4.7/4.8,
+# Sonnet 5, Fable 5) reject budget_tokens with an HTTP 400 and must not be added
+# without also adding an adaptive-thinking code path. This list is the built-in
+# default; it can be replaced via the `claude_extended_thinking_models_override`
+# configuration option.
 CLAUDE_EXTENDED_THINKING_MODELS = [
     "anthropic/claude-3-7-sonnet-20250219",
-    "claude-3-7-sonnet-20250219"
+    "claude-3-7-sonnet-20250219",
+    "anthropic/claude-sonnet-4-6",
+    "claude-sonnet-4-6",
+    "vertex_ai/claude-sonnet-4-6",
+    "bedrock/anthropic.claude-sonnet-4-6",
+    "bedrock/us.anthropic.claude-sonnet-4-6",
+    "bedrock/au.anthropic.claude-sonnet-4-6",
+    "bedrock/eu.anthropic.claude-sonnet-4-6",
+    "bedrock/jp.anthropic.claude-sonnet-4-6",
+    "bedrock/global.anthropic.claude-sonnet-4-6",
+    "anthropic/claude-sonnet-4-5-20250929",
+    "claude-sonnet-4-5-20250929",
+    "vertex_ai/claude-sonnet-4-5@20250929",
+    "bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "bedrock/au.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "bedrock/eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "bedrock/jp.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "anthropic/claude-opus-4-5-20251101",
+    "claude-opus-4-5-20251101",
+    "vertex_ai/claude-opus-4-5@20251101",
+    "bedrock/anthropic.claude-opus-4-5-20251101-v1:0",
+    "bedrock/us.anthropic.claude-opus-4-5-20251101-v1:0",
+    "bedrock/au.anthropic.claude-opus-4-5-20251101-v1:0",
+    "bedrock/eu.anthropic.claude-opus-4-5-20251101-v1:0",
+    "bedrock/jp.anthropic.claude-opus-4-5-20251101-v1:0",
+    "bedrock/global.anthropic.claude-opus-4-5-20251101-v1:0",
+    "anthropic/claude-opus-4-6",
+    "claude-opus-4-6",
+    "vertex_ai/claude-opus-4-6",
+    "bedrock/anthropic.claude-opus-4-6-v1:0",
+    "bedrock/us.anthropic.claude-opus-4-6-v1:0",
+    "bedrock/au.anthropic.claude-opus-4-6-v1:0",
+    "bedrock/eu.anthropic.claude-opus-4-6-v1:0",
+    "bedrock/jp.anthropic.claude-opus-4-6-v1:0",
+    "bedrock/global.anthropic.claude-opus-4-6-v1:0",
+    "anthropic/claude-haiku-4-5-20251001",
+    "claude-haiku-4-5-20251001",
+    "vertex_ai/claude-haiku-4-5@20251001",
+    "bedrock/anthropic.claude-haiku-4-5-20251001-v1:0",
+    "bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "bedrock/au.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "bedrock/eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "bedrock/jp.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0",
 ]
 
 # Models that require streaming mode

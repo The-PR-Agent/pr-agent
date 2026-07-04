@@ -460,3 +460,22 @@ enable_claude_extended_thinking = false # Set to true to enable extended thinkin
 extended_thinking_budget_tokens = 2048
 extended_thinking_max_output_tokens = 4096
 ```
+
+By default, PR-Agent applies the extended-thinking payload only to a built-in list of Claude models
+(see `CLAUDE_EXTENDED_THINKING_MODELS` in `pr_agent/algo/__init__.py`). If you use a newer or custom
+Claude model that is not in that list, you can override it:
+
+```toml
+[config]
+claude_extended_thinking_models_override = ["anthropic/claude-my-new-model"]
+```
+
+When `claude_extended_thinking_models_override` is non-empty, it fully replaces the built-in list, so
+include every model that should receive extended thinking. Leave it empty (the default) to use the
+built-in defaults.
+
+!!! note "Only models that accept a thinking budget are supported"
+    PR-Agent enables extended thinking through the manual
+    `thinking={"type": "enabled", "budget_tokens": ...}` request. Adaptive-only Claude models
+    (e.g. Opus 4.7/4.8, Sonnet 5, Fable 5) reject `budget_tokens` and will error if you add them to
+    the list — they are intentionally excluded from the built-in defaults.
