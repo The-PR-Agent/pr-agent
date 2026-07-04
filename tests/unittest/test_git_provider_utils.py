@@ -90,7 +90,7 @@ def test_apply_repo_settings_attributes_global_error_and_still_applies_local(mon
         assert settings.pr_reviewer.extra_instructions == "local-applied"
         # One error comment, attributed to global, with the global content redacted (not echoed).
         assert len(provider.comments) == 1
-        assert "organization's global settings file" in provider.comments[0]
+        assert "global `pr-agent-settings` settings repository" in provider.comments[0]
         assert "unclosed_section" not in provider.comments[0]
     finally:
         settings.pr_reviewer.extra_instructions = original_extra_instructions
@@ -176,7 +176,7 @@ def test_handle_configurations_errors_publishes_each_error():
     assert "First error" in provider.comments[0]
     assert "[config]\nmodel =" in provider.comments[0]
     assert "Second error" in provider.comments[1]
-    assert "organization's global settings file" in provider.comments[1]
+    assert "global `pr-agent-settings` settings repository" in provider.comments[1]
     assert "dummy-value" not in provider.comments[1]
     assert "num_max_findings" not in provider.comments[1]
 

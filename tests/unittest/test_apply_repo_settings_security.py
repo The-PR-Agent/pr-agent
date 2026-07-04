@@ -285,10 +285,11 @@ def test_temp_file_is_removed_after_failed_apply(monkeypatch, tmp_path, settings
 
     monkeypatch.setattr(tempfile, "mkstemp", fake_mkstemp)
 
-    def exploding_dynaconf(*args, **kwargs):
+    def exploding_validate(*args, **kwargs):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(git_utils, "Dynaconf", exploding_dynaconf)
+    # Force a failure during apply (validate_file_security runs after mkstemp/parse).
+    monkeypatch.setattr(git_utils, "validate_file_security", exploding_validate)
 
     apply_repo_settings("https://example.com/owner/repo/pull/1")
 

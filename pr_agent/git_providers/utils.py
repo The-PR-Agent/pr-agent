@@ -345,32 +345,12 @@ def _apply_repo_settings_file(repo_settings_file):
     # internal filesystem path into the PR configuration-error comment.
     validate_file_security(parsed_toml, ".pr_agent.toml")
 
-    try:
-        dynconf_kwargs = {'core_loaders': [],
-             # Disable default loaders, otherwise TOML files load more than once.
-             'loaders': ['pr_agent.custom_merge_loader'],
-             # Merge sections and overwrite overlapping values without involving environment variables.
-             'merge_enabled': True
-         }
-        new_settings = Dynaconf(settings_files=[repo_settings_file],
-                                # Disable all dynamic loading features
-                                load_dotenv=False,  # Don't load .env files
-                                envvar_prefix=False,  # Drop DYNACONF for env. variables
-                                **dynconf_kwargs
-                                )
-    except TypeError as e:
-        # Fallback for older Dynaconf versions that don't support these parameters
-        get_logger().warning(
-            "Your Dynaconf version does not support disabled 'load_dotenv'/'merge_enabled' parameters. "
-            "Loading repo settings without these security features. "
-            "Please upgrade Dynaconf for better security.",
-            artifact={"error": e, "traceback": traceback.format_exc()})
-        new_settings = Dynaconf(settings_files=[repo_settings_file])
-
-    for section, contents in new_settings.as_dict().items():
-        if not contents:
-            # Skip excluded items, such as forbidden to load env.
-            get_logger().debug(f"Skipping a section: {section} which is not allowed")
+    # Apply the already-parsed data directly instead of re-reading the file through Dynaconf, which
+    # would parse the same TOML a second time. Section names are matched case-insensitively (Dynaconf
+    # stores them upper-cased); list/dict values replace rather than merge, matching the loader.
+    for section, contents in parsed_toml.items():
+        if not isinstance(contents, dict) or not contents:
+            get_logger().debug(f"Skipping non-table or empty section: {section}")
             continue
         allowed_keys = _REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION.get(section.lower())
         if allowed_keys is not None:
@@ -383,7 +363,7 @@ def _apply_repo_settings_file(repo_settings_file):
             contents = {k: v for k, v in contents.items() if k.lower() in allowed_keys}
             if not contents:
                 continue
-        section_dict = copy.deepcopy(get_settings().as_dict().get(section, {}))
+        section_dict = copy.deepcopy(get_settings().as_dict().get(section.upper(), {}))
         for key, value in contents.items():
             section_dict[key] = value
         get_settings().unset(section)
@@ -395,7 +375,7 @@ def _apply_repo_settings_file(repo_settings_file):
     # (e.g. openai.key, gitlab.personal_access_token) that would otherwise leak into
     # CI logs. Section names are safe and sufficient for debugging.
     get_logger().info(
-        f"Applying repo settings (sections: {sorted(new_settings.as_dict().keys())})"
+        f"Applying repo settings (sections: {sorted(parsed_toml.keys())})"
     )
 
 
@@ -422,7 +402,9 @@ def handle_configurations_errors(config_errors, git_provider):
                 body += f"___\n\n**Error message:**\n`{err_message}`\n\n"
                 if config_type == "global":
                     # Global content is redacted, so we never render it — skip decoding it entirely.
-                    body += "\n\nThe invalid configuration came from the organization's global settings file."
+                    # Global settings live in a `pr-agent-settings` repo scoped per platform
+                    # (GitHub organization, GitLab group, or Bitbucket workspace).
+                    body += "\n\nThe invalid configuration came from the global `pr-agent-settings` settings repository."
                 else:
                     settings_content = err['settings']
                     configuration_file_content = (
