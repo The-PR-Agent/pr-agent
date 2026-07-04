@@ -817,10 +817,12 @@ class GitLabProvider(GitProvider):
             return ""
         if not getattr(self, "gl", None) or not getattr(self, "id_project", None):
             return ""
-        # get_pr_owner_id returns the top-level group on gitlab.com, or the host on self-hosted;
-        # global settings are group-scoped, so only apply on gitlab.com.
+        # Group-level global settings are GitLab.com only. Match the host exactly so a self-hosted
+        # instance whose hostname merely contains "gitlab.com" (e.g. "mygitlab.com") is not treated
+        # as GitLab.com. get_pr_owner_id returns the top-level group on gitlab.com.
+        host = (urlparse(self.gitlab_url).hostname or "").lower() if self.gitlab_url else ""
         group = self.get_pr_owner_id()
-        if not group or not self.gitlab_url or 'gitlab.com' not in self.gitlab_url:
+        if not group or host != "gitlab.com":
             return ""
         return get_cached_global_settings(
             f"gitlab:{group}", lambda: self._fetch_global_repo_settings(group))

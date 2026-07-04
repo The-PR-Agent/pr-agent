@@ -335,7 +335,8 @@ class TestGitLabGlobalSettings:
         proj.files.get.assert_called_once_with(file_path=".pr_agent.toml", ref="main")
 
     def test_skips_on_self_hosted(self):
-        provider = self._provider(gitlab_url="https://gitlab.mycompany.com")
+        # "mygitlab.com" contains the substring "gitlab.com" but is NOT GitLab.com — must be skipped.
+        provider = self._provider(gitlab_url="https://mygitlab.com")
         with patch("pr_agent.git_providers.gitlab_provider.get_settings") as ms:
             ms.return_value.config.use_global_settings_file = True
             assert provider._get_global_repo_settings() == ""

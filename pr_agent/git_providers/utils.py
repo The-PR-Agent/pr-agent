@@ -410,11 +410,6 @@ def handle_configurations_errors(config_errors, git_provider):
 
         for err in config_errors:
             if err:
-                settings_content = err['settings']
-                configuration_file_content = (
-                    settings_content.decode("utf-8", errors="replace")
-                    if isinstance(settings_content, bytes) else settings_content
-                )
                 err_message = err['error']
                 config_type = err['category']
                 header = f"❌ **PR-Agent failed to apply '{config_type}' repo settings**"
@@ -424,14 +419,21 @@ def handle_configurations_errors(config_errors, git_provider):
                 )
                 body += f"___\n\n**Error message:**\n`{err_message}`\n\n"
                 if config_type == "global":
+                    # Global content is redacted, so we never render it — skip decoding it entirely.
                     body += "\n\nThe invalid configuration came from the organization's global settings file."
-                elif git_provider.is_supported("gfm_markdown"):
-                    body += (
-                        "\n\n<details><summary>Configuration content:</summary>\n\n"
-                        f"```toml\n{configuration_file_content}\n```\n\n</details>"
-                    )
                 else:
-                    body += f"\n\n**Configuration content:**\n\n```toml\n{configuration_file_content}\n```\n\n"
+                    settings_content = err['settings']
+                    configuration_file_content = (
+                        settings_content.decode("utf-8", errors="replace")
+                        if isinstance(settings_content, bytes) else settings_content
+                    )
+                    if git_provider.is_supported("gfm_markdown"):
+                        body += (
+                            "\n\n<details><summary>Configuration content:</summary>\n\n"
+                            f"```toml\n{configuration_file_content}\n```\n\n</details>"
+                        )
+                    else:
+                        body += f"\n\n**Configuration content:**\n\n```toml\n{configuration_file_content}\n```\n\n"
                 get_logger().warning("Sending a 'configuration error' comment to the PR", artifact={'body': body})
                 # git_provider.publish_comment(body)
                 if hasattr(git_provider, 'publish_persistent_comment'):
