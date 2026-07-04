@@ -68,6 +68,10 @@ reasoning_effort = "medium" # "none", "minimal", "low", "medium", "high", "xhigh
 enable_claude_extended_thinking = false # Set to true to enable extended thinking feature
 extended_thinking_budget_tokens = 2048
 extended_thinking_max_output_tokens = 4096
+# Optional: override the built-in list of Claude models that receive the extended-thinking payload.
+# When non-empty, this list fully replaces the built-in defaults (see CLAUDE_EXTENDED_THINKING_MODELS
+# in pr_agent/algo/__init__.py). Leave empty to use the defaults.
+claude_extended_thinking_models_override = []
 # Extract issue number from PR source branch name (e.g. feature/1-auth-google -> issue #1). When true, branch-derived
 # issue URLs are merged with tickets from the PR description for compliance. Set to false to restore description-only behaviour.
 # Note: Branch-name extraction is GitHub-only for now; other providers planned for later.
