@@ -146,7 +146,7 @@ LANGSMITH_BASE_URL=<url>
 
 `Platforms supported: GitHub, GitLab, Gitea`
 
-To give PR-Agent's tools additional project context, you can have it include repository instruction files — such as [AGENTS.md](https://agents.md/), [CLAUDE.md](https://www.anthropic.com/engineering/claude-code-best-practices), or [QODO.md](https://docs.codium.ai/qodo-documentation/qodo-command/getting-started/setup-and-quickstart) — in the prompts for the `/review`, `/describe` and `/improve` tools.
+To give PR-Agent's tools additional project context, you can have it include repository instruction files — such as [AGENTS.md](https://agents.md/) or [CLAUDE.md](https://www.anthropic.com/engineering/claude-code-best-practices) — in the prompts for the `/review`, `/describe` and `/improve` tools.
 
 By default, PR-Agent looks for an `AGENTS.md` file at the repository root:
 
