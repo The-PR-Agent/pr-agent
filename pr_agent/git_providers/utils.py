@@ -12,7 +12,8 @@ from dynaconf.loaders import env_loader
 from starlette_context import context
 
 from pr_agent.config_loader import get_settings
-from pr_agent.custom_merge_loader import validate_file_security
+from pr_agent.custom_merge_loader import (MAX_TOML_SIZE_IN_BYTES,
+                                          validate_file_security)
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.log import get_logger
 
@@ -328,6 +329,13 @@ def _apply_repo_settings_file(repo_settings_file):
     secrets). Raises on load/parse failure so the caller can attribute the error to the correct
     settings scope (e.g. 'global' vs 'local').
     """
+    # Enforce the same size cap as the loader BEFORE parsing, so an oversized file can't be fully
+    # read/parsed in-process (OOM/CPU) by the explicit validation below.
+    if os.path.getsize(repo_settings_file) > MAX_TOML_SIZE_IN_BYTES:
+        get_logger().warning(
+            f"Settings file too large (> {MAX_TOML_SIZE_IN_BYTES} bytes); skipping repo settings file")
+        return
+
     # Validate the file explicitly first: the shared custom_merge_loader runs with silent=True and
     # would otherwise swallow TOML/security errors, skipping the file without surfacing a scoped
     # configuration error. Parsing here makes malformed/forbidden config raise so it gets reported.

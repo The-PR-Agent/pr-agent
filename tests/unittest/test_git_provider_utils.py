@@ -181,6 +181,22 @@ def test_handle_configurations_errors_publishes_each_error():
     assert "num_max_findings" not in provider.comments[1]
 
 
+def test_apply_repo_settings_file_skips_oversized_file(monkeypatch, tmp_path):
+    # An oversized settings file must be skipped by size BEFORE it is parsed, so it can't be
+    # fully read/parsed in-process (the explicit validation would otherwise bypass the loader cap).
+    from unittest.mock import MagicMock
+
+    f = tmp_path / "big.toml"
+    f.write_bytes(b"[pr_reviewer]\nnum_max_findings = 3\n")
+    monkeypatch.setattr(utils, "MAX_TOML_SIZE_IN_BYTES", 5)  # smaller than the file
+    load_spy = MagicMock(side_effect=AssertionError("oversized file must not be parsed"))
+    monkeypatch.setattr(utils.tomllib, "load", load_spy)
+
+    # Returns quietly (skips) without parsing or raising.
+    utils._apply_repo_settings_file(str(f))
+    load_spy.assert_not_called()
+
+
 def test_handle_configurations_errors_tolerates_non_utf8_settings():
     # Non-UTF-8 settings bytes must not raise (UnicodeDecodeError) and abort posting the error.
     provider = FakePlainProvider()
