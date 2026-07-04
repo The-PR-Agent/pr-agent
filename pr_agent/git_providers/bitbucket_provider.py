@@ -15,7 +15,7 @@ from ..algo.language_handler import is_valid_file
 from ..algo.utils import find_line_number_of_relevant_line_in_file
 from ..config_loader import get_settings
 from ..log import get_logger
-from .git_provider import MAX_FILES_ALLOWED_FULL, GitProvider
+from .git_provider import MAX_FILES_ALLOWED_FULL, GitProvider, get_cached_global_settings
 
 
 def _gef_filename(diff):
@@ -78,15 +78,52 @@ class BitbucketProvider(GitProvider):
         self.bitbucket_pull_request_api_url = self.pr._BitbucketBase__data["links"]['self']['href']
 
     def get_repo_settings(self):
+        settings_files = []
+        global_settings = self._get_global_repo_settings()
+        if global_settings:
+            settings_files.append(("global", global_settings))
         try:
             url = (f"https://api.bitbucket.org/2.0/repositories/{self.workspace_slug}/{self.repo_slug}/src/"
                    f"{self.pr.destination_branch}/.pr_agent.toml")
             response = requests.request("GET", url, headers=self.headers)
-            if response.status_code == 404:  # not found
+            if response.status_code != 404:  # found
+                settings_files.append(("local", response.text.encode('utf-8')))
+        except Exception as e:
+            get_logger().warning(f"Failed to load local .pr_agent.toml file, error: {e}")
+        return settings_files if settings_files else ""
+
+    def _get_global_repo_settings(self):
+        # Load a workspace-wide <workspace>/pr-agent-settings/.pr_agent.toml.
+        if not get_settings().config.use_global_settings_file:
+            return ""
+        workspace = self.get_pr_owner_id()
+        if not workspace or not getattr(self, "headers", None):
+            return ""
+        return get_cached_global_settings(
+            f"bitbucket:{workspace}", lambda: self._fetch_global_repo_settings(workspace))
+
+    def _fetch_global_repo_settings(self, workspace):
+        try:
+            repo_url = f"https://api.bitbucket.org/2.0/repositories/{workspace}/pr-agent-settings"
+            repo_resp = requests.request("GET", repo_url, headers=self.headers)
+            if repo_resp.status_code == 404:  # no global settings repo -> expected fallback
                 return ""
-            contents = response.text.encode('utf-8')
-            return contents
-        except Exception:
+            if repo_resp.status_code >= 400:
+                get_logger().warning(f"Failed to load global settings repo, status: {repo_resp.status_code}")
+                return ""
+            main_branch = (repo_resp.json().get('mainbranch') or {}).get('name')
+            if not main_branch:
+                return ""
+            file_resp = requests.request(
+                "GET", f"{repo_url}/src/{main_branch}/.pr_agent.toml", headers=self.headers)
+            if file_resp.status_code == 404:  # repo exists but no .pr_agent.toml
+                return ""
+            if file_resp.status_code >= 400:
+                get_logger().warning(f"Failed to load global .pr_agent.toml, status: {file_resp.status_code}")
+                return ""
+            return file_resp.text.encode('utf-8')
+        except Exception as e:
+            get_logger().warning(f"Failed to load global .pr_agent.toml file, error: {e}")
             return ""
 
     def get_repo_file_content(self, file_path: str, from_default_branch: bool = False):

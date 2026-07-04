@@ -3,6 +3,7 @@ from abc import ABC, abstractmethod
 import os
 import shutil
 import subprocess
+import time
 from typing import Optional, Tuple
 
 from pr_agent.algo.types import FilePatchInfo
@@ -11,6 +12,31 @@ from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
 MAX_FILES_ALLOWED_FULL = 50
+
+_GLOBAL_SETTINGS_CACHE: dict = {}
+_GLOBAL_SETTINGS_CACHE_TTL_SECONDS = 15 * 60
+_GLOBAL_SETTINGS_CACHE_MAX_SIZE = 256
+
+
+def get_cached_global_settings(cache_key, fetch_fn):
+    """Return the org/group/workspace global .pr_agent.toml via a bounded TTL cache.
+
+    Global settings change rarely, so caching avoids a provider API lookup (and repeated
+    403/404 fallbacks) on every webhook event. Empty/"not found" results are cached too, to
+    prevent repeated failed lookups. Pass a falsy cache_key to bypass the cache.
+    """
+    if not cache_key:
+        return fetch_fn()
+    now = time.monotonic()
+    entry = _GLOBAL_SETTINGS_CACHE.get(cache_key)
+    if entry is not None and entry[1] > now:
+        return entry[0]
+    value = fetch_fn()
+    _GLOBAL_SETTINGS_CACHE[cache_key] = (value, now + _GLOBAL_SETTINGS_CACHE_TTL_SECONDS)
+    while len(_GLOBAL_SETTINGS_CACHE) > _GLOBAL_SETTINGS_CACHE_MAX_SIZE:
+        oldest_key = min(_GLOBAL_SETTINGS_CACHE, key=lambda k: _GLOBAL_SETTINGS_CACHE[k][1])
+        _GLOBAL_SETTINGS_CACHE.pop(oldest_key, None)
+    return value
 
 def get_git_ssl_env() -> dict[str, str]:
     """

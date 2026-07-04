@@ -1,7 +1,17 @@
+import pytest
 from github import GithubException
 
 from pr_agent.config_loader import get_settings
+from pr_agent.git_providers import git_provider as _gp
 from pr_agent.git_providers.github_provider import GithubProvider
+
+
+@pytest.fixture(autouse=True)
+def _clear_global_settings_cache():
+    # The org global-settings cache is process-level; clear it between tests to avoid pollution.
+    _gp._GLOBAL_SETTINGS_CACHE.clear()
+    yield
+    _gp._GLOBAL_SETTINGS_CACHE.clear()
 
 
 def _not_found(name):

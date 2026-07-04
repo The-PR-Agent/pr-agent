@@ -302,3 +302,61 @@ class TestGitLabProvider:
         assert gitlab_provider.mr.title == "AI title"
         assert gitlab_provider.mr.description == "Updated description"
         gitlab_provider.mr.save.assert_called_once()
+
+
+@pytest.fixture(autouse=True)
+def _clear_global_settings_cache():
+    # The group global-settings cache is process-level; clear it between tests.
+    from pr_agent.git_providers import git_provider as _gp
+    _gp._GLOBAL_SETTINGS_CACHE.clear()
+    yield
+    _gp._GLOBAL_SETTINGS_CACHE.clear()
+
+
+class TestGitLabGlobalSettings:
+    def _provider(self, gitlab_url="https://gitlab.com"):
+        provider = GitLabProvider.__new__(GitLabProvider)
+        provider.gl = MagicMock()
+        provider.id_project = "mygroup/myrepo"
+        provider.gitlab_url = gitlab_url
+        return provider
+
+    def test_loads_group_pr_agent_settings(self):
+        provider = self._provider()
+        proj = MagicMock()
+        proj.default_branch = "main"
+        proj.files.get.return_value.decode.return_value = b"[pr_reviewer]\nnum_max_findings = 5\n"
+        provider.gl.projects.get.return_value = proj
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = True
+            result = provider._get_global_repo_settings()
+        assert result == b"[pr_reviewer]\nnum_max_findings = 5\n"
+        provider.gl.projects.get.assert_called_with("mygroup/pr-agent-settings")
+        proj.files.get.assert_called_once_with(file_path=".pr_agent.toml", ref="main")
+
+    def test_skips_on_self_hosted(self):
+        provider = self._provider(gitlab_url="https://gitlab.mycompany.com")
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = True
+            assert provider._get_global_repo_settings() == ""
+        provider.gl.projects.get.assert_not_called()
+
+    def test_disabled_returns_empty(self):
+        provider = self._provider()
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = False
+            assert provider._get_global_repo_settings() == ""
+        provider.gl.projects.get.assert_not_called()
+
+    def test_result_is_cached(self):
+        provider = self._provider()
+        proj = MagicMock()
+        proj.default_branch = "main"
+        proj.files.get.return_value.decode.return_value = b"[pr_reviewer]\nx = 1\n"
+        provider.gl.projects.get.return_value = proj
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = True
+            provider._get_global_repo_settings()
+            provider._get_global_repo_settings()
+        # Only one lookup for the settings project despite two calls (cached).
+        assert provider.gl.projects.get.call_count == 1

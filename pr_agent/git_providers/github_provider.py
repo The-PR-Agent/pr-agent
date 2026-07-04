@@ -27,7 +27,7 @@ from ..config_loader import get_settings
 from ..log import get_logger
 from ..servers.utils import RateLimitExceeded
 from .git_provider import (MAX_FILES_ALLOWED_FULL, FilePatchInfo, GitProvider,
-                           IncrementalPR)
+                           IncrementalPR, get_cached_global_settings)
 
 
 def _next_page_url(headers: dict) -> str:
@@ -883,10 +883,16 @@ class GithubProvider(GitProvider):
         if not getattr(self, "repo", None) or getattr(self, "github_client", None) is None:
             return ""
 
+        repo_owner = self.get_pr_owner_id()
+        if not repo_owner:
+            return ""
+        # Cache per org: global settings change rarely, so avoid a lookup (and repeated 403/404
+        # fallbacks) on every webhook event.
+        return get_cached_global_settings(
+            f"github:{repo_owner}", lambda: self._fetch_global_repo_settings(repo_owner))
+
+    def _fetch_global_repo_settings(self, repo_owner):
         try:
-            repo_owner = self.get_pr_owner_id()
-            if not repo_owner:
-                return ""
             global_settings_repo = self.github_client.get_repo(f"{repo_owner}/pr-agent-settings")
             return global_settings_repo.get_contents(".pr_agent.toml").decoded_content
         except GithubException as e:
