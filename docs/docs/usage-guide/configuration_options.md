@@ -88,6 +88,8 @@ If `.pr_agent.toml` cannot be loaded from the requested branch (e.g. the branch 
 
 If you create a repo called `pr-agent-settings` in your **organization**, its configuration file `.pr_agent.toml` will be used as a global configuration file for any other repo that belongs to the same organization.
 Parameters from a local `.pr_agent.toml` file, in a specific repo, will override the global configuration parameters.
+For GitHub Enterprise Server, use the same organization-level repository on your GHES host.
+The GitHub App installation or user token used by PR-Agent must have read access to both the pull request repository and the `<organization>/pr-agent-settings` repository; otherwise, PR-Agent will skip the global configuration and continue with repository-local settings.
 
 For example, in the GitHub organization `qodo-ai`:
 

@@ -830,6 +830,11 @@ class GithubProvider(GitProvider):
         return self.pr.get_issue_comments()
 
     def get_repo_settings(self):
+        settings_files = []
+        global_settings = self._get_global_repo_settings()
+        if global_settings:
+            settings_files.append(("global", global_settings))
+
         # Normalize each candidate before applying precedence so a whitespace-only
         # settings value doesn't short-circuit the PR_AGENT_CONFIG_BRANCH fallback.
         settings_branch = get_settings().get("CONFIG.CONFIG_BRANCH", None)
@@ -841,16 +846,39 @@ class GithubProvider(GitProvider):
             # reason to fall back to the default branch. Unexpected errors are
             # left to propagate so they aren't masked by a silent fallback.
             try:
-                return self.repo_obj.get_contents(".pr_agent.toml", ref=config_branch).decoded_content
+                contents = self.repo_obj.get_contents(".pr_agent.toml", ref=config_branch).decoded_content
+                if settings_files:
+                    settings_files.append(("local", contents))
+                    return settings_files
+                return contents
             except GithubException as e:
                 get_logger().warning(
                     f"Failed to load .pr_agent.toml from branch '{config_branch}', falling back to default branch",
                     artifact={"status": e.status, "error": str(e)},
                 )
         try:
+            # more logical to take 'pr_agent.toml' from the default branch
             contents = self.repo_obj.get_contents(".pr_agent.toml").decoded_content
-            return contents
-        except Exception:
+            if config_branch and not settings_files:
+                return contents
+            settings_files.append(("local", contents))
+        except Exception as e:
+            get_logger().warning(f"Failed to load .pr_agent.toml file, error: {e}")
+
+        return settings_files if settings_files else ""
+
+    def _get_global_repo_settings(self):
+        if not get_settings().config.use_global_settings_file:
+            return ""
+
+        try:
+            repo_owner = self.get_pr_owner_id()
+            if not repo_owner:
+                return ""
+            global_settings_repo = self.github_client.get_repo(f"{repo_owner}/pr-agent-settings")
+            return global_settings_repo.get_contents(".pr_agent.toml").decoded_content
+        except Exception as e:
+            get_logger().warning(f"Failed to load global .pr_agent.toml file, error: {e}")
             return ""
 
     def get_repo_file_content(self, file_path: str, from_default_branch: bool = False):
