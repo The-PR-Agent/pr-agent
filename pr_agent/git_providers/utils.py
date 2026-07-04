@@ -341,7 +341,13 @@ def apply_repo_settings(pr_url):
                     # Same precedence-restoration rationale as the extra-config
                     # path: env-sourced values must remain the highest layer.
                     _reapply_env_overrides()
-                    get_logger().info(f"Applying repo settings:\n{new_settings.as_dict()}")
+                    # Do NOT log the merged dict: repo/global .pr_agent.toml may contain secrets
+                    # (e.g. openai.key, gitlab.personal_access_token) that would otherwise leak into
+                    # CI logs. Section names are safe and sufficient for debugging (same rationale as
+                    # the extra-config path above).
+                    get_logger().info(
+                        f"Applying repo settings (sections: {sorted(new_settings.as_dict().keys())})"
+                    )
                 except Exception as e:
                     get_logger().warning(f"Failed to apply repo {category} settings, error: {str(e)}")
                     error_local = {'error': str(e), 'settings': repo_settings, 'category': category}
