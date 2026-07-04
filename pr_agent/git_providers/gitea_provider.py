@@ -1,4 +1,5 @@
 import json
+import os
 from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
@@ -291,6 +292,68 @@ class GiteaProvider(GitProvider):
             self.logger.error(f"Unexpected error: {e}")
             return None
 
+    def edit_comment_from_comment_id(self, comment_id: int, body: str):
+        """Edit an existing issue/PR comment addressed by its id.
+
+        Mirrors GithubProvider.edit_comment_from_comment_id; unlocks the inline
+        ``/ask`` flow, which edits its own placeholder comment in place.
+        """
+        body = self.limit_output_characters(body, self.max_comment_chars)
+        try:
+            self.repo_api.edit_comment(
+                owner=self.owner,
+                repo=self.repo,
+                comment_id=comment_id,
+                comment=body
+            )
+        except ApiException as e:
+            self.logger.error(f"Error editing comment {comment_id}: {e}")
+        except Exception as e:
+            self.logger.error(f"Unexpected error: {e}")
+
+    def get_comment_body_from_comment_id(self, comment_id: int) -> str:
+        """Return the body text of an issue/PR comment addressed by its id."""
+        try:
+            comment = self.repo_api.get_comment(
+                owner=self.owner,
+                repo=self.repo,
+                comment_id=comment_id
+            )
+            return comment.get("body", "") if isinstance(comment, dict) else ""
+        except ApiException as e:
+            self.logger.error(f"Error getting comment {comment_id}: {e}")
+            return ""
+        except Exception as e:
+            self.logger.error(f"Unexpected error: {e}")
+            return ""
+
+    def reply_to_comment_from_comment_id(self, comment_id: int, body: str):
+        """Reply to a comment.
+
+        Gitea has no reply-to-a-specific-comment endpoint (unlike GitHub's
+        review-comment replies), so the reply is posted as a new comment on
+        the PR — which is where the inline ``/ask`` answer surfaces.
+        """
+        self.publish_comment(body)
+
+    def get_review_thread_comments(self, comment_id: int) -> List[Dict[str, Any]]:
+        """Return the comments in the thread of the given comment.
+
+        Gitea does not expose a thread-by-comment lookup, so this returns the
+        single target comment (best-effort) so inline ``/ask`` still has the
+        original comment as context.
+        """
+        try:
+            comment = self.repo_api.get_comment(
+                owner=self.owner,
+                repo=self.repo,
+                comment_id=comment_id
+            )
+            return [comment] if comment else []
+        except Exception as e:
+            self.logger.error(f"Error getting review thread comments for {comment_id}: {e}")
+            return []
+
 
     def publish_inline_comment(self,body: str, relevant_file: str, relevant_line_in_file: str, original_suggestion=None):
         """Publish an inline comment on a specific line"""
@@ -425,20 +488,31 @@ class GiteaProvider(GitProvider):
             self.logger.error(f"Unexpected error: {e}")
             return None
 
-    def remove_reaction(self, comment_id: int) -> None:
-        """Remove reaction from a comment"""
+    def remove_reaction(self, issue_comment_id: int, reaction_id: int) -> bool:
+        """Remove the eyes reaction from a comment.
+
+        Signature mirrors the base/GithubProvider contract
+        ``remove_reaction(issue_comment_id, reaction_id)`` — the base class and
+        every caller pass two arguments, so the previous single-argument
+        Gitea signature raised a ``TypeError`` at runtime. Gitea deletes a
+        reaction by its content (not by a reaction id), so ``reaction_id`` is
+        accepted for contract compatibility but the "eyes" content is what is
+        removed. Returns True on success.
+        """
         try:
-            response = self.repo_api.remove_reaction_comment(
+            self.repo_api.remove_reaction_comment(
                 owner=self.owner,
                 repo=self.repo,
-                comment_id=comment_id
+                comment_id=issue_comment_id,
+                reaction="eyes"
             )
-            if not response:
-                self.logger.error("Failed to remove reaction")
+            return True
         except ApiException as e:
             self.logger.error(f"Error removing reaction: {e}")
+            return False
         except Exception as e:
             self.logger.error(f"Unexpected error: {e}")
+            return False
 
     def get_commit_messages(self)-> str:
         """Get commit messages for the PR"""
@@ -650,17 +724,45 @@ class GiteaProvider(GitProvider):
         return [label.name for label in labels]
 
     def get_repo_settings(self) -> bytes:
-        """Get repository settings"""
+        """Get repository settings.
+
+        When a config branch is set (via ``config.config_branch`` or the
+        ``PR_AGENT_CONFIG_BRANCH`` env var, mirroring GithubProvider), the
+        settings file is read from that branch first; a missing branch/file
+        falls back to the PR head commit. ``get_file_content`` passes the ref
+        through Gitea's ``?ref=`` query param, which accepts a branch name as
+        well as a commit sha.
+        """
         if not self.repo_settings:
             self.logger.error("Repository settings not found")
             return b""
 
-        response = self.repo_api.get_file_content(
-            owner=self.owner,
-            repo=self.repo,
-            commit_sha=self.sha,
-            filepath=self.repo_settings
-        )
+        settings_branch = get_settings().get("CONFIG.CONFIG_BRANCH", None)
+        settings_branch = settings_branch.strip() if isinstance(settings_branch, str) else ""
+        env_branch = (os.environ.get("PR_AGENT_CONFIG_BRANCH") or "").strip()
+        config_branch = settings_branch or env_branch
+
+        response = ""
+        if config_branch:
+            response = self.repo_api.get_file_content(
+                owner=self.owner,
+                repo=self.repo,
+                commit_sha=config_branch,
+                filepath=self.repo_settings
+            )
+            if not response:
+                self.logger.warning(
+                    f"Failed to load {self.repo_settings} from branch '{config_branch}', "
+                    "falling back to the PR head commit"
+                )
+
+        if not response:
+            response = self.repo_api.get_file_content(
+                owner=self.owner,
+                repo=self.repo,
+                commit_sha=self.sha,
+                filepath=self.repo_settings
+            )
         if not response:
             self.logger.error("Failed to get repository settings")
             return b""
@@ -676,7 +778,14 @@ class GiteaProvider(GitProvider):
         return f"{self.pr.user.id}" if self.pr else ""
 
     def is_supported(self, capability) -> bool:
-        """Check if the provider is supported"""
+        """Report whether a capability is available.
+
+        Mirrors GithubProvider: in restricted mode the provider must not claim
+        it can push code, so callers skip operations that need elevated
+        permissions instead of failing at the API.
+        """
+        if capability == "push_code" and get_settings().config.restricted_mode:
+            return False
         return True
 
     def get_git_repo_url(self, issues_or_pr_url: str) -> str:
@@ -706,17 +815,55 @@ class GiteaProvider(GitProvider):
                 pr_number=self.pr_number
             )
 
-    def publish_labels(self, labels: List[int]) -> None:
-        """Publish labels to the PR"""
+    def get_repo_labels(self) -> List[Dict[str, Any]]:
+        """Get all labels defined in the repository.
+
+        Returns the raw label objects (each ``{id, name, color, ...}``) so
+        callers can resolve a label name to the numeric id Gitea's
+        issue-label endpoint requires. Mirrors GithubProvider.get_repo_labels.
+        """
+        labels = self.repo_api.get_repo_labels(
+            owner=self.owner,
+            repo=self.repo
+        )
+        if not labels:
+            self.logger.error("Failed to get repository labels")
+            return []
+
+        return labels
+
+    def publish_labels(self, labels: List[str]) -> None:
+        """Publish labels to the PR.
+
+        pr-agent's tools hand this method label *names* (e.g. "Bug fix"), but
+        Gitea's issue-label endpoint takes numeric label *ids*. Resolve the
+        names against the repository's labels before posting; names with no
+        matching repository label are skipped (Gitea can only attach labels
+        that already exist in the repo).
+        """
         if not labels:
             self.logger.error("No labels provided to publish")
+            return None
+
+        repo_labels = self.get_repo_labels()
+        name_to_id = {
+            (label.get("name") if isinstance(label, dict) else getattr(label, "name", None)):
+            (label.get("id") if isinstance(label, dict) else getattr(label, "id", None))
+            for label in repo_labels
+        }
+        label_ids = [name_to_id[name] for name in labels if name in name_to_id]
+        missing = [name for name in labels if name not in name_to_id]
+        if missing:
+            self.logger.warning(f"Skipping labels not defined in the repository: {missing}")
+        if not label_ids:
+            self.logger.error("None of the provided labels exist in the repository")
             return None
 
         response = self.repo_api.add_labels(
             owner=self.owner,
             repo=self.repo,
             issue_number=self.pr_number if self.enabled_pr else self.issue_number,
-            labels=labels
+            labels=label_ids
         )
 
         if response:
@@ -905,6 +1052,41 @@ class RepoApi(giteapy.RepositoryApi):
             index=index
         )
 
+    def get_comment(self, owner: str, repo: str, comment_id: int):
+        """Fetch a single issue/PR comment by its id.
+
+        Maps to ``GET /repos/{owner}/{repo}/issues/comments/{id}`` and returns
+        the raw comment dict (``{id, body, user, ...}``).
+        """
+        try:
+            url = f'/repos/{owner}/{repo}/issues/comments/{comment_id}'
+
+            response = self.api_client.call_api(
+                url,
+                'GET',
+                path_params={},
+                response_type=None,
+                _return_http_data_only=False,
+                _preload_content=False,
+                auth_settings=['AuthorizationHeaderToken']
+            )
+
+            if hasattr(response, 'data'):
+                raw_data = response.data.read()
+                return json.loads(raw_data.decode('utf-8'))
+            elif isinstance(response, tuple):
+                raw_data = response[0].read()
+                return json.loads(raw_data.decode('utf-8'))
+
+            return {}
+
+        except ApiException as e:
+            self.logger.error(f"Error getting comment {comment_id}: {e}")
+            return {}
+        except Exception as e:
+            self.logger.error(f"Unexpected error: {e}")
+            return {}
+
     def get_pull_request_diff(self, owner: str, repo: str, pr_number: int) -> str:
         """Get the diff content of a pull request using direct API call"""
         try:
@@ -1072,6 +1254,41 @@ class RepoApi(giteapy.RepositoryApi):
             index=issue_number
         )
 
+    def get_repo_labels(self, owner: str, repo: str):
+        """Get all labels defined in the repository.
+
+        Maps to ``GET /repos/{owner}/{repo}/labels``. Returns a list of label
+        dicts (``{id, name, color, ...}``).
+        """
+        try:
+            url = f'/repos/{owner}/{repo}/labels'
+
+            response = self.api_client.call_api(
+                url,
+                'GET',
+                path_params={},
+                response_type=None,
+                _return_http_data_only=False,
+                _preload_content=False,
+                auth_settings=['AuthorizationHeaderToken']
+            )
+
+            if hasattr(response, 'data'):
+                raw_data = response.data.read()
+                return json.loads(raw_data.decode('utf-8'))
+            elif isinstance(response, tuple):
+                raw_data = response[0].read()
+                return json.loads(raw_data.decode('utf-8'))
+
+            return []
+
+        except ApiException as e:
+            self.logger.error(f"Error getting repository labels: {e}")
+            return []
+        except Exception as e:
+            self.logger.error(f"Unexpected error: {e}")
+            return []
+
     def list_all_commits(self, owner: str, repo: str):
         return self.repository.repo_get_all_commits(
             owner=owner,
@@ -1104,11 +1321,15 @@ class RepoApi(giteapy.RepositoryApi):
             auth_settings=['AuthorizationHeaderToken']
         )
 
-    def remove_reaction_comment(self, owner: str, repo: str, comment_id: int):
+    def remove_reaction_comment(self, owner: str, repo: str, comment_id: int, reaction: str = "eyes"):
+        body = {
+            "content": reaction
+        }
         return self.api_client.call_api(
             '/repos/{owner}/{repo}/issues/comments/{id}/reactions',
             'DELETE',
             path_params={'owner': owner, 'repo': repo, 'id': comment_id},
+            body=body,
             response_type='Repository',
             auth_settings=['AuthorizationHeaderToken']
         )

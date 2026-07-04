@@ -560,3 +560,370 @@ class TestGiteaProviderSubmitReview:
         provider.repo_api.create_review.side_effect = Exception('nope')
 
         assert provider.auto_approve() is False
+
+
+class TestGiteaProviderLabels:
+    """Tests for get_repo_labels + name-based publish_labels.
+
+    Upstream's publish_labels forwarded whatever it was given straight to
+    Gitea's issue-label endpoint, but every pr-agent tool passes label *names*
+    while Gitea expects numeric label *ids*. The provider must resolve names to
+    ids via the repository's labels first.
+    """
+
+    @staticmethod
+    def _provider():
+        from pr_agent.git_providers.gitea_provider import GiteaProvider
+
+        provider = GiteaProvider.__new__(GiteaProvider)
+        provider.logger = MagicMock()
+        provider.owner = 'owner'
+        provider.repo = 'repo'
+        provider.pr_number = 7
+        provider.enabled_pr = True
+        provider.repo_api = MagicMock()
+        return provider
+
+    def test_get_repo_labels_returns_repo_labels(self):
+        provider = self._provider()
+        provider.repo_api.get_repo_labels.return_value = [
+            {'id': 1, 'name': 'Bug fix', 'color': 'ff0000'},
+            {'id': 2, 'name': 'Enhancement', 'color': '00ff00'},
+        ]
+
+        labels = provider.get_repo_labels()
+
+        provider.repo_api.get_repo_labels.assert_called_once_with(owner='owner', repo='repo')
+        assert [l['name'] for l in labels] == ['Bug fix', 'Enhancement']
+
+    def test_get_repo_labels_empty_on_failure(self):
+        provider = self._provider()
+        provider.repo_api.get_repo_labels.return_value = []
+        assert provider.get_repo_labels() == []
+
+    def test_publish_labels_resolves_names_to_ids(self):
+        """publish_labels receives NAMES; it must resolve them to Gitea label
+        ids before posting (the core of item (a))."""
+        provider = self._provider()
+        provider.repo_api.get_repo_labels.return_value = [
+            {'id': 10, 'name': 'Bug fix'},
+            {'id': 20, 'name': 'Enhancement'},
+            {'id': 30, 'name': 'Documentation'},
+        ]
+
+        provider.publish_labels(['Enhancement', 'Bug fix'])
+
+        _, kwargs = provider.repo_api.add_labels.call_args
+        assert kwargs['issue_number'] == 7
+        assert kwargs['labels'] == [20, 10]
+
+    def test_publish_labels_skips_unknown_names(self):
+        """A name with no matching repo label is skipped (Gitea can only attach
+        labels that already exist in the repo)."""
+        provider = self._provider()
+        provider.repo_api.get_repo_labels.return_value = [{'id': 10, 'name': 'Bug fix'}]
+
+        provider.publish_labels(['Bug fix', 'Nonexistent'])
+
+        _, kwargs = provider.repo_api.add_labels.call_args
+        assert kwargs['labels'] == [10]
+
+    def test_publish_labels_no_call_when_none_resolve(self):
+        provider = self._provider()
+        provider.repo_api.get_repo_labels.return_value = [{'id': 10, 'name': 'Bug fix'}]
+
+        provider.publish_labels(['Totally Unknown'])
+
+        provider.repo_api.add_labels.assert_not_called()
+
+    def test_publish_labels_no_call_on_empty_input(self):
+        provider = self._provider()
+        provider.publish_labels([])
+        provider.repo_api.add_labels.assert_not_called()
+
+    def test_repo_api_get_repo_labels_hits_labels_endpoint(self):
+        from pr_agent.git_providers.gitea_provider import RepoApi
+
+        client = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.data = BytesIO(b'[{"id": 1, "name": "Bug fix"}]')
+        client.call_api.return_value = mock_resp
+        repo_api = RepoApi(client)
+
+        labels = repo_api.get_repo_labels('owner', 'repo')
+
+        args, kwargs = client.call_api.call_args
+        assert args[0] == '/repos/owner/repo/labels'
+        assert args[1] == 'GET'
+        assert kwargs.get('auth_settings') == ['AuthorizationHeaderToken']
+        assert labels == [{'id': 1, 'name': 'Bug fix'}]
+
+
+class TestGiteaProviderRemoveReaction:
+    """Tests for the remove_reaction signature fix.
+
+    Gitea previously defined remove_reaction(self, comment_id) while the base
+    class and callers pass (issue_comment_id, reaction_id) -> the old signature
+    raised a TypeError at runtime. The signature must match the base contract
+    and return a bool.
+    """
+
+    @staticmethod
+    def _provider():
+        from pr_agent.git_providers.gitea_provider import GiteaProvider
+
+        provider = GiteaProvider.__new__(GiteaProvider)
+        provider.logger = MagicMock()
+        provider.owner = 'owner'
+        provider.repo = 'repo'
+        provider.repo_api = MagicMock()
+        return provider
+
+    def test_remove_reaction_accepts_two_args_and_returns_true(self):
+        provider = self._provider()
+
+        # The base/caller contract passes BOTH a comment id and a reaction id.
+        result = provider.remove_reaction(123, 456)
+
+        assert result is True
+        _, kwargs = provider.repo_api.remove_reaction_comment.call_args
+        assert kwargs['comment_id'] == 123
+
+    def test_remove_reaction_returns_false_on_error(self):
+        provider = self._provider()
+        provider.repo_api.remove_reaction_comment.side_effect = Exception('boom')
+
+        assert provider.remove_reaction(123, 456) is False
+
+    def test_remove_reaction_matches_base_signature(self):
+        """Regression guard: the arity must match the base GitProvider so a
+        caller passing (issue_comment_id, reaction_id) never hits a TypeError."""
+        import inspect
+
+        from pr_agent.git_providers.git_provider import GitProvider
+        from pr_agent.git_providers.gitea_provider import GiteaProvider
+
+        base_params = list(inspect.signature(GitProvider.remove_reaction).parameters)
+        gitea_params = list(inspect.signature(GiteaProvider.remove_reaction).parameters)
+        assert base_params == gitea_params == ['self', 'issue_comment_id', 'reaction_id']
+
+    def test_repo_api_remove_reaction_sends_content_body(self):
+        from pr_agent.git_providers.gitea_provider import RepoApi
+
+        client = MagicMock()
+        repo_api = RepoApi(client)
+
+        repo_api.remove_reaction_comment('owner', 'repo', 99)
+
+        args, kwargs = client.call_api.call_args
+        assert args[0] == '/repos/{owner}/{repo}/issues/comments/{id}/reactions'
+        assert args[1] == 'DELETE'
+        assert kwargs['body'] == {'content': 'eyes'}
+        assert kwargs['path_params'] == {'owner': 'owner', 'repo': 'repo', 'id': 99}
+
+
+class TestGiteaProviderIsSupported:
+    """is_supported must reflect real capability, not unconditionally True."""
+
+    @staticmethod
+    def _provider():
+        from pr_agent.git_providers.gitea_provider import GiteaProvider
+
+        provider = GiteaProvider.__new__(GiteaProvider)
+        provider.logger = MagicMock()
+        return provider
+
+    @patch('pr_agent.git_providers.gitea_provider.get_settings')
+    def test_push_code_unsupported_in_restricted_mode(self, mock_get_settings):
+        settings = MagicMock()
+        settings.config.restricted_mode = True
+        mock_get_settings.return_value = settings
+
+        provider = self._provider()
+        assert provider.is_supported("push_code") is False
+
+    @patch('pr_agent.git_providers.gitea_provider.get_settings')
+    def test_push_code_supported_when_not_restricted(self, mock_get_settings):
+        settings = MagicMock()
+        settings.config.restricted_mode = False
+        mock_get_settings.return_value = settings
+
+        provider = self._provider()
+        assert provider.is_supported("push_code") is True
+
+    @patch('pr_agent.git_providers.gitea_provider.get_settings')
+    def test_other_capabilities_supported(self, mock_get_settings):
+        settings = MagicMock()
+        settings.config.restricted_mode = True
+        mock_get_settings.return_value = settings
+
+        provider = self._provider()
+        # A non-push capability stays supported even in restricted mode.
+        assert provider.is_supported("get_labels") is True
+
+
+class TestGiteaProviderCommentById:
+    """Tests for the comment-by-id methods that unlock inline /ask.
+
+    These were base-class no-ops on Gitea; they are implemented against Gitea's
+    issue/PR comment REST endpoints.
+    """
+
+    @staticmethod
+    def _provider():
+        from pr_agent.git_providers.gitea_provider import GiteaProvider
+
+        provider = GiteaProvider.__new__(GiteaProvider)
+        provider.logger = MagicMock()
+        provider.owner = 'owner'
+        provider.repo = 'repo'
+        provider.pr_number = 5
+        provider.enabled_pr = True
+        provider.enabled_issue = False
+        provider.max_comment_chars = 65000
+        provider.repo_api = MagicMock()
+        return provider
+
+    def test_edit_comment_from_comment_id_calls_edit(self):
+        provider = self._provider()
+
+        provider.edit_comment_from_comment_id(321, 'updated body')
+
+        _, kwargs = provider.repo_api.edit_comment.call_args
+        assert kwargs['comment_id'] == 321
+        assert kwargs['comment'] == 'updated body'
+
+    def test_get_comment_body_from_comment_id_returns_body(self):
+        provider = self._provider()
+        provider.repo_api.get_comment.return_value = {'id': 321, 'body': 'hello'}
+
+        assert provider.get_comment_body_from_comment_id(321) == 'hello'
+        _, kwargs = provider.repo_api.get_comment.call_args
+        assert kwargs['comment_id'] == 321
+
+    def test_get_comment_body_from_comment_id_empty_on_missing(self):
+        provider = self._provider()
+        provider.repo_api.get_comment.return_value = {}
+        assert provider.get_comment_body_from_comment_id(321) == ''
+
+    def test_reply_to_comment_from_comment_id_posts_comment(self):
+        provider = self._provider()
+        provider.publish_comment = MagicMock()
+
+        provider.reply_to_comment_from_comment_id(321, 'my answer')
+
+        provider.publish_comment.assert_called_once_with('my answer')
+
+    def test_get_review_thread_comments_returns_target_comment(self):
+        provider = self._provider()
+        provider.repo_api.get_comment.return_value = {'id': 321, 'body': 'original'}
+
+        thread = provider.get_review_thread_comments(321)
+
+        assert thread == [{'id': 321, 'body': 'original'}]
+
+    def test_get_review_thread_comments_empty_when_missing(self):
+        provider = self._provider()
+        provider.repo_api.get_comment.return_value = {}
+        assert provider.get_review_thread_comments(321) == []
+
+    def test_repo_api_get_comment_hits_issue_comment_endpoint(self):
+        from pr_agent.git_providers.gitea_provider import RepoApi
+
+        client = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.data = BytesIO(b'{"id": 321, "body": "hi"}')
+        client.call_api.return_value = mock_resp
+        repo_api = RepoApi(client)
+
+        comment = repo_api.get_comment('owner', 'repo', 321)
+
+        args, kwargs = client.call_api.call_args
+        assert args[0] == '/repos/owner/repo/issues/comments/321'
+        assert args[1] == 'GET'
+        assert kwargs.get('auth_settings') == ['AuthorizationHeaderToken']
+        assert comment == {'id': 321, 'body': 'hi'}
+
+
+class TestGiteaProviderConfigBranch:
+    """get_repo_settings config-branch support (mirrors GithubProvider)."""
+
+    @staticmethod
+    def _provider():
+        from pr_agent.git_providers.gitea_provider import GiteaProvider
+
+        provider = GiteaProvider.__new__(GiteaProvider)
+        provider.logger = MagicMock()
+        provider.owner = 'owner'
+        provider.repo = 'repo'
+        provider.sha = 'headsha'
+        provider.repo_settings = '.pr_agent.toml'
+        provider.repo_api = MagicMock()
+        return provider
+
+    @patch.dict('os.environ', {}, clear=True)
+    @patch('pr_agent.git_providers.gitea_provider.get_settings')
+    def test_reads_from_config_branch_when_set(self, mock_get_settings):
+        settings = MagicMock()
+        settings.get.side_effect = lambda k, d=None: {'CONFIG.CONFIG_BRANCH': 'config-branch'}.get(k, d)
+        mock_get_settings.return_value = settings
+
+        provider = self._provider()
+        provider.repo_api.get_file_content.return_value = '[config]\nx = 1\n'
+
+        result = provider.get_repo_settings()
+
+        # The ref passed to Gitea must be the config branch, not the head sha.
+        _, kwargs = provider.repo_api.get_file_content.call_args
+        assert kwargs['commit_sha'] == 'config-branch'
+        assert result == b'[config]\nx = 1\n'
+
+    @patch.dict('os.environ', {'PR_AGENT_CONFIG_BRANCH': 'env-branch'}, clear=True)
+    @patch('pr_agent.git_providers.gitea_provider.get_settings')
+    def test_reads_from_env_branch_when_setting_unset(self, mock_get_settings):
+        settings = MagicMock()
+        settings.get.side_effect = lambda k, d=None: {}.get(k, d)
+        mock_get_settings.return_value = settings
+
+        provider = self._provider()
+        provider.repo_api.get_file_content.return_value = 'data'
+
+        provider.get_repo_settings()
+
+        _, kwargs = provider.repo_api.get_file_content.call_args
+        assert kwargs['commit_sha'] == 'env-branch'
+
+    @patch.dict('os.environ', {}, clear=True)
+    @patch('pr_agent.git_providers.gitea_provider.get_settings')
+    def test_falls_back_to_head_sha_when_branch_missing_file(self, mock_get_settings):
+        settings = MagicMock()
+        settings.get.side_effect = lambda k, d=None: {'CONFIG.CONFIG_BRANCH': 'config-branch'}.get(k, d)
+        mock_get_settings.return_value = settings
+
+        provider = self._provider()
+        # First call (config branch) misses -> '', second (head sha) succeeds.
+        provider.repo_api.get_file_content.side_effect = ['', 'from-head']
+
+        result = provider.get_repo_settings()
+
+        assert result == b'from-head'
+        assert provider.repo_api.get_file_content.call_count == 2
+        second_call_kwargs = provider.repo_api.get_file_content.call_args_list[1].kwargs
+        assert second_call_kwargs['commit_sha'] == 'headsha'
+
+    @patch.dict('os.environ', {}, clear=True)
+    @patch('pr_agent.git_providers.gitea_provider.get_settings')
+    def test_reads_from_head_sha_when_no_config_branch(self, mock_get_settings):
+        settings = MagicMock()
+        settings.get.side_effect = lambda k, d=None: {}.get(k, d)
+        mock_get_settings.return_value = settings
+
+        provider = self._provider()
+        provider.repo_api.get_file_content.return_value = 'toml'
+
+        provider.get_repo_settings()
+
+        # No config branch -> a single read from the head sha.
+        provider.repo_api.get_file_content.assert_called_once()
+        _, kwargs = provider.repo_api.get_file_content.call_args
+        assert kwargs['commit_sha'] == 'headsha'
