@@ -183,15 +183,6 @@ def test_invalid_toml_does_not_pollute_settings(monkeypatch, settings_snapshot):
     assert after.get("num_max_findings") != 7
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Behavior gap: pr_agent.custom_merge_loader is invoked with silent=True, "
-        "so TOMLDecodeError is logged and swallowed instead of being surfaced to "
-        "handle_configurations_errors. apply_repo_settings therefore never publishes "
-        "a 'local' configuration-error comment for malformed TOML."
-    ),
-    strict=True,
-)
 def test_invalid_toml_publishes_one_local_error(monkeypatch, settings_snapshot):
     malformed = b"[pr_reviewer\nnum_max_findings = 7\n"
     provider = FakeGitProvider(repo_settings_bytes=malformed)
@@ -232,15 +223,6 @@ def test_forbidden_directive_does_not_pollute_settings(monkeypatch, settings_sna
     assert "dynaconf_include" not in {k.lower() for k in settings.as_dict().keys()}
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Behavior gap: forbidden-directive SecurityError raised by "
-        "validate_file_security is swallowed by the silent-loader path, so "
-        "apply_repo_settings does not publish a 'local' configuration-error "
-        "comment for forbidden TOML directives."
-    ),
-    strict=True,
-)
 def test_forbidden_directive_publishes_one_local_error(monkeypatch, settings_snapshot):
     forbidden_toml = b"dynaconf_include = ['evil.toml']\n[pr_reviewer]\nnum_max_findings = 42\n"
     provider = FakeGitProvider(repo_settings_bytes=forbidden_toml)
@@ -253,6 +235,11 @@ def test_forbidden_directive_publishes_one_local_error(monkeypatch, settings_sna
     assert len(captured["errors"]) == 1
     assert captured["errors"][0]["category"] == "local"
     assert captured["errors"][0]["settings"] == forbidden_toml
+    # The error message must not leak the server's internal temp path to PR users.
+    import tempfile
+    error_text = captured["errors"][0]["error"]
+    assert tempfile.gettempdir() not in error_text
+    assert ".pr_agent.toml" in error_text
 
 
 def test_temp_file_is_removed_after_successful_apply(monkeypatch, tmp_path, settings_snapshot):
@@ -298,10 +285,11 @@ def test_temp_file_is_removed_after_failed_apply(monkeypatch, tmp_path, settings
 
     monkeypatch.setattr(tempfile, "mkstemp", fake_mkstemp)
 
-    def exploding_dynaconf(*args, **kwargs):
+    def exploding_validate(*args, **kwargs):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(git_utils, "Dynaconf", exploding_dynaconf)
+    # Force a failure during apply (validate_file_security runs after mkstemp/parse).
+    monkeypatch.setattr(git_utils, "validate_file_security", exploding_validate)
 
     apply_repo_settings("https://example.com/owner/repo/pull/1")
 

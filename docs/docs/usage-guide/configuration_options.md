@@ -86,8 +86,25 @@ If `.pr_agent.toml` cannot be loaded from the requested branch (e.g. the branch 
 
 `Platforms supported: GitHub, GitLab (cloud), Bitbucket (cloud)`
 
-If you create a repo called `pr-agent-settings` in your **organization**, its configuration file `.pr_agent.toml` will be used as a global configuration file for any other repo that belongs to the same organization.
-Parameters from a local `.pr_agent.toml` file, in a specific repo, will override the global configuration parameters.
+Create a repository named `pr-agent-settings` at the organization level; its `.pr_agent.toml` (read from that repo's default branch) is used as a global configuration for every repository under the same organization:
+
+- **GitHub:** `<organization>/pr-agent-settings`
+- **GitLab (cloud):** `<top-level-group>/pr-agent-settings` (GitLab.com only; not applied on self-hosted GitLab)
+- **Bitbucket (cloud):** `<workspace>/pr-agent-settings`
+
+Parameters from a local `.pr_agent.toml` file, in a specific repo, will override the global configuration parameters (the global file is merged *beneath* the repo-local one).
+For GitHub Enterprise Server, use the same organization-level repository on your GHES host.
+The app installation or token used by PR-Agent must have read access to both the pull request repository and the `pr-agent-settings` repository; otherwise, PR-Agent will skip the global configuration and continue with repository-local settings.
+
+!!! note "Caching"
+    In long-running deployments (the GitHub App / webhook server), the fetched global settings are cached **in-process** for up to 15 minutes to avoid re-fetching on every webhook event, so a change to `pr-agent-settings` may take up to that long to take effect there. CLI and CI (GitHub Action) runs are short-lived processes, so they fetch the global settings once per invocation and always see the latest version.
+
+Loading the global settings file is controlled by the `use_global_settings_file` flag, which is **enabled by default**. To opt out and rely only on each repo's local `.pr_agent.toml`, set:
+
+```toml
+[config]
+use_global_settings_file = false
+```
 
 For example, in the GitHub organization `qodo-ai`:
 

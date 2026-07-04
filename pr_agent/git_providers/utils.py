@@ -12,7 +12,8 @@ from dynaconf.loaders import env_loader
 from starlette_context import context
 
 from pr_agent.config_loader import get_settings
-from pr_agent.custom_merge_loader import validate_file_security
+from pr_agent.custom_merge_loader import (MAX_TOML_SIZE_IN_BYTES,
+                                          validate_file_security)
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.log import get_logger
 from pr_agent.settings_validator import validate_settings_overrides
@@ -272,7 +273,7 @@ def apply_repo_settings(pr_url):
     git_provider = get_git_provider_with_context(pr_url)
 
     if get_settings().config.use_repo_settings_file:
-        repo_settings_file = None
+        repo_settings_files = []
         try:
             try:
                 repo_settings = context.get("repo_settings", None)
@@ -286,89 +287,104 @@ def apply_repo_settings(pr_url):
                 except Exception:
                     pass
 
-            error_local = None
+            config_errors = []
             if repo_settings:
-                repo_settings_file = None
-                category = 'local'
-                try:
+                # Apply each settings source (e.g. global then local) independently and in order.
+                # Loading them in a single Dynaconf call would fail all sources on one bad file and
+                # misattribute the error to the last source; applying per-scope keeps error reporting
+                # (and redaction) accurate and lets valid sources still take effect.
+                for category, settings_content in _normalize_repo_settings(repo_settings):
                     fd, repo_settings_file = tempfile.mkstemp(suffix='.toml')
+                    repo_settings_files.append(repo_settings_file)
+                    if isinstance(settings_content, str):
+                        settings_content = settings_content.encode("utf-8")
+                    # os.fdopen takes ownership of fd (closes it) and write() writes all bytes,
+                    # avoiding a silently-truncated file from a partial os.write.
+                    with os.fdopen(fd, "wb") as settings_file_handle:
+                        settings_file_handle.write(settings_content)
                     try:
-                        os.write(fd, repo_settings)
-                    finally:
-                        os.close(fd)
+                        _apply_repo_settings_file(repo_settings_file)
+                    except Exception as e:
+                        get_logger().warning(f"Failed to apply repo {category} settings, error: {str(e)}")
+                        config_errors.append({'error': str(e), 'settings': settings_content, 'category': category})
 
-                    try:
-                        dynconf_kwargs = {'core_loaders': [],  # DISABLE default loaders, otherwise will load toml files more than once.
-                             'loaders': ['pr_agent.custom_merge_loader'],
-                             # Use a custom loader to merge sections, but overwrite their overlapping values. Don't involve ENV variables.
-                             'merge_enabled': True  # Merge multiple files; ensures [XYZ] sections only overwrite overlapping keys, not whole sections.
-                         }
-
-                        new_settings = Dynaconf(settings_files=[repo_settings_file],
-                                                # Disable all dynamic loading features
-                                                load_dotenv=False,  # Don't load .env files
-                                                envvar_prefix=False,  # Drop DYNACONF for env. variables
-                                                **dynconf_kwargs
-                                                )
-                    except TypeError as e:
-                        # Fallback for older Dynaconf versions that don't support these parameters
-                        get_logger().warning(
-                            "Your Dynaconf version does not support disabled 'load_dotenv'/'merge_enabled' parameters. "
-                            "Loading repo settings without these security features. "
-                            "Please upgrade Dynaconf for better security.",
-                            artifact={"error": e, "traceback": traceback.format_exc()})
-                        new_settings = Dynaconf(settings_files=[repo_settings_file])
-
-                    validate_settings_overrides(new_settings.as_dict(), get_settings(), source=".pr_agent.toml")
-                    for section, contents in new_settings.as_dict().items():
-                        if not contents:
-                            # Skip excluded items, such as forbidden to load env.
-                            get_logger().debug(f"Skipping a section: {section} which is not allowed")
-                            continue
-                        allowed_keys = _REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION.get(section.lower())
-                        if allowed_keys is not None:
-                            rejected = [k for k in contents if k.lower() not in allowed_keys]
-                            if rejected:
-                                get_logger().warning(
-                                    f"Ignoring host-only key(s) {rejected} in section [{section}] from repo "
-                                    f"settings; only {sorted(allowed_keys)} may be set per-repo for this section"
-                                )
-                            contents = {k: v for k, v in contents.items() if k.lower() in allowed_keys}
-                            if not contents:
-                                continue
-                        section_dict = copy.deepcopy(get_settings().as_dict().get(section, {}))
-                        for key, value in contents.items():
-                            section_dict[key] = value
-                        get_settings().unset(section)
-                        get_settings().set(section, section_dict, merge=False)
-                    # Same precedence-restoration rationale as the extra-config
-                    # path: env-sourced values must remain the highest layer.
-                    _reapply_env_overrides()
-                    # Do NOT log the merged dict: repo/global .pr_agent.toml may contain secrets
-                    # (e.g. openai.key, gitlab.personal_access_token) that would otherwise leak into
-                    # CI logs. Section names are safe and sufficient for debugging (same rationale as
-                    # the extra-config path above).
-                    get_logger().info(
-                        f"Applying repo settings (sections: {sorted(new_settings.as_dict().keys())})"
-                    )
-                except Exception as e:
-                    get_logger().warning(f"Failed to apply repo {category} settings, error: {str(e)}")
-                    error_local = {'error': str(e), 'settings': repo_settings, 'category': category}
-
-                if error_local:
-                    handle_configurations_errors([error_local], git_provider)
+                if config_errors:
+                    handle_configurations_errors(config_errors, git_provider)
         except Exception as e:
             get_logger().exception("Failed to apply repo settings", e)
         finally:
-            if repo_settings_file:
+            for repo_settings_file in repo_settings_files:
                 try:
                     os.remove(repo_settings_file)
                 except Exception as e:
-                    get_logger().error(f"Failed to remove temporary settings file {repo_settings_file}", e)
+                    get_logger().error(f"Failed to remove temporary settings file {repo_settings_file}: {e}")
 
     # enable switching models with a short definition
     if get_settings().config.model.lower() == 'claude-3-5-sonnet':
         set_claude_model()
+
+
+def _apply_repo_settings_file(repo_settings_file):
+    """Load a single repo settings file and merge its allowed keys into the global settings.
+
+    Enforces the per-repo host-key restrictions and logs only section names (values may contain
+    secrets). Raises on load/parse failure so the caller can attribute the error to the correct
+    settings scope (e.g. 'global' vs 'local').
+    """
+    # Enforce the same size cap as the loader BEFORE parsing, so an oversized file can't be fully
+    # read/parsed in-process (OOM/CPU) by the explicit validation below.
+    if os.path.getsize(repo_settings_file) > MAX_TOML_SIZE_IN_BYTES:
+        get_logger().warning(
+            f"Settings file too large (> {MAX_TOML_SIZE_IN_BYTES} bytes); skipping repo settings file")
+        return
+
+    # Validate the file explicitly first: the shared custom_merge_loader runs with silent=True and
+    # would otherwise swallow TOML/security errors, skipping the file without surfacing a scoped
+    # configuration error. Parsing here makes malformed/forbidden config raise so it gets reported.
+    with open(repo_settings_file, "rb") as f:
+        parsed_toml = tomllib.load(f)
+    # Use a generic name (not the temp path) so a SecurityError message can't leak the server's
+    # internal filesystem path into the PR configuration-error comment.
+    validate_file_security(parsed_toml, ".pr_agent.toml")
+
+    # Apply the already-parsed data directly instead of re-reading the file through Dynaconf, which
+    # would parse the same TOML a second time. Section names are matched case-insensitively (Dynaconf
+    # stores them upper-cased); list/dict values replace rather than merge, matching the loader.
+    for section, contents in parsed_toml.items():
+        if not isinstance(contents, dict) or not contents:
+            get_logger().debug(f"Skipping non-table or empty section: {section}")
+            continue
+        allowed_keys = _REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION.get(section.lower())
+        if allowed_keys is not None:
+            rejected = [k for k in contents if k.lower() not in allowed_keys]
+            if rejected:
+                get_logger().warning(
+                    f"Ignoring host-only key(s) {rejected} in section [{section}] from repo "
+                    f"settings; only {sorted(allowed_keys)} may be set per-repo for this section"
+                )
+            contents = {k: v for k, v in contents.items() if k.lower() in allowed_keys}
+            if not contents:
+                continue
+        section_dict = copy.deepcopy(get_settings().as_dict().get(section.upper(), {}))
+        for key, value in contents.items():
+            section_dict[key] = value
+        get_settings().unset(section)
+        get_settings().set(section, section_dict, merge=False)
+    # Same precedence-restoration rationale as the extra-config path: env-sourced values
+    # must remain the highest layer.
+    _reapply_env_overrides()
+    # Do NOT log the merged dict: repo/global .pr_agent.toml may contain secrets
+    # (e.g. openai.key, gitlab.personal_access_token) that would otherwise leak into
+    # CI logs. Section names are safe and sufficient for debugging.
+    get_logger().info(
+        f"Applying repo settings (sections: {sorted(parsed_toml.keys())})"
+    )
+
+
+def _normalize_repo_settings(repo_settings):
+    if isinstance(repo_settings, (bytes, str)):
+        return [("local", repo_settings)]
+    return repo_settings
 
 
 def handle_configurations_errors(config_errors, git_provider):
@@ -378,24 +394,43 @@ def handle_configurations_errors(config_errors, git_provider):
 
         for err in config_errors:
             if err:
-                configuration_file_content = err['settings'].decode()
                 err_message = err['error']
                 config_type = err['category']
                 header = f"❌ **PR-Agent failed to apply '{config_type}' repo settings**"
-                body = f"{header}\n\nThe configuration file needs to be a valid [TOML](https://qodo-merge-docs.qodo.ai/usage-guide/configuration_options/), please fix it.\n\n"
+                body = (
+                    f"{header}\n\nThe configuration file needs to be a valid "
+                    "[TOML](https://qodo-merge-docs.qodo.ai/usage-guide/configuration_options/), please fix it.\n\n"
+                )
                 body += f"___\n\n**Error message:**\n`{err_message}`\n\n"
-                if git_provider.is_supported("gfm_markdown"):
-                    body += f"\n\n<details><summary>Configuration content:</summary>\n\n```toml\n{configuration_file_content}\n```\n\n</details>"
+                if config_type == "global":
+                    # Global content is redacted, so we never render it — skip decoding it entirely.
+                    # Global settings live in a `pr-agent-settings` repo scoped per platform
+                    # (GitHub organization, GitLab group, or Bitbucket workspace).
+                    body += "\n\nThe invalid configuration came from the global `pr-agent-settings` settings repository."
                 else:
-                    body += f"\n\n**Configuration content:**\n\n```toml\n{configuration_file_content}\n```\n\n"
+                    settings_content = err['settings']
+                    configuration_file_content = (
+                        settings_content.decode("utf-8", errors="replace")
+                        if isinstance(settings_content, bytes) else settings_content
+                    )
+                    if git_provider.is_supported("gfm_markdown"):
+                        body += (
+                            "\n\n<details><summary>Configuration content:</summary>\n\n"
+                            f"```toml\n{configuration_file_content}\n```\n\n</details>"
+                        )
+                    else:
+                        body += f"\n\n**Configuration content:**\n\n```toml\n{configuration_file_content}\n```\n\n"
                 get_logger().warning("Sending a 'configuration error' comment to the PR", artifact={'body': body})
                 # git_provider.publish_comment(body)
                 if hasattr(git_provider, 'publish_persistent_comment'):
+                    # Use a per-scope name so multiple settings errors (e.g. global + local) don't
+                    # collide: in GitHub check-run mode the name keys the check run, so a shared name
+                    # would make later errors overwrite earlier ones and hide failures.
                     git_provider.publish_persistent_comment(body,
                                                             initial_header=header,
                                                             update_header=False,
                                                             final_update_message=False,
-                                                            name="config-errors")
+                                                            name=f"config-errors-{config_type}")
                 else:
                     git_provider.publish_comment(body)
     except Exception as e:
