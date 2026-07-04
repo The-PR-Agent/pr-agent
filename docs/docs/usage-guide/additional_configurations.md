@@ -155,12 +155,15 @@ By default, PR-Agent looks for an `AGENTS.md` file at the repository root:
 repo_context_files = ["AGENTS.md"]
 ```
 
-You can list any repository-relative paths. The files are read from the PR's target branch (falling back to the repository's default branch), so only content already present on the branch you are merging into is used. Set the option to an empty list to disable the feature entirely:
+You can list any repository-relative paths. The files are read from the PR's target (base) branch, so only content already merged into the branch you are merging into is used — a PR cannot inject its own instruction files into its review. A file that is missing on the target branch is silently skipped. Set the option to an empty list to disable the feature entirely:
 
 ```toml
 [config]
 repo_context_files = ["AGENTS.md", "CLAUDE.md", "docs/conventions.md"]
 ```
+
+!!! note "Context is read from the PR's base commit"
+    On GitHub and Gitea, files are fetched at the PR's base commit (the commit the PR was opened against), not the live tip of the target branch. As a result, an instruction file that is added to (or changed on) the target branch *after* the PR was created will not be reflected until the PR is updated/rebased. On GitLab, files are read from the repository's default branch.
 
 To bound how much of this context is sent to the model, `repo_context_max_lines` (default `500`) caps the total number of rendered lines, including the wrapper tags. Content beyond the budget is truncated safely:
 
