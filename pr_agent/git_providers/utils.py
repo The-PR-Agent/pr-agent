@@ -328,6 +328,13 @@ def _apply_repo_settings_file(repo_settings_file):
     secrets). Raises on load/parse failure so the caller can attribute the error to the correct
     settings scope (e.g. 'global' vs 'local').
     """
+    # Validate the file explicitly first: the shared custom_merge_loader runs with silent=True and
+    # would otherwise swallow TOML/security errors, skipping the file without surfacing a scoped
+    # configuration error. Parsing here makes malformed/forbidden config raise so it gets reported.
+    with open(repo_settings_file, "rb") as f:
+        parsed_toml = tomllib.load(f)
+    validate_file_security(parsed_toml, repo_settings_file)
+
     try:
         dynconf_kwargs = {'core_loaders': [],
              # Disable default loaders, otherwise TOML files load more than once.
