@@ -383,8 +383,13 @@ class GiteaProvider(GitProvider):
             comments=comments
         )
 
-        if not response:
-            self.logger.error("Failed to publish inline comment")
+        # ``create_inline_comment`` runs with ``_preload_content=False``, so a
+        # successful call returns the ``(data, status, headers)`` tuple rather
+        # than a truthy body; a non-2xx status raises ``ApiException`` before we
+        # get here. Inspect the status code instead of the (always-falsy) body.
+        status = response[1] if isinstance(response, tuple) and len(response) > 1 else None
+        if status is not None and not (200 <= status < 300):
+            self.logger.error(f"Failed to publish inline comment (status {status})")
             return
 
         self.logger.info("Inline comment published")
@@ -397,6 +402,12 @@ class GiteaProvider(GitProvider):
         APPROVED / REQUEST_CHANGES / COMMENT / PENDING. Gitea (like GitHub)
         rejects a review whose reviewer is the PR author, so the configured
         token must belong to a dedicated bot account distinct from PR authors.
+
+        ``commit_id`` is deliberately omitted so Gitea anchors the review to the
+        PR head: ``self.last_commit`` comes from ``repo_get_all_commits`` (the
+        repository/default-branch commit list, not the PR's commits), so its sha
+        is unrelated to the PR head and could mis-attach or be rejected under
+        stricter branch protection.
 
         Returns True on success; failures are logged and swallowed so a failed
         formal review never breaks the underlying ``/review`` comment.
@@ -411,7 +422,6 @@ class GiteaProvider(GitProvider):
                 pr_number=self.pr_number,
                 event=event,
                 body=body,
-                commit_id=self.last_commit.sha if self.last_commit else "",
             )
             self.logger.info(
                 f"Submitted Gitea review event={event} on {self.owner}/{self.repo}#{self.pr_number}"
@@ -942,17 +952,14 @@ class RepoApi(giteapy.RepositoryApi):
         self.logger = get_logger()
         super().__init__(client)
 
-    def create_inline_comment(self, owner: str, repo: str, pr_number: int, body : str ,commit_id : str, comments: List[Dict[str, Any]], event: Optional[str] = None):
+    def create_inline_comment(self, owner: str, repo: str, pr_number: int, body : str ,commit_id : str, comments: List[Dict[str, Any]]):
         body = {
             "body": body,
             "comments": comments,
             "commit_id": commit_id,
         }
-        # Without an ``event`` the review is created as an unsubmitted PENDING
-        # draft. Pass one of APPROVED / REQUEST_CHANGES / COMMENT / PENDING to
-        # submit a formal review in a single call.
-        if event:
-            body["event"] = event
+        # No ``event`` is sent, so the review is created as an unsubmitted
+        # PENDING draft (the pre-existing ``/review`` inline-comment behavior).
         return self.api_client.call_api(
             '/repos/{owner}/{repo}/pulls/{pr_number}/reviews',
             'POST',
@@ -987,28 +994,6 @@ class RepoApi(giteapy.RepositoryApi):
             '/repos/{owner}/{repo}/pulls/{pr_number}/reviews',
             'POST',
             path_params={'owner': owner, 'repo': repo, 'pr_number': pr_number},
-            body=review_body,
-            response_type=None,
-            _return_http_data_only=False,
-            _preload_content=False,
-            auth_settings=['AuthorizationHeaderToken']
-        )
-
-    def submit_pending_review(self, owner: str, repo: str, pr_number: int, review_id: int,
-                             event: str, body: str = ""):
-        """Submit a previously-created PENDING review.
-
-        Maps to ``POST /repos/{owner}/{repo}/pulls/{index}/reviews/{id}`` with a
-        ``SubmitPullReviewOptions`` ``{event, body}`` payload.
-        """
-        review_body = {
-            "event": event,
-            "body": body,
-        }
-        return self.api_client.call_api(
-            '/repos/{owner}/{repo}/pulls/{pr_number}/reviews/{review_id}',
-            'POST',
-            path_params={'owner': owner, 'repo': repo, 'pr_number': pr_number, 'review_id': review_id},
             body=review_body,
             response_type=None,
             _return_http_data_only=False,

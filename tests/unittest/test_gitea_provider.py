@@ -467,30 +467,6 @@ class TestRepoApiFormalReview:
         assert kwargs['response_type'] is None
         assert kwargs['body']['commit_id'] == 'abc123'
 
-    def test_create_inline_comment_accepts_event(self):
-        repo_api, client = self._repo_api()
-
-        repo_api.create_inline_comment(
-            'owner', 'repo', 5, body='review', commit_id='abc123', comments=[], event='REQUEST_CHANGES',
-        )
-
-        _, kwargs = client.call_api.call_args
-        assert kwargs['body']['event'] == 'REQUEST_CHANGES'
-
-    def test_submit_pending_review_posts_to_review_id(self):
-        repo_api, client = self._repo_api()
-
-        repo_api.submit_pending_review('owner', 'repo', 123, review_id=99, event='APPROVED', body='ok')
-
-        args, kwargs = client.call_api.call_args
-        assert args[0] == '/repos/{owner}/{repo}/pulls/{pr_number}/reviews/{review_id}'
-        assert args[1] == 'POST'
-        assert kwargs['path_params'] == {
-            'owner': 'owner', 'repo': 'repo', 'pr_number': 123, 'review_id': 99,
-        }
-        assert kwargs['body'] == {'event': 'APPROVED', 'body': 'ok'}
-        assert kwargs['response_type'] is None
-
 
 class TestGiteaProviderSubmitReview:
     """Tests for ``GiteaProvider.submit_review`` / ``auto_approve``.
@@ -514,7 +490,11 @@ class TestGiteaProviderSubmitReview:
         provider.repo_api = MagicMock()
         return provider
 
-    def test_submit_review_passes_event_and_head_commit(self):
+    def test_submit_review_passes_event_and_omits_commit_id(self):
+        """``submit_review`` must NOT pin ``commit_id``: ``self.last_commit`` is
+        the repo/default-branch head (from ``repo_get_all_commits``), not the PR
+        head, so pinning it anchors the review to the wrong sha. Omitting it lets
+        Gitea default to the PR head."""
         provider = self._provider()
 
         assert provider.submit_review('COMMENT', body='please look') is True
@@ -525,8 +505,9 @@ class TestGiteaProviderSubmitReview:
             pr_number=42,
             event='COMMENT',
             body='please look',
-            commit_id='headsha',
         )
+        _, kwargs = provider.repo_api.create_review.call_args
+        assert 'commit_id' not in kwargs
 
     def test_submit_review_returns_false_on_api_error(self):
         """A failed formal review must be swallowed (return False), never raised,
@@ -560,6 +541,47 @@ class TestGiteaProviderSubmitReview:
         provider.repo_api.create_review.side_effect = Exception('nope')
 
         assert provider.auto_approve() is False
+
+
+class TestGiteaProviderPublishInlineComments:
+    """``publish_inline_comments`` runs ``create_inline_comment`` with
+    ``_preload_content=False``, so a successful call returns the
+    ``(data, status, headers)`` tuple, not a truthy body. The success/failure
+    log must key off the HTTP status, not the (always-falsy) body."""
+
+    @staticmethod
+    def _provider():
+        from pr_agent.git_providers.gitea_provider import GiteaProvider
+
+        provider = GiteaProvider.__new__(GiteaProvider)
+        provider.logger = MagicMock()
+        provider.owner = 'owner'
+        provider.repo = 'repo'
+        provider.pr_number = 42
+        provider.enabled_pr = True
+        provider.last_commit = MagicMock()
+        provider.last_commit.sha = 'headsha'
+        provider.repo_api = MagicMock()
+        return provider
+
+    def test_logs_success_on_2xx_tuple(self):
+        provider = self._provider()
+        # giteapy returns (data, status, headers); data is None with _preload_content=False
+        provider.repo_api.create_inline_comment.return_value = (None, 201, {})
+
+        provider.publish_inline_comments([{'body': 'x'}])
+
+        provider.logger.info.assert_called_once()
+        provider.logger.error.assert_not_called()
+
+    def test_logs_failure_on_non_2xx_tuple(self):
+        provider = self._provider()
+        provider.repo_api.create_inline_comment.return_value = (None, 422, {})
+
+        provider.publish_inline_comments([{'body': 'x'}])
+
+        provider.logger.error.assert_called_once()
+        provider.logger.info.assert_not_called()
 
 
 class TestGiteaProviderLabels:
