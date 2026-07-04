@@ -142,9 +142,25 @@ async def handle_pr_event(body: Dict[str, Any], event: str, action: str, agent: 
             get_logger().info("Push event, but no push commands found or push trigger is disabled")
             return
         get_logger().debug(f'A push event has been received: {api_url}')
-        await _perform_commands_gitea("push_commands", agent, body, api_url)
-        # for command in commands_on_push:
-        #     await agent.handle_request(api_url, command)
+
+        # Gitea's synchronized payload carries the head-branch SHAs before/after
+        # the push. When incremental push review is enabled we anchor the review
+        # to that range (before...after) so a re-review only looks at the newly
+        # pushed commits. Full review remains the default/fallback: incremental
+        # only kicks in when the flag is set AND both SHAs are present.
+        before_sha = body.get("before")
+        after_sha = body.get("after")
+        incremental_push = get_settings().get("gitea.incremental_review_on_push", False)
+        if incremental_push and before_sha and after_sha and before_sha != after_sha:
+            get_logger().info(
+                f"Incremental push review for {api_url}: {before_sha}...{after_sha}"
+            )
+            await _perform_commands_gitea(
+                "push_commands", agent, body, api_url,
+                incremental=True, before_sha=before_sha, after_sha=after_sha,
+            )
+        else:
+            await _perform_commands_gitea("push_commands", agent, body, api_url)
 
 def review_requested_for_bot(body: Dict[str, Any]) -> bool:
     """True when the (re-)requested reviewer is the agent's bot account."""
@@ -200,7 +216,9 @@ async def handle_comment_event(body: Dict[str, Any], event: str, action: str, ag
 
     await agent.handle_request(pr_url, comment_body)
 
-async def _perform_commands_gitea(commands_conf: str, agent: PRAgent, body: dict, api_url: str):
+async def _perform_commands_gitea(commands_conf: str, agent: PRAgent, body: dict, api_url: str,
+                                  incremental: bool = False, before_sha: str = None,
+                                  after_sha: str = None):
     apply_repo_settings(api_url)
     if commands_conf == "pr_commands" and get_settings().config.disable_auto_feedback:  # auto commands for PR, and auto feedback is disabled
         get_logger().info(f"Auto feedback is disabled, skipping auto commands for PR {api_url=}")
@@ -211,11 +229,21 @@ async def _perform_commands_gitea(commands_conf: str, agent: PRAgent, body: dict
     if not commands:
         get_logger().info(f"New PR, but no auto commands configured")
         return
+    if incremental:
+        # Expose the pushed range so the provider can anchor the incremental base
+        # to the push `before` SHA when there is no prior review comment to
+        # diff against (full review stays the fallback inside the provider).
+        get_settings().set("gitea.incremental_push_before_sha", before_sha)
+        get_settings().set("gitea.incremental_push_after_sha", after_sha)
     get_settings().set("config.is_auto_command", True)
     for command in commands:
         split_command = command.split(" ")
         command = split_command[0]
         args = split_command[1:]
+        # Turn `/review` into `/review -i` on an incremental push so only the
+        # newly pushed commits are re-reviewed. Other commands are untouched.
+        if incremental and command == "/review" and "-i" not in args:
+            args = ["-i"] + args
         other_args = update_settings_from_args(args)
         new_command = ' '.join([command] + other_args)
         get_logger().info(f"{commands_conf}. Performing auto command '{new_command}', for {api_url=}")

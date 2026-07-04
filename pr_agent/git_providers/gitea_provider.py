@@ -1,5 +1,6 @@
 import json
 import os
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
@@ -10,7 +11,7 @@ from pr_agent.algo.file_filter import filter_ignored
 from pr_agent.algo.git_patch_processing import decode_if_bytes
 from pr_agent.algo.language_handler import is_valid_file
 from pr_agent.algo.types import EDIT_TYPE
-from pr_agent.algo.utils import (clip_tokens,
+from pr_agent.algo.utils import (PRReviewHeader, clip_tokens,
                                  find_line_number_of_relevant_line_in_file,
                                  load_large_diff)
 from pr_agent.config_loader import get_settings
@@ -599,19 +600,185 @@ class GiteaProvider(GitProvider):
         """
         return getattr(self, "merge_base_sha", "") or self.base_sha
 
+    # ------------------------------------------------------------------
+    # Incremental review (re-review only the commits pushed since the last
+    # review). Ports github_provider's get_incremental_commits / get_commit_range
+    # / get_previous_review to Gitea's REST API. Enabled via `/review -i`.
+    # ------------------------------------------------------------------
+    def get_incremental_commits(self, incremental=None):
+        """Prepare state for an incremental review.
+
+        Mirrors GithubProvider.get_incremental_commits: records the
+        ``IncrementalPR`` and, when incremental, resets the unreviewed-files set
+        and computes the new-commit range. A no-op for a full review.
+        """
+        if incremental is None:
+            incremental = IncrementalPR(False)
+        self.incremental = incremental
+        if self.incremental.is_incremental:
+            self.unreviewed_files_set = dict()
+            self._get_incremental_commits()
+
+    def _get_incremental_commits(self):
+        """Compute which commits (and files) are new since the last review.
+
+        Uses the PR's commit list (``GET .../pulls/{index}/commits``) and the
+        most recent prior review comment (``get_previous_review``). Files changed
+        across the new-commit range are collected via the compare API
+        (``GET .../compare/{last_seen}...{head}``), whose per-commit ``files``
+        arrays list every affected path. If no previous review exists, we fall
+        back to a full review (``is_incremental = False``), matching
+        github_provider.
+        """
+        if not getattr(self, "pr_commits", None):
+            self.pr_commits = self.repo_api.get_pr_commits(
+                owner=self.owner, repo=self.repo, pr_number=self.pr_number
+            )
+        # Normalize to adapters exposing .sha and .commit.author.date, so the
+        # IncrementalPR accessors used by pr_reviewer work unchanged.
+        self.pr_commits = [self._as_commit(c) for c in (self.pr_commits or [])]
+
+        self.previous_review = self.get_previous_review(full=True, incremental=True)
+        push_before = get_settings().get("gitea.incremental_push_before_sha", None)
+        if self.previous_review:
+            self.incremental.commits_range = self.get_commit_range()
+            head = self.sha
+            base = self.incremental.last_seen_commit_sha or self.base_sha
+            changed = self._get_changed_files_in_range(base, head)
+            self.unreviewed_files_set.update(changed)
+        elif push_before:
+            # No prior review comment to diff against, but a push webhook gave us
+            # the pre-push head SHA. Anchor the incremental review to that range
+            # (before...head) so a push re-review still only looks at the new
+            # commits. Set last_seen_commit so pr_reviewer's threshold checks and
+            # the diff base both use it.
+            self.logger.info(f"No previous review found; using push before-SHA {push_before} as incremental base")
+            self.incremental.last_seen_commit = self._as_commit({"sha": push_before})
+            self.incremental.commits_range = self._commits_after_sha(push_before)
+            if self.incremental.commits_range:
+                self.incremental.first_new_commit = self.incremental.commits_range[0]
+            changed = self._get_changed_files_in_range(push_before, self.sha)
+            self.unreviewed_files_set.update(changed)
+            if not self.unreviewed_files_set:
+                self.logger.info("Push range produced no changed files, will review the entire PR")
+                self.incremental.is_incremental = False
+        else:
+            self.logger.info("No previous review found, will review the entire PR")
+            self.incremental.is_incremental = False
+
+    def _commits_after_sha(self, sha: str) -> List[Any]:
+        """Return the PR commits that come strictly after ``sha`` (exclusive).
+
+        Used to size the new-commit range for a push-anchored incremental review
+        when there is no prior review comment. If ``sha`` is not found in the PR
+        commit list, returns [] (the caller then falls back to a full review).
+        """
+        shas = [c.sha for c in self.pr_commits]
+        if sha in shas:
+            idx = shas.index(sha)
+            return self.pr_commits[idx + 1:]
+        return []
+
+    def get_commit_range(self):
+        """Return the slice of ``pr_commits`` authored after the last review.
+
+        Walks the commits newest-first; commits authored after the previous
+        review's timestamp are "new", and the first commit at/older than that
+        timestamp is the ``last_seen_commit`` (the incremental diff base). Mirrors
+        github_provider.get_commit_range.
+        """
+        last_review_time = self.previous_review.created_at
+        first_new_commit_index = None
+        for index in range(len(self.pr_commits) - 1, -1, -1):
+            if self.pr_commits[index].commit.author.date > last_review_time:
+                self.incremental.first_new_commit = self.pr_commits[index]
+                first_new_commit_index = index
+            else:
+                self.incremental.last_seen_commit = self.pr_commits[index]
+                break
+        return self.pr_commits[first_new_commit_index:] if first_new_commit_index is not None else []
+
+    def get_previous_review(self, *, full: bool, incremental: bool):
+        """Return the most recent prior review comment, or None.
+
+        Matches on the review header prefixes (regular / incremental) exactly
+        like github_provider, scanning the PR's issue comments newest-first.
+        """
+        if not (full or incremental):
+            raise ValueError("At least one of full or incremental must be True")
+        if not getattr(self, "comments", None):
+            self.comments = self.repo_api.list_all_comments(
+                owner=self.owner, repo=self.repo, index=self.pr_number
+            ) or []
+        prefixes = []
+        if full:
+            prefixes.append(PRReviewHeader.REGULAR.value)
+        if incremental:
+            prefixes.append(PRReviewHeader.INCREMENTAL.value)
+        for index in range(len(self.comments) - 1, -1, -1):
+            body = self._comment_body(self.comments[index])
+            if any(body.startswith(prefix) for prefix in prefixes):
+                return self.comments[index]
+        return None
+
+    def _get_changed_files_in_range(self, base: str, head: str) -> Dict[str, Any]:
+        """Map ``{filename: filename}`` for every file touched between two refs.
+
+        Uses the compare API's per-commit ``files`` arrays. Returns an empty
+        mapping (triggering the "no new files" path in pr_reviewer) if the
+        compare is unavailable, rather than falsely reporting the whole PR.
+        """
+        changed: Dict[str, Any] = {}
+        if not base or not head:
+            return changed
+        compare = self.repo_api.get_compare(
+            owner=self.owner, repo=self.repo, base=base, head=head
+        )
+        for commit in (compare or {}).get("commits", []) or []:
+            for f in (commit.get("files") or []):
+                name = f.get("filename")
+                if name:
+                    changed[name] = name
+        return changed
+
+    @staticmethod
+    def _comment_body(comment) -> str:
+        if isinstance(comment, dict):
+            return comment.get("body", "") or ""
+        return getattr(comment, "body", "") or ""
+
+    @staticmethod
+    def _as_commit(commit):
+        """Wrap a Gitea commit (dict or object) so ``.sha`` and
+        ``.commit.author.date`` (a ``datetime``) are always available, matching
+        what the ``IncrementalPR`` accessors and pr_reviewer expect from a
+        PyGithub commit."""
+        if not isinstance(commit, dict):
+            return commit  # already an object with the needed attributes
+
+        from datetime import datetime, timezone
+
+        def _parse_date(value):
+            if not value:
+                return datetime.min.replace(tzinfo=timezone.utc)
+            try:
+                # Gitea emits RFC 3339 (e.g. 2024-01-02T03:04:05Z).
+                return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            except Exception:
+                return datetime.min.replace(tzinfo=timezone.utc)
+
+        commit_obj = commit.get("commit") or {}
+        author = commit_obj.get("author") or {}
+        date = _parse_date(author.get("date"))
+        author_ns = SimpleNamespace(date=date, name=author.get("name", ""))
+        commit_ns = SimpleNamespace(author=author_ns, message=commit_obj.get("message", ""))
+        return SimpleNamespace(sha=commit.get("sha", ""), commit=commit_ns)
+
     def _get_file_content_from_base(self, filename: str) -> str:
         return self.repo_api.get_file_content(
             owner=self.owner,
             repo=self.repo,
             commit_sha=self._get_merge_base_ref(),
-            filepath=filename
-        )
-
-    def _get_file_content_from_latest_commit(self, filename: str) -> str:
-        return self.repo_api.get_file_content(
-            owner=self.owner,
-            repo=self.repo,
-            commit_sha=self.last_commit.sha,
             filepath=filename
         )
 
@@ -680,19 +847,35 @@ class GiteaProvider(GitProvider):
         if self.diff_files:
             return self.diff_files
 
-        # Prefer the merge-base-relative compare diff for patches; fall back to
-        # the PR .diff already parsed into self.file_diffs. Conservative: if the
-        # compare API returns nothing, self.file_diffs is used unchanged.
+        incremental = bool(self.incremental.is_incremental and self.unreviewed_files_set)
+
+        # Patch source. Full review: merge-base-relative compare diff of
+        # base...head (falling back to the PR .diff already parsed into
+        # self.file_diffs). Incremental review: only the diff introduced by the
+        # new commits, i.e. last_seen_commit...head, so re-reviews on push don't
+        # re-diff the whole PR. Both fall back conservatively.
         file_diffs = self.file_diffs
-        if self.base_sha and self.sha:
+        if incremental:
+            base_ref = self.incremental.last_seen_commit_sha or self.base_sha
+            if base_ref and self.sha:
+                compare_patches = self._build_compare_patches(base_ref, self.sha)
+                if compare_patches:
+                    file_diffs = compare_patches
+        elif self.base_sha and self.sha:
             compare_patches = self._build_compare_patches(self.base_sha, self.sha)
             if compare_patches:
                 file_diffs = compare_patches
 
+        # In incremental mode review only the files touched by the new commits.
+        files_iter = self.git_files
+        if incremental:
+            files_iter = [f for f in self.git_files
+                          if f.get("filename") in self.unreviewed_files_set]
+
         invalid_files_names = []
         counter_valid = 0
         diff_files = []
-        for file in self.git_files:
+        for file in files_iter:
             filename = file.get("filename")
             if not filename:
                 continue
@@ -721,8 +904,14 @@ class GiteaProvider(GitProvider):
                 # Get file content from this pr
                 head_file = self.file_contents.get(filename, "")
 
-            if self.incremental.is_incremental and self.unreviewed_files_set:
-                base_file = self._get_file_content_from_latest_commit(previous_filename)
+            if incremental:
+                # Incremental base = the last already-reviewed commit, so the
+                # diff reflects only what the new commits changed.
+                base_ref = self.incremental.last_seen_commit_sha or self.base_sha
+                base_file = self.repo_api.get_file_content(
+                    owner=self.owner, repo=self.repo,
+                    commit_sha=base_ref, filepath=previous_filename,
+                )
             else:
                 if avoid_load:
                     base_file = ""

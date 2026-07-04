@@ -248,3 +248,92 @@ class TestGiteaReviewRequested:
             await gitea_app.handle_request(body, event='pull_request')
 
         mock_handler.assert_awaited_once()
+
+
+class TestGiteaSynchronizedIncremental:
+    """A push (synchronized) can run an incremental /review anchored to the
+    before/after SHAs when gitea.incremental_review_on_push is enabled; full
+    review is the default/fallback (item: incremental review on push)."""
+
+    def _settings(self, incremental_on_push, push_commands=None):
+        settings = MagicMock()
+        values = {
+            'gitea.push_commands': push_commands if push_commands is not None else ['/review'],
+            'gitea.handle_push_trigger': True,
+            'gitea.incremental_review_on_push': incremental_on_push,
+        }
+        settings.get.side_effect = lambda k, d=None: values.get(k, d)
+        return settings
+
+    def _body(self, before='beforesha', after='aftersha'):
+        return {
+            'action': 'synchronized',
+            'sender': {'login': 'alice'},
+            'before': before,
+            'after': after,
+            'pull_request': {'url': 'https://gitea.example.com/api/v1/repos/o/r/pulls/1'},
+        }
+
+    @pytest.mark.asyncio
+    async def test_incremental_push_passes_before_after_sha(self):
+        agent = MagicMock()
+        with patch('pr_agent.servers.gitea_app.get_settings', return_value=self._settings(True)), \
+             patch('pr_agent.servers.gitea_app._perform_commands_gitea', new=AsyncMock()) as mock_perform:
+            await gitea_app.handle_pr_event(self._body(), 'pull_request', 'synchronized', agent)
+
+        mock_perform.assert_awaited_once()
+        _, kwargs = mock_perform.call_args
+        assert kwargs['incremental'] is True
+        assert kwargs['before_sha'] == 'beforesha'
+        assert kwargs['after_sha'] == 'aftersha'
+
+    @pytest.mark.asyncio
+    async def test_full_review_is_default_when_flag_off(self):
+        agent = MagicMock()
+        with patch('pr_agent.servers.gitea_app.get_settings', return_value=self._settings(False)), \
+             patch('pr_agent.servers.gitea_app._perform_commands_gitea', new=AsyncMock()) as mock_perform:
+            await gitea_app.handle_pr_event(self._body(), 'pull_request', 'synchronized', agent)
+
+        mock_perform.assert_awaited_once()
+        # Called without incremental kwargs -> full review.
+        _, kwargs = mock_perform.call_args
+        assert 'incremental' not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_full_review_when_before_equals_after(self):
+        agent = MagicMock()
+        body = self._body(before='samesha', after='samesha')
+        with patch('pr_agent.servers.gitea_app.get_settings', return_value=self._settings(True)), \
+             patch('pr_agent.servers.gitea_app._perform_commands_gitea', new=AsyncMock()) as mock_perform:
+            await gitea_app.handle_pr_event(body, 'pull_request', 'synchronized', agent)
+
+        _, kwargs = mock_perform.call_args
+        assert 'incremental' not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_perform_commands_appends_dash_i_to_review(self):
+        """When incremental, /review is turned into /review -i and the push
+        range is stashed into settings for the provider."""
+        agent = MagicMock()
+        agent.handle_request = AsyncMock()
+        settings = self._settings(True, push_commands=['/review', '/describe'])
+        set_calls = {}
+        settings.set.side_effect = lambda k, v: set_calls.__setitem__(k, v)
+
+        with patch('pr_agent.servers.gitea_app.get_settings', return_value=settings), \
+             patch('pr_agent.servers.gitea_app.apply_repo_settings'), \
+             patch('pr_agent.servers.gitea_app.should_process_pr_logic', return_value=True), \
+             patch('pr_agent.servers.gitea_app.update_settings_from_args', side_effect=lambda a: a):
+            settings.config.disable_auto_feedback = False
+            await gitea_app._perform_commands_gitea(
+                'push_commands', agent, self._body(), 'api_url',
+                incremental=True, before_sha='beforesha', after_sha='aftersha',
+            )
+
+        # /review got -i; /describe untouched.
+        called = [c.args[1] for c in agent.handle_request.call_args_list]
+        assert '/review -i' in called
+        assert '/describe' in called
+        # Push range stashed for the provider.
+        assert set_calls.get('gitea.incremental_push_before_sha') == 'beforesha'
+        assert set_calls.get('gitea.incremental_push_after_sha') == 'aftersha'

@@ -1293,3 +1293,159 @@ class TestGiteaParseUnifiedDiff:
 
     def test_empty_diff(self):
         assert self._parse('') == {}
+
+
+class TestGiteaProviderIncremental:
+    """Incremental review: re-review only the commits pushed since the last
+    review (ports github_provider.get_incremental_commits & friends)."""
+
+    @staticmethod
+    def _commit(sha, iso_date, message='msg'):
+        return {'sha': sha, 'commit': {'message': message, 'author': {'date': iso_date, 'name': 'a'}}}
+
+    @staticmethod
+    def _provider(pr_commits=None, comments=None):
+        from pr_agent.git_providers.gitea_provider import GiteaProvider
+        from pr_agent.git_providers.git_provider import IncrementalPR
+
+        provider = GiteaProvider.__new__(GiteaProvider)
+        provider.logger = MagicMock()
+        provider.owner = 'owner'
+        provider.repo = 'repo'
+        provider.pr_number = 1
+        provider.enabled_pr = True
+        provider.sha = 'headsha'
+        provider.base_sha = 'basesha'
+        provider.incremental = IncrementalPR(False)
+        provider.unreviewed_files_set = {}
+        provider.repo_api = MagicMock()
+        provider.repo_api.get_pr_commits.return_value = pr_commits or []
+        provider.repo_api.list_all_comments.return_value = comments or []
+        provider.repo_api.get_compare.return_value = {'commits': []}
+        return provider
+
+    def test_get_incremental_commits_noop_for_full_review(self):
+        from pr_agent.git_providers.git_provider import IncrementalPR
+        provider = self._provider()
+        provider.get_incremental_commits(IncrementalPR(False))
+        # Full review: no commit lookup, incremental stays off.
+        assert provider.incremental.is_incremental is False
+        provider.repo_api.get_pr_commits.assert_not_called()
+
+    def test_previous_review_matched_by_header(self):
+        from pr_agent.algo.utils import PRReviewHeader
+        c1 = MagicMock(); c1.body = 'random chatter'
+        c2 = MagicMock(); c2.body = f'{PRReviewHeader.REGULAR.value} 🔍\n\nreview text'
+        provider = self._provider(comments=[c1, c2])
+        prev = provider.get_previous_review(full=True, incremental=True)
+        assert prev is c2
+
+    def test_previous_review_none_when_no_review_comment(self):
+        c1 = MagicMock(); c1.body = 'just a comment'
+        provider = self._provider(comments=[c1])
+        assert provider.get_previous_review(full=True, incremental=True) is None
+
+    def test_no_previous_review_falls_back_to_full(self):
+        import datetime
+        commits = [
+            self._commit('sha1', '2024-01-01T00:00:00Z'),
+            self._commit('sha2', '2024-01-02T00:00:00Z'),
+        ]
+        from pr_agent.git_providers.git_provider import IncrementalPR
+        provider = self._provider(pr_commits=commits, comments=[])  # no review comment
+        with patch('pr_agent.git_providers.gitea_provider.get_settings') as gs:
+            gs.return_value.get.return_value = None  # no push before-sha
+            provider.get_incremental_commits(IncrementalPR(True))
+        # Falls back to a full review.
+        assert provider.incremental.is_incremental is False
+
+    def test_incremental_commit_range_after_previous_review(self):
+        import datetime
+        from pr_agent.git_providers.git_provider import IncrementalPR
+        # Two commits: one before the review, one after.
+        commits = [
+            self._commit('old', '2024-01-01T00:00:00Z'),
+            self._commit('new', '2024-01-03T00:00:00Z'),
+        ]
+        review = MagicMock()
+        from pr_agent.algo.utils import PRReviewHeader
+        review.body = f'{PRReviewHeader.REGULAR.value} 🔍'
+        review.created_at = datetime.datetime(2024, 1, 2, tzinfo=datetime.timezone.utc)
+        provider = self._provider(pr_commits=commits, comments=[review])
+        provider.repo_api.get_compare.return_value = {
+            'commits': [{'files': [{'filename': 'changed.py', 'status': 'modified'}]}]
+        }
+        with patch('pr_agent.git_providers.gitea_provider.get_settings') as gs:
+            gs.return_value.get.return_value = None
+            provider.get_incremental_commits(IncrementalPR(True))
+
+        assert provider.incremental.is_incremental is True
+        # Only the commit after the review is "new".
+        assert [c.sha for c in provider.incremental.commits_range] == ['new']
+        assert provider.incremental.first_new_commit_sha == 'new'
+        assert provider.incremental.last_seen_commit_sha == 'old'
+        # The compare range is diffed to collect changed files.
+        assert 'changed.py' in provider.unreviewed_files_set
+        _, kwargs = provider.repo_api.get_compare.call_args
+        assert kwargs['base'] == 'old'
+        assert kwargs['head'] == 'headsha'
+
+    def test_push_before_sha_anchors_incremental_without_prior_review(self):
+        """No prior review comment, but the push webhook gave a before-SHA: the
+        review still runs incrementally, anchored to that SHA."""
+        from pr_agent.git_providers.git_provider import IncrementalPR
+        commits = [
+            self._commit('c0', '2024-01-01T00:00:00Z'),
+            self._commit('c1', '2024-01-02T00:00:00Z'),
+            self._commit('c2', '2024-01-03T00:00:00Z'),
+        ]
+        provider = self._provider(pr_commits=commits, comments=[])
+        provider.repo_api.get_compare.return_value = {
+            'commits': [{'files': [{'filename': 'f.py', 'status': 'modified'}]}]
+        }
+        with patch('pr_agent.git_providers.gitea_provider.get_settings') as gs:
+            gs.return_value.get.side_effect = lambda k, d=None: (
+                'c0' if k == 'gitea.incremental_push_before_sha' else d
+            )
+            provider.get_incremental_commits(IncrementalPR(True))
+
+        assert provider.incremental.is_incremental is True
+        assert provider.incremental.last_seen_commit_sha == 'c0'
+        # commits after c0 are the new ones.
+        assert [c.sha for c in provider.incremental.commits_range] == ['c1', 'c2']
+        assert 'f.py' in provider.unreviewed_files_set
+
+    def test_incremental_get_diff_files_restricts_to_new_files_and_uses_last_seen_base(self):
+        """In incremental mode get_diff_files reviews only the unreviewed files
+        and reads base content from the last-seen commit, not the repo head."""
+        from pr_agent.git_providers.gitea_provider import GiteaProvider
+        from pr_agent.git_providers.git_provider import IncrementalPR
+
+        provider = GiteaProvider.__new__(GiteaProvider)
+        provider.logger = MagicMock()
+        provider.owner = 'owner'; provider.repo = 'repo'; provider.pr_number = 1
+        provider.enabled_pr = True
+        provider.sha = 'headsha'; provider.base_sha = 'basesha'; provider.merge_base_sha = 'mbsha'
+        provider.git_files = [
+            {'filename': 'new.py', 'status': 'modified', 'additions': 1, 'deletions': 0},
+            {'filename': 'untouched.py', 'status': 'modified', 'additions': 1, 'deletions': 0},
+        ]
+        provider.file_diffs = {'new.py': '@@ -1 +1,2 @@\n a\n+b'}
+        provider.file_contents = {'new.py': 'a\nb\n'}
+        provider.diff_files = []
+        inc = IncrementalPR(True)
+        inc.last_seen_commit = __import__('types').SimpleNamespace(sha='lastseen')
+        provider.incremental = inc
+        provider.unreviewed_files_set = {'new.py': 'new.py'}  # only new.py is new
+        provider.repo_api = MagicMock()
+        provider.repo_api.get_compare_diff.return_value = ''  # fall back to file_diffs
+        provider.repo_api.get_file_content.return_value = 'a\n'  # base content
+
+        with patch('pr_agent.git_providers.gitea_provider.is_valid_file', return_value=True):
+            diff_files = provider.get_diff_files()
+
+        # Only the unreviewed file is reviewed.
+        assert [f.filename for f in diff_files] == ['new.py']
+        # Base content was read from the last-seen commit, not the repo head.
+        _, kwargs = provider.repo_api.get_file_content.call_args
+        assert kwargs['commit_sha'] == 'lastseen'

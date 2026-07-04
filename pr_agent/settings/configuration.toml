@@ -283,6 +283,10 @@ push_commands = [
 [gitea]
 url = "https://gitea.com"
 handle_push_trigger = false
+# When true, a push (synchronized) re-review runs as an incremental /review -i,
+# diffing only the newly pushed commits (before...after). Default false = every
+# push re-reviews the whole PR (the pre-existing behavior).
+incremental_review_on_push = false
 pr_commands = [
     "/describe",
     "/review",
