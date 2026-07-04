@@ -150,6 +150,7 @@ def _store_repo_context(git_provider, context_files: list, max_lines: int, repo_
 
 
 def _load_repo_context_files(git_provider, context_files: list) -> tuple[dict[str, str], bool]:
+    from_default_branch = bool(get_settings().config.get("repo_context_from_default_branch", False))
     files = {}
     had_fetch_error = False
     for file_path in context_files:
@@ -159,7 +160,7 @@ def _load_repo_context_files(git_provider, context_files: list) -> tuple[dict[st
 
         file_path = file_path.strip()
         try:
-            content = git_provider.get_repo_file_content(file_path)
+            content = git_provider.get_repo_file_content(file_path, from_default_branch=from_default_branch)
         except Exception as e:
             had_fetch_error = True
             get_logger().warning(f"Failed to load repo context file: {file_path}", artifact={"error": str(e)})

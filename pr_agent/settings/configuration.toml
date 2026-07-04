@@ -29,6 +29,7 @@ skip_keys = []
 custom_reasoning_model = false # when true, disables system messages and temperature controls for models that don't support chat-style inputs
 response_language="en-US" # Language locales code for PR responses in ISO 3166 and ISO 639 format (e.g., "en-US", "it-IT", "zh-CN", ...)
 repo_context_files = ["AGENTS.md"] # Repository-relative files (e.g. AGENTS.md, CLAUDE.md) to include as AI prompt context; set to [] to disable
+repo_context_from_default_branch = true # Read repo context files from the repository default branch (trusts only default-branch content). Set to false to read from the PR target branch instead.
 repo_context_max_lines = 500 # Maximum total rendered lines for repo context, including wrapper tags
 # token limits
 max_description_tokens = 500

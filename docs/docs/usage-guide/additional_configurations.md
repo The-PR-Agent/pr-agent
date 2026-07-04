@@ -155,15 +155,22 @@ By default, PR-Agent looks for an `AGENTS.md` file at the repository root:
 repo_context_files = ["AGENTS.md"]
 ```
 
-You can list any repository-relative paths. The files are read from the PR's target (base) branch, so only content already merged into the branch you are merging into is used — a PR cannot inject its own instruction files into its review. A file that is missing on the target branch is silently skipped. Set the option to an empty list to disable the feature entirely:
+You can list any repository-relative paths. By default the files are read from the repository's **default branch**, so only trusted, already-merged content is used and a PR cannot influence the guidance used to review it. A file that is missing is silently skipped. Set the option to an empty list to disable the feature entirely:
 
 ```toml
 [config]
 repo_context_files = ["AGENTS.md", "CLAUDE.md", "docs/conventions.md"]
 ```
 
-!!! note "Context is read from the PR's target branch"
-    Instruction files are fetched from the branch the PR is merging into (its target/base branch), never from the PR's own head — so a PR cannot alter the guidance used to review it. On most providers the read is pinned to the target branch's commit at the time the PR was opened, so an instruction file added to (or changed on) the target branch *after* that point may not be reflected until the PR is updated/rebased.
+!!! note "Which branch the files are read from"
+    By default (`repo_context_from_default_branch = true`), instruction files are read from the repository's **default branch** — a single trusted source — so neither the PR nor its target branch can alter the guidance used to review it. This matches how Qodo Merge reads these files.
+
+    Set `repo_context_from_default_branch = false` to instead read from the PR's **target (base) branch**. This respects branch-specific instructions (for example a release branch, or a stacked PR that carries its own `AGENTS.md`), at the cost of trusting whoever can write to that target branch. Even then, files are never read from the PR's own head.
+
+    ```toml
+    [config]
+    repo_context_from_default_branch = false
+    ```
 
 To bound how much of this context is sent to the model, `repo_context_max_lines` (default `500`) caps the total number of rendered lines, including the wrapper tags. Content beyond the budget is truncated safely:
 

@@ -290,6 +290,28 @@ class TestGiteaProvider:
             filepath="AGENTS.md"
         )
 
+    def test_get_repo_file_content_from_default_branch(self):
+        provider = GiteaProvider.__new__(GiteaProvider)
+        provider.owner = "owner"
+        provider.repo = "repo"
+        provider.base_sha = "base-sha"
+        provider.base_ref = "release-1.0"
+        provider.sha = "head-sha"
+        provider.logger = MagicMock()
+        provider.repo_api = MagicMock()
+        provider.repo_api.repo_get.return_value = MagicMock(default_branch="main")
+        provider.repo_api.get_file_content.return_value = "repo context"
+
+        content = provider.get_repo_file_content("AGENTS.md", from_default_branch=True)
+
+        assert content == "repo context"
+        provider.repo_api.get_file_content.assert_called_once_with(
+            owner="owner",
+            repo="repo",
+            commit_sha="main",
+            filepath="AGENTS.md"
+        )
+
     def test_get_repo_file_content_never_reads_from_pr_head_when_base_missing(self):
         # Security: when no target/base ref is available, the provider must NOT fall back
         # to the PR head (self.sha) — otherwise a PR could supply its own instruction files.

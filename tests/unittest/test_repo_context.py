@@ -20,9 +20,11 @@ class FakeProvider:
         self.files = files
         self.pr_url = pr_url
         self.requested_paths = []
+        self.from_default_branch_calls = []
 
-    def get_repo_file_content(self, file_path: str):
+    def get_repo_file_content(self, file_path: str, from_default_branch: bool = False):
         self.requested_paths.append(file_path)
+        self.from_default_branch_calls.append(from_default_branch)
         return self.files.get(file_path)
 
 
@@ -35,6 +37,7 @@ def repo_context_settings():
     settings = get_settings()
     original_files = settings.config.get("repo_context_files", [])
     original_max_lines = settings.config.get("repo_context_max_lines", 500)
+    original_from_default_branch = settings.config.get("repo_context_from_default_branch", True)
     original_warned_provider_classes = repo_context._unsupported_repo_context_provider_classes.copy()
     original_process_cache = repo_context._repo_context_process_cache.copy()
 
@@ -42,6 +45,7 @@ def repo_context_settings():
 
     settings.set("CONFIG.REPO_CONTEXT_FILES", original_files)
     settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", original_max_lines)
+    settings.set("CONFIG.REPO_CONTEXT_FROM_DEFAULT_BRANCH", original_from_default_branch)
     repo_context._unsupported_repo_context_provider_classes = original_warned_provider_classes
     repo_context._repo_context_process_cache = original_process_cache
 
@@ -57,6 +61,28 @@ def test_default_config_ships_agents_md_as_repo_context():
         config = tomllib.load(config_file)
 
     assert config["config"]["repo_context_files"] == ["AGENTS.md"]
+    # Reading from the default branch is the secure default.
+    assert config["config"]["repo_context_from_default_branch"] is True
+
+
+def test_build_repo_context_reads_from_default_branch_by_default(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["AGENTS.md"])
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FROM_DEFAULT_BRANCH", True)
+    provider = FakeProvider({"AGENTS.md": "Repo purpose"})
+
+    build_repo_context(provider)
+
+    assert provider.from_default_branch_calls == [True]
+
+
+def test_build_repo_context_reads_from_target_branch_when_disabled(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["AGENTS.md"])
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FROM_DEFAULT_BRANCH", False)
+    provider = FakeProvider({"AGENTS.md": "Repo purpose"})
+
+    build_repo_context(provider)
+
+    assert provider.from_default_branch_calls == [False]
 
 
 def test_build_repo_context_fetches_and_formats_configured_files(repo_context_settings):
@@ -467,6 +493,17 @@ def test_github_provider_falls_back_to_default_branch_without_pr_base():
 
     assert provider.get_repo_file_content("AGENTS.md") == "repo context"
     provider.repo_obj.get_contents.assert_called_once_with("AGENTS.md")
+
+
+def test_github_provider_reads_from_default_branch_when_requested():
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.repo_obj = Mock()
+    provider.repo_obj.get_contents.return_value.decoded_content = b"repo context"
+    # Even with a PR base ref available, from_default_branch must ignore it.
+    provider.pr = Mock(base=Mock(sha="base-sha", ref="release/1.0"))
+
+    assert provider.get_repo_file_content("AGENTS.md", from_default_branch=True) == "repo context"
+    provider.repo_obj.get_contents.assert_called_once_with("AGENTS.md")  # no ref -> default branch
 
 
 @pytest.mark.parametrize(

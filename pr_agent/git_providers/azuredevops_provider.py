@@ -174,12 +174,16 @@ class AzureDevopsProvider(GitProvider):
                 get_logger().error(f"Failed to get repo settings, error: {e}")
             return ""
 
-    def get_repo_file_content(self, file_path: str):
+    def get_repo_file_content(self, file_path: str, from_default_branch: bool = False):
         try:
-            # Read from the PR target (base) commit, matching the other providers.
-            version = GitVersionDescriptor(
-                version=self.pr.last_merge_target_commit.commit_id, version_type="commit"
-            )
+            # Read from the PR target (base) commit, matching the other providers. When
+            # from_default_branch is requested, omit the version so the default branch is used.
+            if from_default_branch:
+                version = None
+            else:
+                version = GitVersionDescriptor(
+                    version=self.pr.last_merge_target_commit.commit_id, version_type="commit"
+                )
             item = self.azure_devops_client.get_item(
                 repository_id=self.repo_slug,
                 path=file_path,

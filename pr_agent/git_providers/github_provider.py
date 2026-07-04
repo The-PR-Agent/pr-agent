@@ -851,12 +851,16 @@ class GithubProvider(GitProvider):
         except Exception:
             return ""
 
-    def get_repo_file_content(self, file_path: str):
+    def get_repo_file_content(self, file_path: str, from_default_branch: bool = False):
         try:
             # Prefer the PR target (base) ref so repo-context instruction files match the branch
-            # the PR is merging into. Fall back to the repo default branch when no PR base is available.
-            base = getattr(getattr(self, "pr", None), "base", None)
-            ref = getattr(base, "sha", None) or getattr(base, "ref", None)
+            # the PR is merging into. Fall back to the repo default branch when no PR base is
+            # available, or always when from_default_branch is requested.
+            if from_default_branch:
+                ref = None
+            else:
+                base = getattr(getattr(self, "pr", None), "base", None)
+                ref = getattr(base, "sha", None) or getattr(base, "ref", None)
             if ref:
                 contents = self.repo_obj.get_contents(file_path, ref=ref).decoded_content
             else:

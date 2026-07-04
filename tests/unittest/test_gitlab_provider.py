@@ -87,6 +87,18 @@ class TestGitLabProvider:
         mock_project.files.get.assert_called_once_with(file_path="AGENTS.md", ref="release-1.0")
         mock_file.decode.assert_called_once()
 
+    def test_get_repo_file_content_from_default_branch_ignores_target(self, gitlab_provider, mock_project):
+        mock_project.default_branch = "main"
+        gitlab_provider.mr = MagicMock(target_branch="release-1.0")
+        mock_file = MagicMock(ProjectFile)
+        mock_file.decode.return_value = b"repo context"
+        mock_project.files.get.return_value = mock_file
+
+        content = gitlab_provider.get_repo_file_content("AGENTS.md", from_default_branch=True)
+
+        assert content == "repo context"
+        mock_project.files.get.assert_called_once_with(file_path="AGENTS.md", ref="main")
+
     def test_get_repo_file_content_falls_back_to_default_branch_without_mr(self, gitlab_provider, mock_project):
         mock_project.default_branch = "main"
         gitlab_provider.mr = None

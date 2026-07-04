@@ -25,6 +25,20 @@ class TestAzureDevopsProviderRepoContext:
         assert kwargs["version_descriptor"].version == "base-sha"
         assert kwargs["version_descriptor"].version_type == "commit"
 
+    def test_get_repo_file_content_from_default_branch_omits_version(self):
+        provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+        provider.repo_slug = "my-repo"
+        provider.workspace_slug = "my-project"
+        provider.pr = MagicMock()
+        provider.azure_devops_client = MagicMock()
+        provider.azure_devops_client.get_item.return_value = MagicMock(content="repo context")
+
+        content = provider.get_repo_file_content("AGENTS.md", from_default_branch=True)
+
+        assert content == "repo context"
+        _, kwargs = provider.azure_devops_client.get_item.call_args
+        assert kwargs["version_descriptor"] is None  # no version -> default branch
+
     def test_get_repo_file_content_treats_failure_as_empty(self):
         provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
         provider.repo_slug = "my-repo"
