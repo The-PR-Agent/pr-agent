@@ -257,7 +257,11 @@ class LiteLLMAIHandler(BaseAiHandler):
                 "Falling back to the built-in Claude extended-thinking model list."
             )
             override = []
-        self.claude_extended_thinking_models = list(override) if override else CLAUDE_EXTENDED_THINKING_MODELS
+        # Store stripped names so exact-match checks against the model succeed even when the config
+        # entries contain surrounding whitespace (validation above already used model.strip()).
+        self.claude_extended_thinking_models = (
+            [model.strip() for model in override] if override else CLAUDE_EXTENDED_THINKING_MODELS
+        )
 
         # Models that require streaming
         self.streaming_required_models = STREAMING_REQUIRED_MODELS
