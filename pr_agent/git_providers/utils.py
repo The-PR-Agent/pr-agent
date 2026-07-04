@@ -341,7 +341,9 @@ def _apply_repo_settings_file(repo_settings_file):
     # configuration error. Parsing here makes malformed/forbidden config raise so it gets reported.
     with open(repo_settings_file, "rb") as f:
         parsed_toml = tomllib.load(f)
-    validate_file_security(parsed_toml, repo_settings_file)
+    # Use a generic name (not the temp path) so a SecurityError message can't leak the server's
+    # internal filesystem path into the PR configuration-error comment.
+    validate_file_security(parsed_toml, ".pr_agent.toml")
 
     try:
         dynconf_kwargs = {'core_loaders': [],

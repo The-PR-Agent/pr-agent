@@ -235,6 +235,11 @@ def test_forbidden_directive_publishes_one_local_error(monkeypatch, settings_sna
     assert len(captured["errors"]) == 1
     assert captured["errors"][0]["category"] == "local"
     assert captured["errors"][0]["settings"] == forbidden_toml
+    # The error message must not leak the server's internal temp path to PR users.
+    import tempfile
+    error_text = captured["errors"][0]["error"]
+    assert tempfile.gettempdir() not in error_text
+    assert ".pr_agent.toml" in error_text
 
 
 def test_temp_file_is_removed_after_successful_apply(monkeypatch, tmp_path, settings_snapshot):
