@@ -476,6 +476,68 @@ class GiteaProvider(GitProvider):
         """
         return self.submit_review("APPROVED")
 
+    # Gitea's commit-status states (StatusState): pending / success / error /
+    # failure / warning. Not 1:1 with GitHub Checks, but the closest native
+    # surface for a pass/fail signal on a commit.
+    _COMMIT_STATUS_STATES = {"pending", "success", "error", "failure", "warning"}
+
+    def publish_commit_status(self, state: str, context: str = "PR-Agent",
+                              description: str = "", target_url: str = "",
+                              commit_sha: Optional[str] = None) -> bool:
+        """Surface a pass/fail signal as a Gitea commit status.
+
+        Gitea has no GitHub Checks API, but it has a commit-status API
+        (``POST /repos/{owner}/{repo}/statuses/{sha}`` with
+        ``{state, context, description, target_url}`` — CreateStatusOption,
+        docs.gitea.com repoCreateStatus). This is an approximate, not 1:1,
+        stand-in for a check run: the reviewer can call it to mark a commit
+        success/failure/pending so branch protection or the PR's status list
+        reflects the review outcome.
+
+        ``state`` must be one of pending/success/error/failure/warning; anything
+        else is coerced to "error" (with a log) rather than sent as-is, since
+        Gitea rejects unknown states. The status is attached to the PR head
+        (``self.sha``) unless an explicit ``commit_sha`` is given. Returns True on
+        success; failures are logged and swallowed so a status update never
+        breaks the underlying review.
+        """
+        if not self.enabled_pr:
+            self.logger.error("Cannot publish commit status: not a pull request")
+            return False
+
+        sha = commit_sha or self.sha
+        if not sha:
+            self.logger.error("Cannot publish commit status: no commit sha available")
+            return False
+
+        normalized = (state or "").lower()
+        if normalized not in self._COMMIT_STATUS_STATES:
+            self.logger.warning(
+                f"Unknown commit status state '{state}', coercing to 'error'"
+            )
+            normalized = "error"
+
+        try:
+            self.repo_api.create_commit_status(
+                owner=self.owner,
+                repo=self.repo,
+                sha=sha,
+                state=normalized,
+                context=context,
+                # Keep the description short. limit_output_characters appends
+                # "..." when it truncates, so budget for that to stay <= 255.
+                description=self.limit_output_characters(description, 252),
+                target_url=target_url,
+            )
+            self.logger.info(
+                f"Published commit status state={normalized} context={context} "
+                f"on {self.owner}/{self.repo}@{sha}"
+            )
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to publish commit status: {e}")
+            return False
+
     def publish_code_suggestions(self, suggestions: List[Dict[str, Any]]):
         """Publish code suggestions"""
         for suggestion in suggestions:
@@ -1687,6 +1749,33 @@ class RepoApi(giteapy.RepositoryApi):
         return self.repository.repo_get_all_commits(
             owner=owner,
             repo=repo
+        )
+
+    def create_commit_status(self, owner: str, repo: str, sha: str, state: str,
+                             context: str = "", description: str = "", target_url: str = ""):
+        """Create a commit status on a specific sha.
+
+        Maps to ``POST /repos/{owner}/{repo}/statuses/{sha}`` with a
+        ``CreateStatusOption`` body ``{state, context, description, target_url}``
+        (docs.gitea.com repoCreateStatus). ``state`` is a Gitea StatusState
+        (pending/success/error/failure/warning). This is Gitea's nearest
+        equivalent to a GitHub check run.
+        """
+        body = {
+            "state": state,
+            "context": context,
+            "description": description,
+            "target_url": target_url,
+        }
+        return self.api_client.call_api(
+            '/repos/{owner}/{repo}/statuses/{sha}',
+            'POST',
+            path_params={'owner': owner, 'repo': repo, 'sha': sha},
+            body=body,
+            response_type=None,
+            _return_http_data_only=False,
+            _preload_content=False,
+            auth_settings=['AuthorizationHeaderToken']
         )
 
     def add_reviewer(self, owner: str, repo: str, pr_number: int, reviewers: List[str]):

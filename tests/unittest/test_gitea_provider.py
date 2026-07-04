@@ -1449,3 +1449,103 @@ class TestGiteaProviderIncremental:
         # Base content was read from the last-seen commit, not the repo head.
         _, kwargs = provider.repo_api.get_file_content.call_args
         assert kwargs['commit_sha'] == 'lastseen'
+
+
+class TestGiteaProviderCommitStatus:
+    """publish_commit_status surfaces pass/fail as a Gitea commit status
+    (POST .../statuses/{sha}) — Gitea's nearest equivalent to a check run."""
+
+    @staticmethod
+    def _provider():
+        from pr_agent.git_providers.gitea_provider import GiteaProvider
+
+        provider = GiteaProvider.__new__(GiteaProvider)
+        provider.logger = MagicMock()
+        provider.owner = 'owner'
+        provider.repo = 'repo'
+        provider.pr_number = 5
+        provider.enabled_pr = True
+        provider.sha = 'headsha'
+        provider.max_comment_chars = 65000
+        provider.repo_api = MagicMock()
+        return provider
+
+    def test_publishes_status_on_head_sha(self):
+        provider = self._provider()
+
+        assert provider.publish_commit_status(
+            'success', context='PR-Agent/review',
+            description='Looks good', target_url='https://example.com/r/1',
+        ) is True
+
+        _, kwargs = provider.repo_api.create_commit_status.call_args
+        assert kwargs['sha'] == 'headsha'
+        assert kwargs['state'] == 'success'
+        assert kwargs['context'] == 'PR-Agent/review'
+        assert kwargs['description'] == 'Looks good'
+        assert kwargs['target_url'] == 'https://example.com/r/1'
+
+    def test_explicit_commit_sha_overrides_head(self):
+        provider = self._provider()
+        provider.publish_commit_status('pending', commit_sha='othersha')
+        _, kwargs = provider.repo_api.create_commit_status.call_args
+        assert kwargs['sha'] == 'othersha'
+
+    def test_unknown_state_coerced_to_error(self):
+        provider = self._provider()
+        provider.publish_commit_status('bogus')
+        _, kwargs = provider.repo_api.create_commit_status.call_args
+        assert kwargs['state'] == 'error'
+        provider.logger.warning.assert_called_once()
+
+    def test_valid_states_pass_through(self):
+        for state in ('pending', 'success', 'error', 'failure', 'warning'):
+            provider = self._provider()
+            provider.publish_commit_status(state)
+            _, kwargs = provider.repo_api.create_commit_status.call_args
+            assert kwargs['state'] == state
+
+    def test_returns_false_when_not_a_pr(self):
+        provider = self._provider()
+        provider.enabled_pr = False
+        assert provider.publish_commit_status('success') is False
+        provider.repo_api.create_commit_status.assert_not_called()
+
+    def test_returns_false_when_no_sha(self):
+        provider = self._provider()
+        provider.sha = ''
+        assert provider.publish_commit_status('success') is False
+        provider.repo_api.create_commit_status.assert_not_called()
+
+    def test_api_error_is_swallowed_returns_false(self):
+        provider = self._provider()
+        provider.repo_api.create_commit_status.side_effect = Exception('boom')
+        assert provider.publish_commit_status('success') is False
+        provider.logger.error.assert_called_once()
+
+    def test_description_is_truncated(self):
+        provider = self._provider()
+        provider.publish_commit_status('success', description='x' * 500)
+        _, kwargs = provider.repo_api.create_commit_status.call_args
+        assert len(kwargs['description']) <= 255
+
+    def test_repo_api_create_commit_status_hits_statuses_endpoint(self):
+        from pr_agent.git_providers.gitea_provider import RepoApi
+
+        client = MagicMock()
+        repo_api = RepoApi(client)
+
+        repo_api.create_commit_status(
+            'owner', 'repo', 'sha123', 'success',
+            context='ctx', description='desc', target_url='http://u',
+        )
+
+        args, kwargs = client.call_api.call_args
+        assert args[0] == '/repos/{owner}/{repo}/statuses/{sha}'
+        assert args[1] == 'POST'
+        assert kwargs['path_params'] == {'owner': 'owner', 'repo': 'repo', 'sha': 'sha123'}
+        assert kwargs['body'] == {
+            'state': 'success', 'context': 'ctx',
+            'description': 'desc', 'target_url': 'http://u',
+        }
+        assert kwargs.get('auth_settings') == ['AuthorizationHeaderToken']
