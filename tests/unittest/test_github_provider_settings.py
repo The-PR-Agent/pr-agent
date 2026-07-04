@@ -67,6 +67,7 @@ def test_get_repo_settings_missing_local_file_logged_quietly(monkeypatch):
     provider = _provider()  # no local .pr_agent.toml -> get_contents raises GithubException(404)
     settings = get_settings()
     original = settings.config.use_global_settings_file
+    original_branch = settings.get("CONFIG.CONFIG_BRANCH", None)
     settings.config.use_global_settings_file = False  # isolate the local-load path
     monkeypatch.delenv("PR_AGENT_CONFIG_BRANCH", raising=False)
     settings.set("CONFIG.CONFIG_BRANCH", "")  # ensure the default-branch load path runs
@@ -79,6 +80,7 @@ def test_get_repo_settings_missing_local_file_logged_quietly(monkeypatch):
         logger.warning.assert_not_called()
     finally:
         settings.config.use_global_settings_file = original
+        settings.set("CONFIG.CONFIG_BRANCH", original_branch)
 
 
 def test_get_global_repo_settings_missing_repo_logged_quietly():
