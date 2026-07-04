@@ -420,6 +420,18 @@ class BitbucketServerProvider(GitProvider):
     def get_pr_branch(self):
         return self.pr.fromRef['displayId']
 
+    def get_pr_base_ref(self) -> str:
+        return self.pr.toRef.get("latestCommit") or self.pr.toRef.get("displayId") or ""
+
+    def get_pr_file_content(self, file_path: str, branch: str) -> str:
+        try:
+            return self.get_file(file_path, branch)
+        except Exception as e:
+            get_logger().warning(
+                f"Error retrieving file {file_path} from ref {branch}: {e}"
+            )
+            return ""
+
     def get_pr_owner_id(self) -> str | None:
         return self.workspace_slug
 
