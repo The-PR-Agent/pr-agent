@@ -174,6 +174,26 @@ class AzureDevopsProvider(GitProvider):
                 get_logger().error(f"Failed to get repo settings, error: {e}")
             return ""
 
+    def get_repo_file_content(self, file_path: str):
+        try:
+            # Read from the PR target (base) commit, matching the other providers.
+            version = GitVersionDescriptor(
+                version=self.pr.last_merge_target_commit.commit_id, version_type="commit"
+            )
+            item = self.azure_devops_client.get_item(
+                repository_id=self.repo_slug,
+                path=file_path,
+                project=self.workspace_slug,
+                version_descriptor=version,
+                download=False,
+                include_content=True,
+            )
+            return item.content or ""
+        except Exception as e:
+            if get_settings().config.verbosity_level >= 2:
+                get_logger().warning(f"Failed to load repo file: {file_path}, error: {e}")
+            return ""
+
     def get_files(self):
         files = []
         for i in self.azure_devops_client.get_pull_request_commits(

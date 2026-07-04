@@ -16,6 +16,18 @@ class TestBitbucketProvider:
         assert repo_slug == "MY_TEST_REPO"
         assert pr_number == 321
 
+    def test_get_repo_file_content_reads_from_target_branch(self):
+        # Repo-context files must be read from the PR destination (target) branch,
+        # matching the other providers.
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.pr = MagicMock(destination_branch="release-1.0")
+        provider.get_pr_file_content = MagicMock(return_value="repo context")
+
+        content = provider.get_repo_file_content("AGENTS.md")
+
+        assert content == "repo context"
+        provider.get_pr_file_content.assert_called_once_with("AGENTS.md", "release-1.0")
+
 
 class TestBitbucketServerProvider:
     def test_parse_pr_url(self):
@@ -31,6 +43,18 @@ class TestBitbucketServerProvider:
         assert workspace_slug == "~username"
         assert repo_slug == "my-repo"
         assert pr_number == 1
+
+    def test_get_repo_file_content_reads_from_target_ref(self):
+        # Repo-context files must be read from the PR target ref (toRef), matching
+        # the other providers.
+        provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
+        provider.pr = MagicMock(toRef={"latestCommit": "base-sha"})
+        provider.get_file = MagicMock(return_value="repo context")
+
+        content = provider.get_repo_file_content("AGENTS.md")
+
+        assert content == "repo context"
+        provider.get_file.assert_called_once_with("AGENTS.md", "base-sha")
 
     def _make_provider_for_repo_settings(self, get_content_side_effect):
         # Bypass __init__ (which performs live API calls) and only wire up the

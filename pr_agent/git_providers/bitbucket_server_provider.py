@@ -119,6 +119,10 @@ class BitbucketServerProvider(GitProvider):
             get_logger().info(f"Failed to load .pr_agent.toml file, error: {e}")
             return ""
 
+    def get_repo_file_content(self, file_path: str):
+        # Read from the PR target ref (the branch being merged into), matching the other providers.
+        return self.get_file(file_path, self.pr.toRef['latestCommit'])
+
     def get_pr_id(self):
         return self.pr_num
 

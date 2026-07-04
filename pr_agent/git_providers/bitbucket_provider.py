@@ -89,6 +89,10 @@ class BitbucketProvider(GitProvider):
         except Exception:
             return ""
 
+    def get_repo_file_content(self, file_path: str):
+        # Read from the PR destination (target) branch, matching the other providers.
+        return self.get_pr_file_content(file_path, self.pr.destination_branch)
+
     def get_git_repo_url(self, pr_url: str=None) -> str: #bitbucket does not support issue url, so ignore param
         try:
             parsed_url = urlparse(self.pr_url)

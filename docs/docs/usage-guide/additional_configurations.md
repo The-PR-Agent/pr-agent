@@ -144,7 +144,7 @@ LANGSMITH_BASE_URL=<url>
 
 ## Bringing per-repo context files to PR-Agent
 
-`Platforms supported: GitHub, GitLab, Gitea`
+`Platforms supported: GitHub, GitLab, Gitea, Bitbucket, Azure DevOps`
 
 To give PR-Agent's tools additional project context, you can have it include repository instruction files — such as [AGENTS.md](https://agents.md/) or [CLAUDE.md](https://www.anthropic.com/engineering/claude-code-best-practices) — in the prompts for the `/review`, `/describe` and `/improve` tools.
 
@@ -162,8 +162,8 @@ You can list any repository-relative paths. The files are read from the PR's tar
 repo_context_files = ["AGENTS.md", "CLAUDE.md", "docs/conventions.md"]
 ```
 
-!!! note "Context is read from the PR's base commit"
-    On GitHub and Gitea, files are fetched at the PR's base commit (the commit the PR was opened against), not the live tip of the target branch. As a result, an instruction file that is added to (or changed on) the target branch *after* the PR was created will not be reflected until the PR is updated/rebased. On GitLab, files are read from the repository's default branch.
+!!! note "Context is read from the PR's target branch"
+    Instruction files are fetched from the branch the PR is merging into (its target/base branch), never from the PR's own head — so a PR cannot alter the guidance used to review it. On most providers the read is pinned to the target branch's commit at the time the PR was opened, so an instruction file added to (or changed on) the target branch *after* that point may not be reflected until the PR is updated/rebased.
 
 To bound how much of this context is sent to the model, `repo_context_max_lines` (default `500`) caps the total number of rendered lines, including the wrapper tags. Content beyond the budget is truncated safely:
 

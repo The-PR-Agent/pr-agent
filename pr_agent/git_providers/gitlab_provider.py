@@ -803,7 +803,10 @@ class GitLabProvider(GitProvider):
     def get_repo_file_content(self, file_path: str):
         try:
             project = self.gl.projects.get(self.id_project)
-            contents = project.files.get(file_path=file_path, ref=project.default_branch).decode()
+            # Read from the MR target branch (the branch being merged into), matching the other
+            # providers; fall back to the project default branch outside of an MR context.
+            ref = getattr(self.mr, "target_branch", None) or project.default_branch
+            contents = project.files.get(file_path=file_path, ref=ref).decode()
             return decode_if_bytes(contents)
         except GitlabGetError:
             return ""
