@@ -877,6 +877,16 @@ class GithubProvider(GitProvider):
                 return ""
             global_settings_repo = self.github_client.get_repo(f"{repo_owner}/pr-agent-settings")
             return global_settings_repo.get_contents(".pr_agent.toml").decoded_content
+        except GithubException as e:
+            # A missing pr-agent-settings repo/file (404) or lack of access (403) is an expected
+            # fallback (skip global settings, continue with local), so log it quietly to avoid noise.
+            if e.status in (403, 404):
+                get_logger().debug(
+                    "No accessible organization global .pr_agent.toml; using local settings only",
+                    artifact={"status": e.status})
+                return ""
+            get_logger().warning(f"Failed to load global .pr_agent.toml file, error: {e}")
+            return ""
         except Exception as e:
             get_logger().warning(f"Failed to load global .pr_agent.toml file, error: {e}")
             return ""

@@ -194,6 +194,21 @@ def test_handle_configurations_errors_publishes_each_error():
     assert "num_max_findings" not in provider.comments[1]
 
 
+def test_handle_configurations_errors_uses_unique_name_per_scope():
+    # In GitHub check-run mode the persistent-comment `name` keys the check run, so multiple
+    # settings errors (global + local) must use distinct names or later ones overwrite earlier ones.
+    provider = FakeMarkdownProvider()
+
+    handle_configurations_errors([
+        {"settings": b"[config]\nmodel =", "error": "global error", "category": "global"},
+        {"settings": b"[config]\nmodel =", "error": "local error", "category": "local"},
+    ], provider)
+
+    names = [c["name"] for c in provider.persistent_comments]
+    assert names == ["config-errors-global", "config-errors-local"]
+    assert len(set(names)) == 2
+
+
 def test_handle_configurations_errors_ignores_empty_sentinel_entry():
     provider = FakePlainProvider()
 

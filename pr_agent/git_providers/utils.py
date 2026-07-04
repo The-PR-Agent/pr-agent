@@ -419,11 +419,14 @@ def handle_configurations_errors(config_errors, git_provider):
                 get_logger().warning("Sending a 'configuration error' comment to the PR", artifact={'body': body})
                 # git_provider.publish_comment(body)
                 if hasattr(git_provider, 'publish_persistent_comment'):
+                    # Use a per-scope name so multiple settings errors (e.g. global + local) don't
+                    # collide: in GitHub check-run mode the name keys the check run, so a shared name
+                    # would make later errors overwrite earlier ones and hide failures.
                     git_provider.publish_persistent_comment(body,
                                                             initial_header=header,
                                                             update_header=False,
                                                             final_update_message=False,
-                                                            name="config-errors")
+                                                            name=f"config-errors-{config_type}")
                 else:
                     git_provider.publish_comment(body)
     except Exception as e:

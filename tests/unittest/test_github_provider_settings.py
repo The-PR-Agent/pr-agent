@@ -1,5 +1,13 @@
+from github import GithubException
+
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.github_provider import GithubProvider
+
+
+def _not_found(name):
+    # Match PyGithub: a missing repo/file raises GithubException(404), which the provider
+    # handles, rather than FileNotFoundError.
+    return GithubException(404, {"message": f"Not Found: {name}"}, {})
 
 
 class FakeContent:
@@ -11,9 +19,9 @@ class FakeRepo:
     def __init__(self, files=None):
         self.files = files or {}
 
-    def get_contents(self, path):
+    def get_contents(self, path, ref=None):
         if path not in self.files:
-            raise FileNotFoundError(path)
+            raise _not_found(path)
         return FakeContent(self.files[path])
 
 
@@ -23,7 +31,7 @@ class FakeGithubClient:
 
     def get_repo(self, repo_name):
         if repo_name not in self.repos:
-            raise FileNotFoundError(repo_name)
+            raise _not_found(repo_name)
         return self.repos[repo_name]
 
 
@@ -37,6 +45,27 @@ def _provider(local_settings=None, global_settings=None):
         else {}
     )
     return provider
+
+
+def test_get_global_repo_settings_missing_repo_logged_quietly():
+    # A missing/inaccessible <owner>/pr-agent-settings repo is an expected fallback, so it must be
+    # logged quietly (debug), not as a warning that would flood logs on every webhook event.
+    from unittest.mock import patch
+
+    provider = _provider()  # no global settings repo -> get_repo raises GithubException(404)
+    settings = get_settings()
+    original = settings.config.use_global_settings_file
+    settings.config.use_global_settings_file = True
+    try:
+        with patch("pr_agent.git_providers.github_provider.get_logger") as mock_get_logger:
+            logger = mock_get_logger.return_value
+            result = provider._get_global_repo_settings()
+
+        assert result == ""
+        logger.warning.assert_not_called()
+        logger.debug.assert_called_once()
+    finally:
+        settings.config.use_global_settings_file = original
 
 
 def test_get_repo_settings_returns_global_settings_when_local_settings_missing():
