@@ -373,20 +373,45 @@ class GiteaProvider(GitProvider):
         self.publish_inline_comments([payload])
 
 
-    def publish_inline_comments(self, comments: List[Dict[str, Any]],body : str = "Inline comment") -> None:
-        response = self.repo_api.create_inline_comment(
+    def publish_inline_comments(self, comments: List[Dict[str, Any]], body: str = "Inline comment") -> None:
+        """Publish inline comments as a *submitted* COMMENT review.
+
+        Previously this called ``create_inline_comment`` with no ``event``,
+        which created an unsubmitted PENDING draft review — the inline
+        ``/review``/``/improve`` suggestions never actually posted. We submit
+        with ``event="COMMENT"`` so the comments post immediately, mirroring
+        GithubProvider (``pr.create_review(comments=...)`` submits a review).
+
+        This is deliberately kept separate from ``submit_review``: the formal
+        verdict (APPROVED / REQUEST_CHANGES via ``submit_review``/``auto_approve``)
+        is its own submitted review with an empty ``comments`` list, so inline
+        suggestions can never accidentally carry an APPROVED event, and an
+        approval can never smuggle in inline comments.
+
+        Maps to ``POST /repos/{owner}/{repo}/pulls/{index}/reviews`` with body
+        ``{body, event: "COMMENT", comments[]}`` where each comment is
+        ``{body, path, new_position, old_position}`` (Gitea CreatePullReviewOptions).
+
+        ``commit_id`` is deliberately omitted (same reasoning as
+        ``submit_review``): ``self.last_commit`` comes from
+        ``repo_get_all_commits`` — the repository/default-branch commit list, not
+        the PR's commits — so its sha is unrelated to the PR head. Pinning it
+        would anchor the inline positions to the wrong commit; omitting it lets
+        Gitea default to the PR head, which is where the positions were computed.
+        """
+        response = self.repo_api.create_review(
             owner=self.owner,
             repo=self.repo,
             pr_number=self.pr_number if self.enabled_pr else self.issue_number,
+            event="COMMENT",
             body=body,
-            commit_id=self.last_commit.sha if self.last_commit else "",
-            comments=comments
+            comments=comments,
         )
 
-        # ``create_inline_comment`` runs with ``_preload_content=False``, so a
-        # successful call returns the ``(data, status, headers)`` tuple rather
-        # than a truthy body; a non-2xx status raises ``ApiException`` before we
-        # get here. Inspect the status code instead of the (always-falsy) body.
+        # ``create_review`` runs with ``_preload_content=False``, so a successful
+        # call returns the ``(data, status, headers)`` tuple rather than a truthy
+        # body; a non-2xx status raises ``ApiException`` before we get here.
+        # Inspect the status code instead of the (always-falsy) body.
         status = response[1] if isinstance(response, tuple) and len(response) > 1 else None
         if status is not None and not (200 <= status < 300):
             self.logger.error(f"Failed to publish inline comment (status {status})")

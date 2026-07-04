@@ -544,10 +544,14 @@ class TestGiteaProviderSubmitReview:
 
 
 class TestGiteaProviderPublishInlineComments:
-    """``publish_inline_comments`` runs ``create_inline_comment`` with
-    ``_preload_content=False``, so a successful call returns the
-    ``(data, status, headers)`` tuple, not a truthy body. The success/failure
-    log must key off the HTTP status, not the (always-falsy) body."""
+    """``publish_inline_comments`` submits a COMMENT review (not a PENDING draft).
+
+    It runs ``create_review`` with ``_preload_content=False``, so a successful
+    call returns the ``(data, status, headers)`` tuple, not a truthy body. The
+    success/failure log must key off the HTTP status, not the (always-falsy)
+    body. The review must carry ``event="COMMENT"`` so the inline comments post
+    immediately instead of lingering as an unsubmitted draft, and must NOT pin a
+    (wrong) ``commit_id`` so Gitea anchors positions to the PR head."""
 
     @staticmethod
     def _provider():
@@ -567,7 +571,7 @@ class TestGiteaProviderPublishInlineComments:
     def test_logs_success_on_2xx_tuple(self):
         provider = self._provider()
         # giteapy returns (data, status, headers); data is None with _preload_content=False
-        provider.repo_api.create_inline_comment.return_value = (None, 201, {})
+        provider.repo_api.create_review.return_value = (None, 201, {})
 
         provider.publish_inline_comments([{'body': 'x'}])
 
@@ -576,12 +580,43 @@ class TestGiteaProviderPublishInlineComments:
 
     def test_logs_failure_on_non_2xx_tuple(self):
         provider = self._provider()
-        provider.repo_api.create_inline_comment.return_value = (None, 422, {})
+        provider.repo_api.create_review.return_value = (None, 422, {})
 
         provider.publish_inline_comments([{'body': 'x'}])
 
         provider.logger.error.assert_called_once()
         provider.logger.info.assert_not_called()
+
+    def test_submits_as_comment_event_with_the_comments(self):
+        """The inline comments must be submitted as a COMMENT review, carrying
+        the exact comment payloads, so they post immediately (not as a draft)."""
+        provider = self._provider()
+        provider.repo_api.create_review.return_value = (None, 201, {})
+
+        comments = [{'body': 'nit', 'path': 'a.py', 'new_position': 3, 'old_position': 0}]
+        provider.publish_inline_comments(comments, body='Suggestion body')
+
+        _, kwargs = provider.repo_api.create_review.call_args
+        assert kwargs['event'] == 'COMMENT'
+        assert kwargs['body'] == 'Suggestion body'
+        assert kwargs['comments'] == comments
+        assert kwargs['pr_number'] == 42
+        # commit_id must NOT be pinned (self.last_commit is the wrong sha).
+        assert 'commit_id' not in kwargs
+        # The old PENDING-draft path must no longer be used.
+        provider.repo_api.create_inline_comment.assert_not_called()
+
+    def test_inline_comments_do_not_submit_an_approval(self):
+        """Guard: inline comments must never smuggle an APPROVED/REQUEST_CHANGES
+        event — the formal verdict is a separate submit_review call."""
+        provider = self._provider()
+        provider.repo_api.create_review.return_value = (None, 201, {})
+
+        provider.publish_inline_comments([{'body': 'x'}])
+
+        _, kwargs = provider.repo_api.create_review.call_args
+        assert kwargs['event'] == 'COMMENT'
+        assert kwargs['event'] not in ('APPROVED', 'REQUEST_CHANGES')
 
 
 class TestGiteaProviderLabels:
