@@ -386,3 +386,177 @@ class TestGiteaProviderAddFileDiff:
         provider.logger.error.assert_called_once()
         # file_diffs is left untouched when the diff cannot be fetched.
         assert provider.file_diffs == {}
+
+
+class TestRepoApiFormalReview:
+    """Tests for the formal-review HTTP calls on ``RepoApi``.
+
+    These exercise the exact request the provider makes to Gitea's reviews API,
+    mocking ``call_api`` so no real server is hit.
+    """
+
+    @staticmethod
+    def _repo_api():
+        from pr_agent.git_providers.gitea_provider import RepoApi
+
+        client = MagicMock()
+        return RepoApi(client), client
+
+    def test_create_review_sends_event_and_commit_id(self):
+        """A formal review POST must carry the ``event`` field (so it is
+        submitted, not left as a PENDING draft) plus body/commit_id/comments."""
+        repo_api, client = self._repo_api()
+
+        repo_api.create_review(
+            'owner', 'repo', 123,
+            event='APPROVED',
+            body='looks good',
+            commit_id='deadbeef',
+            comments=[],
+        )
+
+        args, kwargs = client.call_api.call_args
+        assert args[0] == '/repos/{owner}/{repo}/pulls/{pr_number}/reviews'
+        assert args[1] == 'POST'
+        assert kwargs['path_params'] == {'owner': 'owner', 'repo': 'repo', 'pr_number': 123}
+        body = kwargs['body']
+        assert body['event'] == 'APPROVED'
+        assert body['body'] == 'looks good'
+        assert body['commit_id'] == 'deadbeef'
+        assert body['comments'] == []
+        # Regression: the reviews endpoint returns a review, not a Repository —
+        # the response_type must not be the mistyped 'Repository'.
+        assert kwargs['response_type'] is None
+        assert kwargs.get('auth_settings') == ['AuthorizationHeaderToken']
+
+    def test_create_review_without_event_is_pending_draft(self):
+        """Omitting ``event`` must NOT inject one, leaving an unsubmitted draft."""
+        repo_api, client = self._repo_api()
+
+        repo_api.create_review('owner', 'repo', 123)
+
+        _, kwargs = client.call_api.call_args
+        assert 'event' not in kwargs['body']
+        # commit_id is only sent when provided
+        assert 'commit_id' not in kwargs['body']
+        assert kwargs['body']['comments'] == []
+
+    def test_create_review_forwards_inline_comments(self):
+        repo_api, client = self._repo_api()
+
+        comments = [{'body': 'nit', 'path': 'a.py', 'new_position': 3, 'old_position': 0}]
+        repo_api.create_review(
+            'owner', 'repo', 7, event='COMMENT', body='', commit_id='c0ffee', comments=comments,
+        )
+
+        _, kwargs = client.call_api.call_args
+        assert kwargs['body']['comments'] == comments
+        assert kwargs['body']['event'] == 'COMMENT'
+
+    def test_create_inline_comment_defaults_to_pending_and_fixed_response_type(self):
+        """The pre-existing inline-comment path must still work and no longer use
+        the mistyped ``response_type='Repository'``."""
+        repo_api, client = self._repo_api()
+
+        repo_api.create_inline_comment(
+            'owner', 'repo', 5, body='review', commit_id='abc123', comments=[],
+        )
+
+        _, kwargs = client.call_api.call_args
+        assert 'event' not in kwargs['body']  # draft by default (unchanged behavior)
+        assert kwargs['response_type'] is None
+        assert kwargs['body']['commit_id'] == 'abc123'
+
+    def test_create_inline_comment_accepts_event(self):
+        repo_api, client = self._repo_api()
+
+        repo_api.create_inline_comment(
+            'owner', 'repo', 5, body='review', commit_id='abc123', comments=[], event='REQUEST_CHANGES',
+        )
+
+        _, kwargs = client.call_api.call_args
+        assert kwargs['body']['event'] == 'REQUEST_CHANGES'
+
+    def test_submit_pending_review_posts_to_review_id(self):
+        repo_api, client = self._repo_api()
+
+        repo_api.submit_pending_review('owner', 'repo', 123, review_id=99, event='APPROVED', body='ok')
+
+        args, kwargs = client.call_api.call_args
+        assert args[0] == '/repos/{owner}/{repo}/pulls/{pr_number}/reviews/{review_id}'
+        assert args[1] == 'POST'
+        assert kwargs['path_params'] == {
+            'owner': 'owner', 'repo': 'repo', 'pr_number': 123, 'review_id': 99,
+        }
+        assert kwargs['body'] == {'event': 'APPROVED', 'body': 'ok'}
+        assert kwargs['response_type'] is None
+
+
+class TestGiteaProviderSubmitReview:
+    """Tests for ``GiteaProvider.submit_review`` / ``auto_approve``.
+
+    Built via ``__new__`` to bypass __init__'s network calls; only the
+    attributes the methods touch are wired up.
+    """
+
+    @staticmethod
+    def _provider():
+        from pr_agent.git_providers.gitea_provider import GiteaProvider
+
+        provider = GiteaProvider.__new__(GiteaProvider)
+        provider.logger = MagicMock()
+        provider.owner = 'owner'
+        provider.repo = 'repo'
+        provider.pr_number = 42
+        provider.enabled_pr = True
+        provider.last_commit = MagicMock()
+        provider.last_commit.sha = 'headsha'
+        provider.repo_api = MagicMock()
+        return provider
+
+    def test_submit_review_passes_event_and_head_commit(self):
+        provider = self._provider()
+
+        assert provider.submit_review('COMMENT', body='please look') is True
+
+        provider.repo_api.create_review.assert_called_once_with(
+            owner='owner',
+            repo='repo',
+            pr_number=42,
+            event='COMMENT',
+            body='please look',
+            commit_id='headsha',
+        )
+
+    def test_submit_review_returns_false_on_api_error(self):
+        """A failed formal review must be swallowed (return False), never raised,
+        so it cannot break the underlying /review comment."""
+        provider = self._provider()
+        provider.repo_api.create_review.side_effect = Exception('boom')
+
+        assert provider.submit_review('APPROVED') is False
+        provider.logger.error.assert_called_once()
+
+    def test_submit_review_refuses_when_not_a_pr(self):
+        provider = self._provider()
+        provider.enabled_pr = False
+
+        assert provider.submit_review('APPROVED') is False
+        provider.repo_api.create_review.assert_not_called()
+
+    def test_auto_approve_submits_approved_review(self):
+        """Mirrors github_provider.auto_approve: it must actually submit an
+        APPROVED formal review (not the base-class no-op that returns False)."""
+        provider = self._provider()
+
+        assert provider.auto_approve() is True
+
+        _, kwargs = provider.repo_api.create_review.call_args
+        assert kwargs['event'] == 'APPROVED'
+        assert kwargs['pr_number'] == 42
+
+    def test_auto_approve_returns_false_on_error(self):
+        provider = self._provider()
+        provider.repo_api.create_review.side_effect = Exception('nope')
+
+        assert provider.auto_approve() is False
