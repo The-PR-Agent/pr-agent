@@ -16,6 +16,9 @@ MAX_FILES_ALLOWED_FULL = 50
 _GLOBAL_SETTINGS_CACHE: dict = {}
 _GLOBAL_SETTINGS_CACHE_TTL_SECONDS = 15 * 60
 _GLOBAL_SETTINGS_CACHE_MAX_SIZE = 256
+# Only cache reasonably-sized settings blobs; a valid .pr_agent.toml is tiny. This bounds the
+# process-wide cache memory (256 entries x this) regardless of the much larger apply-time size cap.
+_GLOBAL_SETTINGS_CACHE_MAX_VALUE_BYTES = 1024 * 1024
 
 
 def get_cached_global_settings(cache_key, fetch_fn):
@@ -23,7 +26,8 @@ def get_cached_global_settings(cache_key, fetch_fn):
 
     Global settings change rarely, so caching avoids a provider API lookup (and repeated
     403/404 fallbacks) on every webhook event. Empty/"not found" results are cached too, to
-    prevent repeated failed lookups. Pass a falsy cache_key to bypass the cache.
+    prevent repeated failed lookups. Oversized values are returned but not cached (to bound
+    memory). Pass a falsy cache_key to bypass the cache.
     """
     if not cache_key:
         return fetch_fn()
@@ -32,10 +36,12 @@ def get_cached_global_settings(cache_key, fetch_fn):
     if entry is not None and entry[1] > now:
         return entry[0]
     value = fetch_fn()
-    _GLOBAL_SETTINGS_CACHE[cache_key] = (value, now + _GLOBAL_SETTINGS_CACHE_TTL_SECONDS)
-    while len(_GLOBAL_SETTINGS_CACHE) > _GLOBAL_SETTINGS_CACHE_MAX_SIZE:
-        oldest_key = min(_GLOBAL_SETTINGS_CACHE, key=lambda k: _GLOBAL_SETTINGS_CACHE[k][1])
-        _GLOBAL_SETTINGS_CACHE.pop(oldest_key, None)
+    value_size = len(value) if isinstance(value, (bytes, str)) else 0
+    if value_size <= _GLOBAL_SETTINGS_CACHE_MAX_VALUE_BYTES:
+        _GLOBAL_SETTINGS_CACHE[cache_key] = (value, now + _GLOBAL_SETTINGS_CACHE_TTL_SECONDS)
+        while len(_GLOBAL_SETTINGS_CACHE) > _GLOBAL_SETTINGS_CACHE_MAX_SIZE:
+            oldest_key = min(_GLOBAL_SETTINGS_CACHE, key=lambda k: _GLOBAL_SETTINGS_CACHE[k][1])
+            _GLOBAL_SETTINGS_CACHE.pop(oldest_key, None)
     return value
 
 def get_git_ssl_env() -> dict[str, str]:

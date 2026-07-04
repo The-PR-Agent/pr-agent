@@ -464,3 +464,20 @@ class TestBitbucketGlobalSettings:
             provider._get_global_repo_settings()
         # Two HTTP calls total (first fetch), none on the cached second call.
         assert rq.call_count == 2
+
+
+class TestBitbucketLocalSettingsRobustness:
+    def test_get_repo_settings_ignores_error_response_for_local(self):
+        # A non-200/404 response (e.g. 500 error page) must NOT be treated as local TOML content.
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.workspace_slug = "myws"
+        provider.repo_slug = "myrepo"
+        provider.headers = {"Authorization": "Bearer x"}
+        provider.pr = MagicMock(destination_branch="main")
+        resp = MagicMock(status_code=500)
+        resp.text = "<html>internal error</html>"
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request", return_value=resp), \
+             patch("pr_agent.git_providers.bitbucket_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = False
+            result = provider.get_repo_settings()
+        assert result == ""

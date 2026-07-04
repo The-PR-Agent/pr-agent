@@ -246,3 +246,39 @@ def test_handle_configurations_errors_skips_empty_sentinel_entries_in_mixed_list
 
     assert len(provider.comments) == 1
     assert "Only error" in provider.comments[0]
+
+
+def test_get_cached_global_settings_skips_oversized_values(monkeypatch):
+    from pr_agent.git_providers import git_provider as gp
+    gp._GLOBAL_SETTINGS_CACHE.clear()
+    monkeypatch.setattr(gp, "_GLOBAL_SETTINGS_CACHE_MAX_VALUE_BYTES", 4)
+    calls = {"n": 0}
+
+    def fetch():
+        calls["n"] += 1
+        return b"way too big for the cap"
+
+    try:
+        gp.get_cached_global_settings("k", fetch)
+        gp.get_cached_global_settings("k", fetch)  # oversized -> not cached, fetched again
+        assert calls["n"] == 2
+        assert "k" not in gp._GLOBAL_SETTINGS_CACHE
+    finally:
+        gp._GLOBAL_SETTINGS_CACHE.clear()
+
+
+def test_get_cached_global_settings_caches_small_values():
+    from pr_agent.git_providers import git_provider as gp
+    gp._GLOBAL_SETTINGS_CACHE.clear()
+    calls = {"n": 0}
+
+    def fetch():
+        calls["n"] += 1
+        return b"tiny"
+
+    try:
+        gp.get_cached_global_settings("k2", fetch)
+        gp.get_cached_global_settings("k2", fetch)  # cached -> not fetched again
+        assert calls["n"] == 1
+    finally:
+        gp._GLOBAL_SETTINGS_CACHE.clear()

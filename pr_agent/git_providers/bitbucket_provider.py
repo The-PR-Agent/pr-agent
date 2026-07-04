@@ -86,8 +86,11 @@ class BitbucketProvider(GitProvider):
             url = (f"https://api.bitbucket.org/2.0/repositories/{self.workspace_slug}/{self.repo_slug}/src/"
                    f"{self.pr.destination_branch}/.pr_agent.toml")
             response = requests.request("GET", url, headers=self.headers)
-            if response.status_code != 404:  # found
+            if response.status_code == 200:  # found
                 settings_files.append(("local", response.text.encode('utf-8')))
+            elif response.status_code != 404:
+                # Don't treat error bodies (401/403/500/...) as TOML content.
+                get_logger().warning(f"Failed to load local .pr_agent.toml file, status: {response.status_code}")
         except Exception as e:
             get_logger().warning(f"Failed to load local .pr_agent.toml file, error: {e}")
         return settings_files if settings_files else ""
