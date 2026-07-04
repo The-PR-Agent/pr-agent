@@ -11,7 +11,8 @@ from pr_agent.algo.git_patch_processing import decode_if_bytes
 from pr_agent.algo.language_handler import is_valid_file
 from pr_agent.algo.types import EDIT_TYPE
 from pr_agent.algo.utils import (clip_tokens,
-                                 find_line_number_of_relevant_line_in_file)
+                                 find_line_number_of_relevant_line_in_file,
+                                 load_large_diff)
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import (MAX_FILES_ALLOWED_FULL,
                                                  FilePatchInfo, GitProvider,
@@ -96,6 +97,13 @@ class GiteaProvider(GitProvider):
             self.last_commit_id = self.last_commit
             self.base_sha = self.pr.base.sha if self.pr.base.sha else ""
             self.base_ref = self.pr.base.ref if self.pr.base.ref else ""
+            # Gitea's PR object exposes the merge base directly. Prefer it for
+            # reading *base* file content: the base branch may have advanced
+            # (parallel merges) so base.sha no longer reflects the point the PR
+            # actually diverged from. Mirrors github_provider, which reads
+            # original content from compare.merge_base_commit.sha. Falls back to
+            # base_sha when the field is absent (older Gitea).
+            self.merge_base_sha = getattr(self.pr, "merge_base", None) or self.base_sha
         elif "issues" in url:
             self.issue_url = url
             self.__set_repo_and_owner_from_issue()
@@ -578,11 +586,24 @@ class GiteaProvider(GitProvider):
             self.logger.error(f"Error processing commit messages: {str(e)}")
             return ""
 
+    def _get_merge_base_ref(self) -> str:
+        """Ref to read *base* file content from.
+
+        Uses the PR's merge base (``self.merge_base_sha``, from Gitea's
+        ``PullRequest.merge_base``) rather than the raw ``base.sha``: the base
+        branch may have advanced via parallel merges, so ``base.sha`` no longer
+        points at where the PR diverged. This mirrors github_provider reading
+        original content from ``compare.merge_base_commit.sha``. Falls back to
+        ``base_sha`` when the merge base is unknown (older Gitea), so it never
+        regresses.
+        """
+        return getattr(self, "merge_base_sha", "") or self.base_sha
+
     def _get_file_content_from_base(self, filename: str) -> str:
         return self.repo_api.get_file_content(
             owner=self.owner,
             repo=self.repo,
-            commit_sha=self.base_sha,
+            commit_sha=self._get_merge_base_ref(),
             filepath=filename
         )
 
@@ -594,10 +615,79 @@ class GiteaProvider(GitProvider):
             filepath=filename
         )
 
+    def _build_compare_patches(self, base: str, head: str) -> Dict[str, str]:
+        """Return ``{filename: patch}`` from the merge-base-relative compare diff.
+
+        Uses ``GET .../compare/{base}...{head}?output=diff`` (three-dot, so it is
+        relative to the merge base, exactly like github_provider's compare).
+        Parsed with the same hunk-extraction logic as the PR ``.diff`` so the
+        patch shape is identical. Returns ``{}`` when the compare API is
+        unavailable, so the caller falls back to the PR ``.diff`` and never
+        regresses.
+        """
+        try:
+            diff_text = self.repo_api.get_compare_diff(
+                owner=self.owner, repo=self.repo, base=base, head=head
+            )
+        except Exception as e:
+            self.logger.warning(f"Compare diff unavailable ({base}...{head}): {e}; falling back to PR diff")
+            return {}
+        if not diff_text:
+            return {}
+        return self._parse_unified_diff(diff_text)
+
+    @staticmethod
+    def _parse_unified_diff(diff_text: str) -> Dict[str, str]:
+        """Parse a unified diff into ``{filename: patch}`` (hunks only).
+
+        Shared by the PR ``.diff`` path and the compare-diff path. The patch for
+        each file starts at its first ``@@`` hunk header (headers like ``index``/
+        ``---``/``+++`` are dropped), matching the shape the rest of pr-agent
+        expects. Files with no ``@@`` hunk (pure renames, mode changes, binaries)
+        produce no entry here; ``get_diff_files`` synthesizes a patch for those
+        via ``load_large_diff`` so they are never silently dropped.
+        """
+        lines = diff_text.splitlines()
+        current_file = None
+        current_patch = []
+        file_patches: Dict[str, str] = {}
+        for line in lines:
+            if line.startswith('diff --git'):
+                if current_file and current_patch:
+                    file_patches[current_file] = '\n'.join(current_patch)
+                current_patch = []
+                current_file = line.split(' b/')[-1]
+            elif line.startswith('@@') and not current_patch:
+                current_patch = [line]
+            elif current_patch:
+                current_patch.append(line)
+        if current_file and current_patch:
+            file_patches[current_file] = '\n'.join(current_patch)
+        return file_patches
+
     def get_diff_files(self) -> List[FilePatchInfo]:
-        """Get files that were modified in the PR"""
+        """Get files that were modified in the PR.
+
+        The per-file *list* (with status/additions/deletions and, for renames,
+        ``previous_filename``) comes from ``GET .../pulls/{index}/files`` — it
+        already includes renames, mode changes and binary files. Patches come
+        from the merge-base-relative compare diff when available (falling back to
+        the PR ``.diff``); any changed file still missing a patch (pure rename,
+        mode change, binary, or a diff the parser could not attribute) gets a
+        synthesized patch via ``load_large_diff`` so it is never dropped from the
+        review input.
+        """
         if self.diff_files:
             return self.diff_files
+
+        # Prefer the merge-base-relative compare diff for patches; fall back to
+        # the PR .diff already parsed into self.file_diffs. Conservative: if the
+        # compare API returns nothing, self.file_diffs is used unchanged.
+        file_diffs = self.file_diffs
+        if self.base_sha and self.sha:
+            compare_patches = self._build_compare_patches(self.base_sha, self.sha)
+            if compare_patches:
+                file_diffs = compare_patches
 
         invalid_files_names = []
         counter_valid = 0
@@ -613,7 +703,10 @@ class GiteaProvider(GitProvider):
 
             counter_valid += 1
             avoid_load = False
-            patch = self.file_diffs.get(filename,"")
+            patch = file_diffs.get(filename, "")
+            # For renames, the base content lives under the OLD path; ChangedFile
+            # exposes it as previous_filename. Fall back to the new filename.
+            previous_filename = file.get("previous_filename") or filename
             head_file = ""
             base_file = ""
 
@@ -626,20 +719,30 @@ class GiteaProvider(GitProvider):
                 head_file = ""
             else:
                 # Get file content from this pr
-                head_file = self.file_contents.get(filename,"")
+                head_file = self.file_contents.get(filename, "")
 
             if self.incremental.is_incremental and self.unreviewed_files_set:
-                base_file = self._get_file_content_from_latest_commit(filename)
-                self.unreviewed_files_set[filename] = patch
+                base_file = self._get_file_content_from_latest_commit(previous_filename)
             else:
                 if avoid_load:
                     base_file = ""
                 else:
-                    base_file = self._get_file_content_from_base(filename)
+                    base_file = self._get_file_content_from_base(previous_filename)
 
-            num_plus_lines = file.get("additions",0)
-            num_minus_lines = file.get("deletions",0)
-            status = file.get("status","")
+            # Synthesize a patch for any changed file the diff parser could not
+            # attribute (pure rename, mode change, binary, multi-hunk gap). This
+            # mirrors github_provider, which calls load_large_diff whenever
+            # file.patch is empty. Skipped when content was intentionally not
+            # loaded (avoid_load) — there is nothing to diff against.
+            if not patch and not avoid_load and (head_file or base_file):
+                patch = load_large_diff(filename, head_file, base_file, show_warning=False)
+
+            if self.incremental.is_incremental and self.unreviewed_files_set:
+                self.unreviewed_files_set[filename] = patch
+
+            num_plus_lines = file.get("additions", 0)
+            num_minus_lines = file.get("deletions", 0)
+            status = file.get("status", "")
 
             if status == 'added':
                 edit_type = EDIT_TYPE.ADDED
@@ -647,6 +750,8 @@ class GiteaProvider(GitProvider):
                 edit_type = EDIT_TYPE.DELETED
             elif status == 'renamed':
                 edit_type = EDIT_TYPE.RENAMED
+            elif status == 'copied':
+                edit_type = EDIT_TYPE.ADDED
             elif status == 'modified' or status == 'changed':
                 edit_type = EDIT_TYPE.MODIFIED
             else:
@@ -660,7 +765,8 @@ class GiteaProvider(GitProvider):
                 filename=filename,
                 num_minus_lines=num_minus_lines,
                 num_plus_lines=num_plus_lines,
-                edit_type=edit_type
+                edit_type=edit_type,
+                old_filename=None if previous_filename == filename else previous_filename,
             )
             diff_files.append(file_patch_info)
 
@@ -1129,6 +1235,95 @@ class RepoApi(giteapy.RepositoryApi):
         except Exception as e:
             self.logger.error(f"Unexpected error: {str(e)}")
             raise e
+
+    def get_compare(self, owner: str, repo: str, base: str, head: str) -> Dict[str, Any]:
+        """Compare two refs via Gitea's compare API.
+
+        Maps to ``GET /repos/{owner}/{repo}/compare/{base}...{head}`` (three-dot,
+        merge-base relative — see docs.gitea.com repoCompareDiff). The endpoint
+        is a wildcard route (``/compare/*``), so ``base...head`` is embedded in
+        the path rather than passed as a path param.
+
+        Returns Gitea's ``Compare`` object: ``{"total_commits": int, "commits":
+        [Commit, ...]}`` where each commit carries a ``files`` array of
+        ``{"filename", "status"}`` (CommitAffectedFiles). Note that Gitea's
+        compare JSON does NOT return a merge-base sha and does NOT return a
+        merged per-file patch (only per-commit affected files); the merge-base
+        relative *diff text* is fetched separately via ``get_compare_diff``.
+
+        Returns ``{}`` on failure so callers can fall back gracefully.
+        """
+        try:
+            # base...head is merge-base relative (three-dot), matching how
+            # GitHub's compare merge_base_commit is used in github_provider.
+            url = f'/repos/{owner}/{repo}/compare/{base}...{head}'
+
+            response = self.api_client.call_api(
+                url,
+                'GET',
+                path_params={},
+                response_type=None,
+                _return_http_data_only=False,
+                _preload_content=False,
+                auth_settings=['AuthorizationHeaderToken']
+            )
+
+            if hasattr(response, 'data'):
+                raw_data = response.data.read()
+                return json.loads(raw_data.decode('utf-8'))
+            elif isinstance(response, tuple):
+                raw_data = response[0].read()
+                return json.loads(raw_data.decode('utf-8'))
+
+            return {}
+
+        except ApiException as e:
+            self.logger.error(f"Error comparing {base}...{head}: {e}")
+            return {}
+        except Exception as e:
+            self.logger.error(f"Unexpected error: {e}")
+            return {}
+
+    def get_compare_diff(self, owner: str, repo: str, base: str, head: str) -> str:
+        """Get the merge-base-relative unified diff for a ref range.
+
+        Maps to ``GET /repos/{owner}/{repo}/compare/{base}...{head}?output=diff``.
+        Gitea's compare route serves the raw diff/patch when ``output=diff`` is
+        requested (``downloadCompareDiffOrPatch``), computed over ``base...head``
+        (three-dot), i.e. relative to the merge base — the same semantics as the
+        GitHub compare used by github_provider.
+
+        Returns "" on failure so callers can fall back to the PR ``.diff``.
+        """
+        try:
+            url = f'/repos/{owner}/{repo}/compare/{base}...{head}'
+
+            response = self.api_client.call_api(
+                url,
+                'GET',
+                path_params={},
+                query_params=[('output', 'diff')],
+                response_type=None,
+                _return_http_data_only=False,
+                _preload_content=False,
+                auth_settings=['AuthorizationHeaderToken']
+            )
+
+            if hasattr(response, 'data'):
+                raw_data = response.data.read()
+                return raw_data.decode('utf-8', errors='replace')
+            elif isinstance(response, tuple):
+                raw_data = response[0].read()
+                return raw_data.decode('utf-8', errors='replace')
+
+            return ""
+
+        except ApiException as e:
+            self.logger.error(f"Error getting compare diff {base}...{head}: {e}")
+            return ""
+        except Exception as e:
+            self.logger.error(f"Unexpected error: {e}")
+            return ""
 
     def get_pull_request(self, owner: str, repo: str, pr_number: int):
         """Get pull request details including description"""

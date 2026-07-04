@@ -984,3 +984,312 @@ class TestGiteaProviderConfigBranch:
         provider.repo_api.get_file_content.assert_called_once()
         _, kwargs = provider.repo_api.get_file_content.call_args
         assert kwargs['commit_sha'] == 'headsha'
+
+
+class TestGiteaProviderGetDiffFiles:
+    """Tests for the hardened ``get_diff_files`` — the core review input.
+
+    The previous implementation pulled the patch straight from the hand-parsed
+    PR ``.diff`` and dropped the patch for files with no ``@@`` hunk (pure
+    renames, mode changes, binaries), and read base content from the raw
+    ``base.sha`` instead of the merge base. The hardened version:
+      * reads base content from the PR merge base (``merge_base_sha``),
+      * prefers the merge-base-relative compare diff for patches, falling back
+        to the PR ``.diff`` when the compare API is unavailable,
+      * synthesizes a patch via ``load_large_diff`` for any changed file the
+        parser could not attribute, so renames/binaries are never dropped.
+
+    Built via ``__new__`` to bypass __init__'s network calls; only the
+    attributes ``get_diff_files`` touches are wired up.
+    """
+
+    @staticmethod
+    def _provider(git_files, file_diffs=None, file_contents=None,
+                  base_sha='basesha', head_sha='headsha', merge_base_sha='mbsha',
+                  compare_diff=None):
+        from pr_agent.git_providers.gitea_provider import GiteaProvider
+
+        provider = GiteaProvider.__new__(GiteaProvider)
+        provider.logger = MagicMock()
+        provider.owner = 'owner'
+        provider.repo = 'repo'
+        provider.pr_number = 1
+        provider.enabled_pr = True
+        provider.git_files = git_files
+        provider.file_diffs = file_diffs or {}
+        provider.file_contents = file_contents or {}
+        provider.sha = head_sha
+        provider.base_sha = base_sha
+        provider.merge_base_sha = merge_base_sha
+        provider.diff_files = []
+        provider.incremental = __import__(
+            'pr_agent.git_providers.git_provider', fromlist=['IncrementalPR']
+        ).IncrementalPR(False)
+        provider.unreviewed_files_set = {}
+        provider.repo_api = MagicMock()
+        # base content read: return "" unless overridden by the test
+        provider.repo_api.get_file_content.return_value = ""
+        # compare diff: default to none so the PR .diff (file_diffs) is used
+        provider.repo_api.get_compare_diff.return_value = compare_diff or ""
+        return provider
+
+    def _patch_valid_file(self):
+        # is_valid_file consults settings; patch it to accept every .py/.txt path
+        return patch('pr_agent.git_providers.gitea_provider.is_valid_file', return_value=True)
+
+    def test_multi_hunk_patch_is_carried_through(self):
+        from pr_agent.algo.types import EDIT_TYPE
+        git_files = [{'filename': 'a.py', 'status': 'modified', 'additions': 2, 'deletions': 0}]
+        multi_hunk = (
+            '@@ -1,2 +1,3 @@\n a\n+b\n c\n'
+            '@@ -20,2 +21,3 @@\n d\n+e\n f'
+        )
+        provider = self._provider(git_files, file_diffs={'a.py': multi_hunk})
+        with self._patch_valid_file():
+            diff_files = provider.get_diff_files()
+
+        assert len(diff_files) == 1
+        f = diff_files[0]
+        assert f.filename == 'a.py'
+        assert f.patch.count('@@ -') == 2  # both hunks preserved
+        assert f.edit_type == EDIT_TYPE.MODIFIED
+
+    def test_rename_without_hunk_gets_synthesized_patch_and_reads_old_path(self):
+        """A pure rename has no ``@@`` hunk, so the parser produces no patch. The
+        file must NOT be dropped: base content is read from previous_filename and
+        a patch is synthesized via load_large_diff."""
+        from pr_agent.algo.types import EDIT_TYPE
+        git_files = [{
+            'filename': 'new_name.py', 'previous_filename': 'old_name.py',
+            'status': 'renamed', 'additions': 1, 'deletions': 1,
+        }]
+        provider = self._provider(
+            git_files,
+            file_diffs={},  # no patch for the rename
+            file_contents={'new_name.py': 'line1\nline2 changed\n'},
+        )
+        provider.repo_api.get_file_content.return_value = 'line1\nline2\n'  # base (old path)
+
+        with self._patch_valid_file():
+            diff_files = provider.get_diff_files()
+
+        assert len(diff_files) == 1
+        f = diff_files[0]
+        assert f.filename == 'new_name.py'
+        assert f.old_filename == 'old_name.py'
+        assert f.edit_type == EDIT_TYPE.RENAMED
+        # base content must have been read from the OLD path (rename source).
+        _, kwargs = provider.repo_api.get_file_content.call_args
+        assert kwargs['filepath'] == 'old_name.py'
+        # a patch was synthesized (not left empty) since content changed.
+        assert f.patch != ''
+        assert '@@' in f.patch
+
+    def test_binary_file_is_not_dropped(self):
+        """A binary file appears in the files list but has no textual patch; it
+        must still be represented (never silently dropped)."""
+        from pr_agent.algo.types import EDIT_TYPE
+        git_files = [{'filename': 'logo.png', 'status': 'modified', 'additions': 0, 'deletions': 0}]
+        provider = self._provider(
+            git_files,
+            file_diffs={},  # binary -> no hunk
+            file_contents={'logo.png': ''},  # binary content decoded to ""
+        )
+        with self._patch_valid_file():
+            diff_files = provider.get_diff_files()
+
+        # The binary file is still present in the diff-files list.
+        assert [f.filename for f in diff_files] == ['logo.png']
+        assert diff_files[0].edit_type == EDIT_TYPE.MODIFIED
+
+    def test_added_and_deleted_files_get_correct_edit_types(self):
+        from pr_agent.algo.types import EDIT_TYPE
+        git_files = [
+            {'filename': 'new.py', 'status': 'added', 'additions': 3, 'deletions': 0},
+            {'filename': 'gone.py', 'status': 'deleted', 'additions': 0, 'deletions': 3},
+        ]
+        provider = self._provider(
+            git_files,
+            file_diffs={
+                'new.py': '@@ -0,0 +1,3 @@\n+a\n+b\n+c',
+                'gone.py': '@@ -1,3 +0,0 @@\n-a\n-b\n-c',
+            },
+            file_contents={'new.py': 'a\nb\nc\n'},
+        )
+        with self._patch_valid_file():
+            diff_files = provider.get_diff_files()
+
+        by_name = {f.filename: f for f in diff_files}
+        assert by_name['new.py'].edit_type == EDIT_TYPE.ADDED
+        assert by_name['gone.py'].edit_type == EDIT_TYPE.DELETED
+
+    def test_base_content_read_from_merge_base(self):
+        """Base content must be read from the merge base, not the raw base.sha."""
+        git_files = [{'filename': 'a.py', 'status': 'modified', 'additions': 1, 'deletions': 0}]
+        provider = self._provider(
+            git_files,
+            file_diffs={'a.py': '@@ -1,1 +1,2 @@\n a\n+b'},
+            file_contents={'a.py': 'a\nb\n'},
+            base_sha='basesha', merge_base_sha='mergebasesha',
+        )
+        with self._patch_valid_file():
+            provider.get_diff_files()
+
+        _, kwargs = provider.repo_api.get_file_content.call_args
+        assert kwargs['commit_sha'] == 'mergebasesha'
+
+    def test_prefers_compare_diff_over_pr_diff(self):
+        """When the compare API returns a diff, it is used as the patch source
+        (merge-base relative) in preference to the PR .diff."""
+        git_files = [{'filename': 'a.py', 'status': 'modified', 'additions': 1, 'deletions': 0}]
+        compare_diff = (
+            'diff --git a/a.py b/a.py\n'
+            'index 111..222 100644\n'
+            '--- a/a.py\n'
+            '+++ b/a.py\n'
+            '@@ -1,1 +1,2 @@\n a\n+from_compare'
+        )
+        provider = self._provider(
+            git_files,
+            file_diffs={'a.py': '@@ -1,1 +1,2 @@\n a\n+from_pr_diff'},
+            file_contents={'a.py': 'a\nfrom_compare\n'},
+            compare_diff=compare_diff,
+        )
+        with self._patch_valid_file():
+            diff_files = provider.get_diff_files()
+
+        assert 'from_compare' in diff_files[0].patch
+        assert 'from_pr_diff' not in diff_files[0].patch
+        provider.repo_api.get_compare_diff.assert_called_once()
+
+    def test_falls_back_to_pr_diff_when_compare_unavailable(self):
+        """If the compare API returns nothing, the PR .diff patch is used —
+        never regressing the pre-existing behavior."""
+        git_files = [{'filename': 'a.py', 'status': 'modified', 'additions': 1, 'deletions': 0}]
+        provider = self._provider(
+            git_files,
+            file_diffs={'a.py': '@@ -1,1 +1,2 @@\n a\n+from_pr_diff'},
+            file_contents={'a.py': 'a\nfrom_pr_diff\n'},
+            compare_diff='',  # compare unavailable
+        )
+        with self._patch_valid_file():
+            diff_files = provider.get_diff_files()
+
+        assert 'from_pr_diff' in diff_files[0].patch
+
+    def test_invalid_files_are_filtered(self):
+        git_files = [
+            {'filename': 'a.py', 'status': 'modified', 'additions': 1, 'deletions': 0},
+            {'filename': 'skip.bin', 'status': 'modified', 'additions': 1, 'deletions': 0},
+        ]
+        provider = self._provider(git_files, file_diffs={'a.py': '@@ -1 +1,2 @@\n a\n+b'})
+
+        def only_py(name):
+            return name.endswith('.py')
+
+        with patch('pr_agent.git_providers.gitea_provider.is_valid_file', side_effect=only_py):
+            diff_files = provider.get_diff_files()
+
+        assert [f.filename for f in diff_files] == ['a.py']
+
+
+class TestRepoApiCompare:
+    """Tests for the compare HTTP calls used to build merge-base-relative diffs.
+
+    ``GET /repos/{owner}/{repo}/compare/{base}...{head}`` (docs.gitea.com
+    repoCompareDiff). JSON form returns ``{total_commits, commits[]}``; the
+    ``?output=diff`` form returns the raw unified diff.
+    """
+
+    @staticmethod
+    def _repo_api():
+        from pr_agent.git_providers.gitea_provider import RepoApi
+
+        client = MagicMock()
+        return RepoApi(client), client
+
+    def test_get_compare_hits_compare_endpoint_three_dot(self):
+        repo_api, client = self._repo_api()
+        mock_resp = MagicMock()
+        mock_resp.data = BytesIO(b'{"total_commits": 2, "commits": []}')
+        client.call_api.return_value = mock_resp
+
+        result = repo_api.get_compare('owner', 'repo', 'base_sha', 'head_sha')
+
+        args, kwargs = client.call_api.call_args
+        # three-dot (merge-base relative), base...head embedded in the wildcard path
+        assert args[0] == '/repos/owner/repo/compare/base_sha...head_sha'
+        assert args[1] == 'GET'
+        assert kwargs.get('auth_settings') == ['AuthorizationHeaderToken']
+        assert result == {'total_commits': 2, 'commits': []}
+
+    def test_get_compare_returns_empty_dict_on_error(self):
+        from giteapy.rest import ApiException
+        repo_api, client = self._repo_api()
+        client.call_api.side_effect = ApiException(status=404)
+
+        assert repo_api.get_compare('owner', 'repo', 'b', 'h') == {}
+
+    def test_get_compare_diff_requests_output_diff(self):
+        repo_api, client = self._repo_api()
+        mock_resp = MagicMock()
+        mock_resp.data = BytesIO(b'diff --git a/x b/x\n@@ -1 +1 @@\n-a\n+b')
+        client.call_api.return_value = mock_resp
+
+        diff = repo_api.get_compare_diff('owner', 'repo', 'base_sha', 'head_sha')
+
+        args, kwargs = client.call_api.call_args
+        assert args[0] == '/repos/owner/repo/compare/base_sha...head_sha'
+        assert ('output', 'diff') in kwargs.get('query_params', [])
+        assert diff.startswith('diff --git')
+
+    def test_get_compare_diff_returns_empty_on_error(self):
+        from giteapy.rest import ApiException
+        repo_api, client = self._repo_api()
+        client.call_api.side_effect = ApiException(status=500)
+
+        assert repo_api.get_compare_diff('owner', 'repo', 'b', 'h') == ''
+
+
+class TestGiteaParseUnifiedDiff:
+    """The shared unified-diff parser used by both the PR .diff and compare-diff
+    paths. Multi-hunk and multi-file behavior must match the original parser."""
+
+    @staticmethod
+    def _parse(text):
+        from pr_agent.git_providers.gitea_provider import GiteaProvider
+        return GiteaProvider._parse_unified_diff(text)
+
+    def test_multi_hunk_kept(self):
+        diff = (
+            'diff --git a/f.py b/f.py\n'
+            'index 1..2 100644\n--- a/f.py\n+++ b/f.py\n'
+            '@@ -1,2 +1,3 @@\n a\n+b\n c\n'
+            '@@ -20,2 +21,3 @@\n d\n+e\n f'
+        )
+        parsed = self._parse(diff)
+        assert set(parsed) == {'f.py'}
+        assert parsed['f.py'].count('@@ -') == 2
+        assert parsed['f.py'].startswith('@@ -1,2 +1,3 @@')
+
+    def test_multiple_files(self):
+        diff = (
+            'diff --git a/f1.py b/f1.py\n@@ -1 +1,2 @@\n a\n+b\n'
+            'diff --git a/f2.py b/f2.py\n@@ -5 +5,2 @@\n c\n+d'
+        )
+        parsed = self._parse(diff)
+        assert set(parsed) == {'f1.py', 'f2.py'}
+
+    def test_rename_with_no_hunk_produces_no_entry(self):
+        """A pure rename has no @@ hunk -> no entry (get_diff_files synthesizes
+        the patch for it separately, so it is not lost)."""
+        diff = (
+            'diff --git a/old.py b/new.py\n'
+            'similarity index 100%\n'
+            'rename from old.py\n'
+            'rename to new.py'
+        )
+        assert self._parse(diff) == {}
+
+    def test_empty_diff(self):
+        assert self._parse('') == {}
