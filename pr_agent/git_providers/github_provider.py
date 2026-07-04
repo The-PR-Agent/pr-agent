@@ -851,6 +851,23 @@ class GithubProvider(GitProvider):
         except Exception:
             return ""
 
+    def get_repo_file_content(self, file_path: str):
+        try:
+            # Prefer the PR target (base) ref so repo-context instruction files match the branch
+            # the PR is merging into. Fall back to the repo default branch when no PR base is available.
+            base = getattr(getattr(self, "pr", None), "base", None)
+            ref = getattr(base, "sha", None) or getattr(base, "ref", None)
+            if ref:
+                contents = self.repo_obj.get_contents(file_path, ref=ref).decoded_content
+            else:
+                contents = self.repo_obj.get_contents(file_path).decoded_content
+            if isinstance(contents, bytes):
+                return contents.decode("utf-8", errors="replace")
+            return contents
+        except Exception as e:
+            get_logger().warning(f"Failed to load repo file: {file_path}, error: {e}")
+            return ""
+
     def get_workspace_name(self):
         return self.repo.split('/')[0]
 

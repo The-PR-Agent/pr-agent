@@ -13,6 +13,7 @@ from pr_agent.algo.pr_processing import (add_ai_metadata_to_diff_files,
                                          get_pr_diff,
                                          retry_with_fallback_models)
 from pr_agent.algo.skills_loader import get_skills_context
+from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (ModelType, PRReviewHeader,
                                  convert_to_markdown_v2, github_action_output,
@@ -94,6 +95,7 @@ class PRReviewer:
             'answer_str': answer_str,
             "extra_instructions": get_settings().pr_reviewer.extra_instructions,
             "skills_context": get_skills_context(),
+            "repo_context": build_repo_context(self.git_provider),
             "commit_messages_str": self.git_provider.get_commit_messages(),
             "custom_labels": "",
             "enable_custom_labels": get_settings().config.enable_custom_labels,

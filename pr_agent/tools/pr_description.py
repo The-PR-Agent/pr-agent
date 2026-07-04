@@ -15,6 +15,7 @@ from pr_agent.algo.pr_processing import (OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
                                          get_pr_diff_multiple_patchs,
                                          retry_with_fallback_models)
 from pr_agent.algo.skills_loader import get_skills_context
+from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (ModelType, PRDescriptionHeader, clip_tokens,
                                  get_max_tokens, get_user_labels, load_yaml,
@@ -69,6 +70,7 @@ class PRDescription:
             "diff": "",  # empty diff for initial calculation
             "extra_instructions": get_settings().pr_description.extra_instructions,
             "skills_context": get_skills_context(),
+            "repo_context": build_repo_context(self.git_provider),
             "commit_messages_str": self.git_provider.get_commit_messages(),
             "enable_custom_labels": get_settings().config.enable_custom_labels,
             "custom_labels_class": "",  # will be filled if necessary in 'set_custom_labels' function
