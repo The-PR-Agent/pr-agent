@@ -1,4 +1,5 @@
 import copy
+import json
 import os
 import re
 from typing import Any, Dict
@@ -36,18 +37,23 @@ async def handle_gitea_webhooks(background_tasks: BackgroundTasks, request: Requ
     return {}
 
 async def get_body(request: Request):
-    """Parse and verify webhook request body"""
+    """Parse and verify webhook request body.
+
+    The raw bytes are read FIRST and the JSON is parsed from those same bytes.
+    HMAC verification must run over the exact bytes the client signed; reading
+    ``request.json()`` before ``request.body()`` risks the body stream already
+    being consumed, so ``request.body()`` could yield empty bytes and the
+    signature check would run over the wrong payload.
+    """
     try:
-        body = await request.json()
+        body_bytes = await request.body()
     except Exception as e:
-        get_logger().error("Error parsing request body", artifact={'error': e})
-        raise HTTPException(status_code=400, detail="Error parsing request body") from e
+        get_logger().error("Error reading request body", artifact={'error': e})
+        raise HTTPException(status_code=400, detail="Error reading request body") from e
 
-
-    # Verify webhook signature
+    # Verify webhook signature over the exact raw bytes that were received.
     webhook_secret = getattr(get_settings().gitea, 'webhook_secret', None)
     if webhook_secret:
-        body_bytes = await request.body()
         signature_header = request.headers.get('x-gitea-signature', None)
         if not signature_header:
             get_logger().error("Missing signature header")
@@ -59,13 +65,40 @@ async def get_body(request: Request):
             get_logger().error(f"Invalid signature: {ex}")
             raise HTTPException(status_code=401, detail="Invalid signature")
 
+    try:
+        body = json.loads(body_bytes)
+    except Exception as e:
+        get_logger().error("Error parsing request body", artifact={'error': e})
+        raise HTTPException(status_code=400, detail="Error parsing request body") from e
+
     return body
+
+def get_bot_user() -> str:
+    """The login of the account whose token the agent runs as.
+
+    Used to filter out the agent's own comments so it never triggers on
+    itself. Configurable via ``gitea.bot_user``; defaults to "pr-agent".
+    """
+    return str(get_settings().get("GITEA.BOT_USER", "pr-agent") or "pr-agent")
+
+
+def is_self_comment(body: Dict[str, Any]) -> bool:
+    """True if the comment/event was raised by the agent's own bot account."""
+    sender = str((body.get("sender") or {}).get("login", ""))
+    return bool(sender) and sender.lower() == get_bot_user().lower()
+
 
 async def handle_request(body: Dict[str, Any], event: str):
     """Process Gitea webhook events"""
     action = body.get("action")
     if not action:
         get_logger().debug("No action found in request body")
+        return {}
+
+    # Never act on an event the agent itself raised (e.g. its own review-submitted
+    # echo or its own comment), which would otherwise self-trigger an endless loop.
+    if is_self_comment(body):
+        get_logger().debug("Request ignored: event raised by the bot user itself")
         return {}
 
     agent = PRAgent()
@@ -77,6 +110,8 @@ async def handle_request(body: Dict[str, Any], event: str):
             return {}
         if action in ["opened", "reopened", "synchronized"]:
             await handle_pr_event(body, event, action, agent)
+        elif action == "review_requested":
+            await handle_review_requested_event(body, event, action, agent)
     elif event == "issue_comment":
         if action == "created":
             await handle_comment_event(body, event, action, agent)
@@ -110,6 +145,44 @@ async def handle_pr_event(body: Dict[str, Any], event: str, action: str, agent: 
         await _perform_commands_gitea("push_commands", agent, body, api_url)
         # for command in commands_on_push:
         #     await agent.handle_request(api_url, command)
+
+def review_requested_for_bot(body: Dict[str, Any]) -> bool:
+    """True when the (re-)requested reviewer is the agent's bot account."""
+    bot = get_bot_user().lower()
+    requested = body.get("requested_reviewer") or {}
+    if isinstance(requested, dict) and str(requested.get("login", "")).lower() == bot:
+        return True
+    # fall back to the PR's current requested-reviewers list
+    for user in (body.get("pull_request") or {}).get("requested_reviewers") or []:
+        if isinstance(user, dict) and str(user.get("login", "")).lower() == bot:
+            return True
+    return False
+
+
+async def handle_review_requested_event(body: Dict[str, Any], event: str, action: str, agent: PRAgent):
+    """Auto-run /review when the bot is (re-)requested as a reviewer.
+
+    Gitea fires ``pull_request`` with ``action=review_requested`` when a
+    reviewer is added (including the "re-request review" button). Upstream
+    never wired this action, so a reviewer request was a no-op. We run the
+    configured ``pr_commands`` (which include /review) so the reviewer slot is
+    filled on demand.
+    """
+    if not review_requested_for_bot(body):
+        get_logger().debug("Review requested, but not for the bot user; ignoring")
+        return
+    if not should_process_pr_logic(body):
+        get_logger().debug("Request ignored: PR logic filtering")
+        return
+
+    pr = body.get("pull_request", {})
+    api_url = pr.get("url")
+    if not api_url:
+        return
+
+    get_logger().info(f"Bot (re-)requested as reviewer, running pr_commands for {api_url=}")
+    await _perform_commands_gitea("pr_commands", agent, body, api_url)
+
 
 async def handle_comment_event(body: Dict[str, Any], event: str, action: str, agent: PRAgent):
     """Handle comment events"""
