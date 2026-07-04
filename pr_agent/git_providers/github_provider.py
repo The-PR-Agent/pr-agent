@@ -192,6 +192,7 @@ class GithubProvider(GitProvider):
         for index in range(len(self.comments) - 1, -1, -1):
             if any(self.comments[index].body.startswith(prefix) for prefix in prefixes):
                 return self.comments[index]
+        return None
 
     def get_files(self):
         if self.incremental.is_incremental and self.unreviewed_files_map:
