@@ -290,7 +290,9 @@ class TestGiteaProvider:
             filepath="AGENTS.md"
         )
 
-    def test_get_repo_file_content_falls_back_to_head_sha_when_base_missing(self):
+    def test_get_repo_file_content_never_reads_from_pr_head_when_base_missing(self):
+        # Security: when no target/base ref is available, the provider must NOT fall back
+        # to the PR head (self.sha) — otherwise a PR could supply its own instruction files.
         provider = GiteaProvider.__new__(GiteaProvider)
         provider.owner = "owner"
         provider.repo = "repo"
@@ -303,13 +305,8 @@ class TestGiteaProvider:
 
         content = provider.get_repo_file_content("AGENTS.md")
 
-        assert content == "repo context"
-        provider.repo_api.get_file_content.assert_called_once_with(
-            owner="owner",
-            repo="repo",
-            commit_sha="head-sha",
-            filepath="AGENTS.md"
-        )
+        assert content == ""
+        provider.repo_api.get_file_content.assert_not_called()
 
 
 class TestGiteaProviderAddFileDiff:

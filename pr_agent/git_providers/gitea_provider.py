@@ -748,20 +748,21 @@ class GiteaProvider(GitProvider):
         return clone_url
 
     def get_repo_file_content(self, file_path: str) -> str:
-        """Get content of a file from the repository target branch.
+        """Get content of a file from the PR target (base) branch.
 
         This method implements the interface required by PR #2387 repo_context feature.
-        It retrieves file content from the PR target when available, falling back to
-        the PR head commit for non-PR contexts.
+        It reads only from the PR target ref (base sha/ref) and never from the PR head,
+        so a PR cannot supply its own instruction files to influence its own review.
         """
         try:
             if not self.owner or not self.repo:
                 self.logger.warning("Cannot get repo file content: owner or repo not set")
                 return ""
 
-            ref = self.base_sha or self.base_ref or self.sha
+            # Only trust the PR target (base) ref — never fall back to the PR head (self.sha).
+            ref = self.base_sha or self.base_ref
             if not ref:
-                self.logger.warning("Cannot get repo file content: ref not set")
+                self.logger.warning("Cannot get repo file content: no target/base ref available")
                 return ""
 
             content = self.repo_api.get_file_content(
