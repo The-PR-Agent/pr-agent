@@ -181,6 +181,18 @@ def test_handle_configurations_errors_publishes_each_error():
     assert "num_max_findings" not in provider.comments[1]
 
 
+def test_handle_configurations_errors_tolerates_non_utf8_settings():
+    # Non-UTF-8 settings bytes must not raise (UnicodeDecodeError) and abort posting the error.
+    provider = FakePlainProvider()
+
+    handle_configurations_errors([
+        {"settings": b"\xff\xfe[config]\nmodel =", "error": "bad config", "category": "local"},
+    ], provider)
+
+    assert len(provider.comments) == 1
+    assert "bad config" in provider.comments[0]
+
+
 def test_handle_configurations_errors_uses_unique_name_per_scope():
     # In GitHub check-run mode the persistent-comment `name` keys the check run, so multiple
     # settings errors (global + local) must use distinct names or later ones overwrite earlier ones.

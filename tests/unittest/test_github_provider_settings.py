@@ -47,6 +47,40 @@ def _provider(local_settings=None, global_settings=None):
     return provider
 
 
+def test_get_global_repo_settings_repo_less_provider_does_not_crash():
+    # A provider built via __new__ (no repo/github_client) must not raise from _get_global_repo_settings.
+    provider = GithubProvider.__new__(GithubProvider)
+    settings = get_settings()
+    original = settings.config.use_global_settings_file
+    settings.config.use_global_settings_file = True
+    try:
+        assert provider._get_global_repo_settings() == ""
+    finally:
+        settings.config.use_global_settings_file = original
+
+
+def test_get_repo_settings_missing_local_file_logged_quietly(monkeypatch):
+    # A missing local .pr_agent.toml (404) is expected for most repos; it must be logged at debug,
+    # not warning.
+    from unittest.mock import patch
+
+    provider = _provider()  # no local .pr_agent.toml -> get_contents raises GithubException(404)
+    settings = get_settings()
+    original = settings.config.use_global_settings_file
+    settings.config.use_global_settings_file = False  # isolate the local-load path
+    monkeypatch.delenv("PR_AGENT_CONFIG_BRANCH", raising=False)
+    settings.set("CONFIG.CONFIG_BRANCH", "")  # ensure the default-branch load path runs
+    try:
+        with patch("pr_agent.git_providers.github_provider.get_logger") as mock_get_logger:
+            logger = mock_get_logger.return_value
+            result = provider.get_repo_settings()
+
+        assert result == ""
+        logger.warning.assert_not_called()
+    finally:
+        settings.config.use_global_settings_file = original
+
+
 def test_get_global_repo_settings_missing_repo_logged_quietly():
     # A missing/inaccessible <owner>/pr-agent-settings repo is an expected fallback, so it must be
     # logged quietly (debug), not as a warning that would flood logs on every webhook event.

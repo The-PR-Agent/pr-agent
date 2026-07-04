@@ -862,6 +862,13 @@ class GithubProvider(GitProvider):
             if config_branch and not settings_files:
                 return contents
             settings_files.append(("local", contents))
+        except GithubException as e:
+            # A missing local .pr_agent.toml (404) is expected for most repos; log it quietly to
+            # avoid warning noise, and surface only unexpected errors as warnings.
+            if e.status == 404:
+                get_logger().debug("No local .pr_agent.toml found; using existing settings")
+            else:
+                get_logger().warning(f"Failed to load .pr_agent.toml file, error: {e}")
         except Exception as e:
             get_logger().warning(f"Failed to load .pr_agent.toml file, error: {e}")
 
@@ -869,6 +876,11 @@ class GithubProvider(GitProvider):
 
     def _get_global_repo_settings(self):
         if not get_settings().config.use_global_settings_file:
+            return ""
+
+        # Be robust to providers built without full __init__ (e.g. __new__ in tests/helpers):
+        # without a repo/client there is no org to resolve, so skip global settings quietly.
+        if not getattr(self, "repo", None) or getattr(self, "github_client", None) is None:
             return ""
 
         try:

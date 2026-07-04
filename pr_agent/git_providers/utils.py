@@ -404,7 +404,8 @@ def handle_configurations_errors(config_errors, git_provider):
             if err:
                 settings_content = err['settings']
                 configuration_file_content = (
-                    settings_content.decode() if isinstance(settings_content, bytes) else settings_content
+                    settings_content.decode("utf-8", errors="replace")
+                    if isinstance(settings_content, bytes) else settings_content
                 )
                 err_message = err['error']
                 config_type = err['category']
