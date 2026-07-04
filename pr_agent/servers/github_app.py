@@ -74,8 +74,11 @@ async def get_body(request):
     return body
 
 
-_duplicate_push_triggers = DefaultDictWithTimeout(ttl=get_settings().github_app.push_trigger_pending_tasks_ttl)
-_pending_task_duplicate_push_conditions = DefaultDictWithTimeout(asyncio.locks.Condition, ttl=get_settings().github_app.push_trigger_pending_tasks_ttl)
+# No TTL eviction: these caches are bounded by the deterministic cleanup in
+# handle_push_trigger_for_new_commits (entries are removed once no task remains).
+# TTL-based eviction could otherwise delete state for a still-in-flight task.
+_duplicate_push_triggers = DefaultDictWithTimeout(ttl=None)
+_pending_task_duplicate_push_conditions = DefaultDictWithTimeout(asyncio.locks.Condition, ttl=None)
 
 async def handle_comments_on_pr(body: Dict[str, Any],
                                 event: str,
@@ -172,22 +175,24 @@ async def handle_push_trigger_for_new_commits(body: Dict[str, Any],
     # We let the second event wait instead of discarding it because while the first event was being processed,
     # more commits may have been pushed that led to the subsequent events,
     # so we keep just one waiting as a delegate to trigger the processing for the new commits when done waiting.
-    current_active_tasks = _duplicate_push_triggers.setdefault(api_url, 0)
-    max_active_tasks = 2 if get_settings().github_app.push_trigger_pending_tasks_backlog else 1
-    if current_active_tasks < max_active_tasks:
+    # Admission and cleanup mutate the counter and condition for this api_url, so
+    # both run under the same per-PR condition lock to keep their lifecycle
+    # consistent across concurrent tasks.
+    async with _pending_task_duplicate_push_conditions[api_url]:
+        current_active_tasks = _duplicate_push_triggers.setdefault(api_url, 0)
+        max_active_tasks = 2 if get_settings().github_app.push_trigger_pending_tasks_backlog else 1
+        if current_active_tasks >= max_active_tasks:
+            get_logger().info(
+                f"Skipping push trigger for {api_url=} because another event already triggered the same processing"
+            )
+            return {}
         # first task can enter, and second tasks too if backlog is enabled
         get_logger().info(
             f"Continue processing push trigger for {api_url=} because there are {current_active_tasks} active tasks"
         )
         _duplicate_push_triggers[api_url] += 1
-    else:
-        get_logger().info(
-            f"Skipping push trigger for {api_url=} because another event already triggered the same processing"
-        )
-        return {}
-    async with _pending_task_duplicate_push_conditions[api_url]:
         if current_active_tasks == 1:
-            # second task waits
+            # second task waits for the in-progress task to finish
             get_logger().info(
                 f"Waiting to process push trigger for {api_url=} because the first task is still in progress"
             )
@@ -201,25 +206,15 @@ async def handle_push_trigger_for_new_commits(body: Dict[str, Any],
 
     finally:
         # Release the next waiting task, then remove the shared per-PR state once
-        # no task remains. The decrement, the "is anyone left?" decision, and the
-        # removal all run under the same condition lock so a newly admitted task
-        # cannot interleave between the decision and the removal.
-        condition = _pending_task_duplicate_push_conditions[api_url]
-        async with condition:
-            condition.notify(1)
-            try:
-                _duplicate_push_triggers[api_url] -= 1
-                no_tasks_left = _duplicate_push_triggers[api_url] <= 0
-            except KeyError:
-                # The counter was already evicted (e.g. by the TTL sweep while
-                # this task was processing). Leave any stray condition entry for
-                # the TTL sweep rather than removing state a concurrent task may
-                # still rely on.
-                get_logger().debug(f"Push trigger counter already removed for {api_url=}")
-                no_tasks_left = False
-            if no_tasks_left:
-                # pop() (not del) tolerates an already-missing key and keeps
-                # DefaultDictWithTimeout's internal key-time map in sync.
+        # no task remains. The decrement, the "is anyone left?" check, and the
+        # removal run under the same condition lock that guards admission, so a
+        # newly admitted task cannot interleave between the decision and removal.
+        async with _pending_task_duplicate_push_conditions[api_url]:
+            _pending_task_duplicate_push_conditions[api_url].notify(1)
+            _duplicate_push_triggers[api_url] -= 1
+            if _duplicate_push_triggers[api_url] <= 0:
+                # pop() (not del) keeps DefaultDictWithTimeout's internal
+                # key-time map in sync and tolerates an already-missing key.
                 _duplicate_push_triggers.pop(api_url, None)
                 _pending_task_duplicate_push_conditions.pop(api_url, None)
 

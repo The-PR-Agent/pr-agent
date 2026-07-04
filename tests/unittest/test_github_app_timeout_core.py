@@ -560,30 +560,51 @@ class TestPushTriggerDedupe:
         assert github_app._duplicate_push_triggers[api_url] == 1
         assert api_url in github_app._pending_task_duplicate_push_conditions
 
-    def test_cleanup_tolerates_ttl_evicted_counter(
+    def test_backlog_second_task_waits_then_both_clean_up(
         self, push_trigger_env, monkeypatch
     ):
-        # If TTL eviction removes the counter entry while the task is processing,
-        # the finally block's `-= 1` hits a missing key. The guarded KeyError must
-        # be swallowed so webhook handling does not blow up.
-        body = _push_body()
-        api_url = body["pull_request"]["url"]
+        # With backlog enabled, a second concurrent push for the same PR waits for
+        # the first task to finish, then runs. Admission and cleanup share the
+        # per-PR condition lock, so the shared entries are removed only once both
+        # tasks have drained.
+        github_app.get_settings().github_app.push_trigger_pending_tasks_backlog = True
+        api_url = _push_body()["pull_request"]["url"]
 
-        async def perform_then_evict(*args, **kwargs):
-            push_trigger_env["count"] += 1
-            # Simulate TTL eviction of the counter entry mid-processing.
-            github_app._duplicate_push_triggers.pop(api_url, None)
+        order = []
+        calls = {"n": 0}
 
-        monkeypatch.setattr(
-            github_app, "_perform_auto_commands_github", perform_then_evict
-        )
+        async def perform(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                # Hold the first task until the second has been admitted and is
+                # waiting (counter == 2) so the wait/notify path is exercised.
+                for _ in range(1000):
+                    if github_app._duplicate_push_triggers.get(api_url, 0) >= 2:
+                        break
+                    await asyncio.sleep(0)
+                order.append("first")
+            else:
+                order.append("second")
 
-        # Must complete without raising despite the missing-key decrement.
-        asyncio.run(
-            github_app.handle_push_trigger_for_new_commits(
-                body, "push", "alice", "1", "synchronize", {}, agent=None
+        monkeypatch.setattr(github_app, "_perform_auto_commands_github", perform)
+
+        async def scenario():
+            await asyncio.wait_for(
+                asyncio.gather(
+                    github_app.handle_push_trigger_for_new_commits(
+                        _push_body(), "push", "alice", "1", "synchronize", {}, agent=None
+                    ),
+                    github_app.handle_push_trigger_for_new_commits(
+                        _push_body(), "push", "bob", "2", "synchronize", {}, agent=None
+                    ),
+                ),
+                timeout=5,
             )
-        )
 
-        assert push_trigger_env["count"] == 1
+        asyncio.run(scenario())
+
+        assert calls["n"] == 2
+        assert order == ["first", "second"]
+        # Both tasks drained -> shared state fully cleaned up.
         assert api_url not in github_app._duplicate_push_triggers
+        assert api_url not in github_app._pending_task_duplicate_push_conditions

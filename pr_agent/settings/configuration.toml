@@ -257,7 +257,6 @@ push_trigger_ignore_bot_commits = true
 push_trigger_ignore_merge_commits = true
 push_trigger_wait_for_initial_review = true
 push_trigger_pending_tasks_backlog = true
-push_trigger_pending_tasks_ttl = 300
 push_commands = [
     "/describe",
     "/review",
