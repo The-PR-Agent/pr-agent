@@ -29,13 +29,24 @@ def get_cached_global_settings(cache_key, fetch_fn):
     prevent repeated failed lookups. Oversized values are returned but not cached (to bound
     memory). Pass a falsy cache_key to bypass the cache.
     """
+    def _fetch_safely():
+        # A transient/unexpected fetch failure must NOT be cached, so it is retried instead of
+        # disabling global settings for the whole TTL. fetch_fn returns "" for expected "not found".
+        try:
+            return fetch_fn(), True
+        except Exception as e:
+            get_logger().warning(f"Failed to load global settings, error: {e}")
+            return "", False
+
     if not cache_key:
-        return fetch_fn()
+        return _fetch_safely()[0]
     now = time.monotonic()
     entry = _GLOBAL_SETTINGS_CACHE.get(cache_key)
     if entry is not None and entry[1] > now:
         return entry[0]
-    value = fetch_fn()
+    value, cacheable = _fetch_safely()
+    if not cacheable:
+        return value
     value_size = len(value) if isinstance(value, (bytes, str)) else 0
     if value_size <= _GLOBAL_SETTINGS_CACHE_MAX_VALUE_BYTES:
         _GLOBAL_SETTINGS_CACHE[cache_key] = (value, now + _GLOBAL_SETTINGS_CACHE_TTL_SECONDS)

@@ -106,28 +106,22 @@ class BitbucketProvider(GitProvider):
             f"bitbucket:{workspace}", lambda: self._fetch_global_repo_settings(workspace))
 
     def _fetch_global_repo_settings(self, workspace):
-        try:
-            repo_url = f"https://api.bitbucket.org/2.0/repositories/{workspace}/pr-agent-settings"
-            repo_resp = requests.request("GET", repo_url, headers=self.headers)
-            if repo_resp.status_code == 404:  # no global settings repo -> expected fallback
-                return ""
-            if repo_resp.status_code >= 400:
-                get_logger().warning(f"Failed to load global settings repo, status: {repo_resp.status_code}")
-                return ""
-            main_branch = (repo_resp.json().get('mainbranch') or {}).get('name')
-            if not main_branch:
-                return ""
-            file_resp = requests.request(
-                "GET", f"{repo_url}/src/{main_branch}/.pr_agent.toml", headers=self.headers)
-            if file_resp.status_code == 404:  # repo exists but no .pr_agent.toml
-                return ""
-            if file_resp.status_code >= 400:
-                get_logger().warning(f"Failed to load global .pr_agent.toml, status: {file_resp.status_code}")
-                return ""
-            return file_resp.text.encode('utf-8')
-        except Exception as e:
-            get_logger().warning(f"Failed to load global .pr_agent.toml file, error: {e}")
+        # A missing settings repo/file (404) is an expected fallback -> return "" (cached). Other
+        # errors raise (via raise_for_status) so the caller does not cache a transient failure.
+        repo_url = f"https://api.bitbucket.org/2.0/repositories/{workspace}/pr-agent-settings"
+        repo_resp = requests.request("GET", repo_url, headers=self.headers)
+        if repo_resp.status_code == 404:  # no global settings repo
             return ""
+        repo_resp.raise_for_status()
+        main_branch = (repo_resp.json().get('mainbranch') or {}).get('name')
+        if not main_branch:
+            return ""
+        file_resp = requests.request(
+            "GET", f"{repo_url}/src/{main_branch}/.pr_agent.toml", headers=self.headers)
+        if file_resp.status_code == 404:  # repo exists but no .pr_agent.toml
+            return ""
+        file_resp.raise_for_status()
+        return file_resp.text.encode('utf-8')
 
     def get_repo_file_content(self, file_path: str, from_default_branch: bool = False):
         # Read from the PR destination (target) branch, matching the other providers,

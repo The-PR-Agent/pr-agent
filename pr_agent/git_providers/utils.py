@@ -294,12 +294,12 @@ def apply_repo_settings(pr_url):
                 for category, settings_content in _normalize_repo_settings(repo_settings):
                     fd, repo_settings_file = tempfile.mkstemp(suffix='.toml')
                     repo_settings_files.append(repo_settings_file)
-                    try:
-                        if isinstance(settings_content, str):
-                            settings_content = settings_content.encode("utf-8")
-                        os.write(fd, settings_content)
-                    finally:
-                        os.close(fd)
+                    if isinstance(settings_content, str):
+                        settings_content = settings_content.encode("utf-8")
+                    # os.fdopen takes ownership of fd (closes it) and write() writes all bytes,
+                    # avoiding a silently-truncated file from a partial os.write.
+                    with os.fdopen(fd, "wb") as settings_file_handle:
+                        settings_file_handle.write(settings_content)
                     try:
                         _apply_repo_settings_file(repo_settings_file)
                     except Exception as e:

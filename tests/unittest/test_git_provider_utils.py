@@ -282,3 +282,21 @@ def test_get_cached_global_settings_caches_small_values():
         assert calls["n"] == 1
     finally:
         gp._GLOBAL_SETTINGS_CACHE.clear()
+
+
+def test_get_cached_global_settings_does_not_cache_fetch_errors():
+    from pr_agent.git_providers import git_provider as gp
+    gp._GLOBAL_SETTINGS_CACHE.clear()
+    calls = {"n": 0}
+
+    def fetch():
+        calls["n"] += 1
+        raise RuntimeError("transient 500")
+
+    try:
+        assert gp.get_cached_global_settings("k3", fetch) == ""  # error -> "" (not cached)
+        assert gp.get_cached_global_settings("k3", fetch) == ""  # retried, not served from cache
+        assert calls["n"] == 2
+        assert "k3" not in gp._GLOBAL_SETTINGS_CACHE
+    finally:
+        gp._GLOBAL_SETTINGS_CACHE.clear()

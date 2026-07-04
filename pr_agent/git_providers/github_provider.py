@@ -852,10 +852,13 @@ class GithubProvider(GitProvider):
                     return settings_files
                 return contents
             except GithubException as e:
-                get_logger().warning(
-                    f"Failed to load .pr_agent.toml from branch '{config_branch}', falling back to default branch",
-                    artifact={"status": e.status, "error": str(e)},
-                )
+                # Only a missing branch/file (404) is an expected reason to fall back to the default
+                # branch. Other errors (e.g. 403/5xx) are surfaced rather than silently masked by a
+                # fallback that could apply unintended settings.
+                if e.status != 404:
+                    raise
+                get_logger().debug(
+                    f"No .pr_agent.toml on branch '{config_branch}', falling back to default branch")
         try:
             # more logical to take 'pr_agent.toml' from the default branch
             contents = self.repo_obj.get_contents(".pr_agent.toml").decoded_content
@@ -896,18 +899,15 @@ class GithubProvider(GitProvider):
             global_settings_repo = self.github_client.get_repo(f"{repo_owner}/pr-agent-settings")
             return global_settings_repo.get_contents(".pr_agent.toml").decoded_content
         except GithubException as e:
-            # A missing pr-agent-settings repo/file (404) or lack of access (403) is an expected
-            # fallback (skip global settings, continue with local), so log it quietly to avoid noise.
+            # A missing pr-agent-settings repo/file (404) or lack of access (403) is an expected,
+            # stable fallback (skip global settings, continue with local) — return "" so it's cached.
             if e.status in (403, 404):
                 get_logger().debug(
                     "No accessible organization global .pr_agent.toml; using local settings only",
                     artifact={"status": e.status})
                 return ""
-            get_logger().warning(f"Failed to load global .pr_agent.toml file, error: {e}")
-            return ""
-        except Exception as e:
-            get_logger().warning(f"Failed to load global .pr_agent.toml file, error: {e}")
-            return ""
+            # Transient/unexpected errors propagate so the caller does not cache the failure.
+            raise
 
     def get_repo_file_content(self, file_path: str, from_default_branch: bool = False):
         try:

@@ -1,3 +1,5 @@
+from unittest.mock import MagicMock
+
 import pytest
 from github import GithubException
 
@@ -163,5 +165,22 @@ def test_get_repo_settings_skips_global_settings_when_disabled():
         repo_settings = provider.get_repo_settings()
 
         assert repo_settings == [("local", b"[pr_reviewer]\nextra_instructions = \"local\"\n")]
+    finally:
+        settings.config.use_global_settings_file = original
+
+
+def test_get_repo_settings_config_branch_non_404_error_propagates(monkeypatch):
+    # A non-404 error loading the config branch must NOT be masked by a silent default-branch fallback.
+    provider = _provider()  # no global settings repo -> _get_global returns "" quietly
+    provider.repo_obj = MagicMock()
+    provider.repo_obj.get_contents.side_effect = GithubException(403, {"message": "Forbidden"}, {})
+    monkeypatch.setenv("PR_AGENT_CONFIG_BRANCH", "release")
+    settings = get_settings()
+    original = settings.config.use_global_settings_file
+    settings.config.use_global_settings_file = False
+    try:
+        import pytest as _pytest
+        with _pytest.raises(GithubException):
+            provider.get_repo_settings()
     finally:
         settings.config.use_global_settings_file = original

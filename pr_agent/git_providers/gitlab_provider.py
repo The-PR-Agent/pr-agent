@@ -832,11 +832,9 @@ class GitLabProvider(GitProvider):
             project = self.gl.projects.get(f"{group}/pr-agent-settings")
             return project.files.get(file_path='.pr_agent.toml', ref=project.default_branch).decode()
         except GitlabGetError:
-            # missing pr-agent-settings project/file is an expected fallback
+            # A missing pr-agent-settings project/file is an expected fallback -> return "" (cached).
             return ""
-        except Exception as e:
-            get_logger().warning(f"Failed to load global .pr_agent.toml file, error: {e}")
-            return ""
+        # Transient/unexpected errors propagate so the caller does not cache the failure.
 
     def get_repo_file_content(self, file_path: str, from_default_branch: bool = False):
         try:
