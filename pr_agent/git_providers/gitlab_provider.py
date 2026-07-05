@@ -201,8 +201,8 @@ class GitLabProvider(GitProvider):
                     return self.gl.projects.get(p.id)
             if matches:
                 get_logger().warning(f"[submodule] no exact match for {proj_path} (skip)")
-        except Exception:
-            pass
+        except Exception as e:
+            get_logger().debug(f"[submodule] project search fallback failed for {proj_path}: {e}")
 
         return None
 
@@ -913,7 +913,8 @@ class GitLabProvider(GitProvider):
         try:
             commit_messages_list = [commit['message'] for commit in self.mr.commits()._list]
             commit_messages_str = "\n".join([f"{i + 1}. {message}" for i, message in enumerate(commit_messages_list)])
-        except Exception:
+        except Exception as e:
+            get_logger().warning(f"Failed to retrieve commit messages for MR: {e}")
             commit_messages_str = ""
         if max_tokens:
             commit_messages_str = clip_tokens(commit_messages_str, max_tokens)

@@ -209,8 +209,8 @@ def check_if_hunk_lines_matches_to_file(i, original_lines, patch_lines, start1):
                 is_valid_hunk = False
                 get_logger().info(
                     f"Invalid hunk in PR, line {start1} in hunk header doesn't match the original file content")
-    except:
-        pass
+    except Exception as e:
+        get_logger().warning(f"Failed to check hunk lines against file content (line {start1}): {e}")
     return is_valid_hunk
 
 

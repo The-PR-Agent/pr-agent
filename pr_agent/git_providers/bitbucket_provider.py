@@ -567,7 +567,8 @@ class BitbucketProvider(GitProvider):
                 return ""
             contents = response.text
             return contents
-        except Exception:
+        except Exception as e:
+            get_logger().debug(f"Failed to get file content for {file_path} on branch {branch}: {e}")
             return ""
 
     def create_or_update_pr_file(self, file_path: str, branch: str, contents="", message="") -> None:
@@ -595,7 +596,8 @@ class BitbucketProvider(GitProvider):
                 return ""
             contents = response.text
             return contents
-        except Exception:
+        except Exception as e:
+            get_logger().debug(f"Failed to get PR file content from {remote_link}: {e}")
             return ""
 
     def get_commit_messages(self):

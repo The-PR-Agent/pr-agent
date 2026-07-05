@@ -578,8 +578,8 @@ class GithubProvider(GitProvider):
         if verified_comments:
             try:
                 self.pr.create_review(commit=self.last_commit_id, comments=verified_comments)
-            except:
-                pass
+            except Exception as e:
+                get_logger().error(f"Failed to publish group of verified inline comments: {e}")
 
         # try to publish one by one the invalid comments as a one-line code comment
         if invalid_comments and get_settings().github.try_fix_invalid_inline_comments:
@@ -609,8 +609,8 @@ class GithubProvider(GitProvider):
         if pending_review_id is not None:
             try:
                 self.pr._requester.requestJsonAndCheck("DELETE", f"{self.pr.url}/reviews/{pending_review_id}")
-            except Exception:
-                pass
+            except Exception as e:
+                get_logger().debug(f"Failed to delete pending review {pending_review_id}: {e}")
         return is_verified, e
 
     def _verify_code_comments(self, comments: list[dict]) -> tuple[list[dict], list[tuple[dict, Exception]]]:
@@ -988,7 +988,8 @@ class GithubProvider(GitProvider):
                 .get_contents(file_path, ref=branch)
                 .decoded_content.decode()
             )
-        except Exception:
+        except Exception as e:
+            get_logger().debug(f"Failed to get file content for {file_path} on branch {branch}: {e}")
             file_content_str = ""
         return file_content_str
 
@@ -1056,7 +1057,8 @@ class GithubProvider(GitProvider):
             commit_list = self.pr.get_commits()
             commit_messages = [commit.commit.message for commit in commit_list]
             commit_messages_str = "\n".join([f"{i + 1}. {message}" for i, message in enumerate(commit_messages)])
-        except Exception:
+        except Exception as e:
+            get_logger().warning(f"Failed to retrieve commit messages for PR: {e}")
             commit_messages_str = ""
         if max_tokens:
             commit_messages_str = clip_tokens(commit_messages_str, max_tokens)
