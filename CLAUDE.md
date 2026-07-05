@@ -42,6 +42,8 @@ Sensitive values (API keys, tokens) come from environment variables or `.secrets
 
 `pr_agent/servers/` hosts the webhook entrypoints (`github_app.py`, `gitlab_webhook.py`, `bitbucket_app.py`, etc.) that translate webhooks into `PRAgent.handle_request(pr_url, command)` calls. The CLI entry point is `pr_agent/cli.py` (registered as the `pr-agent` console script).
 
+`pr_agent/mosaico/` is a separate entrypoint: an A2A 1.0 server (`python -m pr_agent.mosaico.server`) that exposes the tools to other agents, routing a PR URL or pasted unified diff through the token-free `mosaico_diff` provider. See `docs/docs/core-abilities/mosaico.md` and the module docstrings; tests live in `tests/unittest/test_mosaico_*`.
+
 ### Tests
 
 Unit tests in `tests/unittest/` are the right place for helpers in `pr_agent/algo/`, prompt-building logic, and provider adapters; mirror the file naming pattern (`test_<module>.py`). Use `parametrize` where the surrounding files do. The health test (`tests/health_test/main.py`) exercises `/describe`, `/review`, `/improve` against real PRs and is the canary for prompt regressions — update its expected artifacts when prompts change meaningfully.

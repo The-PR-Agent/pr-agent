@@ -39,6 +39,7 @@ nav:
       - Fetching ticket context: 'core-abilities/fetching_ticket_context.md'
       - Interactivity: 'core-abilities/interactivity.md'
       - Local and global metadata: 'core-abilities/metadata.md'
+      - MOSAICO / A2A integration: 'core-abilities/mosaico.md'
       - Self-reflection: 'core-abilities/self_reflection.md'
 #  - Code Fine-tuning Benchmark: 'finetuning_benchmark/index.md'
 
