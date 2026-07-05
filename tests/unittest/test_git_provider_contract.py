@@ -46,7 +46,8 @@ def test_is_supported_returns_bool_for_every_known_capability(name, cls, capabil
 def test_is_supported_warns_on_unknown_capability(name, cls):
     provider = _bare_instance(cls)
     with patch("pr_agent.git_providers.git_provider.get_logger") as mock_logger:
-        provider.is_supported("definitely_not_a_capability")
+        result = provider.is_supported("definitely_not_a_capability")
+        assert result is False
         assert mock_logger.return_value.warning.called
 
 

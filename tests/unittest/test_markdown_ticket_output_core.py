@@ -479,6 +479,14 @@ class TestFormatTodoItem:
         assert "<a href" not in out
         assert out == "src/a.py [5]: x"
 
+    def test_no_git_provider_plain_file_ref(self):
+        out = format_todo_item(
+            {"relevant_file": "src/a.py", "line_number": 5, "content": "x"},
+            None,
+            gfm_supported=True,
+        )
+        assert out == "src/a.py [5]: x"
+
 
 class TestFormatTodoItems:
     def _provider(self):

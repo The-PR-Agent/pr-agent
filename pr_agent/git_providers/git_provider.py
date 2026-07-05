@@ -90,6 +90,7 @@ class GitProvider(ABC):
         if capability not in KNOWN_CAPABILITIES:
             get_logger().warning(f"Unknown git provider capability '{capability}'. "
                                  f"Known capabilities: {sorted(KNOWN_CAPABILITIES)}")
+            return False
         return self._is_supported(capability)
 
     @abstractmethod

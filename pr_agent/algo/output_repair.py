@@ -10,6 +10,13 @@ import yaml
 from pr_agent.log import get_logger
 
 
+def _last_code_suggestion_index(review: str) -> int | None:
+    matches = [m.end() for m in re.finditer(r"\}\s*,", review)]
+    if not matches:
+        return None
+    return matches[-1] - 1
+
+
 def try_fix_json(review, max_iter=10, code_suggestions=False):
     """
     Fix broken or incomplete JSON messages and return the parsed JSON data.
@@ -47,7 +54,10 @@ def try_fix_json(review, max_iter=10, code_suggestions=False):
 
     if (review.rfind("'Code feedback': [") > 0 or review.rfind('"Code feedback": [') > 0) or \
             (review.rfind("'Code suggestions': [") > 0 or review.rfind('"Code suggestions": [') > 0) :
-        last_code_suggestion_ind = [m.end() for m in re.finditer(r"\}\s*,", review)][-1] - 1
+        last_code_suggestion_ind = _last_code_suggestion_index(review)
+        if last_code_suggestion_ind is None:
+            get_logger().error("Unable to decode JSON response from AI")
+            return data
         valid_json = False
         iter_count = 0
 
@@ -58,7 +68,9 @@ def try_fix_json(review, max_iter=10, code_suggestions=False):
                 review = review[:last_code_suggestion_ind].strip() + closing_bracket
             except json.decoder.JSONDecodeError:
                 review = review[:last_code_suggestion_ind]
-                last_code_suggestion_ind = [m.end() for m in re.finditer(r"\}\s*,", review)][-1] - 1
+                last_code_suggestion_ind = _last_code_suggestion_index(review)
+                if last_code_suggestion_ind is None:
+                    break
                 iter_count += 1
 
         if not valid_json:
@@ -86,7 +98,14 @@ def fix_json_escape_char(json_message=None):
         result = json.loads(json_message)
     except Exception as e:
         # Find the offending character index:
-        idx_to_replace = int(str(e).split(' ')[-1].replace(')', ''))
+        char_match = re.search(r"char (\d+)", str(e))
+        if not char_match:
+            get_logger().error(f"Unable to decode JSON response from AI: {e}")
+            return {}
+        idx_to_replace = int(char_match.group(1))
+        if not json_message or idx_to_replace >= len(json_message):
+            get_logger().error(f"Unable to decode JSON response from AI: {e}")
+            return {}
         # Remove the offending character:
         json_message = list(json_message)
         json_message[idx_to_replace] = ' '

@@ -68,6 +68,25 @@ class TestValidateCurrentConfig:
         })
         result = validate_current_config(settings)
         assert any("not-a-real-model-name" in e for e in result["errors"])
+        assert not any("config.fallback_models is not set" in e for e in result["errors"])
+
+    def test_comma_separated_fallback_models_are_validated_individually(self):
+        settings = self._fake_settings({
+            "config.git_provider": "github",
+            "config.model": "gpt-4o",
+            "config.fallback_models": "gpt-4o, gpt-4o-mini",
+        })
+        result = validate_current_config(settings)
+        assert result["errors"] == []
+
+    def test_empty_fallback_models_list_is_allowed(self):
+        settings = self._fake_settings({
+            "config.git_provider": "github",
+            "config.model": "gpt-4o",
+            "config.fallback_models": [],
+        })
+        result = validate_current_config(settings)
+        assert result["errors"] == []
 
     def test_missing_credentials_is_warning_not_error(self):
         settings = self._fake_settings({

@@ -25,7 +25,7 @@ from pr_agent.algo.markdown_render import (  # noqa: F401
     format_todo_item, format_todo_items, is_value_no, parse_code_suggestion,
     process_can_be_split, replace_code_tags, ticket_markdown_logic)
 from pr_agent.algo.output_repair import fix_json_escape_char  # noqa: F401
-from pr_agent.algo.output_repair import load_yaml, try_fix_json, try_fix_yaml
+from pr_agent.algo.output_repair import load_yaml, try_fix_json, try_fix_yaml  # noqa: F401
 from pr_agent.algo.token_handler import TokenEncoder
 from pr_agent.algo.types import (FilePatchInfo, ModelType,  # noqa: F401
                                  PRDescriptionHeader, PRReviewHeader, Range,
@@ -424,8 +424,8 @@ def get_rate_limit_status(github_token) -> dict:
         "Authorization": f"token {github_token}"
     }
 
-    response = requests.get(RATE_LIMIT_URL, headers=HEADERS, timeout=10)
     try:
+        response = requests.get(RATE_LIMIT_URL, headers=HEADERS, timeout=10)
         rate_limit_info = response.json()
         if rate_limit_info.get('message') == 'Rate limiting is not enabled.':  # for github enterprise
             return {'resources': {}}
@@ -675,4 +675,3 @@ def set_file_languages(diff_files) -> List[FilePatchInfo]:
         get_logger().exception(f"Failed to set file languages: {e}")
 
     return diff_files
-

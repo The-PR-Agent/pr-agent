@@ -81,7 +81,7 @@ def _collect_prompt_templates():
     """Yield (section, key, template) for every jinja template in prompt sections."""
     params = []
     for section, value in global_settings.as_dict().items():
-        if "PROMPT" not in section or not isinstance(value, dict):
+        if "prompt" not in section.lower() or not isinstance(value, dict):
             continue
         for key, template in value.items():
             if isinstance(template, str) and ("{{" in template or "{%" in template):

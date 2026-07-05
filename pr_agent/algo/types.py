@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional, Tuple, TypedDict
+from typing import Optional, TypedDict
 
 from pydantic import BaseModel
 
@@ -41,7 +41,7 @@ class ModelType(str, Enum):
 
 class TodoItem(TypedDict):
     relevant_file: str
-    line_range: Tuple[int, int]
+    line_number: int
     content: str
 
 
@@ -62,4 +62,3 @@ class ReasoningEffort(str, Enum):
 class PRDescriptionHeader(str, Enum):
     DIAGRAM_WALKTHROUGH = "Diagram Walkthrough"
     FILE_WALKTHROUGH = "File Walkthrough"
-

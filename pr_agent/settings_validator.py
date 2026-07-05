@@ -90,10 +90,13 @@ def validate_current_config(settings) -> dict:
     from pr_agent.algo.utils import get_max_tokens
     for key in ("config.model", "config.fallback_models"):
         value = settings.get(key, None)
-        if not value:
+        if value is None or (key == "config.model" and not value):
             errors.append(f"{key} is not set")
             continue
-        models = value if isinstance(value, list) else [value]
+        if isinstance(value, str):
+            models = [model.strip() for model in value.split(",") if model.strip()]
+        else:
+            models = value if isinstance(value, list) else [value]
         for model in models:
             try:
                 get_max_tokens(model)

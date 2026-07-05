@@ -517,7 +517,7 @@ def format_todo_item(todo_item: TodoItem, git_provider, gfm_supported) -> str:
     relevant_file = todo_item.get('relevant_file', '').strip()
     line_number = todo_item.get('line_number', '')
     content = todo_item.get('content', '')
-    reference_link = git_provider.get_line_link(relevant_file, line_number, line_number)
+    reference_link = git_provider.get_line_link(relevant_file, line_number, line_number) if git_provider else ""
     file_ref = f"{relevant_file} [{line_number}]"
     if reference_link:
         if gfm_supported:
@@ -556,4 +556,3 @@ def format_todo_items(value: list[TodoItem] | TodoItem, git_provider, gfm_suppor
         else:
             markdown_text += f"- {format_todo_item(value, git_provider, gfm_supported)}\n"
     return markdown_text
-
