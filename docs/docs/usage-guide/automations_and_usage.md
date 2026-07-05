@@ -171,6 +171,9 @@ This means that when new code is pushed to the PR, PR-Agent will run the `descri
 
 `GitHub Action` is a different way to trigger PR-Agent tools, and uses a different configuration mechanism than `GitHub App`.<br>
 You can configure settings for `GitHub Action` by adding environment variables under the env section in `.github/workflows/pr_agent.yml` file.
+
+!!! tip "Fork/contribution support"
+    To support PRs from forked repositories, use the `pull_request_target` event instead of `pull_request`. See the [fork contribution guide](../installation/github.md#using-with-pull_request_target-forkcontribution-support) for a complete example and security considerations.
 Specifically, start by setting the following environment variables:
 
 ```yaml
