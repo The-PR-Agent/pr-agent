@@ -401,3 +401,9 @@ pr_commands = [
     "/review",
     "/improve",
 ]
+
+[monitoring]
+# Prometheus metrics for the webhook servers. Requires the optional dependency:
+# pip install pr-agent[monitoring]
+enable_metrics=false # expose request/latency metrics and a scrape endpoint on the webhook servers
+metrics_endpoint="/metrics" # path of the Prometheus scrape endpoint

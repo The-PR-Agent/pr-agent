@@ -10,3 +10,4 @@ ruff==0.15.20
 mypy==2.1.0
 types-PyYAML
 types-requests
+prometheus-client==0.25.0  # exercised by tests/unittest/test_metrics_endpoint.py

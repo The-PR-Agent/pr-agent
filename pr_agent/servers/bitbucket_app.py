@@ -24,6 +24,7 @@ from pr_agent.identity_providers import get_identity_provider
 from pr_agent.identity_providers.identity_provider import Eligibility
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.secret_providers import get_secret_provider
+from pr_agent.servers.metrics import setup_metrics
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
 router = APIRouter()
@@ -347,6 +348,7 @@ def start():
     middleware = [Middleware(RawContextMiddleware)]
     app = FastAPI(middleware=middleware)
     app.include_router(router)
+    setup_metrics(app)
 
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "3000")))
 

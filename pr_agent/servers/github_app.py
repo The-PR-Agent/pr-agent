@@ -20,6 +20,7 @@ from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.identity_providers import get_identity_provider
 from pr_agent.identity_providers.identity_provider import Eligibility
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
+from pr_agent.servers.metrics import setup_metrics
 from pr_agent.servers.utils import DefaultDictWithTimeout, verify_signature
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
@@ -425,6 +426,7 @@ if get_settings().github_app.override_deployment_type:
 middleware = [Middleware(RawContextMiddleware)]
 app = FastAPI(middleware=middleware)
 app.include_router(router)
+setup_metrics(app)
 
 
 def start():

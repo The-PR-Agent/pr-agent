@@ -367,3 +367,10 @@ environment variables. See the
 | Key | Default | Description |
 |-----|---------|-------------|
 | `pr_commands` | `[` |  |
+
+## `[monitoring]`
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `enable_metrics` | `false` | expose request/latency metrics and a scrape endpoint on the webhook servers |
+| `metrics_endpoint` | `"/metrics"` | path of the Prometheus scrape endpoint |

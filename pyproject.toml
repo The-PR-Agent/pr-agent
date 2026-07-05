@@ -48,6 +48,8 @@ gcp = [
 ]
 # Enables pr_agent.algo.ai_handlers.langchain_ai_handler.LangChainOpenAIHandler
 langchain = ["langchain==1.3.9", "langchain-core==1.4.6", "langchain-openai==1.1.14"]
+# Enables Prometheus metrics on the webhook servers (monitoring.enable_metrics)
+monitoring = ["prometheus-client==0.25.0"]
 
 [project.urls]
 "Homepage" = "https://github.com/the-pr-agent/pr-agent"
