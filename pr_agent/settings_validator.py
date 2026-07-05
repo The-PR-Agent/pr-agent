@@ -87,16 +87,15 @@ def validate_current_config(settings) -> dict:
                       f"expected one of {sorted(_GIT_PROVIDERS)}")
 
     # models resolve to a max-token budget
-    from pr_agent.algo.utils import get_max_tokens
+    from pr_agent.algo.utils import get_max_tokens, parse_fallback_models
     for key in ("config.model", "config.fallback_models"):
         value = settings.get(key, None)
         if value is None or (key == "config.model" and not value):
             errors.append(f"{key} is not set")
             continue
-        if isinstance(value, str):
-            models = [model.strip() for model in value.split(",") if model.strip()]
-        else:
-            models = value if isinstance(value, list) else [value]
+        # config.model is used verbatim at runtime; only fallback_models may be a
+        # comma-separated string, parsed here exactly as the runtime parses it.
+        models = parse_fallback_models(value) if key == "config.fallback_models" else [value]
         for model in models:
             try:
                 get_max_tokens(model)

@@ -37,6 +37,13 @@ def emphasize_header(text: str, only_markdown=False, reference_link=None) -> str
         return text
 
 
+def _line_link(git_provider, relevant_file: str, start_line, end_line) -> str:
+    """Provider line link, or '' when rendering without a git provider."""
+    if not git_provider:
+        return ""
+    return git_provider.get_line_link(relevant_file, start_line, end_line) or ""
+
+
 def convert_to_markdown_v2(output_data: dict,
                            gfm_supported: bool = True,
                            incremental_review=None,
@@ -200,13 +207,10 @@ def convert_to_markdown_v2(output_data: dict,
                         end_line = int(str(issue.get('end_line', 0)).strip())
 
                         relevant_lines_str = extract_relevant_lines_str(end_line, files, relevant_file, start_line, dedent=True)
-                        if git_provider:
-                            reference_link = git_provider.get_line_link(relevant_file, start_line, end_line)
-                        else:
-                            reference_link = None
+                        reference_link = _line_link(git_provider, relevant_file, start_line, end_line)
 
                         if gfm_supported:
-                            if reference_link is not None and len(reference_link) > 0:
+                            if reference_link:
                                 if relevant_lines_str:
                                     issue_str = f"<details><summary><a href='{reference_link}'><strong>{issue_header}</strong></a>\n\n{issue_content}\n</summary>\n\n{relevant_lines_str}\n\n</details>"
                                 else:
@@ -214,7 +218,7 @@ def convert_to_markdown_v2(output_data: dict,
                             else:
                                 issue_str = f"<strong>{issue_header}</strong><br>{issue_content}"
                         else:
-                            if reference_link is not None and len(reference_link) > 0:
+                            if reference_link:
                                 issue_str = f"[**{issue_header}**]({reference_link})\n\n{issue_content}\n\n"
                             else:
                                 issue_str = f"**{issue_header}**\n\n{issue_content}\n\n"
@@ -517,7 +521,7 @@ def format_todo_item(todo_item: TodoItem, git_provider, gfm_supported) -> str:
     relevant_file = todo_item.get('relevant_file', '').strip()
     line_number = todo_item.get('line_number', '')
     content = todo_item.get('content', '')
-    reference_link = git_provider.get_line_link(relevant_file, line_number, line_number) if git_provider else ""
+    reference_link = _line_link(git_provider, relevant_file, line_number, line_number)
     file_ref = f"{relevant_file} [{line_number}]"
     if reference_link:
         if gfm_supported:

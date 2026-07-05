@@ -78,6 +78,22 @@ def test_get_all_models_uses_requested_model_type_and_string_fallbacks():
         settings.config.fallback_models = original["fallback_models"]
 
 
+def test_get_all_models_drops_empty_fallback_segments():
+    settings = get_settings()
+    original = {
+        "model": settings.config.model,
+        "fallback_models": settings.get("config.fallback_models", []),
+    }
+    try:
+        settings.config.model = "regular-model"
+        settings.config.fallback_models = "fallback-a,,"
+
+        assert pr_processing._get_all_models(ModelType.REGULAR) == ["regular-model", "fallback-a"]
+    finally:
+        settings.config.model = original["model"]
+        settings.config.fallback_models = original["fallback_models"]
+
+
 def test_get_all_deployments_rejects_short_fallback_deployment_list():
     settings = get_settings()
     original_deployment_id = settings.get("openai.deployment_id", None)

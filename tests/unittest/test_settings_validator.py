@@ -87,6 +87,25 @@ class TestValidateCurrentConfig:
         result = validate_current_config(settings)
         assert result["errors"] == []
 
+    def test_comma_separated_model_string_is_error(self):
+        """config.model is used verbatim at runtime, so a comma string must not validate clean"""
+        settings = self._fake_settings({
+            "config.git_provider": "github",
+            "config.model": "gpt-4o, gpt-4o-mini",
+            "config.fallback_models": [],
+        })
+        result = validate_current_config(settings)
+        assert any("gpt-4o, gpt-4o-mini" in e for e in result["errors"])
+
+    def test_trailing_comma_in_fallback_models_is_allowed(self):
+        settings = self._fake_settings({
+            "config.git_provider": "github",
+            "config.model": "gpt-4o",
+            "config.fallback_models": "gpt-4o,",
+        })
+        result = validate_current_config(settings)
+        assert result["errors"] == []
+
     def test_missing_credentials_is_warning_not_error(self):
         settings = self._fake_settings({
             "config.git_provider": "gitlab",

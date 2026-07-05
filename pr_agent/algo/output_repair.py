@@ -96,14 +96,10 @@ def fix_json_escape_char(json_message=None):
     """
     try:
         result = json.loads(json_message)
-    except Exception as e:
-        # Find the offending character index:
-        char_match = re.search(r"char (\d+)", str(e))
-        if not char_match:
-            get_logger().error(f"Unable to decode JSON response from AI: {e}")
-            return {}
-        idx_to_replace = int(char_match.group(1))
-        if not json_message or idx_to_replace >= len(json_message):
+    except json.decoder.JSONDecodeError as e:
+        idx_to_replace = e.pos
+        # e.pos can equal len(json_message) (e.g. truncated input) - nothing to replace
+        if idx_to_replace >= len(json_message):
             get_logger().error(f"Unable to decode JSON response from AI: {e}")
             return {}
         # Remove the offending character:

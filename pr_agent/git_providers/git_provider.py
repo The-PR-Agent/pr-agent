@@ -116,8 +116,9 @@ def get_git_ssl_env() -> dict[str, str]:
 
 
 # Every capability string that provider _is_supported implementations and call
-# sites are allowed to use. Add new capabilities here so a typo at a call site
-# warns instead of silently taking the unsupported branch.
+# sites are allowed to use. is_supported() warns and returns False for any
+# capability not listed here, so new capabilities must be added to this set
+# before call sites can use them.
 KNOWN_CAPABILITIES = frozenset({
     "create_inline_comment",
     "get_issue_comments",

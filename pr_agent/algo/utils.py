@@ -262,6 +262,19 @@ def get_max_tokens(model):
     return max_tokens_model
 
 
+def parse_fallback_models(fallback_models) -> list:
+    """
+    Normalize config.fallback_models (a list or a comma-separated string) to a list
+    of model names, dropping empty segments. Shared by the runtime model chain and
+    the config validator so both agree on what a fallback_models value means.
+    """
+    if isinstance(fallback_models, list):
+        return fallback_models
+    if isinstance(fallback_models, str):
+        return [m.strip() for m in fallback_models.split(",") if m.strip()]
+    return [fallback_models]
+
+
 def clip_tokens(text: str, max_tokens: int, add_three_dots=True, num_input_tokens=None, delete_last_line=False) -> str:
     """
     Clip the number of tokens in a string to a maximum number of tokens.
@@ -443,17 +456,18 @@ def get_rate_limit_status(github_token) -> dict:
         "Authorization": f"token {github_token}"
     }
 
-    try:
-        response = requests.get(RATE_LIMIT_URL, headers=HEADERS, timeout=10)
-        rate_limit_info = response.json()
-        if rate_limit_info.get('message') == 'Rate limiting is not enabled.':  # for github enterprise
-            return {'resources': {}}
-        response.raise_for_status()  # Check for HTTP errors
-    except:  # retry
-        time.sleep(0.1)
-        response = requests.get(RATE_LIMIT_URL, headers=HEADERS, timeout=10)
-        return response.json()
-    return rate_limit_info
+    for attempt in range(2):
+        try:
+            response = requests.get(RATE_LIMIT_URL, headers=HEADERS, timeout=10)
+            rate_limit_info = response.json()
+            if rate_limit_info.get('message') == 'Rate limiting is not enabled.':  # for github enterprise
+                return {'resources': {}}
+            response.raise_for_status()  # Check for HTTP errors
+            return rate_limit_info
+        except Exception:
+            if attempt:
+                raise
+            time.sleep(0.1)  # transient failure: retry once through the same handling
 
 
 def validate_rate_limit_github(github_token, installation_id=None, threshold=0.1) -> bool:

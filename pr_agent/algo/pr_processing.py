@@ -13,7 +13,7 @@ from pr_agent.algo.git_patch_processing import (
 from pr_agent.algo.language_handler import sort_files_by_main_languages
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.types import EDIT_TYPE
-from pr_agent.algo.utils import ModelType, clip_tokens, get_max_tokens, get_model
+from pr_agent.algo.utils import ModelType, clip_tokens, get_max_tokens, get_model, parse_fallback_models
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.log import get_logger
@@ -348,9 +348,7 @@ def _get_all_models(model_type: ModelType = ModelType.REGULAR) -> List[str]:
         model = get_settings().config.model
     else:
         model = get_settings().config.model
-    fallback_models = get_settings().config.fallback_models
-    if not isinstance(fallback_models, list):
-        fallback_models = [m.strip() for m in fallback_models.split(",")]
+    fallback_models = parse_fallback_models(get_settings().config.fallback_models)
     all_models = [model] + fallback_models
     return all_models
 
