@@ -577,11 +577,13 @@ class PRCodeSuggestions:
             except Exception:
                 get_logger().info(f"Could not parse suggestion: {d}")
 
-        is_successful = self.git_provider.publish_code_suggestions(code_suggestions)
+        # publish_code_suggestions performs blocking provider calls (including rate-limit
+        # sleeps on GitHub) — keep them off the event loop
+        is_successful = await asyncio.to_thread(self.git_provider.publish_code_suggestions, code_suggestions)
         if not is_successful:
             get_logger().info("Failed to publish code suggestions, trying to publish each suggestion separately")
             for code_suggestion in code_suggestions:
-                self.git_provider.publish_code_suggestions([code_suggestion])
+                await asyncio.to_thread(self.git_provider.publish_code_suggestions, [code_suggestion])
 
     def dedent_code(self, relevant_file, relevant_lines_start, new_code_snippet):
         try:  # dedent code snippet

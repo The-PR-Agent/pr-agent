@@ -6,8 +6,8 @@ import os
 import re
 import time
 
+import aiohttp
 import jwt
-import requests
 import uvicorn
 from fastapi import APIRouter, FastAPI, Request, Response
 from starlette.background import BackgroundTasks
@@ -51,8 +51,9 @@ async def get_bearer_token(shared_secret: str, client_key: str):
             'Authorization': f'JWT {token}',
             'Content-Type': 'application/x-www-form-urlencoded'
         }
-        response = requests.request("POST", url, headers=headers, data=payload)
-        bearer_token = response.json()["access_token"]
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
+            async with session.post(url, headers=headers, data=payload) as response:
+                bearer_token = (await response.json())["access_token"]
         return bearer_token
     except Exception as e:
         get_logger().error(f"Failed to get bearer token: {e}")
@@ -101,13 +102,14 @@ async def _validate_time_from_last_commit_to_pr_update(data: dict) -> bool:
             'Authorization': f'Bearer {bearer_token}',
             'Accept': 'application/json'
         }
-        response = requests.get(commits_api, headers=headers, timeout=30)
-        if response.status_code != 200:
-            get_logger().warning(f"Bitbucket commits API returned {response.status_code} for {commits_api}")
-            return False
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
+            async with session.get(commits_api, headers=headers) as response:
+                if response.status != 200:
+                    get_logger().warning(f"Bitbucket commits API returned {response.status} for {commits_api}")
+                    return False
+                commits_data = (await response.json()) or {}
 
         username =_get_username(data)
-        commits_data = response.json() or {}
         values = commits_data.get('values') or []
         if (not values or not isinstance(values, list) or not values[0].get('author') or not values[0]['author'].get('user')
                 or not values[0]['author']['user'].get('display_name')):

@@ -6,7 +6,6 @@ from collections import deque
 from datetime import datetime, timezone
 
 import aiohttp
-import requests
 
 from pr_agent.agent.pr_agent import PRAgent
 from pr_agent.config_loader import get_settings
@@ -114,8 +113,9 @@ async def is_valid_notification(notification, headers, handled_ids, session, use
                         else: # we could not find the user tag in the latest comment. Check previous comments
                             # get all comments in the PR
                             requests_url = f"{pr_url}/comments".replace("pulls", "issues")
-                            comments_response = requests.get(requests_url, headers=headers, timeout=30)
-                            comments = comments_response.json()[::-1]
+                            async with session.get(requests_url, headers=headers,
+                                                   timeout=aiohttp.ClientTimeout(total=30)) as comments_response:
+                                comments = (await comments_response.json())[::-1]
                             max_comment_to_scan = 4
                             for comment in comments[:max_comment_to_scan]:
                                 if 'user' in comment and 'login' in comment['user']:
