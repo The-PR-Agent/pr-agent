@@ -131,10 +131,10 @@ async def _validate_time_from_last_commit_to_pr_update(data: dict) -> bool:
         if diff > 0 and diff < max_delta_seconds:
             is_valid_push = True
         else:
-            get_logger().debug(f"Too much time passed since last commit",
+            get_logger().debug("Too much time passed since last commit",
                                artifact={'updated': time_pr_updated, 'last_commit': time_last_commit})
     except Exception as e:
-        get_logger().exception(f"Failed to validate time difference between last commit and PR update",
+        get_logger().exception("Failed to validate time difference between last commit and PR update",
                                artifact={'error': e, 'data': data})
     return is_valid_push
 
@@ -156,7 +156,7 @@ async def _perform_commands_bitbucket(commands_conf: str, agent: PRAgent, api_ur
     if commands_conf == "push_commands":
         is_valid_push = await _validate_time_from_last_commit_to_pr_update(data)
         if not is_valid_push:
-            get_logger().info(f"Bitbucket skipping 'pullrequest:updated' for push commands")
+            get_logger().info("Bitbucket skipping 'pullrequest:updated' for push commands")
             return
     for command in commands:
         try:
@@ -310,7 +310,7 @@ async def handle_github_webhooks(background_tasks: BackgroundTasks, request: Req
     return "OK"
 
 @router.get("/webhook")
-async def handle_github_webhooks(request: Request, response: Response):
+async def webhook_health(request: Request, response: Response):
     return "Webhook server online!"
 
 @router.post("/installed")

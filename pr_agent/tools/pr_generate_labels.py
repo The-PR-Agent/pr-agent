@@ -1,7 +1,6 @@
 import copy
-import re
 from functools import partial
-from typing import List, Tuple
+from typing import List
 
 from jinja2 import Environment, StrictUndefined
 
@@ -161,9 +160,9 @@ class PRGenerateLabels:
 
         # If the 'labels' key is present in the dictionary, split its value by comma and assign it to 'pr_types'
         if 'labels' in self.data:
-            if type(self.data['labels']) == list:
+            if isinstance(self.data['labels'], list):
                 pr_types = self.data['labels']
-            elif type(self.data['labels']) == str:
+            elif isinstance(self.data['labels'], str):
                 pr_types = self.data['labels'].split(',')
         pr_types = [label.strip() for label in pr_types]
 

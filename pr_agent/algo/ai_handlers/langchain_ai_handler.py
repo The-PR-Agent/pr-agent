@@ -7,11 +7,10 @@ try:
 except:  # we don't enforce langchain as a dependency, so if it's not installed, just move on
     pass
 
-import functools
 
 import openai
-from tenacity import retry, retry_if_exception_type, retry_if_not_exception_type, stop_after_attempt
 from langchain_core.runnables import Runnable
+from tenacity import retry, retry_if_exception_type, retry_if_not_exception_type, stop_after_attempt
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler, make_api_error
 from pr_agent.config_loader import get_settings
@@ -59,7 +58,7 @@ class LangChainOpenAIHandler(BaseAiHandler):
                     )
         except AttributeError as e:
             # Handle configuration errors
-            error_msg = f"OpenAI {e.name} is required" if getattr(e, "name") else str(e)
+            error_msg = f"OpenAI {e.name} is required" if e.name else str(e)
             get_logger().error(error_msg)
             raise ValueError(error_msg) from e
 

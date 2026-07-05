@@ -1,6 +1,5 @@
 import asyncio
 import multiprocessing
-import time
 import traceback
 from collections import deque
 from datetime import datetime, timezone
@@ -79,7 +78,7 @@ async def is_valid_notification(notification, headers, handled_ids, session, use
                 pr_url = notification['subject']['url']
                 latest_comment = notification['subject']['latest_comment_url']
                 if not latest_comment or not isinstance(latest_comment, str):
-                    get_logger().debug(f"no latest_comment")
+                    get_logger().debug("no latest_comment")
                     return False, handled_ids
                 async with session.get(latest_comment, headers=headers) as comment_response:
                     check_prev_comments = False
@@ -88,21 +87,21 @@ async def is_valid_notification(notification, headers, handled_ids, session, use
                         comment = await comment_response.json()
                         if 'id' in comment:
                             if comment['id'] in handled_ids:
-                                get_logger().debug(f"comment['id'] in handled_ids")
+                                get_logger().debug("comment['id'] in handled_ids")
                                 return False, handled_ids
                             else:
                                 handled_ids.add(comment['id'])
                         if 'user' in comment and 'login' in comment['user']:
                             if comment['user']['login'] == user_id:
-                                get_logger().debug(f"comment['user']['login'] == user_id")
+                                get_logger().debug("comment['user']['login'] == user_id")
                                 check_prev_comments = True
                         comment_body = comment.get('body', '')
                         if not comment_body:
-                            get_logger().debug(f"no comment_body")
+                            get_logger().debug("no comment_body")
                             check_prev_comments = True
                         else:
                             if user_tag not in comment_body:
-                                get_logger().debug(f"user_tag not in comment_body")
+                                get_logger().debug("user_tag not in comment_body")
                                 check_prev_comments = True
                             else:
                                 get_logger().info(f"Polling, pr_url: {pr_url}",
@@ -136,7 +135,7 @@ async def is_valid_notification(notification, headers, handled_ids, session, use
 
         return False, handled_ids
     except Exception as e:
-        get_logger().exception(f"Error processing polling notification",
+        get_logger().exception("Error processing polling notification",
                                artifact={"notification": notification, "error": e})
         return False, handled_ids
 
@@ -211,7 +210,7 @@ async def polling_loop():
                                 task_queue.append((process_comment_sync, (pr_url, rest_of_comment, comment_id)))
                                 get_logger().info(f"Queued comment processing for PR: {pr_url}")
                             else:
-                                get_logger().debug(f"Skipping comment processing for PR")
+                                get_logger().debug("Skipping comment processing for PR")
 
                         max_allowed_parallel_tasks = 10
                         if task_queue:

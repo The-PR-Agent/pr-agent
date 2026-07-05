@@ -1,6 +1,6 @@
-from threading import Lock
-from math import ceil
 import re
+from math import ceil
+from threading import Lock
 
 from jinja2 import Environment, StrictUndefined
 from tiktoken import encoding_for_model, get_encoding
@@ -56,7 +56,7 @@ class TokenHandler:
     CLAUDE_MODEL = "claude-3-7-sonnet-20250219"
     CLAUDE_MAX_CONTENT_SIZE = 9_000_000 # Maximum allowed content size (9MB) for Claude API
 
-    def __init__(self, pr=None, vars: dict = {}, system="", user=""):
+    def __init__(self, pr=None, vars: dict = None, system="", user=""):
         """
         Initializes the TokenHandler object.
 
@@ -67,7 +67,9 @@ class TokenHandler:
         - user: The user string.
         """
         self.encoder = TokenEncoder.get_token_encoder()
-        
+        if vars is None:
+            vars = {}
+
         if pr is not None:
             self.prompt_tokens = self._get_system_user_tokens(pr, self.encoder, vars, system, user)
 
@@ -99,6 +101,7 @@ class TokenHandler:
     def _calc_claude_tokens(self, patch: str) -> int:
         try:
             import anthropic
+
             from pr_agent.algo import MAX_TOKENS
             
             client = anthropic.Anthropic(api_key=get_settings(use_context=False).get('anthropic.key'))

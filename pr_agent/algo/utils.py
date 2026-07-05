@@ -18,18 +18,37 @@ import yaml
 from starlette_context import context
 
 from pr_agent.algo import MAX_TOKENS
+
 # Markdown rendering, output repair, and shared types moved to sibling modules;
 # re-exported here so existing `from pr_agent.algo.utils import ...` keeps working.
 from pr_agent.algo.markdown_render import (  # noqa: F401
-    convert_to_markdown_v2, emphasize_header, extract_relevant_lines_str,
-    format_todo_item, format_todo_items, is_value_no, parse_code_suggestion,
-    process_can_be_split, replace_code_tags, ticket_markdown_logic)
-from pr_agent.algo.output_repair import fix_json_escape_char  # noqa: F401
-from pr_agent.algo.output_repair import load_yaml, try_fix_json, try_fix_yaml  # noqa: F401
+    convert_to_markdown_v2,
+    emphasize_header,
+    extract_relevant_lines_str,
+    format_todo_item,
+    format_todo_items,
+    is_value_no,
+    parse_code_suggestion,
+    process_can_be_split,
+    replace_code_tags,
+    ticket_markdown_logic,
+)
+from pr_agent.algo.output_repair import (  # noqa: F401
+    fix_json_escape_char,  # noqa: F401
+    load_yaml,
+    try_fix_json,
+    try_fix_yaml,
+)
 from pr_agent.algo.token_handler import TokenEncoder
-from pr_agent.algo.types import (FilePatchInfo, ModelType,  # noqa: F401
-                                 PRDescriptionHeader, PRReviewHeader, Range,
-                                 ReasoningEffort, TodoItem)
+from pr_agent.algo.types import (  # noqa: F401
+    FilePatchInfo,
+    ModelType,
+    PRDescriptionHeader,
+    PRReviewHeader,
+    Range,
+    ReasoningEffort,
+    TodoItem,
+)
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.log import get_logger
 
@@ -500,7 +519,7 @@ def show_relevant_configurations(relevant_section: str) -> str:
     markdown_text = ""
     markdown_text += "\n<hr>\n<details> <summary><strong>🛠️ Relevant configurations:</strong></summary> \n\n"
     markdown_text +="<br>These are the relevant [configurations](https://github.com/Codium-ai/pr-agent/blob/main/pr_agent/settings/configuration.toml) for this tool:\n\n"
-    markdown_text += f"**[config**]\n```yaml\n\n"
+    markdown_text += "**[config**]\n```yaml\n\n"
     for key, value in get_settings().config.items():
         if key in skip_keys:
             continue
@@ -621,7 +640,7 @@ def process_description(description_full: str) -> Tuple[str, List]:
                         if '<code>...</code>' in file_data:
                             pass # PR with many files. some did not get analyzed
                         else:
-                            get_logger().warning(f"Failed to parse description", artifact={'description': file_data})
+                            get_logger().warning("Failed to parse description", artifact={'description': file_data})
                 except Exception as e:
                     get_logger().exception(f"Failed to process description: {e}", artifact={'description': file_data})
 

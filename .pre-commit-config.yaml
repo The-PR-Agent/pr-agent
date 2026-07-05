@@ -30,13 +30,11 @@ repos:
         args: [
           "-c", "pyproject.toml",
         ]
-  # - repo: https://github.com/astral-sh/ruff-pre-commit
-  #   rev: v0.7.1
-  #   hooks:
-  #     - id: ruff
-  #       args:
-  #         - --fix
-  #     - id: ruff-format
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    # rev should match the ruff pin in requirements-dev.txt
+    rev: v0.15.20
+    hooks:
+      - id: ruff
   # -   repo: https://github.com/PyCQA/autoflake
   #     rev: v2.3.1
   #     hooks:

@@ -1,7 +1,5 @@
 import json
 
-import openai
-
 from pr_agent.algo.ai_handlers.base_ai_handler import make_api_error
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger

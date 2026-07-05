@@ -15,9 +15,7 @@ from starlette_context.middleware import RawContextMiddleware
 from pr_agent.agent.pr_agent import PRAgent
 from pr_agent.algo.utils import update_settings_from_args
 from pr_agent.config_loader import get_settings, global_settings
-from pr_agent.git_providers import (get_git_provider,
-                                    get_git_provider_with_context)
-from pr_agent.git_providers.git_provider import IncrementalPR
+from pr_agent.git_providers import get_git_provider, get_git_provider_with_context
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.identity_providers import get_identity_provider
 from pr_agent.identity_providers.identity_provider import Eligibility
@@ -233,7 +231,7 @@ def get_log_context(body, event, action, build_number):
                        "request_id": uuid.uuid4().hex, "build_number": build_number, "app_name": app_name,
                         "repo": repo, "git_org": git_org, "installation_id": installation_id}
     except Exception as e:
-        get_logger().error(f"Failed to get log context", artifact={'error': e})
+        get_logger().error("Failed to get log context", artifact={'error': e})
         log_context = {}
     return log_context, sender, sender_id, sender_type
 
@@ -320,18 +318,18 @@ async def handle_request(body: Dict[str, Any], event: str):
     action = body.get("action")  # "created", "opened", "reopened", "ready_for_review", "review_requested", "synchronize"
     get_logger().debug(f"Handling request with event: {event}, action: {action}")
     if not action:
-        get_logger().debug(f"No action found in request body, exiting handle_request")
+        get_logger().debug("No action found in request body, exiting handle_request")
         return {}
     agent = PRAgent()
     log_context, sender, sender_id, sender_type = get_log_context(body, event, action, build_number)
 
     # logic to ignore PRs opened by bot, PRs with specific titles, labels, source branches, or target branches
     if is_bot_user(sender, sender_type) and 'check_run' not in body:
-        get_logger().debug(f"Request ignored: bot user detected")
+        get_logger().debug("Request ignored: bot user detected")
         return {}
     if action != 'created' and 'check_run' not in body:
         if not should_process_pr_logic(body):
-            get_logger().debug(f"Request ignored: PR logic filtering")
+            get_logger().debug("Request ignored: PR logic filtering")
             return {}
 
     if 'check_run' in body:  # handle failed checks
@@ -339,11 +337,11 @@ async def handle_request(body: Dict[str, Any], event: str):
         pass
     # handle comments on PRs
     elif action == 'created':
-        get_logger().debug(f'Request body', artifact=body, event=event)
+        get_logger().debug('Request body', artifact=body, event=event)
         await handle_comments_on_pr(body, event, sender, sender_id, action, log_context, agent)
     # handle new PRs
     elif event == 'pull_request' and action != 'synchronize' and action != 'closed':
-        get_logger().debug(f'Request body', artifact=body, event=event)
+        get_logger().debug('Request body', artifact=body, event=event)
         await handle_new_pr_opened(body, event, sender, sender_id, action, log_context, agent)
     elif event == "issue_comment" and 'edited' in action:
         pass # handle_checkbox_clicked
@@ -402,7 +400,7 @@ async def _perform_auto_commands_github(commands_conf: str, agent: PRAgent, body
         return {}
     commands = get_settings().get(f"github_app.{commands_conf}")
     if not commands:
-        get_logger().info(f"New PR, but no auto commands configured")
+        get_logger().info("New PR, but no auto commands configured")
         return
     get_settings().set("config.is_auto_command", True)
     for command in commands:

@@ -56,7 +56,7 @@ class PRAddDocs:
             get_logger().info('Preparing PR documentation...')
             await retry_with_fallback_models(self._prepare_prediction)
             data = self._prepare_pr_code_docs()
-            if (not data) or (not 'Code Documentation' in data):
+            if (not data) or ('Code Documentation' not in data):
                 get_logger().info('No code documentation found for PR.')
                 return
 
@@ -119,7 +119,7 @@ class PRAddDocs:
                     new_code_snippet = self.dedent_code(relevant_file, relevant_line, documentation, doc_placement,
                                                         add_original_line=True)
 
-                    body = f"**Suggestion:** Proposed documentation\n```suggestion\n" + new_code_snippet + "\n```"
+                    body = "**Suggestion:** Proposed documentation\n```suggestion\n" + new_code_snippet + "\n```"
                     docs.append({'body': body, 'relevant_file': relevant_file,
                                              'relevant_lines_start': relevant_line,
                                              'relevant_lines_end': relevant_line})

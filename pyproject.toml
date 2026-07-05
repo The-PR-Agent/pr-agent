@@ -89,18 +89,34 @@ lint.unfixable = [
 
 lint.exclude = ["api/code_completions"]
 
-lint.ignore = ["E999", "B008"]
+# B008 is a deliberate style choice (Depends() defaults in FastAPI handlers).
+# The remaining entries are a baseline of pre-existing findings so `ruff check`
+# can gate new code (pre-commit); remove entries as they get burned down.
+lint.ignore = [
+  "B008",
+  "E501", # line-too-long (pre-existing long lines)
+  "E722", # bare-except (pervasive best-effort fallbacks; see bandit B110 note)
+  "F841", # unused-variable (mostly `except ... as e` without use)
+  "B904", # raise-without-from-inside-except
+  "B007", # unused-loop-control-variable
+  "B027", # empty-method-without-abstract-decorator (GitProvider optional hooks)
+  "E402", # module-import-not-at-top-of-file (deliberate config-load ordering)
+  "B905", # zip-without-explicit-strict
+]
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = [
   "E402",
 ] # Ignore `E402` (import violations) in all `__init__.py` files, and in `path/to/file.py`.
+"pr_agent/tools/pr_similar_issue.py" = [
+  "F821", # pinecone/pandas imports are optional deps, currently commented out in requirements
+]
 
 [tool.mypy]
-# Gradual-typing baseline: only pr_agent/algo is checked for now, permissively.
+# Gradual-typing baseline: pr_agent/algo and pr_agent/git_providers are checked, permissively.
 # Run with: ./.venv/bin/mypy
 # Tighten (more paths, fewer disabled codes) as modules get annotated.
-files = ["pr_agent/algo"]
+files = ["pr_agent/algo", "pr_agent/git_providers"]
 follow_imports = "silent"
 ignore_missing_imports = true
 no_strict_optional = true
@@ -113,6 +129,20 @@ module = [
   "pr_agent.algo.ai_handlers.*",
 ]
 disable_error_code = ["var-annotated", "assignment", "arg-type"]
+
+[[tool.mypy.overrides]]
+# Provider baseline: the vendor SDKs (PyGithub, python-gitlab, atlassian, azure)
+# are untyped, which dominates attr-defined/assignment noise. Still catches
+# syntax, name-defined, and call-arg errors. Burn down per module over time.
+module = ["pr_agent.git_providers.*"]
+disable_error_code = [
+  "attr-defined",
+  "assignment",
+  "var-annotated",
+  "override",
+  "return-value",
+  "arg-type",
+]
 
 [tool.bandit]
 exclude_dirs = ["tests"]

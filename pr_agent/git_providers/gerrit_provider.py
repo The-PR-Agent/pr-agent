@@ -19,7 +19,7 @@ from pr_agent.git_providers.local_git_provider import PullRequestMimic
 from pr_agent.log import get_logger
 
 
-def _call(*command, **kwargs) -> (int, str, str):
+def _call(*command, **kwargs) -> str:
     res = subprocess.run(
         command,
         stdout=subprocess.PIPE,

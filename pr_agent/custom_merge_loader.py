@@ -1,9 +1,10 @@
+import tomllib  #tomllib should be used instead of Py toml for Python 3.11+
 from pathlib import Path
-import tomllib #tomllib should be used instead of Py toml for Python 3.11+
 
 from jinja2.exceptions import SecurityError
 
 from pr_agent.log import get_logger
+
 
 def load(obj, env=None, silent=True, key=None, filename=None):
     """

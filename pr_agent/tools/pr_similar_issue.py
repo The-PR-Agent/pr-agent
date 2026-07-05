@@ -35,9 +35,7 @@ class PRSimilarIssue:
 
         if get_settings().pr_similar_issue.vectordb == "pinecone":
             try:
-                import pandas as pd
                 import pinecone
-                from pinecone_datasets import Dataset, DatasetMetadata
             except:
                 raise Exception("Please install 'pinecone' and 'pinecone_datasets' to use pinecone as vectordb")
             # assuming pinecone api key and environment are set in secrets file
@@ -62,7 +60,7 @@ class PRSimilarIssue:
 
             upsert = True
             pinecone.init(api_key=api_key, environment=environment)
-            if not index_name in pinecone.list_indexes():
+            if index_name not in pinecone.list_indexes():
                 run_from_scratch = True
                 upsert = False
             else:
@@ -178,9 +176,7 @@ class PRSimilarIssue:
         elif get_settings().pr_similar_issue.vectordb == "qdrant":
             try:
                 import qdrant_client
-                from qdrant_client.models import (Distance, FieldCondition,
-                                                  Filter, MatchValue,
-                                                  PointStruct, VectorParams)
+                from qdrant_client.models import Distance, FieldCondition, Filter, MatchValue, VectorParams
             except Exception:
                 raise Exception("Please install qdrant-client to use qdrant as vectordb")
 

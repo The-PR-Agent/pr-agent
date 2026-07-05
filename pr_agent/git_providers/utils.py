@@ -382,7 +382,7 @@ def handle_configurations_errors(config_errors, git_provider):
                     body += f"\n\n<details><summary>Configuration content:</summary>\n\n```toml\n{configuration_file_content}\n```\n\n</details>"
                 else:
                     body += f"\n\n**Configuration content:**\n\n```toml\n{configuration_file_content}\n```\n\n"
-                get_logger().warning(f"Sending a 'configuration error' comment to the PR", artifact={'body': body})
+                get_logger().warning("Sending a 'configuration error' comment to the PR", artifact={'body': body})
                 # git_provider.publish_comment(body)
                 if hasattr(git_provider, 'publish_persistent_comment'):
                     git_provider.publish_persistent_comment(body,
@@ -393,7 +393,7 @@ def handle_configurations_errors(config_errors, git_provider):
                 else:
                     git_provider.publish_comment(body)
     except Exception as e:
-        get_logger().exception(f"Failed to handle configurations errors", e)
+        get_logger().exception("Failed to handle configurations errors", e)
 
 
 def set_claude_model():
