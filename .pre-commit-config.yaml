@@ -35,6 +35,14 @@ repos:
     rev: v0.15.20
     hooks:
       - id: ruff
+  - repo: local
+    hooks:
+      - id: config-reference-up-to-date
+        name: config reference is generated from configuration.toml
+        entry: python scripts/generate_config_reference.py --check
+        language: python
+        files: ^(pr_agent/settings/configuration\.toml|docs/docs/usage-guide/configuration_reference\.md|scripts/generate_config_reference\.py)$
+        pass_filenames: false
   # -   repo: https://github.com/PyCQA/autoflake
   #     rev: v2.3.1
   #     hooks:
