@@ -67,9 +67,9 @@ def set_parser():
         ),
     )
     parser.add_argument("--diff-file", dest="diff_file", type=str, default=None,
-                        help="Path to a unified diff file to review (tokenless local mode)")
+                        help="Path to a unified diff file to review (plain-diff local mode)")
     parser.add_argument("--stdin", action="store_true", default=False,
-                        help="Read a unified diff from stdin (tokenless local mode)")
+                        help="Read a unified diff from stdin (plain-diff local mode)")
     parser.add_argument("--output", dest="output", type=str, default=None,
                         help="Write the result to this file (in addition to stdout)")
     parser.add_argument('command', type=str, help='The', choices=commands, default='review')
@@ -106,10 +106,10 @@ def run(inargs=None, args=None):
             diff_content = sys.stdin.read()
         if not diff_content.strip():
             parser.error("No diff content received (empty stdin/file)")
-        get_settings().set("config.git_provider", "diff")
-        get_settings().set("diff.content", diff_content)
-        get_settings().set("diff.output_path", getattr(args, "output", None))
-        # Diff mode's whole purpose is to emit the result to stdout/--output, so
+        get_settings().set("config.git_provider", "plain-diff")
+        get_settings().set("plain_diff.content", diff_content)
+        get_settings().set("plain_diff.output_path", getattr(args, "output", None))
+        # Plain-diff mode's whole purpose is to emit the result to stdout/--output, so
         # force publishing on even if a config/env set publish_output=false.
         get_settings().set("config.publish_output", True)
     elif not args.pr_url and not args.issue_url:

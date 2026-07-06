@@ -17,7 +17,7 @@ nav:
     - Managing Mail Notifications: 'usage-guide/mail_notifications.md'
     - Changing a Model: 'usage-guide/changing_a_model.md'
     - Additional Configurations: 'usage-guide/additional_configurations.md'
-    - Tokenless Diff Mode: 'usage-guide/tokenless_diff_mode.md'
+    - Plain-Diff Mode: 'usage-guide/plain_diff_mode.md'
     - Frequently Asked Questions: 'faq/index.md'
   - Tools:
      - 'tools/index.md'

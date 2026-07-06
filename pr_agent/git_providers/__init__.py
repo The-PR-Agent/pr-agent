@@ -3,8 +3,7 @@ from starlette_context import context
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
 from pr_agent.git_providers.bitbucket_provider import BitbucketProvider
-from pr_agent.git_providers.bitbucket_server_provider import \
-    BitbucketServerProvider
+from pr_agent.git_providers.bitbucket_server_provider import BitbucketServerProvider
 from pr_agent.git_providers.codecommit_provider import CodeCommitProvider
 from pr_agent.git_providers.gerrit_provider import GerritProvider
 from pr_agent.git_providers.git_provider import GitProvider
@@ -12,8 +11,7 @@ from pr_agent.git_providers.gitea_provider import GiteaProvider
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
 from pr_agent.git_providers.local_git_provider import LocalGitProvider
-from pr_agent.git_providers.gitea_provider import GiteaProvider
-from pr_agent.git_providers.diff_provider import DiffGitProvider
+from pr_agent.git_providers.plain_diff_provider import PlainDiffGitProvider
 
 _GIT_PROVIDERS = {
     'github': GithubProvider,
@@ -25,7 +23,7 @@ _GIT_PROVIDERS = {
     'local': LocalGitProvider,
     'gerrit': GerritProvider,
     'gitea': GiteaProvider,
-    'diff': DiffGitProvider,
+    'plain-diff': PlainDiffGitProvider,
 }
 
 
@@ -59,11 +57,11 @@ def get_git_provider_with_context(pr_url) -> GitProvider:
     else:
         try:
             provider_id = get_settings().config.git_provider
-            # Tokenless diff mode is keyed on loaded diff content; it must not be
+            # Plain-diff mode is keyed on loaded diff content; it must not be
             # overridden by an extra/repo config file that sets a different
             # git_provider (apply_repo_settings merges those before this call).
-            if get_settings().get("diff.content", None):
-                provider_id = "diff"
+            if get_settings().get("plain_diff.content", None):
+                provider_id = "plain-diff"
             if provider_id not in _GIT_PROVIDERS:
                 raise ValueError(f"Unknown git provider: {provider_id}")
             git_provider = _GIT_PROVIDERS[provider_id](pr_url)

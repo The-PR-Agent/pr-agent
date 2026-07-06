@@ -17,19 +17,20 @@ class PullRequestMimic:
         self.diff_files = diff_files
 
 
-class DiffGitProvider(GitProvider):
-    """Tokenless provider that reviews a raw unified diff (stdin/file).
+class PlainDiffGitProvider(GitProvider):
+    """Provider that reviews a raw unified diff (stdin/file), no hosting platform.
 
     The diff text and optional output path are read from global settings
-    (diff.content, diff.output_path). The pr_url arg is an ignored sentinel.
+    (plain_diff.content, plain_diff.output_path). The pr_url arg is an ignored
+    sentinel.
     """
 
     def __init__(self, pr_url=None, incremental=False):
-        diff_text = get_settings().get("diff.content", None)
+        diff_text = get_settings().get("plain_diff.content", None)
         if not diff_text or not str(diff_text).strip():
-            raise ValueError("No diff content provided for the 'diff' git provider")
+            raise ValueError("No diff content provided for the 'plain-diff' git provider")
         self.diff_text = diff_text
-        self.output_path = get_settings().get("diff.output_path", None)
+        self.output_path = get_settings().get("plain_diff.output_path", None)
         self.diff_files = None
         self.pr = PullRequestMimic(self.get_pr_title(), self.get_diff_files())
 
@@ -88,7 +89,7 @@ class DiffGitProvider(GitProvider):
         # (PRReviewer would otherwise call len() on an unpopulated commits_range).
         if getattr(incremental, "is_incremental", False):
             get_logger().info(
-                "Incremental review is not supported in tokenless diff mode; "
+                "Incremental review is not supported in plain-diff mode; "
                 "running a full review instead."
             )
         incremental.is_incremental = False
@@ -166,10 +167,10 @@ class DiffGitProvider(GitProvider):
     # ---- unsupported publish operations (no-op or NotImplementedError) ----
     def publish_inline_comment(self, body: str, relevant_file: str,
                                relevant_line_in_file: str, original_suggestion=None):
-        raise NotImplementedError("Inline comments are not supported by the diff provider")
+        raise NotImplementedError("Inline comments are not supported by the plain-diff provider")
 
     def publish_inline_comments(self, comments: list):
-        raise NotImplementedError("Inline comments are not supported by the diff provider")
+        raise NotImplementedError("Inline comments are not supported by the plain-diff provider")
 
     def publish_labels(self, labels):
         pass
@@ -193,7 +194,7 @@ class DiffGitProvider(GitProvider):
         return None
 
     def get_issue_comments(self):
-        raise NotImplementedError("Issue comments are not supported by the diff provider")
+        raise NotImplementedError("Issue comments are not supported by the plain-diff provider")
 
     def get_pr_labels(self, update=False):
         return []

@@ -2,10 +2,10 @@ import pytest
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers.diff_provider import DiffGitProvider
+from pr_agent.git_providers.plain_diff_provider import PlainDiffGitProvider
 
 # Diff-mode settings keys these tests mutate on the process-wide singleton.
-_SETTINGS_KEYS = ["diff.content", "diff.output_path",
+_SETTINGS_KEYS = ["plain_diff.content", "plain_diff.output_path",
                   "config.git_provider", "config.publish_output"]
 
 
@@ -38,9 +38,9 @@ index 1111111..2222222 100644
 
 
 def test_provider_end_to_end_files_and_output(cfg, capsys):
-    cfg("diff.content", DIFF)
-    cfg("diff.output_path", None)
-    provider = DiffGitProvider(None)
+    cfg("plain_diff.content", DIFF)
+    cfg("plain_diff.output_path", None)
+    provider = PlainDiffGitProvider(None)
 
     # files parsed and content reconstructed where working tree is absent
     files = provider.get_diff_files()
@@ -69,9 +69,9 @@ def test_base_file_reconstructed_from_working_tree(cfg, tmp_path, monkeypatch):
     # Change cwd so the provider's relative-path lookup resolves into tmp_path
     monkeypatch.chdir(tmp_path)
 
-    cfg("diff.content", DIFF)
-    cfg("diff.output_path", None)
-    provider = DiffGitProvider(None)
+    cfg("plain_diff.content", DIFF)
+    cfg("plain_diff.output_path", None)
+    provider = PlainDiffGitProvider(None)
 
     files = provider.get_diff_files()
     assert files[0].filename == "foo.py"
@@ -100,9 +100,9 @@ def test_base_file_reconstructed_when_run_from_subdirectory(cfg, tmp_path, monke
     subdir.mkdir(parents=True)
     monkeypatch.chdir(subdir)
 
-    cfg("diff.content", DIFF)
-    cfg("diff.output_path", None)
-    provider = DiffGitProvider(None)
+    cfg("plain_diff.content", DIFF)
+    cfg("plain_diff.output_path", None)
+    provider = PlainDiffGitProvider(None)
 
     files = provider.get_diff_files()
     assert files[0].filename == "foo.py"
@@ -117,7 +117,7 @@ async def test_review_command_through_diff_provider_mocked_llm(cfg, monkeypatch)
     """Integration test: drives PRReviewer with a fake AI handler through the
     diff provider.  We assert that the AI handler is invoked with a prompt that
     contains the changed content from the diff, proving end-to-end wiring from
-    diff -> DiffGitProvider -> PRReviewer -> LLM boundary.
+    diff -> PlainDiffGitProvider -> PRReviewer -> LLM boundary.
 
     We do NOT attempt to parse back a full schema-valid review YAML from the
     fake response, because the exact expected schema is prone to breaking with
@@ -127,9 +127,9 @@ async def test_review_command_through_diff_provider_mocked_llm(cfg, monkeypatch)
     from pr_agent.tools.pr_reviewer import PRReviewer
 
     # --- configure provider ---
-    cfg("config.git_provider", "diff")
-    cfg("diff.content", DIFF)
-    cfg("diff.output_path", None)
+    cfg("config.git_provider", "plain-diff")
+    cfg("plain_diff.content", DIFF)
+    cfg("plain_diff.output_path", None)
     # Disable publish so we don't need a real comment sink
     cfg("config.publish_output", False)
 

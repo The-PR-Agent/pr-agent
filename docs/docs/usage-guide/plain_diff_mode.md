@@ -1,4 +1,4 @@
-# Tokenless local diff mode
+# Plain-diff local mode
 
 Run PR-Agent against a raw unified diff with no platform API token and no PR URL.
 Results are printed to stdout (and optionally saved to a file). This suits security-first
@@ -29,7 +29,7 @@ python -m pr_agent.cli --diff-file changes.diff --output review.md review
 | `--output <path>` | Write the result to a file in addition to stdout |
 
 `--stdin` and `--diff-file` are mutually exclusive. At least one must be provided to
-enter tokenless diff mode; omitting both falls back to the normal `--pr_url` flow.
+enter plain-diff mode; omitting both falls back to the normal `--pr_url` flow.
 
 ### Supported commands
 
@@ -63,9 +63,9 @@ step itself. An LLM API key is still needed unless you configure a local model.
 
 The existing `git_provider = "local"` mode (invoked with `--pr_url`) computes a diff
 by comparing branches in a local Git repository and requires a clean working tree.
-The diff mode is different in the following ways:
+The plain-diff mode is different in the following ways:
 
-| | `local` provider | `diff` provider (this page) |
+| | `local` provider | `plain-diff` provider (this page) |
 |---|---|---|
 | Input | Branch names in a local repo | A unified diff supplied via stdin or file |
 | Working tree required | Yes (clean) | No |
@@ -73,5 +73,5 @@ The diff mode is different in the following ways:
 | Output | GitHub-style comment published locally | stdout (+ optional file) |
 | Inline comments | Not supported | Not supported |
 
-Use the `diff` provider when you already have a diff artifact (e.g. from a CI step or
+Use the `plain-diff` provider when you already have a diff artifact (e.g. from a CI step or
 `git format-patch`) and want a zero-configuration, token-free review.

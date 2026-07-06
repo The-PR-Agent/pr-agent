@@ -6,7 +6,7 @@ from pr_agent.config_loader import get_settings
 # Keys run() mutates on the process-wide settings singleton, directly or via the
 # diff-mode CLI path. Snapshotted and restored around every test (autouse) so
 # state never leaks, even when run() sets keys the test never touches itself.
-_SETTINGS_KEYS = ["diff.content", "diff.output_path",
+_SETTINGS_KEYS = ["plain_diff.content", "plain_diff.output_path",
                   "config.git_provider", "config.publish_output"]
 
 
