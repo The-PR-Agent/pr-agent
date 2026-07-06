@@ -200,7 +200,12 @@ class PlainDiffGitProvider(GitProvider):
         return None
 
     def get_issue_comments(self):
-        raise NotImplementedError("Issue comments are not supported by the plain-diff provider")
+        # A raw diff has no issue-comment history. Return an empty iterable rather
+        # than raising: the improve persistent-comment path calls this without a
+        # capability guard, and treating "no comments" as the default lets it fall
+        # through to publishing the suggestions to stdout without a spurious
+        # traceback in the log.
+        return []
 
     def get_pr_labels(self, update=False):
         return []

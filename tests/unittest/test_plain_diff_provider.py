@@ -235,3 +235,24 @@ def test_diff_content_forces_diff_provider(cfg):
     cfg("plain_diff.output_path", None)
     provider = get_git_provider_with_context("local_diff")
     assert isinstance(provider, PlainDiffGitProvider)
+
+
+def test_diff_content_forces_provider_via_base_getter(cfg):
+    # get_git_provider() (used by e.g. PRQuestions for `ask`) must honor the same
+    # plain-diff override, so an extra config that overwrote config.git_provider
+    # after apply_repo_settings() can't route a supported command to a hosted
+    # provider. It returns the class (callers do get_git_provider()(pr_url)).
+    from pr_agent.git_providers import get_git_provider
+    cfg("config.git_provider", "github")
+    cfg("plain_diff.content", DIFF)
+    assert get_git_provider() is PlainDiffGitProvider
+
+
+def test_get_issue_comments_returns_empty(cfg):
+    # A raw diff has no issue comments; return [] rather than raising, so the
+    # improve persistent-comment path treats "no history" as the default instead
+    # of logging a spurious traceback on every run.
+    cfg("plain_diff.content", DIFF)
+    cfg("plain_diff.output_path", None)
+    provider = PlainDiffGitProvider(None)
+    assert list(provider.get_issue_comments()) == []
