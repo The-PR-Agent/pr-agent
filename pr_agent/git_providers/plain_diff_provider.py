@@ -31,6 +31,12 @@ class PlainDiffGitProvider(GitProvider):
             raise ValueError("No diff content provided for the 'plain-diff' git provider")
         self.diff_text = diff_text
         self.output_path = get_settings().get("plain_diff.output_path", None)
+        # cli.run() already forces config.publish_output=True, but apply_repo_settings()
+        # runs afterwards and can overwrite it back to False from an extra/repo config
+        # (tools gate all publishing on this flag). This provider is constructed after
+        # apply_repo_settings, so re-assert it here: stdout/--output is plain-diff mode's
+        # only output channel, and it must never be silently suppressed.
+        get_settings().set("config.publish_output", True)
         self.diff_files = None
         self.pr = PullRequestMimic(self.get_pr_title(), self.get_diff_files())
 

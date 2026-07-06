@@ -42,6 +42,18 @@ def test_registered():
     assert _GIT_PROVIDERS["plain-diff"] is PlainDiffGitProvider
 
 
+def test_init_forces_publish_output(cfg):
+    # cli.run() forces config.publish_output=True, but apply_repo_settings()
+    # runs afterwards and can overwrite it back to False from an extra/repo
+    # config. Plain-diff mode's only output channel is stdout/--output, so the
+    # provider (built after apply_repo_settings) must re-assert publish_output.
+    cfg("plain_diff.content", DIFF)
+    cfg("plain_diff.output_path", None)
+    cfg("config.publish_output", False)
+    PlainDiffGitProvider(None)
+    assert get_settings().config.publish_output is True
+
+
 def test_get_diff_files(cfg):
     cfg("plain_diff.content", DIFF)
     cfg("plain_diff.output_path", None)
