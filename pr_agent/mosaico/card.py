@@ -5,8 +5,7 @@ as required=True; streaming is advertised as False (load-bearing: the reference 
 selects message/send vs message/stream from capabilities.streaming)."""
 import os
 
-from a2a.types import (AgentCapabilities, AgentCard, AgentExtension,
-                       AgentInterface, AgentSkill)
+from a2a.types import AgentCapabilities, AgentCard, AgentExtension, AgentInterface, AgentSkill
 
 from pr_agent.algo.utils import get_version
 

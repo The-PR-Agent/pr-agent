@@ -8,11 +8,8 @@ from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger, setup_logger
 from tests.e2e_tests.e2e_utils import (
     FILE_PATH,
-    IMPROVE_START_WITH_REGEX_PATTERN,
     NEW_FILE_CONTENT,
     NUM_MINUTES,
-    PR_HEADER_START_WITH,
-    REVIEW_START_WITH,
 )
 
 log_level = os.environ.get("LOG_LEVEL", "INFO")
@@ -121,7 +118,7 @@ def test_e2e_run_gitea_app():
         pr_number = pr['number']
         
         for i in range(NUM_MINUTES):
-            logger.info(f"Waiting for the PR to get all the tool results...")
+            logger.info("Waiting for the PR to get all the tool results...")
             time.sleep(60)
             
             response = requests.get(
@@ -163,7 +160,7 @@ def test_e2e_run_gitea_app():
         )
         response.raise_for_status()
         
-        logger.info(f"Succeeded in running e2e test for Gitea app on the PR")
+        logger.info("Succeeded in running e2e test for Gitea app on the PR")
     except Exception as e:
         logger.error(f"Failed to run e2e test for Gitea app: {e}")
         raise

@@ -17,11 +17,12 @@ repos:
   #   rev: v1.7.3
   #   hooks:
   #     - id: actionlint
-  - repo: https://github.com/pycqa/isort
-    # rev must match what's in dev-requirements.txt
-    rev: 5.13.2
+  # ruff handles linting and import sorting (config in pyproject.toml).
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.20
     hooks:
-      - id: isort
+      - id: ruff
+        args: [--fix]
   # - repo: https://github.com/PyCQA/bandit
   #   rev: 1.7.10
   #   hooks:
@@ -29,18 +30,3 @@ repos:
   #       args: [
   #         "-c", "pyproject.toml",
   #       ]
-  # - repo: https://github.com/astral-sh/ruff-pre-commit
-  #   rev: v0.7.1
-  #   hooks:
-  #     - id: ruff
-  #       args:
-  #         - --fix
-  #     - id: ruff-format
-  # -   repo: https://github.com/PyCQA/autoflake
-  #     rev: v2.3.1
-  #     hooks:
-  #     -   id: autoflake
-  #         args:
-  #           - --in-place
-  #           - --remove-all-unused-imports
-  #           - --remove-unused-variables

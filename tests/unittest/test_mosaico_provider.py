@@ -252,8 +252,8 @@ def isolated_settings():
 async def _run_tool_via_spy(monkeypatch, isolated_settings, verb, canned_yaml, second_yaml=""):
     """Patch the provider registry to a spy subclass, mock the LLM, run the tool with
     publish_output=False, and return (captured_artifact, incremental_accessed_list)."""
-    from pr_agent.git_providers import _GIT_PROVIDERS
     import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_mod
+    from pr_agent.git_providers import _GIT_PROVIDERS
 
     files = parse_unified_diff(TWO_FILE_DIFF)
     provider_input = {"files": files, "languages": {"Python": 100}, "title": "spike PR"}

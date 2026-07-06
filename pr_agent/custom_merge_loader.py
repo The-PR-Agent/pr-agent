@@ -1,5 +1,5 @@
+import tomllib  #tomllib should be used instead of Py toml for Python 3.11+
 from pathlib import Path
-import tomllib #tomllib should be used instead of Py toml for Python 3.11+
 
 from jinja2.exceptions import SecurityError
 

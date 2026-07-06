@@ -2,8 +2,7 @@ import re
 import traceback
 
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers import GithubProvider
-from pr_agent.git_providers import AzureDevopsProvider
+from pr_agent.git_providers import AzureDevopsProvider, GithubProvider
 from pr_agent.log import get_logger
 
 # Compile the regex pattern once, outside the function

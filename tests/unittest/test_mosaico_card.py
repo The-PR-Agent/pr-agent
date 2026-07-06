@@ -4,8 +4,7 @@ import os
 
 from google.protobuf.json_format import MessageToDict
 
-from pr_agent.mosaico.card import (OBSERVABILITY_EXTENSION_URI,
-                                   build_agent_card)
+from pr_agent.mosaico.card import OBSERVABILITY_EXTENSION_URI, build_agent_card
 
 _REGISTRATION_JSON = os.path.join(
     os.path.dirname(__file__), "..", "..", "docker", "mosaico",

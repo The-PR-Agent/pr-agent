@@ -158,7 +158,7 @@ async def handle_webhook(background_tasks: BackgroundTasks, request: Request):
             or (data["eventKey"] == "repo:refs_changed" and data.get("pullRequest", {}).get("id", -1) != -1)):  # push event; -1 for push unassigned to a PR: #Check auto commands for creation/updating
         apply_repo_settings(pr_url)
         if not should_process_pr_logic(data):
-            get_logger().info(f"PR ignored due to config settings", **log_context)
+            get_logger().info("PR ignored due to config settings", **log_context)
             return JSONResponse(
                 status_code=status.HTTP_200_OK, content=jsonable_encoder({"message": "PR ignored by config"})
             )

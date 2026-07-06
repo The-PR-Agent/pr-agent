@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ast
 import copy
 import difflib
 import hashlib
@@ -164,7 +163,7 @@ def convert_to_markdown_v2(output_data: dict,
         return ""
 
     if get_settings().get("pr_reviewer.enable_intro_text", False):
-        markdown_text += f"Here are some key observations to aid the review process:\n\n"
+        markdown_text += "Here are some key observations to aid the review process:\n\n"
 
     if gfm_supported:
         markdown_text += "<table>\n"
@@ -190,20 +189,20 @@ def convert_to_markdown_v2(output_data: dict,
             white_bars = '⚪' * (5 - value_int)
             value = f"{value_int} {blue_bars}{white_bars}"
             if gfm_supported:
-                markdown_text += f"<tr><td>"
+                markdown_text += "<tr><td>"
                 markdown_text += f"{emoji}&nbsp;<strong>{key_nice}</strong>: {value}"
-                markdown_text += f"</td></tr>\n"
+                markdown_text += "</td></tr>\n"
             else:
                 markdown_text += f"### {emoji} {key_nice}: {value}\n\n"
         elif 'relevant tests' in key_nice.lower():
             value = str(value).strip().lower()
             if gfm_supported:
-                markdown_text += f"<tr><td>"
+                markdown_text += "<tr><td>"
                 if is_value_no(value):
                     markdown_text += f"{emoji}&nbsp;<strong>No relevant tests</strong>"
                 else:
                     markdown_text += f"{emoji}&nbsp;<strong>PR contains tests</strong>"
-                markdown_text += f"</td></tr>\n"
+                markdown_text += "</td></tr>\n"
             else:
                 if is_value_no(value):
                     markdown_text += f'### {emoji} No relevant tests\n\n'
@@ -215,20 +214,20 @@ def convert_to_markdown_v2(output_data: dict,
             if gfm_supported:
                 markdown_text += f"<tr><td>{emoji}&nbsp;<strong>Contribution time estimate</strong> (best, average, worst case): "
                 markdown_text += f"{value['best_case'].replace('m', ' minutes')} | {value['average_case'].replace('m', ' minutes')} | {value['worst_case'].replace('m', ' minutes')}"
-                markdown_text += f"</td></tr>\n"
+                markdown_text += "</td></tr>\n"
             else:
                 markdown_text += f"### {emoji} Contribution time estimate (best, average, worst case): "
                 markdown_text += f"{value['best_case'].replace('m', ' minutes')} | {value['average_case'].replace('m', ' minutes')} | {value['worst_case'].replace('m', ' minutes')}\n\n"
         elif 'security concerns' in key_nice.lower():
             if gfm_supported:
-                markdown_text += f"<tr><td>"
+                markdown_text += "<tr><td>"
                 if is_value_no(value):
                     markdown_text += f"{emoji}&nbsp;<strong>No security concerns identified</strong>"
                 else:
                     markdown_text += f"{emoji}&nbsp;<strong>Security concerns</strong><br><br>\n\n"
                     value = emphasize_header(value.strip())
                     markdown_text += f"{value}"
-                markdown_text += f"</td></tr>\n"
+                markdown_text += "</td></tr>\n"
             else:
                 if is_value_no(value):
                     markdown_text += f'### {emoji} No security concerns identified\n\n'
@@ -240,7 +239,7 @@ def convert_to_markdown_v2(output_data: dict,
             if gfm_supported:
                 markdown_text += "<tr><td>"
                 if is_value_no(value):
-                    markdown_text += f"✅&nbsp;<strong>No TODO sections</strong>"
+                    markdown_text += "✅&nbsp;<strong>No TODO sections</strong>"
                 else:
                     markdown_todo_items = format_todo_items(value, git_provider, gfm_supported)
                     markdown_text += f"{emoji}&nbsp;<strong>TODO sections</strong>\n<br><br>\n"
@@ -248,29 +247,29 @@ def convert_to_markdown_v2(output_data: dict,
                 markdown_text += "</td></tr>\n"
             else:
                 if is_value_no(value):
-                    markdown_text += f"### ✅ No TODO sections\n\n"
+                    markdown_text += "### ✅ No TODO sections\n\n"
                 else:
                     markdown_todo_items = format_todo_items(value, git_provider, gfm_supported)
                     markdown_text += f"### {emoji} TODO sections\n\n"
                     markdown_text += markdown_todo_items
         elif 'can be split' in key_nice.lower():
             if gfm_supported:
-                markdown_text += f"<tr><td>"
+                markdown_text += "<tr><td>"
                 markdown_text += process_can_be_split(emoji, value)
-                markdown_text += f"</td></tr>\n"
+                markdown_text += "</td></tr>\n"
         elif 'key issues to review' in key_nice.lower():
             # value is a list of issues
             if is_value_no(value):
                 if gfm_supported:
-                    markdown_text += f"<tr><td>"
+                    markdown_text += "<tr><td>"
                     markdown_text += f"{emoji}&nbsp;<strong>No major issues detected</strong>"
-                    markdown_text += f"</td></tr>\n"
+                    markdown_text += "</td></tr>\n"
                 else:
                     markdown_text += f"### {emoji} No major issues detected\n\n"
             else:
                 issues = value
                 if gfm_supported:
-                    markdown_text += f"<tr><td>"
+                    markdown_text += "<tr><td>"
                     # markdown_text += f"{emoji}&nbsp;<strong>{key_nice}</strong><br><br>\n\n"
                     markdown_text += f"{emoji}&nbsp;<strong>Recommended focus areas for review</strong><br><br>\n\n"
                 else:
@@ -310,12 +309,12 @@ def convert_to_markdown_v2(output_data: dict,
                     except Exception as e:
                         get_logger().exception(f"Failed to process 'Recommended focus areas for review': {e}")
                 if gfm_supported:
-                    markdown_text += f"</td></tr>\n"
+                    markdown_text += "</td></tr>\n"
         else:
             if gfm_supported:
-                markdown_text += f"<tr><td>"
+                markdown_text += "<tr><td>"
                 markdown_text += f"{emoji}&nbsp;<strong>{key_nice}</strong>: {value}"
-                markdown_text += f"</td></tr>\n"
+                markdown_text += "</td></tr>\n"
             else:
                 markdown_text += f"### {emoji} {key_nice}: {value}\n\n"
 
@@ -383,7 +382,7 @@ def ticket_markdown_logic(emoji, markdown_text, value, gfm_supported) -> str:
                                                                           '').strip()
 
                 if not fully_compliant_str and not not_compliant_str:
-                    get_logger().debug(f"Ticket compliance has no requirements",
+                    get_logger().debug("Ticket compliance has no requirements",
                                        artifact={'ticket_url': ticket_url})
                     continue
 
@@ -414,7 +413,7 @@ def ticket_markdown_logic(emoji, markdown_text, value, gfm_supported) -> str:
 
                 # for debugging
                 if requires_further_human_verification:
-                    get_logger().debug(f"Ticket compliance requires further human verification",
+                    get_logger().debug("Ticket compliance requires further human verification",
                                        artifact={'ticket_url': ticket_url,
                                                  'requires_further_human_verification': requires_further_human_verification,
                                                  'compliance_level': ticket_compliance_level})
@@ -451,10 +450,10 @@ def ticket_markdown_logic(emoji, markdown_text, value, gfm_supported) -> str:
 
         # editing table row for ticket compliance analysis
         if gfm_supported:
-            markdown_text += f"<tr><td>\n\n"
+            markdown_text += "<tr><td>\n\n"
             markdown_text += f"**{emoji} Ticket compliance analysis {compliance_emoji}**\n\n"
             markdown_text += ticket_compliance_str
-            markdown_text += f"</td></tr>\n"
+            markdown_text += "</td></tr>\n"
         else:
             markdown_text += f"### {emoji} Ticket compliance analysis {compliance_emoji}\n\n"
             markdown_text += ticket_compliance_str + "\n\n"
@@ -478,11 +477,11 @@ def process_can_be_split(emoji, value):
                 title = split.get('title', '')
                 relevant_files = split.get('relevant_files', [])
                 markdown_text += f"<details><summary>\nSub-PR theme: <b>{title}</b></summary>\n\n"
-                markdown_text += f"___\n\nRelevant files:\n\n"
+                markdown_text += "___\n\nRelevant files:\n\n"
                 for file in relevant_files:
                     markdown_text += f"- {file}\n"
-                markdown_text += f"___\n\n"
-                markdown_text += f"</details>\n\n"
+                markdown_text += "___\n\n"
+                markdown_text += "</details>\n\n"
 
                 # markdown_text += f"#### Sub-PR theme: {title}\n\n"
                 # markdown_text += f"Relevant files:\n\n"
@@ -539,7 +538,7 @@ def parse_code_suggestion(code_suggestion: dict, i: int = 0, gfm_supported: bool
                     markdown_text += (f"<tr><td>{sub_key} &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</td>"
                                       f"<td>\n\n<strong>\n\n{sub_value.strip()}\n\n</strong>\n</td></tr>")
                 elif sub_key.lower() == 'relevant_line':
-                    markdown_text += f"<tr><td>relevant line</td>"
+                    markdown_text += "<tr><td>relevant line</td>"
                     sub_value_list = sub_value.split('](')
                     relevant_line = sub_value_list[0].lstrip('`').lstrip('[')
                     if len(sub_value_list) > 1:
@@ -759,10 +758,10 @@ def load_yaml(response_text: str, keys_fix_yaml: List[str] = [], first_key="", l
         data = try_fix_yaml(response_text, keys_fix_yaml=keys_fix_yaml, first_key=first_key, last_key=last_key,
                             response_text_original=response_text_original)
         if not data:
-            get_logger().error(f"Failed to parse AI prediction after fallbacks",
+            get_logger().error("Failed to parse AI prediction after fallbacks",
                                artifact={'response_text': response_text})
         else:
-            get_logger().info(f"Successfully parsed AI prediction after fallbacks",
+            get_logger().info("Successfully parsed AI prediction after fallbacks",
                               artifact={'response_text': response_text})
     return data
 
@@ -788,7 +787,7 @@ def try_fix_yaml(response_text: str,
                                                                                   f'{key} |\n        ')
     try:
         data = yaml.safe_load('\n'.join(response_text_lines_copy))
-        get_logger().info(f"Successfully parsed AI prediction after adding |-\n")
+        get_logger().info("Successfully parsed AI prediction after adding |-\n")
         return data
     except:
         pass
@@ -798,7 +797,7 @@ def try_fix_yaml(response_text: str,
     response_text_copy = response_text_copy.replace('|\n', '|2\n')
     try:
         data = yaml.safe_load(response_text_copy)
-        get_logger().info(f"Successfully parsed AI prediction after replacing | with |2")
+        get_logger().info("Successfully parsed AI prediction after replacing | with |2")
         return data
     except:
         # if it fails, we can try to add spaces to the lines that are not indented properly, and contain '}'.
@@ -809,7 +808,7 @@ def try_fix_yaml(response_text: str,
                 response_text_lines_copy[i] = '    ' + response_text_lines_copy[i].lstrip()
         try:
             data = yaml.safe_load('\n'.join(response_text_lines_copy))
-            get_logger().info(f"Successfully parsed AI prediction after replacing | with |2 and adding spaces")
+            get_logger().info("Successfully parsed AI prediction after replacing | with |2 and adding spaces")
             return data
         except:
             pass
@@ -824,7 +823,7 @@ def try_fix_yaml(response_text: str,
         snippet_text = snippet.group(2)
         try:
             data = yaml.safe_load(snippet_text)
-            get_logger().info(f"Successfully parsed AI prediction after extracting yaml snippet")
+            get_logger().info("Successfully parsed AI prediction after extracting yaml snippet")
             return data
         except Exception as e:
             get_logger().debug(f"Failed to parse AI prediction after extracting yaml snippet: {e}")
@@ -834,7 +833,7 @@ def try_fix_yaml(response_text: str,
     response_text_copy = response_text.strip().rstrip().removeprefix('{').removesuffix('}').rstrip(':\n')
     try:
         data = yaml.safe_load(response_text_copy)
-        get_logger().info(f"Successfully parsed AI prediction after removing curly brackets")
+        get_logger().info("Successfully parsed AI prediction after removing curly brackets")
         return data
     except:
         pass
@@ -855,7 +854,7 @@ def try_fix_yaml(response_text: str,
         if response_text_copy:
             try:
                 data = yaml.safe_load(response_text_copy)
-                get_logger().info(f"Successfully parsed AI prediction after extracting yaml snippet")
+                get_logger().info("Successfully parsed AI prediction after extracting yaml snippet")
                 return data
             except:
                 pass
@@ -867,7 +866,7 @@ def try_fix_yaml(response_text: str,
             response_text_lines_copy[i] = ' ' + response_text_lines_copy[i][1:]
     try:
         data = yaml.safe_load('\n'.join(response_text_lines_copy))
-        get_logger().info(f"Successfully parsed AI prediction after removing leading '+'")
+        get_logger().info("Successfully parsed AI prediction after removing leading '+'")
         return data
     except:
         pass
@@ -878,7 +877,7 @@ def try_fix_yaml(response_text: str,
         response_text_copy = response_text_copy.replace('\t', '    ')
         try:
             data = yaml.safe_load(response_text_copy)
-            get_logger().info(f"Successfully parsed AI prediction after replacing tabs with spaces")
+            get_logger().info("Successfully parsed AI prediction after replacing tabs with spaces")
             return data
         except:
             pass
@@ -901,7 +900,7 @@ def try_fix_yaml(response_text: str,
     response_text_copy = response_text_copy.replace(' |\n', ' |2\n')
     try:
         data = yaml.safe_load(response_text_copy)
-        get_logger().info(f"Successfully parsed AI prediction after adding indent for sections of code blocks")
+        get_logger().info("Successfully parsed AI prediction after adding indent for sections of code blocks")
         return data
     except:
         pass
@@ -911,7 +910,7 @@ def try_fix_yaml(response_text: str,
     response_text_copy = response_text_copy.lstrip('|\n')
     try:
         data = yaml.safe_load(response_text_copy)
-        get_logger().info(f"Successfully parsed AI prediction after removing pipe chars")
+        get_logger().info("Successfully parsed AI prediction after removing pipe chars")
         return data
     except:
         pass
@@ -1281,7 +1280,7 @@ def show_relevant_configurations(relevant_section: str) -> str:
     markdown_text = ""
     markdown_text += "\n<hr>\n<details> <summary><strong>🛠️ Relevant configurations:</strong></summary> \n\n"
     markdown_text +="<br>These are the relevant [configurations](https://github.com/Codium-ai/pr-agent/blob/main/pr_agent/settings/configuration.toml) for this tool:\n\n"
-    markdown_text += f"**[config**]\n```yaml\n\n"
+    markdown_text += "**[config**]\n```yaml\n\n"
     for key, value in get_settings().config.items():
         if key in skip_keys:
             continue
@@ -1411,7 +1410,7 @@ def process_description(description_full: str) -> Tuple[str, List]:
                         if '<code>...</code>' in file_data:
                             pass # PR with many files. some did not get analyzed
                         else:
-                            get_logger().warning(f"Failed to parse description", artifact={'description': file_data})
+                            get_logger().warning("Failed to parse description", artifact={'description': file_data})
                 except Exception as e:
                     get_logger().exception(f"Failed to process description: {e}", artifact={'description': file_data})
 
