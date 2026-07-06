@@ -32,7 +32,18 @@ def _settings(*, enable_org_template=True, use_description_markers=False):
     pd.get.side_effect = lambda key, default=None: {
         "enable_org_template": enable_org_template,
         "enable_conventional_title": False,
+        "use_description_markers": use_description_markers,
     }.get(key, default)
+    # Phase 4: _fork_toggle reads settings.get("config", {}).get(key, None)
+    # first. Without this, a bare MagicMock returns a truthy MagicMock for
+    # settings.config.get(...) and every fork toggle would read as
+    # "explicitly-set-in-config". Make the [config] section behave as empty so
+    # _fork_toggle falls through to pr_description.*.
+    config_section = MagicMock()
+    config_section.get.side_effect = lambda key, default=None: default
+    settings.get.side_effect = lambda key, default=None: (
+        config_section if key == "config" else default
+    )
     return settings
 
 

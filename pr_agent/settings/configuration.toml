@@ -129,6 +129,7 @@ async_ai_calls=true
 # --- fork: org MR enhancements (default off; see docs/fork/org-mr-enhancements.md) ---
 enable_conventional_title=false
 enable_org_template=false
+enable_pr_agent_output=false # when false + enable_org_template=true, suppress PR-Agent's default '## PR Description' body (walkthrough/diagram still render inside the org template's '## Changes' section)
 [pr_questions] # /ask #
 enable_help_text=false
 use_conversation_history=true
@@ -325,6 +326,7 @@ pr_commands = [
 [litellm]
 # use_client = false
 # drop_params = false
+suppress_provider_debug_info = true # silence litellm's raw "Provider List:" banner, printed from internal cost/token accounting even on successful calls
 enable_callbacks = false
 success_callback = []
 failure_callback = []

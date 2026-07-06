@@ -91,6 +91,36 @@ if pyproject_path is not None:
     get_settings().load_file(pyproject_path, env=f'tool.{PR_AGENT_TOML_KEY}')
 
 
+def _mirror_fork_config_keys(settings=global_settings):
+    """Mirror legacy `CONFIG__*` overrides into the `[pr_description]` section.
+
+    The fork's dual-read helper (pr_description._fork_toggle) consults `[config]`
+    first for the fork toggles, so legacy `CONFIG__*` env vars reach the fork
+    reads without help. `use_description_markers` is different: it is read by
+    UPSTREAM code (the marker-vs-normal branch in PRDescription.run and the
+    `_prepare_pr_answer_with_markers` guard) which consults `pr_description.*`
+    directly. This mirror copies an explicitly-set `config.use_description_markers`
+    into `pr_description.use_description_markers` so the upstream branch honors
+    `CONFIG__USE_DESCRIPTION_MARKERS` without editing upstream code.
+
+    Idempotent and safe: only writes when `config.use_description_markers` is
+    explicitly non-None, so a default or absent value never clobbers an
+    explicit `pr_description.use_description_markers`.
+    """
+    try:
+        val = settings.get("config.use_description_markers", None)
+    except Exception:
+        val = None
+    if val is not None:
+        try:
+            settings.set("pr_description.use_description_markers", val)
+        except Exception:
+            pass
+
+
+_mirror_fork_config_keys()
+
+
 def apply_secrets_manager_config():
     """
     Retrieve configuration from AWS Secrets Manager and override existing settings

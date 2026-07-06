@@ -118,16 +118,30 @@ def _is_gitlab_provider(git_provider) -> bool:
     return isinstance(git_provider, GitLabProvider)
 
 
+def _fork_toggle(key, default=False, settings=None) -> bool:
+    # Dual-read: legacy `CONFIG__*` env access (config.*) wins when explicitly
+    # set; otherwise fall back to `pr_description.*`. Keys stay defined in
+    # [pr_description]; config.* only carries an override when an operator set
+    # the legacy-style env var (dynaconf SECTION__KEY convention: CONFIG__ ->
+    # [config]). See docs/fork/org-mr-enhancements.md (Phase 4).
+    s = settings if settings is not None else get_settings()
+    config_section = s.get("config", {}) if hasattr(s, "get") else {}
+    val = config_section.get(key, None) if hasattr(config_section, "get") else None
+    if val is not None:
+        return val
+    return s.pr_description.get(key, default)
+
+
 def _conventional_title_enabled(git_provider) -> bool:
-    return _is_gitlab_provider(git_provider) and get_settings().pr_description.get("enable_conventional_title", False)
+    return _is_gitlab_provider(git_provider) and _fork_toggle("enable_conventional_title", False)
 
 
 def _org_template_enabled(git_provider) -> bool:
-    return _is_gitlab_provider(git_provider) and get_settings().pr_description.get("enable_org_template", False)
+    return _is_gitlab_provider(git_provider) and _fork_toggle("enable_org_template", False)
 
 
 def _org_template_active(git_provider) -> bool:
-    return _org_template_enabled(git_provider) and not get_settings().pr_description.use_description_markers
+    return _org_template_enabled(git_provider) and not _fork_toggle("use_description_markers", False)
 
 
 def _format_org_template_value(value) -> str:
