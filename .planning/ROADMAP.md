@@ -26,5 +26,15 @@ Delivered GitLab-only, config-gated `describe` enhancements:
 
 No active milestone. Start the next planning cycle with `$gsd-new-milestone`.
 
+### Phase 4: Expose v1.0 describe toggles via config__* env vars and embed pr_agent:walkthrough into org template
+
+**Goal:** [To be planned]
+**Requirements**: TBD
+**Depends on:** Phase 3
+**Plans:** 0 plans
+Plans:
+
+- [ ] TBD (run /gsd-plan-phase 4 to break down)
+
 ---
 *Last updated: 2026-07-03 after 1.0 completion*

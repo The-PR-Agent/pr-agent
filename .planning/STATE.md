@@ -1,19 +1,18 @@
 ---
 gsd_state_version: 1.0
 milestone: v1.0
-milestone_name: milestone
-current_phase: null
+milestone_name: "describe toggles via config__* env vars and embed pr_agent:walkthrough into org template"
 status: Awaiting next milestone
 stopped_at: Milestone 1.0 complete and archived
-last_updated: "2026-07-03T07:48:33.778Z"
-last_activity: 2026-07-03
-last_activity_desc: Milestone 1.0 completed and archived
+last_updated: "2026-07-06T04:06:04.349Z"
+last_activity: 2026-07-03 — Milestone 1.0 completed and archived
 progress:
   total_phases: 3
   completed_phases: 3
   total_plans: 6
   completed_plans: 6
   percent: 100
+current_phase: null
 current_phase_name: null
 ---
 
@@ -83,6 +82,10 @@ _None yet._
 ### Blockers
 
 _None._
+
+### Roadmap Evolution
+
+- Phase 4 added: Expose v1.0 describe toggles via config__* env vars and embed pr_agent:walkthrough into org template
 
 ## Session Continuity
 
