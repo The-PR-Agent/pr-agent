@@ -238,7 +238,7 @@ class TestGetMaxTokens:
 
         monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
 
-        assert get_max_tokens(model) == 200000
+        assert get_max_tokens(model) == 1000000
 
     @pytest.mark.parametrize(
         "model",
@@ -290,4 +290,4 @@ class TestGetMaxTokens:
 
         monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
 
-        assert get_max_tokens(model) == 200000
+        assert get_max_tokens(model) == 1000000
