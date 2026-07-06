@@ -112,7 +112,7 @@ dev = [
   "pytest-cov==7.0.0",
   "httpx==0.28.1",
   "pre-commit>=4,<5",
-  "flake8==7.3.0",
+  "ruff==0.15.20",
 ]
 
 [tool.ruff]
@@ -126,9 +126,10 @@ lint.select = [
   "I002", # isort missing-required-import
 ]
 
-# First commit - only fixing isort
 lint.fixable = [
-  "I001", # isort basic checks
+  "I001", # import sorting
+  "F401", # unused imports
+  "F541", # f-string without placeholders
 ]
 
 lint.unfixable = [
@@ -137,12 +138,39 @@ lint.unfixable = [
 
 lint.exclude = ["api/code_completions"]
 
-lint.ignore = ["E999", "B008"]
+# B008 is a long-standing ignore. Everything below it is a pre-existing
+# violation deferred so ruff runs green on adoption — fix the code and drop
+# the entry. TODO: burn this list down.
+lint.ignore = [
+  "B008", # function call in argument defaults
+  "E402", # import not at top of file
+  "E501", # line too long
+  "E711", # comparison to None
+  "E713", # test for membership with `not ... in`
+  "E714", # test for object identity with `not ... is`
+  "E721", # type comparison with `==`
+  "E722", # bare `except`
+  "F811", # redefinition of unused name
+  "F841", # unused local variable
+  "B005", # strip() with multi-character string
+  "B006", # mutable argument default
+  "B007", # unused loop control variable
+  "B009", # getattr with constant attribute
+  "B011", # `assert False`
+  "B012", # break/continue/return inside finally
+  "B017", # assertRaises(Exception)
+  "B023", # function definition uses loop variable
+  "B027", # empty method without @abstractmethod
+  "B904", # raise without `from` inside `except`
+  "B905", # zip() without explicit strict=
+]
 
 [tool.ruff.lint.per-file-ignores]
-"__init__.py" = [
-  "E402",
-] # Ignore `E402` (import violations) in all `__init__.py` files, and in `path/to/file.py`.
+# Ignore import-position and unused-import in __init__.py (re-export modules).
+"__init__.py" = ["E402", "F401"]
+# The 'similar issue' tool imports its optional deps (pinecone, pandas,
+# pinecone-datasets) lazily at runtime; ruff can't see them at module scope.
+"pr_agent/tools/pr_similar_issue.py" = ["F821"]
 
 [tool.bandit]
 exclude_dirs = ["tests"]

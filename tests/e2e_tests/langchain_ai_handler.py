@@ -43,7 +43,7 @@ async def measure_performance(handler, num_requests=3):
     total_time = end_time - start_time
     avg_time = total_time / num_requests
     
-    print(f'Performance results:')
+    print('Performance results:')
     print(f'Total time: {total_time:.2f} seconds')
     print(f'Average time per request: {avg_time:.2f} seconds')
     print(f'Requests per second: {num_requests/total_time:.2f}')

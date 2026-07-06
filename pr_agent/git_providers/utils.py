@@ -12,8 +12,7 @@ from dynaconf.loaders import env_loader
 from starlette_context import context
 
 from pr_agent.config_loader import get_settings
-from pr_agent.custom_merge_loader import (MAX_TOML_SIZE_IN_BYTES,
-                                          validate_file_security)
+from pr_agent.custom_merge_loader import MAX_TOML_SIZE_IN_BYTES, validate_file_security
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.log import get_logger
 

@@ -1,7 +1,5 @@
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from pr_agent.algo.token_handler import TokenEncoder
 from pr_agent.algo.utils import clip_tokens
 

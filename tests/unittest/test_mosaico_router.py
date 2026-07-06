@@ -5,15 +5,18 @@ Pins: each path returns a string and NEVER raises; no-files/no-suggestions/empty
 with no exception escaping.
 
 asyncio_mode=auto."""
-import pytest
-
 import aiohttp
+import pytest
 
 from pr_agent.config_loader import global_settings
 from pr_agent.mosaico import dispatch
-from pr_agent.mosaico.dispatch import (_detect_verb, _empty_fallback,
-                                       _error_fallback, route_and_run,
-                                       route_and_run_result, RouteResult)
+from pr_agent.mosaico.dispatch import (
+    _detect_verb,
+    _empty_fallback,
+    _error_fallback,
+    route_and_run,
+    route_and_run_result,
+)
 
 PR_URL = "https://github.com/org/repo/pull/123"
 

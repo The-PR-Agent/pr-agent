@@ -66,7 +66,7 @@ class PRConfig:
 
 
         markdown_text = "<details> <summary><strong>🛠️ PR-Agent Configurations:</strong></summary> \n\n"
-        markdown_text += f"\n\n```yaml\n\n"
+        markdown_text += "\n\n```yaml\n\n"
         for header, configs in relevant_configs.items():
             if configs:
                 markdown_text += "\n\n"
@@ -80,5 +80,5 @@ class PRConfig:
                 markdown_text += "  "
         markdown_text += "\n```"
         markdown_text += "\n</details>\n"
-        get_logger().info(f"Possible Configurations outputted to PR comment", artifact=markdown_text)
+        get_logger().info("Possible Configurations outputted to PR comment", artifact=markdown_text)
         return markdown_text

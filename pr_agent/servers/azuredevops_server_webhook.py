@@ -49,7 +49,7 @@ async def handle_request_comment(url: str, body: str, thread_id: int, comment_id
                 provider.set_thread_status(thread_id, "closed")
                 provider.remove_initial_comment()
     except Exception as e:
-        get_logger().exception(f"Failed to handle webhook", artifact={"url": url, "body": body}, error=str(e))
+        get_logger().exception("Failed to handle webhook", artifact={"url": url, "body": body}, error=str(e))
 
 def handle_line_comment(body: str, thread_id: int, provider: AzureDevopsProvider):
     body = body.strip()

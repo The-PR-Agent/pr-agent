@@ -1,21 +1,19 @@
 import difflib
 import re
-
-from packaging.version import parse as parse_version
+import shlex
+import subprocess
 from typing import Optional, Tuple
 from urllib.parse import quote_plus, urlparse
 
 from atlassian.bitbucket import Bitbucket
+from packaging.version import parse as parse_version
 from requests.exceptions import HTTPError
-import shlex
-import subprocess
 
 from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import decode_if_bytes
 from ..algo.language_handler import is_valid_file
 from ..algo.types import EDIT_TYPE, FilePatchInfo
-from ..algo.utils import (find_line_number_of_relevant_line_in_file,
-                          load_large_diff)
+from ..algo.utils import find_line_number_of_relevant_line_in_file, load_large_diff
 from ..config_loader import get_settings
 from ..log import get_logger
 from .git_provider import GitProvider, get_git_ssl_env
@@ -575,7 +573,7 @@ class BitbucketServerProvider(GitProvider):
         bearer_token = self.bearer_token
         if not bearer_token:
             #Shouldn't happen since this is checked in _prepare_clone, therefore - throwing an exception.
-            raise RuntimeError(f"Bearer token is required!")
+            raise RuntimeError("Bearer token is required!")
 
         cli_args = shlex.split(f"git clone -c http.extraHeader='Authorization: Bearer {bearer_token}' "
                                f"--filter=blob:none --depth 1 {repo_url} {dest_folder}")
