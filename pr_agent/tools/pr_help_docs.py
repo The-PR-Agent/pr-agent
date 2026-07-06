@@ -7,7 +7,6 @@ import os
 import re
 from tempfile import TemporaryDirectory
 
-from pr_agent.algo import MAX_TOKENS
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.pr_processing import retry_with_fallback_models
@@ -466,11 +465,8 @@ class PRHelpDocs(object):
             token_count = self.token_handler.count_tokens(docs_input, force_accurate=True)
             get_logger().debug(f"Estimated token count of documentation to send to model: {token_count}")
             model = get_settings().config.model
-            if model in MAX_TOKENS:
-                max_tokens_full = MAX_TOKENS[
-                    model]  # note - here we take the actual max tokens, without any reductions. we do aim to get the full documentation website in the prompt
-            else:
-                max_tokens_full = get_max_tokens(model)
+            # uncapped context window - we aim to fit the full documentation website into the prompt
+            max_tokens_full = get_max_tokens(model, cap=False)
             delta_output = 5000  # Elbow room to reduce chance of exceeding token limit or model paying less attention to prompt guidelines.
             if token_count > max_tokens_full - delta_output:
                 if only_return_if_trim_needed:

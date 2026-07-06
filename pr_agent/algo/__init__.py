@@ -1,3 +1,27 @@
+import re
+
+# Deployment-decoration tokens that appear between the provider prefix and the model
+# identity: Bedrock cross-region prefixes and cloud vendor names.
+_PROVIDER_INFIX = {"us", "eu", "au", "jp", "apac", "global",
+                   "anthropic", "meta", "amazon", "ai21", "cohere", "mistral"}
+
+
+def base_model_name(model: str) -> str:
+    """Strip deployment decoration so every provider spelling of a model maps to one key.
+
+    e.g. ``anthropic/claude-opus-4-8``, ``bedrock/us.anthropic.claude-opus-4-8-v1:0`` and
+    ``vertex_ai/claude-opus-4-8`` all collapse to ``claude-opus-4-8``. Used for the capability
+    sets below, which are keyed by base model rather than by every provider-prefixed variant.
+    """
+    m = model.split("/", 1)[-1]           # drop provider prefix (anthropic/, bedrock/, vertex_ai/, ...)
+    m = m.replace("@", "-")               # vertex date separator -> '-' (matches anthropic spelling)
+    m = re.sub(r"-v\d+:\d+$", "", m)      # bedrock cloud-version suffix (-v1:0)
+    parts = m.split(".")
+    while len(parts) > 1 and parts[0] in _PROVIDER_INFIX:   # bedrock region + vendor infixes
+        parts.pop(0)
+    return ".".join(parts)                # dotted model versions (gpt-5.2) are preserved
+
+
 MAX_TOKENS = {
     'text-embedding-ada-002': 8000,
     'gpt-3.5-turbo': 16000,
@@ -298,15 +322,19 @@ MAX_TOKENS = {
     "codestral/codestral-2405": 8191,
 }
 
-USER_MESSAGE_ONLY_MODELS = [
-    "deepseek/deepseek-reasoner",
+# The capability sets below are keyed by base model name (see base_model_name); membership is
+# checked with `base_model_name(model) in <set>`, so each model is listed once regardless of
+# provider prefix, Bedrock region, or cloud-version/date suffix.
+
+USER_MESSAGE_ONLY_MODELS = {
+    "deepseek-reasoner",
     "o1-mini",
     "o1-mini-2024-09-12",
-    "o1-preview"
-]
+    "o1-preview",
+}
 
-NO_SUPPORT_TEMPERATURE_MODELS = [
-    "deepseek/deepseek-reasoner",
+NO_SUPPORT_TEMPERATURE_MODELS = {
+    "deepseek-reasoner",
     "o1-mini",
     "o1-mini-2024-09-12",
     "o1",
@@ -323,104 +351,40 @@ NO_SUPPORT_TEMPERATURE_MODELS = [
     "gpt-5.2-codex",
     "gpt-5.3-codex",
     "gpt-5-mini",
-    # Anthropic Claude Opus 4-7 — temperature is deprecated (Issue #2400), (Issue #2449)
+    # Anthropic Claude — temperature is deprecated (Issue #2400), (Issue #2449)
     "claude-opus-4-7",
-    "anthropic/claude-opus-4-7",
     "claude-opus-4-8",
-    "anthropic/claude-opus-4-8",
-    "vertex_ai/claude-opus-4-8",
-    "bedrock/anthropic.claude-opus-4-8",
-    "bedrock/global.anthropic.claude-opus-4-8",
-    "bedrock/us.anthropic.claude-opus-4-8",
-    "bedrock/eu.anthropic.claude-opus-4-8",
-    "bedrock/au.anthropic.claude-opus-4-8",
-    "bedrock/jp.anthropic.claude-opus-4-8",
     "claude-fable-5",
-    "anthropic/claude-fable-5",
     "claude-sonnet-5",
-    "anthropic/claude-sonnet-5",
-    "vertex_ai/claude-sonnet-5",
-    "bedrock/anthropic.claude-sonnet-5",
-    "bedrock/global.anthropic.claude-sonnet-5",
-    "bedrock/us.anthropic.claude-sonnet-5",
-    "bedrock/au.anthropic.claude-sonnet-5",
-    "bedrock/eu.anthropic.claude-sonnet-5",
-    "bedrock/jp.anthropic.claude-sonnet-5",
-    "vertex_ai/claude-opus-4-7",
-    "bedrock/anthropic.claude-opus-4-7",
-    "bedrock/anthropic.claude-opus-4-7-v1:0",
-    "bedrock/us.anthropic.claude-opus-4-7",
-    "bedrock/global.anthropic.claude-opus-4-7",
-]
+}
 
-SUPPORT_REASONING_EFFORT_MODELS = [
+SUPPORT_REASONING_EFFORT_MODELS = {
     "o3-mini",
     "o3-mini-2025-01-31",
     "o3",
     "o3-2025-04-16",
     "o4-mini",
     "o4-mini-2025-04-16",
-]
+}
 
 # Claude models that support "extended thinking" through the manual
 # thinking={"type": "enabled", "budget_tokens": ...} request built by
 # LiteLLMAIHandler._configure_claude_extended_thinking(). Only models that
 # accept budget_tokens belong here. Adaptive-only models (Claude Opus 4.7/4.8,
 # Sonnet 5, Fable 5) reject budget_tokens with an HTTP 400 and must not be added
-# without also adding an adaptive-thinking code path. This list is the built-in
+# without also adding an adaptive-thinking code path. This set is the built-in
 # default; it can be replaced via the `claude_extended_thinking_models_override`
 # configuration option.
-CLAUDE_EXTENDED_THINKING_MODELS = [
-    "anthropic/claude-3-7-sonnet-20250219",
+CLAUDE_EXTENDED_THINKING_MODELS = {
     "claude-3-7-sonnet-20250219",
-    "anthropic/claude-sonnet-4-6",
     "claude-sonnet-4-6",
-    "vertex_ai/claude-sonnet-4-6",
-    "bedrock/anthropic.claude-sonnet-4-6",
-    "bedrock/us.anthropic.claude-sonnet-4-6",
-    "bedrock/au.anthropic.claude-sonnet-4-6",
-    "bedrock/eu.anthropic.claude-sonnet-4-6",
-    "bedrock/jp.anthropic.claude-sonnet-4-6",
-    "bedrock/global.anthropic.claude-sonnet-4-6",
-    "anthropic/claude-sonnet-4-5-20250929",
     "claude-sonnet-4-5-20250929",
-    "vertex_ai/claude-sonnet-4-5@20250929",
-    "bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0",
-    "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-    "bedrock/au.anthropic.claude-sonnet-4-5-20250929-v1:0",
-    "bedrock/eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
-    "bedrock/jp.anthropic.claude-sonnet-4-5-20250929-v1:0",
-    "bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0",
-    "anthropic/claude-opus-4-5-20251101",
     "claude-opus-4-5-20251101",
-    "vertex_ai/claude-opus-4-5@20251101",
-    "bedrock/anthropic.claude-opus-4-5-20251101-v1:0",
-    "bedrock/us.anthropic.claude-opus-4-5-20251101-v1:0",
-    "bedrock/au.anthropic.claude-opus-4-5-20251101-v1:0",
-    "bedrock/eu.anthropic.claude-opus-4-5-20251101-v1:0",
-    "bedrock/jp.anthropic.claude-opus-4-5-20251101-v1:0",
-    "bedrock/global.anthropic.claude-opus-4-5-20251101-v1:0",
-    "anthropic/claude-opus-4-6",
     "claude-opus-4-6",
-    "vertex_ai/claude-opus-4-6",
-    "bedrock/anthropic.claude-opus-4-6-v1:0",
-    "bedrock/us.anthropic.claude-opus-4-6-v1:0",
-    "bedrock/au.anthropic.claude-opus-4-6-v1:0",
-    "bedrock/eu.anthropic.claude-opus-4-6-v1:0",
-    "bedrock/jp.anthropic.claude-opus-4-6-v1:0",
-    "bedrock/global.anthropic.claude-opus-4-6-v1:0",
-    "anthropic/claude-haiku-4-5-20251001",
     "claude-haiku-4-5-20251001",
-    "vertex_ai/claude-haiku-4-5@20251001",
-    "bedrock/anthropic.claude-haiku-4-5-20251001-v1:0",
-    "bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0",
-    "bedrock/au.anthropic.claude-haiku-4-5-20251001-v1:0",
-    "bedrock/eu.anthropic.claude-haiku-4-5-20251001-v1:0",
-    "bedrock/jp.anthropic.claude-haiku-4-5-20251001-v1:0",
-    "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0",
-]
+}
 
 # Models that require streaming mode
-STREAMING_REQUIRED_MODELS = [
-    "openai/qwq-plus"
-]
+STREAMING_REQUIRED_MODELS = {
+    "qwq-plus",
+}

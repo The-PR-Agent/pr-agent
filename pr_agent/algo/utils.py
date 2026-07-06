@@ -989,15 +989,27 @@ def get_user_labels(current_labels: List[str] = None):
     return user_labels
 
 
-def get_max_tokens(model):
+def _litellm_max_tokens(model):
+    """Context window from litellm's built-in registry; None if litellm doesn't know the model."""
+    try:
+        import litellm
+        info = litellm.get_model_info(model)
+        return info.get("max_input_tokens") or info.get("max_tokens")
+    except Exception:
+        return None
+
+
+def get_max_tokens(model, cap=True):
     """
     Get the maximum number of tokens allowed for a model.
     logic:
     (1) If the model is in './pr_agent/algo/__init__.py', use the value from there.
-    (2) else, the user needs to define explicitly 'config.custom_model_max_tokens'
+    (2) else, if 'config.custom_model_max_tokens' is set explicitly, use it.
+    (3) else, fall back to litellm's built-in context-window registry.
 
-    For both cases, we further limit the number of tokens to 'config.max_model_tokens' if it is set.
+    When cap=True, further limit the number of tokens to 'config.max_model_tokens' if it is set.
     This aims to improve the algorithmic quality, as the AI model degrades in performance when the input is too long.
+    Pass cap=False when the uncapped context window is wanted (e.g. fitting full documentation into the prompt).
     """
     settings = get_settings()
     if model in MAX_TOKENS:
@@ -1005,10 +1017,12 @@ def get_max_tokens(model):
     elif settings.config.custom_model_max_tokens > 0:
         max_tokens_model = settings.config.custom_model_max_tokens
     else:
-        get_logger().error(f"Model {model} is not defined in MAX_TOKENS in ./pr_agent/algo/__init__.py and no custom_model_max_tokens is set")
-        raise Exception(f"Ensure {model} is defined in MAX_TOKENS in ./pr_agent/algo/__init__.py or set a positive value for it in config.custom_model_max_tokens")
+        max_tokens_model = _litellm_max_tokens(model)
+        if not max_tokens_model:
+            get_logger().error(f"Model {model} is not defined in MAX_TOKENS in ./pr_agent/algo/__init__.py, not known to litellm, and no custom_model_max_tokens is set")
+            raise Exception(f"Ensure {model} is defined in MAX_TOKENS in ./pr_agent/algo/__init__.py or set a positive value for it in config.custom_model_max_tokens")
 
-    if settings.config.max_model_tokens and settings.config.max_model_tokens > 0:
+    if cap and settings.config.max_model_tokens and settings.config.max_model_tokens > 0:
         max_tokens_model = min(settings.config.max_model_tokens, max_tokens_model)
     return max_tokens_model
 

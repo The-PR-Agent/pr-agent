@@ -5,7 +5,6 @@ from typing import List
 import openai
 from pydantic import BaseModel, Field
 
-from pr_agent.algo import MAX_TOKENS
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import get_max_tokens
 from pr_agent.config_loader import get_settings
@@ -443,7 +442,7 @@ class PRSimilarIssue:
                             continue
 
                         if len(comment_body) < 8000 or \
-                                self.token_handler.count_tokens(comment_body) < MAX_TOKENS[MODEL]:
+                                self.token_handler.count_tokens(comment_body) < get_max_tokens(MODEL):
                             comment_record = Record(
                                 id=issue_key + ".comment_" + str(j + 1),
                                 text=comment_body,
@@ -539,7 +538,7 @@ class PRSimilarIssue:
                             continue
 
                         if len(comment_body) < 8000 or \
-                                self.token_handler.count_tokens(comment_body) < MAX_TOKENS[MODEL]:
+                                self.token_handler.count_tokens(comment_body) < get_max_tokens(MODEL):
                             comment_record = Record(
                                 id=issue_key + ".comment_" + str(j + 1),
                                 text=comment_body,
@@ -637,7 +636,7 @@ class PRSimilarIssue:
                             continue
 
                         if len(comment_body) < 8000 or \
-                                self.token_handler.count_tokens(comment_body) < MAX_TOKENS[MODEL]:
+                                self.token_handler.count_tokens(comment_body) < get_max_tokens(MODEL):
                             comment_record = Record(
                                 id=issue_key + ".comment_" + str(j + 1),
                                 text=comment_body,

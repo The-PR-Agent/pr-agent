@@ -55,17 +55,18 @@ def test_valid_claude_extended_thinking_override_replaces_built_in_models(monkey
 
     handler = litellm_handler.LiteLLMAIHandler()
 
-    assert handler.claude_extended_thinking_models == ["custom-claude-model"]
+    assert handler.claude_extended_thinking_models == {"custom-claude-model"}
     assert handler.claude_extended_thinking_models is not override
     logger.warning.assert_not_called()
 
 
 def test_claude_extended_thinking_override_entries_are_stripped(monkeypatch, logger):
-    # Entries with surrounding whitespace must be stored stripped so exact model matches succeed.
+    # Entries with surrounding whitespace are stripped and normalized to base model names so
+    # membership checks succeed regardless of provider prefix.
     override = ["  custom-claude-model  ", "another-model\n"]
     monkeypatch.setattr(litellm_handler, "get_settings", lambda: settings_with_claude_override(override))
 
     handler = litellm_handler.LiteLLMAIHandler()
 
-    assert handler.claude_extended_thinking_models == ["custom-claude-model", "another-model"]
+    assert handler.claude_extended_thinking_models == {"custom-claude-model", "another-model"}
     logger.warning.assert_not_called()

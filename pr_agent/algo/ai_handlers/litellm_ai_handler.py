@@ -14,7 +14,7 @@ from pr_agent.algo import (CLAUDE_EXTENDED_THINKING_MODELS,
                            NO_SUPPORT_TEMPERATURE_MODELS,
                            STREAMING_REQUIRED_MODELS,
                            SUPPORT_REASONING_EFFORT_MODELS,
-                           USER_MESSAGE_ONLY_MODELS)
+                           USER_MESSAGE_ONLY_MODELS, base_model_name)
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_helpers import (
     MockResponse, _get_azure_ad_token, _handle_streaming_response,
@@ -257,11 +257,11 @@ class LiteLLMAIHandler(BaseAiHandler):
                 "Falling back to the built-in Claude extended-thinking model list."
             )
             override = []
-        # Store stripped names so exact-match checks against the model succeed even when the config
-        # entries contain surrounding whitespace (validation above already used model.strip()).
-        self.claude_extended_thinking_models = (
-            [model.strip() for model in override] if override else CLAUDE_EXTENDED_THINKING_MODELS
-        )
+        # Normalize to base model names so membership checks match regardless of provider prefix,
+        # whether the entries come from config override or the built-in default.
+        self.claude_extended_thinking_models = {
+            base_model_name(model.strip()) for model in override
+        } if override else set(CLAUDE_EXTENDED_THINKING_MODELS)
 
         # Models that require streaming
         self.streaming_required_models = STREAMING_REQUIRED_MODELS
@@ -508,7 +508,7 @@ class LiteLLMAIHandler(BaseAiHandler):
 
 
                 # Currently, some models do not support a separate system and user prompts
-                if model in self.user_message_only_models or get_settings().config.custom_reasoning_model:
+                if base_model_name(model) in self.user_message_only_models or get_settings().config.custom_reasoning_model:
                     user = f"{system}\n\n\n{user}"
                     system = ""
                     get_logger().info(f"Using model {model}, combining system and user prompts")
@@ -528,7 +528,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                     }
 
                 # Add temperature only if model supports it
-                if model not in self.no_support_temperature_models and not get_settings().config.custom_reasoning_model:
+                if base_model_name(model) not in self.no_support_temperature_models and not get_settings().config.custom_reasoning_model:
                     # get_logger().info(f"Adding temperature with value {temperature} to model {model}.")
                     kwargs["temperature"] = temperature
 
@@ -538,7 +538,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                         del kwargs['temperature']
 
                 # Add reasoning_effort if model supports it
-                if model in self.support_reasoning_models:
+                if base_model_name(model) in self.support_reasoning_models:
                     config_effort = get_settings().config.reasoning_effort
                     try:
                         ReasoningEffort(config_effort)
@@ -555,7 +555,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                     kwargs["reasoning_effort"] = reasoning_effort
 
                 # https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking
-                if (model in self.claude_extended_thinking_models) and get_settings().config.get("enable_claude_extended_thinking", False):
+                if (base_model_name(model) in self.claude_extended_thinking_models) and get_settings().config.get("enable_claude_extended_thinking", False):
                     kwargs = self._configure_claude_extended_thinking(model, kwargs)
 
                 if get_settings().litellm.get("enable_callbacks", False):
@@ -642,7 +642,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         Wrapper that automatically handles streaming for required models.
         """
         model = kwargs["model"]
-        if model in self.streaming_required_models:
+        if base_model_name(model) in self.streaming_required_models:
             kwargs["stream"] = True
             get_logger().info(f"Using streaming mode for model {model}")
             response = await acompletion(**kwargs)
