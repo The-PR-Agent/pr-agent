@@ -23,7 +23,7 @@ import yaml
 from pydantic import BaseModel
 from starlette_context import context
 
-from pr_agent.algo import MAX_TOKENS
+from pr_agent.algo import MAX_TOKENS, base_model_name
 from pr_agent.algo.git_patch_processing import extract_hunk_lines_from_patch
 from pr_agent.algo.token_handler import TokenEncoder
 from pr_agent.algo.types import FilePatchInfo
@@ -989,38 +989,54 @@ def get_user_labels(current_labels: List[str] = None):
     return user_labels
 
 
+# Context window used when a model is unknown to both the MAX_TOKENS overrides and litellm.
+# Conservative but non-zero so any model still runs (token clipping stays sane) rather than failing.
+DEFAULT_MODEL_MAX_TOKENS = 32000
+
+
 def _litellm_max_tokens(model):
-    """Context window from litellm's built-in registry; None if litellm doesn't know the model."""
-    try:
-        import litellm
-        info = litellm.get_model_info(model)
-        return info.get("max_input_tokens") or info.get("max_tokens")
-    except Exception:
-        return None
+    """Context window from litellm's built-in, self-updating registry; None if litellm doesn't know it.
+
+    Tries the exact model string first, then the base model name (see base_model_name) since litellm
+    keys its registry by canonical names and often doesn't recognize provider-prefixed / region /
+    cloud-version spellings (e.g. 'bedrock/us.anthropic.claude-sonnet-4-6-v1:0' -> 'claude-sonnet-4-6').
+    """
+    import litellm
+    for name in (model, base_model_name(model)):
+        try:
+            info = litellm.get_model_info(name)
+            ctx = info.get("max_input_tokens") or info.get("max_tokens")
+            if ctx:
+                return ctx
+        except Exception:
+            continue
+    return None
 
 
 def get_max_tokens(model, cap=True):
     """
-    Get the maximum number of tokens allowed for a model.
-    logic:
-    (1) If the model is in './pr_agent/algo/__init__.py', use the value from there.
-    (2) else, if 'config.custom_model_max_tokens' is set explicitly, use it.
-    (3) else, fall back to litellm's built-in context-window registry.
+    Get the maximum number of input tokens allowed for a model. Resolution order:
+    (1) MAX_TOKENS in './pr_agent/algo/__init__.py' — a small override layer for values litellm
+        gets wrong or lacks (matched by exact then base model name).
+    (2) litellm's built-in, self-updating model registry (exact then base model name).
+    (3) 'config.custom_model_max_tokens' if set (>0) — user-declared budget for private/unknown models.
+    (4) DEFAULT_MODEL_MAX_TOKENS with a warning — never raises, so any model runs.
 
     When cap=True, further limit the number of tokens to 'config.max_model_tokens' if it is set.
     This aims to improve the algorithmic quality, as the AI model degrades in performance when the input is too long.
     Pass cap=False when the uncapped context window is wanted (e.g. fitting full documentation into the prompt).
     """
     settings = get_settings()
-    if model in MAX_TOKENS:
-        max_tokens_model = MAX_TOKENS[model]
-    elif settings.config.custom_model_max_tokens > 0:
-        max_tokens_model = settings.config.custom_model_max_tokens
-    else:
-        max_tokens_model = _litellm_max_tokens(model)
-        if not max_tokens_model:
-            get_logger().error(f"Model {model} is not defined in MAX_TOKENS in ./pr_agent/algo/__init__.py, not known to litellm, and no custom_model_max_tokens is set")
-            raise Exception(f"Ensure {model} is defined in MAX_TOKENS in ./pr_agent/algo/__init__.py or set a positive value for it in config.custom_model_max_tokens")
+    max_tokens_model = (MAX_TOKENS.get(model) or MAX_TOKENS.get(base_model_name(model))
+                        or _litellm_max_tokens(model))
+    if not max_tokens_model:
+        if settings.config.custom_model_max_tokens > 0:
+            max_tokens_model = settings.config.custom_model_max_tokens
+        else:
+            max_tokens_model = DEFAULT_MODEL_MAX_TOKENS
+            get_logger().warning(
+                f"Model {model} is unknown to MAX_TOKENS and litellm; using default {DEFAULT_MODEL_MAX_TOKENS}. "
+                f"Set config.custom_model_max_tokens to specify its context window.")
 
     if cap and settings.config.max_model_tokens and settings.config.max_model_tokens > 0:
         max_tokens_model = min(settings.config.max_model_tokens, max_tokens_model)
