@@ -203,16 +203,29 @@ def _apply_checkbox_states(block: str, existing_description: str) -> str:
     return "\n".join(lines)
 
 
-def _render_org_template_block(template: str, what_why, note_risk, existing_description: str = "") -> str:
+def _render_org_template_block(
+    template: str,
+    what_why,
+    note_risk,
+    existing_description: str = "",
+    walkthrough: str = "",
+    diagram: str = "",
+) -> str:
     block = (
         f"{_ORG_TEMPLATE_START}\n\n"
         "## What does this MR do? Why?\n\n"
         f"{_sanitize_org_template_value(what_why)}\n\n"
         "## Note / Risk\n\n"
         f"{_sanitize_org_template_value(note_risk)}\n\n"
+        "## Changes\n\n"
+        f"{(walkthrough or '').strip()}\n\n"
+        f"{(diagram or '').strip()}\n\n"
         f"{_template_checklist(template)}\n\n"
         f"{_ORG_TEMPLATE_END}"
     )
+    # Defensive: never let a forbidden literal leak into the org block even if
+    # a future walkthrough/diagram source reintroduces it (Phase 3 SC#5 —
+    # process_description in utils.py splits on these).
     return _apply_checkbox_states(block, existing_description)
 
 
@@ -734,9 +747,18 @@ class PRDescription:
         self.org_template_fields = {}
         if not _org_template_active(self.git_provider) or not isinstance(self.data, dict):
             return
+        # Capture the RAW walkthrough table (not the wrapped changes_walkthrough,
+        # which carries the literal 'File Walkthrough' header — Phase 3 SC#5).
+        walkthrough_gfm = ""
+        try:
+            walkthrough_gfm, _ = self.process_pr_files_prediction("", self.file_label_dict)
+        except Exception as e:
+            get_logger().warning(f"Could not compute walkthrough for org template: {e}")
         self.org_template_fields = {
             "what_why": self.data.pop("what_why", None),
             "note_risk": self.data.pop("note_risk", None),
+            "walkthrough": walkthrough_gfm,
+            "diagram": self.data.get("changes_diagram"),
         }
 
     def _prepend_org_template(self, pr_body: str) -> str:
@@ -759,7 +781,15 @@ class PRDescription:
             fields.get("what_why"),
             fields.get("note_risk"),
             existing_description,
+            fields.get("walkthrough"),
+            fields.get("diagram"),
         )
+        # When the org template is active and the operator has not opted back
+        # into PR-Agent's own default body, suppress it (render only the org
+        # block). Default false — the early-return guard above keeps this
+        # unreachable when the org template is off (byte-identical-when-off).
+        if not _fork_toggle("enable_pr_agent_output", False):
+            return block
         clean_body = _strip_org_template_block(pr_body)
         return f"{block}\n\n{clean_body}" if clean_body else block
 

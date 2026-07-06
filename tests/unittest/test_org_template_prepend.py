@@ -25,7 +25,7 @@ TEMPLATE = """## What does this MR do? Why?
 """
 
 
-def _settings(*, enable_org_template=True, use_description_markers=False):
+def _settings(*, enable_org_template=True, use_description_markers=False, enable_pr_agent_output=False):
     settings = MagicMock()
     pd = settings.pr_description
     pd.use_description_markers = use_description_markers
@@ -33,6 +33,7 @@ def _settings(*, enable_org_template=True, use_description_markers=False):
         "enable_org_template": enable_org_template,
         "enable_conventional_title": False,
         "use_description_markers": use_description_markers,
+        "enable_pr_agent_output": enable_pr_agent_output,
     }.get(key, default)
     # Phase 4: _fork_toggle reads settings.get("config", {}).get(key, None)
     # first. Without this, a bare MagicMock returns a truthy MagicMock for
@@ -159,7 +160,7 @@ def test_prepend_org_template_replaces_existing_block_and_preserves_checkboxes(
     _mock_is_gitlab_provider,
     _mock_load_template,
 ):
-    mock_get_settings.return_value = _settings()
+    mock_get_settings.return_value = _settings(enable_pr_agent_output=True)
     old_block = _render_org_template_block(TEMPLATE, "- old", "None", "")
     old_block = old_block.replace("- [ ] Added or updated tests", "- [x] Added or updated tests")
     obj = _make_instance()
@@ -193,6 +194,11 @@ def test_stash_org_template_fields_consumes_ai_keys(_mock_is_gitlab_provider, mo
     assert obj.org_template_fields == {
         "what_why": ["Adds org template", "Keeps PR-Agent body"],
         "note_risk": "None",
+        # Phase 4: stash also captures the walkthrough (raw table; empty here
+        # because file_label_dict is not set on this minimal instance) and the
+        # diagram (None when changes_diagram is absent from self.data).
+        "walkthrough": "",
+        "diagram": None,
     }
     assert "what_why" not in obj.data
     assert "note_risk" not in obj.data

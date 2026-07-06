@@ -41,6 +41,24 @@ The two env vars are therefore:
 | `PR_DESCRIPTION__ENABLE_CONVENTIONAL_TITLE=true` | Sets `pr_description.enable_conventional_title` to `True` for the current process. |
 | `PR_DESCRIPTION__ENABLE_ORG_TEMPLATE=true` | Sets `pr_description.enable_org_template` to `True` for the current process. |
 
+## Legacy `config__*` env-var style (Phase 4)
+
+The same toggles are also settable via the legacy `CONFIG__*` style, which
+targets the `[config]` section rather than `[pr_description]`. The fork reads
+each toggle with a dual-read helper (`config.*` first, `pr_description.*`
+fallback), so `CONFIG__*` takes precedence when both are set and
+`PR_DESCRIPTION__*` remains fully supported.
+
+| Env var | Effect |
+| --- | --- |
+| `CONFIG__ENABLE_CONVENTIONAL_TITLE=true` | Enables Angular-convention title rewriting (same as the `PR_DESCRIPTION__` variant). |
+| `CONFIG__ENABLE_ORG_TEMPLATE=true` | Enables the org-template prepend + `## Changes` walkthrough/diagram embed. |
+| `CONFIG__USE_DESCRIPTION_MARKERS=false` | Mirrored into `pr_description.use_description_markers` so the upstream marker-vs-normal branch honors the legacy prefix. |
+| `CONFIG__ENABLE_PR_AGENT_OUTPUT=false` | When `false` (default) and `enable_org_template=true`, suppresses PR-Agent's own default `## PR Description` body — the rendered body is the org template (What/Risk, `## Changes` walkthrough + diagram, Checklist) only. Set `true` to also render PR-Agent's default body below the org block (note: the walkthrough/diagram then render twice — once inside the template, once in the default body). |
+
+When the org template is off (`enable_org_template=false`), behavior is
+byte-identical to upstream regardless of `enable_pr_agent_output`.
+
 Set them in the real environment before the PR-Agent CLI starts — for
 example, in a GitLab CI job's `variables:` block, in a job-level
 `before_script`, or on the invoking shell:
