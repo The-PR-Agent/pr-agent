@@ -1280,7 +1280,10 @@ def push_outputs(message_type: str, payload: dict | None = None, markdown: str |
     """
     try:
         cfg = get_settings().get('push_outputs', {}) or {}
-        if not cfg.get('enable', False):
+        enable = cfg.get('enable', False)
+        if isinstance(enable, str):  # env vars arrive as strings; treat "false"/"0"/"no"/"" as off
+            enable = enable.lower().strip() not in ("false", "0", "no", "")
+        if not enable:
             return
 
         channels = cfg.get('channels', []) or []
