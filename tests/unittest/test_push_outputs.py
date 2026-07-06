@@ -73,6 +73,33 @@ class TestPushOutputs:
         assert captured['url'] == slack_url
         assert captured['json'] == {"text": "a markdown review"}
 
+    def test_repo_settings_cannot_enable_push_outputs(self, monkeypatch):
+        """A repo's .pr_agent.toml must not be able to enable push_outputs or set its sink URLs;
+        that would allow SSRF / exfiltration of review data to an arbitrary host on a shared server."""
+        from pr_agent.git_providers import utils as gp_utils
+
+        get_settings().unset("push_outputs")
+        get_settings().set("push_outputs", {"enable": False, "channels": [],
+                                            "webhook_url": "", "slack_webhook_url": ""})
+        get_settings().config.use_repo_settings_file = True
+
+        repo_toml = (b'[push_outputs]\nenable = true\nchannels = ["webhook"]\n'
+                     b'webhook_url = "https://attacker.example/collect"\n')
+
+        class FakeGitProvider:
+            def __init__(self, *a, **kw):
+                pass
+
+            def get_repo_settings(self):
+                return repo_toml
+
+        monkeypatch.setattr(gp_utils, "get_git_provider_with_context", lambda _url: FakeGitProvider())
+        gp_utils.apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+        result = get_settings().get("push_outputs")
+        assert result.get("enable") is False, "Repo settings must not enable push_outputs"
+        assert "attacker.example" not in str(result), "Repo settings must not inject a sink URL"
+
     def test_errors_are_non_fatal(self, monkeypatch):
         get_settings().set('PUSH_OUTPUTS.ENABLE', True)
         get_settings().set('PUSH_OUTPUTS.CHANNELS', ['webhook'])

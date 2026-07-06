@@ -1307,15 +1307,17 @@ def push_outputs(message_type: str, payload: dict | None = None, markdown: str |
                 fh.write(json.dumps(record, ensure_ascii=False) + "\n")
 
         # ponytail: local channels first, network last, so a failed POST can't lose a file write.
+        # allow_redirects=False: never follow a redirect from a configured sink to another host.
         if "webhook" in channels and cfg.get('webhook_url'):
-            requests.post(cfg['webhook_url'], json=record, timeout=5)
+            requests.post(cfg['webhook_url'], json=record, timeout=5, allow_redirects=False)
 
         # Slack Incoming Webhooks accept {"text": ...} directly — no relay service needed.
         if "slack" in channels and cfg.get('slack_webhook_url'):
             text = markdown if markdown is not None else json.dumps(payload or {}, ensure_ascii=False)
-            requests.post(cfg['slack_webhook_url'], json={"text": text}, timeout=5)
+            requests.post(cfg['slack_webhook_url'], json={"text": text}, timeout=5, allow_redirects=False)
     except Exception as e:
-        get_logger().warning(f"push_outputs failed: {e}")
+        # Log only the exception type: requests errors embed the (secret-bearing) URL in their text.
+        get_logger().warning(f"push_outputs failed: {type(e).__name__}")
 
 
 def show_relevant_configurations(relevant_section: str) -> str:
