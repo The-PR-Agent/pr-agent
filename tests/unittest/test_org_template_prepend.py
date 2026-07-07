@@ -53,6 +53,9 @@ def _make_instance():
     obj.git_provider = MagicMock()
     obj.git_provider.get_pr_description.return_value = ""
     obj.org_template_fields = {}
+    # Phase 4: _stash_org_template_fields reads self.file_label_dict to gate
+    # walkthrough capture. Default None mirrors the pre-_prepare_file_labels state.
+    obj.file_label_dict = None
     return obj
 
 

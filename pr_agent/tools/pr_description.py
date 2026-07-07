@@ -367,14 +367,16 @@ class PRDescription:
                 self._prepare_data()
                 raw_ai_title = self.data.get('title')
                 self.ai_title = raw_ai_title.strip() if isinstance(raw_ai_title, str) and raw_ai_title.strip() else None
+                # file_label_dict must be populated before _stash_org_template_fields
+                # so the org-template '## Changes' walkthrough capture has a non-None
+                # dict to pass to process_pr_files_prediction (Phase 4).
+                if get_settings().pr_description.enable_semantic_files_types:
+                    self.file_label_dict = self._prepare_file_labels()
                 self._stash_org_template_fields()
             else:
                 get_logger().warning(f"Empty prediction, PR: {self.pr_id}")
                 self.git_provider.remove_initial_comment()
                 return None
-
-            if get_settings().pr_description.enable_semantic_files_types:
-                self.file_label_dict = self._prepare_file_labels()
 
             pr_labels, pr_file_changes = [], []
             if get_settings().pr_description.publish_labels:
@@ -749,11 +751,15 @@ class PRDescription:
             return
         # Capture the RAW walkthrough table (not the wrapped changes_walkthrough,
         # which carries the literal 'File Walkthrough' header — Phase 3 SC#5).
+        # Guard: process_pr_files_prediction calls value.keys() unconditionally,
+        # so skip when file_label_dict is None (e.g. enable_semantic_files_types
+        # off) — matches the normal-path gate at the pr_files branch.
         walkthrough_gfm = ""
-        try:
-            walkthrough_gfm, _ = self.process_pr_files_prediction("", self.file_label_dict)
-        except Exception as e:
-            get_logger().warning(f"Could not compute walkthrough for org template: {e}")
+        if self.file_label_dict:
+            try:
+                walkthrough_gfm, _ = self.process_pr_files_prediction("", self.file_label_dict)
+            except Exception as e:
+                get_logger().warning(f"Could not compute walkthrough for org template: {e}")
         self.org_template_fields = {
             "what_why": self.data.pop("what_why", None),
             "note_risk": self.data.pop("note_risk", None),

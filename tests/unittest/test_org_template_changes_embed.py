@@ -146,3 +146,26 @@ def test_byte_identical_when_org_template_off(mock_get_settings, _mock_is_gitlab
     obj = _make_instance()
     result = obj._prepend_org_template("untouched body")
     assert result == "untouched body"
+
+
+@patch("pr_agent.tools.pr_description._is_gitlab_provider", return_value=True)
+@patch("pr_agent.tools.pr_description.get_settings")
+def test_stash_skips_walkthrough_when_file_label_dict_none(mock_get_settings, _mock_is_gitlab):
+    """Regression: when file_label_dict is None (e.g. enable_semantic_files_types
+    off), _stash_org_template_fields must NOT call process_pr_files_prediction
+    with None (which would throw 'NoneType' object has no attribute 'keys' and
+    yield a partial table). Walkthrough falls back to empty."""
+    mock_get_settings.return_value = _settings(enable_org_template=True)
+    obj = PRDescription.__new__(PRDescription)
+    obj.git_provider = MagicMock()
+    obj.file_label_dict = None  # the regression condition
+    obj.data = {
+        "what_why": "- change",
+        "note_risk": "None",
+        "pr_files": [{"filename": "a.py", "changes_title": "t", "label": "enh"}],
+    }
+
+    obj._stash_org_template_fields()
+
+    assert obj.org_template_fields["walkthrough"] == ""
+    assert "diagram" in obj.org_template_fields
