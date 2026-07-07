@@ -33,10 +33,10 @@ def get_setting_or_env(key: str, default: Union[str, bool] = None) -> Union[str,
 def _inject_artifact_context():
     """Inject CI artifact content into extra_instructions for configured tools."""
     artifact_path_env = (
-        os.environ.get('ARTIFACT_PATH') or os.environ.get('PR_AGENT_ARTIFACT_PATH') or ''
+        os.environ.get("ARTIFACT_PATH") or os.environ.get("PR_AGENT_ARTIFACT_PATH") or ""
     ).strip()
     artifact_instructions_env = (
-        os.environ.get('ARTIFACT_INSTRUCTIONS') or os.environ.get('PR_AGENT_ARTIFACT_INSTRUCTIONS') or ''
+        os.environ.get("ARTIFACT_INSTRUCTIONS") or os.environ.get("PR_AGENT_ARTIFACT_INSTRUCTIONS") or ""
     ).strip()
     if artifact_path_env:
         get_settings().set("ARTIFACTS.ENABLE", True)
@@ -273,11 +273,11 @@ async def run_action():
                     url = event_payload.get("issue", {}).get("url")
 
                 if url:
-                    _inject_artifact_context()
                     body = comment_body.strip().lower()
                     comment_id = event_payload.get("comment", {}).get("id")
                     provider = get_git_provider()(pr_url=url)
                     if is_pr:
+                        _inject_artifact_context()
                         await PRAgent().handle_request(
                             url, body, notify=lambda: provider.add_eyes_reaction(
                                 comment_id, disable_eyes=disable_eyes
@@ -309,7 +309,7 @@ async def run_action():
         try:
             apply_repo_settings(pr_url)
         except Exception as e:
-            get_logger().info(f"github action: failed to apply repo settings for workflow_run: {e}")
+            get_logger().warning(f"github action: failed to apply repo settings for workflow_run: {e}")
 
         # Inject artifact context after repo settings are applied for workflow_run
         _inject_artifact_context()

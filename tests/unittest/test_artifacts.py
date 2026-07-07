@@ -127,6 +127,14 @@ class TestResolveArtifactPath:
             result = resolve_artifact_path(str(outside))
             assert result is None
 
+    def test_root_workspace_does_not_reject_valid_paths(self, tmp_path):
+        f = tmp_path / "artifact.txt"
+        f.write_text("data")
+
+        with patch.dict(os.environ, {"GITHUB_WORKSPACE": "/"}):
+            result = resolve_artifact_path(str(f))
+            assert result == f.resolve()
+
 
 class TestReadAndTruncate:
     def test_reads_file_content(self, tmp_path):

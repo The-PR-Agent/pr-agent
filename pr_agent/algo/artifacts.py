@@ -27,10 +27,7 @@ def resolve_artifact_path(path: str) -> Optional[Path]:
 
         if workspace:
             workspace_resolved = Path(workspace).resolve()
-            under_workspace = (
-                str(resolved).startswith(str(workspace_resolved) + os.sep)
-                or resolved == workspace_resolved
-            )
+            under_workspace = resolved == workspace_resolved or resolved.is_relative_to(workspace_resolved)
             if not under_workspace:
                 get_logger().warning(
                     f"Artifact path '{path}' resolves outside GITHUB_WORKSPACE: {resolved}"

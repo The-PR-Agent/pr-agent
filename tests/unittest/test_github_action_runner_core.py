@@ -116,8 +116,8 @@ def restore_github_settings():
     original_cfg = copy.deepcopy(settings.get("GITHUB_ACTION_CONFIG", None))
     had_app = "GITHUB_APP" in settings
     original_app = copy.deepcopy(settings.get("GITHUB_APP", None))
-    original_is_auto = getattr(settings.config, 'is_auto_command', None)
-    original_final_update = getattr(settings.pr_description, 'final_update_message', None)
+    original_is_auto = getattr(settings.config, "is_auto_command", None)
+    original_final_update = getattr(settings.pr_description, "final_update_message", None)
     yield
     if had_github:
         settings.set("GITHUB", original_github)
