@@ -395,6 +395,20 @@ extra_instructions = "" # public - extra instructions to the auto best practices
 content = ""
 max_patterns = 5 # max number of patterns to be detected
 
+[artifacts]
+# Enable artifact injection into tool prompts (off by default; auto-enabled when artifact_path input is set)
+enable = false
+# File path to the artifact (relative to GITHUB_WORKSPACE, or absolute)
+artifact_path = ""
+# Custom instructions appended after the artifact content (leave empty for a sensible default)
+artifact_instructions = ""
+# Label shown to the AI — defaults to the filename when empty
+artifact_label = ""
+# Which tools receive artifact context
+target_tools = ["pr_reviewer", "pr_description", "pr_code_suggestions"]
+# Max artifact size in characters (content is truncated if exceeded)
+max_artifact_size = 50000
+
 [azure_devops]
 default_comment_status = "closed"
 

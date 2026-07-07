@@ -30,6 +30,53 @@ def get_setting_or_env(key: str, default: Union[str, bool] = None) -> Union[str,
     return value
 
 
+def _inject_artifact_context():
+    """Inject CI artifact content into extra_instructions for configured tools."""
+    artifact_path_env = (
+        os.environ.get('ARTIFACT_PATH') or os.environ.get('PR_AGENT_ARTIFACT_PATH') or ''
+    ).strip()
+    artifact_instructions_env = (
+        os.environ.get('ARTIFACT_INSTRUCTIONS') or os.environ.get('PR_AGENT_ARTIFACT_INSTRUCTIONS') or ''
+    ).strip()
+    if artifact_path_env:
+        get_settings().set("ARTIFACTS.ENABLE", True)
+        get_settings().set("ARTIFACTS.ARTIFACT_PATH", artifact_path_env)
+        if artifact_instructions_env:
+            get_settings().set("ARTIFACTS.ARTIFACT_INSTRUCTIONS", artifact_instructions_env)
+
+    artifacts_enabled = get_settings().get("ARTIFACTS.ENABLE", False)
+    if not is_true(artifacts_enabled):
+        return
+
+    try:
+        from pr_agent.algo.artifacts import load_artifact
+
+        artifact_text = load_artifact()
+        if not artifact_text:
+            return
+        target_tools = get_settings().get(
+            "ARTIFACTS.TARGET_TOOLS",
+            ["pr_reviewer", "pr_description", "pr_code_suggestions"]
+        )
+        if isinstance(target_tools, str):
+            target_tools = [t.strip() for t in target_tools.split(",") if t.strip()]
+        target_tools = {str(t).lower() for t in target_tools}
+        separator = "\n======\n\n"
+        for key in get_settings():
+            setting = get_settings().get(key)
+            if str(type(setting)) == "<class 'dynaconf.utils.boxing.DynaBox'>":
+                if key.lower() in target_tools and hasattr(setting, 'extra_instructions'):
+                    extra_instructions = str(setting.extra_instructions or "")
+                    if artifact_text not in extra_instructions:
+                        setting.extra_instructions = (
+                            extra_instructions + separator + artifact_text
+                            if extra_instructions else artifact_text
+                        )
+        get_logger().info(f"Injected artifact context into tools: {target_tools}")
+    except (OSError, ValueError, TypeError) as e:
+        get_logger().warning(f"github action: failed to process artifacts: {e}", exc_info=True)
+
+
 async def run_action():
     # Get environment variables
     GITHUB_EVENT_NAME = os.environ.get('GITHUB_EVENT_NAME')
@@ -106,8 +153,11 @@ async def run_action():
                                 setting.extra_instructions = updated_instructions
     except Exception as e:
         get_logger().info(f"github action: failed to apply language-specific instructions: {e}")
+
     # Handle pull request opened event
     if GITHUB_EVENT_NAME == "pull_request" or GITHUB_EVENT_NAME == "pull_request_target":
+        # Inject artifact context here so it runs after apply_repo_settings above
+        _inject_artifact_context()
         action = event_payload.get("action")
 
         # Retrieve the list of actions from the configuration
@@ -223,6 +273,7 @@ async def run_action():
                     url = event_payload.get("issue", {}).get("url")
 
                 if url:
+                    _inject_artifact_context()
                     body = comment_body.strip().lower()
                     comment_id = event_payload.get("comment", {}).get("id")
                     provider = get_git_provider()(pr_url=url)
@@ -234,6 +285,58 @@ async def run_action():
                         )
                     else:
                         await PRAgent().handle_request(url, body)
+
+    # Handle workflow_run event (triggered after another workflow completes, e.g. after a terraform plan)
+    elif GITHUB_EVENT_NAME == "workflow_run":
+        workflow_run = event_payload.get("workflow_run", {})
+        if workflow_run.get("event") not in ("pull_request", "pull_request_target"):
+            get_logger().info(
+                f"Skipping workflow_run: originating event is '{workflow_run.get('event')}', "
+                "not 'pull_request' or 'pull_request_target'"
+            )
+            return
+
+        pull_requests = workflow_run.get("pull_requests", [])
+        if not pull_requests:
+            get_logger().info("Skipping workflow_run: no pull_requests found in payload (fork PRs are not supported)")
+            return
+
+        pr_url = pull_requests[0].get("url")
+        if not pr_url:
+            get_logger().info("Skipping workflow_run: pull_requests[0] has no url")
+            return
+
+        try:
+            apply_repo_settings(pr_url)
+        except Exception as e:
+            get_logger().info(f"github action: failed to apply repo settings for workflow_run: {e}")
+
+        # Inject artifact context after repo settings are applied for workflow_run
+        _inject_artifact_context()
+
+        auto_review = get_setting_or_env("GITHUB_ACTION.AUTO_REVIEW", None)
+        if auto_review is None:
+            auto_review = get_setting_or_env("GITHUB_ACTION_CONFIG.AUTO_REVIEW", None)
+        auto_describe = get_setting_or_env("GITHUB_ACTION.AUTO_DESCRIBE", None)
+        if auto_describe is None:
+            auto_describe = get_setting_or_env("GITHUB_ACTION_CONFIG.AUTO_DESCRIBE", None)
+        auto_improve = get_setting_or_env("GITHUB_ACTION.AUTO_IMPROVE", None)
+        if auto_improve is None:
+            auto_improve = get_setting_or_env("GITHUB_ACTION_CONFIG.AUTO_IMPROVE", None)
+
+        get_settings().config.is_auto_command = True
+        get_settings().pr_description.final_update_message = False
+        get_logger().info(
+            f"Running auto actions for workflow_run: auto_describe={auto_describe}, "
+            f"auto_review={auto_review}, auto_improve={auto_improve}"
+        )
+
+        if auto_describe is None or is_true(auto_describe):
+            await PRDescription(pr_url).run()
+        if auto_review is None or is_true(auto_review):
+            await PRReviewer(pr_url).run()
+        if auto_improve is None or is_true(auto_improve):
+            await PRCodeSuggestions(pr_url).run()
 
 
 if __name__ == '__main__':
