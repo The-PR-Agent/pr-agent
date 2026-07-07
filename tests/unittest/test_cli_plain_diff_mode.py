@@ -64,8 +64,6 @@ def test_diff_mode_forces_publish_output(cfg, monkeypatch):
     never suppressed by a config/env that disabled publishing."""
     import io
 
-    import pr_agent.cli as cli
-
     cfg("config.publish_output", False)
     captured = {}
 
@@ -74,7 +72,7 @@ def test_diff_mode_forces_publish_output(cfg, monkeypatch):
             captured["publish_output"] = get_settings().config.publish_output
             return True
 
-    monkeypatch.setattr(cli, "PRAgent", FakeAgent)
+    monkeypatch.setattr("pr_agent.cli.PRAgent", FakeAgent)
     monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
     run(inargs=["--stdin", "review"])
     assert captured["publish_output"] is True
