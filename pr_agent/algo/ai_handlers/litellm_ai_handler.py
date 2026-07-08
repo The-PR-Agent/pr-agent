@@ -16,6 +16,7 @@ from pr_agent.algo import (CLAUDE_EXTENDED_THINKING_MODELS,
                            SUPPORT_REASONING_EFFORT_MODELS,
                            USER_MESSAGE_ONLY_MODELS)
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
+from pr_agent.algo.ai_handlers.codex_auth import apply_codex_auth_to_kwargs
 from pr_agent.algo.ai_handlers.litellm_helpers import (
     MockResponse, _get_azure_ad_token, _handle_streaming_response,
     _process_litellm_extra_body)
@@ -603,6 +604,8 @@ class LiteLLMAIHandler(BaseAiHandler):
                 if (litellm.api_key and litellm.api_key != DUMMY_LITELLM_API_KEY
                         and not is_databricks):
                     kwargs["api_key"] = litellm.api_key
+
+                apply_codex_auth_to_kwargs(kwargs, get_settings())
 
                 # Get completion with automatic streaming detection
                 resp, finish_reason, response_obj = await self._get_completion(**kwargs)

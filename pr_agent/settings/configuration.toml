@@ -342,6 +342,14 @@ failure_callback = []
 service_callback = []
 # model_id = "" # Optional: Custom inference profile ID for Amazon Bedrock
 
+[codex]
+# Optional: authenticate OpenAI-compatible model calls with a Codex CLI auth.json.
+# Use auth_json_path for file-based configuration, or auth_json for an inline JSON string
+# supplied through a secret manager/environment variable. The auth file is read-only here.
+auth_json_path = ""
+auth_json = ""
+api_base = "" # optional; token-based auth.json defaults to https://chatgpt.com/backend-api/codex
+
 [pr_similar_issue]
 skip_comments = false
 force_update_dataset = false

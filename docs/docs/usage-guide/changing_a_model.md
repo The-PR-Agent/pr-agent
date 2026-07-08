@@ -45,6 +45,33 @@ extra_body='{"processing_mode": "flex"}'
 
 See [OpenAI Flex Processing docs](https://platform.openai.com/docs/guides/flex-processing) for details.
 
+### Codex auth.json
+
+To use a Codex seat that was authenticated by the Codex CLI, point PR-Agent at the Codex `auth.json`
+file or provide the same JSON through a secret. PR-Agent reads the file only; it does not refresh or
+rewrite Codex tokens.
+
+```toml
+[config]
+model = "openai/gpt-5.1-codex"
+fallback_models = ["openai/gpt-5.1-codex-mini"]
+
+[codex]
+auth_json_path = "~/.codex/auth.json"
+# Optional. Defaults to the Codex backend.
+api_base = "https://chatgpt.com/backend-api/codex"
+```
+
+For deployments where the auth file is stored in a secret manager, use an inline JSON value instead:
+
+```toml
+[codex]
+auth_json = '{"tokens":{"access_token":"...","refresh_token":"...","id_token":"...","account_id":"..."}}'
+```
+
+`auth_json` and `auth_json_path` also support environment variables using double underscores, such as
+`CODEX__AUTH_JSON_PATH` or `CODEX__AUTH_JSON`.
+
 ### Azure
 
 To use Azure, set in your `.secrets.toml` (working from CLI), or in the GitHub `Settings > Secrets and variables` (working from GitHub App or GitHub Action):
