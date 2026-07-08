@@ -5,7 +5,7 @@
 
 [pr_reviewer]
 enable_review_labels_effort = true
-enable_auto_approval = true
+enable_auto_approval = false
 
 [github_app]
 pr_commands = [
@@ -24,4 +24,4 @@ push_commands = [
 enabled = true
 publish_output = true
 demand_self_review = true
-approve_pr_on_self_review = true
+approve_pr_on_self_review = false
