@@ -5,7 +5,42 @@ Tests cover:
 - Full Asana URL detection
 - Edge cases (mixed content, no tickets, duplicates)
 """
-from pr_agent.tools.ticket_pr_compliance_check import find_asana_tickets
+from pr_agent.git_providers.github_provider import GithubProvider
+from pr_agent.tools.ticket_pr_compliance_check import extract_tickets, find_asana_tickets
+
+
+class _Issue:
+    def __init__(self, number):
+        self.number = number
+        self.title = f"Issue {number}"
+        self.body = f"Issue {number} body"
+        self.labels = []
+
+
+class _Repo:
+    def get_issue(self, number):
+        return _Issue(number)
+
+
+class _GithubProvider(GithubProvider):
+    repo = "owner/repo"
+    base_url_html = "https://github.com"
+    repo_obj = _Repo()
+
+    def __init__(self, description):
+        self.description = description
+
+    def get_user_description(self):
+        return self.description
+
+    def get_pr_branch(self):
+        return ""
+
+    def _parse_issue_url(self, ticket):
+        return self.repo, int(ticket.rsplit("/", 1)[-1])
+
+    def fetch_sub_issues(self, ticket):
+        return []
 
 
 class TestFindAsanaTickets:
@@ -71,3 +106,40 @@ class TestFindAsanaTickets:
         """
         tickets = find_asana_tickets(text)
         assert len(tickets) == 2
+
+    async def test_extract_tickets_includes_asana_reference(self):
+        """extract_tickets() should include Asana references in ticket content."""
+        provider = _GithubProvider(
+            "Related Asana task: https://app.asana.com/0/99/888888888888"
+        )
+
+        tickets = await extract_tickets(provider)
+
+        assert tickets == [
+            {
+                "ticket_id": "https://app.asana.com/0/99/888888888888",
+                "ticket_url": "https://app.asana.com/0/99/888888888888",
+                "title": "Asana Task: https://app.asana.com/0/99/888888888888",
+                "body": (
+                    "Asana task referenced in PR description. "
+                    "Fetch task details from Asana for full context."
+                ),
+                "labels": "",
+            }
+        ]
+
+    async def test_extract_tickets_reserves_slot_for_asana_when_truncated(self):
+        """Asana references should not be dropped when the ticket list is capped."""
+        provider = _GithubProvider(
+            "Fixes #1 and #2 and #3. "
+            "Related Asana task: https://app.asana.com/0/99/888888888888"
+        )
+
+        tickets = await extract_tickets(provider)
+
+        assert len(tickets) == 3
+        asana_tickets = [
+            ticket for ticket in tickets
+            if ticket["ticket_url"].startswith("https://app.asana.com/")
+        ]
+        assert len(asana_tickets) == 1
