@@ -81,6 +81,11 @@ class TestFindAsanaTickets:
         tickets = find_asana_tickets("")
         assert tickets == []
 
+    def test_returns_empty_for_none_input(self):
+        """None input returns an empty list."""
+        tickets = find_asana_tickets(None)
+        assert tickets == []
+
     def test_ignores_github_urls(self):
         """GitHub issue URLs should not be mistaken for Asana tickets."""
         text = "Fix https://github.com/owner/repo/issues/42"
@@ -143,3 +148,21 @@ class TestFindAsanaTickets:
             if ticket["ticket_url"].startswith("https://app.asana.com/")
         ]
         assert len(asana_tickets) == 1
+
+    async def test_extract_tickets_backfills_with_asana_when_truncated(self):
+        """Ticket truncation should still return up to 3 available Asana tickets."""
+        provider = _GithubProvider(
+            "Related Asana tasks: "
+            "https://app.asana.com/0/99/111111111111 "
+            "https://app.asana.com/0/99/222222222222 "
+            "https://app.asana.com/0/99/333333333333 "
+            "https://app.asana.com/0/99/444444444444"
+        )
+
+        tickets = await extract_tickets(provider)
+
+        assert len(tickets) == 3
+        assert all(
+            ticket["ticket_url"].startswith("https://app.asana.com/")
+            for ticket in tickets
+        )

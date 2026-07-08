@@ -40,7 +40,7 @@ _ASANA_TASK_URL_PATTERN = re.compile(
 )
 
 
-def find_asana_tickets(text: str) -> list:
+def find_asana_tickets(text: str | None) -> list:
     """Extract Asana task references from text.
 
     Supports full Asana URLs (``https://app.asana.com/0/{project_id}/{task_id}``).
@@ -52,6 +52,9 @@ def find_asana_tickets(text: str) -> list:
     Returns:
         A list of Asana task URLs.
     """
+    if not isinstance(text, str) or not text:
+        return []
+
     tickets = set()
     for match in _ASANA_TASK_URL_PATTERN.finditer(text):
         tickets.add(match.group(0))
@@ -159,9 +162,9 @@ async def extract_tickets(git_provider):
                 get_logger().info(f"Too many tickets (description + branch): {len(merged)}")
                 # Reserve at least one slot for an Asana reference when
                 # present so it is not systematically dropped.
-                asana_slot = asana_links[:1]
-                gh_slots = 3 - len(asana_slot)
-                tickets = github_like[:gh_slots] + asana_slot
+                reserved_asana_slots = 1 if asana_links else 0
+                github_slots = 3 - reserved_asana_slots
+                tickets = (github_like[:github_slots] + asana_links)[:3]
             else:
                 tickets = merged
             tickets_content = []
