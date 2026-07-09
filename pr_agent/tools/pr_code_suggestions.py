@@ -17,6 +17,8 @@ from pr_agent.algo.git_patch_processing import decouple_and_convert_to_hunks_wit
 from pr_agent.algo.pr_processing import (add_ai_metadata_to_diff_files,
                                          get_pr_diff, get_pr_multi_diffs,
                                          retry_with_fallback_models)
+from pr_agent.algo.skills_loader import get_skills_context
+from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (ModelType, load_yaml, replace_code_tags,
                                  show_relevant_configurations, get_max_tokens, clip_tokens, get_model,
@@ -69,6 +71,8 @@ class PRCodeSuggestions:
             "diff_no_line_numbers": "",  # empty diff for initial calculation
             "num_code_suggestions": num_code_suggestions,
             "extra_instructions": get_repo_metadata_context_str(get_settings().pr_code_suggestions.extra_instructions, self.git_provider),
+            "skills_context": get_skills_context(),
+            "repo_context": build_repo_context(self.git_provider),
             "commit_messages_str": self.git_provider.get_commit_messages(),
             "relevant_best_practices": "",
             "is_ai_metadata": get_settings().get("config.enable_ai_metadata", False),
@@ -252,6 +256,9 @@ class PRCodeSuggestions:
                                                 max_previous_comments=4,
                                                 progress_response=None,
                                                 only_fold=False):
+        if hasattr(git_provider, '_publish_check_run') and get_settings().github.publish_as_check_run:
+            if git_provider._publish_check_run(pr_comment, name):
+                return
 
         def _extract_link(comment_text: str):
             r = re.compile(r"<!--.*?-->")

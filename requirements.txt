@@ -10,7 +10,10 @@ dynaconf==3.2.4
 fastapi==0.118.0
 GitPython==3.1.41
 google-cloud-aiplatform==1.154.0
-google-cloud-storage==2.10.0
+# google-cloud-aiplatform==1.154.0 requires storage <4,>=1.32.0 on py<3.13 and <4,>=3.10.0 on py>=3.13.
+# Pin per-Python (exact, like the rest of this file) so existing installs are unchanged and py3.13 resolves. See #2480.
+google-cloud-storage==2.10.0; python_version < "3.13"
+google-cloud-storage==3.12.0; python_version >= "3.13"
 protobuf==6.33.6  # grpcio-status 1.80.0 forces >=6.31.1,<7; pinned to lock the resolved transitive version
 Jinja2==3.1.6
 litellm==1.84.0

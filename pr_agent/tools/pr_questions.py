@@ -35,6 +35,7 @@ class PRQuestions:
             "diff": "",  # empty diff for initial calculation
             "questions": self.question_str,
             "commit_messages_str": self.git_provider.get_commit_messages(),
+            "extra_instructions": get_settings().pr_questions.extra_instructions,
         }
         self.token_handler = TokenHandler(self.git_provider.pr,
                                           self.vars,

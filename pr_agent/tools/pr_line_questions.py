@@ -35,7 +35,8 @@ class PR_LineQuestions:
             "question": self.question_str,
             "full_hunk": "",
             "selected_lines": "",
-            "conversation_history": "",  
+            "conversation_history": "",
+            "extra_instructions": get_settings().pr_questions.extra_instructions,
         }
         self.token_handler = TokenHandler(self.git_provider.pr,
                                           self.vars,

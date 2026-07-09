@@ -1,6 +1,8 @@
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
+import pytest
 from atlassian.bitbucket import Bitbucket
+from requests.exceptions import HTTPError
 
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.git_providers import BitbucketServerProvider
@@ -14,6 +16,29 @@ class TestBitbucketProvider:
         assert workspace_slug == "WORKSPACE_XYZ"
         assert repo_slug == "MY_TEST_REPO"
         assert pr_number == 321
+
+    def test_get_repo_file_content_reads_from_target_branch(self):
+        # Repo-context files must be read from the PR destination (target) branch,
+        # matching the other providers.
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.pr = MagicMock(destination_branch="release-1.0")
+        provider.get_pr_file_content = MagicMock(return_value="repo context")
+
+        content = provider.get_repo_file_content("AGENTS.md")
+
+        assert content == "repo context"
+        provider.get_pr_file_content.assert_called_once_with("AGENTS.md", "release-1.0")
+
+    def test_get_repo_file_content_from_default_branch(self):
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.pr = MagicMock(destination_branch="release-1.0")
+        provider.get_repo_default_branch = MagicMock(return_value="main")
+        provider.get_pr_file_content = MagicMock(return_value="repo context")
+
+        content = provider.get_repo_file_content("AGENTS.md", from_default_branch=True)
+
+        assert content == "repo context"
+        provider.get_pr_file_content.assert_called_once_with("AGENTS.md", "main")
 
 
 class TestBitbucketServerProvider:
@@ -30,6 +55,77 @@ class TestBitbucketServerProvider:
         assert workspace_slug == "~username"
         assert repo_slug == "my-repo"
         assert pr_number == 1
+
+    def test_get_repo_file_content_reads_from_target_ref(self):
+        # Repo-context files must be read from the PR target ref (toRef), matching
+        # the other providers.
+        provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
+        provider.pr = MagicMock(toRef={"latestCommit": "base-sha"})
+        provider.get_file = MagicMock(return_value="repo context")
+
+        content = provider.get_repo_file_content("AGENTS.md")
+
+        assert content == "repo context"
+        provider.get_file.assert_called_once_with("AGENTS.md", "base-sha")
+
+    def test_get_repo_file_content_from_default_branch(self):
+        provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
+        provider.workspace_slug = "AAA"
+        provider.repo_slug = "my-repo"
+        provider.pr = MagicMock(toRef={"latestCommit": "base-sha"})
+        provider.bitbucket_client = MagicMock()
+        provider.bitbucket_client.get_default_branch.return_value = {"displayId": "main"}
+        provider.get_file = MagicMock(return_value="repo context")
+
+        content = provider.get_repo_file_content("AGENTS.md", from_default_branch=True)
+
+        assert content == "repo context"
+        provider.get_file.assert_called_once_with("AGENTS.md", "main")
+
+    def _make_provider_for_repo_settings(self, get_content_side_effect):
+        # Bypass __init__ (which performs live API calls) and only wire up the
+        # attributes get_repo_settings() relies on.
+        provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
+        provider.workspace_slug = "AAA"
+        provider.repo_slug = "my-repo"
+        provider.bitbucket_client = MagicMock(Bitbucket)
+        provider.bitbucket_client.get_content_of_file.side_effect = get_content_side_effect
+        return provider
+
+    def test_get_repo_settings_missing_file_not_logged_as_error(self):
+        # A missing .pr_agent.toml is expected/optional and must not be logged as an
+        # error, matching the other git providers (issue #2481).
+        def raise_not_found(*args, **kwargs):
+            raise Exception("File not found")
+
+        provider = self._make_provider_for_repo_settings(raise_not_found)
+
+        with patch("pr_agent.git_providers.bitbucket_server_provider.get_logger") as mock_get_logger:
+            logger = mock_get_logger.return_value
+            result = provider.get_repo_settings()
+
+        assert result == ""
+        logger.error.assert_not_called()
+        logger.info.assert_called_once()
+
+    def test_get_repo_settings_404_returns_empty_silently(self):
+        response = MagicMock()
+        response.status_code = 404
+        http_error = HTTPError("404 Not Found")
+        http_error.response = response
+
+        def raise_http_404(*args, **kwargs):
+            raise http_error
+
+        provider = self._make_provider_for_repo_settings(raise_http_404)
+
+        with patch("pr_agent.git_providers.bitbucket_server_provider.get_logger") as mock_get_logger:
+            logger = mock_get_logger.return_value
+            result = provider.get_repo_settings()
+
+        assert result == ""
+        logger.error.assert_not_called()
+        logger.info.assert_not_called()
 
     def mock_get_content_of_file(self, project_key, repository_slug, filename, at=None, markup=None):
         content_map = {
@@ -304,3 +400,95 @@ class TestBitbucketServerProvider:
         actual = provider.get_diff_files()
 
         assert actual == expected
+
+
+@pytest.fixture(autouse=True)
+def _clear_global_settings_cache():
+    from pr_agent.git_providers import git_provider as _gp
+    _gp._GLOBAL_SETTINGS_CACHE.clear()
+    yield
+    _gp._GLOBAL_SETTINGS_CACHE.clear()
+
+
+class TestBitbucketGlobalSettings:
+    def _provider(self):
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.workspace_slug = "myws"
+        provider.headers = {"Authorization": "Bearer x"}
+        return provider
+
+    def test_loads_workspace_pr_agent_settings(self):
+        provider = self._provider()
+        repo_resp = MagicMock(status_code=200)
+        repo_resp.json.return_value = {"mainbranch": {"name": "main"}}
+        file_resp = MagicMock(status_code=200)
+        file_resp.text = "[pr_reviewer]\nnum_max_findings = 5\n"
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request",
+                   side_effect=[repo_resp, file_resp]) as rq, \
+             patch("pr_agent.git_providers.bitbucket_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = True
+            result = provider._get_global_repo_settings()
+        assert result == b"[pr_reviewer]\nnum_max_findings = 5\n"
+        assert rq.call_count == 2  # repo info + file
+        assert "myws/pr-agent-settings" in rq.call_args_list[0].args[1]
+        assert "src/main/.pr_agent.toml" in rq.call_args_list[1].args[1]
+
+    def test_no_access_403_returns_empty_and_caches(self):
+        # A 403 (no access) is a stable/expected condition like 404: return "" AND cache it.
+        provider = self._provider()
+        repo_resp = MagicMock(status_code=403)
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request", return_value=repo_resp) as rq, \
+             patch("pr_agent.git_providers.bitbucket_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = True
+            assert provider._get_global_repo_settings() == ""
+            assert provider._get_global_repo_settings() == ""  # served from cache
+        assert rq.call_count == 1
+
+    def test_missing_settings_repo_returns_empty(self):
+        provider = self._provider()
+        repo_resp = MagicMock(status_code=404)
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request",
+                   return_value=repo_resp), \
+             patch("pr_agent.git_providers.bitbucket_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = True
+            assert provider._get_global_repo_settings() == ""
+
+    def test_disabled_returns_empty(self):
+        provider = self._provider()
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request") as rq, \
+             patch("pr_agent.git_providers.bitbucket_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = False
+            assert provider._get_global_repo_settings() == ""
+        rq.assert_not_called()
+
+    def test_result_is_cached(self):
+        provider = self._provider()
+        repo_resp = MagicMock(status_code=200)
+        repo_resp.json.return_value = {"mainbranch": {"name": "main"}}
+        file_resp = MagicMock(status_code=200)
+        file_resp.text = "[pr_reviewer]\nx = 1\n"
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request",
+                   side_effect=[repo_resp, file_resp]) as rq, \
+             patch("pr_agent.git_providers.bitbucket_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = True
+            provider._get_global_repo_settings()
+            provider._get_global_repo_settings()
+        # Two HTTP calls total (first fetch), none on the cached second call.
+        assert rq.call_count == 2
+
+
+class TestBitbucketLocalSettingsRobustness:
+    def test_get_repo_settings_ignores_error_response_for_local(self):
+        # A non-200/404 response (e.g. 500 error page) must NOT be treated as local TOML content.
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.workspace_slug = "myws"
+        provider.repo_slug = "myrepo"
+        provider.headers = {"Authorization": "Bearer x"}
+        provider.pr = MagicMock(destination_branch="main")
+        resp = MagicMock(status_code=500)
+        resp.text = "<html>internal error</html>"
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request", return_value=resp), \
+             patch("pr_agent.git_providers.bitbucket_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = False
+            result = provider.get_repo_settings()
+        assert result == ""
