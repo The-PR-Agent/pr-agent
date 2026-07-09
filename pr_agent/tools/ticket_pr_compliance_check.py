@@ -300,8 +300,7 @@ async def extract_tickets(git_provider):
             asana_tickets_to_include,
             max_tickets,
         )
-        if tickets_content:
-            return tickets_content
+        return tickets_content
 
     except Exception as e:
         get_logger().error(f"Error extracting tickets error= {e}",
