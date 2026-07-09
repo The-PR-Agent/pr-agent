@@ -43,6 +43,17 @@ class _GithubProvider(GithubProvider):
         return []
 
 
+class _GenericProvider:
+    def __init__(self, description):
+        self.description = description
+
+    def get_user_description(self):
+        return self.description
+
+    def get_pr_branch(self):
+        return ""
+
+
 class TestFindAsanaTickets:
     """Tests for find_asana_tickets()."""
 
@@ -166,3 +177,24 @@ class TestFindAsanaTickets:
             ticket["ticket_url"].startswith("https://app.asana.com/")
             for ticket in tickets
         )
+
+    async def test_extract_tickets_includes_asana_for_non_github_provider(self):
+        """Asana detection should not be limited to the GitHub provider path."""
+        provider = _GenericProvider(
+            "Related Asana task: https://app.asana.com/0/99/888888888888"
+        )
+
+        tickets = await extract_tickets(provider)
+
+        assert tickets == [
+            {
+                "ticket_id": "https://app.asana.com/0/99/888888888888",
+                "ticket_url": "https://app.asana.com/0/99/888888888888",
+                "title": "Asana Task: https://app.asana.com/0/99/888888888888",
+                "body": (
+                    "Asana task referenced in PR description. "
+                    "Fetch task details from Asana for full context."
+                ),
+                "labels": "",
+            }
+        ]

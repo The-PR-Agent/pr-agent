@@ -61,6 +61,23 @@ def find_asana_tickets(text: str | None) -> list:
     return sorted(tickets)
 
 
+def _is_asana_ticket(ticket: str) -> bool:
+    return ticket.startswith("https://app.asana.com/")
+
+
+def _make_asana_ticket_content(ticket: str) -> dict:
+    return {
+        "ticket_id": ticket,
+        "ticket_url": ticket,
+        "title": f"Asana Task: {ticket}",
+        "body": (
+            "Asana task referenced in PR description. "
+            "Fetch task details from Asana for full context."
+        ),
+        "labels": "",
+    }
+
+
 def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url_html='https://github.com'):
     """
     Extract all ticket links from PR description
@@ -134,8 +151,16 @@ def extract_ticket_links_from_branch_name(branch_name, repo_path, base_url_html=
 async def extract_tickets(git_provider):
     MAX_TICKET_CHARACTERS = 10000
     try:
-        if isinstance(git_provider, GithubProvider):
+        user_description = ""
+        try:
             user_description = git_provider.get_user_description()
+        except Exception as e:
+            get_logger().warning(
+                f"Failed to get PR description for Asana ticket detection: {e}"
+            )
+        asana_tickets = find_asana_tickets(user_description)
+
+        if isinstance(git_provider, GithubProvider):
             description_tickets = extract_ticket_links_from_pr_description(
                 user_description, git_provider.repo, git_provider.base_url_html
             )
@@ -150,14 +175,12 @@ async def extract_tickets(git_provider):
                     seen.add(link)
                     merged.append(link)
 
-            # Also detect Asana ticket references in the PR description
-            asana_tickets = find_asana_tickets(user_description)
             for link in asana_tickets:
                 if link not in seen:
                     seen.add(link)
                     merged.append(link)
-            asana_links = [t for t in merged if t.startswith("https://app.asana.com/")]
-            github_like = [t for t in merged if not t.startswith("https://app.asana.com/")]
+            asana_links = [t for t in merged if _is_asana_ticket(t)]
+            github_like = [t for t in merged if not _is_asana_ticket(t)]
             if len(merged) > 3:
                 get_logger().info(f"Too many tickets (description + branch): {len(merged)}")
                 # Reserve at least one slot for an Asana reference when
@@ -174,15 +197,8 @@ async def extract_tickets(git_provider):
                 for ticket in tickets:
                     # Skip Asana URLs — these are external references,
                     # included for visibility but cannot be fetched via GitHub API.
-                    if ticket.startswith("https://app.asana.com/"):
-                        tickets_content.append({
-                            "ticket_id": ticket,
-                            "ticket_url": ticket,
-                            "title": f"Asana Task: {ticket}",
-                            "body": ("Asana task referenced in PR description. "
-                                     "Fetch task details from Asana for full context."),
-                            "labels": "",
-                        })
+                    if _is_asana_ticket(ticket):
+                        tickets_content.append(_make_asana_ticket_content(ticket))
                         continue
 
                     repo_name, original_issue_number = git_provider._parse_issue_url(ticket)
@@ -266,7 +282,14 @@ async def extract_tickets(git_provider):
                         f"Error processing Azure DevOps ticket: {e}",
                         artifact={"traceback": traceback.format_exc()},
                     )
+            seen_ticket_urls = {ticket.get("ticket_url") for ticket in tickets_content}
+            for ticket in asana_tickets:
+                if ticket not in seen_ticket_urls:
+                    tickets_content.append(_make_asana_ticket_content(ticket))
             return tickets_content
+
+        if asana_tickets:
+            return [_make_asana_ticket_content(ticket) for ticket in asana_tickets]
 
     except Exception as e:
         get_logger().error(f"Error extracting tickets error= {e}",
