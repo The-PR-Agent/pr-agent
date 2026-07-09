@@ -74,9 +74,15 @@ def _make_asana_ticket_content(ticket: str) -> dict:
     }
 
 
-def _append_asana_ticket_content(tickets_content: list, asana_tickets: list) -> None:
+def _append_asana_ticket_content(
+    tickets_content: list,
+    asana_tickets: list,
+    max_tickets: int,
+) -> None:
     seen_ticket_urls = {ticket.get("ticket_url") for ticket in tickets_content}
     for ticket in asana_tickets:
+        if len(tickets_content) >= max_tickets:
+            break
         if ticket not in seen_ticket_urls:
             tickets_content.append(_make_asana_ticket_content(ticket))
             seen_ticket_urls.add(ticket)
@@ -154,15 +160,12 @@ def extract_ticket_links_from_branch_name(branch_name, repo_path, base_url_html=
 
 async def extract_tickets(git_provider):
     MAX_TICKET_CHARACTERS = 10000
+    MAX_TICKETS = 3
     try:
-        user_description = ""
-        try:
-            user_description = git_provider.get_user_description()
-        except Exception as e:
-            get_logger().warning(
-                f"Failed to get PR description for Asana ticket detection: {e}"
-            )
+        user_description = git_provider.get_user_description()
         asana_tickets = find_asana_tickets(user_description)
+        tickets_content = []
+        asana_tickets_to_include = asana_tickets
 
         if isinstance(git_provider, GithubProvider):
             description_tickets = extract_ticket_links_from_pr_description(
@@ -180,20 +183,20 @@ async def extract_tickets(git_provider):
                     merged.append(link)
 
             total_tickets = len(merged) + len(asana_tickets)
-            asana_tickets_to_include = asana_tickets
-            if total_tickets > 3:
+            if total_tickets > MAX_TICKETS:
                 get_logger().info(
                     f"Too many tickets (description + branch + Asana): {total_tickets}"
                 )
                 # Reserve at least one slot for an Asana reference when
                 # present so it is not systematically dropped.
                 reserved_asana_slots = 1 if asana_tickets else 0
-                github_slots = 3 - reserved_asana_slots
+                github_slots = MAX_TICKETS - reserved_asana_slots
                 tickets = merged[:github_slots]
-                asana_tickets_to_include = asana_tickets[: 3 - len(tickets)]
+                asana_tickets_to_include = asana_tickets[
+                    : MAX_TICKETS - len(tickets)
+                ]
             else:
                 tickets = merged
-            tickets_content = []
 
             if tickets:
 
@@ -253,13 +256,8 @@ async def extract_tickets(git_provider):
                         'sub_issues': sub_issues_content  # Store sub-issues content
                     })
 
-            _append_asana_ticket_content(tickets_content, asana_tickets_to_include)
-            if tickets_content:
-                return tickets_content
-
         elif isinstance(git_provider, AzureDevopsProvider):
             tickets_info = git_provider.get_linked_work_items()
-            tickets_content = []
             for ticket in tickets_info:
                 try:
                     ticket_body_str = ticket.get("body", "")
@@ -281,11 +279,16 @@ async def extract_tickets(git_provider):
                         f"Error processing Azure DevOps ticket: {e}",
                         artifact={"traceback": traceback.format_exc()},
                     )
-            _append_asana_ticket_content(tickets_content, asana_tickets)
-            return tickets_content
+            if asana_tickets and len(tickets_content) >= MAX_TICKETS:
+                tickets_content = tickets_content[: MAX_TICKETS - 1]
 
-        if asana_tickets:
-            return [_make_asana_ticket_content(ticket) for ticket in asana_tickets]
+        _append_asana_ticket_content(
+            tickets_content,
+            asana_tickets_to_include,
+            MAX_TICKETS,
+        )
+        if tickets_content:
+            return tickets_content
 
     except Exception as e:
         get_logger().error(f"Error extracting tickets error= {e}",

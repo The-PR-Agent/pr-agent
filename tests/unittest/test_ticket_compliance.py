@@ -5,6 +5,7 @@ Tests cover:
 - Full Asana URL detection
 - Edge cases (mixed content, no tickets, duplicates)
 """
+from pr_agent.git_providers import AzureDevopsProvider
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.tools.ticket_pr_compliance_check import extract_tickets, find_asana_tickets
 
@@ -52,6 +53,18 @@ class _GenericProvider:
 
     def get_pr_branch(self):
         return ""
+
+
+class _AzureProvider(AzureDevopsProvider):
+    def __init__(self, description, work_items):
+        self.description = description
+        self.work_items = work_items
+
+    def get_user_description(self):
+        return self.description
+
+    def get_linked_work_items(self):
+        return self.work_items
 
 
 class TestFindAsanaTickets:
@@ -198,3 +211,58 @@ class TestFindAsanaTickets:
                 "labels": "",
             }
         ]
+
+    async def test_extract_tickets_caps_non_github_asana_references(self):
+        """Provider-agnostic Asana fallback should keep ticket context bounded."""
+        provider = _GenericProvider(
+            "Related Asana tasks: "
+            "https://app.asana.com/0/99/111111111111 "
+            "https://app.asana.com/0/99/222222222222 "
+            "https://app.asana.com/0/99/333333333333 "
+            "https://app.asana.com/0/99/444444444444"
+        )
+
+        tickets = await extract_tickets(provider)
+
+        assert len(tickets) == 3
+        assert all(
+            ticket["ticket_url"].startswith("https://app.asana.com/")
+            for ticket in tickets
+        )
+
+    async def test_extract_tickets_caps_azure_asana_references(self):
+        """Azure work items and Asana references should share the ticket cap."""
+        provider = _AzureProvider(
+            "Related Asana task: https://app.asana.com/0/99/888888888888",
+            [
+                {
+                    "id": 1,
+                    "url": "https://dev.azure.com/org/project/_workitems/edit/1",
+                    "title": "Issue 1",
+                    "body": "Issue 1 body",
+                    "acceptance_criteria": "",
+                    "labels": [],
+                },
+                {
+                    "id": 2,
+                    "url": "https://dev.azure.com/org/project/_workitems/edit/2",
+                    "title": "Issue 2",
+                    "body": "Issue 2 body",
+                    "acceptance_criteria": "",
+                    "labels": [],
+                },
+                {
+                    "id": 3,
+                    "url": "https://dev.azure.com/org/project/_workitems/edit/3",
+                    "title": "Issue 3",
+                    "body": "Issue 3 body",
+                    "acceptance_criteria": "",
+                    "labels": [],
+                },
+            ],
+        )
+
+        tickets = await extract_tickets(provider)
+
+        assert len(tickets) == 3
+        assert tickets[-1]["ticket_url"] == "https://app.asana.com/0/99/888888888888"
