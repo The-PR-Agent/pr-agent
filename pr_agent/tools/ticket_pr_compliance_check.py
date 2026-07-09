@@ -61,10 +61,6 @@ def find_asana_tickets(text: str | None) -> list:
     return sorted(tickets)
 
 
-def _is_asana_ticket(ticket: str) -> bool:
-    return ticket.startswith("https://app.asana.com/")
-
-
 def _make_asana_ticket_content(ticket: str) -> dict:
     return {
         "ticket_id": ticket,
@@ -76,6 +72,14 @@ def _make_asana_ticket_content(ticket: str) -> dict:
         ),
         "labels": "",
     }
+
+
+def _append_asana_ticket_content(tickets_content: list, asana_tickets: list) -> None:
+    seen_ticket_urls = {ticket.get("ticket_url") for ticket in tickets_content}
+    for ticket in asana_tickets:
+        if ticket not in seen_ticket_urls:
+            tickets_content.append(_make_asana_ticket_content(ticket))
+            seen_ticket_urls.add(ticket)
 
 
 def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url_html='https://github.com'):
@@ -175,19 +179,18 @@ async def extract_tickets(git_provider):
                     seen.add(link)
                     merged.append(link)
 
-            for link in asana_tickets:
-                if link not in seen:
-                    seen.add(link)
-                    merged.append(link)
-            asana_links = [t for t in merged if _is_asana_ticket(t)]
-            github_like = [t for t in merged if not _is_asana_ticket(t)]
-            if len(merged) > 3:
-                get_logger().info(f"Too many tickets (description + branch): {len(merged)}")
+            total_tickets = len(merged) + len(asana_tickets)
+            asana_tickets_to_include = asana_tickets
+            if total_tickets > 3:
+                get_logger().info(
+                    f"Too many tickets (description + branch + Asana): {total_tickets}"
+                )
                 # Reserve at least one slot for an Asana reference when
                 # present so it is not systematically dropped.
-                reserved_asana_slots = 1 if asana_links else 0
+                reserved_asana_slots = 1 if asana_tickets else 0
                 github_slots = 3 - reserved_asana_slots
-                tickets = (github_like[:github_slots] + asana_links)[:3]
+                tickets = merged[:github_slots]
+                asana_tickets_to_include = asana_tickets[: 3 - len(tickets)]
             else:
                 tickets = merged
             tickets_content = []
@@ -195,12 +198,6 @@ async def extract_tickets(git_provider):
             if tickets:
 
                 for ticket in tickets:
-                    # Skip Asana URLs — these are external references,
-                    # included for visibility but cannot be fetched via GitHub API.
-                    if _is_asana_ticket(ticket):
-                        tickets_content.append(_make_asana_ticket_content(ticket))
-                        continue
-
                     repo_name, original_issue_number = git_provider._parse_issue_url(ticket)
 
                     try:
@@ -256,6 +253,8 @@ async def extract_tickets(git_provider):
                         'sub_issues': sub_issues_content  # Store sub-issues content
                     })
 
+            _append_asana_ticket_content(tickets_content, asana_tickets_to_include)
+            if tickets_content:
                 return tickets_content
 
         elif isinstance(git_provider, AzureDevopsProvider):
@@ -282,10 +281,7 @@ async def extract_tickets(git_provider):
                         f"Error processing Azure DevOps ticket: {e}",
                         artifact={"traceback": traceback.format_exc()},
                     )
-            seen_ticket_urls = {ticket.get("ticket_url") for ticket in tickets_content}
-            for ticket in asana_tickets:
-                if ticket not in seen_ticket_urls:
-                    tickets_content.append(_make_asana_ticket_content(ticket))
+            _append_asana_ticket_content(tickets_content, asana_tickets)
             return tickets_content
 
         if asana_tickets:
