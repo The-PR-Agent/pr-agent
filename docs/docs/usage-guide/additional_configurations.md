@@ -142,25 +142,41 @@ LANGSMITH_PROJECT=<project>
 LANGSMITH_BASE_URL=<url>
 ```
 
-## Bringing additional repository metadata to PR-Agent
+## Bringing per-repo context files to PR-Agent
 
-To provide PR-Agent tools with additional context about your project, you can enable automatic repository metadata detection. 
+`Platforms supported: GitHub, GitLab, Gitea, Bitbucket, Azure DevOps`
 
-If you set:
+To give PR-Agent's tools additional project context, you can have it include repository instruction files — such as [AGENTS.md](https://agents.md/) or [CLAUDE.md](https://www.anthropic.com/engineering/claude-code-best-practices) — in the prompts for the `/review`, `/describe` and `/improve` tools.
+
+By default, PR-Agent looks for an `AGENTS.md` file at the repository root:
 
 ```toml
 [config]
-add_repo_metadata = true
+repo_context_files = ["AGENTS.md"]
 ```
 
-PR-Agent automatically searches for repository metadata files in your PR's head branch root directory. By default, it looks for:
-[AGENTS.MD](https://agents.md/), [QODO.MD](https://docs.codium.ai/qodo-documentation/qodo-command/getting-started/setup-and-quickstart), [CLAUDE.MD](https://www.anthropic.com/engineering/claude-code-best-practices).
-
-You can also specify custom filenames to search for:
+You can list any repository-relative paths. By default the files are read from the repository's **default branch**, so only trusted, already-merged content is used and a PR cannot influence the guidance used to review it. A file that is missing is silently skipped. Set the option to an empty list to disable the feature entirely:
 
 ```toml
 [config]
-add_repo_metadata_file_list= ["file1.md", "file2.md", ...]
+repo_context_files = ["AGENTS.md", "CLAUDE.md", "docs/conventions.md"]
+```
+
+!!! note "Which branch the files are read from"
+    By default (`repo_context_from_default_branch = true`), instruction files are read from the repository's **default branch** — a single trusted source — so neither the PR nor its target branch can alter the guidance used to review it. This matches how Qodo Merge reads these files.
+
+    Set `repo_context_from_default_branch = false` to instead read from the PR's **target (base) branch**. This respects branch-specific instructions (for example a release branch, or a stacked PR that carries its own `AGENTS.md`), at the cost of trusting whoever can write to that target branch. Even then, files are never read from the PR's own head.
+
+    ```toml
+    [config]
+    repo_context_from_default_branch = false
+    ```
+
+To bound how much of this context is sent to the model, `repo_context_max_lines` (default `500`) caps the total number of rendered lines, including the wrapper tags. Content beyond the budget is truncated safely:
+
+```toml
+[config]
+repo_context_max_lines = 500
 ```
 
 ## Ignoring automatic commands in PRs
@@ -280,3 +296,24 @@ ignore_ticket_labels = ["ignore-compliance", "skip-review", "wont-fix"]
 ```
 
 Where `ignore_ticket_labels` is a list of label names that should be ignored during ticket analysis.
+
+### Restricted Mode
+
+When running PR-Agent with limited GitHub/GitLab permissions, set `restricted_mode` to `true` to gracefully skip operations that require elevated access (e.g., pushing changelog changes):
+
+```toml
+[config]
+restricted_mode = true
+```
+
+With restricted mode, the minimum workflow permissions are:
+
+```yaml
+permissions:
+  issues: write
+  pull-requests: write
+```
+
+Within an explicit `permissions:` block, any scope you do not list (such as `contents`) is set to `none`, so you do not need to grant `contents` — restricted mode skips every operation that would require `contents: write`. All tools (`/review`, `/describe`, `/improve`, etc.) continue to work normally with just `pull-requests: write`.
+
+> **Note:** this only holds when a `permissions:` block is present (as above). If you omit the `permissions:` block entirely, the effective defaults are governed by your repository/organization GitHub Actions settings and may grant broader access.

@@ -113,6 +113,52 @@ async def run_action():
         # Retrieve the list of actions from the configuration
         pr_actions = get_settings().get("GITHUB_ACTION_CONFIG.PR_ACTIONS", ["opened", "reopened", "ready_for_review", "review_requested"])
 
+        # Handle synchronize first so it is not captured by pr_actions
+        if action == "synchronize":
+            push_trigger = get_settings().get(
+                "github_action_config.handle_push_trigger",
+                get_settings().get("github_app.handle_push_trigger", False),
+            )
+            if is_true(push_trigger):
+                pr_url = event_payload.get("pull_request", {}).get("url")
+                if not pr_url:
+                    return
+                before_sha = event_payload.get("before")
+                after_sha = event_payload.get("after")
+                if before_sha is not None and before_sha == after_sha:
+                    return
+                pull_request = event_payload.get("pull_request", {})
+                merge_commit_sha = pull_request.get("merge_commit_sha")
+                ignore_merge_commits = get_settings().get(
+                    "github_action_config.push_trigger_ignore_merge_commits",
+                    get_settings().get("github_app.push_trigger_ignore_merge_commits", True),
+                )
+                if is_true(ignore_merge_commits) and after_sha is not None and after_sha == merge_commit_sha:
+                    get_logger().info("Skipping synchronize: merge commit detected")
+                    return
+                sender_type = event_payload.get("sender", {}).get("type")
+                ignore_bot_commits = get_settings().get(
+                    "github_action_config.push_trigger_ignore_bot_commits",
+                    get_settings().get("github_app.push_trigger_ignore_bot_commits", True),
+                )
+                if is_true(ignore_bot_commits) and sender_type == "Bot":
+                    get_logger().info("Skipping synchronize: bot commit detected")
+                    return
+                push_commands = get_settings().get(
+                    "github_action_config.push_commands",
+                    get_settings().get("github_app.push_commands", []),
+                )
+                if isinstance(push_commands, str):
+                    push_commands = [push_commands]
+                if not push_commands:
+                    get_logger().info("No push_commands configured, skipping synchronize")
+                    return
+                get_settings().config.is_auto_command = True
+                get_settings().pr_description.final_update_message = False
+                get_logger().info(f"Running push commands: {push_commands}")
+                for command in push_commands:
+                    await PRAgent().handle_request(pr_url, command)
+                return
         if action in pr_actions:
             pr_url = event_payload.get("pull_request", {}).get("url")
             if pr_url:

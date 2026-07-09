@@ -20,7 +20,8 @@ from ..algo.utils import (clip_tokens,
                           load_large_diff)
 from ..config_loader import get_settings
 from ..log import get_logger
-from .git_provider import MAX_FILES_ALLOWED_FULL, GitProvider
+from .git_provider import (MAX_FILES_ALLOWED_FULL, GitProvider,
+                           get_cached_global_settings)
 
 
 class DiffNotFoundError(Exception):
@@ -289,6 +290,8 @@ class GitLabProvider(GitProvider):
     def is_supported(self, capability: str) -> bool:
         if capability in ['get_issue_comments', 'create_inline_comment', 'publish_inline_comments',
             'publish_file_comments']: # gfm_markdown is supported in gitlab !
+            return False
+        if capability == "push_code" and get_settings().config.restricted_mode:
             return False
         return True
 
@@ -671,9 +674,8 @@ class GitLabProvider(GitProvider):
                 target_file = None
                 for file in diff_files:
                     if file.filename == relevant_file:
-                        if file.filename == relevant_file:
-                            target_file = file
-                            break
+                        target_file = file
+                        break
                 if target_file is None:
                     get_logger().warning(f"Skipping suggestion: file '{relevant_file}' not found in diff")
                     continue
@@ -847,13 +849,14 @@ class GitLabProvider(GitProvider):
         return self.mr.notes.list(get_all=True)[::-1]
 
     def get_repo_settings(self):
-        contents = ""
-        # 1. Try from the wiki project
+        settings_files = []
+        global_settings = self._get_global_repo_settings()
+        if global_settings:
+            settings_files.append(("global", global_settings))
+        # Try from the wiki project
         if get_settings().config.get("use_wiki_settings_file", True):
             try:
                 get_logger().info("Attempting to fetch settings from wiki...")
-                # For GitLab, we can access wikis through the main project object
-                # Attempt to get the '.pr_agent.toml' page
                 wiki_project_id = get_settings().get("GITLAB.WIKI_PROJECT_ID", self.id_project)
                 project = self.gl.projects.get(wiki_project_id)
                 wiki_page = None
@@ -864,22 +867,63 @@ class GitLabProvider(GitProvider):
                             break
                     except Exception:
                         continue
-
                 if wiki_page:
-                    contents = self._extract_toml_from_markdown(wiki_page.content)
+                    wiki_contents = self._extract_toml_from_markdown(wiki_page.content)
+                    if wiki_contents:
+                        settings_files.append(("wiki", wiki_contents))
             except Exception as e:
                 get_logger().warning(f"Failed to fetch settings from wiki: {e}")
-        # 2. Try from the main project
-        if not contents:
-            try:
-                get_logger().info("Attempting to fetch settings from .pr_agent.toml...")
-                project = self.gl.projects.get(self.id_project)
-                main_branch = project.default_branch
-                contents = project.files.get(file_path='.pr_agent.toml', ref=main_branch).decode()
-            except Exception:
-                pass
+        # Fall back to local repo file
+        try:
+            main_branch = self.gl.projects.get(self.id_project).default_branch
+            contents = self.gl.projects.get(self.id_project).files.get(file_path='.pr_agent.toml', ref=main_branch).decode()
+            if contents:
+                settings_files.append(("local", contents))
+        except GitlabGetError:
+            pass  # a missing local .pr_agent.toml is expected
+        except Exception as e:
+            get_logger().warning(f"Failed to load local .pr_agent.toml file, error: {e}")
+        return settings_files if settings_files else ""
 
-        return contents.encode() if isinstance(contents, str) else contents
+    def _get_global_repo_settings(self):
+        # Load an org-wide <group>/pr-agent-settings/.pr_agent.toml (GitLab.com groups only).
+        if not get_settings().config.use_global_settings_file:
+            return ""
+        if not getattr(self, "gl", None) or not getattr(self, "id_project", None):
+            return ""
+        # Group-level global settings are GitLab.com only. Match the host exactly so a self-hosted
+        # instance whose hostname merely contains "gitlab.com" (e.g. "mygitlab.com") is not treated
+        # as GitLab.com. get_pr_owner_id returns the top-level group on gitlab.com.
+        host = (urlparse(self.gitlab_url).hostname or "").lower() if self.gitlab_url else ""
+        group = self.get_pr_owner_id()
+        if not group or host != "gitlab.com":
+            return ""
+        return get_cached_global_settings(
+            f"gitlab:{group}", lambda: self._fetch_global_repo_settings(group))
+
+    def _fetch_global_repo_settings(self, group):
+        try:
+            project = self.gl.projects.get(f"{group}/pr-agent-settings")
+            return project.files.get(file_path='.pr_agent.toml', ref=project.default_branch).decode()
+        except GitlabGetError:
+            # A missing pr-agent-settings project/file is an expected fallback -> return "" (cached).
+            return ""
+        # Transient/unexpected errors propagate so the caller does not cache the failure.
+
+    def get_repo_file_content(self, file_path: str, from_default_branch: bool = False):
+        try:
+            project = self.gl.projects.get(self.id_project)
+            # Read from the MR target branch (the branch being merged into), matching the other
+            # providers; fall back to the project default branch outside of an MR context, or
+            # always when from_default_branch is requested.
+            if from_default_branch:
+                ref = project.default_branch
+            else:
+                ref = getattr(self.mr, "target_branch", None) or project.default_branch
+            contents = project.files.get(file_path=file_path, ref=ref).decode()
+            return decode_if_bytes(contents)
+        except GitlabGetError:
+            return ""
 
     def get_repo_metadata(self) -> dict:
         """Fetch additional repository metadata files.
