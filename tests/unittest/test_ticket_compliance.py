@@ -56,6 +56,11 @@ class _GenericProvider:
         return ""
 
 
+class _FailingProvider:
+    def get_user_description(self):
+        raise RuntimeError("description unavailable")
+
+
 class _AzureProvider(AzureDevopsProvider):
     def __init__(self, description, work_items):
         self.description = description
@@ -212,6 +217,20 @@ class TestFindAsanaTickets:
                 "labels": "",
             }
         ]
+
+    async def test_extract_tickets_returns_empty_list_when_no_tickets_found(self):
+        """No detected tickets should return an empty list rather than None."""
+        provider = _GenericProvider("No related ticket references.")
+
+        tickets = await extract_tickets(provider)
+
+        assert tickets == []
+
+    async def test_extract_tickets_returns_empty_list_on_provider_error(self):
+        """Provider errors should not make extract_tickets() return None."""
+        tickets = await extract_tickets(_FailingProvider())
+
+        assert tickets == []
 
     async def test_extract_tickets_caps_non_github_asana_references(self):
         """Provider-agnostic Asana fallback should keep ticket context bounded."""

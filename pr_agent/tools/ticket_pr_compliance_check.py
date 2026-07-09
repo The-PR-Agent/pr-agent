@@ -306,6 +306,7 @@ async def extract_tickets(git_provider):
     except Exception as e:
         get_logger().error(f"Error extracting tickets error= {e}",
                            artifact={"traceback": traceback.format_exc()})
+    return []
 
 
 async def extract_and_cache_pr_tickets(git_provider, vars):
