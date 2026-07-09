@@ -5,6 +5,7 @@ Tests cover:
 - Full Asana URL detection
 - Edge cases (mixed content, no tickets, duplicates)
 """
+from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import AzureDevopsProvider
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.tools.ticket_pr_compliance_check import extract_tickets, find_asana_tickets
@@ -265,4 +266,66 @@ class TestFindAsanaTickets:
         tickets = await extract_tickets(provider)
 
         assert len(tickets) == 3
+        assert tickets[-1]["ticket_url"] == "https://app.asana.com/0/99/888888888888"
+
+    async def test_extract_tickets_caps_azure_work_items_without_asana(self):
+        """Azure-only work items should also respect the configured ticket cap."""
+        provider = _AzureProvider(
+            "",
+            [
+                {
+                    "id": 1,
+                    "url": "https://dev.azure.com/org/project/_workitems/edit/1",
+                    "title": "Issue 1",
+                    "body": "Issue 1 body",
+                    "acceptance_criteria": "",
+                    "labels": [],
+                },
+                {
+                    "id": 2,
+                    "url": "https://dev.azure.com/org/project/_workitems/edit/2",
+                    "title": "Issue 2",
+                    "body": "Issue 2 body",
+                    "acceptance_criteria": "",
+                    "labels": [],
+                },
+                {
+                    "id": 3,
+                    "url": "https://dev.azure.com/org/project/_workitems/edit/3",
+                    "title": "Issue 3",
+                    "body": "Issue 3 body",
+                    "acceptance_criteria": "",
+                    "labels": [],
+                },
+                {
+                    "id": 4,
+                    "url": "https://dev.azure.com/org/project/_workitems/edit/4",
+                    "title": "Issue 4",
+                    "body": "Issue 4 body",
+                    "acceptance_criteria": "",
+                    "labels": [],
+                },
+            ],
+        )
+
+        tickets = await extract_tickets(provider)
+
+        assert len(tickets) == 3
+        assert [ticket["ticket_id"] for ticket in tickets] == [1, 2, 3]
+
+    async def test_extract_tickets_uses_configured_ticket_cap(self):
+        """The ticket cap should be configurable via pr_reviewer.max_related_tickets."""
+        previous_max = get_settings().get("pr_reviewer.max_related_tickets", 3)
+        get_settings().set("pr_reviewer.max_related_tickets", 4)
+        try:
+            provider = _GithubProvider(
+                "Fixes #1, #2 and #3. "
+                "Related Asana task: https://app.asana.com/0/99/888888888888"
+            )
+
+            tickets = await extract_tickets(provider)
+        finally:
+            get_settings().set("pr_reviewer.max_related_tickets", previous_max)
+
+        assert len(tickets) == 4
         assert tickets[-1]["ticket_url"] == "https://app.asana.com/0/99/888888888888"

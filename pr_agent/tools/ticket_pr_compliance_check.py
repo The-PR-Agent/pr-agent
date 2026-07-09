@@ -2,8 +2,7 @@ import re
 import traceback
 
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers import GithubProvider
-from pr_agent.git_providers import AzureDevopsProvider
+from pr_agent.git_providers import AzureDevopsProvider, GithubProvider
 from pr_agent.log import get_logger
 
 # Compile the regex pattern once, outside the function
@@ -36,8 +35,9 @@ def find_jira_tickets(text):
 
 
 _ASANA_TASK_URL_PATTERN = re.compile(
-    r'https://app\.asana\.com/0/(\d+)/(\d+)'
+    r"https://app\.asana\.com/0/(\d+)/(\d+)"
 )
+DEFAULT_MAX_RELATED_TICKETS = 3
 
 
 def find_asana_tickets(text: str | None) -> list:
@@ -86,6 +86,18 @@ def _append_asana_ticket_content(
         if ticket not in seen_ticket_urls:
             tickets_content.append(_make_asana_ticket_content(ticket))
             seen_ticket_urls.add(ticket)
+
+
+def _get_max_related_tickets() -> int:
+    max_tickets = get_settings().get(
+        "pr_reviewer.max_related_tickets",
+        DEFAULT_MAX_RELATED_TICKETS,
+    )
+    try:
+        max_tickets = int(max_tickets)
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_RELATED_TICKETS
+    return max(max_tickets, 1)
 
 
 def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url_html='https://github.com'):
@@ -138,7 +150,8 @@ def extract_ticket_links_from_branch_name(branch_name, repo_path, base_url_html=
             pattern = re.compile(custom_regex_str)
             if pattern.groups < 1:
                 get_logger().error(
-                    "branch_issue_regex must contain at least one capturing group for the issue number; using default pattern."
+                    "branch_issue_regex must contain at least one capturing group for the issue number; "
+                    "using default pattern."
                 )
                 pattern = BRANCH_ISSUE_PATTERN
         except re.error as e:
@@ -160,7 +173,7 @@ def extract_ticket_links_from_branch_name(branch_name, repo_path, base_url_html=
 
 async def extract_tickets(git_provider):
     MAX_TICKET_CHARACTERS = 10000
-    MAX_TICKETS = 3
+    max_tickets = _get_max_related_tickets()
     try:
         user_description = git_provider.get_user_description()
         asana_tickets = find_asana_tickets(user_description)
@@ -183,17 +196,17 @@ async def extract_tickets(git_provider):
                     merged.append(link)
 
             total_tickets = len(merged) + len(asana_tickets)
-            if total_tickets > MAX_TICKETS:
+            if total_tickets > max_tickets:
                 get_logger().info(
                     f"Too many tickets (description + branch + Asana): {total_tickets}"
                 )
                 # Reserve at least one slot for an Asana reference when
                 # present so it is not systematically dropped.
                 reserved_asana_slots = 1 if asana_tickets else 0
-                github_slots = MAX_TICKETS - reserved_asana_slots
+                github_slots = max_tickets - reserved_asana_slots
                 tickets = merged[:github_slots]
                 asana_tickets_to_include = asana_tickets[
-                    : MAX_TICKETS - len(tickets)
+                    : max_tickets - len(tickets)
                 ]
             else:
                 tickets = merged
@@ -279,13 +292,13 @@ async def extract_tickets(git_provider):
                         f"Error processing Azure DevOps ticket: {e}",
                         artifact={"traceback": traceback.format_exc()},
                     )
-            if asana_tickets and len(tickets_content) >= MAX_TICKETS:
-                tickets_content = tickets_content[: MAX_TICKETS - 1]
+            azure_slots = max_tickets - (1 if asana_tickets else 0)
+            tickets_content = tickets_content[:azure_slots]
 
         _append_asana_ticket_content(
             tickets_content,
             asana_tickets_to_include,
-            MAX_TICKETS,
+            max_tickets,
         )
         if tickets_content:
             return tickets_content
