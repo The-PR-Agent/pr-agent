@@ -6,12 +6,12 @@ See `AGENTS.md` for the full repository guidelines (dos/don'ts, coding style, sa
 
 ## Common commands
 
-Run from the repo root with the virtualenv activated:
+This is a uv project. Run `uv sync` once to create `.venv` and install runtime + dev dependencies from `uv.lock`, then use `uv run` (which auto-syncs):
 
-- Single unit test: `PYTHONPATH=. ./.venv/bin/pytest tests/unittest/test_fix_json_escape_char.py -q`
-- Full unit suite: `PYTHONPATH=. ./.venv/bin/pytest tests/unittest -v`
+- Single unit test: `PYTHONPATH=. uv run pytest tests/unittest/test_fix_json_escape_char.py -q`
+- Full unit suite: `PYTHONPATH=. uv run pytest tests/unittest -v`
 - Pytest auto-discovery is configured in `pyproject.toml` (`asyncio_mode = "auto"`, `testpaths = ["tests"]`); always set `PYTHONPATH=.` to avoid import errors.
-- Local CLI run: `python -m pr_agent.cli --pr_url <url> review`
+- Local CLI run: `uv run pr-agent --pr_url <url> review`
 - Lint: project uses Ruff with `line-length = 120` (config in `pyproject.toml`); pre-commit hooks live in `.pre-commit-config.yaml`.
 - Docker test target (mirror of CI): `docker build -f docker/Dockerfile --target test .`
 - E2E (`tests/e2e_tests/`) and health (`tests/health_test/`) suites require provider tokens (`TOKEN_GITHUB`, `TOKEN_GITLAB`, `BITBUCKET_USERNAME`/`PASSWORD`) and are slow — only run when configured.

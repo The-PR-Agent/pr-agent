@@ -135,10 +135,10 @@ if __name__ == '__main__':
 git clone https://github.com/the-pr-agent/pr-agent.git
 ```
 
-2. Navigate to the `/pr-agent` folder and install the requirements in your favorite virtual environment:
+2. Navigate to the `/pr-agent` folder and install dependencies with [uv](https://docs.astral.sh/uv/) (creates a `.venv` from `uv.lock`):
 
 ```bash
-pip install -e .
+uv sync
 ```
 
 *Note: If you get an error related to Rust in the dependency installation then make sure Rust is installed and in your `PATH`, instructions: https://rustup.rs*
@@ -154,13 +154,13 @@ chmod 600 pr_agent/settings/.secrets.toml
 4. Run the cli.py script:
 
 ```bash
-python3 -m pr_agent.cli --pr_url <pr_url> review
-python3 -m pr_agent.cli --pr_url <pr_url> ask <your question>
-python3 -m pr_agent.cli --pr_url <pr_url> describe
-python3 -m pr_agent.cli --pr_url <pr_url> improve
-python3 -m pr_agent.cli --pr_url <pr_url> add_docs
-python3 -m pr_agent.cli --pr_url <pr_url> generate_labels
-python3 -m pr_agent.cli --issue_url <issue_url> similar_issue
+uv run pr-agent --pr_url <pr_url> review
+uv run pr-agent --pr_url <pr_url> ask "<your question>"
+uv run pr-agent --pr_url <pr_url> describe
+uv run pr-agent --pr_url <pr_url> improve
+uv run pr-agent --pr_url <pr_url> add_docs
+uv run pr-agent --pr_url <pr_url> generate_labels
+uv run pr-agent --issue_url <issue_url> similar_issue
 ...
 ```
 

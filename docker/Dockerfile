@@ -1,12 +1,14 @@
 FROM python:3.12.13-slim AS base
+COPY --from=ghcr.io/astral-sh/uv:0.9.7 /uv /uvx /bin/
 
 RUN apt update && apt install --no-install-recommends -y git curl && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-ADD pyproject.toml .
-ADD requirements.txt .
+ENV UV_COMPILE_BYTECODE=1
+ADD pyproject.toml uv.lock ./
 ADD docs docs
-RUN pip install --no-cache-dir . && rm pyproject.toml requirements.txt
+RUN uv sync --frozen --no-install-project --no-dev
+ENV PATH="/app/.venv/bin:$PATH"
 ENV PYTHONPATH=/app
 
 FROM base AS github_app
@@ -44,8 +46,7 @@ CMD ["python", "pr_agent/mosaico/server.py"]
 
 
 FROM base AS test
-ADD requirements-dev.txt .
-RUN pip install --no-cache-dir -r requirements-dev.txt && rm requirements-dev.txt
+RUN uv sync --frozen --no-install-project
 ADD pr_agent pr_agent
 ADD tests tests
 ADD docker/mosaico docker/mosaico

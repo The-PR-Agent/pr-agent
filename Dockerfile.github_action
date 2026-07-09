@@ -1,11 +1,13 @@
 FROM python:3.12.13-slim AS base
+COPY --from=ghcr.io/astral-sh/uv:0.9.7 /uv /uvx /bin/
 
 RUN apt-get update && apt-get install --no-install-recommends -y git curl && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-ADD pyproject.toml .
-ADD requirements.txt .
-RUN pip install --no-cache-dir . && rm pyproject.toml requirements.txt
+ENV UV_COMPILE_BYTECODE=1
+ADD pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-install-project --no-dev
+ENV PATH="/app/.venv/bin:$PATH"
 ENV PYTHONPATH=/app
 ADD docs docs
 ADD pr_agent pr_agent
