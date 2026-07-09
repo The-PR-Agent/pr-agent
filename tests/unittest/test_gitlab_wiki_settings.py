@@ -45,7 +45,7 @@ class TestGitLabWikiSettings:
             provider = GitLabProvider("https://gitlab.com/test/repo/-/merge_requests/1")
             provider.gl = mock_gitlab_client
             provider.id_project = "test/repo"
-            return provider
+            yield provider
 
     def test_get_repo_settings_from_main_repo(self, gitlab_provider, mock_project):
         mock_file = MagicMock(ProjectFile)
