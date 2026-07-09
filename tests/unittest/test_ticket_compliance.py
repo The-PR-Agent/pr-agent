@@ -24,13 +24,22 @@ class _Repo:
         return _Issue(number)
 
 
+class _PartiallyFailingRepo:
+    def get_issue(self, number):
+        if number == 2:
+            raise RuntimeError("issue unavailable")
+        return _Issue(number)
+
+
 class _GithubProvider(GithubProvider):
     repo = "owner/repo"
     base_url_html = "https://github.com"
     repo_obj = _Repo()
 
-    def __init__(self, description):
+    def __init__(self, description, repo_obj=None):
         self.description = description
+        if repo_obj is not None:
+            self.repo_obj = repo_obj
 
     def get_user_description(self):
         return self.description
@@ -196,6 +205,28 @@ class TestFindAsanaTickets:
             ticket["ticket_url"].startswith("https://app.asana.com/")
             for ticket in tickets
         )
+
+    async def test_extract_tickets_backfills_asana_after_github_fetch_failure(self):
+        """Asana tickets should fill available slots after GitHub issue fetch failures."""
+        provider = _GithubProvider(
+            "Fixes #1 and #2. "
+            "Related Asana tasks: "
+            "https://app.asana.com/0/99/111111111111 "
+            "https://app.asana.com/0/99/222222222222 "
+            "https://app.asana.com/0/99/333333333333",
+            repo_obj=_PartiallyFailingRepo(),
+        )
+
+        tickets = await extract_tickets(provider)
+
+        assert len(tickets) == 3
+        assert tickets[0]["ticket_url"] == "https://github.com/owner/repo/issues/1"
+        assert [
+            ticket["ticket_url"] for ticket in tickets[1:]
+        ] == [
+            "https://app.asana.com/0/99/111111111111",
+            "https://app.asana.com/0/99/222222222222",
+        ]
 
     async def test_extract_tickets_includes_asana_for_non_github_provider(self):
         """Asana detection should not be limited to the GitHub provider path."""

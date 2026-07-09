@@ -205,9 +205,6 @@ async def extract_tickets(git_provider):
                 reserved_asana_slots = 1 if asana_tickets else 0
                 github_slots = max_tickets - reserved_asana_slots
                 tickets = merged[:github_slots]
-                asana_tickets_to_include = asana_tickets[
-                    : max_tickets - len(tickets)
-                ]
             else:
                 tickets = merged
 
