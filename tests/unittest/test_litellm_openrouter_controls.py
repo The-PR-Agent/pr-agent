@@ -8,6 +8,7 @@ as `extra_body.provider`, `extra_body.reasoning` and `max_tokens`, but only for
 models addressed as "openrouter/...". When nothing is configured the block is a
 no-op, and non-openrouter models are never touched.
 """
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import litellm
@@ -16,18 +17,38 @@ import pytest
 
 import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_handler
 
+# Environment variables that LiteLLMAIHandler.__init__ reads or mutates: the AWS
+# credential path (entered when AWS_USE_IMDS is set) writes the AWS_* variables,
+# and OPENAI_API_KEY influences the litellm.api_key fallback.
+_HANDLER_ENV_VARS = (
+    "AWS_USE_IMDS",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_REGION_NAME",
+    "OPENAI_API_KEY",
+)
+
 
 @pytest.fixture(autouse=True)
 def _restore_litellm_globals():
-    """LiteLLMAIHandler.__init__ mutates global litellm/openai state; snapshot and
-    restore it so these tests do not leak into the rest of the suite."""
+    """LiteLLMAIHandler.__init__ mutates global litellm/openai state and, when
+    AWS_USE_IMDS is set, os.environ; snapshot and restore both, and drop
+    AWS_USE_IMDS so the AWS credential path never runs in these tests."""
     saved = (litellm.api_key, getattr(litellm, "openai_key", None), openai.api_key)
+    saved_env = {name: os.environ.get(name) for name in _HANDLER_ENV_VARS}
+    os.environ.pop("AWS_USE_IMDS", None)
     try:
         yield
     finally:
         litellm.api_key = saved[0]
         litellm.openai_key = saved[1]
         openai.api_key = saved[2]
+        for name, value in saved_env.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
 
 def _make_settings(openrouter=None):
