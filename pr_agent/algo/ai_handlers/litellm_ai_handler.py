@@ -443,7 +443,12 @@ class LiteLLMAIHandler(BaseAiHandler):
                 # a multi-provider config) would otherwise hide the 'databricks/' prefix and bypass
                 # the guards that keep Databricks on its own DATABRICKS_API_KEY/DATABRICKS_API_BASE.
                 is_databricks = model.startswith("databricks/")
-                if self.azure and not is_databricks:
+                # OpenRouter models keep their "openrouter/" prefix: __init__ already
+                # routed them to the OpenRouter api_key/api_base, and rewriting to
+                # "azure/openrouter/..." would both misroute the request and skip the
+                # OpenRouter controls block below (guarded by the same prefix).
+                is_openrouter = isinstance(model, str) and model.startswith("openrouter/")
+                if self.azure and not is_databricks and not is_openrouter:
                     model = 'azure/' + model
                 if 'claude' in model and not system:
                     system = "No system prompt provided"

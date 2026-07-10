@@ -160,3 +160,19 @@ class TestOpenRouterControls:
     async def test_non_numeric_max_tokens_ignored(self, monkeypatch):
         kwargs = await _run(monkeypatch, "openrouter/z-ai/glm-5.2", {"max_tokens": "16k"})
         assert "max_tokens" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_azure_mode_does_not_mask_openrouter(self, monkeypatch):
+        # Azure mode must not rewrite "openrouter/..." to "azure/openrouter/...":
+        # that would misroute the request and skip the OpenRouter controls block.
+        monkeypatch.setattr(litellm_handler, "get_settings",
+                            lambda: _make_settings({"provider_only": ["z-ai"]}))
+        with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion",
+                   new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = _mock_response()
+            handler = litellm_handler.LiteLLMAIHandler()
+            handler.azure = True
+            await handler.chat_completion(model="openrouter/z-ai/glm-5.2", system="sys", user="usr")
+        kwargs = mock_call.call_args[1]
+        assert kwargs["model"] == "openrouter/z-ai/glm-5.2"
+        assert kwargs["extra_body"]["provider"] == {"only": ["z-ai"]}
