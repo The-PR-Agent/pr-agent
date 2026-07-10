@@ -99,10 +99,10 @@ class TokenHandler:
     def _calc_claude_tokens(self, patch: str) -> int:
         try:
             import anthropic
-            from pr_agent.algo import MAX_TOKENS
-            
+            from pr_agent.algo.utils import get_max_tokens
+
             client = anthropic.Anthropic(api_key=get_settings(use_context=False).get('anthropic.key'))
-            max_tokens = MAX_TOKENS[get_settings().config.model]
+            max_tokens = get_max_tokens(get_settings().config.model)
 
             if len(patch.encode('utf-8')) > self.CLAUDE_MAX_CONTENT_SIZE:
                 get_logger().warning(

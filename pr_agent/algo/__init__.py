@@ -1,11 +1,33 @@
+import re
+
+# Deployment-decoration tokens that appear between the provider prefix and the model
+# identity: Bedrock cross-region prefixes and cloud vendor names.
+_PROVIDER_INFIX = {"us", "eu", "au", "jp", "apac", "global",
+                   "anthropic", "meta", "amazon", "ai21", "cohere", "mistral"}
+
+
+def base_model_name(model: str) -> str:
+    """Strip deployment decoration so every provider spelling of a model maps to one key.
+
+    e.g. ``anthropic/claude-opus-4-8``, ``bedrock/us.anthropic.claude-opus-4-8-v1:0`` and
+    ``vertex_ai/claude-opus-4-8`` all collapse to ``claude-opus-4-8``. Used for the capability
+    sets below, which are keyed by base model rather than by every provider-prefixed variant.
+    """
+    m = model.split("/", 1)[-1]           # drop provider prefix (anthropic/, bedrock/, vertex_ai/, ...)
+    m = m.replace("@", "-")               # vertex date separator -> '-' (matches anthropic spelling)
+    m = re.sub(r"-v\d+:\d+$", "", m)      # bedrock cloud-version suffix (-v1:0)
+    parts = m.split(".")
+    while len(parts) > 1 and parts[0] in _PROVIDER_INFIX:   # bedrock region + vendor infixes
+        parts.pop(0)
+    return ".".join(parts)                # dotted model versions (gpt-5.2) are preserved
+
+
 MAX_TOKENS = {
     'text-embedding-ada-002': 8000,
     'gpt-3.5-turbo': 16000,
     'gpt-3.5-turbo-0125': 16000,
-    'gpt-3.5-turbo-0613': 4000,
     'gpt-3.5-turbo-1106': 16000,
     'gpt-3.5-turbo-16k': 16000,
-    'gpt-3.5-turbo-16k-0613': 16000,
     'gpt-4': 8000,
     'gpt-4-0613': 8000,
     'gpt-4-32k': 32000,
@@ -28,20 +50,20 @@ MAX_TOKENS = {
     'gpt-4.1-mini-2025-04-14': 1047576,
     'gpt-4.1-nano': 1047576,
     'gpt-4.1-nano-2025-04-14': 1047576,
-    'gpt-5-nano': 200000,  # 200K, but may be limited by config.max_model_tokens
-    'gpt-5-mini': 200000,  # 200K, but may be limited by config.max_model_tokens
-    'gpt-5': 200000,
-    'gpt-5-2025-08-07': 200000,
-    'gpt-5.1': 200000,
-    'gpt-5.1-2025-11-13': 200000,
-    'gpt-5.1-chat-latest': 200000,
-    'gpt-5.1-codex': 200000,
-    'gpt-5.1-codex-mini': 200000,
-    'gpt-5.2': 400000,  # 400K, but may be limited by config.max_model_tokens
-    'gpt-5.2-2025-12-11': 400000,  # 400K, but may be limited by config.max_model_tokens
+    'gpt-5-nano': 272000,  # 272K, but may be limited by config.max_model_tokens
+    'gpt-5-mini': 272000,  # 272K, but may be limited by config.max_model_tokens
+    'gpt-5': 272000,
+    'gpt-5-2025-08-07': 272000,
+    'gpt-5.1': 272000,
+    'gpt-5.1-2025-11-13': 272000,
+    'gpt-5.1-chat-latest': 128000,
+    'gpt-5.1-codex': 272000,
+    'gpt-5.1-codex-mini': 272000,
+    'gpt-5.2': 272000,  # 272K, but may be limited by config.max_model_tokens
+    'gpt-5.2-2025-12-11': 272000,  # 272K, but may be limited by config.max_model_tokens
     'gpt-5.2-chat-latest': 128000,  # 128K, but may be limited by config.max_model_tokens
-    'gpt-5.2-codex': 400000,  # 400K, but may be limited by config.max_model_tokens
-    'gpt-5.3-codex': 400000,  # 400K, but may be limited by config.max_model_tokens
+    'gpt-5.2-codex': 272000,  # 272K, but may be limited by config.max_model_tokens
+    'gpt-5.3-codex': 272000,  # 272K, but may be limited by config.max_model_tokens
     'gpt-5.3-chat': 128000,  # 128K, but may be limited by config.max_model_tokens
     'gpt-5.4': 272000,  # 272K safe default without opt-in 1M context parameters
     'gpt-5.4-2026-03-05': 272000,  # 272K safe default without opt-in 1M context parameters
@@ -59,16 +81,14 @@ MAX_TOKENS = {
     'o1-mini-2024-09-12': 128000,  # 128K, but may be limited by config.max_model_tokens
     'o1-preview': 128000,  # 128K, but may be limited by config.max_model_tokens
     'o1-preview-2024-09-12': 128000,  # 128K, but may be limited by config.max_model_tokens
-    'o1-2024-12-17': 204800,  # 200K, but may be limited by config.max_model_tokens
-    'o1': 204800,  # 200K, but may be limited by config.max_model_tokens
-    'o3-mini': 204800,  # 200K, but may be limited by config.max_model_tokens
-    'o3-mini-2025-01-31': 204800,  # 200K, but may be limited by config.max_model_tokens
+    'o1-2024-12-17': 200000,  # 200K, but may be limited by config.max_model_tokens
+    'o1': 200000,  # 200K, but may be limited by config.max_model_tokens
+    'o3-mini': 200000,  # 200K, but may be limited by config.max_model_tokens
+    'o3-mini-2025-01-31': 200000,  # 200K, but may be limited by config.max_model_tokens
     'o3': 200000,  # 200K, but may be limited by config.max_model_tokens
     'o3-2025-04-16': 200000,  # 200K, but may be limited by config.max_model_tokens
     'o4-mini': 200000, # 200K, but may be limited by config.max_model_tokens
     'o4-mini-2025-04-16': 200000, # 200K, but may be limited by config.max_model_tokens
-    'claude-instant-1': 100000,
-    'claude-2': 100000,
     'command-nightly': 4096,
     'deepseek/deepseek-chat': 128000,  # 128K, but may be limited by config.max_model_tokens
     'deepseek/deepseek-reasoner': 64000,  # 64K, but may be limited by config.max_model_tokens
@@ -77,177 +97,40 @@ MAX_TOKENS = {
     'openai/qwq-plus': 131072,  # 131K context length, but may be limited by config.max_model_tokens
     'replicate/llama-2-70b-chat:2c1608e18606fad2812020dc541930f2d0495ce32eee50074220b87300bc16e1': 4096,
     'meta-llama/Llama-2-7b-chat-hf': 4096,
-    'vertex_ai/codechat-bison': 6144,
-    'vertex_ai/codechat-bison-32k': 32000,
-    'vertex_ai/claude-3-haiku@20240307': 100000,
-    'vertex_ai/claude-3-5-haiku@20241022': 100000,
-    'vertex_ai/claude-haiku-4-5@20251001': 200000,
-    'vertex_ai/claude-3-sonnet@20240229': 100000,
-    'vertex_ai/claude-3-opus@20240229': 100000,
-    'vertex_ai/claude-opus-4@20250514': 200000,
-    'vertex_ai/claude-opus-4-1@20250805': 200000,
-    'vertex_ai/claude-opus-4-5@20251101': 200000,
-    'vertex_ai/claude-opus-4-6@20260120': 200000,
-    'vertex_ai/claude-opus-4-6': 200000,
-    'vertex_ai/claude-opus-4-7': 1000000,
-    'vertex_ai/claude-opus-4-8': 1000000,
-    'vertex_ai/claude-3-5-sonnet@20240620': 100000,
-    'vertex_ai/claude-3-5-sonnet-v2@20241022': 100000,
-    'vertex_ai/claude-3-7-sonnet@20250219': 200000,
-    'vertex_ai/claude-sonnet-4@20250514': 200000,
-    'vertex_ai/claude-sonnet-4-5@20250929': 200000,
-    'vertex_ai/claude-sonnet-4-6': 200000,
-    'vertex_ai/claude-sonnet-5': 1000000,
-    'vertex_ai/gemini-1.5-pro': 1048576,
-    'vertex_ai/gemini-2.5-pro-preview-03-25': 1048576,
-    'vertex_ai/gemini-2.5-pro-preview-05-06': 1048576,
-    'vertex_ai/gemini-2.5-pro-preview-06-05': 1048576,
-    'vertex_ai/gemini-2.5-pro': 1048576,
-    'vertex_ai/gemini-1.5-flash': 1048576,
-    'vertex_ai/gemini-2.0-flash': 1048576,
-    'vertex_ai/gemini-2.5-flash-preview-04-17': 1048576,
-    'vertex_ai/gemini-2.5-flash-preview-05-20': 1048576,
-    'vertex_ai/gemini-2.5-flash': 1048576,
-    'vertex_ai/gemini-3-flash-preview': 1048576,
-    'vertex_ai/gemini-3-pro-preview': 1048576,
-    'vertex_ai/gemini-3.1-flash': 1048576,
-    'vertex_ai/gemini-3.1-pro': 1048576,
-    'vertex_ai/gemini-3.1-flash-lite-preview': 1048576,
-    'vertex_ai/gemini-3.1-pro-preview': 1048576,
-    'vertex_ai/gemini-3.5-flash': 1048576,
-    'vertex_ai/gemini-3.5-pro': 1048576,
-    'vertex_ai/gemma2': 8200,
-    'gemini/gemini-1.5-pro': 1048576,
-    'gemini/gemini-1.5-flash': 1048576,
-    'gemini/gemini-2.0-flash': 1048576,
-    'gemini/gemini-2.5-flash-preview-04-17': 1048576,
-    'gemini/gemini-2.5-flash-preview-05-20': 1048576,
-    'gemini/gemini-2.5-flash': 1048576,
-    'gemini/gemini-2.5-pro-preview-03-25': 1048576,
-    'gemini/gemini-2.5-pro-preview-05-06': 1048576,
-    'gemini/gemini-2.5-pro-preview-06-05': 1048576,
-    'gemini/gemini-2.5-pro': 1048576,
-    'gemini/gemini-3-flash-preview': 1048576,
-    'gemini/gemini-3-pro-preview': 1048576,
-    'gemini/gemini-3.1-flash': 1048576,
-    'gemini/gemini-3.1-pro': 1048576,
-    'gemini/gemini-3.1-flash-lite-preview': 1048576,
-    'gemini/gemini-3.1-pro-preview': 1048576,
-    'gemini/gemini-3.5-flash': 1048576,
-    'gemini/gemini-3.5-pro': 1048576,
+    # codechat / gemini / claude below are keyed by base model name: get_max_tokens() normalizes any
+    # provider prefix (anthropic/, vertex_ai/, gemini/, bedrock/...), Bedrock region + vendor infix,
+    # cloud-version (-v1:0) and vertex @date via base_model_name(), so one key covers every spelling.
     'codechat-bison': 6144,
     'codechat-bison-32k': 32000,
-    'anthropic.claude-instant-v1': 100000,
-    'anthropic.claude-v1': 100000,
-    'anthropic.claude-v2': 100000,
-    'anthropic/claude-3-opus-20240229': 100000,
-    'anthropic/claude-opus-4-20250514': 200000,
-    'anthropic/claude-opus-4-1-20250805': 200000,
-    'anthropic/claude-opus-4-5-20251101': 200000,
-    'anthropic/claude-opus-4-6': 200000,
-    'anthropic/claude-opus-4-6-20260120': 200000,
-    'anthropic/claude-opus-4-7': 1000000,
-    'anthropic/claude-opus-4-8': 1000000,
-    'anthropic/claude-3-5-sonnet-20240620': 100000,
-    'anthropic/claude-3-5-sonnet-20241022': 100000,
-    'anthropic/claude-3-7-sonnet-20250219': 200000,
-    'anthropic/claude-sonnet-4-20250514': 200000,
-    'anthropic/claude-sonnet-4-5-20250929': 200000,
-    'anthropic/claude-sonnet-4-6': 200000,
-    'anthropic/claude-sonnet-5': 1000000,
+    'gemini-1.5-pro': 1048576,
+    'gemini-1.5-flash': 1048576,
+    'gemini-2.0-flash': 1048576,
+    'gemini-2.5-flash-preview-04-17': 1048576,
+    'gemini-2.5-flash-preview-05-20': 1048576,
+    'gemini-2.5-flash': 1048576,
+    'gemini-2.5-pro-preview-03-25': 1048576,
+    'gemini-2.5-pro-preview-05-06': 1048576,
+    'gemini-2.5-pro-preview-06-05': 1048576,
+    'gemini-2.5-pro': 1048576,
+    'gemini-3-flash-preview': 1048576,
+    'gemini-3-pro-preview': 1048576,
+    'gemini-3.1-flash': 1048576,
+    'gemini-3.1-flash-lite-preview': 1048576,
+    'gemini-3.1-pro': 1048576,
+    'gemini-3.1-pro-preview': 1048576,
+    'gemini-3.5-flash': 1048576,
+    'gemini-3.5-pro': 1048576,
+    'vertex_ai/gemma2': 8200,
+    'claude-haiku-4-5-20251001': 200000,
     'claude-opus-4-1-20250805': 200000,
     'claude-opus-4-5-20251101': 200000,
-    'claude-opus-4-6': 200000,
-    'claude-opus-4-6-20260120': 200000,
+    'claude-opus-4-6': 1000000,
+    'claude-opus-4-6-20260120': 1000000,
     'claude-opus-4-7': 1000000,
     'claude-opus-4-8': 1000000,
-    'claude-3-7-sonnet-20250219': 200000,
-    'claude-sonnet-4-6': 200000,
+    'claude-sonnet-4-5-20250929': 200000,
+    'claude-sonnet-4-6': 1000000,
     'claude-sonnet-5': 1000000,
-    'anthropic/claude-3-5-haiku-20241022': 100000,
-    'anthropic/claude-haiku-4-5-20251001': 200000,
-    'claude-haiku-4-5-20251001': 200000,
-    'bedrock/anthropic.claude-instant-v1': 100000,
-    'bedrock/anthropic.claude-v2': 100000,
-    'bedrock/anthropic.claude-v2:1': 100000,
-    'bedrock/anthropic.claude-3-sonnet-20240229-v1:0': 100000,
-    'bedrock/anthropic.claude-opus-4-20250514-v1:0': 200000,
-    'bedrock/anthropic.claude-opus-4-1-20250805-v1:0': 200000,
-    'bedrock/anthropic.claude-opus-4-6-20260120-v1:0': 200000,
-    'bedrock/anthropic.claude-opus-4-6-v1:0': 200000,
-    'bedrock/anthropic.claude-opus-4-7': 1000000,
-    'bedrock/anthropic.claude-opus-4-7-v1:0': 1000000,
-    'bedrock/anthropic.claude-opus-4-8': 1000000,
-    'bedrock/anthropic.claude-3-haiku-20240307-v1:0': 100000,
-    'bedrock/anthropic.claude-3-5-haiku-20241022-v1:0': 100000,
-    'bedrock/anthropic.claude-haiku-4-5-20251001-v1:0': 200000,
-    'bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0': 100000,
-    'bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0': 100000,
-    'bedrock/anthropic.claude-3-7-sonnet-20250219-v1:0': 200000,
-    'bedrock/anthropic.claude-sonnet-4-20250514-v1:0': 200000,
-    'bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0': 200000,
-    'bedrock/anthropic.claude-sonnet-4-6': 200000,
-    'bedrock/anthropic.claude-sonnet-4-6-v1:0': 200000,
-    'bedrock/anthropic.claude-sonnet-5': 1000000,
-    'bedrock/anthropic.claude-opus-4-5-20251101-v1:0': 200000,
-    "bedrock/us.anthropic.claude-opus-4-20250514-v1:0": 200000,
-    "bedrock/us.anthropic.claude-opus-4-1-20250805-v1:0": 200000,
-    "bedrock/us.anthropic.claude-opus-4-6-20260120-v1:0": 200000,
-    "bedrock/global.anthropic.claude-opus-4-5-20251101-v1:0": 200000,
-    "bedrock/eu.anthropic.claude-opus-4-5-20251101-v1:0": 200000,
-    "bedrock/au.anthropic.claude-opus-4-5-20251101-v1:0": 200000,
-    "bedrock/jp.anthropic.claude-opus-4-5-20251101-v1:0": 200000,
-    "bedrock/apac.anthropic.claude-opus-4-5-20251101-v1:0": 200000,
-    "bedrock/us.anthropic.claude-opus-4-5-20251101-v1:0": 200000,
-    "bedrock/global.anthropic.claude-opus-4-6-v1:0": 200000,
-    "bedrock/eu.anthropic.claude-opus-4-6-v1:0": 200000,
-    "bedrock/au.anthropic.claude-opus-4-6-v1:0": 200000,
-    "bedrock/jp.anthropic.claude-opus-4-6-v1:0": 200000,
-    "bedrock/apac.anthropic.claude-opus-4-6-v1:0": 200000,
-    "bedrock/us.anthropic.claude-opus-4-6-v1:0": 200000,
-    "bedrock/global.anthropic.claude-opus-4-7": 1000000,
-    "bedrock/us.anthropic.claude-opus-4-7": 1000000,
-    "bedrock/global.anthropic.claude-opus-4-8": 1000000,
-    "bedrock/us.anthropic.claude-opus-4-8": 1000000,
-    "bedrock/eu.anthropic.claude-opus-4-8": 1000000,
-    "bedrock/au.anthropic.claude-opus-4-8": 1000000,
-    "bedrock/jp.anthropic.claude-opus-4-8": 1000000,
-    "bedrock/us.anthropic.claude-3-5-sonnet-20241022-v2:0": 100000,
-    "bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0": 200000,
-    "bedrock/eu.anthropic.claude-haiku-4-5-20251001-v1:0": 200000,
-    "bedrock/au.anthropic.claude-haiku-4-5-20251001-v1:0": 200000,
-    "bedrock/jp.anthropic.claude-haiku-4-5-20251001-v1:0": 200000,
-    "bedrock/apac.anthropic.claude-haiku-4-5-20251001-v1:0": 200000,
-    "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0": 200000,
-    "bedrock/us.anthropic.claude-3-7-sonnet-20250219-v1:0": 200000,
-    "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0": 200000,
-    "bedrock/global.anthropic.claude-sonnet-4-20250514-v1:0": 200000,
-    "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0": 200000,
-    "bedrock/au.anthropic.claude-sonnet-4-5-20250929-v1:0": 200000,
-    "bedrock/us.anthropic.claude-sonnet-4-6": 200000,
-    "bedrock/us.anthropic.claude-sonnet-4-6-v1:0": 200000,
-    "bedrock/au.anthropic.claude-sonnet-4-6": 200000,
-    "bedrock/au.anthropic.claude-sonnet-4-6-v1:0": 200000,
-    "bedrock/apac.anthropic.claude-3-5-sonnet-20241022-v2:0": 100000,
-    "bedrock/apac.anthropic.claude-3-7-sonnet-20250219-v1:0": 200000,
-    "bedrock/apac.anthropic.claude-sonnet-4-20250514-v1:0": 200000,
-    "bedrock/eu.anthropic.claude-sonnet-4-5-20250929-v1:0": 200000,
-    "bedrock/eu.anthropic.claude-sonnet-4-6": 200000,
-    "bedrock/eu.anthropic.claude-sonnet-4-6-v1:0": 200000,
-    "bedrock/jp.anthropic.claude-sonnet-4-5-20250929-v1:0": 200000,
-    "bedrock/jp.anthropic.claude-sonnet-4-6": 200000,
-    "bedrock/jp.anthropic.claude-sonnet-4-6-v1:0": 200000,
-    "bedrock/apac.anthropic.claude-sonnet-4-6": 200000,
-    "bedrock/apac.anthropic.claude-sonnet-4-6-v1:0": 200000,
-    "bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0": 200000,
-    "bedrock/global.anthropic.claude-sonnet-4-6": 200000,
-    "bedrock/global.anthropic.claude-sonnet-4-6-v1:0": 200000,
-    "bedrock/us.anthropic.claude-sonnet-5": 1000000,
-    "bedrock/au.anthropic.claude-sonnet-5": 1000000,
-    "bedrock/eu.anthropic.claude-sonnet-5": 1000000,
-    "bedrock/jp.anthropic.claude-sonnet-5": 1000000,
-    "bedrock/global.anthropic.claude-sonnet-5": 1000000,
-    'claude-3-5-sonnet': 100000,
     'bedrock/us.meta.llama4-scout-17b-instruct-v1:0': 128000,
     'bedrock/us.meta.llama4-maverick-17b-instruct-v1:0': 128000,
     'groq/openai/gpt-oss-120b': 131072,
@@ -302,15 +185,19 @@ MAX_TOKENS = {
     "codestral/codestral-2405": 8191,
 }
 
-USER_MESSAGE_ONLY_MODELS = [
-    "deepseek/deepseek-reasoner",
+# The capability sets below are keyed by base model name (see base_model_name); membership is
+# checked with `base_model_name(model) in <set>`, so each model is listed once regardless of
+# provider prefix, Bedrock region, or cloud-version/date suffix.
+
+USER_MESSAGE_ONLY_MODELS = {
+    "deepseek-reasoner",
     "o1-mini",
     "o1-mini-2024-09-12",
-    "o1-preview"
-]
+    "o1-preview",
+}
 
-NO_SUPPORT_TEMPERATURE_MODELS = [
-    "deepseek/deepseek-reasoner",
+NO_SUPPORT_TEMPERATURE_MODELS = {
+    "deepseek-reasoner",
     "o1-mini",
     "o1-mini-2024-09-12",
     "o1",
@@ -327,104 +214,39 @@ NO_SUPPORT_TEMPERATURE_MODELS = [
     "gpt-5.2-codex",
     "gpt-5.3-codex",
     "gpt-5-mini",
-    # Anthropic Claude Opus 4-7 — temperature is deprecated (Issue #2400), (Issue #2449)
+    # Anthropic Claude — temperature is deprecated (Issue #2400), (Issue #2449)
     "claude-opus-4-7",
-    "anthropic/claude-opus-4-7",
     "claude-opus-4-8",
-    "anthropic/claude-opus-4-8",
-    "vertex_ai/claude-opus-4-8",
-    "bedrock/anthropic.claude-opus-4-8",
-    "bedrock/global.anthropic.claude-opus-4-8",
-    "bedrock/us.anthropic.claude-opus-4-8",
-    "bedrock/eu.anthropic.claude-opus-4-8",
-    "bedrock/au.anthropic.claude-opus-4-8",
-    "bedrock/jp.anthropic.claude-opus-4-8",
     "claude-fable-5",
-    "anthropic/claude-fable-5",
     "claude-sonnet-5",
-    "anthropic/claude-sonnet-5",
-    "vertex_ai/claude-sonnet-5",
-    "bedrock/anthropic.claude-sonnet-5",
-    "bedrock/global.anthropic.claude-sonnet-5",
-    "bedrock/us.anthropic.claude-sonnet-5",
-    "bedrock/au.anthropic.claude-sonnet-5",
-    "bedrock/eu.anthropic.claude-sonnet-5",
-    "bedrock/jp.anthropic.claude-sonnet-5",
-    "vertex_ai/claude-opus-4-7",
-    "bedrock/anthropic.claude-opus-4-7",
-    "bedrock/anthropic.claude-opus-4-7-v1:0",
-    "bedrock/us.anthropic.claude-opus-4-7",
-    "bedrock/global.anthropic.claude-opus-4-7",
-]
+}
 
-SUPPORT_REASONING_EFFORT_MODELS = [
+SUPPORT_REASONING_EFFORT_MODELS = {
     "o3-mini",
     "o3-mini-2025-01-31",
     "o3",
     "o3-2025-04-16",
     "o4-mini",
     "o4-mini-2025-04-16",
-]
+}
 
 # Claude models that support "extended thinking" through the manual
 # thinking={"type": "enabled", "budget_tokens": ...} request built by
 # LiteLLMAIHandler._configure_claude_extended_thinking(). Only models that
 # accept budget_tokens belong here. Adaptive-only models (Claude Opus 4.7/4.8,
 # Sonnet 5, Fable 5) reject budget_tokens with an HTTP 400 and must not be added
-# without also adding an adaptive-thinking code path. This list is the built-in
+# without also adding an adaptive-thinking code path. This set is the built-in
 # default; it can be replaced via the `claude_extended_thinking_models_override`
 # configuration option.
-CLAUDE_EXTENDED_THINKING_MODELS = [
-    "anthropic/claude-3-7-sonnet-20250219",
-    "claude-3-7-sonnet-20250219",
-    "anthropic/claude-sonnet-4-6",
+CLAUDE_EXTENDED_THINKING_MODELS = {
     "claude-sonnet-4-6",
-    "vertex_ai/claude-sonnet-4-6",
-    "bedrock/anthropic.claude-sonnet-4-6",
-    "bedrock/us.anthropic.claude-sonnet-4-6",
-    "bedrock/au.anthropic.claude-sonnet-4-6",
-    "bedrock/eu.anthropic.claude-sonnet-4-6",
-    "bedrock/jp.anthropic.claude-sonnet-4-6",
-    "bedrock/global.anthropic.claude-sonnet-4-6",
-    "anthropic/claude-sonnet-4-5-20250929",
     "claude-sonnet-4-5-20250929",
-    "vertex_ai/claude-sonnet-4-5@20250929",
-    "bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0",
-    "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-    "bedrock/au.anthropic.claude-sonnet-4-5-20250929-v1:0",
-    "bedrock/eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
-    "bedrock/jp.anthropic.claude-sonnet-4-5-20250929-v1:0",
-    "bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0",
-    "anthropic/claude-opus-4-5-20251101",
     "claude-opus-4-5-20251101",
-    "vertex_ai/claude-opus-4-5@20251101",
-    "bedrock/anthropic.claude-opus-4-5-20251101-v1:0",
-    "bedrock/us.anthropic.claude-opus-4-5-20251101-v1:0",
-    "bedrock/au.anthropic.claude-opus-4-5-20251101-v1:0",
-    "bedrock/eu.anthropic.claude-opus-4-5-20251101-v1:0",
-    "bedrock/jp.anthropic.claude-opus-4-5-20251101-v1:0",
-    "bedrock/global.anthropic.claude-opus-4-5-20251101-v1:0",
-    "anthropic/claude-opus-4-6",
     "claude-opus-4-6",
-    "vertex_ai/claude-opus-4-6",
-    "bedrock/anthropic.claude-opus-4-6-v1:0",
-    "bedrock/us.anthropic.claude-opus-4-6-v1:0",
-    "bedrock/au.anthropic.claude-opus-4-6-v1:0",
-    "bedrock/eu.anthropic.claude-opus-4-6-v1:0",
-    "bedrock/jp.anthropic.claude-opus-4-6-v1:0",
-    "bedrock/global.anthropic.claude-opus-4-6-v1:0",
-    "anthropic/claude-haiku-4-5-20251001",
     "claude-haiku-4-5-20251001",
-    "vertex_ai/claude-haiku-4-5@20251001",
-    "bedrock/anthropic.claude-haiku-4-5-20251001-v1:0",
-    "bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0",
-    "bedrock/au.anthropic.claude-haiku-4-5-20251001-v1:0",
-    "bedrock/eu.anthropic.claude-haiku-4-5-20251001-v1:0",
-    "bedrock/jp.anthropic.claude-haiku-4-5-20251001-v1:0",
-    "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0",
-]
+}
 
 # Models that require streaming mode
-STREAMING_REQUIRED_MODELS = [
-    "openai/qwq-plus"
-]
+STREAMING_REQUIRED_MODELS = {
+    "qwq-plus",
+}

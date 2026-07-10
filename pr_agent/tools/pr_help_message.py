@@ -5,7 +5,6 @@ from pathlib import Path
 
 from jinja2 import Environment, StrictUndefined
 
-from pr_agent.algo import MAX_TOKENS
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.pr_processing import retry_with_fallback_models
@@ -134,10 +133,8 @@ class PRHelpMessage:
                 get_logger().debug(f"Token count of full documentation website: {token_count}")
 
                 model = get_settings().config.model
-                if model in MAX_TOKENS:
-                    max_tokens_full = MAX_TOKENS[model] # note - here we take the actual max tokens, without any reductions. we do aim to get the full documentation website in the prompt
-                else:
-                    max_tokens_full = get_max_tokens(model)
+                # uncapped context window - we aim to fit the full documentation website into the prompt
+                max_tokens_full = get_max_tokens(model, cap=False)
                 delta_output = 2000
                 if token_count > max_tokens_full - delta_output:
                     get_logger().info(f"Token count {token_count} exceeds the limit {max_tokens_full - delta_output}. Skipping the PR Help message.")

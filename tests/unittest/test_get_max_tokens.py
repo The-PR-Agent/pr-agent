@@ -1,7 +1,7 @@
 import pytest
 
 import pr_agent.algo.utils as utils
-from pr_agent.algo.utils import MAX_TOKENS, get_max_tokens
+from pr_agent.algo.utils import DEFAULT_MODEL_MAX_TOKENS, MAX_TOKENS, get_max_tokens
 
 
 class TestGetMaxTokens:
@@ -123,6 +123,8 @@ class TestGetMaxTokens:
         assert get_max_tokens(model) == expected
 
     def test_model_not_max_tokens_and_not_has_custom(self, monkeypatch):
+        # A model unknown to both MAX_TOKENS and litellm, with no custom_model_max_tokens set,
+        # falls back to the conservative default instead of raising, so any model still runs.
         fake_settings = type('', (), {
             'config': type('', (), {
                 'custom_model_max_tokens': 0,
@@ -132,10 +134,9 @@ class TestGetMaxTokens:
 
         monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
 
-        model = "custom-model"
+        model = "some-model-unknown-to-litellm-and-max-tokens"
 
-        with pytest.raises(Exception):
-            get_max_tokens(model)
+        assert get_max_tokens(model) == DEFAULT_MODEL_MAX_TOKENS
 
     def test_model_max_tokens_with__limit(self, monkeypatch):
         fake_settings = type('', (), {
@@ -250,7 +251,7 @@ class TestGetMaxTokens:
 
         monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
 
-        assert get_max_tokens(model) == 200000
+        assert get_max_tokens(model) == 1000000
 
     @pytest.mark.parametrize(
         "model",
@@ -302,4 +303,4 @@ class TestGetMaxTokens:
 
         monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
 
-        assert get_max_tokens(model) == 200000
+        assert get_max_tokens(model) == 1000000
