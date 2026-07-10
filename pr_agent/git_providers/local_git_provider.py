@@ -164,18 +164,35 @@ class LocalGitProvider(GitProvider):
         settings map (name -> [extensions]) into an extension -> name lookup;
         files with unknown extensions are left out and fall through to "Other".
         """
+        # Invert to a filename-token -> language lookup. Map entries are mostly
+        # ".ext", but also include multi-part extensions (".cmake.in") and full
+        # filenames ("Dockerfile", "Makefile"); normalize the glob form ("*.bsl").
         ext_to_lang = {}
         lang_map = get_settings().get("language_extension_map_org", {}) or {}
         for language, extensions in lang_map.items():
             for ext in extensions:
                 ext_to_lang.setdefault(ext.lower().lstrip("*"), language)
 
+        def _match_language(name: str):
+            # Full-filename rules (Dockerfile, Makefile) carry no extension.
+            language = ext_to_lang.get(name.lower())
+            if language:
+                return language
+            # Try progressively shorter dotted suffixes so multi-part extensions
+            # (".cmake.in") win over their simple tail (".in") when both exist.
+            parts = name.split(".")
+            for i in range(1, len(parts)):
+                language = ext_to_lang.get("." + ".".join(parts[i:]).lower())
+                if language:
+                    return language
+            return None
+
         # Get all files in repository
         filepaths = [Path(item.path) for item in self.repo.tree().traverse() if item.type == 'blob']
-        # Identify language by file extension (mapped to its language name) and count
+        # Identify language by filename (mapped to its language name) and count
         lang_count = Counter()
         for filepath in filepaths:
-            language = ext_to_lang.get(filepath.suffix.lower())
+            language = _match_language(filepath.name)
             if language:
                 lang_count[language] += 1
         # Convert counts to percentages

@@ -39,4 +39,18 @@ def test_get_languages_returns_language_names(tmp_path):
                for b in sort_files_by_main_languages(languages, files)}
     assert buckets["Python"] == {"a.py"}
     assert buckets["JavaScript"] == {"d.js"}
-    assert buckets["Other"] == {"weird.zzz"}
+    assert buckets["Other"] == {"weird.zzz"}  # unknown extension falls through
+
+
+def test_get_languages_matches_full_names_and_multipart_extensions(tmp_path):
+    # Beyond simple ".ext", the language map also has full-filename rules
+    # ("Dockerfile") and multi-part extensions (".cmake.in"); Path.suffix alone
+    # would miss both. Match on the whole filename and dotted-suffix fallbacks.
+    repo = _make_repo(tmp_path, ["Dockerfile", "build.cmake.in", "app.py"])
+    provider = object.__new__(LocalGitProvider)
+    provider.repo = repo
+
+    languages = provider.get_languages()
+    # One file each -> ~33.33% apiece, and none dropped as "unknown".
+    assert set(languages) == {"Dockerfile", "CMake", "Python"}
+    assert all(abs(v - 100 / 3) < 1e-6 for v in languages.values())
