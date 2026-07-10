@@ -590,6 +590,70 @@ class LiteLLMAIHandler(BaseAiHandler):
                     kwargs["model_id"] = model_id
                     get_logger().info(f"Using Bedrock custom inference profile: {model_id}")
 
+                # OpenRouter provider routing, reasoning control and output cap.
+                # Applied only to "openrouter/*" models. Every key defaults to unset in
+                # the [openrouter] section of configuration.toml, so this block is a
+                # no-op unless explicitly configured, and never affects other providers.
+                if isinstance(model, str) and model.startswith("openrouter/"):
+                    openrouter_settings = get_settings().get("openrouter", {})
+                    extra_body = kwargs.get("extra_body") or {}
+
+                    # Normalize operator-controlled config: Dynaconf/env overrides can
+                    # arrive as strings (AUTO_CAST_FOR_DYNACONF is disabled), so coerce
+                    # defensively instead of trusting the declared types.
+                    def _as_list(value):
+                        if isinstance(value, (list, tuple)):
+                            return [str(v).strip() for v in value if str(v).strip()]
+                        if isinstance(value, str):
+                            return [v.strip() for v in value.split(",") if v.strip()]
+                        return []
+
+                    def _as_bool(value, default=True):
+                        if isinstance(value, bool):
+                            return value
+                        if isinstance(value, str):
+                            return value.strip().lower() in ("1", "true", "yes", "on")
+                        return default
+
+                    def _as_int(value):
+                        try:
+                            return int(value)
+                        except (TypeError, ValueError):
+                            return 0
+
+                    provider_only = _as_list(openrouter_settings.get("provider_only", []))
+                    provider_order = _as_list(openrouter_settings.get("provider_order", []))
+                    if provider_only:
+                        extra_body.setdefault("provider", {})["only"] = provider_only
+                    elif provider_order:
+                        provider = extra_body.setdefault("provider", {})
+                        provider["order"] = provider_order
+                        provider["allow_fallbacks"] = _as_bool(openrouter_settings.get("allow_fallbacks", True))
+
+                    reasoning = {}
+                    reasoning_effort = str(openrouter_settings.get("reasoning_effort", "") or "").strip().lower()
+                    if reasoning_effort == "none":
+                        reasoning["enabled"] = False
+                    elif reasoning_effort in ("low", "medium", "high"):
+                        reasoning["effort"] = reasoning_effort
+                    elif reasoning_effort:
+                        get_logger().warning(
+                            f"Ignoring invalid openrouter.reasoning_effort '{reasoning_effort}'. "
+                            "Valid values: none, low, medium, high."
+                        )
+                    reasoning_max_tokens = _as_int(openrouter_settings.get("reasoning_max_tokens", 0))
+                    if reasoning_max_tokens > 0 and reasoning.get("enabled") is not False:
+                        reasoning["max_tokens"] = reasoning_max_tokens
+                    if reasoning:
+                        extra_body["reasoning"] = reasoning
+
+                    if extra_body:
+                        kwargs["extra_body"] = extra_body
+
+                    max_tokens = _as_int(openrouter_settings.get("max_tokens", 0))
+                    if max_tokens > 0:
+                        kwargs["max_tokens"] = max_tokens
+
                 get_logger().debug("Prompts", artifact={"system": system, "user": user})
 
                 if get_settings().config.verbosity_level >= 2:

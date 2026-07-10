@@ -342,6 +342,19 @@ failure_callback = []
 service_callback = []
 # model_id = "" # Optional: Custom inference profile ID for Amazon Bedrock
 
+[openrouter]
+# OpenRouter provider routing, reasoning control and output cap. These apply only
+# to models addressed as "openrouter/...". The API key and api_base live in
+# .secrets.toml (or the openrouter__key env var); the keys below are non-secret.
+# Refs: https://openrouter.ai/docs/features/provider-routing
+#       https://openrouter.ai/docs/use-cases/reasoning-tokens
+provider_only = [] # restrict routing to these upstream providers only, a hard allowlist (e.g. ["z-ai"]); empty = OpenRouter default routing
+provider_order = [] # preferred provider order; ignored when provider_only is set; empty = unset
+allow_fallbacks = true # when provider_order is set, allow routing beyond the listed providers
+reasoning_effort = "" # "" leaves reasoning to the model default; "none" disables it; otherwise "low", "medium" or "high"
+reasoning_max_tokens = 0 # cap the reasoning budget in tokens; 0 = unset
+max_tokens = 0 # hard cap on completion tokens for the request; 0 = unset
+
 [pr_similar_issue]
 skip_comments = false
 force_update_dataset = false

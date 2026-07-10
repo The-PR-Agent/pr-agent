@@ -417,6 +417,23 @@ key = "..." # your openrouter api key
 
 (you can obtain an Openrouter API key from [here](https://openrouter.ai/settings/keys))
 
+#### Openrouter provider routing, reasoning and output cap
+
+For `openrouter/...` models you can optionally restrict which upstream providers Openrouter uses, control reasoning, and cap the completion length. All keys live in the `[openrouter]` section of `configuration.toml` and default to unset (no change to Openrouter's default behavior):
+
+```toml
+[openrouter]
+# Uncomment and adjust the keys you need; unset keys keep Openrouter's defaults.
+# provider_only = ["z-ai"]             # hard allowlist of upstream providers; empty = default routing
+# provider_order = ["z-ai", "novita"]  # preferred order instead of an allowlist; ignored when provider_only is set
+# allow_fallbacks = true               # when provider_order is set, allow routing beyond the list
+# reasoning_effort = "low"             # "none" disables reasoning; otherwise "low", "medium" or "high"
+# reasoning_max_tokens = 2048          # cap the reasoning budget in tokens
+# max_tokens = 16000                   # hard cap on completion tokens for the request
+```
+
+`provider_only` and `reasoning_effort = "none"` are useful to pin a specific provider and to bound the cost of reasoning models. See the Openrouter [provider routing](https://openrouter.ai/docs/features/provider-routing) and [reasoning tokens](https://openrouter.ai/docs/use-cases/reasoning-tokens) docs.
+
 ### Custom models
 
 If the relevant model doesn't appear [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py), you can still use it as a custom model:
