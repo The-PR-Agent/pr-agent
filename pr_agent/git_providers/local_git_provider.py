@@ -156,15 +156,31 @@ class LocalGitProvider(GitProvider):
     def get_languages(self):
         """
         Calculate percentage of languages in repository. Used for hunk prioritisation.
+
+        Keys are language NAMES (e.g. "Python"), not raw extensions: the consumer
+        sort_files_by_main_languages() maps each name back to its extensions, so
+        returning extensions ("py") silently drops every file into the "Other"
+        bucket and defeats the prioritisation this method exists for. Invert the
+        settings map (name -> [extensions]) into an extension -> name lookup;
+        files with unknown extensions are left out and fall through to "Other".
         """
+        ext_to_lang = {}
+        lang_map = get_settings().get("language_extension_map_org", {}) or {}
+        for language, extensions in lang_map.items():
+            for ext in extensions:
+                ext_to_lang.setdefault(ext.lower().lstrip("*"), language)
+
         # Get all files in repository
         filepaths = [Path(item.path) for item in self.repo.tree().traverse() if item.type == 'blob']
-        # Identify language by file extension and count
-        lang_count = Counter(ext.lstrip('.') for filepath in filepaths for ext in [filepath.suffix.lower()])
+        # Identify language by file extension (mapped to its language name) and count
+        lang_count = Counter()
+        for filepath in filepaths:
+            language = ext_to_lang.get(filepath.suffix.lower())
+            if language:
+                lang_count[language] += 1
         # Convert counts to percentages
-        total_files = len(filepaths)
-        lang_percentage = {lang: count / total_files * 100 for lang, count in lang_count.items()}
-        return lang_percentage
+        total = sum(lang_count.values()) or 1
+        return {lang: count / total * 100 for lang, count in lang_count.items()}
 
     def get_pr_branch(self):
         return self.repo.head
