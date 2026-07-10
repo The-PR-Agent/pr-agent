@@ -652,7 +652,8 @@ class LiteLLMAIHandler(BaseAiHandler):
 
                     max_tokens = _as_int(openrouter_settings.get("max_tokens", 0))
                     if max_tokens > 0:
-                        kwargs["max_tokens"] = max_tokens
+                        existing = _as_int(kwargs.get("max_tokens", 0))
+                        kwargs["max_tokens"] = min(existing, max_tokens) if existing > 0 else max_tokens
 
                 get_logger().debug("Prompts", artifact={"system": system, "user": user})
 

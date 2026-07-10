@@ -10,9 +10,24 @@ no-op, and non-openrouter models are never touched.
 """
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import litellm
+import openai
 import pytest
 
 import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_handler
+
+
+@pytest.fixture(autouse=True)
+def _restore_litellm_globals():
+    """LiteLLMAIHandler.__init__ mutates global litellm/openai state; snapshot and
+    restore it so these tests do not leak into the rest of the suite."""
+    saved = (litellm.api_key, getattr(litellm, "openai_key", None), openai.api_key)
+    try:
+        yield
+    finally:
+        litellm.api_key = saved[0]
+        litellm.openai_key = saved[1]
+        openai.api_key = saved[2]
 
 
 def _make_settings(openrouter=None):
@@ -37,9 +52,9 @@ def _make_settings(openrouter=None):
 
 def _mock_response():
     mock = MagicMock()
-    mock.__getitem__ = lambda self, key: {
-        "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]
-    }[key]
+    response = {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+    mock.__getitem__.side_effect = response.__getitem__
+    mock.dict.return_value = response
     return mock
 
 
