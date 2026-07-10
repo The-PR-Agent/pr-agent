@@ -128,8 +128,27 @@ class PlainDiffGitProvider(GitProvider):
         return True
 
     def get_languages(self):
-        files = [f.filename for f in self.get_diff_files() if f.filename]
-        lang_count = Counter(os.path.splitext(name)[1].lstrip(".").lower() for name in files)
+        # Return {language-name: percentage}, matching the hosted providers.
+        # sort_files_by_main_languages() keys on language NAMES (it maps each
+        # name back to its extensions), so returning raw extensions here would
+        # drop every file into the "Other" bucket and disable language-based
+        # hunk prioritization. Invert the settings map (name -> [extensions])
+        # into an extension -> name lookup; files with unknown extensions are
+        # left out and fall through to "Other" downstream.
+        ext_to_lang = {}
+        lang_map = get_settings().get("language_extension_map_org", {}) or {}
+        for language, extensions in lang_map.items():
+            for ext in extensions:
+                ext_to_lang.setdefault(ext.lower().lstrip("*"), language)
+
+        lang_count = Counter()
+        for f in self.get_diff_files():
+            if not f.filename:
+                continue
+            language = ext_to_lang.get(os.path.splitext(f.filename)[1].lower())
+            if language:
+                lang_count[language] += 1
+
         total = sum(lang_count.values()) or 1
         return {lang: count / total * 100 for lang, count in lang_count.items()}
 

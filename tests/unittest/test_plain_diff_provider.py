@@ -64,6 +64,47 @@ def test_get_diff_files(cfg):
     assert files[0].edit_type == EDIT_TYPE.MODIFIED
 
 
+_MULTI_LANG_DIFF = """diff --git a/foo.py b/foo.py
+--- a/foo.py
++++ b/foo.py
+@@ -1 +1,2 @@
+ a
++b
+diff --git a/app.js b/app.js
+--- a/app.js
++++ b/app.js
+@@ -1 +1,2 @@
+ x
++y
+diff --git a/weird.zzz b/weird.zzz
+--- a/weird.zzz
++++ b/weird.zzz
+@@ -1 +1,2 @@
+ p
++q
+"""
+
+
+def test_get_languages_returns_language_names(cfg):
+    # get_languages() must key on language NAMES (e.g. "Python"), not raw
+    # extensions ("py"): sort_files_by_main_languages() maps names back to
+    # extensions, so extension keys would silently drop every file into "Other"
+    # and disable language-based hunk prioritization.
+    cfg("plain_diff.content", _MULTI_LANG_DIFF)
+    cfg("plain_diff.output_path", None)
+    provider = PlainDiffGitProvider(None)
+    languages = provider.get_languages()
+    assert languages == {"Python": 50.0, "JavaScript": 50.0}
+
+    # And the values must flow through the real consumer as expected.
+    from pr_agent.algo.language_handler import sort_files_by_main_languages
+    buckets = {b["language"]: {f.filename for f in b["files"]}
+               for b in sort_files_by_main_languages(languages, provider.get_diff_files())}
+    assert buckets["Python"] == {"foo.py"}
+    assert buckets["JavaScript"] == {"app.js"}
+    assert buckets["Other"] == {"weird.zzz"}  # unknown extension falls through
+
+
 def test_get_diff_files_patch_is_hunk_only(cfg):
     # The stored patch must not carry the 'diff --git'/'index'/'---'/'+++'
     # headers, which the shared hunk converter would misparse as a bogus hunk.
