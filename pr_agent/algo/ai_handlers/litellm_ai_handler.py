@@ -537,8 +537,12 @@ class LiteLLMAIHandler(BaseAiHandler):
                     if 'temperature' in kwargs:
                         del kwargs['temperature']
 
-                # Add reasoning_effort if model supports it
-                if model in self.support_reasoning_models:
+                # Add reasoning_effort if model supports it. Match the bare model
+                # id as well as any provider-prefixed form (e.g.
+                # "openrouter/google/gemini-2.5-pro", "gemini/gemini-2.5-pro"), so a
+                # configured reasoning_effort is not silently dropped for models the
+                # user references with a provider prefix.
+                if any(model == m or model.endswith("/" + m) for m in self.support_reasoning_models):
                     config_effort = get_settings().config.reasoning_effort
                     try:
                         ReasoningEffort(config_effort)
