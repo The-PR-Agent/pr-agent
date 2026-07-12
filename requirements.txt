@@ -16,7 +16,7 @@ google-cloud-storage==2.10.0; python_version < "3.13"
 google-cloud-storage==3.12.0; python_version >= "3.13"
 protobuf==6.33.6  # grpcio-status 1.80.0 forces >=6.31.1,<7; pinned to lock the resolved transitive version
 Jinja2==3.1.6
-litellm==1.84.0
+litellm==1.92.0
 loguru==0.7.2
 msrest==0.7.1
 openai>=1.55.3
