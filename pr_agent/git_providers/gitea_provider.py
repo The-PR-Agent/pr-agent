@@ -883,12 +883,13 @@ class RepoApi(giteapy.RepositoryApi):
             index=pr_number
         )
 
-    def edit_pull_request(self, owner: str, repo: str, pr_number: int,title : str, body: str):
+    def edit_pull_request(self, owner: str, repo: str, pr_number: int, body: str, title: Optional[str] = None):
         """Edit pull request description"""
         body = {
-            "body": body,
-            "title" : title
+            "body": body
         }
+        if title is not None:
+            body["title"] = title
         return self.repository.repo_edit_pull_request(
             owner=owner,
             repo=repo,

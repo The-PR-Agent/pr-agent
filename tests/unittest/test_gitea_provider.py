@@ -500,3 +500,31 @@ class TestGiteaProviderAddFileDiff:
         provider.logger.error.assert_called_once()
         # file_diffs is left untouched when the diff cannot be fetched.
         assert provider.file_diffs == {}
+
+    @patch('pr_agent.git_providers.gitea_provider.giteapy.RepositoryApi')
+    def test_edit_pull_request_without_title(self, mock_repository_api_cls):
+        from pr_agent.git_providers.gitea_provider import RepoApi
+
+        repo_api = RepoApi(MagicMock())
+        repo_api.edit_pull_request('owner', 'repo', 123, 'Updated description')
+
+        mock_repository_api_cls.return_value.repo_edit_pull_request.assert_called_once_with(
+            owner='owner',
+            repo='repo',
+            index=123,
+            body={'body': 'Updated description'}
+        )
+
+    @patch('pr_agent.git_providers.gitea_provider.giteapy.RepositoryApi')
+    def test_edit_pull_request_with_title(self, mock_repository_api_cls):
+        from pr_agent.git_providers.gitea_provider import RepoApi
+
+        repo_api = RepoApi(MagicMock())
+        repo_api.edit_pull_request('owner', 'repo', 123, 'Updated description', 'Updated title')
+
+        mock_repository_api_cls.return_value.repo_edit_pull_request.assert_called_once_with(
+            owner='owner',
+            repo='repo',
+            index=123,
+            body={'body': 'Updated description', 'title': 'Updated title'}
+        )
