@@ -26,7 +26,7 @@
 6. Build a Docker image for the app and optionally push it to a Docker repository. We'll use Dockerhub as an example:
 
     ```bash
-    docker build -f /docker/Dockerfile -t pr-agent:gitea_app --target gitea_app .
+    docker build -f docker/Dockerfile -t pr-agent:gitea_app --target gitea_app .
     docker push pragent/pr-agent:gitea_webhook  # Push to your Docker repository
     ```
 
