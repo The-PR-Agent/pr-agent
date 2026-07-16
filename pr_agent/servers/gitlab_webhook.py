@@ -64,7 +64,8 @@ def is_bot_user(data) -> bool:
     try:
         # logic to ignore bot users (unlike Github, no direct flag for bot users in gitlab)
         sender_name = data.get("user", {}).get("name", "unknown").lower()
-        bot_indicators = ['codium', 'bot_', 'bot-', '_bot', '-bot']
+        default_indicators = ['codium', 'bot_', 'bot-', '_bot', '-bot']
+        bot_indicators = get_settings().get("gitlab.bot_user_indicators", default_indicators)
         if any(indicator in sender_name for indicator in bot_indicators):
             get_logger().info(f"Skipping GitLab bot user: {sender_name}")
             return True

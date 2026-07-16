@@ -191,3 +191,56 @@ def test_gitlab_handle_ask_line_converts_new_line_diff_note_to_right_side_comman
         "/ask_line --line_start=10 --line_end=12 --side=RIGHT "
         "--file_name=src/app.py --comment_id=disc-1 why this change?"
     )
+
+
+@pytest.mark.parametrize(
+    "sender_name, expected",
+    [
+        ("Codium Bot", True),
+        ("release_bot", True),
+        ("release-bot", True),
+        ("bot-release", True),
+        ("bot_release", True),
+        ("Jane Developer", False),
+        ("renovate[bot]", False),  # 'renovate' is not in the default list
+    ],
+)
+def test_gitlab_is_bot_user_uses_default_indicators(
+    gitlab_webhook_module, sender_name, expected
+):
+    settings = get_settings()
+    # Ensure no override is set: default list must apply.
+    had_override = "GITLAB.BOT_USER_INDICATORS" in settings
+    original_override = settings.get("GITLAB.BOT_USER_INDICATORS", None)
+    if had_override:
+        settings.unset("GITLAB.BOT_USER_INDICATORS", force=True)
+    try:
+        data = {"user": {"name": sender_name}}
+        assert gitlab_webhook_module.is_bot_user(data) is expected
+    finally:
+        if had_override:
+            settings.set("GITLAB.BOT_USER_INDICATORS", original_override)
+
+
+def test_gitlab_is_bot_user_honors_configured_indicators(gitlab_webhook_module):
+    settings = get_settings()
+    had_override = "GITLAB.BOT_USER_INDICATORS" in settings
+    original_override = settings.get("GITLAB.BOT_USER_INDICATORS", None)
+    settings.set("GITLAB.BOT_USER_INDICATORS", ["renovate", "dependabot"])
+    try:
+        assert gitlab_webhook_module.is_bot_user(
+            {"user": {"name": "renovate[bot]"}}
+        ) is True
+        assert gitlab_webhook_module.is_bot_user(
+            {"user": {"name": "dependabot"}}
+        ) is True
+        # A name matching the built-in default list must NOT be flagged when the
+        # override is set: configured indicators fully replace the defaults.
+        assert gitlab_webhook_module.is_bot_user(
+            {"user": {"name": "codium-agent"}}
+        ) is False
+    finally:
+        if had_override:
+            settings.set("GITLAB.BOT_USER_INDICATORS", original_override)
+        else:
+            settings.unset("GITLAB.BOT_USER_INDICATORS", force=True)
