@@ -284,10 +284,11 @@ push_commands = [
     "/describe",
     "/review",
 ]
-# Substring indicators used to skip GitLab bot users on webhook events (case-insensitive match against
-# the sender's display name). When unset, defaults to ['codium', 'bot_', 'bot-', '_bot', '-bot'].
-# Override to extend or replace the default list (e.g. to include 'renovate', 'dependabot', etc.).
-# bot_user_indicators = ['codium', 'bot_', 'bot-', '_bot', '-bot', 'renovate']
+# Substring indicators used to skip GitLab bot users on webhook events. The match is
+# case-insensitive and performed against the sender's display name. Overriding this
+# setting REPLACES the default list; include the entries below in your override if you
+# want to keep them (e.g. `["codium", "bot_", "bot-", "_bot", "-bot", "renovate"]`).
+bot_user_indicators = ["codium", "bot_", "bot-", "_bot", "-bot"]
 # Configure SSL validation for GitLab. Can be either set to the path of a custom CA or disabled entirely.
 # ssl_verify = true
 
