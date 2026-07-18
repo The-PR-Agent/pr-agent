@@ -68,6 +68,11 @@ reasoning_effort = "medium" # "none", "minimal", "low", "medium", "high", "xhigh
 enable_claude_extended_thinking = false # Set to true to enable extended thinking feature
 extended_thinking_budget_tokens = 2048
 extended_thinking_max_output_tokens = 4096
+# Adaptive thinking for Claude Opus 4.7/4.8 and Claude 5 models. When enabled,
+# these models receive thinking={"type": "adaptive"} and an output_config effort.
+# Do not add adaptive-only models to claude_extended_thinking_models_override;
+# when both features are enabled, adaptive thinking takes precedence.
+enable_claude_adaptive_thinking = false
 # Optional: override the built-in list of Claude models that receive the extended-thinking payload.
 # When non-empty, this list fully replaces the built-in defaults (see CLAUDE_EXTENDED_THINKING_MODELS
 # in pr_agent/algo/__init__.py). Leave empty to use the defaults.
