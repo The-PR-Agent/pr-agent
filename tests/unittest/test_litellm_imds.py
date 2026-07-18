@@ -53,12 +53,13 @@ def _base_settings(extra_get=None):
     })()
 
 
-def _mock_acompletion_response():
+def _mock_acompletion_response(usage=None):
     mock = MagicMock()
-    mock.__getitem__ = lambda self, key: {
-        "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]
-    }[key]
-    mock.dict.return_value = {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+    response = {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+    if usage is not None:
+        response["usage"] = usage
+    mock.__getitem__ = lambda self, key: response[key]
+    mock.dict.return_value = response
     return mock
 
 
@@ -546,13 +547,14 @@ class TestImdsCallBehavior:
         }
 
         call_count = 0
+        usage = {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18}
 
         async def flaky_completion(**kwargs):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
                 raise openai.APIError("Bedrock auth failed", request=MagicMock(), body=None)
-            return _mock_acompletion_response()
+            return _mock_acompletion_response(usage)
 
         with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion",
                    side_effect=flaky_completion):
@@ -565,6 +567,7 @@ class TestImdsCallBehavior:
         assert handler._aws_imds_fell_back is True
         assert os.environ["AWS_ACCESS_KEY_ID"] == "STATICKEY"
         assert os.environ["AWS_SECRET_ACCESS_KEY"] == "STATICSECRET"
+        assert handler.last_usage == usage
 
     @pytest.mark.asyncio
     async def test_fallback_not_triggered_without_static_creds(self, monkeypatch):
