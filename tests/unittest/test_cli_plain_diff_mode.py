@@ -6,7 +6,7 @@ from pr_agent.config_loader import get_settings
 # Keys run() mutates on the process-wide settings singleton, directly or via the
 # diff-mode CLI path. Snapshotted and restored around every test (autouse) so
 # state never leaks, even when run() sets keys the test never touches itself.
-_SETTINGS_KEYS = ["plain_diff.content", "plain_diff.output_path",
+_SETTINGS_KEYS = ["plain_diff.content", "plain_diff.output_path", "plain_diff.json_output_path",
                   "config.git_provider", "config.publish_output"]
 
 
@@ -27,9 +27,13 @@ def cfg():
 
 def test_parser_has_diff_flags():
     parser = set_parser()
-    args = parser.parse_args(["--diff-file", "x.diff", "--output", "out.md", "review"])
+    args = parser.parse_args([
+        "--diff-file", "x.diff", "--output", "out.md",
+        "--json-output", "out.json", "review",
+    ])
     assert args.diff_file == "x.diff"
     assert args.output == "out.md"
+    assert args.json_output == "out.json"
     assert args.command == "review"
 
 
@@ -76,3 +80,22 @@ def test_diff_mode_forces_publish_output(cfg, monkeypatch):
     monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
     run(inargs=["--stdin", "review"])
     assert captured["publish_output"] is True
+
+
+def test_diff_mode_sets_json_output_path(cfg, monkeypatch, tmp_path):
+    import io
+
+    captured = {}
+
+    class FakeAgent:
+        async def handle_request(self, target, request, notify=None):
+            captured["json_output_path"] = get_settings().plain_diff.json_output_path
+            return True
+
+    output = tmp_path / "review.json"
+    monkeypatch.setattr("pr_agent.cli.PRAgent", FakeAgent)
+    monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
+
+    run(inargs=["--stdin", "--json-output", str(output), "review"])
+
+    assert captured["json_output_path"] == str(output)

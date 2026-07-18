@@ -1,3 +1,4 @@
+import json
 import os
 from collections import Counter
 from typing import List, Optional
@@ -20,9 +21,9 @@ class PullRequestMimic:
 class PlainDiffGitProvider(GitProvider):
     """Provider that reviews a raw unified diff (stdin/file), no hosting platform.
 
-    The diff text and optional output path are read from global settings
-    (plain_diff.content, plain_diff.output_path). The pr_url arg is an ignored
-    sentinel.
+    The diff text and optional output paths are read from global settings
+    (plain_diff.content, plain_diff.output_path, plain_diff.json_output_path).
+    The pr_url arg is an ignored sentinel.
     """
 
     def __init__(self, pr_url=None, incremental=False):
@@ -31,6 +32,7 @@ class PlainDiffGitProvider(GitProvider):
             raise ValueError("No diff content provided for the 'plain-diff' git provider")
         self.diff_text = diff_text
         self.output_path = get_settings().get("plain_diff.output_path", None)
+        self.json_output_path = get_settings().get("plain_diff.json_output_path", None)
         # cli.run() already forces config.publish_output=True, but apply_repo_settings()
         # runs afterwards and can overwrite it back to False from an extra/repo config
         # (tools gate all publishing on this flag). This provider is constructed after
@@ -116,6 +118,17 @@ class PlainDiffGitProvider(GitProvider):
         if is_temporary:
             return  # don't emit "Preparing review..." placeholders to stdout
         self._write_output(pr_comment)
+
+    def publish_structured_review(self, review: dict):
+        if not self.json_output_path:
+            return
+        try:
+            with open(self.json_output_path, "w", encoding="utf-8") as fh:
+                json.dump(review, fh, indent=2)
+                fh.write("\n")
+        except (OSError, TypeError, ValueError) as e:
+            get_logger().error(f"Failed to write structured review to {self.json_output_path}: {e}")
+            raise
 
     def publish_description(self, pr_title: str, pr_body: str):
         self._write_output(f"{pr_title}\n\n{pr_body}")

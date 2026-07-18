@@ -72,6 +72,8 @@ def set_parser():
                         help="Read a unified diff from stdin (plain-diff local mode)")
     parser.add_argument("--output", dest="output", type=str, default=None,
                         help="Write the result to this file (in addition to stdout)")
+    parser.add_argument("--json-output", dest="json_output", type=str, default=None,
+                        help="Write the parsed review and token usage to this JSON file")
     parser.add_argument('command', type=str, help='The', choices=commands, default='review')
     parser.add_argument('rest', nargs=argparse.REMAINDER, default=[])
     return parser
@@ -109,6 +111,7 @@ def run(inargs=None, args=None):
         get_settings().set("config.git_provider", "plain-diff")
         get_settings().set("plain_diff.content", diff_content)
         get_settings().set("plain_diff.output_path", getattr(args, "output", None))
+        get_settings().set("plain_diff.json_output_path", getattr(args, "json_output", None))
         # Plain-diff mode's whole purpose is to emit the result to stdout/--output, so
         # force publishing on even if a config/env set publish_output=false.
         get_settings().set("config.publish_output", True)

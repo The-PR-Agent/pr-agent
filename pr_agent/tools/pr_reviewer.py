@@ -254,6 +254,12 @@ class PRReviewer:
             get_logger().exception("Failed to parse review data", artifact={"data": data})
             return ""
 
+        structured_publisher = getattr(self.git_provider, "publish_structured_review", None)
+        if callable(structured_publisher):
+            structured_data = dict(data)
+            structured_data["usage"] = dict(getattr(self.ai_handler, "last_usage", {}) or {})
+            structured_publisher(structured_data)
+
         # move data['review'] 'key_issues_to_review' key to the end of the dictionary
         if 'key_issues_to_review' in data['review']:
             key_issues_to_review = data['review'].pop('key_issues_to_review')
