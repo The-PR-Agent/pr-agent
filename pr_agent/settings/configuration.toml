@@ -59,6 +59,12 @@ ignore_pr_labels = [] # labels to ignore from PR agent when an PR is created
 ignore_pr_authors = [] # authors to ignore from PR agent when an PR is created
 ignore_repositories = [] # a list of regular expressions of repository full names (e.g. "org/repo") to ignore from PR agent processing
 ignore_language_framework = [] # a list of code-generation languages or frameworks (e.g. 'protobuf', 'go_gen') whose auto-generated source files will be excluded from analysis
+# Substring indicators used to skip bot users on webhook events. Currently consumed by
+# the GitLab webhook (`is_bot_user`); other providers may adopt this list in future.
+# The match is case-insensitive against the sender's display name. Overriding this
+# setting REPLACES the default list — include the entries below in your override if
+# you want to keep them (e.g. `["codium", "bot_", "bot-", "_bot", "-bot", "renovate"]`).
+bot_user_indicators = ["codium", "bot_", "bot-", "_bot", "-bot"]
 #
 restricted_mode = false # when true, skip operations that require elevated permissions (e.g. pushing code to the repository)
 is_auto_command = false # will be auto-set to true if the command is triggered by an automation
@@ -284,11 +290,6 @@ push_commands = [
     "/describe",
     "/review",
 ]
-# Substring indicators used to skip GitLab bot users on webhook events. The match is
-# case-insensitive and performed against the sender's display name. Overriding this
-# setting REPLACES the default list; include the entries below in your override if you
-# want to keep them (e.g. `["codium", "bot_", "bot-", "_bot", "-bot", "renovate"]`).
-bot_user_indicators = ["codium", "bot_", "bot-", "_bot", "-bot"]
 # Configure SSL validation for GitLab. Can be either set to the path of a custom CA or disabled entirely.
 # ssl_verify = true
 

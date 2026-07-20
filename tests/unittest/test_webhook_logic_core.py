@@ -215,8 +215,8 @@ def test_gitlab_is_bot_user_uses_default_indicators(
 
 def test_gitlab_is_bot_user_honors_configured_indicators(gitlab_webhook_module):
     settings = get_settings()
-    original_override = settings.get("GITLAB.BOT_USER_INDICATORS")
-    settings.set("GITLAB.BOT_USER_INDICATORS", ["renovate", "dependabot"])
+    original_override = settings.get("CONFIG.BOT_USER_INDICATORS")
+    settings.set("CONFIG.BOT_USER_INDICATORS", ["renovate", "dependabot"])
     try:
         assert gitlab_webhook_module.is_bot_user(
             {"user": {"name": "renovate[bot]"}}
@@ -230,15 +230,15 @@ def test_gitlab_is_bot_user_honors_configured_indicators(gitlab_webhook_module):
             {"user": {"name": "codium-agent"}}
         ) is False
     finally:
-        settings.set("GITLAB.BOT_USER_INDICATORS", original_override)
+        settings.set("CONFIG.BOT_USER_INDICATORS", original_override)
 
 
 def test_gitlab_is_bot_user_matches_case_insensitively(gitlab_webhook_module):
     # Operator supplies indicators with varied casing; matching must be case-insensitive
     # against the (already lowercased) sender display name.
     settings = get_settings()
-    original_override = settings.get("GITLAB.BOT_USER_INDICATORS")
-    settings.set("GITLAB.BOT_USER_INDICATORS", ["Renovate", "DEPENDABOT"])
+    original_override = settings.get("CONFIG.BOT_USER_INDICATORS")
+    settings.set("CONFIG.BOT_USER_INDICATORS", ["Renovate", "DEPENDABOT"])
     try:
         assert gitlab_webhook_module.is_bot_user(
             {"user": {"name": "renovate[bot]"}}
@@ -247,15 +247,15 @@ def test_gitlab_is_bot_user_matches_case_insensitively(gitlab_webhook_module):
             {"user": {"name": "dependabot"}}
         ) is True
     finally:
-        settings.set("GITLAB.BOT_USER_INDICATORS", original_override)
+        settings.set("CONFIG.BOT_USER_INDICATORS", original_override)
 
 
 def test_gitlab_is_bot_user_normalizes_string_value(gitlab_webhook_module):
     # A misconfigured .pr_agent.toml that sets a bare string instead of a list must not
     # trigger per-character iteration; the value should be treated as a single indicator.
     settings = get_settings()
-    original_override = settings.get("GITLAB.BOT_USER_INDICATORS")
-    settings.set("GITLAB.BOT_USER_INDICATORS", "renovate")
+    original_override = settings.get("CONFIG.BOT_USER_INDICATORS")
+    settings.set("CONFIG.BOT_USER_INDICATORS", "renovate")
     try:
         assert gitlab_webhook_module.is_bot_user(
             {"user": {"name": "renovate[bot]"}}
@@ -267,14 +267,14 @@ def test_gitlab_is_bot_user_normalizes_string_value(gitlab_webhook_module):
             {"user": {"name": "Jane Developer"}}
         ) is False
     finally:
-        settings.set("GITLAB.BOT_USER_INDICATORS", original_override)
+        settings.set("CONFIG.BOT_USER_INDICATORS", original_override)
 
 
 def test_gitlab_is_bot_user_skips_non_string_entries(gitlab_webhook_module):
     # Non-string entries in the list should be silently dropped, not crash detection.
     settings = get_settings()
-    original_override = settings.get("GITLAB.BOT_USER_INDICATORS")
-    settings.set("GITLAB.BOT_USER_INDICATORS", ["renovate", 42, None, "bot"])
+    original_override = settings.get("CONFIG.BOT_USER_INDICATORS")
+    settings.set("CONFIG.BOT_USER_INDICATORS", ["renovate", 42, None, "bot"])
     try:
         assert gitlab_webhook_module.is_bot_user(
             {"user": {"name": "renovate[bot]"}}
@@ -283,4 +283,4 @@ def test_gitlab_is_bot_user_skips_non_string_entries(gitlab_webhook_module):
             {"user": {"name": "Jane Developer"}}
         ) is False
     finally:
-        settings.set("GITLAB.BOT_USER_INDICATORS", original_override)
+        settings.set("CONFIG.BOT_USER_INDICATORS", original_override)
