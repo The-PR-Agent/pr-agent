@@ -4,10 +4,10 @@
 
 [config]
 # models
-model="gpt-5.5-2026-04-23"
-fallback_models=["gpt-5.4-mini"]
-#model_reasoning="gpt-5.4-mini" # dedicated reasoning model for self-reflection
-#model_weak="gpt-5.4-nano" # optional, a weaker model to use for some easier tasks
+model="gpt-5.6"
+fallback_models=["gpt-5.6-terra"]
+#model_reasoning="gpt-5.6-terra" # dedicated reasoning model for self-reflection
+#model_weak="gpt-5.6-luna" # optional, a weaker model to use for some easier tasks
 # CLI
 git_provider="github"
 publish_output=true
