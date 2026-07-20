@@ -50,6 +50,20 @@ class _FakeRepoObj:
         return self._issues[number]
 
 
+class _FakeGithubClient:
+    """Mimics PyGithub Github.get_repo lookup, counting calls."""
+
+    def __init__(self, repos_by_name=None):
+        self._repos = repos_by_name or {}
+        self.get_repo_calls = []
+
+    def get_repo(self, full_name):
+        self.get_repo_calls.append(full_name)
+        if full_name not in self._repos:
+            raise RuntimeError(f"no access to repository {full_name}")
+        return self._repos[full_name]
+
+
 def _make_github_provider(
     *,
     user_description="",
@@ -59,12 +73,14 @@ def _make_github_provider(
     repo_obj=None,
     sub_issues_map=None,
     sub_issues_raises=False,
+    github_client=None,
 ):
     """Build a GithubProvider that passes ``isinstance`` checks without __init__."""
     provider = GithubProvider.__new__(GithubProvider)
     provider.repo = repo
     provider.base_url_html = base_url_html
     provider.repo_obj = repo_obj
+    provider.github_client = github_client
     provider.get_user_description = lambda: user_description
     provider.get_pr_branch = lambda: branch
 
@@ -198,6 +214,180 @@ class TestGithubExtractionMerging:
         # The branch-derived #13 must be the one dropped: description tickets
         # come first in the merge order, so the cap drops the trailing entry.
         assert ids == [10, 11, 12]
+
+
+# ---------------------------------------------------------------------------
+# Scenario 1b: tickets are fetched from the repository that owns them
+# ---------------------------------------------------------------------------
+
+class TestCrossRepoTicketResolution:
+    def test_ticket_in_other_repo_is_fetched_from_that_repo(self, settings_snapshot):
+        # Both repositories happen to have an issue #5. The PR links the one in
+        # ``other/repo``, so the ``other/repo`` issue must be the one returned —
+        # not the same-numbered issue that exists in the PR's own repository.
+        pr_repo_obj = _FakeRepoObj({5: _FakeIssue(5, title="Unrelated issue in PR repo")})
+        other_repo_obj = _FakeRepoObj({5: _FakeIssue(5, title="Linked issue", body="linked")})
+        provider = _make_github_provider(
+            user_description="Relates to https://github.com/other/repo/issues/5",
+            repo="org/repo",
+            repo_obj=pr_repo_obj,
+            github_client=_FakeGithubClient({"other/repo": other_repo_obj}),
+        )
+        result = asyncio.run(extract_tickets(provider))
+        assert result and len(result) == 1
+        assert result[0]["title"] == "Linked issue"
+        assert provider.github_client.get_repo_calls == ["other/repo"]
+
+    def test_same_repo_ticket_reuses_repo_obj_without_extra_api_call(self, settings_snapshot):
+        repo_obj = _FakeRepoObj({1: _FakeIssue(1, title="One")})
+        provider = _make_github_provider(
+            user_description="Fixes #1",
+            repo="org/repo",
+            repo_obj=repo_obj,
+            github_client=_FakeGithubClient(),
+        )
+        result = asyncio.run(extract_tickets(provider))
+        assert result and result[0]["title"] == "One"
+        # The PR's own repository handle is reused — no repository lookup at all.
+        assert provider.github_client.get_repo_calls == []
+
+    def test_same_repo_differing_in_case_reuses_repo_obj(self, settings_snapshot):
+        # GitHub repository names are case-insensitive, so a link spelled with
+        # different case is the PR's own repository and must take the fast path.
+        repo_obj = _FakeRepoObj({4: _FakeIssue(4, title="Four")})
+        provider = _make_github_provider(
+            user_description="See https://github.com/Org/Repo/issues/4",
+            repo="org/repo",
+            repo_obj=repo_obj,
+            github_client=_FakeGithubClient(),
+        )
+        result = asyncio.run(extract_tickets(provider))
+        assert [t["ticket_id"] for t in result] == [4]
+        assert provider.github_client.get_repo_calls == []
+
+    def test_unreachable_repo_is_skipped_without_failing_other_tickets(self, settings_snapshot):
+        repo_obj = _FakeRepoObj({1: _FakeIssue(1, title="One")})
+        provider = _make_github_provider(
+            user_description="Fixes #1, see https://github.com/private/repo/issues/9",
+            repo="org/repo",
+            repo_obj=repo_obj,
+            # ``private/repo`` is absent -> get_repo raises, e.g. no read access.
+            github_client=_FakeGithubClient(),
+        )
+        result = asyncio.run(extract_tickets(provider))
+        assert result is not None
+        assert [t["ticket_id"] for t in result] == [1]
+
+    def test_repeated_unreachable_repo_is_looked_up_once(self, settings_snapshot):
+        # A failed lookup is cached as well, so several tickets pointing at one
+        # inaccessible repository do not repeat the failing call.
+        provider = _make_github_provider(
+            user_description=(
+                "See https://github.com/private/repo/issues/1 "
+                "and https://github.com/private/repo/issues/2"
+            ),
+            repo="org/repo",
+            repo_obj=_FakeRepoObj({}),
+            github_client=_FakeGithubClient(),
+        )
+        result = asyncio.run(extract_tickets(provider))
+        assert result == []
+        assert provider.github_client.get_repo_calls == ["private/repo"]
+
+    def test_repeated_foreign_repo_is_looked_up_once(self, settings_snapshot):
+        other_repo_obj = _FakeRepoObj({
+            5: _FakeIssue(5, title="Five"),
+            6: _FakeIssue(6, title="Six"),
+        })
+        provider = _make_github_provider(
+            user_description=(
+                "See https://github.com/other/repo/issues/5 "
+                "and https://github.com/other/repo/issues/6"
+            ),
+            repo="org/repo",
+            repo_obj=_FakeRepoObj({}),
+            github_client=_FakeGithubClient({"other/repo": other_repo_obj}),
+        )
+        result = asyncio.run(extract_tickets(provider))
+        assert sorted(t["ticket_id"] for t in result) == [5, 6]
+        assert provider.github_client.get_repo_calls == ["other/repo"]
+
+    def test_ticket_on_another_github_host_is_skipped_not_read_from_pr_repo(self, settings_snapshot):
+        # ``_parse_issue_url`` drops the host, so this ticket parses to the same
+        # "org/repo" as the PR. It lives on a different GitHub instance, which the
+        # PR's client cannot reach, so it must be skipped rather than served from
+        # the PR's own repository.
+        pr_repo_obj = _FakeRepoObj({
+            1: _FakeIssue(1, title="One"),
+            7: _FakeIssue(7, title="Unrelated issue on the PR's host"),
+        })
+        provider = _make_github_provider(
+            user_description="Fixes #1, see https://github.enterprise.local/org/repo/issues/7",
+            repo="org/repo",
+            base_url_html="https://github.com",
+            repo_obj=pr_repo_obj,
+            github_client=_FakeGithubClient(),
+        )
+        result = asyncio.run(extract_tickets(provider))
+        assert [t["ticket_id"] for t in result] == [1]
+        # Nor may it fall through to a lookup on the PR's (wrong) instance.
+        assert provider.github_client.get_repo_calls == []
+
+    def test_api_host_form_counts_as_the_same_instance(self, settings_snapshot):
+        # Sub-issue URLs may arrive in api.github.com form; that is the same
+        # instance as the PR's https://github.com and must not be rejected.
+        repo_obj = _FakeRepoObj({
+            1: _FakeIssue(1, title="Main"),
+            99: _FakeIssue(99, title="Sub", body="s"),
+        })
+        sub_url = "https://api.github.com/repos/org/repo/issues/99"
+        provider = _make_github_provider(
+            user_description="Fixes #1",
+            repo="org/repo",
+            base_url_html="https://github.com",
+            repo_obj=repo_obj,
+            github_client=_FakeGithubClient(),
+            sub_issues_map={"https://github.com/org/repo/issues/1": [sub_url]},
+        )
+        result = asyncio.run(extract_tickets(provider))
+        subs = result[0]["sub_issues"]
+        assert [s["title"] for s in subs] == ["Sub"]
+        assert provider.github_client.get_repo_calls == []
+
+    def test_explicit_default_port_is_the_same_instance(self, settings_snapshot):
+        # An explicit port must not make the host check reject an otherwise local
+        # ticket — hosts are compared without port or userinfo.
+        repo_obj = _FakeRepoObj({7: _FakeIssue(7, title="Seven")})
+        provider = _make_github_provider(
+            user_description="See https://github.com:443/org/repo/issues/7",
+            repo="org/repo",
+            base_url_html="https://github.com",
+            repo_obj=repo_obj,
+            github_client=_FakeGithubClient(),
+        )
+        result = asyncio.run(extract_tickets(provider))
+        assert [t["ticket_id"] for t in result] == [7]
+        assert provider.github_client.get_repo_calls == []
+
+    def test_sub_issue_in_other_repo_is_fetched_from_that_repo(self, settings_snapshot):
+        pr_repo_obj = _FakeRepoObj({
+            1: _FakeIssue(1, title="Main"),
+            99: _FakeIssue(99, title="Unrelated issue in PR repo"),
+        })
+        other_repo_obj = _FakeRepoObj({99: _FakeIssue(99, title="Linked sub-issue", body="s")})
+        sub_url = "https://github.com/other/repo/issues/99"
+        provider = _make_github_provider(
+            user_description="Fixes #1",
+            repo="org/repo",
+            repo_obj=pr_repo_obj,
+            github_client=_FakeGithubClient({"other/repo": other_repo_obj}),
+            sub_issues_map={"https://github.com/org/repo/issues/1": [sub_url]},
+        )
+        result = asyncio.run(extract_tickets(provider))
+        subs = result[0]["sub_issues"]
+        assert len(subs) == 1
+        assert subs[0]["title"] == "Linked sub-issue"
+        assert provider.github_client.get_repo_calls == ["other/repo"]
 
 
 # ---------------------------------------------------------------------------
