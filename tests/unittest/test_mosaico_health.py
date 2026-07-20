@@ -48,7 +48,7 @@ class TestHealthRoute:
 # under the pinned litellm). Under the OLD (removed) gate, health_check() short-circuited
 # to "Unhealthy: LLM does not support 'stop' parameter" for exactly such models — so these
 # tests would have failed before Fix A. They guard against the gate being reintroduced.
-_MODEL_WITHOUT_STOP = "gpt-5.5-2026-04-23"
+_MODEL_WITHOUT_STOP = "gpt-5.6"
 
 
 @pytest.fixture
