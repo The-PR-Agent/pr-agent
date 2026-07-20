@@ -161,16 +161,29 @@ class PRDescription:
 
                 # publish labels
                 if get_settings().pr_description.publish_labels and pr_labels and self.git_provider.is_supported("get_labels"):
-                    original_labels = self.git_provider.get_pr_labels(update=True)
-                    get_logger().debug(f"original labels", artifact=original_labels)
-                    user_labels = get_user_labels(original_labels)
-                    new_labels = pr_labels + user_labels
-                    get_logger().debug(f"published labels", artifact=new_labels)
-                    if set(new_labels) != set(original_labels):
-                        get_logger().info(f"Setting describe labels:\n{new_labels}")
-                        self.git_provider.publish_labels(new_labels)
-                    else:
-                        get_logger().debug(f"Labels are the same, not updating")
+                    # Isolate label refresh/publish failures from the description
+                    # publish: GitLabProvider.get_pr_labels(update=True) now raises
+                    # on a stale-snapshot refresh failure (see PR #2484), and the
+                    # outer try/except in this method is wide enough that an
+                    # unhandled exception here would skip the description publish
+                    # too. Label updates are best-effort for /describe.
+                    try:
+                        original_labels = self.git_provider.get_pr_labels(update=True)
+                        get_logger().debug("original labels", artifact=original_labels)
+                        user_labels = get_user_labels(original_labels)
+                        new_labels = pr_labels + user_labels
+                        get_logger().debug("published labels", artifact=new_labels)
+                        if set(new_labels) != set(original_labels):
+                            get_logger().info(f"Setting describe labels:\n{new_labels}")
+                            self.git_provider.publish_labels(new_labels)
+                        else:
+                            get_logger().debug("Labels are the same, not updating")
+                    except Exception as label_err:
+                        get_logger().warning(
+                            "Failed to update labels during PR description; "
+                            "continuing with description publish "
+                            f"({type(label_err).__name__})"
+                        )
 
                 # publish description
                 if get_settings().pr_description.publish_description_as_comment:
