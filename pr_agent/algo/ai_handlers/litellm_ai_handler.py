@@ -470,7 +470,8 @@ class LiteLLMAIHandler(BaseAiHandler):
                     messages[1]["content"] = [{"type": "text", "text": messages[1]["content"]},
                                               {"type": "image_url", "image_url": {"url": img_path}}]
 
-                thinking_kwargs_gpt5 = None
+                reasoning_kwargs = None
+                drop_temperature_for_reasoning = False
                 # Detect GPT-5 family regardless of provider prefix(es) on the model name.
                 # Users sometimes put a provider prefix in config (e.g. "openai/gpt-5.1-codex-max"),
                 # and Azure mode auto-prepends "azure/", which together can produce stacked prefixes
@@ -479,6 +480,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                 model_base = model
                 while model_base.startswith(('openai/', 'azure/')):
                     model_base = model_base.removeprefix('openai/').removeprefix('azure/')
+                grok_model = model.rsplit('/', 1)[-1]
                 if model_base.startswith('gpt-5'):
                     # Use configured reasoning_effort or default to MEDIUM
                     config_effort = get_settings().config.reasoning_effort
@@ -493,10 +495,11 @@ class LiteLLMAIHandler(BaseAiHandler):
                                 f"Using default '{effort}'. Valid values: {[e.value for e in ReasoningEffort]}"
                             )
 
-                    thinking_kwargs_gpt5 = {
+                    reasoning_kwargs = {
                         "reasoning_effort": effort,
                         "allowed_openai_params": ["reasoning_effort"],
                     }
+                    drop_temperature_for_reasoning = True
                     get_logger().info(f"Using reasoning_effort='{effort}' for GPT-5 model")
                     # Routing priority: Azure mode > explicit provider prefix in user config > openai/
                     # default. This preserves an explicit "azure/" the user wrote in config even when
@@ -510,6 +513,26 @@ class LiteLLMAIHandler(BaseAiHandler):
                     else:
                         provider_prefix = 'openai/'
                     model = provider_prefix + model_base.replace('_thinking', '')  # remove _thinking suffix
+                elif grok_model.startswith('grok-') and get_settings().config.get(
+                        "enable_grok_reasoning_effort", False):
+                    config_effort = get_settings().config.reasoning_effort
+                    valid_grok_efforts = ("low", "medium", "high")
+                    if grok_model.startswith("grok-4.20-multi-agent"):
+                        valid_grok_efforts += ("xhigh",)
+                    if config_effort in valid_grok_efforts:
+                        effort = config_effort
+                    else:
+                        effort = ReasoningEffort.MEDIUM.value
+                        if config_effort is not None:
+                            get_logger().warning(
+                                f"Invalid reasoning_effort '{config_effort}' in config. "
+                                f"Using default '{effort}'. Valid Grok values: {list(valid_grok_efforts)}"
+                            )
+                    reasoning_kwargs = {
+                        "reasoning_effort": effort,
+                        "allowed_openai_params": ["reasoning_effort"],
+                    }
+                    get_logger().info(f"Using reasoning_effort='{effort}' for Grok model")
 
 
                 # Currently, some models do not support a separate system and user prompts
@@ -537,9 +560,9 @@ class LiteLLMAIHandler(BaseAiHandler):
                     # get_logger().info(f"Adding temperature with value {temperature} to model {model}.")
                     kwargs["temperature"] = temperature
 
-                if thinking_kwargs_gpt5:
-                    kwargs.update(thinking_kwargs_gpt5)
-                    if 'temperature' in kwargs:
+                if reasoning_kwargs:
+                    kwargs.update(reasoning_kwargs)
+                    if drop_temperature_for_reasoning and 'temperature' in kwargs:
                         del kwargs['temperature']
 
                 # Add reasoning_effort if model supports it. Match the bare model
