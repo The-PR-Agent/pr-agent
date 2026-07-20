@@ -18,6 +18,9 @@ from starlette_context import context
 
 from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import extract_hunk_headers
+from ..algo.inline_comment_dedup import (body_fingerprint, body_with_markers,
+                                         code_fingerprint,
+                                         get_inline_comment_store, has_marker)
 from ..algo.language_handler import is_valid_file
 from ..algo.types import EDIT_TYPE
 from ..algo.utils import (PRReviewHeader, Range, clip_tokens,
@@ -512,9 +515,70 @@ class GithubProvider(GitProvider):
         return dict(body=body, path=path, position=position) if subject_type == "LINE" else {}
 
     def publish_inline_comments(self, comments: list[dict], disable_fallback: bool = False):
+        store = None
+        pending_fingerprints = []
+        dedup_code_fp_key = "_dedup_code_fp"
+        if get_settings().get("config.persistent_inline_comments", False):
+            store = get_inline_comment_store(self)
+            local_seen = set()
+            deduped = []
+            skipped = 0
+            for comment in comments:
+                if not comment:
+                    deduped.append(comment)
+                    continue
+                path = comment.get("path", "")
+                body = comment.get("body", "")
+                # GitHub committable comments are anchored by diff position, which
+                # shifts as the PR gains commits; anchor the fingerprint on the file
+                # path and comment content instead so it stays stable across runs.
+                body_fp = body_fingerprint(path, None, body)
+                pre_transform_code_fp = comment.get(dedup_code_fp_key)
+                code_fp = pre_transform_code_fp or code_fingerprint(path, None, body)
+                # A fallback re-publish (disable_fallback=True) is for a comment
+                # that has not been posted yet, so do not filter it; only the
+                # top-level call drops duplicates. The fallback still gets marked
+                # and recorded below so it dedups on later runs.
+                if not disable_fallback and (
+                        store.seen(body_fp) or store.seen(code_fp)
+                        or body_fp in local_seen or (code_fp and code_fp in local_seen)):
+                    skipped += 1
+                    continue
+                marked = dict(comment)
+                marked.pop(dedup_code_fp_key, None)
+                if has_marker(body):
+                    pass  # already carries a marker from the first pass
+                else:
+                    marked["body"] = body_with_markers(
+                        body, body_fp, code_fp, getattr(self, "max_comment_chars", None))
+                deduped.append(marked)
+                local_seen.add(body_fp)
+                if code_fp:
+                    local_seen.add(code_fp)
+                pending_fingerprints.append((body_fp, code_fp))
+            if skipped and not any(deduped):
+                get_logger().info(
+                    f"Persistent inline comments: all {skipped} suggestion(s) "
+                    f"already posted; nothing to publish")
+                return
+            comments = deduped
+        else:
+            comments = [
+                {key: value for key, value in comment.items() if key != dedup_code_fp_key}
+                if comment else comment
+                for comment in comments
+            ]
         try:
             # publish all comments in a single message
             self.pr.create_review(commit=self.last_commit_id, comments=comments)
+            # The whole batch posted; record its fingerprints so the rest of this
+            # run dedups against them. Cross-run dedup relies on the markers in the
+            # posted bodies, so comments the fallback below drops stay unrecorded
+            # and can be retried on a later run.
+            if store is not None:
+                for body_fp, code_fp in pending_fingerprints:
+                    store.add(body_fp)
+                    store.add(code_fp)
         except Exception as e:
             get_logger().info(f"Initially failed to publish inline comments as committable")
 
@@ -527,8 +591,8 @@ class GithubProvider(GitProvider):
                 self._publish_inline_comments_fallback_with_verification(comments)
             except Exception as e:
                 get_logger().error(f"Failed to publish inline code comments fallback, error: {e}")
-                raise e    
-    
+                raise
+
     def get_review_thread_comments(self, comment_id: int) -> list[dict]:
         """
         Retrieves all comments in the same thread as the given comment.
@@ -654,7 +718,11 @@ class GithubProvider(GitProvider):
         """
         post_parameters_list = []
 
-        code_suggestions_validated = self.validate_comments_inside_hunks(code_suggestions)
+        code_suggestions_with_fingerprints = copy.deepcopy(code_suggestions)
+        for suggestion in code_suggestions_with_fingerprints:
+            suggestion["_dedup_code_fp"] = code_fingerprint(
+                suggestion.get("relevant_file", ""), None, suggestion.get("body", ""))
+        code_suggestions_validated = self.validate_comments_inside_hunks(code_suggestions_with_fingerprints)
 
         for suggestion in code_suggestions_validated:
             body = suggestion['body']
@@ -680,6 +748,7 @@ class GithubProvider(GitProvider):
                     "line": relevant_lines_end,
                     "start_line": relevant_lines_start,
                     "start_side": "RIGHT",
+                    "_dedup_code_fp": suggestion.get("_dedup_code_fp"),
                 }
             else:  # API is different for single line comments
                 post_parameters = {
@@ -687,6 +756,7 @@ class GithubProvider(GitProvider):
                     "path": relevant_file,
                     "line": relevant_lines_start,
                     "side": "RIGHT",
+                    "_dedup_code_fp": suggestion.get("_dedup_code_fp"),
                 }
             post_parameters_list.append(post_parameters)
 
