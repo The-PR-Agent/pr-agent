@@ -340,12 +340,16 @@ class PRCodeSuggestions:
                             pr_comment_updated += f"{prev_suggestion_table}\n"
 
                         get_logger().info(f"Persistent mode - updating comment {comment_url} to latest {name} message")
-                        if progress_response:  # publish to 'progress_response' comment, because it refreshes immediately
-                            git_provider.edit_comment(progress_response, pr_comment_updated)
-                            git_provider.remove_comment(comment)
-                            comment = progress_response
-                        else:
-                            git_provider.edit_comment(comment, pr_comment_updated)
+                        git_provider.edit_comment(comment, pr_comment_updated)
+                        if progress_response:
+                            # best-effort: propagating would re-trigger the duplicate-thread fallback below
+                            try:
+                                git_provider.edit_comment(progress_response, "Code suggestions published in the persistent thread above.")
+                                git_provider.remove_comment(progress_response)
+                            except Exception as cleanup_error:
+                                get_logger().warning(
+                                    f"Failed to clean up progress note after persistent update, leaving it in place: {cleanup_error}"
+                                )
                         return comment
             except Exception as e:
                 get_logger().exception(f"Failed to update persistent review, error: {e}")
