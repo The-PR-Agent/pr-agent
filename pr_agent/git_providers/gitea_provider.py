@@ -726,25 +726,20 @@ class GiteaProvider(GitProvider):
 
         gitea_token = self.gitea_access_token
         gitea_base_url = self.base_url
-        scheme = gitea_base_url.split("://")[0]
-        scheme += "://"
         if not all([gitea_token, gitea_base_url]):
             get_logger().error("Either missing auth token or missing base url")
             return None
-        base_url = gitea_base_url.split(scheme)[1]
-        if not base_url:
-            get_logger().error(f"Base url: {gitea_base_url} has an empty base url")
-            return None
-        if base_url not in repo_url_to_clone:
-            get_logger().error(f"url to clone: {repo_url_to_clone} does not contain {base_url}")
-            return None
-        repo_full_name = repo_url_to_clone.split(base_url)[-1]
+
+        # Validate the requested url against the configured gitea host exactly, rather than a weak
+        # substring check which would let 'gitea.com.attacker.tld' leak the token (issue #2445).
+        base_parsed = urlparse(gitea_base_url)
+        repo_full_name = self._validate_clone_url_and_extract_path(repo_url_to_clone, base_parsed.hostname)
         if not repo_full_name:
-            get_logger().error(f"url to clone: {repo_url_to_clone} is malformed")
             return None
 
-        clone_url = scheme
-        clone_url += f"{gitea_token}@{base_url}{repo_full_name}"
+        # Rebuild from the trusted authority (host[:port]) so the token cannot reach a different host.
+        scheme = (base_parsed.scheme or "https") + "://"
+        clone_url = f"{scheme}{gitea_token}@{base_parsed.netloc}{repo_full_name}"
         return clone_url
 
     def get_repo_file_content(self, file_path: str, from_default_branch: bool = False) -> str:

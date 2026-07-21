@@ -1009,14 +1009,16 @@ class GitLabProvider(GitProvider):
         return ""
     #Clone related
     def _prepare_clone_url_with_token(self, repo_url_to_clone: str) -> str | None:
-        if "gitlab." not in repo_url_to_clone:
-            get_logger().error(f"Repo URL: {repo_url_to_clone} is not a valid gitlab URL.")
-            return None
-        (scheme, base_url) = repo_url_to_clone.split("gitlab.")
         access_token = getattr(self.gl, 'oauth_token', None) or getattr(self.gl, 'private_token', None)
-        if not all([scheme, access_token, base_url]):
-            get_logger().error(f"Either no access token found, or repo URL: {repo_url_to_clone} "
-                               f"is missing prefix: {scheme} and/or base URL: {base_url}.")
+        if not access_token:
+            get_logger().error("No access token found")
+            return None
+
+        # Validate the requested url against the configured gitlab host exactly, rather than a weak
+        # substring check ("gitlab." in url) which would let 'gitlab.attacker.tld' leak the token (issue #2445).
+        base_parsed = urlparse(self.gitlab_url)
+        repo_full_name = self._validate_clone_url_and_extract_path(repo_url_to_clone, base_parsed.hostname)
+        if not repo_full_name:
             return None
 
         #Note that the ""official"" method found here:
@@ -1026,5 +1028,7 @@ class GitLabProvider(GitProvider):
         # For example: For repo url: https://gitlab.codium-inc.com/qodo/autoscraper.git
         # Then to clone one will issue: 'git clone https://oauth2:<access token>@gitlab.codium-inc.com/qodo/autoscraper.git'
 
-        clone_url = f"{scheme}oauth2:{access_token}@gitlab.{base_url}"
+        # Rebuild from the trusted authority (host[:port]) so the token cannot reach a different host.
+        scheme = (base_parsed.scheme or "https") + "://"
+        clone_url = f"{scheme}oauth2:{access_token}@{base_parsed.netloc}{repo_full_name}"
         return clone_url

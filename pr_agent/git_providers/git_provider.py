@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import time
 from typing import Optional, Tuple
+from urllib.parse import urlparse
 
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import Range, process_description
@@ -151,6 +152,48 @@ class GitProvider(ABC):
     def _prepare_clone_url_with_token(self, repo_url_to_clone: str) -> str | None:
         get_logger().warning("Not implemented! Returning None")
         return None
+
+    @staticmethod
+    def _validate_clone_url_and_extract_path(repo_url_to_clone: str, allowed_host: str) -> Optional[str]:
+        """Structurally validate a clone URL against a single allowed host and return its path.
+
+        Providers embed an auth token into the clone URL (or an Authorization header). A naive
+        substring check such as ``allowed_host in repo_url_to_clone`` lets an attacker-controlled
+        host that merely *contains* the allowed host pass validation, e.g. ``github.com.attacker.tld``
+        or ``https://github.com@attacker.tld/...``, causing the token to be sent to that host
+        (issue #2445). This helper parses the URL and requires the host to match ``allowed_host``
+        exactly, rejecting embedded credentials and non-http(s) schemes.
+
+        Returns the repository path (leading slash included) on success, or None if the URL must
+        be rejected. The caller is responsible for rebuilding the clone URL from a trusted host.
+        """
+        if not allowed_host:
+            get_logger().error("No allowed host configured for clone url validation")
+            return None
+        normalized_url = (repo_url_to_clone or "").strip()
+        if "://" not in normalized_url:  # tolerate scheme-less inputs like 'github.com/owner/repo'
+            normalized_url = "https://" + normalized_url
+        parsed = urlparse(normalized_url)
+        if parsed.scheme not in ("http", "https"):
+            get_logger().error(f"url to clone: {repo_url_to_clone} has an unsupported scheme")
+            return None
+        # Reject embedded credentials (userinfo) to avoid 'https://allowed_host@attacker.tld/...' tricks.
+        if parsed.username or parsed.password:
+            get_logger().error(f"url to clone: {repo_url_to_clone} must not contain embedded credentials")
+            return None
+        if (parsed.hostname or "").lower() != allowed_host.lower():
+            get_logger().error(f"url to clone: {repo_url_to_clone} host does not match allowed host: {allowed_host}")
+            return None
+        repo_path = parsed.path
+        if not repo_path or repo_path == "/":
+            get_logger().error(f"url to clone: {repo_url_to_clone} is malformed - missing repository path")
+            return None
+        # A legitimate repository path never contains whitespace/control chars. Rejecting them prevents
+        # argument injection where the path is later interpolated into a 'git clone ...' command string.
+        if any(ch.isspace() for ch in repo_path):
+            get_logger().error(f"url to clone: {repo_url_to_clone} path contains whitespace")
+            return None
+        return repo_path
 
     # Does a shallow clone, using a forked process to support a timeout guard.
     # In case operation has failed, it is expected to throw an exception as this method does not return a value.
