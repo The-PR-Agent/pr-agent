@@ -167,10 +167,14 @@ class TestGetMaxTokens:
         "vertex_ai/gemini-3.1-flash-lite-preview",
         "gemini/gemini-3.5-flash",
         "vertex_ai/gemini-3.5-flash",
+        "gemini/gemini-3.5-flash-lite",
+        "vertex_ai/gemini-3.5-flash-lite",
         "gemini/gemini-3.5-pro",
         "vertex_ai/gemini-3.5-pro",
+        "gemini/gemini-3.6-flash",
+        "vertex_ai/gemini-3.6-flash",
     ])
-    def test_gemini_3_3_1_and_3_5_models_max_tokens(self, monkeypatch, model):
+    def test_gemini_3_3_1_3_5_and_3_6_models_max_tokens(self, monkeypatch, model):
         fake_settings = type("", (), {
             "config": type("", (), {
                 "custom_model_max_tokens": 0,
