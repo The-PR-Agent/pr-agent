@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 
 import litellm
 import openai
@@ -357,6 +358,29 @@ class LiteLLMAIHandler(BaseAiHandler):
 
         return kwargs
 
+    @staticmethod
+    def _is_claude_adaptive_thinking_model(model: str) -> bool:
+        """Return whether a Claude model requires the adaptive thinking API."""
+        normalized_model = model.lower().replace("_", "-").replace(".", "-")
+        return re.search(
+            r"claude-(?:opus-4-(?:7|8)|(?:sonnet|fable)-5)(?:[^0-9]|$)",
+            normalized_model,
+        ) is not None
+
+    def _configure_claude_adaptive_thinking(self, model: str, kwargs: dict) -> dict:
+        """Configure thinking for Claude models that reject token budgets."""
+        kwargs["thinking"] = {"type": "adaptive"}
+        effort = get_settings().config.reasoning_effort
+        if effort in ("low", "medium", "high", "xhigh", "max"):
+            kwargs["output_config"] = {"effort": effort}
+        get_logger().info(
+            f"Using adaptive thinking for model {model}"
+            + (f" with output_config effort '{effort}'" if "output_config" in kwargs else "")
+        )
+        # temperature may only be set to 1 when thinking is enabled
+        kwargs["temperature"] = 1
+        return kwargs
+
     def add_litellm_callbacks(self, kwargs) -> dict:
         captured_extra = []
 
@@ -564,7 +588,13 @@ class LiteLLMAIHandler(BaseAiHandler):
                     kwargs["reasoning_effort"] = reasoning_effort
 
                 # https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking
-                if (model in self.claude_extended_thinking_models) and get_settings().config.get("enable_claude_extended_thinking", False):
+                if self._is_claude_adaptive_thinking_model(model) and get_settings().config.get(
+                        "enable_claude_adaptive_thinking", False):
+                    kwargs = self._configure_claude_adaptive_thinking(model, kwargs)
+                elif (
+                    model in self.claude_extended_thinking_models
+                    and get_settings().config.get("enable_claude_extended_thinking", False)
+                ):
                     kwargs = self._configure_claude_extended_thinking(model, kwargs)
 
                 if get_settings().litellm.get("enable_callbacks", False):
