@@ -134,7 +134,8 @@ class PRCodeSuggestions:
 
                 # Publish table summarized suggestions
                 if ((not get_settings().pr_code_suggestions.commitable_code_suggestions) and
-                        self.git_provider.is_supported("gfm_markdown")):
+                        self.git_provider.is_supported("gfm_markdown") and
+                        self.git_provider.is_supported("publish_inline_comments")):
 
                     # generate summarized suggestions
                     pr_body = self.generate_summarized_suggestions(data)
