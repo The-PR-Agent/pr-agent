@@ -33,9 +33,11 @@ class FakeSettings:
         return self._settings_values.get(key, default)
 
 
-def _mock_response():
+def _mock_response(usage=None):
     mock = MagicMock()
     response = {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+    if usage is not None:
+        response["usage"] = usage
     mock.__getitem__.side_effect = response.__getitem__
     mock.dict.return_value = response
     return mock
@@ -52,6 +54,20 @@ async def test_chat_completion_passes_seed_when_temperature_is_zero(monkeypatch)
         await handler.chat_completion(model="gpt-4o", system="sys", user="usr", temperature=0)
 
     assert mock_call.call_args.kwargs["seed"] == 123
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_records_token_usage(monkeypatch):
+    monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+    usage = {"prompt_tokens": 101, "completion_tokens": 23, "total_tokens": 124}
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response(usage)
+        handler = litellm_handler.LiteLLMAIHandler()
+
+        await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
+
+    assert handler.last_usage == usage
 
 
 @pytest.mark.asyncio

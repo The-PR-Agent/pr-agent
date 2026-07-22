@@ -28,6 +28,34 @@ def test_should_publish_review_no_suggestions_respects_config():
         settings.pr_reviewer.publish_output_no_suggestions = original_publish_no_suggestions
 
 
+def test_prepare_review_publishes_provider_neutral_structured_data(monkeypatch):
+    git_provider = MagicMock()
+    git_provider.is_supported.return_value = False
+    git_provider.get_diff_files.return_value = []
+    reviewer = _make_reviewer(git_provider)
+    reviewer.prediction = """review:
+  key_issues_to_review: []
+  security_concerns: no
+"""
+    reviewer.ai_handler = SimpleNamespace(last_usage={"total_tokens": 42})
+    reviewer.incremental = SimpleNamespace(is_incremental=False)
+    reviewer.set_review_labels = MagicMock()
+    monkeypatch.setattr(
+        "pr_agent.tools.pr_reviewer.convert_to_markdown_v2",
+        lambda *args, **kwargs: "## Review",
+    )
+
+    reviewer._prepare_pr_review()
+
+    git_provider.publish_structured_review.assert_called_once_with({
+        "review": {
+            "key_issues_to_review": [],
+            "security_concerns": False,
+        },
+        "usage": {"total_tokens": 42},
+    })
+
+
 def test_can_run_incremental_review_skips_auto_mode_without_new_commit():
     reviewer = _make_reviewer()
     reviewer.is_auto = True
