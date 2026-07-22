@@ -17,7 +17,8 @@ from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (ModelType, PRReviewHeader,
                                  convert_to_markdown_v2, github_action_output,
-                                 load_yaml, show_relevant_configurations)
+                                 load_yaml, push_outputs,
+                                 show_relevant_configurations)
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import (get_git_provider,
                                     get_git_provider_with_context)
@@ -280,6 +281,9 @@ class PRReviewer:
         # Output the relevant configurations if enabled
         if get_settings().get('config', {}).get('output_relevant_configurations', False):
             markdown_text += show_relevant_configurations(relevant_section='pr_reviewer')
+
+        # Emit the review to optional external sinks (stdout/file/webhook/slack); no-op unless enabled.
+        push_outputs("review", payload=data.get('review', {}), markdown=markdown_text)
 
         # Add custom labels from the review prediction (effort, security)
         self.set_review_labels(data)
