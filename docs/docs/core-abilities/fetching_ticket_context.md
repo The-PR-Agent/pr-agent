@@ -14,6 +14,7 @@ This integration enriches the review process by automatically surfacing relevant
 
 - [GitHub/Gitlab Issues](#githubgitlab-issues-integration)
 - [Jira](#jira-integration)
+- [Asana](#asana-integration)
 
 **Ticket data fetched:**
 
@@ -30,6 +31,7 @@ Ticket Recognition Requirements:
 
 - The PR description should contain a link to the ticket or if the branch name starts with the ticket id / number.
 - For Jira tickets, you should follow the instructions in [Jira Integration](#jira-integration) in order to authenticate with Jira.
+- For Asana tickets, see [Asana Integration](#asana-integration).
 
 ### Describe tool
 
@@ -91,6 +93,23 @@ Branch names can also be used to link issues, for example:
 This branch-name detection applies **only when the git provider is GitHub**. Support for other platforms is planned for later.
 
 Since PR-Agent is integrated with GitHub, it doesn't require any additional configuration to fetch GitHub issues.
+
+## Asana Integration
+
+PR-Agent can detect Asana task references in PR descriptions and include them in the ticket compliance check.
+
+**Supported reference format:**
+
+- Full Asana URLs: `https://app.asana.com/0/{project_id}/{task_id}`
+
+**How to link a PR to an Asana task:**
+
+Include an Asana task URL in your PR description. PR-Agent will detect it automatically and include it in the related tickets list.
+
+!!! note "Asana content fetching"
+    Asana task references are included for visibility and ticket compliance checking, but PR-Agent does **not** fetch the full task details from Asana (unlike GitHub and Jira tickets, which are fetched via API). The compliance check will note the reference and suggest reviewing the task in Asana for full context.
+
+No additional configuration is required for Asana detection — it works out of the box.
 
 ## Jira Integration
 
