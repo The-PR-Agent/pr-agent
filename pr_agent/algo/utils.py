@@ -64,6 +64,7 @@ class PRReviewHeader(str, Enum):
 
 
 class ReasoningEffort(str, Enum):
+    MAX = "max"
     XHIGH = "xhigh"
     HIGH = "high"
     MEDIUM = "medium"
