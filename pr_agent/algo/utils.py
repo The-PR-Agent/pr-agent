@@ -125,6 +125,28 @@ def unique_strings(input_list: List[str]) -> List[str]:
     return unique_list
 
 
+def _get_fence(content: str) -> str:
+    """Return the shortest fence string (minimum 3) that does not appear in content.
+
+    Considers both backtick and tilde fences and picks whichever yields a shorter
+    safe fence, reducing the risk that a very long backtick run in the content
+    produces an extremely long fence line that gets truncated by the provider.
+    """
+    max_backticks = 2
+    for m in re.finditer(r"`+", content):
+        max_backticks = max(max_backticks, len(m.group()))
+    backtick_len = max_backticks + 1
+
+    max_tildes = 2
+    for m in re.finditer(r"~+", content):
+        max_tildes = max(max_tildes, len(m.group()))
+    tilde_len = max_tildes + 1
+
+    if tilde_len < backtick_len:
+        return "~" * tilde_len
+    return "`" * backtick_len
+
+
 def convert_to_markdown_v2(output_data: dict,
                            gfm_supported: bool = True,
                            incremental_review=None,
@@ -356,7 +378,9 @@ def extract_relevant_lines_str(end_line, files, relevant_file, start_line, deden
                     if dedent and relevant_lines_str:
                         # Remove the longest leading string of spaces and tabs common to all lines.
                         relevant_lines_str = textwrap.dedent(relevant_lines_str)
-                    relevant_lines_str = f"```{file.language}\n{relevant_lines_str}\n```"
+                    if relevant_lines_str:
+                        fence = _get_fence(relevant_lines_str)
+                        relevant_lines_str = f"{fence}{file.language}\n{relevant_lines_str}\n{fence}"
                     break
 
         return relevant_lines_str
