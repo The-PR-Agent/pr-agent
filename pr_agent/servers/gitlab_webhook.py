@@ -1,4 +1,6 @@
+import asyncio
 import copy
+import hashlib
 import json
 import os
 import re
@@ -123,6 +125,87 @@ def is_draft_ready(data) -> bool:
         get_logger().error(f"Failed 'is_draft_ready' logic: {e}")
     return False
 
+_bot_user_id_cache = {}
+
+async def _get_bot_user_id():
+    gitlab_url = get_settings().get("GITLAB.URL", "https://gitlab.com")
+    gitlab_token = get_settings().get("GITLAB.PERSONAL_ACCESS_TOKEN", None)
+    if not gitlab_token:
+        get_logger().error("No GitLab token available for bot user ID resolution")
+        return None
+
+    cache_key = hashlib.sha256(f"{gitlab_url}:{gitlab_token}".encode()).hexdigest()
+
+    cached = _bot_user_id_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    def _resolve_sync():
+        import gitlab
+
+        ssl_verify = get_settings().get("GITLAB.SSL_VERIFY", True)
+        if isinstance(ssl_verify, str) and ssl_verify.lower() in ("true", "false"):
+            ssl_verify = ssl_verify.lower() == "true"
+
+        auth_method = get_settings().get("GITLAB.AUTH_TYPE", "oauth_token")
+        if auth_method not in ("oauth_token", "private_token"):
+            raise ValueError(
+                f"Unsupported GITLAB.AUTH_TYPE: '{auth_method}'. "
+                f"Must be 'oauth_token' or 'private_token'."
+            )
+
+        if auth_method == "oauth_token":
+            gl = gitlab.Gitlab(
+                url=gitlab_url,
+                oauth_token=gitlab_token,
+                ssl_verify=ssl_verify
+            )
+        else:
+            gl = gitlab.Gitlab(
+                url=gitlab_url,
+                private_token=gitlab_token,
+                ssl_verify=ssl_verify
+            )
+        gl.auth()
+        return gl.user.id
+
+    try:
+        user_id = await asyncio.to_thread(_resolve_sync)
+        if len(_bot_user_id_cache) > 1000:
+            _bot_user_id_cache.clear()
+        _bot_user_id_cache[cache_key] = user_id
+        get_logger().info(f"Bot user ID resolved via API: {user_id}")
+        return user_id
+    except Exception as e:
+        get_logger().error(f"Failed to resolve bot user ID: {e}")
+        return None
+
+async def is_bot_assigned_as_reviewer(data) -> bool:
+    try:
+        changes = data.get("changes")
+        if not isinstance(changes, dict):
+            return False
+        if "reviewers" not in changes:
+            return False
+        reviewers_change = changes["reviewers"]
+        if not isinstance(reviewers_change, dict):
+            return False
+        previous = reviewers_change.get("previous")
+        if not isinstance(previous, list):
+            previous = []
+        current = reviewers_change.get("current")
+        if not isinstance(current, list):
+            current = []
+        bot_user_id = await _get_bot_user_id()
+        if bot_user_id is None:
+            return False
+        previous_ids = {r.get("id") for r in previous if isinstance(r, dict)}
+        current_ids = {r.get("id") for r in current if isinstance(r, dict)}
+        return bot_user_id in current_ids and bot_user_id not in previous_ids
+    except Exception as e:
+        get_logger().error(f"Failed 'is_bot_assigned_as_reviewer' logic: {e}")
+    return False
+
 def should_process_pr_logic(data) -> bool:
     try:
         if not data.get('object_attributes', {}):
@@ -232,7 +315,9 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
             # ignore MRs based on title, labels, source and target branches
             if not should_process_pr_logic(data):
                 return JSONResponse(status_code=status.HTTP_200_OK, content=jsonable_encoder({"message": "success"}))
-            object_attributes = data.get('object_attributes', {})
+            object_attributes = data.get('object_attributes')
+            if not isinstance(object_attributes, dict):
+                object_attributes = {}
             if object_attributes.get('action') in ['open', 'reopen']:
                 url = object_attributes.get('url')
                 get_logger().info(f"New merge request: {url}")
@@ -262,7 +347,7 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
 
                 get_logger().debug(f'A push event has been received: {url}')
                 await _perform_commands_gitlab("push_commands", PRAgent(), url, log_context, data)
-                
+
             # for draft to ready triggered merge requests
             elif object_attributes.get('action') == 'update' and is_draft_ready(data):
                 url = object_attributes.get('url')
@@ -270,6 +355,44 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
 
                 # same as open MR
                 await _perform_commands_gitlab("pr_commands", PRAgent(), url, log_context, data)
+
+            # for reviewer assignment triggered merge requests
+            elif object_attributes.get('action') == 'update' and not object_attributes.get('oldrev'):
+                url = object_attributes.get('url')
+                if not url:
+                    return JSONResponse(status_code=status.HTTP_200_OK,
+                                        content=jsonable_encoder({"message": "success"}))
+
+                # Fast early-exit: no reviewer changes means nothing to do
+                changes = data.get("changes")
+                if not isinstance(changes, dict) or "reviewers" not in changes:
+                    return JSONResponse(status_code=status.HTTP_200_OK,
+                                        content=jsonable_encoder({"message": "success"}))
+
+                apply_repo_settings(url)
+                handle_assignment = get_settings().gitlab.get("handle_reviewer_assignment", False)
+                if isinstance(handle_assignment, str):
+                    handle_assignment = handle_assignment.lower() in ("true", "1", "yes")
+                if not handle_assignment:
+                    return JSONResponse(status_code=status.HTTP_200_OK,
+                                        content=jsonable_encoder({"message": "success"}))
+
+                # Check PR logic after applying repo settings
+                if not should_process_pr_logic(data):
+                    return JSONResponse(status_code=status.HTTP_200_OK, content=jsonable_encoder({"message": "success"}))
+
+                if is_draft(data):
+                    get_logger().info(f"Skipping draft MR reviewer assignment: {url}")
+                    return JSONResponse(status_code=status.HTTP_200_OK,
+                                        content=jsonable_encoder({"message": "success"}))
+                if await is_bot_assigned_as_reviewer(data):
+                    reviewer_commands = get_settings().gitlab.get("reviewer_commands", [])
+                    if not isinstance(reviewer_commands, list) or not all(isinstance(c, str) for c in reviewer_commands):
+                        get_logger().warning("gitlab.reviewer_commands is not a list of strings, skipping")
+                        return JSONResponse(status_code=status.HTTP_200_OK,
+                                            content=jsonable_encoder({"message": "success"}))
+                    get_logger().info(f"Bot was assigned as reviewer on MR: {url}")
+                    await _perform_commands_gitlab("reviewer_commands", PRAgent(), url, log_context, data)
 
         elif data.get('object_kind') == 'note' and data.get('event_type') == 'note': # comment on MR
             if 'merge_request' in data:
