@@ -1,5 +1,6 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import openai
 import pytest
 
 import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_handler
@@ -200,3 +201,40 @@ async def test_get_completion_uses_streaming_for_required_models():
     assert resp == "streamed text"
     assert finish_reason == "stop"
     assert response_obj.dict()["choices"][0]["message"]["content"] == "streamed text"
+
+
+def _empty_content_response(finish_reason="stop"):
+    mock = MagicMock()
+    response = {"choices": [{"message": {"content": ""}, "finish_reason": finish_reason}]}
+    mock.__getitem__.side_effect = response.__getitem__
+    mock.dict.return_value = response
+    return mock
+
+
+@pytest.mark.asyncio
+async def test_get_completion_raises_on_empty_content_for_non_streaming_model():
+    # A reasoning model that puts everything into a thinking/reasoning block and leaves
+    # `content` empty is not caught by the "response is None or no choices" guard, so an
+    # empty response must be treated as a failure instead of silently returned.
+    handler = litellm_handler.LiteLLMAIHandler.__new__(litellm_handler.LiteLLMAIHandler)
+    handler.streaming_required_models = []
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _empty_content_response(finish_reason="stop")
+
+        with pytest.raises(openai.APIError):
+            await handler._get_completion(model="anthropic/custom-reasoning-model", messages=[])
+
+
+@pytest.mark.asyncio
+async def test_get_completion_returns_non_empty_content_for_non_streaming_model():
+    handler = litellm_handler.LiteLLMAIHandler.__new__(litellm_handler.LiteLLMAIHandler)
+    handler.streaming_required_models = []
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+
+        resp, finish_reason, response_obj = await handler._get_completion(model="gpt-4o", messages=[])
+
+    assert resp == "ok"
+    assert finish_reason == "stop"

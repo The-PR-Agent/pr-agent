@@ -3,6 +3,7 @@ import contextlib
 import json
 import os
 
+import httpx
 import litellm
 import openai
 import requests
@@ -728,6 +729,14 @@ class LiteLLMAIHandler(BaseAiHandler):
             response = await acompletion(**kwargs)
             if response is None or len(response["choices"]) == 0:
                 raise openai.APIError
-            return (response["choices"][0]['message']['content'],
-                    response["choices"][0]["finish_reason"],
-                    response)
+            content = response["choices"][0]['message']['content']
+            finish_reason = response["choices"][0]["finish_reason"]
+            if not content:
+                get_logger().warning(
+                    f"Empty content in model response, finish_reason: {finish_reason}")
+                raise openai.APIError(
+                    f"Empty content in model response (finish_reason: {finish_reason})",
+                    request=httpx.Request("POST", model),
+                    body=None,
+                )
+            return content, finish_reason, response
