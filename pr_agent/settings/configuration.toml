@@ -280,6 +280,8 @@ push_commands = [
 [gitlab]
 url = "https://gitlab.com"
 expand_submodule_diffs = false
+# Post the /review summary as a resolvable thread (discussion) instead of a plain note.
+publish_review_as_thread = false
 pr_commands = [
     "/describe --pr_description.final_update_message=false",
     "/review",

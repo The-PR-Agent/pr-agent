@@ -8,6 +8,15 @@ from gitlab.v4.objects import Project, ProjectFile
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
 
 
+def _mock_settings(publish_review_as_thread=False):
+    """Settings stub whose .get() returns the GitLab review-thread flag and passes other keys through to the default."""
+    settings = MagicMock()
+    settings.get.side_effect = lambda key, default=None: {
+        "GITLAB.PUBLISH_REVIEW_AS_THREAD": publish_review_as_thread,
+    }.get(key, default)
+    return settings
+
+
 class TestGitLabProvider:
     """Test suite for GitLab provider functionality."""
 
@@ -302,6 +311,239 @@ class TestGitLabProvider:
         assert gitlab_provider.mr.title == "AI title"
         assert gitlab_provider.mr.description == "Updated description"
         gitlab_provider.mr.save.assert_called_once()
+
+    @pytest.mark.parametrize("configured", [True, False])
+    def test_should_publish_review_as_thread_reflects_config(self, gitlab_provider, configured):
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings",
+                   return_value=_mock_settings(publish_review_as_thread=configured)):
+            assert gitlab_provider.should_publish_review_as_thread() is configured
+
+    def test_should_publish_review_as_thread_defaults_false(self, gitlab_provider):
+        # Key absent -> default False (the feature is opt-in).
+        settings = MagicMock()
+        settings.get.side_effect = lambda key, default=None: default
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings):
+            assert gitlab_provider.should_publish_review_as_thread() is False
+
+    def test_publish_comment_defaults_to_a_note(self, gitlab_provider):
+        # Without as_thread (status comments, other tools), publishing stays a plain note.
+        gitlab_provider.mr = MagicMock()
+        result = gitlab_provider.publish_comment("a status comment")
+
+        gitlab_provider.mr.notes.create.assert_called_once_with({'body': 'a status comment'})
+        gitlab_provider.mr.discussions.create.assert_not_called()
+        assert result is gitlab_provider.mr.notes.create.return_value
+
+    def test_publish_comment_as_thread_creates_a_discussion(self, gitlab_provider):
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.discussions.create.return_value.attributes = {'notes': [{'id': 42}]}
+        result = gitlab_provider.publish_comment("the review", as_thread=True)
+
+        # A resolvable thread (discussion) is opened instead of a plain note...
+        gitlab_provider.mr.discussions.create.assert_called_once_with({'body': 'the review'})
+        gitlab_provider.mr.notes.create.assert_not_called()
+        # ...and the thread's underlying note is returned so callers keep note-level semantics.
+        gitlab_provider.mr.notes.get.assert_called_once_with(42)
+        assert result is gitlab_provider.mr.notes.get.return_value
+
+    def test_publish_comment_as_thread_falls_back_to_note_on_error(self, gitlab_provider):
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.discussions.create.side_effect = Exception("gitlab api error")
+        result = gitlab_provider.publish_comment("the review", as_thread=True)
+
+        # Thread creation failed, so publishing must not raise and must fall back to a plain note.
+        gitlab_provider.mr.notes.create.assert_called_once_with({'body': 'the review'})
+        assert result is gitlab_provider.mr.notes.create.return_value
+
+    @pytest.mark.parametrize("break_response", [
+        lambda mr: setattr(mr.notes.get, 'side_effect', Exception("gitlab api error")),
+        lambda mr: setattr(mr.discussions.create.return_value, 'attributes', {'notes': []}),
+        lambda mr: setattr(mr.discussions.create.return_value, 'attributes', {}),
+    ])
+    def test_publish_comment_as_thread_returns_none_when_note_fetch_fails(self, gitlab_provider, break_response):
+        # The thread was created; a failure fetching its note (API error or unexpected response
+        # shape) must return None - not raise, and not post the review a second time as a plain note.
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.discussions.create.return_value.attributes = {'notes': [{'id': 42}]}
+        break_response(gitlab_provider.mr)
+
+        result = gitlab_provider.publish_comment("the review", as_thread=True)
+
+        assert result is None
+        gitlab_provider.mr.discussions.create.assert_called_once()
+        gitlab_provider.mr.notes.create.assert_not_called()
+
+    def test_publish_comment_as_thread_is_ignored_for_temporary(self, gitlab_provider):
+        gitlab_provider.mr = MagicMock()
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings",
+                   return_value=_mock_settings(publish_review_as_thread=True)):
+            result = gitlab_provider.publish_comment("Preparing review...", is_temporary=True, as_thread=True)
+
+        # Temporary progress comments are removed shortly after, so they are never threaded.
+        gitlab_provider.mr.discussions.create.assert_not_called()
+        gitlab_provider.mr.notes.create.assert_called_once_with({'body': 'Preparing review...'})
+        assert result in gitlab_provider.temp_comments
+
+    def test_publish_review_as_thread_opens_a_new_thread_each_call(self, gitlab_provider):
+        # persistent_comment=false: the reviewer calls publish_comment(as_thread=True) on every run,
+        # so each review opens a fresh thread rather than editing or reusing a previous one.
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.discussions.create.return_value.attributes = {'notes': [{'id': 1}]}
+        gitlab_provider.publish_comment("first review", as_thread=True)
+        gitlab_provider.publish_comment("second review", as_thread=True)
+
+        assert gitlab_provider.mr.discussions.create.call_count == 2
+        gitlab_provider.mr.discussions.create.assert_any_call({'body': 'first review'})
+        gitlab_provider.mr.discussions.create.assert_any_call({'body': 'second review'})
+        gitlab_provider.mr.notes.update.assert_not_called()
+
+    def test_persistent_review_opens_a_thread_on_first_run(self, gitlab_provider):
+        # persistent_comment=true, no existing review yet: the fallback create must open a thread.
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.discussions.create.return_value.attributes = {'notes': [{'id': 5}]}
+        gitlab_provider.get_issue_comments = MagicMock(return_value=[])
+        gitlab_provider.publish_persistent_comment("## PR Review\n\nbody",
+                                                   initial_header="## PR Review",
+                                                   update_header=True,
+                                                   final_update_message=False,
+                                                   as_thread=True)
+
+        gitlab_provider.mr.discussions.create.assert_called_once()
+        gitlab_provider.mr.notes.create.assert_not_called()
+
+    def test_persistent_review_update_edits_in_place_and_reopens_thread(self, gitlab_provider):
+        # persistent_comment=true with an existing review thread: edit it in place
+        # and reopen (unresolve) it
+        header = "## PR Review"
+        existing = MagicMock()
+        existing.body = f"{header}\n\nprevious review"
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.get_issue_comments = MagicMock(return_value=[existing])
+        gitlab_provider.get_latest_commit_url = MagicMock(return_value="https://gitlab.com/c/abc")
+        gitlab_provider.get_comment_url = MagicMock(return_value="https://gitlab.com/n/1")
+        gitlab_provider.unresolve_comment_thread = MagicMock()
+        gitlab_provider.publish_persistent_comment(f"{header}\n\nnew review",
+                                                   initial_header=header,
+                                                   update_header=True,
+                                                   final_update_message=False,
+                                                   as_thread=True)
+
+        gitlab_provider.mr.notes.update.assert_called_once()
+        gitlab_provider.mr.discussions.create.assert_not_called()
+        gitlab_provider.unresolve_comment_thread.assert_called_once_with(existing)
+
+    def test_persistent_review_update_status_message_stays_a_plain_note(self, gitlab_provider):
+        # final_update_message=true posts an "updated to latest commit" follow-up. It is a status
+        # comment, so it stays a plain note even when the review itself is threaded.
+        header = "## PR Review"
+        existing = MagicMock()
+        existing.body = f"{header}\n\nprevious review"
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.get_issue_comments = MagicMock(return_value=[existing])
+        gitlab_provider.get_latest_commit_url = MagicMock(return_value="https://gitlab.com/c/abc")
+        gitlab_provider.get_comment_url = MagicMock(return_value="https://gitlab.com/n/1")
+        gitlab_provider.unresolve_comment_thread = MagicMock()
+        gitlab_provider.publish_persistent_comment(f"{header}\n\nnew review",
+                                                   initial_header=header,
+                                                   update_header=True,
+                                                   final_update_message=True,
+                                                   as_thread=True)
+
+        gitlab_provider.mr.discussions.create.assert_not_called()
+        gitlab_provider.mr.notes.create.assert_called_once()
+        assert "updated to latest commit" in gitlab_provider.mr.notes.create.call_args.args[0]['body']
+
+    def test_persistent_review_update_does_not_duplicate_when_unresolve_raises(self, gitlab_provider):
+        # A reopen failure after the in-place edit must not reach the outer fallback, which would
+        # publish the review a second time.
+        header = "## PR Review"
+        existing = MagicMock()
+        existing.body = f"{header}\n\nprevious review"
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.get_issue_comments = MagicMock(return_value=[existing])
+        gitlab_provider.get_latest_commit_url = MagicMock(return_value="https://gitlab.com/c/abc")
+        gitlab_provider.get_comment_url = MagicMock(return_value="https://gitlab.com/n/1")
+        gitlab_provider.unresolve_comment_thread = MagicMock(side_effect=Exception("reopen failed"))
+        gitlab_provider.publish_persistent_comment(f"{header}\n\nnew review",
+                                                   initial_header=header,
+                                                   update_header=True,
+                                                   final_update_message=False,
+                                                   as_thread=True)
+
+        gitlab_provider.mr.notes.update.assert_called_once()
+        gitlab_provider.mr.discussions.create.assert_not_called()
+        gitlab_provider.mr.notes.create.assert_not_called()
+
+    def test_persistent_review_update_without_thread_keeps_resolution(self, gitlab_provider):
+        # Without as_thread (the persistent comment isn't a thread), resolution state must not be touched.
+        header = "## PR Review"
+        existing = MagicMock()
+        existing.body = f"{header}\n\nprevious review"
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.get_issue_comments = MagicMock(return_value=[existing])
+        gitlab_provider.get_latest_commit_url = MagicMock(return_value="https://gitlab.com/c/abc")
+        gitlab_provider.get_comment_url = MagicMock(return_value="https://gitlab.com/n/1")
+        gitlab_provider.unresolve_comment_thread = MagicMock()
+        gitlab_provider.publish_persistent_comment(f"{header}\n\nnew review",
+                                                   initial_header=header,
+                                                   update_header=True,
+                                                   final_update_message=False)
+
+        gitlab_provider.mr.notes.update.assert_called_once()
+        gitlab_provider.unresolve_comment_thread.assert_not_called()
+
+    @pytest.mark.parametrize("resolvable,resolved,should_reopen", [
+        (True, True, True),     # resolved thread -> reopen it
+        (True, False, False),   # already open -> leave it
+        (False, False, False),  # not resolvable -> nothing to do
+    ])
+    def test_unresolve_comment_thread(self, gitlab_provider, resolvable, resolved, should_reopen):
+        comment = MagicMock(id=42)
+        discussion = MagicMock()
+        discussion.attributes = {'notes': [{'id': 42, 'resolvable': resolvable, 'resolved': resolved}]}
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.discussions.list.return_value = [discussion]
+
+        gitlab_provider.unresolve_comment_thread(comment)
+
+        if should_reopen:
+            assert discussion.resolved is False
+            discussion.save.assert_called_once()
+        else:
+            discussion.save.assert_not_called()
+
+    @pytest.mark.parametrize("note_attrs", [
+        {'resolved': False},      # note not resolved -> nothing to reopen
+        {'resolvable': False},    # note not resolvable -> nothing to reopen
+    ])
+    def test_unresolve_comment_thread_skips_discussion_scan_when_note_not_resolved(self, gitlab_provider, note_attrs):
+        # The note's own resolution state rules out a resolved thread, so the (paginated)
+        # discussions listing must be skipped entirely.
+        comment = MagicMock(id=42, **note_attrs)
+        gitlab_provider.mr = MagicMock()
+
+        gitlab_provider.unresolve_comment_thread(comment)
+
+        gitlab_provider.mr.discussions.list.assert_not_called()
+
+    def test_unresolve_comment_thread_ignores_unrelated_discussions(self, gitlab_provider):
+        # A resolved discussion that does not own our note must be left untouched.
+        comment = MagicMock(id=99)
+        other = MagicMock()
+        other.attributes = {'notes': [{'id': 1, 'resolvable': True, 'resolved': True}]}
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.discussions.list.return_value = [other]
+
+        gitlab_provider.unresolve_comment_thread(comment)
+
+        other.save.assert_not_called()
+
+    def test_unresolve_comment_thread_soft_fails(self, gitlab_provider):
+        # A GitLab API error while reopening must not raise.
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.discussions.list.side_effect = Exception("gitlab api error")
+
+        gitlab_provider.unresolve_comment_thread(MagicMock(id=1))  # must not raise
 
 
 @pytest.fixture(autouse=True)
