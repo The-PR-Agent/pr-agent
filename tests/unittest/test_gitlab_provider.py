@@ -355,16 +355,21 @@ class TestGitLabProvider:
         gitlab_provider.mr.notes.create.assert_called_once_with({'body': 'the review'})
         assert result is gitlab_provider.mr.notes.create.return_value
 
-    def test_publish_comment_as_thread_does_not_duplicate_when_note_fetch_fails(self, gitlab_provider):
-        # The thread was created; a failure fetching its note must propagate, not post the review
-        # a second time as a plain note.
+    @pytest.mark.parametrize("break_response", [
+        lambda mr: setattr(mr.notes.get, 'side_effect', Exception("gitlab api error")),
+        lambda mr: setattr(mr.discussions.create.return_value, 'attributes', {'notes': []}),
+        lambda mr: setattr(mr.discussions.create.return_value, 'attributes', {}),
+    ])
+    def test_publish_comment_as_thread_returns_none_when_note_fetch_fails(self, gitlab_provider, break_response):
+        # The thread was created; a failure fetching its note (API error or unexpected response
+        # shape) must return None - not raise, and not post the review a second time as a plain note.
         gitlab_provider.mr = MagicMock()
         gitlab_provider.mr.discussions.create.return_value.attributes = {'notes': [{'id': 42}]}
-        gitlab_provider.mr.notes.get.side_effect = Exception("gitlab api error")
+        break_response(gitlab_provider.mr)
 
-        with pytest.raises(Exception, match="gitlab api error"):
-            gitlab_provider.publish_comment("the review", as_thread=True)
+        result = gitlab_provider.publish_comment("the review", as_thread=True)
 
+        assert result is None
         gitlab_provider.mr.discussions.create.assert_called_once()
         gitlab_provider.mr.notes.create.assert_not_called()
 
@@ -485,6 +490,20 @@ class TestGitLabProvider:
             discussion.save.assert_called_once()
         else:
             discussion.save.assert_not_called()
+
+    @pytest.mark.parametrize("note_attrs", [
+        {'resolved': False},      # note not resolved -> nothing to reopen
+        {'resolvable': False},    # note not resolvable -> nothing to reopen
+    ])
+    def test_unresolve_comment_thread_skips_discussion_scan_when_note_not_resolved(self, gitlab_provider, note_attrs):
+        # The note's own resolution state rules out a resolved thread, so the (paginated)
+        # discussions listing must be skipped entirely.
+        comment = MagicMock(id=42, **note_attrs)
+        gitlab_provider.mr = MagicMock()
+
+        gitlab_provider.unresolve_comment_thread(comment)
+
+        gitlab_provider.mr.discussions.list.assert_not_called()
 
     def test_unresolve_comment_thread_ignores_unrelated_discussions(self, gitlab_provider):
         # A resolved discussion that does not own our note must be left untouched.

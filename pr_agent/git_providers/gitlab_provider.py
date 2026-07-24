@@ -533,7 +533,13 @@ class GitLabProvider(GitProvider):
                 get_logger().warning(f"Failed to publish comment as a thread, falling back to a note: {e}")
             else:
                 # Return the underlying note so callers keep note-level semantics (edit/remove/url by id).
-                return self.mr.notes.get(discussion.attributes['notes'][0]['id'])
+                # The thread already exists here, so a failure must not fall back to a note
+                # (it would duplicate the review); return None instead.
+                try:
+                    return self.mr.notes.get(discussion.attributes['notes'][0]['id'])
+                except Exception as e:
+                    get_logger().warning(f"Published review thread but failed to fetch its note: {e}")
+                    return None
         comment = self.mr.notes.create({'body': mr_comment})
         if is_temporary:
             self.temp_comments.append(comment)
@@ -545,6 +551,10 @@ class GitLabProvider(GitProvider):
 
     def unresolve_comment_thread(self, comment):
         try:
+            # Notes carry their own resolution state; skip the full discussions scan (the API offers no
+            # note -> discussion lookup) unless the note reports it is actually resolved.
+            if getattr(comment, 'resolvable', None) is False or getattr(comment, 'resolved', None) is False:
+                return
             for discussion in self.mr.discussions.list(get_all=True):
                 notes = discussion.attributes.get('notes', [])
                 if not any(note.get('id') == comment.id for note in notes):
