@@ -375,8 +375,13 @@ class GitProvider(ABC):
                     # response = self.mr.notes.update(comment.id, {'body': pr_comment_updated})
                     self.edit_comment(comment, pr_comment_updated)
                     if as_thread:
-                        # Reopen the thread if it was resolved, so the developer revisits the updated review.
-                        self.unresolve_comment_thread(comment)
+                        try:
+                            # Reopen the thread if it was resolved, so the developer revisits the updated review.
+                            self.unresolve_comment_thread(comment)
+                        except Exception as e:
+                            # The review was already updated in place; a reopen failure must not reach the
+                            # outer except, whose fallback publish would duplicate the review.
+                            get_logger().warning(f"Failed to reopen review thread: {e}")
                     if final_update_message:
                         return self.publish_comment(
                             f"**[Persistent {name}]({comment_url})** updated to latest commit {latest_commit_url}")

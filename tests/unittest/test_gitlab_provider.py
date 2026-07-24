@@ -453,6 +453,27 @@ class TestGitLabProvider:
         gitlab_provider.mr.notes.create.assert_called_once()
         assert "updated to latest commit" in gitlab_provider.mr.notes.create.call_args.args[0]['body']
 
+    def test_persistent_review_update_does_not_duplicate_when_unresolve_raises(self, gitlab_provider):
+        # A reopen failure after the in-place edit must not reach the outer fallback, which would
+        # publish the review a second time.
+        header = "## PR Review"
+        existing = MagicMock()
+        existing.body = f"{header}\n\nprevious review"
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.get_issue_comments = MagicMock(return_value=[existing])
+        gitlab_provider.get_latest_commit_url = MagicMock(return_value="https://gitlab.com/c/abc")
+        gitlab_provider.get_comment_url = MagicMock(return_value="https://gitlab.com/n/1")
+        gitlab_provider.unresolve_comment_thread = MagicMock(side_effect=Exception("reopen failed"))
+        gitlab_provider.publish_persistent_comment(f"{header}\n\nnew review",
+                                                   initial_header=header,
+                                                   update_header=True,
+                                                   final_update_message=False,
+                                                   as_thread=True)
+
+        gitlab_provider.mr.notes.update.assert_called_once()
+        gitlab_provider.mr.discussions.create.assert_not_called()
+        gitlab_provider.mr.notes.create.assert_not_called()
+
     def test_persistent_review_update_without_thread_keeps_resolution(self, gitlab_provider):
         # Without as_thread (the persistent comment isn't a thread), resolution state must not be touched.
         header = "## PR Review"
