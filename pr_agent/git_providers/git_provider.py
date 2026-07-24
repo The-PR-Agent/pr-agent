@@ -340,18 +340,26 @@ class GitProvider(ABC):
     def publish_comment(self, pr_comment: str, is_temporary: bool = False):
         pass
 
+    def should_publish_review_as_thread(self) -> bool:
+        return False
+
+    def unresolve_comment_thread(self, comment):  # noqa: B027 - intentional no-op
+        pass
+
     def publish_persistent_comment(self, pr_comment: str,
                                    initial_header: str,
                                    update_header: bool = True,
                                    name='review',
-                                   final_update_message=True):
-        return self.publish_comment(pr_comment)
+                                   final_update_message=True,
+                                   as_thread: bool = False):
+        return self.publish_comment(pr_comment, **({'as_thread': True} if as_thread else {}))
 
     def publish_persistent_comment_full(self, pr_comment: str,
                                    initial_header: str,
                                    update_header: bool = True,
                                    name='review',
-                                   final_update_message=True):
+                                   final_update_message=True,
+                                   as_thread: bool = False):
         try:
             prev_comments = list(self.get_issue_comments())
             for comment in prev_comments:
@@ -366,6 +374,9 @@ class GitProvider(ABC):
                     get_logger().info(f"Persistent mode - updating comment {comment_url} to latest {name} message")
                     # response = self.mr.notes.update(comment.id, {'body': pr_comment_updated})
                     self.edit_comment(comment, pr_comment_updated)
+                    if as_thread:
+                        # Reopen the thread if it was resolved, so the developer revisits the updated review.
+                        self.unresolve_comment_thread(comment)
                     if final_update_message:
                         return self.publish_comment(
                             f"**[Persistent {name}]({comment_url})** updated to latest commit {latest_commit_url}")
@@ -373,7 +384,7 @@ class GitProvider(ABC):
         except Exception as e:
             get_logger().exception(f"Failed to update persistent review, error: {e}")
             pass
-        return self.publish_comment(pr_comment)
+        return self.publish_comment(pr_comment, **({'as_thread': True} if as_thread else {}))
 
     @abstractmethod
     def publish_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str, original_suggestion=None):

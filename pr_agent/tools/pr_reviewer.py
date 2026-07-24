@@ -181,14 +181,18 @@ class PRReviewer:
                 return
 
             # publish the review
+            # Providers that support it (GitLab) can post the review's final comment as a resolvable thread.
+            # This intent applies to the review only - never to status comments or the output of other tools.
+            review_thread_kwargs = {'as_thread': True} if self.git_provider.should_publish_review_as_thread() else {}
             if get_settings().pr_reviewer.persistent_comment and not self.incremental.is_incremental:
                 final_update_message = get_settings().pr_reviewer.final_update_message
                 self.git_provider.publish_persistent_comment(pr_review,
                                                             initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
                                                             update_header=True,
-                                                            final_update_message=final_update_message, )
+                                                            final_update_message=final_update_message,
+                                                            **review_thread_kwargs)
             else:
-                self.git_provider.publish_comment(pr_review)
+                self.git_provider.publish_comment(pr_review, **review_thread_kwargs)
 
             self.git_provider.remove_initial_comment()
         except Exception as e:

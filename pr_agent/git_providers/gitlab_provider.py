@@ -507,18 +507,33 @@ class GitLabProvider(GitProvider):
     def get_comment_url(self, comment):
         return f"{self.mr.web_url}#note_{comment.id}"
 
+    def should_publish_review_as_thread(self) -> bool:
+        return bool(get_settings().get("GITLAB.PUBLISH_REVIEW_AS_THREAD", False))
+
     def publish_persistent_comment(self, pr_comment: str,
                                    initial_header: str,
                                    update_header: bool = True,
                                    name='review',
-                                   final_update_message=True):
-        self.publish_persistent_comment_full(pr_comment, initial_header, update_header, name, final_update_message)
+                                   final_update_message=True,
+                                   as_thread: bool = False):
+        self.publish_persistent_comment_full(pr_comment, initial_header, update_header, name, final_update_message,
+                                             as_thread=as_thread)
 
-    def publish_comment(self, mr_comment: str, is_temporary: bool = False):
+    def publish_comment(self, mr_comment: str, is_temporary: bool = False, as_thread: bool = False):
         if is_temporary and not get_settings().config.publish_output_progress:
             get_logger().debug(f"Skipping publish_comment for temporary comment: {mr_comment}")
             return None
         mr_comment = self.limit_output_characters(mr_comment, self.max_comment_chars)
+        # When as_thread is set (only the review's final comment requests this), post it as a resolvable
+        # thread (discussion) instead of a plain note. Temporary progress comments are never threaded.
+        if as_thread and not is_temporary:
+            try:
+                discussion = self.mr.discussions.create({'body': mr_comment})
+            except Exception as e:
+                get_logger().warning(f"Failed to publish comment as a thread, falling back to a note: {e}")
+            else:
+                # Return the underlying note so callers keep note-level semantics (edit/remove/url by id).
+                return self.mr.notes.get(discussion.attributes['notes'][0]['id'])
         comment = self.mr.notes.create({'body': mr_comment})
         if is_temporary:
             self.temp_comments.append(comment)
@@ -527,6 +542,19 @@ class GitLabProvider(GitProvider):
     def edit_comment(self, comment, body: str):
         body = self.limit_output_characters(body, self.max_comment_chars)
         self.mr.notes.update(comment.id,{'body': body} )
+
+    def unresolve_comment_thread(self, comment):
+        try:
+            for discussion in self.mr.discussions.list(get_all=True):
+                notes = discussion.attributes.get('notes', [])
+                if not any(note.get('id') == comment.id for note in notes):
+                    continue
+                if any(note.get('resolvable') and note.get('resolved') for note in notes):
+                    discussion.resolved = False
+                    discussion.save()
+                return
+        except Exception as e:
+            get_logger().warning(f"Failed to reopen resolved review thread: {e}")
 
     def edit_comment_from_comment_id(self, comment_id: int, body: str):
         body = self.limit_output_characters(body, self.max_comment_chars)

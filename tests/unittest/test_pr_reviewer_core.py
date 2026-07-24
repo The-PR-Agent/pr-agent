@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from pr_agent.config_loader import get_settings
 from pr_agent.tools.pr_reviewer import PRReviewer
 
@@ -90,6 +92,64 @@ def test_get_user_answers_collects_question_and_answer_from_issue_comments():
 
     assert question == "Questions to better understand the PR:\n- Why?"
     assert answer == "/answer Because it fixes production."
+
+
+@pytest.mark.parametrize("persistent", [True, False])
+@pytest.mark.parametrize("thread_enabled", [True, False])
+async def test_run_threads_only_the_final_review_comment(monkeypatch, persistent, thread_enabled):
+    """`as_thread` is forwarded to the review's final publish call only when the provider opts in
+    (should_publish_review_as_thread), and is omitted entirely otherwise - other providers'
+    publish methods don't accept it. Status/progress comments are never threaded.
+    """
+    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+
+    git_provider = MagicMock()
+    git_provider.should_publish_review_as_thread.return_value = thread_enabled
+    reviewer = _make_reviewer(git_provider)
+    reviewer.incremental = SimpleNamespace(is_incremental=False)
+    reviewer.vars = {}
+    reviewer.prediction = None
+    review_text = "## PR Reviewer Guide 🔍\n\nsome findings"
+    reviewer._prepare_pr_review = lambda: review_text
+
+    async def fake_extract_tickets(git_provider, vars):
+        return None
+
+    async def fake_retry(prepare_fn, model_type=None):
+        reviewer.prediction = "prediction"
+
+    monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", fake_extract_tickets)
+    monkeypatch.setattr(pr_reviewer_module, "retry_with_fallback_models", fake_retry)
+
+    settings = get_settings()
+    original = {
+        "publish_output": settings.config.publish_output,
+        "persistent_comment": settings.pr_reviewer.persistent_comment,
+        "is_auto_command": settings.config.get("is_auto_command", False),
+    }
+    try:
+        settings.config.publish_output = True
+        settings.config.is_auto_command = False
+        settings.pr_reviewer.persistent_comment = persistent
+
+        await reviewer.run()
+    finally:
+        settings.config.publish_output = original["publish_output"]
+        settings.config.is_auto_command = original["is_auto_command"]
+        settings.pr_reviewer.persistent_comment = original["persistent_comment"]
+
+    if persistent:
+        publish = git_provider.publish_persistent_comment
+        publish.assert_called_once()
+    else:
+        publish = git_provider.publish_comment
+    assert publish.call_args.args[0] == review_text
+    if thread_enabled:
+        assert publish.call_args.kwargs.get("as_thread") is True
+    else:
+        assert "as_thread" not in publish.call_args.kwargs
+    # The temporary progress comment is published without as_thread regardless of the flag.
+    git_provider.publish_comment.assert_any_call("Preparing review...", is_temporary=True)
 
 
 def test_init_maps_user_question_and_answer_to_correct_prompt_vars(monkeypatch):
