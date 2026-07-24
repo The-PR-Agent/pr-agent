@@ -412,7 +412,7 @@ class TestGitLabProvider:
         gitlab_provider.mr.notes.create.assert_not_called()
 
     def test_persistent_review_update_edits_in_place_and_reopens_thread(self, gitlab_provider):
-        # persistent_comment=true with an existing review thread: edit it in place 
+        # persistent_comment=true with an existing review thread: edit it in place
         # and reopen (unresolve) it
         header = "## PR Review"
         existing = MagicMock()
