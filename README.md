@@ -224,7 +224,7 @@ ___
 
 ### Usage Examples
 
-Every tool runs either as a comment on a PR or from the CLI. A few common ones:
+PR-Agent tools run as a comment on a PR or from the CLI. A few common ones:
 
 ```bash
 # Comment on a PR (GitHub/GitLab/Bitbucket/…):
