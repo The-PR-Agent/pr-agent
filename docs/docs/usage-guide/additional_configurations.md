@@ -142,6 +142,33 @@ LANGSMITH_PROJECT=<project>
 LANGSMITH_BASE_URL=<url>
 ```
 
+### Custom callbacks
+
+If you embed PR-Agent in your own code, you can also register callbacks programmatically — for example a
+`litellm.CustomLogger` that records per-call token usage and cost:
+
+```python
+import litellm
+from pr_agent import cli
+
+class UsageLogger(litellm.integrations.custom_logger.CustomLogger):
+    async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
+        record_usage(kwargs.get("model"), response_obj)
+
+litellm.callbacks = [UsageLogger()]
+cli.run_command("<pr_url>", "/review")
+```
+
+LiteLLM dispatches these callbacks asynchronously, after the completion call has already returned. PR-Agent
+flushes any pending callbacks before the CLI (and the GitHub Action runner) exits, so they are not lost when
+the event loop is torn down — no configuration required. Use `callback_timeout_seconds` to bound how long
+that flush may take:
+
+```
+[litellm]
+callback_timeout_seconds = 30 # default
+```
+
 ## Bringing per-repo context files to PR-Agent
 
 `Platforms supported: GitHub, GitLab, Gitea, Bitbucket, Azure DevOps`
