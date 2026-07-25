@@ -68,6 +68,22 @@ class TestAvailableCpus:
         monkeypatch.setattr(gunicorn_config.os, "sched_getaffinity", lambda pid: set(range(8)), raising=False)
         assert gunicorn_config.available_cpus() == 8
 
+    def test_affinity_wins_when_stricter_than_quota(self, monkeypatch, tmp_path):
+        # A pod can be both quota-limited and cpuset-pinned; the tighter bound applies.
+        write_cgroup_v2(monkeypatch, tmp_path, "400000 100000\n")  # quota = 4 CPUs
+        monkeypatch.setattr(gunicorn_config.os, "sched_getaffinity", lambda pid: {0, 1}, raising=False)
+        assert gunicorn_config.available_cpus() == 2
+
+    def test_quota_wins_when_stricter_than_affinity(self, monkeypatch, tmp_path):
+        write_cgroup_v2(monkeypatch, tmp_path, "200000 100000\n")  # quota = 2 CPUs
+        monkeypatch.setattr(gunicorn_config.os, "sched_getaffinity", lambda pid: set(range(16)), raising=False)
+        assert gunicorn_config.available_cpus() == 2
+
+    def test_survives_a_platform_that_reports_no_cpus(self, monkeypatch):
+        monkeypatch.delattr(gunicorn_config.os, "sched_getaffinity", raising=False)
+        monkeypatch.setattr(gunicorn_config.os, "cpu_count", lambda: None)
+        assert gunicorn_config.available_cpus() == 1
+
 
 class TestComputeWorkers:
     def test_explicit_override_wins(self, monkeypatch, tmp_path):

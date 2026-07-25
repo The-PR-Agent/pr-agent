@@ -109,15 +109,24 @@ def _cgroup_cpu_limit():
     return None
 
 
-def available_cpus():
-    """CPUs actually usable by this process, honouring cgroup quota and CPU affinity."""
-    limit = _cgroup_cpu_limit()
-    if limit is not None:
-        return max(1, int(limit))
+def _affinity_cpus():
+    """CPUs this process may be scheduled on, or None when the platform cannot say."""
     try:
-        return max(1, len(os.sched_getaffinity(0)))  # respects cpuset pinning; Linux only
+        return len(os.sched_getaffinity(0))  # respects cpuset pinning; Linux only
     except AttributeError:
-        return max(1, os.cpu_count() or 1)
+        return os.cpu_count()
+
+
+def available_cpus():
+    """CPUs usable by this process: the stricter of the cgroup quota and CPU affinity.
+
+    A pod can have both - a quota of 4 while pinned to 2 cores - so neither alone is the
+    answer. Either may be absent, in which case the other stands on its own.
+    """
+    limits = [limit for limit in (_cgroup_cpu_limit(), _affinity_cpus()) if limit]
+    if not limits:
+        return 1
+    return max(1, int(min(limits)))
 
 
 def _env_int(name):

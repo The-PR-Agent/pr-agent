@@ -18,31 +18,33 @@ from pr_agent.algo.utils import update_settings_from_args
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
-from pr_agent.secret_providers import get_secret_provider
+from pr_agent.secret_providers import (get_secret_provider,
+                                       validate_secret_provider_setting)
 from pr_agent.git_providers import get_git_provider_with_context
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
 router = APIRouter()
 
 
-def _build_secret_provider():
-    return get_secret_provider() if get_settings().get("CONFIG.SECRET_PROVIDER") else None
+# Validated at import so a typo in CONFIG.SECRET_PROVIDER still fails at startup. The
+# client itself is deliberately not built here - see get_fork_safe_secret_provider.
+validate_secret_provider_setting()
 
-
-# Built at import so a misconfigured CONFIG.SECRET_PROVIDER still fails at startup.
-_secret_provider_state = {"provider": _build_secret_provider(), "pid": os.getpid()}
+_secret_provider_state = {}
 
 
 def get_fork_safe_secret_provider():
-    """Return the secret provider, rebuilding it once per process after a fork.
+    """Return this process's secret provider, building it on first use.
 
-    Gunicorn runs with `preload_app`, so the provider is constructed in the master and
-    every worker inherits it. Cloud clients hold a pooled connection that must not be
-    shared across processes, so each worker builds its own on first use.
+    Nothing is constructed at import because gunicorn runs with `preload_app`: a client
+    built there would belong to the master, and every worker would inherit its pooled
+    connection. Keying the cache on the pid means a forked worker always builds its own,
+    and never adopts one created in another process.
     """
-    if _secret_provider_state["provider"] is not None and _secret_provider_state["pid"] != os.getpid():
-        _secret_provider_state["provider"] = _build_secret_provider()
-        _secret_provider_state["pid"] = os.getpid()
+    pid = os.getpid()
+    if _secret_provider_state.get("pid") != pid:
+        _secret_provider_state["provider"] = get_secret_provider()
+        _secret_provider_state["pid"] = pid
     return _secret_provider_state["provider"]
 
 
