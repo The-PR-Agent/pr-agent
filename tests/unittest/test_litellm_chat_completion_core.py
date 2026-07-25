@@ -105,6 +105,33 @@ async def test_chat_completion_strips_temperature_for_claude_opus_4_8(monkeypatc
 @pytest.mark.parametrize(
     "model",
     [
+        "anthropic/claude-opus-5",
+        "claude-opus-5",
+        "vertex_ai/claude-opus-5",
+        "bedrock/anthropic.claude-opus-5",
+        "bedrock/global.anthropic.claude-opus-5",
+        "bedrock/us.anthropic.claude-opus-5",
+        "bedrock/eu.anthropic.claude-opus-5",
+        "bedrock/au.anthropic.claude-opus-5",
+        "bedrock/jp.anthropic.claude-opus-5",
+    ],
+)
+async def test_chat_completion_strips_temperature_for_claude_opus_5(monkeypatch, model):
+    monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+
+        await handler.chat_completion(model=model, system="sys", user="usr", temperature=0.2)
+
+    assert "temperature" not in mock_call.call_args.kwargs
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model",
+    [
         "anthropic/claude-sonnet-5",
         "claude-sonnet-5",
         "vertex_ai/claude-sonnet-5",
@@ -141,6 +168,39 @@ async def test_chat_completion_does_not_use_extended_thinking_for_claude_opus_4_
         handler = litellm_handler.LiteLLMAIHandler()
 
         await handler.chat_completion(model="claude-opus-4-8", system="sys", user="usr", temperature=0.2)
+
+    assert "thinking" not in mock_call.call_args.kwargs
+    assert "max_tokens" not in mock_call.call_args.kwargs
+    assert "temperature" not in mock_call.call_args.kwargs
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model",
+    [
+        "anthropic/claude-opus-5",
+        "claude-opus-5",
+        "vertex_ai/claude-opus-5",
+        "bedrock/anthropic.claude-opus-5",
+        "bedrock/global.anthropic.claude-opus-5",
+        "bedrock/us.anthropic.claude-opus-5",
+        "bedrock/eu.anthropic.claude-opus-5",
+        "bedrock/au.anthropic.claude-opus-5",
+        "bedrock/jp.anthropic.claude-opus-5",
+    ],
+)
+async def test_chat_completion_does_not_use_extended_thinking_for_claude_opus_5(monkeypatch, model):
+    monkeypatch.setattr(
+        litellm_handler,
+        "get_settings",
+        lambda: FakeSettings(config_values={"enable_claude_extended_thinking": True}),
+    )
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+
+        await handler.chat_completion(model=model, system="sys", user="usr", temperature=0.2)
 
     assert "thinking" not in mock_call.call_args.kwargs
     assert "max_tokens" not in mock_call.call_args.kwargs

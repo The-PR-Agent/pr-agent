@@ -91,6 +91,7 @@ MAX_TOKENS = {
     'vertex_ai/claude-opus-4-6': 200000,
     'vertex_ai/claude-opus-4-7': 1000000,
     'vertex_ai/claude-opus-4-8': 1000000,
+    'vertex_ai/claude-opus-5': 1000000,
     'vertex_ai/claude-3-5-sonnet@20240620': 100000,
     'vertex_ai/claude-3-5-sonnet-v2@20241022': 100000,
     'vertex_ai/claude-3-7-sonnet@20250219': 200000,
@@ -152,6 +153,7 @@ MAX_TOKENS = {
     'anthropic/claude-opus-4-6-20260120': 200000,
     'anthropic/claude-opus-4-7': 1000000,
     'anthropic/claude-opus-4-8': 1000000,
+    'anthropic/claude-opus-5': 1000000,
     'anthropic/claude-3-5-sonnet-20240620': 100000,
     'anthropic/claude-3-5-sonnet-20241022': 100000,
     'anthropic/claude-3-7-sonnet-20250219': 200000,
@@ -165,6 +167,7 @@ MAX_TOKENS = {
     'claude-opus-4-6-20260120': 200000,
     'claude-opus-4-7': 1000000,
     'claude-opus-4-8': 1000000,
+    'claude-opus-5': 1000000,
     'claude-3-7-sonnet-20250219': 200000,
     'claude-sonnet-4-6': 200000,
     'claude-sonnet-5': 1000000,
@@ -182,6 +185,7 @@ MAX_TOKENS = {
     'bedrock/anthropic.claude-opus-4-7': 1000000,
     'bedrock/anthropic.claude-opus-4-7-v1:0': 1000000,
     'bedrock/anthropic.claude-opus-4-8': 1000000,
+    'bedrock/anthropic.claude-opus-5': 1000000,
     'bedrock/anthropic.claude-3-haiku-20240307-v1:0': 100000,
     'bedrock/anthropic.claude-3-5-haiku-20241022-v1:0': 100000,
     'bedrock/anthropic.claude-haiku-4-5-20251001-v1:0': 200000,
@@ -213,6 +217,11 @@ MAX_TOKENS = {
     "bedrock/us.anthropic.claude-opus-4-7": 1000000,
     "bedrock/global.anthropic.claude-opus-4-8": 1000000,
     "bedrock/us.anthropic.claude-opus-4-8": 1000000,
+    "bedrock/global.anthropic.claude-opus-5": 1000000,
+    "bedrock/us.anthropic.claude-opus-5": 1000000,
+    "bedrock/eu.anthropic.claude-opus-5": 1000000,
+    "bedrock/au.anthropic.claude-opus-5": 1000000,
+    "bedrock/jp.anthropic.claude-opus-5": 1000000,
     "bedrock/eu.anthropic.claude-opus-4-8": 1000000,
     "bedrock/au.anthropic.claude-opus-4-8": 1000000,
     "bedrock/jp.anthropic.claude-opus-4-8": 1000000,
@@ -343,6 +352,15 @@ NO_SUPPORT_TEMPERATURE_MODELS = [
     "bedrock/eu.anthropic.claude-opus-4-8",
     "bedrock/au.anthropic.claude-opus-4-8",
     "bedrock/jp.anthropic.claude-opus-4-8",
+    "claude-opus-5",
+    "anthropic/claude-opus-5",
+    "vertex_ai/claude-opus-5",
+    "bedrock/anthropic.claude-opus-5",
+    "bedrock/global.anthropic.claude-opus-5",
+    "bedrock/us.anthropic.claude-opus-5",
+    "bedrock/eu.anthropic.claude-opus-5",
+    "bedrock/au.anthropic.claude-opus-5",
+    "bedrock/jp.anthropic.claude-opus-5",
     "claude-fable-5",
     "anthropic/claude-fable-5",
     "claude-sonnet-5",
@@ -382,7 +400,7 @@ SUPPORT_REASONING_EFFORT_MODELS = [
 # thinking={"type": "enabled", "budget_tokens": ...} request built by
 # LiteLLMAIHandler._configure_claude_extended_thinking(). Only models that
 # accept budget_tokens belong here. Adaptive-only models (Claude Opus 4.7/4.8,
-# Sonnet 5, Fable 5) reject budget_tokens with an HTTP 400 and must not be added
+# Opus 5, Sonnet 5, Fable 5) reject budget_tokens with an HTTP 400 and must not be added
 # without also adding an adaptive-thinking code path. This list is the built-in
 # default; it can be replaced via the `claude_extended_thinking_models_override`
 # configuration option.
