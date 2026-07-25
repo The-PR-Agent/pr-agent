@@ -212,10 +212,12 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
     async def inner(data: dict):
         log_context = {"server_type": "gitlab_app"}
         get_logger().debug("Received a GitLab webhook")
-        active_secret_provider = get_fork_safe_secret_provider()
-        if request.headers.get("X-Gitlab-Token") and active_secret_provider:
-            request_token = request.headers.get("X-Gitlab-Token")
-            secret = active_secret_provider.get_secret(request_token)
+        request_token = request.headers.get("X-Gitlab-Token")
+        # Built only for a request that will actually consult it, so a cloud client that
+        # fails to initialize cannot drop webhooks authenticated by shared secret instead.
+        secret_provider = get_fork_safe_secret_provider() if request_token else None
+        if request_token and secret_provider:
+            secret = secret_provider.get_secret(request_token)
             if not secret:
                 get_logger().warning(f"Empty secret retrieved, request_token: {request_token}")
                 return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED,
@@ -230,7 +232,7 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                 return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content=jsonable_encoder({"message": "unauthorized"}))
         elif get_settings().get("GITLAB.SHARED_SECRET"):
             secret = get_settings().get("GITLAB.SHARED_SECRET")
-            if not request.headers.get("X-Gitlab-Token") == secret:
+            if not request_token == secret:
                 get_logger().error("Failed to validate secret")
                 return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content=jsonable_encoder({"message": "unauthorized"}))
         else:
