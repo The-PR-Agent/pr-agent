@@ -7,16 +7,9 @@ import openai
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
-# Max seconds to wait for pending litellm callbacks before giving up and exiting.
 DEFAULT_CALLBACK_TIMEOUT_SECONDS = 30
-# Bound on how many times we re-snapshot asyncio.all_tasks() while draining. Each
-# pass can surface tasks spawned by the previous pass; a handful of rounds is
-# plenty and keeps a pathological callback from looping us forever.
 MAX_DRAIN_ROUNDS = 5
-# Slice of the timeout held back for the final queue flush, so a slow task drain
-# cannot starve it - callbacks already on the queue would otherwise be dropped -
-# while the total wait still stays within the caller's timeout.
-FLUSH_RESERVE_SECONDS = 1.0
+FLUSH_RESERVE_SECONDS = 1.0  # held back from the timeout so the final flush always gets a turn
 
 
 async def _handle_streaming_response(response):
@@ -127,11 +120,10 @@ def _process_litellm_extra_body(kwargs: dict) -> dict:
 
 def _get_global_logging_worker():
     """
-    Return litellm's module-global LoggingWorker, or None if unavailable.
+    Return litellm's module-global LoggingWorker, or None if it is unavailable.
 
-    Imported lazily and defensively: the worker lives under litellm's internal
-    `litellm_core_utils` package, so a future litellm may move it. Losing it only
-    costs us the queue flush, not the task drain.
+    Lives under litellm's internal litellm_core_utils, so it may move; losing it
+    costs the queue flush, not the task drain.
     """
     try:
         from litellm.litellm_core_utils.logging_worker import \
@@ -146,10 +138,8 @@ def _is_litellm_task(task) -> bool:
     """
     True when a pending task belongs to litellm's deferred-logging machinery.
 
-    Keeps the drain from waiting on unrelated background work, which would otherwise
-    let any long-running task hold up process exit for the whole timeout. Coroutine
-    objects carry no ``__module__``, so read the defining module off the frame's
-    globals; anything we cannot introspect is treated as unrelated.
+    Coroutines carry no __module__, so the defining module is read off the frame
+    globals. Anything we cannot introspect counts as unrelated.
     """
     try:
         frame = getattr(task.get_coro(), "cr_frame", None)
@@ -160,12 +150,7 @@ def _is_litellm_task(task) -> bool:
 
 
 def _log_task_exceptions(tasks) -> None:
-    """
-    Retrieve exceptions from finished tasks so they are observed, not just dropped.
-
-    Without this, a callback that raises surfaces later as an unhelpful
-    "Task exception was never retrieved" during interpreter shutdown.
-    """
+    """Consume exceptions from finished tasks, so they don't resurface at shutdown."""
     for task in tasks:
         try:
             exception = task.exception()
@@ -177,11 +162,10 @@ def _log_task_exceptions(tasks) -> None:
 
 def litellm_callbacks_registered() -> bool:
     """
-    True when anything is listening for litellm callbacks, so a drain is worthwhile.
+    True when anything is listening for litellm callbacks.
 
-    Checks the config flag *and* litellm's module-level lists, because callbacks
-    can also be registered programmatically (`litellm.callbacks = [MyLogger()]`)
-    by code that embeds pr-agent and never touches configuration.toml.
+    Covers litellm's module-level lists as well as the config flag, since callers
+    embedding pr-agent can register callbacks without touching configuration.toml.
     """
     litellm_settings = get_settings().get("litellm", {})
     if litellm_settings and litellm_settings.get("enable_callbacks", False):
@@ -195,24 +179,17 @@ def litellm_callbacks_registered() -> bool:
 
 async def drain_litellm_callbacks(timeout: float = DEFAULT_CALLBACK_TIMEOUT_SECONDS) -> None:
     """
-    Let litellm's deferred success/failure callbacks run before the event loop closes.
+    Let litellm's deferred callbacks run before the event loop closes.
 
-    litellm defers async logging twice: once via asyncio.create_task() when the
-    completion resolves, and again when that task enqueues the actual callback onto
-    a module-global LoggingWorker queue. Entry points that wrap a whole command in
-    asyncio.run() (the CLI, the GitHub Action runner) cancel both as soon as the
-    command returns, so callbacks silently never fire. Draining stage one lets the
-    callbacks reach the queue; flushing the worker waits for them to finish.
-
-    Best-effort by design: this is telemetry, so anything that goes wrong is logged
-    and swallowed rather than allowed to fail a command whose result we already have.
+    litellm defers logging twice - a create_task when the completion resolves,
+    which then enqueues onto a global LoggingWorker - and asyncio.run() cancels
+    both when the command returns. Draining lets the callbacks reach the queue;
+    the flush waits for them to finish. Best-effort: errors are logged, not raised.
     """
     try:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        # Split the budget rather than extending it: the task drain stops early
-        # enough to leave the flush a slice, so both get a turn and the caller's
-        # timeout still bounds the whole call.
+        # Split the budget rather than extending it, so timeout bounds the whole call.
         task_deadline = deadline - min(FLUSH_RESERVE_SECONDS, timeout / 2)
         worker = _get_global_logging_worker()
 
@@ -220,16 +197,15 @@ async def drain_litellm_callbacks(timeout: float = DEFAULT_CALLBACK_TIMEOUT_SECO
             remaining = task_deadline - loop.time()
             if remaining <= 0:
                 break
-            # Exclude the worker's own loop task: it runs forever by design, so
-            # waiting on it would burn the full timeout on every single run.
+            # The worker's own loop task never finishes, so waiting on it would
+            # burn the full timeout on every run.
             worker_task = getattr(worker, "_worker_task", None)
             pending = [task for task in asyncio.all_tasks()
                        if task is not asyncio.current_task() and task is not worker_task
                        and _is_litellm_task(task)]
             if not pending:
                 break
-            # Re-snapshot on the next round: a drained task may itself have spawned
-            # the task that actually enqueues the callback.
+            # Re-snapshot next round: a drained task may have spawned the one that enqueues.
             done, still_pending = await asyncio.wait(pending, timeout=remaining)
             _log_task_exceptions(done)
             if still_pending:
@@ -241,8 +217,7 @@ async def drain_litellm_callbacks(timeout: float = DEFAULT_CALLBACK_TIMEOUT_SECO
 
         if worker is None:
             return
-        # Always reach the flush, even after a timeout above: callbacks that already
-        # made it onto the queue would otherwise be dropped at the buzzer.
+        # Reached even after a timeout above, or already-queued callbacks are dropped.
         try:
             await asyncio.wait_for(worker.flush(), timeout=max(0.0, deadline - loop.time()))
         except asyncio.TimeoutError:
