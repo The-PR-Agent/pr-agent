@@ -89,11 +89,15 @@ class GiteaProvider(GitProvider):
             self.sha = self.pr.head.sha if self.pr.head.sha else ""
             self.__add_file_content()
             self.__add_file_diff()
+            # list commits starting at the PR head so we get the PR branch history,
+            # not the repository default branch (see get_commit_messages, which
+            # already uses the PR-scoped endpoint)
             self.pr_commits = self.repo_api.list_all_commits(
                 owner=self.owner,
-                repo=self.repo
+                repo=self.repo,
+                sha=self.sha
             )
-            self.last_commit = self.pr_commits[-1]
+            self.last_commit = self.__select_last_commit(self.pr_commits, self.sha)
             self.last_commit_id = self.last_commit
             self.base_sha = self.pr.base.sha if self.pr.base.sha else ""
             self.base_ref = self.pr.base.ref if self.pr.base.ref else ""
@@ -103,6 +107,21 @@ class GiteaProvider(GitProvider):
             self.enabled_issue = True
         else:
             self.pr_commits = None
+
+    @staticmethod
+    def __select_last_commit(commits, head_sha: str):
+        """Pick the PR head commit from a Gitea commit listing.
+
+        Gitea returns commits newest-first, so the head is the first entry;
+        prefer an exact ``head_sha`` match when it is present.
+        """
+        if not commits:
+            return None
+        if head_sha:
+            for commit in commits:
+                if getattr(commit, "sha", None) == head_sha:
+                    return commit
+        return commits[0]
 
     def __add_file_content(self):
         for file in self.git_files:
@@ -1010,10 +1029,14 @@ class RepoApi(giteapy.RepositoryApi):
             index=issue_number
         )
 
-    def list_all_commits(self, owner: str, repo: str):
+    def list_all_commits(self, owner: str, repo: str, sha: str | None = None):
+        kwargs = {}
+        if sha:
+            kwargs["sha"] = sha
         return self.repository.repo_get_all_commits(
             owner=owner,
-            repo=repo
+            repo=repo,
+            **kwargs
         )
 
     def add_reviewer(self, owner: str, repo: str, pr_number: int, reviewers: List[str]):

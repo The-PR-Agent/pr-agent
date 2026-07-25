@@ -528,3 +528,44 @@ class TestGiteaProviderAddFileDiff:
             index=123,
             body={"body": "Updated description", "title": "Updated title"}
         )
+
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
+    @patch("pr_agent.git_providers.gitea_provider.RepoApi")
+    def test_last_commit_is_pr_head_not_default_branch(
+        self, mock_repo_api_cls, mock_api_client_cls, mock_get_settings
+    ):
+        settings = MagicMock()
+        settings.get.side_effect = lambda k, d=None: {
+            'GITEA.URL': 'https://gitea.example.com',
+            'GITEA.PERSONAL_ACCESS_TOKEN': 'test-token',
+            'GITEA.REPO_SETTING': None,
+            'GITEA.SKIP_SSL_VERIFICATION': False,
+            'GITEA.SSL_CA_CERT': None
+        }.get(k, d)
+        mock_get_settings.return_value = settings
+
+        repo_api = mock_repo_api_cls.return_value
+        pr = MagicMock()
+        pr.head.sha = "pr-head-sha"
+        pr.base.sha = "base-sha"
+        pr.base.ref = "main"
+        repo_api.get_pull_request.return_value = pr
+        repo_api.get_change_file_pull_request.return_value = []
+
+        # Gitea returns commits newest-first; the default branch listing must not
+        # be used, and the last element of it is the oldest commit.
+        def list_all_commits(owner, repo, sha=None):
+            if sha == "pr-head-sha":
+                return [MagicMock(sha="pr-head-sha"), MagicMock(sha="pr-older-sha")]
+            return [MagicMock(sha="default-newest"), MagicMock(sha="default-oldest")]
+
+        repo_api.list_all_commits.side_effect = list_all_commits
+
+        from pr_agent.git_providers.gitea_provider import GiteaProvider
+
+        provider = GiteaProvider("https://gitea.example.com/owner/repo/pulls/123")
+
+        assert repo_api.list_all_commits.call_args.kwargs.get("sha") == "pr-head-sha"
+        assert provider.last_commit.sha == "pr-head-sha"
+        assert provider.last_commit_id.sha == "pr-head-sha"
