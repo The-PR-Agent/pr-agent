@@ -51,6 +51,21 @@ def patch_settings(monkeypatch):
     monkeypatch.setattr(litellm_handler, "get_settings", lambda: _make_settings())
 
 
+@pytest.fixture(autouse=True)
+def restore_litellm_globals():
+    """Undo the LiteLLM globals LiteLLMAIHandler.__init__ writes.
+
+    Constructing the handler mutates process-wide state (litellm.api_key and
+    litellm.openai_key). monkeypatch only reverts what a test set itself, so without
+    this the placeholder written during __init__ would outlive the test and make
+    later tests order-dependent.
+    """
+    saved = {name: getattr(litellm, name) for name in ("api_key", "openai_key")}
+    yield
+    for name, value in saved.items():
+        setattr(litellm, name, value)
+
+
 def _make_anthropic_settings():
     """Settings with ANTHROPIC.KEY configured, no OPENAI.KEY.
 
@@ -499,6 +514,53 @@ class TestPlaceholderDoesNotShadowProviderEnvVars:
         monkeypatch.setattr(litellm, "openai_key", None)
         monkeypatch.setattr(litellm, "api_key", None)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    @pytest.mark.asyncio
+    async def test_keyless_init_clears_a_stale_provider_key(self, monkeypatch):
+        """A keyless request must not inherit the previous request's provider key.
+
+        __init__ mutates process-global LiteLLM state, so a provider branch from an
+        earlier request (Groq/xAI/SambaNova/OpenRouter all write litellm.api_key) can
+        still be sitting there. chat_completion() forwards any truthy non-placeholder
+        litellm.api_key, so without an explicit reset a keyless request would
+        authenticate with — and leak — the earlier request's credential.
+        """
+        groq_settings = type("Settings", (), {
+            "config": type("Config", (), {
+                "reasoning_effort": None,
+                "ai_timeout": 30,
+                "custom_reasoning_model": False,
+                "max_model_tokens": 32000,
+                "verbosity_level": 0,
+                "seed": -1,
+                "get": lambda self, key, default=None: default,
+            })(),
+            "litellm": type("LiteLLM", (), {
+                "get": lambda self, key, default=None: default,
+            })(),
+            "groq": type("Groq", (), {"key": "gsk-tenant-a"})(),
+            "get": lambda self, key, default=None: (
+                "gsk-tenant-a" if key == "GROQ.KEY" else default
+            ),
+        })()
+
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: groq_settings)
+        LiteLLMAIHandler()  # request 1: tenant A, Groq key lands in litellm.api_key
+        assert litellm.api_key == "gsk-tenant-a"
+
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: _make_settings())
+        with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion",
+                   new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = _mock_response()
+            handler = LiteLLMAIHandler()  # request 2: tenant B, no keys configured
+            await handler.chat_completion(
+                model="openai/local-model", system="sys", user="usr"
+            )
+
+        assert "api_key" not in mock_call.call_args[1], (
+            f"A keyless init must clear the previous request's provider key; "
+            f"kwargs had: {mock_call.call_args[1].get('api_key')!r}"
+        )
 
     def test_placeholder_not_stored_in_global_litellm_api_key(self):
         """With no OpenAI key configured, litellm.api_key must stay falsy."""

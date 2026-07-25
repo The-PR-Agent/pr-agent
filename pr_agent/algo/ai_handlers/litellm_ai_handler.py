@@ -55,6 +55,12 @@ class LiteLLMAIHandler(BaseAiHandler):
             openai.api_key = get_settings().openai.key
             litellm.openai_key = get_settings().openai.key
         elif 'OPENAI_API_KEY' not in os.environ:
+            # These are process-wide globals and __init__ runs per request, so drop any
+            # key a previous request's provider branch left behind — chat_completion()
+            # forwards a truthy litellm.api_key, which would authenticate this request
+            # with (and leak) the earlier one's credential. The provider branches below
+            # repopulate it for the current request.
+            litellm.api_key = None
             # Keyless OpenAI-compatible endpoints (vLLM, LM Studio, ...) still need *some*
             # key or the OpenAI SDK raises "The api_key client option must be set".
             # The placeholder must live in litellm.openai_key, which LiteLLM only consults
