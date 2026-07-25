@@ -15,10 +15,7 @@ import litellm
 import pytest
 
 from pr_agent.algo.ai_handlers.litellm_helpers import (
-    _is_litellm_task,
-    drain_litellm_callbacks,
-    litellm_callbacks_registered,
-)
+    _is_litellm_task, drain_litellm_callbacks, litellm_callbacks_registered)
 from pr_agent.config_loader import global_settings
 from pr_agent.log import get_logger
 
@@ -188,6 +185,39 @@ def test_drain_still_flushes_after_a_task_timeout(clean_litellm_callbacks, monke
     asyncio.run(inner())
 
     assert flushed["value"] is True
+
+
+def test_drain_never_exceeds_the_configured_timeout(clean_litellm_callbacks, monkeypatch):
+    """
+    callback_timeout_seconds is documented as the max wait, so a slow flush on top
+    of an already-exhausted task drain must not push the total past it.
+    """
+    class _SlowWorker:
+        _worker_task = None
+
+        async def flush(self):
+            await asyncio.sleep(30)
+
+    monkeypatch.setattr(
+        "pr_agent.algo.ai_handlers.litellm_helpers._get_global_logging_worker",
+        lambda: _SlowWorker(),
+    )
+    monkeypatch.setattr(
+        "pr_agent.algo.ai_handlers.litellm_helpers._is_litellm_task", lambda task: True)
+    elapsed = {}
+
+    async def inner():
+        stuck = asyncio.create_task(asyncio.sleep(30))
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        await drain_litellm_callbacks(timeout=0.5)
+        elapsed["seconds"] = loop.time() - start
+        stuck.cancel()
+
+    asyncio.run(inner())
+
+    # Both phases are slow, so this is the worst case: it must still fit the budget.
+    assert elapsed["seconds"] <= 0.5 + 0.25, elapsed["seconds"]
 
 
 def test_drain_retrieves_task_exceptions(clean_litellm_callbacks, monkeypatch):

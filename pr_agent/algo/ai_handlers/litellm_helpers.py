@@ -13,9 +13,10 @@ DEFAULT_CALLBACK_TIMEOUT_SECONDS = 30
 # pass can surface tasks spawned by the previous pass; a handful of rounds is
 # plenty and keeps a pathological callback from looping us forever.
 MAX_DRAIN_ROUNDS = 5
-# Grace given to the final queue flush when the task drain already used the budget,
-# so callbacks that reached the queue are not dropped right at the deadline.
-FLUSH_GRACE_SECONDS = 1.0
+# Slice of the timeout held back for the final queue flush, so a slow task drain
+# cannot starve it - callbacks already on the queue would otherwise be dropped -
+# while the total wait still stays within the caller's timeout.
+FLUSH_RESERVE_SECONDS = 1.0
 
 
 async def _handle_streaming_response(response):
@@ -133,7 +134,8 @@ def _get_global_logging_worker():
     costs us the queue flush, not the task drain.
     """
     try:
-        from litellm.litellm_core_utils.logging_worker import GLOBAL_LOGGING_WORKER
+        from litellm.litellm_core_utils.logging_worker import \
+            GLOBAL_LOGGING_WORKER
         return GLOBAL_LOGGING_WORKER
     except ImportError:
         get_logger().debug("litellm LoggingWorker unavailable; draining pending tasks only")
@@ -208,10 +210,14 @@ async def drain_litellm_callbacks(timeout: float = DEFAULT_CALLBACK_TIMEOUT_SECO
     try:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
+        # Split the budget rather than extending it: the task drain stops early
+        # enough to leave the flush a slice, so both get a turn and the caller's
+        # timeout still bounds the whole call.
+        task_deadline = deadline - min(FLUSH_RESERVE_SECONDS, timeout / 2)
         worker = _get_global_logging_worker()
 
         for _ in range(MAX_DRAIN_ROUNDS):
-            remaining = deadline - loop.time()
+            remaining = task_deadline - loop.time()
             if remaining <= 0:
                 break
             # Exclude the worker's own loop task: it runs forever by design, so
@@ -236,11 +242,9 @@ async def drain_litellm_callbacks(timeout: float = DEFAULT_CALLBACK_TIMEOUT_SECO
         if worker is None:
             return
         # Always reach the flush, even after a timeout above: callbacks that already
-        # made it onto the queue would otherwise be dropped at the buzzer. The grace
-        # keeps that final wait bounded.
-        flush_timeout = max(FLUSH_GRACE_SECONDS, deadline - loop.time())
+        # made it onto the queue would otherwise be dropped at the buzzer.
         try:
-            await asyncio.wait_for(worker.flush(), timeout=flush_timeout)
+            await asyncio.wait_for(worker.flush(), timeout=max(0.0, deadline - loop.time()))
         except asyncio.TimeoutError:
             get_logger().warning("litellm callback queue did not flush within timeout")
     except Exception as e:

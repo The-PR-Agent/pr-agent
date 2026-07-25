@@ -5,10 +5,8 @@ import sys
 
 from pr_agent.agent.pr_agent import PRAgent, commands
 from pr_agent.algo.ai_handlers.litellm_helpers import (
-    DEFAULT_CALLBACK_TIMEOUT_SECONDS,
-    drain_litellm_callbacks,
-    litellm_callbacks_registered,
-)
+    DEFAULT_CALLBACK_TIMEOUT_SECONDS, drain_litellm_callbacks,
+    litellm_callbacks_registered)
 from pr_agent.algo.utils import get_version
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger, setup_logger
@@ -47,7 +45,7 @@ def set_parser():
     - add_docs
 
     - generate_labels
-    
+
     - help_docs - Ask a question, from either an issue or PR context, on a given repo (current context or a different one)
 
 
