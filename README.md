@@ -222,6 +222,25 @@ ___
 
 <hr>
 
+### Usage Examples
+
+PR-Agent tools run as a comment on a PR or from the CLI. A few common ones:
+
+```bash
+# Comment on a PR (GitHub/GitLab/Bitbucket/…):
+/describe                        # generate title, summary, walkthrough and labels
+/review                          # findings, security, review effort and tests
+/improve                         # actionable code-improvement suggestions
+/ask "What does this PR change?" # free-text Q&A about the PR
+
+# Or locally via the CLI:
+pr-agent --pr_url <PR_URL> review
+```
+
+See the [Tools docs](https://docs.pr-agent.ai/tools/#usage-examples) for the full list of tools with example commands, and each tool's page for screenshots and options.
+
+<hr>
+
 ## How It Works
 
 The following diagram illustrates PR-Agent tools and their flow:

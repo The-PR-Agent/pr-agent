@@ -296,6 +296,11 @@ def test_publish_code_suggestions_multi_line_payload_shape():
 
     assert "comments" in captured
     payload = captured["comments"][0]
+    # publish_code_suggestions attaches an internal '_dedup_code_fp' fingerprint that
+    # publish_inline_comments consumes and strips before the GitHub API call; it is not
+    # part of the API payload shape under test, so drop it before comparing.
+    assert "_dedup_code_fp" in payload
+    payload = {key: value for key, value in payload.items() if key != "_dedup_code_fp"}
     assert payload == {
         "body": "```suggestion\nnew\n```",
         "path": "src/foo.py",
@@ -325,6 +330,11 @@ def test_publish_code_suggestions_single_line_payload_shape():
 
     assert provider.publish_code_suggestions(suggestions) is True
     payload = captured["c"][0]
+    # publish_code_suggestions attaches an internal '_dedup_code_fp' fingerprint that
+    # publish_inline_comments consumes and strips before the GitHub API call; it is not
+    # part of the API payload shape under test, so drop it before comparing.
+    assert "_dedup_code_fp" in payload
+    payload = {key: value for key, value in payload.items() if key != "_dedup_code_fp"}
     assert payload == {
         "body": "fix",
         "path": "src/foo.py",

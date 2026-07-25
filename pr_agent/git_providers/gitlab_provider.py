@@ -14,6 +14,9 @@ from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 
 from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import decode_if_bytes
+from ..algo.inline_comment_dedup import (body_fingerprint, body_with_markers,
+                                         code_fingerprint,
+                                         get_inline_comment_store)
 from ..algo.language_handler import is_valid_file
 from ..algo.utils import (clip_tokens,
                           find_line_number_of_relevant_line_in_file,
@@ -563,6 +566,23 @@ class GitLabProvider(GitProvider):
         if not found:
             get_logger().info(f"Could not find position for {relevant_file} {relevant_line_in_file}")
         else:
+            store = None
+            body_fp = code_fp = None
+            if get_settings().get("config.persistent_inline_comments", False):
+                store = get_inline_comment_store(self)
+                # Anchor the fingerprint on the line the comment is actually
+                # attached to: deletions anchor on the old line (source), all
+                # other edits on the new line (target).
+                anchor_line = source_line_no if edit_type == "deletion" else target_line_no
+                body_fp = body_fingerprint(relevant_file, anchor_line, body)
+                code_fp = code_fingerprint(relevant_file, anchor_line, body)
+                if store.seen(body_fp) or store.seen(code_fp):
+                    get_logger().info(
+                        f"Persistent inline comments: skipping duplicate inline "
+                        f"comment on {relevant_file}:{anchor_line}")
+                    return
+                body = body_with_markers(
+                    body, body_fp, code_fp, getattr(self, "max_comment_chars", None))
             # in order to have exact sha's we have to find correct diff for this change
             diff = self.get_relevant_diff(relevant_file, relevant_line_in_file)
             if diff is None:
@@ -582,6 +602,9 @@ class GitLabProvider(GitProvider):
             get_logger().debug(f"Creating comment in MR {self.id_mr} with body {body} and position {pos_obj}")
             try:
                 self.mr.discussions.create({'body': body, 'position': pos_obj})
+                if store is not None:
+                    store.add(body_fp)
+                    store.add(code_fp)
             except Exception as e:
                 try:
                     # fallback - create a general note on the file in the MR
@@ -621,6 +644,9 @@ class GitLabProvider(GitProvider):
                     diff_code = f"\n\n```diff\n{patch.rstrip()}\n```"
                     body_fallback += diff_code
 
+                    if store is not None:
+                        body_fallback = body_with_markers(
+                            body_fallback, body_fp, code_fp, getattr(self, "max_comment_chars", None))
                     # Create a general note on the file in the MR
                     self.mr.notes.create({
                         'body': body_fallback,
@@ -633,6 +659,9 @@ class GitLabProvider(GitProvider):
                         }
                     })
                     get_logger().debug(f"Created fallback comment in MR {self.id_mr} with position {pos_obj}")
+                    if store is not None:
+                        store.add(body_fp)
+                        store.add(code_fp)
 
                     # get_logger().debug(
                     #     f"Failed to create comment in MR {self.id_mr} with position {pos_obj} (probably not a '+' line)")
@@ -936,16 +965,70 @@ class GitLabProvider(GitProvider):
 
     def publish_labels(self, pr_types):
         try:
-            self.mr.labels = list(set(pr_types))
-            self.mr.save()
+            # Send an incremental diff instead of assigning ``self.mr.labels``, which
+            # would PUT the whole array and wipe any label added to the MR after this
+            # snapshot was taken. python-gitlab forwards ``add_labels`` /
+            # ``remove_labels`` to the identically named parameters of
+            # ``PUT /projects/:id/merge_requests/:merge_request_iid``, so labels the
+            # snapshot never saw are left untouched by the server.
+            desired = set(pr_types)
+            current = set(self._read_mr_labels())
+            to_add = sorted(desired - current)
+            to_remove = sorted(current - desired)
+            if not to_add and not to_remove:
+                return
+            try:
+                if to_add:
+                    self.mr.add_labels = ",".join(to_add)
+                if to_remove:
+                    self.mr.remove_labels = ",".join(to_remove)
+                self.mr.save()
+            finally:
+                # save() clears pending attributes on success, but not when it raises.
+                # Drop them so an unrelated later save() (publish_description runs
+                # moments later) cannot resend the diff.
+                self._clear_pending_mr_attrs("add_labels", "remove_labels")
         except Exception as e:
             get_logger().warning(f"Failed to publish labels, error: {e}")
+
+    def _read_mr_labels(self):
+        # Reading ``mr.labels`` is not free of side effects: python-gitlab cannot detect
+        # in-place list edits, so __getattr__ copies every list attribute into the
+        # pending-attribute set to make sure it gets saved. Left there, the next save()
+        # on this MR would PUT the whole labels array — exactly the overwrite the
+        # add/remove diff exists to avoid. Drop it again so a read stays a read.
+        labels = self.mr.labels or []
+        self._clear_pending_mr_attrs("labels")
+        return list(labels)
+
+    def _clear_pending_mr_attrs(self, *names):
+        # python-gitlab keeps attributes assigned on a merge request in ``_updated_attrs``
+        # rather than ``__dict__``, so ``delattr`` cannot reach them. That is private API
+        # and ``self.mr`` is not guaranteed to be a python-gitlab object, so check before
+        # touching it: failing to clear a pending write must not break the caller.
+        pending = getattr(self.mr, "_updated_attrs", None)
+        if not isinstance(pending, dict):
+            return
+        for name in names:
+            pending.pop(name, None)
 
     def publish_inline_comments(self, comments: list[dict]):
         pass
 
     def get_pr_labels(self, update=False):
-        return self.mr.labels
+        # ``update`` used to be ignored, so callers that re-read labels to preserve
+        # user additions (PRReviewer.set_review_labels, PRDescription.run) kept seeing
+        # the snapshot cached when the provider was built, and dropped any label added
+        # after the webhook fired.
+        if update:
+            try:
+                self.mr = self._get_merge_request()
+            except Exception as e:
+                # Best-effort, like the other providers: fall back to the cached
+                # snapshot. publish_labels diffs against that same snapshot, so a
+                # stale read narrows what gets updated rather than clobbering labels.
+                get_logger().warning(f"Failed to refresh merge request {self.id_mr}, using cached labels, error: {e}")
+        return self._read_mr_labels()
 
     def get_repo_labels(self):
         return self.gl.projects.get(self.id_project).labels.list()

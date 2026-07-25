@@ -1,7 +1,7 @@
 ## Changing a model in PR-Agent
 
 See [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py) for a list of supported models in PR-Agent.
-The default model of PR-Agent is `GPT-5` from OpenAI.
+The default model of PR-Agent is `GPT-5.6` from OpenAI.
 To use a different model than the default, you need to edit in the [configuration file](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml#L7) the fields:
 
 ```toml
@@ -467,7 +467,7 @@ custom_model_max_tokens= ...
 reasoning_effort = "medium" # "none", "minimal", "low", "medium", "high", "xhigh"
 ```
 
-With the OpenAI models that support reasoning effort (eg: gpt-5.4-mini), you can specify its reasoning effort via `config` section. The default value is `medium`. You can change it to any supported value based on your usage. Available values depend on the model and provider.
+With the OpenAI models that support reasoning effort (eg: gpt-5.6-terra), you can specify its reasoning effort via `config` section. The default value is `medium`. You can change it to any supported value based on your usage. Available values depend on the model and provider.
 
 ### Anthropic models
 

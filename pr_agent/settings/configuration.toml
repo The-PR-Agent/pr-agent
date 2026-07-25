@@ -4,10 +4,10 @@
 
 [config]
 # models
-model="gpt-5.5-2026-04-23"
-fallback_models=["gpt-5.4-mini"]
-#model_reasoning="gpt-5.4-mini" # dedicated reasoning model for self-reflection
-#model_weak="gpt-5.4-nano" # optional, a weaker model to use for some easier tasks
+model="gpt-5.6"
+fallback_models=["gpt-5.6-terra"]
+#model_reasoning="gpt-5.6-terra" # dedicated reasoning model for self-reflection
+#model_weak="gpt-5.6-luna" # optional, a weaker model to use for some easier tasks
 # CLI
 git_provider="github"
 publish_output=true
@@ -48,6 +48,10 @@ cli_mode=false
 output_relevant_configurations=false
 large_patch_policy = "clip" # "clip", "skip"
 duplicate_prompt_examples = false
+# Persistent inline comments (issue #2037): when true, the GitHub and GitLab providers
+# fingerprint each inline comment, embed the fingerprint as an HTML marker, and skip
+# re-posting suggestions already present on the PR/MR across runs.
+persistent_inline_comments = false
 # seed
 seed=-1 # set positive value to fix the seed (and ensure temperature=0)
 temperature=0.2
