@@ -26,8 +26,11 @@
 6. Build a Docker image for the app and optionally push it to a Docker repository. We'll use Dockerhub as an example:
 
     ```bash
-    docker build -f docker/Dockerfile -t pr-agent:gitea_app --target gitea_app .
-    docker push pragent/pr-agent:gitea_webhook  # Push to your Docker repository
+    docker build . -t pr-agent:gitea_app --target gitea_app -f docker/Dockerfile
+
+    # Optional, to push it to your own Docker repository:
+    docker tag pr-agent:gitea_app <your-registry>/pr-agent:gitea_app
+    docker push <your-registry>/pr-agent:gitea_app
     ```
 
 7. Set the environmental variables, the method depends on your docker runtime. Skip this step if you included your secrets/configuration directly in the Docker image.
