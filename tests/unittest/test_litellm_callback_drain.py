@@ -14,8 +14,13 @@ import asyncio
 import litellm
 import pytest
 
-from pr_agent.algo.ai_handlers.litellm_helpers import drain_litellm_callbacks, litellm_callbacks_registered
+from pr_agent.algo.ai_handlers.litellm_helpers import (
+    _is_litellm_task,
+    drain_litellm_callbacks,
+    litellm_callbacks_registered,
+)
 from pr_agent.config_loader import global_settings
+from pr_agent.log import get_logger
 
 _CALLBACK_ATTRS = ("callbacks", "success_callback", "failure_callback", "service_callback",
                    "_async_success_callback", "_async_failure_callback")
@@ -138,21 +143,79 @@ def test_drain_does_not_wait_on_the_logging_worker(clean_litellm_callbacks):
     assert elapsed["seconds"] < 5
 
 
-def test_drain_gives_up_at_the_timeout(clean_litellm_callbacks):
-    """A task that never finishes must not hold the process past the deadline."""
+def test_unrelated_pending_tasks_do_not_delay_the_drain(clean_litellm_callbacks):
+    """Background work that has nothing to do with litellm must not hold up exit."""
     elapsed = {}
 
     async def inner():
         stuck = asyncio.create_task(asyncio.sleep(30))
         loop = asyncio.get_running_loop()
         start = loop.time()
-        await drain_litellm_callbacks(timeout=0.2)
+        await drain_litellm_callbacks(timeout=30)
         elapsed["seconds"] = loop.time() - start
         stuck.cancel()
 
     asyncio.run(inner())
 
     assert elapsed["seconds"] < 5
+
+
+def test_drain_still_flushes_after_a_task_timeout(clean_litellm_callbacks, monkeypatch):
+    """
+    A stuck callback task must not cost us the callbacks already on the queue: the
+    drain has to reach worker.flush() even once the task wait has timed out.
+    """
+    flushed = {"value": False}
+
+    class _SpyWorker:
+        _worker_task = None
+
+        async def flush(self):
+            flushed["value"] = True
+
+    monkeypatch.setattr(
+        "pr_agent.algo.ai_handlers.litellm_helpers._get_global_logging_worker",
+        lambda: _SpyWorker(),
+    )
+    monkeypatch.setattr(
+        "pr_agent.algo.ai_handlers.litellm_helpers._is_litellm_task", lambda task: True)
+
+    async def inner():
+        stuck = asyncio.create_task(asyncio.sleep(30))
+        await drain_litellm_callbacks(timeout=0.2)
+        stuck.cancel()
+
+    asyncio.run(inner())
+
+    assert flushed["value"] is True
+
+
+def test_drain_retrieves_task_exceptions(clean_litellm_callbacks, monkeypatch):
+    """
+    A callback that raises must be reported, not left to resurface as an opaque
+    "Task exception was never retrieved" during interpreter shutdown.
+    """
+    monkeypatch.setattr(
+        "pr_agent.algo.ai_handlers.litellm_helpers._is_litellm_task", lambda task: True)
+    messages = []
+    sink_id = get_logger().add(lambda m: messages.append(m.record["message"]))
+
+    async def boom():
+        raise RuntimeError("callback exploded")
+
+    async def inner():
+        task = asyncio.create_task(boom())
+        await drain_litellm_callbacks(timeout=5)
+        return task
+
+    try:
+        task = asyncio.run(inner())
+    finally:
+        get_logger().remove(sink_id)
+
+    assert any("callback exploded" in message for message in messages)
+    # The drain consumed it, so asyncio has nothing left to complain about.
+    assert task.exception() is not None
 
 
 def test_drain_swallows_errors(clean_litellm_callbacks, monkeypatch):
@@ -174,6 +237,8 @@ def test_drain_without_the_logging_worker_still_drains_tasks(clean_litellm_callb
         "pr_agent.algo.ai_handlers.litellm_helpers._get_global_logging_worker",
         lambda: None,
     )
+    monkeypatch.setattr(
+        "pr_agent.algo.ai_handlers.litellm_helpers._is_litellm_task", lambda task: True)
     ran = {"value": False}
 
     async def side_task():
@@ -187,3 +252,20 @@ def test_drain_without_the_logging_worker_still_drains_tasks(clean_litellm_callb
     asyncio.run(inner())
 
     assert ran["value"] is True
+
+
+def test_litellm_tasks_are_recognised(clean_litellm_callbacks):
+    """The module filter must actually match litellm's deferred logging helper."""
+    seen = {}
+
+    async def inner():
+        await _one_completion()
+        seen["litellm"] = [t for t in asyncio.all_tasks()
+                           if t is not asyncio.current_task() and _is_litellm_task(t)]
+        seen["mine"] = [t for t in asyncio.all_tasks() if t is asyncio.current_task()]
+        await drain_litellm_callbacks()
+
+    asyncio.run(inner())
+
+    assert seen["litellm"], "litellm's logging helper task was not recognised"
+    assert all(not _is_litellm_task(t) for t in seen["mine"])

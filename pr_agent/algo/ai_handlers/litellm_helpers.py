@@ -13,6 +13,9 @@ DEFAULT_CALLBACK_TIMEOUT_SECONDS = 30
 # pass can surface tasks spawned by the previous pass; a handful of rounds is
 # plenty and keeps a pathological callback from looping us forever.
 MAX_DRAIN_ROUNDS = 5
+# Grace given to the final queue flush when the task drain already used the budget,
+# so callbacks that reached the queue are not dropped right at the deadline.
+FLUSH_GRACE_SECONDS = 1.0
 
 
 async def _handle_streaming_response(response):
@@ -137,6 +140,39 @@ def _get_global_logging_worker():
         return None
 
 
+def _is_litellm_task(task) -> bool:
+    """
+    True when a pending task belongs to litellm's deferred-logging machinery.
+
+    Keeps the drain from waiting on unrelated background work, which would otherwise
+    let any long-running task hold up process exit for the whole timeout. Coroutine
+    objects carry no ``__module__``, so read the defining module off the frame's
+    globals; anything we cannot introspect is treated as unrelated.
+    """
+    try:
+        frame = getattr(task.get_coro(), "cr_frame", None)
+        module = frame.f_globals.get("__name__", "") if frame is not None else ""
+        return module.split(".")[0] == "litellm"
+    except Exception:
+        return False
+
+
+def _log_task_exceptions(tasks) -> None:
+    """
+    Retrieve exceptions from finished tasks so they are observed, not just dropped.
+
+    Without this, a callback that raises surfaces later as an unhelpful
+    "Task exception was never retrieved" during interpreter shutdown.
+    """
+    for task in tasks:
+        try:
+            exception = task.exception()
+        except asyncio.CancelledError:
+            continue
+        if exception is not None:
+            get_logger().warning(f"litellm callback task raised: {exception}")
+
+
 def litellm_callbacks_registered() -> bool:
     """
     True when anything is listening for litellm callbacks, so a drain is worthwhile.
@@ -182,23 +218,29 @@ async def drain_litellm_callbacks(timeout: float = DEFAULT_CALLBACK_TIMEOUT_SECO
             # waiting on it would burn the full timeout on every single run.
             worker_task = getattr(worker, "_worker_task", None)
             pending = [task for task in asyncio.all_tasks()
-                       if task is not asyncio.current_task() and task is not worker_task]
+                       if task is not asyncio.current_task() and task is not worker_task
+                       and _is_litellm_task(task)]
             if not pending:
                 break
             # Re-snapshot on the next round: a drained task may itself have spawned
             # the task that actually enqueues the callback.
-            _, still_pending = await asyncio.wait(pending, timeout=remaining)
+            done, still_pending = await asyncio.wait(pending, timeout=remaining)
+            _log_task_exceptions(done)
             if still_pending:
                 get_logger().warning(
                     f"{len(still_pending)} callback tasks({[task.get_coro() for task in still_pending]}) "
                     f"did not complete within timeout"
                 )
-                return
+                break
 
         if worker is None:
             return
+        # Always reach the flush, even after a timeout above: callbacks that already
+        # made it onto the queue would otherwise be dropped at the buzzer. The grace
+        # keeps that final wait bounded.
+        flush_timeout = max(FLUSH_GRACE_SECONDS, deadline - loop.time())
         try:
-            await asyncio.wait_for(worker.flush(), timeout=max(0.0, deadline - loop.time()))
+            await asyncio.wait_for(worker.flush(), timeout=flush_timeout)
         except asyncio.TimeoutError:
             get_logger().warning("litellm callback queue did not flush within timeout")
     except Exception as e:
