@@ -25,6 +25,22 @@ setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL"
 router = APIRouter()
 
 secret_provider = get_secret_provider() if get_settings().get("CONFIG.SECRET_PROVIDER") else None
+_secret_provider_pid = os.getpid()
+
+
+def get_fork_safe_secret_provider():
+    """Return the secret provider, rebuilding it once per process after a fork.
+
+    Gunicorn runs with `preload_app`, so the provider above is constructed in the master
+    and every worker inherits it. Cloud clients hold a pooled connection that must not be
+    shared across processes, so each worker builds its own on first use. Constructing at
+    import is kept so a misconfigured CONFIG.SECRET_PROVIDER still fails at startup.
+    """
+    global secret_provider, _secret_provider_pid
+    if secret_provider is not None and _secret_provider_pid != os.getpid():
+        secret_provider = get_secret_provider()
+        _secret_provider_pid = os.getpid()
+    return secret_provider
 
 
 async def handle_request(api_url: str, body: str, log_context: dict, sender_id: str, notify=None):
@@ -191,9 +207,10 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
     async def inner(data: dict):
         log_context = {"server_type": "gitlab_app"}
         get_logger().debug("Received a GitLab webhook")
-        if request.headers.get("X-Gitlab-Token") and secret_provider:
+        active_secret_provider = get_fork_safe_secret_provider()
+        if request.headers.get("X-Gitlab-Token") and active_secret_provider:
             request_token = request.headers.get("X-Gitlab-Token")
-            secret = secret_provider.get_secret(request_token)
+            secret = active_secret_provider.get_secret(request_token)
             if not secret:
                 get_logger().warning(f"Empty secret retrieved, request_token: {request_token}")
                 return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED,

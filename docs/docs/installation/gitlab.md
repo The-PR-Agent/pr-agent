@@ -97,6 +97,25 @@ PORT=3000  # Optional: override the webhook server port
 
 9. Test your installation by opening a merge request or commenting on a merge request using one of PR Agent's commands.
 
+### Sizing the webhook server
+
+The webhook server runs under gunicorn with multiple worker processes, so that a worker busy handling a request cannot block the health check served by another. Workers do not share memory, and each one needs roughly 250MB, which sets the container's memory requirement:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GUNICORN_WORKERS` | *(unset)* | Pins the worker count exactly. Overrides everything below. |
+| `GUNICORN_MAX_WORKERS` | `4` | Upper bound on the automatically derived worker count. |
+
+When `GUNICORN_WORKERS` is unset, the worker count is derived from the CPUs actually available to the container (cgroup quota, falling back to CPU affinity), clamped to between 2 and `GUNICORN_MAX_WORKERS`.
+
+Budget about `250MB × workers` of memory. If the container is OOMKilled during startup, lower the worker count:
+
+```bash
+GUNICORN_WORKERS=2
+```
+
+The same variables apply to the GitHub and Gitea webhook servers, which run under the same gunicorn configuration.
+
 ## Deploy as a Lambda Function
 
 Note that since AWS Lambda env vars cannot have "." in the name, you can replace each "." in an env variable with "__".<br>
