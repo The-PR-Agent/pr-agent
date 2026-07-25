@@ -24,6 +24,7 @@ from pr_agent.git_providers import get_git_provider_with_context
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
 router = APIRouter()
 
+
 def _build_secret_provider():
     return get_secret_provider() if get_settings().get("CONFIG.SECRET_PROVIDER") else None
 
