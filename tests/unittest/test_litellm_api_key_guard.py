@@ -48,7 +48,7 @@ def _mock_response():
 
 @pytest.fixture(autouse=True)
 def patch_settings(monkeypatch):
-    monkeypatch.setattr(litellm_handler, "get_settings", lambda: _make_settings())
+    monkeypatch.setattr(litellm_handler, "get_settings", _make_settings)
 
 
 @pytest.fixture(autouse=True)
@@ -548,7 +548,7 @@ class TestPlaceholderDoesNotShadowProviderEnvVars:
         LiteLLMAIHandler()  # request 1: tenant A, Groq key lands in litellm.api_key
         assert litellm.api_key == "gsk-tenant-a"
 
-        monkeypatch.setattr(litellm_handler, "get_settings", lambda: _make_settings())
+        monkeypatch.setattr(litellm_handler, "get_settings", _make_settings)
         with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion",
                    new_callable=AsyncMock) as mock_call:
             mock_call.return_value = _mock_response()
