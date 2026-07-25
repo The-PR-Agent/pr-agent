@@ -513,6 +513,59 @@ class TestPlaceholderDoesNotShadowProviderEnvVars:
             "so keyless local endpoints (vLLM, LM Studio, ...) keep working."
         )
 
+    def test_placeholder_does_not_stick_across_handler_inits(self, monkeypatch):
+        """A keyless request must not poison later requests that do configure OPENAI.KEY.
+
+        LiteLLMAIHandler is constructed per request but writes to LiteLLM's process-wide
+        globals. With the placeholder on litellm.api_key a single keyless init left
+        "dummy_key" there for the lifetime of the process, and every later request
+        resolved the placeholder even with OPENAI.KEY set — because __init__ only ever
+        writes the real OpenAI key to litellm.openai_key, which sits *behind*
+        litellm.api_key in the chain. Keeping the placeholder on openai_key means the
+        real key simply replaces it.
+        """
+        from litellm import main as litellm_main
+
+        openai_settings = type("Settings", (), {
+            "config": type("Config", (), {
+                "reasoning_effort": None,
+                "ai_timeout": 30,
+                "custom_reasoning_model": False,
+                "max_model_tokens": 32000,
+                "verbosity_level": 0,
+                "seed": -1,
+                "get": lambda self, key, default=None: default,
+            })(),
+            "litellm": type("LiteLLM", (), {
+                "get": lambda self, key, default=None: default,
+            })(),
+            "openai": type("OpenAI", (), {"key": "sk-real-openai"})(),
+            "get": lambda self, key, default=None: (
+                "sk-real-openai" if key == "OPENAI.KEY" else default
+            ),
+        })()
+
+        LiteLLMAIHandler()  # request 1: no OpenAI key configured
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: openai_settings)
+        LiteLLMAIHandler()  # request 2: OPENAI.KEY configured
+
+        captured = {}
+
+        class _Capturing:
+            def completion(self, *args, **kwargs):
+                captured["api_key"] = kwargs.get("api_key")
+                raise _StopCall
+
+        monkeypatch.setattr(litellm_main, "openai_chat_completions", _Capturing())
+        monkeypatch.setattr(litellm_main, "base_llm_http_handler", _Capturing())
+        with contextlib.suppress(Exception):
+            litellm.completion(model="gpt-4o", messages=[{"role": "user", "content": "hi"}])
+
+        assert captured.get("api_key") == "sk-real-openai", (
+            f"A keyless init must not leave a placeholder that outlives it; "
+            f"LiteLLM resolved: {captured.get('api_key')!r}"
+        )
+
     def test_openrouter_env_key_wins_over_placeholder(self, monkeypatch):
         """End-to-end through LiteLLM's own resolution chain.
 
