@@ -2,10 +2,12 @@
 Tests for the litellm.api_key guard in LiteLLMAIHandler.chat_completion.
 
 Verifies:
-  - Placeholder key (DUMMY_LITELLM_API_KEY) is never injected into the call.
+  - Placeholder key (DUMMY_LITELLM_API_KEY) is never injected into the call, and never
+    occupies the global litellm.api_key (issue #2544).
   - None is not injected (e.g. when OpenAI key is set via litellm.openai_key).
   - Real provider keys (Groq, SambaNova, XAI, OpenRouter, Azure AD) ARE injected.
 """
+import contextlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import litellm
@@ -53,7 +55,7 @@ def _make_anthropic_settings():
     """Settings with ANTHROPIC.KEY configured, no OPENAI.KEY.
 
     This simulates the original bug scenario: ANTHROPIC.KEY is set,
-    but OPENAI.KEY is not, so litellm.api_key falls back to DUMMY_LITELLM_API_KEY.
+    but OPENAI.KEY is not, so __init__ falls back to the DUMMY_LITELLM_API_KEY placeholder.
     """
     anthropic_key = "test-anthropic-key-12345"
     return type("Settings", (), {
@@ -134,9 +136,9 @@ class TestApiKeyGuard:
     async def test_anthropic_key_not_shadowed_by_dummy_key(self, monkeypatch):
         """Original bug scenario: ANTHROPIC.KEY configured without OPENAI.KEY.
 
-        During __init__, litellm.api_key is set to DUMMY_LITELLM_API_KEY (fallback)
-        because OPENAI.KEY is not configured. But litellm.anthropic_key is also set.
-        The guard must prevent the dummy key from being passed to the call,
+        During __init__ the DUMMY_LITELLM_API_KEY placeholder is stored (as the OpenAI
+        fallback) because OPENAI.KEY is not configured. But litellm.anthropic_key is also
+        set. The guard must prevent the placeholder from being passed to the call,
         allowing litellm to use anthropic_key internally.
 
         This test replicates the exact bug from GitHub issue #2042.
@@ -145,7 +147,7 @@ class TestApiKeyGuard:
         monkeypatch.setattr(litellm_handler, "get_settings", _make_anthropic_settings)
 
         # Ensure deterministic preconditions: delete OPENAI_API_KEY env var so __init__
-        # will set litellm.api_key to DUMMY_LITELLM_API_KEY (line 42-43 of litellm_ai_handler.py)
+        # takes the placeholder branch in litellm_ai_handler.py
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
         # Reset litellm.api_key to avoid cross-test state pollution
@@ -156,9 +158,11 @@ class TestApiKeyGuard:
             mock_call.return_value = _mock_response()
             handler = LiteLLMAIHandler()
 
-            # After init: litellm.api_key should be the dummy (OpenAI fallback),
-            # but litellm.anthropic_key is the real Anthropic key
-            assert litellm.api_key == DUMMY_LITELLM_API_KEY
+            # After init: the placeholder lives in litellm.openai_key (OpenAI fallback)
+            # and never in litellm.api_key, which LiteLLM checks ahead of provider env
+            # vars. litellm.anthropic_key holds the real Anthropic key.
+            assert litellm.openai_key == DUMMY_LITELLM_API_KEY
+            assert litellm.api_key != DUMMY_LITELLM_API_KEY
 
             # Call with Anthropic model
             await handler.chat_completion(
@@ -472,3 +476,106 @@ class TestApiKeyGuard:
             # (which is Ollama in this case, but the guard correctly allows real keys through)
             await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
             assert mock_call.call_args[1]["api_key"] == ollama_key
+
+
+class _StopCall(Exception):
+    """Sentinel raised from a patched LiteLLM transport once the api_key is captured."""
+
+
+class TestPlaceholderDoesNotShadowProviderEnvVars:
+    """Regression tests for issue #2544.
+
+    The placeholder must not sit in the global ``litellm.api_key``: LiteLLM resolves
+    several providers as ``api_key or litellm.api_key or <provider attr> or
+    get_secret("<PROVIDER>_API_KEY")``, so a truthy placeholder there wins over the
+    user's provider env var (OpenRouter, Azure, Mistral, ... ) and the request goes
+    out with "dummy_key". Keeping the placeholder in ``litellm.openai_key`` — which
+    LiteLLM only consults on the OpenAI/OpenAI-compatible paths — preserves the
+    keyless local-endpoint use case without shadowing anything else.
+    """
+
+    @pytest.fixture(autouse=True)
+    def restore_openai_key(self, monkeypatch):
+        monkeypatch.setattr(litellm, "openai_key", None)
+        monkeypatch.setattr(litellm, "api_key", None)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    def test_placeholder_not_stored_in_global_litellm_api_key(self):
+        """With no OpenAI key configured, litellm.api_key must stay falsy."""
+        LiteLLMAIHandler()
+
+        assert litellm.api_key != DUMMY_LITELLM_API_KEY, (
+            "The placeholder must not occupy litellm.api_key — it shadows provider "
+            "env vars such as OPENROUTER_API_KEY in LiteLLM's resolution chain."
+        )
+        assert litellm.openai_key == DUMMY_LITELLM_API_KEY, (
+            "The placeholder must still be available on the OpenAI-compatible path, "
+            "so keyless local endpoints (vLLM, LM Studio, ...) keep working."
+        )
+
+    def test_openrouter_env_key_wins_over_placeholder(self, monkeypatch):
+        """End-to-end through LiteLLM's own resolution chain.
+
+        Patches LiteLLM's internal HTTP handler to capture the api_key that would be
+        sent for an ``openrouter/*`` model when the key comes from the native
+        OPENROUTER_API_KEY env var rather than PR-Agent's [openrouter] settings.
+        """
+        from litellm import main as litellm_main
+
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-real-key")
+        LiteLLMAIHandler()
+
+        captured = {}
+
+        class _CapturingHandler:
+            def completion(self, **kwargs):
+                captured["api_key"] = kwargs.get("api_key")
+                raise _StopCall
+
+        monkeypatch.setattr(litellm_main, "base_llm_http_handler", _CapturingHandler())
+        # LiteLLM maps whatever the transport raises onto its own exception types,
+        # so the sentinel comes back wrapped — the captured key is what matters.
+        with contextlib.suppress(Exception):
+            litellm.completion(
+                model="openrouter/deepseek/deepseek-chat",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert captured.get("api_key") == "sk-or-real-key", (
+            f"OPENROUTER_API_KEY must not be shadowed by the placeholder; "
+            f"LiteLLM resolved: {captured.get('api_key')!r}"
+        )
+
+    def test_openai_compatible_endpoint_still_gets_placeholder(self, monkeypatch):
+        """Keyless local endpoints must still receive a key.
+
+        The OpenAI SDK raises "The api_key client option must be set" when no key is
+        resolved, which is exactly why the placeholder exists. Dropping it entirely
+        (instead of moving it to litellm.openai_key) would break these setups.
+        """
+        from litellm import main as litellm_main
+
+        LiteLLMAIHandler()
+
+        captured = {}
+
+        class _CapturingOpenAI:
+            def completion(self, *args, **kwargs):
+                captured["api_key"] = kwargs.get("api_key")
+                raise _StopCall
+
+        # LiteLLM routes the OpenAI path through either handler depending on the
+        # EXPERIMENTAL_OPENAI_BASE_LLM_HTTP_HANDLER flag; capture on both.
+        monkeypatch.setattr(litellm_main, "openai_chat_completions", _CapturingOpenAI())
+        monkeypatch.setattr(litellm_main, "base_llm_http_handler", _CapturingOpenAI())
+        with contextlib.suppress(Exception):
+            litellm.completion(
+                model="openai/local-model",
+                api_base="http://localhost:8000/v1",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert captured.get("api_key") == DUMMY_LITELLM_API_KEY, (
+            f"Keyless OpenAI-compatible endpoints must still receive the placeholder; "
+            f"LiteLLM resolved: {captured.get('api_key')!r}"
+        )

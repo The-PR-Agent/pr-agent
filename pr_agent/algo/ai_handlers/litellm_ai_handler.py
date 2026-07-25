@@ -54,7 +54,13 @@ class LiteLLMAIHandler(BaseAiHandler):
             openai.api_key = get_settings().openai.key
             litellm.openai_key = get_settings().openai.key
         elif 'OPENAI_API_KEY' not in os.environ:
-            litellm.api_key = DUMMY_LITELLM_API_KEY
+            # Keyless OpenAI-compatible endpoints (vLLM, LM Studio, ...) still need *some*
+            # key or the OpenAI SDK raises "The api_key client option must be set".
+            # The placeholder must live in litellm.openai_key, which LiteLLM only consults
+            # on the OpenAI-compatible path: the global litellm.api_key is checked ahead of
+            # provider env vars (OPENROUTER_API_KEY, AZURE_API_KEY, ...) in LiteLLM's
+            # resolution chain, so a placeholder there silently shadows them.
+            litellm.openai_key = DUMMY_LITELLM_API_KEY
         if os.environ.get("AWS_USE_IMDS", "").strip().lower() in ("1", "true", "yes"):
             import boto3
             import botocore.exceptions
