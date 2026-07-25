@@ -965,49 +965,18 @@ class GitLabProvider(GitProvider):
 
     def publish_labels(self, pr_types):
         try:
-            # Race-safe label update.
-            #
-            # Previous behavior: ``self.mr.labels = list(set(pr_types))`` followed
-            # by ``self.mr.save()`` issued a full PUT on the labels array using
-            # whatever snapshot of ``self.mr`` was cached at provider-construction
-            # time. Any label a user added between webhook delivery and this save
-            # was silently dropped.
-            #
-            # New behavior: re-fetch the MR immediately before computing the
-            # delta, then use python-gitlab's ``add_labels`` / ``remove_labels``
-            # attributes on save. python-gitlab forwards those attributes to
-            # the matching ``add_labels`` / ``remove_labels`` parameters on
-            # ``PUT /projects/:id/merge_requests/:merge_request_iid`` so the
-            # server applies an incremental set-diff and concurrent additions
-            # outside the diff are preserved.
+            # Send an incremental diff instead of assigning ``self.mr.labels``, which
+            # would PUT the whole array and wipe any label added to the MR after this
+            # snapshot was taken. python-gitlab forwards ``add_labels`` /
+            # ``remove_labels`` to the identically named parameters of
+            # ``PUT /projects/:id/merge_requests/:merge_request_iid``, so labels the
+            # snapshot never saw are left untouched by the server.
             desired = set(pr_types)
-            try:
-                self.mr = self._get_merge_request()
-            except Exception as refresh_err:
-                # Strict policy: a stale snapshot can produce an incorrect
-                # add/remove diff that re-introduces the bug this method is
-                # meant to fix. Abort the publish, log, and leave server
-                # state untouched rather than risk clobbering user labels.
-                #
-                # Log only the exception type — the message from HTTP/SDK
-                # client errors may include credentialed URLs or headers, so
-                # we avoid emitting the raw object.
-                get_logger().warning(
-                    "publish_labels: aborting, failed to refresh MR before save "
-                    f"({type(refresh_err).__name__})"
-                )
-                return
-            current = set(self.mr.labels or [])
+            current = set(self._read_mr_labels())
             to_add = sorted(desired - current)
             to_remove = sorted(current - desired)
             if not to_add and not to_remove:
                 return
-            # GitLab accepts comma-separated strings for these attributes.
-            # Wrap the save in try/finally so the transient add_labels /
-            # remove_labels attributes are always cleared from ``self.mr``,
-            # even on save() failure. Otherwise a later self.mr.save() call
-            # in an unrelated tool (e.g. publish_description) would resend
-            # the prior label diff and cause unexpected churn.
             try:
                 if to_add:
                     self.mr.add_labels = ",".join(to_add)
@@ -1015,37 +984,51 @@ class GitLabProvider(GitProvider):
                     self.mr.remove_labels = ",".join(to_remove)
                 self.mr.save()
             finally:
-                for attr in ("add_labels", "remove_labels"):
-                    try:
-                        delattr(self.mr, attr)
-                    except (AttributeError, KeyError):
-                        # Already absent (e.g. only one side of the diff was
-                        # set, or python-gitlab cleared it on save). Safe to
-                        # ignore.
-                        pass
+                # save() clears pending attributes on success, but not when it raises.
+                # Drop them so an unrelated later save() (publish_description runs
+                # moments later) cannot resend the diff.
+                self._clear_pending_mr_attrs("add_labels", "remove_labels")
         except Exception as e:
             get_logger().warning(f"Failed to publish labels, error: {e}")
+
+    def _read_mr_labels(self):
+        # Reading ``mr.labels`` is not free of side effects: python-gitlab cannot detect
+        # in-place list edits, so __getattr__ copies every list attribute into the
+        # pending-attribute set to make sure it gets saved. Left there, the next save()
+        # on this MR would PUT the whole labels array — exactly the overwrite the
+        # add/remove diff exists to avoid. Drop it again so a read stays a read.
+        labels = self.mr.labels or []
+        self._clear_pending_mr_attrs("labels")
+        return list(labels)
+
+    def _clear_pending_mr_attrs(self, *names):
+        # python-gitlab keeps attributes assigned on a merge request in ``_updated_attrs``
+        # rather than ``__dict__``, so ``delattr`` cannot reach them. That is private API
+        # and ``self.mr`` is not guaranteed to be a python-gitlab object, so check before
+        # touching it: failing to clear a pending write must not break the caller.
+        pending = getattr(self.mr, "_updated_attrs", None)
+        if not isinstance(pending, dict):
+            return
+        for name in names:
+            pending.pop(name, None)
 
     def publish_inline_comments(self, comments: list[dict]):
         pass
 
     def get_pr_labels(self, update=False):
-        # The previous implementation ignored the ``update`` flag entirely and
-        # always returned the snapshot cached at provider construction. Callers
-        # such as ``PRReviewer.set_review_labels`` rely on a fresh read to
-        # preserve user-added labels in their read-modify-write cycle; without
-        # the refresh, any label added after the webhook fired would be missing
-        # from ``current_labels`` and dropped by the subsequent publish_labels.
-        #
-        # Strict policy on refresh failure: a stale snapshot will produce an
-        # incorrect diff in the caller's filter-and-republish cycle, so we
-        # surface the failure to the caller instead of silently returning
-        # cached data. ``set_review_labels`` already wraps this in a broad
-        # try/except, so the failure degrades into "skip the label update for
-        # this run" rather than breaking the whole review.
+        # ``update`` used to be ignored, so callers that re-read labels to preserve
+        # user additions (PRReviewer.set_review_labels, PRDescription.run) kept seeing
+        # the snapshot cached when the provider was built, and dropped any label added
+        # after the webhook fired.
         if update:
-            self.mr = self._get_merge_request()
-        return self.mr.labels
+            try:
+                self.mr = self._get_merge_request()
+            except Exception as e:
+                # Best-effort, like the other providers: fall back to the cached
+                # snapshot. publish_labels diffs against that same snapshot, so a
+                # stale read narrows what gets updated rather than clobbering labels.
+                get_logger().warning(f"Failed to refresh merge request {self.id_mr}, using cached labels, error: {e}")
+        return self._read_mr_labels()
 
     def get_repo_labels(self):
         return self.gl.projects.get(self.id_project).labels.list()
