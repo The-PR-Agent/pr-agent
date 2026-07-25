@@ -685,6 +685,8 @@ cp pr_agent/settings/.secrets_template.toml pr_agent/settings/.secrets.toml
 
 9. Install the app by navigating to the "Install App" tab and selecting your desired repositories.
 
+10. The app runs under gunicorn with multiple worker processes. See [Sizing a self-hosted webhook server](./index.md#sizing-a-self-hosted-webhook-server) for the `GUNICORN_WORKERS` / `GUNICORN_MAX_WORKERS` knobs and memory guidance — worth reading before setting a memory limit.
+
 > **Note:** When running PR-Agent from GitHub app, the default configuration file (configuration.toml) will be loaded.
 > However, you can override the default tool parameters by uploading a local configuration file `.pr_agent.toml`
 > To use organization-level global configuration, create `<organization>/pr-agent-settings` with a `.pr_agent.toml` file and install the GitHub App on that repository too.

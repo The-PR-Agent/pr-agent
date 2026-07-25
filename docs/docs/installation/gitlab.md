@@ -97,26 +97,7 @@ PORT=3000  # Optional: override the webhook server port
 
 9. Test your installation by opening a merge request or commenting on a merge request using one of PR Agent's commands.
 
-### Sizing the webhook server
-
-The webhook server runs under gunicorn with multiple worker processes, so that a worker busy handling a request cannot block the health check served by another.
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `GUNICORN_WORKERS` | *(unset)* | Pins the worker count exactly. Overrides everything below. |
-| `GUNICORN_MAX_WORKERS` | `4` | Upper bound on the automatically derived worker count. |
-
-When `GUNICORN_WORKERS` is unset, the worker count is derived from the CPUs actually available to the container (cgroup CPU limit, falling back to CPU affinity), clamped to between 2 and `GUNICORN_MAX_WORKERS`. Note that a CPU *request* without a *limit* leaves no cgroup quota to read, so the cap is what bounds the worker count there.
-
-**Sizing memory:** importing the application costs roughly 250MB. The app is imported once in the gunicorn master and workers are forked from it, so they share most of that baseline copy-on-write rather than each paying it in full — total memory grows with worker count, but by noticeably less than 250MB per worker. Start from about 1Gi for the default of 4 workers and adjust against your own metrics.
-
-If the container is OOMKilled during startup, lower the worker count:
-
-```bash
-GUNICORN_WORKERS=2
-```
-
-The same variables apply to the GitHub and Gitea webhook servers, which run under the same gunicorn configuration.
+10. The webhook server runs under gunicorn with multiple worker processes. See [Sizing a self-hosted webhook server](./index.md#sizing-a-self-hosted-webhook-server) for the `GUNICORN_WORKERS` / `GUNICORN_MAX_WORKERS` knobs and memory guidance — worth reading before setting a memory limit.
 
 ## Deploy as a Lambda Function
 
