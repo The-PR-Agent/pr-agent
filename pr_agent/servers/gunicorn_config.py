@@ -96,7 +96,7 @@ def _cgroup_cpu_limit():
             return float(quota) / float(period)
         return None
     except (OSError, ValueError):
-        pass
+        pass  # not a cgroup v2 host (or the file is unreadable) - try v1 below
     try:  # cgroup v1
         with open(CGROUP_V1_CPU_QUOTA) as f:
             quota = int(f.read())
@@ -105,7 +105,7 @@ def _cgroup_cpu_limit():
         if quota > 0 and period > 0:
             return quota / period
     except (OSError, ValueError):
-        pass
+        pass  # no cgroup at all (macOS/Windows/bare metal) - caller falls back to CPU affinity
     return None
 
 
@@ -271,3 +271,17 @@ def when_ready(server):
     # object it visits. Freezing moves everything allocated so far into a permanent
     # generation the collector never traverses, keeping those pages shared.
     gc.freeze()
+
+
+def post_fork(server, worker):
+    """Runs inside each worker right after it is forked."""
+    # The webhook apps call setup_logger() at import, which under `preload_app` now runs
+    # in the master. When CONFIG.ANALYTICS_FOLDER is set that opens `pr-agent.<pid>.log`
+    # named for the *master*, and every worker inherits the same descriptor. Re-running it
+    # here gives each worker its own file again. All three apps that use this config call
+    # setup_logger identically, so repeating that call is enough.
+    from pr_agent.config_loader import get_settings
+    from pr_agent.log import LoggingFormat, setup_logger
+
+    if get_settings().get("CONFIG.ANALYTICS_FOLDER", ""):
+        setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))

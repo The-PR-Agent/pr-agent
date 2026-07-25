@@ -24,23 +24,25 @@ from pr_agent.git_providers import get_git_provider_with_context
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
 router = APIRouter()
 
-secret_provider = get_secret_provider() if get_settings().get("CONFIG.SECRET_PROVIDER") else None
-_secret_provider_pid = os.getpid()
+def _build_secret_provider():
+    return get_secret_provider() if get_settings().get("CONFIG.SECRET_PROVIDER") else None
+
+
+# Built at import so a misconfigured CONFIG.SECRET_PROVIDER still fails at startup.
+_secret_provider_state = {"provider": _build_secret_provider(), "pid": os.getpid()}
 
 
 def get_fork_safe_secret_provider():
     """Return the secret provider, rebuilding it once per process after a fork.
 
-    Gunicorn runs with `preload_app`, so the provider above is constructed in the master
-    and every worker inherits it. Cloud clients hold a pooled connection that must not be
-    shared across processes, so each worker builds its own on first use. Constructing at
-    import is kept so a misconfigured CONFIG.SECRET_PROVIDER still fails at startup.
+    Gunicorn runs with `preload_app`, so the provider is constructed in the master and
+    every worker inherits it. Cloud clients hold a pooled connection that must not be
+    shared across processes, so each worker builds its own on first use.
     """
-    global secret_provider, _secret_provider_pid
-    if secret_provider is not None and _secret_provider_pid != os.getpid():
-        secret_provider = get_secret_provider()
-        _secret_provider_pid = os.getpid()
-    return secret_provider
+    if _secret_provider_state["provider"] is not None and _secret_provider_state["pid"] != os.getpid():
+        _secret_provider_state["provider"] = _build_secret_provider()
+        _secret_provider_state["pid"] = os.getpid()
+    return _secret_provider_state["provider"]
 
 
 async def handle_request(api_url: str, body: str, log_context: dict, sender_id: str, notify=None):

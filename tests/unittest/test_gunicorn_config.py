@@ -105,12 +105,50 @@ class TestComputeWorkers:
         monkeypatch.setenv("GUNICORN_MAX_WORKERS", "1")
         assert gunicorn_config.compute_workers() == 1
 
-    def test_module_level_workers_within_bounds(self):
-        assert gunicorn_config.MIN_WORKERS <= gunicorn_config.workers <= gunicorn_config.DEFAULT_MAX_WORKERS
+    def test_module_level_workers_is_a_usable_count(self):
+        # `workers` is computed at import, before this module's fixtures can isolate the
+        # environment, so it can legitimately reflect a GUNICORN_WORKERS set by the host.
+        # Only assert what holds regardless of that: gunicorn gets a positive int.
+        assert isinstance(gunicorn_config.workers, int)
+        assert gunicorn_config.workers >= 1
 
 
 def test_preload_app_enabled():
     assert gunicorn_config.preload_app is True
+
+
+class TestPostFork:
+    @pytest.fixture
+    def recorded_setup_logger(self, monkeypatch):
+        import pr_agent.log
+
+        calls = []
+        monkeypatch.setattr(pr_agent.log, "setup_logger", lambda **kwargs: calls.append(kwargs))
+        return calls
+
+    @pytest.fixture
+    def analytics_folder(self):
+        from pr_agent.config_loader import get_settings
+
+        original = get_settings().get("CONFIG.ANALYTICS_FOLDER", "")
+
+        def _set(value):
+            get_settings().set("CONFIG.ANALYTICS_FOLDER", value)
+
+        yield _set
+        get_settings().set("CONFIG.ANALYTICS_FOLDER", original)
+
+    def test_noop_without_analytics_folder(self, recorded_setup_logger, analytics_folder):
+        analytics_folder("")
+        gunicorn_config.post_fork(server=None, worker=None)
+        assert recorded_setup_logger == []
+
+    def test_reopens_analytics_log_in_the_worker(self, recorded_setup_logger, analytics_folder, tmp_path):
+        # Under preload the sink was opened in the master and named for the master's pid;
+        # the worker must open its own.
+        analytics_folder(str(tmp_path))
+        gunicorn_config.post_fork(server=None, worker=None)
+        assert len(recorded_setup_logger) == 1
 
 
 def test_when_ready_freezes_gc(monkeypatch):
