@@ -26,6 +26,9 @@ on:
     paths:
       - 'docker/mosaico/**'
       - '.github/scripts/mosaico_bundle_parity.sh'
+      # Same list as the PR trigger. Omitting this file would let a workflow-only
+      # change land on main without the job it alters ever running there.
+      - '.github/workflows/mosaico-bundle-parity.yaml'
   schedule:
     # Monday 06:00 UTC — catches drift introduced on the mirror between releases.
     - cron: '0 6 * * 1'

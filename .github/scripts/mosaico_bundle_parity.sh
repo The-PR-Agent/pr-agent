@@ -149,8 +149,8 @@ report() { printf '  %-8s %s\n' "$1" "$2"; }
 echo "Comparing  $GITHUB_DIR  <->  mirror ref '$REF'"
 echo
 
-only_gh="$(comm -23 <(printf '%s\n' "$gh_files") <(printf '%s\n' "$gl_files"))"
-only_gl="$(comm -13 <(printf '%s\n' "$gh_files") <(printf '%s\n' "$gl_files"))"
+only_gh="$(LC_ALL=C comm -23 <(printf '%s\n' "$gh_files") <(printf '%s\n' "$gl_files"))"
+only_gl="$(LC_ALL=C comm -13 <(printf '%s\n' "$gh_files") <(printf '%s\n' "$gl_files"))"
 
 if [[ -n "$only_gh" ]]; then
   drift=1
@@ -162,7 +162,7 @@ if [[ -n "$only_gl" ]]; then
 fi
 
 # --- byte-compare everything present on both sides ---------------------------------------
-shared="$(comm -12 <(printf '%s\n' "$gh_files") <(printf '%s\n' "$gl_files"))"
+shared="$(LC_ALL=C comm -12 <(printf '%s\n' "$gh_files") <(printf '%s\n' "$gl_files"))"
 n_total=0
 n_same=0
 while IFS= read -r f; do
