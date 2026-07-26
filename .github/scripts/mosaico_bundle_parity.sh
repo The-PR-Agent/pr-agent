@@ -187,7 +187,13 @@ while IFS= read -r f; do
     if [[ ! -L "$gh_p" || ! -L "$gl_p" ]]; then
       drift=1
       report "DIFFER" "$f (symlink on one side, regular file on the other)"
-    elif [[ "$(readlink "$gh_p")" == "$(readlink "$gl_p")" ]]; then
+    # The trailing `printf x` keeps a target string that ends in a newline distinguishable:
+    # command substitution strips trailing newlines, so 'a' and 'a\n' would otherwise be
+    # reported as the same link. Verified on Linux, the CI platform, where dropping the
+    # `printf x` does make the two compare equal. It is untestable on macOS, whose readlink
+    # collapses the trailing newline before the shell ever sees it - so do not "simplify"
+    # this away on the strength of a local run there.
+    elif [[ "$(readlink "$gh_p"; printf x)" == "$(readlink "$gl_p"; printf x)" ]]; then
       report "same" "$f"
       n_same=$((n_same + 1))
     else
