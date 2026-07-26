@@ -16,10 +16,12 @@ services:
       AGENT_CARD_HOST: ${PR_AGENT_HOST:-${DEFAULT_TASK_AGENT_HOST}}
       AGENT_CARD_PORT: ${PR_AGENT_PORT:-23000}
       MODEL_NAME: ${PR_AGENT_MODEL}
-    # Matches the peer agents' probe verbatim. /health is a live LLM check, so no LLM
-    # means no registration - intended: a registered card with a dead LLM is worse.
+    # Mirrors the peer agents' probe. /health is a live LLM check, so no LLM means no
+    # registration - intended: a registered card with a dead LLM is worse.
+    # PORT comes from base-definitions.yml's `agent` service; the :-9000 fallback keeps
+    # the probe correct even if this overlay is composed without it.
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:$${PORT}/health')\""]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:$${PORT:-9000}/health')\""]
 
   pr-agent-solution-agent-registration:
     extends:
