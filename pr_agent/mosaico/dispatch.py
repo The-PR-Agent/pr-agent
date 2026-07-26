@@ -308,17 +308,8 @@ def _pr_fetch_failed_fallback(pr_url: str) -> str:
 
 async def _run_pr_agent(target: str, verb: str) -> "RouteResult":
     """Run a review/improve/describe verb via PRAgent.handle_request, defensively.
-    Force non-publishing output capture: the tools render into get_settings().data only
-    when publish_output is False; with the default True they'd publish to the real PR and
-    return nothing to MOSAICO.
-
-    propagate_tool_errors makes the tool re-raise instead of swallowing, so handle_request
-    returns False and a failed run stops looking like one that produced nothing. The flags go
-    through args, not get_settings(): _handle_request applies repo settings first.
-
-    Restored in a finally: args are applied onto get_settings(), which is global_settings when
-    no request context is active, and leaking re-raise semantics into unrelated later runs in
-    the same process is exactly the blast radius this flag exists to avoid."""
+    publish_output=false makes the tools render into get_settings().data instead of the real PR;
+    propagate_tool_errors makes them re-raise, so a failure cannot read back as an empty run."""
     from pr_agent.agent.pr_agent import PRAgent
     settings = get_settings()
     propagate_before = settings.get("CONFIG.PROPAGATE_TOOL_ERRORS", False)

@@ -147,11 +147,9 @@ class TestSmokeFullPath:
 
     @pytest.mark.parametrize("verb", ["review", "improve", "describe", "ask"])
     def test_llm_outage_yields_failed_not_completed(self, monkeypatch, verb):
-        """A total model outage must reach the caller as TASK_STATE_FAILED.
-
-        Previously review/improve/describe swallowed the exception and reported success
-        with 'no output produced'. 'ask' already failed correctly; it is pinned here so
-        the fix does not regress it."""
+        """A total model outage must reach the caller as TASK_STATE_FAILED. Previously
+        review/improve/describe swallowed it and reported success with 'no output produced'.
+        'ask' already failed correctly and is pinned here so the fix does not regress it."""
         async def failing_chat_completion(self, model, system, user, temperature=0.2, **kwargs):
             raise RuntimeError("provider unavailable")
 
