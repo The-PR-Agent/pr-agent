@@ -23,7 +23,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${ENV_FILE:-$SCRIPT_DIR/.env}"
 BASE="http://localhost:${PORT}"
 
-cleanup() { docker rm -f "$CONTAINER" >/dev/null 2>&1 || true; }
+# 0700 by construction, so the /health body (which embeds the raw provider exception
+# when unhealthy) is neither world-readable nor writable at a predictable path.
+TMPDIR_RUN="$(mktemp -d)"
+cleanup() {
+  docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+  rm -rf "$TMPDIR_RUN"
+}
 trap cleanup EXIT
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -87,10 +93,10 @@ fi
 
 # --- FULL: /health (live LLM ping -> 200/503) ---
 echo "==> [full] GET /health (live LLM probe)"
-code=$(curl -s -o /tmp/mosaico_health.json -w '%{http_code}' "$BASE/health")
+code=$(curl -s -o "$TMPDIR_RUN/health.json" -w '%{http_code}' "$BASE/health")
 # On 503 the body is a raw provider exception (it can name the endpoint), which is
 # exactly the diagnostic you want here - just don't paste it into a public issue.
-cat /tmp/mosaico_health.json; echo
+cat "$TMPDIR_RUN/health.json"; echo
 [[ "$code" == "200" ]] || fail "/health returned $code (expected 200) — check LLM creds"
 
 # --- FULL: SendMessage review on an inline diff (no PR URL / GitHub token needed) ---
@@ -103,10 +109,10 @@ read -r -d '' BODY <<'JSON'
 JSON
 
 curl -fsS -X POST "$BASE/" -H 'Content-Type: application/json' -H 'A2A-Version: 1.0' \
-  -d "$BODY" -o /tmp/mosaico_resp.json || fail "SendMessage request failed"
-python3 - <<'PY' || fail "SendMessage response invalid"
-import json
-d = json.load(open("/tmp/mosaico_resp.json"))
+  -d "$BODY" -o "$TMPDIR_RUN/resp.json" || fail "SendMessage request failed"
+RESP="$TMPDIR_RUN/resp.json" python3 - <<'PY' || fail "SendMessage response invalid"
+import json, os
+d = json.load(open(os.environ["RESP"]))
 if "error" in d:
     raise SystemExit(f"    JSON-RPC error: {json.dumps(d['error'])[:300]}")
 # A2A 1.0 wraps the Task in result.task, and delivers the review as an artifact.
