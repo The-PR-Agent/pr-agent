@@ -100,9 +100,17 @@ if [[ -z "$GITLAB_DIR" ]]; then
   # where any local process could read it off the process list. `printf` is a bash builtin,
   # so the token never becomes a process argument there either.
   if [[ -n "${GITLAB_TOKEN:-}" ]]; then
+    # Encode first and check it worked. Inlined in the export, a failing base64 would yield
+    # "Authorization: Basic " with nothing after it, and the run would come back reporting
+    # authentication failure - blaming the operator's token for what is a broken tool on the
+    # runner. Kept unexported here: a plain shell variable is not visible to child processes.
+    auth_basic="$(printf 'oauth2:%s' "$GITLAB_TOKEN" | base64 | tr -d '\n')" \
+      || die "could not encode the credential for the Authorization header"
+    [[ -n "$auth_basic" ]] \
+      || die "credential encoded to an empty string; refusing to send a malformed Authorization header"
     (
       export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraHeader
-      export GIT_CONFIG_VALUE_0="Authorization: Basic $(printf 'oauth2:%s' "$GITLAB_TOKEN" | base64 | tr -d '\n')"
+      export GIT_CONFIG_VALUE_0="Authorization: Basic $auth_basic"
       clone_mirror
     )
   else
