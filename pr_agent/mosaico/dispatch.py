@@ -50,17 +50,32 @@ _DIFF_HEADER_RE = re.compile(r"^diff --git ", re.MULTILINE)
 _UNIFIED_HUNK_RE = re.compile(r"^@@ .* @@", re.MULTILINE)
 
 # Where a raw (unfenced) patch body starts, and the lines that belong to it: file/hunk
-# headers plus the context/added/removed lines that follow (an empty line is a context line
-# whose trailing space was stripped). Used to excise the body while keeping the prose.
+# headers, git's extended header (mode/rename/copy/similarity/binary), plus the
+# context/added/removed lines that follow (an empty line is a context line whose trailing
+# space was stripped). Used to excise the body while keeping the prose.
+#
+# The extended-header alternatives matter because they sit between "diff --git" and the first
+# hunk: without them the first one ends body mode, and the `index`/`---`/`+++` lines after it
+# leak into the prose that decides the verb. A leaked "rename to improve.py" then routes an
+# explicit "review this" to /improve, and a '?' in a leaked path routes it to /ask. They are
+# only ever consulted once a patch body is already open, so they cannot swallow loose prose.
 _DIFF_START_RE = re.compile(r"^(?:diff --git |@@ )")
-_DIFF_BODY_LINE_RE = re.compile(r"^(?:diff --git |index [0-9a-fA-F]|--- |\+\+\+ |@@ |[ +\-\\]|$)")
+_DIFF_BODY_LINE_RE = re.compile(
+    r"^(?:diff --git |index [0-9a-fA-F]|--- |\+\+\+ |@@ "
+    r"|(?:old|new) mode \d|(?:new|deleted) file mode \d"
+    r"|(?:similarity|dissimilarity) index \d|rename (?:from|to) |copy (?:from|to) "
+    r"|Binary files .*differ$|GIT binary patch$"
+    r"|[ +\-\\]|$)"
+)
 
 # Conversation-blob detection. The reference agent labels each forwarded turn with the raw
 # role from the client ("user"/"agent"); "assistant" is accepted too since sibling handlers
 # normalise to it. Only the FIRST line of a turn carries the label — a turn's content is
 # routinely multi-line (a pasted diff, or a whole review), so turns are delimited by
-# label lines rather than by newlines.
-_ROLE_LINE_RE = re.compile(r"^(user|agent|assistant)[ \t]*:[ \t]?", re.IGNORECASE)
+# label lines rather than by newlines. All whitespace after the colon is consumed, not just
+# the single separator space: a turn whose own content starts with a space would otherwise
+# leave the patch header indented, and parse_unified_diff needs "diff --git" at column 0.
+_ROLE_LINE_RE = re.compile(r"^(user|agent|assistant)[ \t]*:[ \t]*", re.IGNORECASE)
 _USER_ROLES = ("user",)
 
 # Negation immediately before a verb ("do not review", "instead of reviewing"): at most two

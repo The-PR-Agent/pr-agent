@@ -774,6 +774,22 @@ class TestTurnSplitting:
     def test_not_a_conversation_blob(self, text):
         assert _split_turns(text) == []
 
+    def test_content_indentation_after_the_label_is_dropped(self):
+        """A turn whose own content starts with a space arrives as 'user:  diff --git ...'.
+        parse_unified_diff needs 'diff --git' at column 0, so the label match consumes ALL
+        whitespace after the colon, not just the single separator space."""
+        turns = _split_turns(_blob(("user", " diff --git a/x.py b/x.py"), ("agent", "ok")))
+        assert turns[0].content == "diff --git a/x.py b/x.py"
+
+    @pytest.mark.asyncio
+    async def test_indented_raw_diff_in_a_turn_still_routes(self, monkeypatch, restore_settings):
+        seen = _routed(monkeypatch)
+        await route_and_run(_blob(("user", "here is a patch"),
+                                  ("agent", "thanks"),
+                                  ("user", f" {RAW_DIFF_BODY}\nnow describe it")))
+        assert seen["verb"] == "describe"
+        assert seen["files"] == ["bar.py"]
+
 
 class TestConversationVerbRouting:
     """Defect 1: the verb must come from the LATEST user turn, never from the agent's own
@@ -920,6 +936,47 @@ class TestProseAfterRawDiff:
                       " z = 3")
         await route_and_run(raw_with_q)
         assert seen["verb"] == "review"
+
+
+class TestExtendedHeaderNotLeaked:
+    """git's extended header (mode/rename/copy/similarity/binary) sits between 'diff --git'
+    and the first hunk. When those lines did not count as patch body, the first one ended
+    body mode and the index/---/+++ lines after it leaked into the prose that picks the
+    verb — so the PATCH's own contents could override what the user actually asked for."""
+
+    RENAME_DIFF = ("diff --git a/a.py b/improve.py\n"
+                   "similarity index 95%\n"
+                   "rename from a.py\n"
+                   "rename to improve.py\n"
+                   "review this")
+
+    NEW_FILE_DIFF = ("diff --git a/x.py b/x.py\n"
+                     "new file mode 100644\n"
+                     "index 0000000..1111111\n"
+                     "--- /dev/null\n"
+                     "+++ b/is_it_ok?.py\n"
+                     "@@ -0,0 +1 @@\n"
+                     "+x = 1")
+
+    def test_rename_metadata_does_not_leak(self):
+        assert _diff_prose(self.RENAME_DIFF).strip() == "review this"
+
+    def test_new_file_metadata_does_not_leak(self):
+        assert _diff_prose(self.NEW_FILE_DIFF).strip() == ""
+
+    def test_renamed_path_does_not_override_the_request(self):
+        """'rename to improve.py' used to be read as an explicit /improve, beating the
+        user's own 'review this' on position."""
+        assert _detect_verb(_diff_prose(self.RENAME_DIFF)) == "review"
+
+    def test_question_mark_in_a_leaked_path_does_not_flip_to_ask(self):
+        assert _detect_verb(_diff_prose(self.NEW_FILE_DIFF)) == "review"
+
+    def test_prose_after_an_extended_header_patch_still_survives(self):
+        """The excision must not be widened into 'swallow everything to the end' — the
+        request written after the patch is exactly what defect 4 was about."""
+        prose = _diff_prose(f"{self.NEW_FILE_DIFF}\nnow describe it")
+        assert prose.strip() == "now describe it"
 
 
 class TestNewestContextWins:
