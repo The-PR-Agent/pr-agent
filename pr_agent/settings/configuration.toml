@@ -72,6 +72,7 @@ bot_user_indicators = ["codium", "bot_", "bot-", "_bot", "-bot"]
 #
 restricted_mode = false # when true, skip operations that require elevated permissions (e.g. pushing code to the repository)
 is_auto_command = false # will be auto-set to true if the command is triggered by an automation
+propagate_tool_errors = false # when true, a tool re-raises instead of swallowing an internal error, so a caller can tell a failed run from an empty one
 enable_ai_metadata = false # will enable adding ai metadata
 reasoning_effort = "medium" # "none", "minimal", "low", "medium", "high", "xhigh"
 # extended thinking for Claude reasoning models

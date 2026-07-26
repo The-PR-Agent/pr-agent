@@ -193,6 +193,8 @@ class PRReviewer:
             self.git_provider.remove_initial_comment()
         except Exception as e:
             get_logger().error(f"Failed to review PR: {e}")
+            if get_settings().config.get("propagate_tool_errors", False):
+                raise
 
     def _should_publish_review_no_suggestions(self, pr_review: str) -> bool:
         return get_settings().pr_reviewer.get('publish_output_no_suggestions', True) or "No major issues detected" not in pr_review

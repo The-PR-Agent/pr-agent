@@ -310,11 +310,16 @@ async def _run_pr_agent(target: str, verb: str) -> "RouteResult":
     """Run a review/improve/describe verb via PRAgent.handle_request, defensively.
     Force non-publishing output capture: the tools render into get_settings().data only
     when publish_output is False; with the default True they'd publish to the real PR and
-    return nothing to MOSAICO."""
+    return nothing to MOSAICO.
+
+    propagate_tool_errors makes the tool re-raise instead of swallowing, so handle_request
+    returns False and a failed run stops looking like one that produced nothing. The flags go
+    through args, not get_settings(): _handle_request applies repo settings first."""
     from pr_agent.agent.pr_agent import PRAgent
     ok = await PRAgent().handle_request(
         target,
-        ["/" + verb, "--config.publish_output=false", "--config.publish_output_progress=false"],
+        ["/" + verb, "--config.publish_output=false", "--config.publish_output_progress=false",
+         "--config.propagate_tool_errors=true"],
     )
     if ok is False:
         return RouteResult(_error_fallback(verb), ok=False)

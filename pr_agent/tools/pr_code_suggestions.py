@@ -197,6 +197,8 @@ class PRCodeSuggestions:
                         self.git_provider.publish_comment(f"Failed to generate code suggestions for PR")
                     except Exception as e:
                         get_logger().exception(f"Failed to update persistent review, error: {e}")
+            if get_settings().config.get("propagate_tool_errors", False):
+                raise
 
     async def add_self_review_text(self, pr_body):
         text = get_settings().pr_code_suggestions.code_suggestions_self_review_text

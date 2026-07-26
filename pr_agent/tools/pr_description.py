@@ -204,6 +204,8 @@ class PRDescription:
         except Exception as e:
             get_logger().error(f"Error generating PR description {self.pr_id}: {e}",
                                artifact={"traceback": traceback.format_exc()})
+            if get_settings().config.get("propagate_tool_errors", False):
+                raise
 
         return ""
 
