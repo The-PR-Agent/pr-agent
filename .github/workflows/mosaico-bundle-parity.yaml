@@ -1,0 +1,56 @@
+name: Mosaico-bundle-parity
+
+# The MOSAICO deployment bundle in docker/mosaico/ is mirrored to
+# gitlab.eclipse.org/eclipse-research-labs/mosaico-project/mosaico-extra/qodo-pr-agent,
+# where the Horizon Europe consortium consumes it. Upstream is canonical; the mirror must
+# never drift. This job makes "we keep it current" a mechanism rather than a promise.
+#
+# Runs on PRs that touch the bundle (so drift is caught before merge), on merges to main,
+# and weekly (so an edit made directly on the mirror surfaces even if nothing changes here).
+#
+# Requires the GITLAB_MIRROR_TOKEN secret: a GitLab token with read_repository on that
+# project. Fork PRs get no secrets, so the script skips cleanly rather than failing — the
+# push-to-main and scheduled runs still cover those changes.
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'docker/mosaico/**'
+      - '.github/scripts/mosaico_bundle_parity.sh'
+      - '.github/workflows/mosaico-bundle-parity.yaml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'docker/mosaico/**'
+      - '.github/scripts/mosaico_bundle_parity.sh'
+  schedule:
+    # Monday 06:00 UTC — catches drift introduced on the mirror between releases.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+
+    steps:
+      - id: checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - id: parity
+        name: Compare docker/mosaico against the GitLab mirror
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_MIRROR_TOKEN }}
+          # Fork PRs are the only runs that legitimately have no secret.
+          IS_FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+        run: |
+          chmod +x .github/scripts/mosaico_bundle_parity.sh
+          # Everywhere a secret IS expected, demand it. Without --require-token an expired
+          # or unset GITLAB_MIRROR_TOKEN would make the script skip and exit 0 on every
+          # scheduled run - a permanently green check that verifies nothing, which is worse
+          # than having no check at all.
+          args=()
+          [[ "$IS_FORK_PR" == "true" ]] || args+=(--require-token)
+          .github/scripts/mosaico_bundle_parity.sh "${args[@]}"

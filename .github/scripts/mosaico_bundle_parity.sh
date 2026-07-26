@@ -1,0 +1,210 @@
+#!/usr/bin/env bash
+# Fail if docker/mosaico/ has drifted from the MOSAICO deployment bundle published at
+# gitlab.eclipse.org/eclipse-research-labs/mosaico-project/mosaico-extra/qodo-pr-agent.
+#
+# That GitLab repo is a *mirror*, not a fork: it holds the same deployment assets at its
+# root, with zero Python. Upstream here is canonical and edits flow GitHub -> GitLab, but
+# drift is detected in BOTH directions on purpose — a consortium member editing the mirror
+# directly is exactly the case that silently strands a fix outside this repo.
+#
+#   GitHub  docker/mosaico/<f>   <->   GitLab  <f>   (bundle lives at the mirror's root)
+#
+# Usage:
+#   mosaico_bundle_parity.sh                      # fetch the mirror, compare against HEAD
+#   mosaico_bundle_parity.sh --gitlab-dir DIR     # compare against an already-fetched copy
+#   mosaico_bundle_parity.sh --github-dir DIR     # override the local side
+#   mosaico_bundle_parity.sh --ref BRANCH         # mirror ref to compare (default: main)
+#   mosaico_bundle_parity.sh --require-token      # treat a missing token as an error
+#
+# Auth: set GITLAB_TOKEN to a token with read_repository. Without it the script cannot see
+# the mirror, so it reports SKIP and exits 0 — correct only where secrets are legitimately
+# unavailable (fork PRs). Everywhere else pass --require-token, otherwise an expired or
+# unset secret degrades into a permanently green check that verifies nothing.
+#
+# Exit: 0 parity, 1 drift, 2 usage/fetch error.
+set -uo pipefail
+
+GITHUB_DIR="docker/mosaico"
+GITLAB_DIR=""
+REF="main"
+REQUIRE_TOKEN=0
+MIRROR_URL="https://gitlab.eclipse.org/eclipse-research-labs/mosaico-project/mosaico-extra/qodo-pr-agent.git"
+
+# Tracked on the mirror but deliberately absent from docker/mosaico/. The mirror is a
+# standalone repo, so it carries its own .gitignore (it ignores the .env a deployer creates
+# from pr-agent.env.example); upstream's root .gitignore already covers that path here.
+# Anything NOT listed here must exist on both sides — that is what catches a new file added
+# to one side only. Filtered from BOTH lists: an allowlisted name is "not part of the
+# comparison", so its presence on either side is equally uninteresting. Filtering only the
+# mirror would make an upstream copy of .gitignore report as GH-ONLY on identical trees.
+MIRROR_ONLY=(".gitignore")
+
+die() { echo "error: $*" >&2; exit 2; }
+
+# Options take a value, so a missing one is a usage error (exit 2). Relying on bash's
+# ${2:?} here would abort with exit 1, which this script defines as "drift found" — a
+# mistyped flag would be indistinguishable from a real divergence.
+needval() { [[ $# -ge 2 && -n "${2:-}" ]] || die "option $1 requires a value"; }
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --github-dir) needval "$@"; GITHUB_DIR="$2"; shift 2 ;;
+    --gitlab-dir) needval "$@"; GITLAB_DIR="$2"; shift 2 ;;
+    --ref)        needval "$@"; REF="$2";        shift 2 ;;
+    --require-token) REQUIRE_TOKEN=1;            shift ;;
+    # Header comment block only; line 25 is `set -uo pipefail`, not documentation.
+    -h|--help)    sed -n '2,24p' "$0"; exit 0 ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+[[ -d "$GITHUB_DIR" ]] || die "github dir not found: $GITHUB_DIR"
+
+SCRATCH=""
+cleanup() { [[ -n "$SCRATCH" ]] && rm -rf "$SCRATCH"; }
+trap cleanup EXIT
+
+# --- obtain the mirror side -------------------------------------------------------------
+if [[ -z "$GITLAB_DIR" ]]; then
+  if [[ -z "${GITLAB_TOKEN:-}" ]]; then
+    if [[ $REQUIRE_TOKEN == 1 ]]; then
+      die "GITLAB_TOKEN is unset or empty and --require-token was given"
+    fi
+    echo "SKIP: GITLAB_TOKEN unset — cannot reach the mirror, so parity is unverified."
+    echo "      Legitimate only on fork PRs, where secrets are withheld. A maintainer push"
+    echo "      or the scheduled run covers it; both pass --require-token."
+    exit 0
+  fi
+  SCRATCH="$(mktemp -d)" || die "mktemp -d failed"
+  GITLAB_DIR="$SCRATCH/mirror"
+  # Token goes through a credential helper rather than the URL, so it never lands in the
+  # remote URL, the reflog, or a CI log line on failure.
+  if ! git -c credential.helper='!f(){ echo username=oauth2; echo "password=${GITLAB_TOKEN}"; };f' \
+         clone --quiet --depth 1 --branch "$REF" "$MIRROR_URL" "$GITLAB_DIR" 2>"$SCRATCH/clone.err"; then
+    echo "--- clone stderr ---" >&2
+    # Defensive: the token should never appear here, but strip anything token-shaped anyway
+    # rather than trust that and echo a secret into a public log.
+    sed -E 's#://[^@]*@#://***@#g; s#glpat-[A-Za-z0-9._-]+#***#g' "$SCRATCH/clone.err" >&2
+    die "could not clone the mirror at ref '$REF'"
+  fi
+fi
+
+[[ -d "$GITLAB_DIR" ]] || die "gitlab dir not found: $GITLAB_DIR"
+
+# --- build both file sets ---------------------------------------------------------------
+# Ask git what is tracked (authoritative, and `git -C <dir> ls-files` already emits paths
+# relative to <dir>, so no prefix stripping is needed — and no path-spelling like
+# "./docker/mosaico" or a trailing slash can desynchronise the two lists). Fall back to a
+# plain listing so the script also works against an exported, non-git directory.
+# Symlinks are included in the fallback: the bundle has none today, but a symlink appearing
+# on one side only is drift, and -type f alone would silently ignore it.
+#
+# Both backends are read NUL-delimited. Plain `git ls-files` renders a non-ASCII or
+# quote-bearing name as a C-style quoted literal ("caf\303\251.md"), which is not a path
+# that exists on disk — the existence check below would then miss it and report false drift
+# on identical trees. `-z` emits raw bytes and sidesteps the quoting entirely. Note that
+# core.quotePath=off is NOT sufficient: it unquotes non-ASCII but still escapes " and \.
+# Emits raw NUL-delimited names. Must stay a pipeline source: a bash variable cannot hold
+# NUL, so capturing this with $(...) would silently discard every delimiter.
+emit_raw() {
+  local dir="$1"
+  if git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
+    git -C "$dir" ls-files -z
+  else
+    (cd "$dir" && find . \( -type f -o -type l \) -not -path './.git/*' -print0)
+  fi
+}
+
+list_files() {
+  local dir="$1" n_entries n_lines
+  n_entries="$(emit_raw "$dir" | tr -cd '\0' | wc -c | tr -d ' ')"
+  n_lines="$(emit_raw "$dir" | tr '\0' '\n' | grep -c '' || true)"
+  # Everything downstream (comm, the read loops) is line-based, so a filename containing a
+  # literal newline cannot be compared correctly. Refuse rather than emit a confident wrong
+  # verdict; the bundle has no such name, so this is a guard, not a workflow.
+  [[ "$n_lines" == "$n_entries" ]] \
+    || die "a filename in '$dir' contains a newline; this comparison is line-based and cannot represent it safely"
+  emit_raw "$dir" | tr '\0' '\n' | sed 's#^\./##' | LC_ALL=C sort
+}
+
+drop_allowlisted() {
+  local list="$1" f
+  for f in "${MIRROR_ONLY[@]}"; do
+    list="$(printf '%s\n' "$list" | grep -vxF "$f" || true)"
+  done
+  printf '%s\n' "$list"
+}
+
+# list_files runs in a command substitution, so a die() inside it only kills that subshell.
+# Without propagating the status here the script would carry on with an empty file list and
+# report the resulting phantom differences as drift (exit 1) instead of the real error.
+gh_raw="$(list_files "$GITHUB_DIR")" || exit $?
+gl_raw="$(list_files "$GITLAB_DIR")" || exit $?
+gh_files="$(drop_allowlisted "$gh_raw")"
+gl_files="$(drop_allowlisted "$gl_raw")"
+
+drift=0
+report() { printf '  %-8s %s\n' "$1" "$2"; }
+
+echo "Comparing  $GITHUB_DIR  <->  mirror ref '$REF'"
+echo
+
+only_gh="$(comm -23 <(printf '%s\n' "$gh_files") <(printf '%s\n' "$gl_files"))"
+only_gl="$(comm -13 <(printf '%s\n' "$gh_files") <(printf '%s\n' "$gl_files"))"
+
+if [[ -n "$only_gh" ]]; then
+  drift=1
+  while IFS= read -r f; do [[ -n "$f" ]] && report "GH-ONLY" "$f"; done <<<"$only_gh"
+fi
+if [[ -n "$only_gl" ]]; then
+  drift=1
+  while IFS= read -r f; do [[ -n "$f" ]] && report "GL-ONLY" "$f"; done <<<"$only_gl"
+fi
+
+# --- byte-compare everything present on both sides ---------------------------------------
+shared="$(comm -12 <(printf '%s\n' "$gh_files") <(printf '%s\n' "$gl_files"))"
+n_total=0
+n_same=0
+while IFS= read -r f; do
+  [[ -z "$f" ]] && continue
+  n_total=$((n_total + 1))
+  # A file git still tracks but that is gone from the working tree (an uncommitted delete)
+  # is neither "same" nor a content difference; diff would just emit a bare "No such file"
+  # to stderr in the middle of the report. Name the real condition instead.
+  if [[ ! -e "$GITHUB_DIR/$f" ]]; then
+    drift=1; report "MISSING" "$f (tracked on GitHub side, absent from the working tree)"; continue
+  fi
+  if [[ ! -e "$GITLAB_DIR/$f" ]]; then
+    drift=1; report "MISSING" "$f (tracked on the mirror, absent from its working tree)"; continue
+  fi
+  if diff -q "$GITHUB_DIR/$f" "$GITLAB_DIR/$f" >/dev/null 2>&1; then
+    report "same" "$f"
+    n_same=$((n_same + 1))
+  else
+    drift=1
+    report "DIFFER" "$f"
+    diff -u "$GITHUB_DIR/$f" "$GITLAB_DIR/$f" \
+      --label "github/$GITHUB_DIR/$f" --label "gitlab/$f" 2>/dev/null | sed 's/^/    /'
+  fi
+done <<<"$shared"
+
+echo
+if [[ $drift == 0 ]]; then
+  if [[ $n_total == 0 ]]; then
+    die "compared 0 files — the bundle should never be empty; check --github-dir/--gitlab-dir"
+  fi
+  echo "PARITY OK — $n_same/$n_total files identical."
+  exit 0
+fi
+
+cat >&2 <<'EOF'
+PARITY FAILED — docker/mosaico/ and the GitLab mirror have diverged.
+
+Resolve by direction:
+  * Change originated here (the normal case): port it to the mirror. Upstream is canonical,
+    so the mirror is brought up to this repo, never the reverse.
+  * Change originated on the mirror: port it back here FIRST, then re-sync the mirror, so
+    the fix is not stranded outside upstream. The bundle README says never to edit the
+    mirror directly, and a GL-ONLY line above means someone did.
+EOF
+exit 1
