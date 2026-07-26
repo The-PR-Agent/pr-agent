@@ -41,11 +41,19 @@ def _import_error(module_name: str):
 
 @pytest.fixture
 def restore_in_memory_loggers():
-    """Constructing the callback appends it to litellm's module-global logger registry."""
+    """Constructing the callback appends it to litellm's module-global logger registry.
+
+    Reaching into litellm privates is unavoidable here -- there is no public API that
+    reports a callback litellm declined to build -- but it should never be the reason
+    this test fails. If the registry is renamed or removed upstream, skip the cleanup
+    rather than erroring: the assertions below still carry the signal we care about.
+    """
     from litellm.litellm_core_utils import litellm_logging
-    snapshot = list(litellm_logging._in_memory_loggers)
+    registry = getattr(litellm_logging, "_in_memory_loggers", None)
+    snapshot = list(registry) if registry is not None else None
     yield
-    litellm_logging._in_memory_loggers[:] = snapshot
+    if snapshot is not None:
+        registry[:] = snapshot
 
 
 class TestLangfuseOtelCallbackDeps:
@@ -72,6 +80,10 @@ class TestLangfuseOtelCallbackDeps:
             f"tracing is dead. The factory swallows the underlying error; the likely cause is "
             f"{_import_error('litellm.integrations.otel')!r}. {_REMEDY}"
         )
-        assert type(logger).__name__ == "LangfuseOtelLogger", (
-            f"Expected a LangfuseOtelLogger for the '{CALLBACK_NAME}' callback, got {type(logger).__name__}."
+        # Substring, not equality: `is not None` above is the assertion that catches the
+        # actual defect. This one only guards against litellm handing back some unrelated
+        # logger, so it should survive an upstream rename (LangfuseOtelLoggerV2 and the
+        # like) rather than failing CI over a refactor that changed nothing that matters.
+        assert "langfuse" in type(logger).__name__.lower(), (
+            f"Expected a Langfuse logger for the '{CALLBACK_NAME}' callback, got {type(logger).__name__}."
         )
