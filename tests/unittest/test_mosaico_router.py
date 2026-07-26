@@ -53,8 +53,7 @@ index 3333333..4444444 100644
  b = 3
 ```"""
 
-# Keep the 'Estimated effort to review:' line: r'review\b' does not match 'reviewer', so the
-# heading alone would make every test using this fixture vacuous.
+# Keep the 'Estimated effort to review:' line: r'review\b' does not match 'reviewer'.
 AGENT_REVIEW_OUTPUT = """## PR Reviewer Guide 🔍
 
 Here are some key observations to aid the review process:
@@ -697,9 +696,6 @@ class TestPublishOutputForced:
         )
 
 
-# ---------------------------------------------------------------------------
-# Forwarded conversation blobs
-# ---------------------------------------------------------------------------
 def _blob(*turns) -> str:
     return "\n".join(f"{role}: {content}" for role, content in turns)
 
@@ -745,7 +741,6 @@ class TestTurnSplitting:
                                    ("user", "now describe it")))
         assert [t.role for t in turns] == ["user", "agent", "user"]
         assert [t.is_user for t in turns] == [True, False, True]
-        # The agent turn's content is multi-line; only its first line carried the label.
         assert turns[1].content == AGENT_REVIEW_OUTPUT
         assert turns[2].content == "now describe it"
 

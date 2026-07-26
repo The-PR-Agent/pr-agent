@@ -45,8 +45,6 @@ _DIFF_FENCE_RE = re.compile(r"```\s*diff", re.IGNORECASE)
 _DIFF_HEADER_RE = re.compile(r"^diff --git ", re.MULTILINE)
 _UNIFIED_HUNK_RE = re.compile(r"^@@ .* @@", re.MULTILINE)
 
-# Lines counting as raw-patch body; an unlisted git extended-header prefix leaks the rest of
-# the header into the prose that picks the verb.
 _DIFF_START_RE = re.compile(r"^(?:diff --git |@@ )")
 _DIFF_BODY_LINE_RE = re.compile(
     r"^(?:diff --git |index [0-9a-fA-F]|--- |\+\+\+ |@@ "
@@ -56,12 +54,10 @@ _DIFF_BODY_LINE_RE = re.compile(
     r"|[ +\-\\]|$)"
 )
 
-# The live label is "agent", not "assistant"; matching only "assistant" would be a no-op in
-# production. Only a turn's first line carries a label.
+# The live label is "agent", not "assistant" — matching only "assistant" is a no-op live.
 _ROLE_LINE_RE = re.compile(r"^(user|agent|assistant)[ \t]*:[ \t]*", re.IGNORECASE)
 _USER_ROLES = ("user",)
 
-# Adjacent-only by design: at most two words before the verb, no punctuation crossed.
 _NEGATION_RE = re.compile(
     r"\b(?:no|not|never|avoid|skip|without|don'?t|do\s+not|instead\s+of|rather\s+than)\b"
     r"(?:\s+\w+){0,2}\s*/?$",
@@ -90,8 +86,7 @@ class _Turn(NamedTuple):
 
 
 def _split_turns(text: str) -> list["_Turn"]:
-    """Turns oldest first, [] when not a blob. Conservative on purpose: the text must open
-    with a role label AND carry at least two."""
+    """Conservative on purpose: a blob must open with a role label AND carry at least two."""
     if not text:
         return []
     lines = text.split("\n")
@@ -111,8 +106,7 @@ def _split_turns(text: str) -> list["_Turn"]:
 
 
 def _explicit_verb(text: str) -> Optional[str]:
-    """The requested verb, by POSITION IN THE TEXT and not by _VALID_VERBS order. Negated
-    occurrences are skipped; None when no verb is requested."""
+    """The requested verb, by POSITION IN THE TEXT and not by _VALID_VERBS order."""
     low = (text or "").lower()
     best = None
     for verb in _VALID_VERBS:
@@ -122,7 +116,7 @@ def _explicit_verb(text: str) -> Optional[str]:
                 continue
             if best is None or at < best[0]:
                 best = (at, verb)
-            break  # only the first non-negated occurrence of this verb can be the earliest
+            break
     return best[1] if best else None
 
 
@@ -144,8 +138,6 @@ def _detect_verb(text: str) -> str:
 
 
 def _resolve_verb(user_segments: list) -> str:
-    """Verb from the LATEST user turn (segments newest first); an intentless turn falls back
-    to older USER turns. Agent turns are never consulted."""
     prose = [_diff_prose(seg) for seg in user_segments]
     if not prose:
         return _DEFAULT_VERB
@@ -175,7 +167,7 @@ def _looks_like_diff(text: str) -> bool:
 
 
 def _extract_diff(text: str) -> str:
-    """The unified-diff body, unwrapping a ```diff fence. With several fences the LAST wins."""
+    """Return the unified-diff body, unwrapping a ```diff fence if present."""
     fences = re.findall(r"```\s*diff\s*\n(.*?)```", text, re.IGNORECASE | re.DOTALL)
     if fences:
         return fences[-1]
@@ -191,7 +183,6 @@ def _diff_prose(text: str) -> str:
     without_fence = re.sub(r"```\s*diff\s*\n.*?```", " ", text, flags=re.IGNORECASE | re.DOTALL)
     if without_fence != text:
         return without_fence
-    # Raw diff: excise the body, keep prose on BOTH sides — the request often follows the patch.
     kept, in_diff = [], False
     for line in text.split("\n"):
         if _DIFF_START_RE.match(line):
@@ -394,14 +385,12 @@ async def route_and_run_result(user_text: str) -> "RouteResult":
     try:
         text = user_text or ""
         turns = _split_turns(text)
-        # Newest first. Intent comes from user turns only; context may come from an agent turn.
         user_segments = [t.content for t in reversed(turns) if t.is_user] or [text]
         context_segments = [t.content for t in reversed(turns)] or [text]
 
         verb = _resolve_verb(user_segments)
         question = user_segments[0]
 
-        # Newest turn supplying context wins; within a turn a PR URL beats an inline diff.
         for segment in context_segments:
             pr_url = _find_pr_url(segment)
             if pr_url:
