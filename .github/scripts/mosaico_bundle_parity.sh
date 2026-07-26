@@ -273,7 +273,17 @@ while IFS= read -r f; do
       n_same=$((n_same + 1))
     else
       drift=1
-      report "DIFFER" "$f (symlink target: '$(readlink "$gh_p")' vs '$(readlink "$gl_p")')"
+      # Same sentinel trick as the comparison, then %q, so the message can actually show
+      # what the comparison reacted to. Bare $(readlink) would strip a trailing newline and
+      # print control characters raw, i.e. render two targets the script just called
+      # different as an identical-looking pair, leaving nothing to act on.
+      #
+      # Two strips, in order: the sentinel, then the single newline readlink itself prints
+      # as a terminator. Only that one - a target that genuinely ends in a newline keeps it
+      # and shows up as $'a\n', which is the whole point of not using bare $(readlink).
+      gh_t="$(readlink "$gh_p"; printf x)"; gh_t="${gh_t%x}"; gh_t="${gh_t%$'\n'}"
+      gl_t="$(readlink "$gl_p"; printf x)"; gl_t="${gl_t%x}"; gl_t="${gl_t%$'\n'}"
+      report "DIFFER" "$f (symlink target: $(printf '%q' "$gh_t") vs $(printf '%q' "$gl_t"))"
     fi
     continue
   fi
@@ -289,8 +299,22 @@ while IFS= read -r f; do
   diff_out="$(diff -u "$gh_p" "$gl_p" --label "github/$GITHUB_DIR/$f" --label "gitlab/$f" 2>&1)"
   d_status=$?
   if (( d_status == 0 )); then
-    report "same" "$f"
-    n_same=$((n_same + 1))
+    # Identical bytes are not the whole story: the consortium deploys from the mirror and
+    # runs smoke_test.sh out of it, so an executable bit lost in the copy leaves the bundle
+    # broken while every byte still matches. git tracks that bit (100644 vs 100755), which
+    # makes it drift by the same definition as any other tracked difference. -x is the
+    # portable way to ask - `stat` formats differ between GNU and BSD - and it is the only
+    # mode bit git records, so it is exactly the right question.
+    if [[ -x "$gh_p" && ! -x "$gl_p" ]]; then
+      drift=1
+      report "DIFFER" "$f (executable here, not on the mirror)"
+    elif [[ ! -x "$gh_p" && -x "$gl_p" ]]; then
+      drift=1
+      report "DIFFER" "$f (executable on the mirror, not here)"
+    else
+      report "same" "$f"
+      n_same=$((n_same + 1))
+    fi
   elif (( d_status > 1 )); then
     die "diff failed on '$f' (exit $d_status); cannot tell whether it differs: $diff_out"
   else
