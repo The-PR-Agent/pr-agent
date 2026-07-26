@@ -4,7 +4,7 @@
 #
 #   Smoke (always):       boot the container and validate the A2A agent card.
 #   Full round-trip:      when LLM creds are present, also exercise GET /health
-#                         (live LLM probe) and an A2A message/send PR-review on
+#                         (live LLM probe) and an A2A SendMessage PR-review on
 #                         an inline diff.
 #
 # LLM creds are read from a .env file beside this script (gitignored), NOT the
@@ -70,7 +70,7 @@ print("    card OK: name, streaming=False, observability required, skills", ids)
 PY
 
 if [[ $have_creds == 0 ]]; then
-  echo "==> SMOKE PASSED (no LLM creds in $ENV_FILE -> skipped /health + message/send)."
+  echo "==> SMOKE PASSED (no LLM creds in $ENV_FILE -> skipped /health + SendMessage)."
   echo "    Add API_BASE/API_KEY/MODEL_NAME to $ENV_FILE for the full round-trip."
   exit 0
 fi
