@@ -221,19 +221,25 @@ while IFS= read -r f; do
     continue
   fi
   # diff distinguishes "identical" (0) from "differs" (1) from "diff itself failed" (2+, an
-  # unreadable file or an I/O error). Folding 2 into the else branch would book an
-  # operational fault as drift and print an empty diff under it, so split the cases.
-  diff -q "$gh_p" "$gl_p" >/dev/null 2>&1; d_status=$?
+  # unreadable file or an I/O error). Folding 2 in with 1 would book an operational fault as
+  # drift and print an empty diff under it, so split the three cases on one status.
+  #
+  # One invocation, not a `diff -q` probe followed by a `diff -u` to render: two calls means
+  # two chances to fail and a second status to drop on the floor. Capturing stderr with the
+  # output puts it in the error message instead of discarding it down /dev/null, which is
+  # what made this failure mode invisible to begin with. The bundle is a handful of small
+  # config files, so holding one diff in a variable costs nothing.
+  diff_out="$(diff -u "$gh_p" "$gl_p" --label "github/$GITHUB_DIR/$f" --label "gitlab/$f" 2>&1)"
+  d_status=$?
   if (( d_status == 0 )); then
     report "same" "$f"
     n_same=$((n_same + 1))
   elif (( d_status > 1 )); then
-    die "diff failed on '$f' (exit $d_status); cannot tell whether it differs"
+    die "diff failed on '$f' (exit $d_status); cannot tell whether it differs: $diff_out"
   else
     drift=1
     report "DIFFER" "$f"
-    diff -u "$GITHUB_DIR/$f" "$GITLAB_DIR/$f" \
-      --label "github/$GITHUB_DIR/$f" --label "gitlab/$f" 2>/dev/null | sed 's/^/    /'
+    printf '%s\n' "$diff_out" | sed 's/^/    /'
   fi
 done <<<"$shared"
 
