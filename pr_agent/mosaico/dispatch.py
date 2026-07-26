@@ -9,8 +9,7 @@ Three paths:
       on the context settings, run the verb via DiffInputProvider.
   (c) free-text with no PR URL and no diff -> honest guidance (ask needs a PR/diff).
 
-Inbound text may be a WHOLE forwarded conversation, one part per turn shaped
-"{role}: {content}"; intent then resolves from the latest user turn.
+Inbound text may be a whole forwarded conversation, one part per turn: "{role}: {content}".
 
 Capture is DEFENSIVE everywhere: get_settings().get("data", {}).get("artifact", "")
 (several tool paths never set it, and handle_request swallows exceptions -> False).
