@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# Pull and test-run the MOSAICO A2A solution-agent image published by the
+# upstream qodo-ai/pr-agent release workflow (Docker target `mosaico_agent`).
+#
+#   Smoke (always):       boot the container and validate the A2A agent card.
+#   Full round-trip:      when LLM creds are present, also exercise GET /health
+#                         (live LLM probe) and an A2A message/send PR-review on
+#                         an inline diff.
+#
+# LLM creds are read from a .env file beside this script (gitignored), NOT the
+# environment — they must survive across separate shell invocations
+# (e.g. an unattended poll loop). Copy pr-agent.env.example to .env and fill it in.
+# Format: plain KEY=VALUE lines, e.g.
+#   API_BASE=https://openrouter.ai/api/v1
+#   API_KEY=sk-...
+#   MODEL_NAME=openrouter/mistralai/devstral-small
+set -uo pipefail
+
+IMAGE="${IMAGE:-pragent/pr-agent:0.40.0-mosaico_agent}"
+PORT="${PORT:-9000}"
+CONTAINER="pr-agent-mosaico-test"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="${ENV_FILE:-$SCRIPT_DIR/.env}"
+BASE="http://localhost:${PORT}"
+
+cleanup() { docker rm -f "$CONTAINER" >/dev/null 2>&1 || true; }
+trap cleanup EXIT
+
+fail() { echo "FAIL: $*" >&2; exit 1; }
+
+echo "==> Pulling $IMAGE"
+docker pull "$IMAGE" || fail "docker pull failed"
+
+run_args=(-d --rm --name "$CONTAINER" -p "${PORT}:9000")
+have_creds=0
+if [[ -f "$ENV_FILE" ]]; then
+  run_args+=(--env-file "$ENV_FILE")
+  # Full round-trip requires all three LLM keys to be present and non-empty.
+  if grep -qE '^API_BASE=.+' "$ENV_FILE" \
+     && grep -qE '^API_KEY=.+' "$ENV_FILE" \
+     && grep -qE '^MODEL_NAME=.+' "$ENV_FILE"; then
+    have_creds=1
+  fi
+fi
+
+mode=$([[ $have_creds == 1 ]] && echo "full round-trip" || echo "smoke only")
+echo "==> Starting container ($mode)"
+docker run "${run_args[@]}" "$IMAGE" || fail "docker run failed"
+
+# --- SMOKE: fetch the card (with retry; needs no LLM) and validate it ---
+echo "==> [smoke] fetching + validating agent card"
+CARD=""
+for _ in $(seq 1 30); do
+  CARD=$(curl -fsSL "$BASE/.well-known/agent-card.json" 2>/dev/null)
+  [[ -n "$CARD" ]] && break
+  sleep 2
+done
+[[ -n "$CARD" ]] || { docker logs "$CONTAINER" 2>&1 | tail -40; fail "card endpoint never served a body"; }
+
+CARD="$CARD" python3 - <<'PY' || fail "agent card invalid"
+import json, os
+c = json.loads(os.environ["CARD"])
+assert c["name"] == "PR-Agent Solution Agent", c.get("name")
+assert c["capabilities"]["streaming"] is False, "streaming must be False"
+exts = c["capabilities"]["extensions"]
+assert any(e.get("required") and "observability" in e["uri"] for e in exts), "observability ext missing/required"
+ids = sorted(s["id"] for s in c["skills"])
+assert ids == ["ask", "describe", "improve", "review"], ids
+print("    card OK: name, streaming=False, observability required, skills", ids)
+PY
+
+if [[ $have_creds == 0 ]]; then
+  echo "==> SMOKE PASSED (no LLM creds in $ENV_FILE -> skipped /health + message/send)."
+  echo "    Add API_BASE/API_KEY/MODEL_NAME to $ENV_FILE for the full round-trip."
+  exit 0
+fi
+
+# --- FULL: /health (live LLM ping -> 200/503) ---
+echo "==> [full] GET /health (live LLM probe)"
+code=$(curl -s -o /tmp/mosaico_health.json -w '%{http_code}' "$BASE/health")
+# On 503 the body is a raw provider exception (it can name the endpoint), which is
+# exactly the diagnostic you want here - just don't paste it into a public issue.
+cat /tmp/mosaico_health.json; echo
+[[ "$code" == "200" ]] || fail "/health returned $code (expected 200) — check LLM creds"
+
+# --- FULL: SendMessage review on an inline diff (no PR URL / GitHub token needed) ---
+# A2A 1.0 wire contract: the `A2A-Version: 1.0` header is REQUIRED (the server treats a
+# missing header as 0.3 and rejects the call), the method is the gRPC-style `SendMessage`,
+# and Message/Part carry no `kind` discriminator.
+echo "==> [full] A2A SendMessage review (inline diff)"
+read -r -d '' BODY <<'JSON'
+{"id":"smoke-1","jsonrpc":"2.0","method":"SendMessage","params":{"message":{"messageId":"smoke-msg-1","role":"ROLE_USER","parts":[{"text":"review the following\n```diff\ndiff --git a/foo.py b/foo.py\nindex 1111111..2222222 100644\n--- a/foo.py\n+++ b/foo.py\n@@ -1,2 +1,2 @@\n-x = 1\n+x = 2\n y = 3\n```"}]}}}
+JSON
+
+curl -fsS -X POST "$BASE/" -H 'Content-Type: application/json' -H 'A2A-Version: 1.0' \
+  -d "$BODY" -o /tmp/mosaico_resp.json || fail "SendMessage request failed"
+python3 - <<'PY' || fail "SendMessage response invalid"
+import json
+d = json.load(open("/tmp/mosaico_resp.json"))
+if "error" in d:
+    raise SystemExit(f"    JSON-RPC error: {json.dumps(d['error'])[:300]}")
+# A2A 1.0 wraps the Task in result.task, and delivers the review as an artifact.
+# status.message is populated only on failure, so asserting on it would invert the test.
+task = d.get("result", d).get("task", {})
+state = (task.get("status") or {}).get("state", "")
+parts = [p for a in (task.get("artifacts") or []) for p in (a.get("parts") or [])]
+text = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
+assert state == "TASK_STATE_COMPLETED", f"task state {state!r}: {text[:300]}"
+assert text.strip(), "empty agent reply"
+assert "(no output produced)" not in text, "publish_output capture regression"
+print(f"    review returned {len(text)} chars; first line:")
+print("    " + (text.strip().splitlines() or [""])[0][:100])
+PY
+
+echo "==> FULL ROUND-TRIP PASSED."
