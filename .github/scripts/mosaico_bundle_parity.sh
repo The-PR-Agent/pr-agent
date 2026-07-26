@@ -117,14 +117,24 @@ emit_raw() {
 
 list_files() {
   local dir="$1" n_entries n_lines
-  n_entries="$(emit_raw "$dir" | tr -cd '\0' | wc -c | tr -d ' ')"
+  # pipefail carries an emit_raw failure out to each pipeline below; turn it into exit 2.
+  # A listing that failed partway - an unreadable subdirectory under the `find` fallback,
+  # say - still prints the entries it did reach, and every name missing from that short list
+  # then reads as a one-sided file, i.e. drift. Unchecked, an operational error reports as
+  # exit 1, the code reserved for a genuine divergence.
+  n_entries="$(emit_raw "$dir" | tr -cd '\0' | wc -c | tr -d ' ')" \
+    || die "could not list files in '$dir'"
+  # `grep -c ''` exits 1 on empty input. That is an empty listing, not a failure: a real
+  # emit_raw error already became exit 2 on the line above, and an empty bundle is caught by
+  # the "compared 0 files" guard at the end, which words it far better. Keep the `|| true`.
   n_lines="$(emit_raw "$dir" | tr '\0' '\n' | grep -c '' || true)"
   # Everything downstream (comm, the read loops) is line-based, so a filename containing a
   # literal newline cannot be compared correctly. Refuse rather than emit a confident wrong
   # verdict; the bundle has no such name, so this is a guard, not a workflow.
   [[ "$n_lines" == "$n_entries" ]] \
     || die "a filename in '$dir' contains a newline; this comparison is line-based and cannot represent it safely"
-  emit_raw "$dir" | tr '\0' '\n' | sed 's#^\./##' | LC_ALL=C sort
+  emit_raw "$dir" | tr '\0' '\n' | sed 's#^\./##' | LC_ALL=C sort \
+    || die "could not list files in '$dir'"
 }
 
 drop_allowlisted() {

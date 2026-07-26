@@ -34,6 +34,12 @@ on:
     - cron: '0 6 * * 1'
   workflow_dispatch:
 
+# Checkout and compare, nothing else: the job reads this repo and reaches the mirror with a
+# separate GitLab token. Stated explicitly so the boundary does not move when the
+# repository or org default for GITHUB_TOKEN changes.
+permissions:
+  contents: read
+
 jobs:
   parity:
     runs-on: ubuntu-latest
