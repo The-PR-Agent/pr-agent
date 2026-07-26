@@ -116,7 +116,7 @@ emit_raw() {
 }
 
 list_files() {
-  local dir="$1" n_entries n_lines
+  local dir="$1" n_entries n_lines status
   # pipefail carries an emit_raw failure out to each pipeline below; turn it into exit 2.
   # A listing that failed partway - an unreadable subdirectory under the `find` fallback,
   # say - still prints the entries it did reach, and every name missing from that short list
@@ -126,8 +126,11 @@ list_files() {
     || die "could not list files in '$dir'"
   # `grep -c ''` exits 1 on empty input. That is an empty listing, not a failure: a real
   # emit_raw error already became exit 2 on the line above, and an empty bundle is caught by
-  # the "compared 0 files" guard at the end, which words it far better. Keep the `|| true`.
-  n_lines="$(emit_raw "$dir" | tr '\0' '\n' | grep -c '' || true)"
+  # the "compared 0 files" guard at the end, which words it far better. Above 1 is grep
+  # itself failing, which must not pass for a count of zero - hence the range test rather
+  # than a blanket `|| true`.
+  n_lines="$(emit_raw "$dir" | tr '\0' '\n' | grep -c '')"; status=$?
+  (( status <= 1 )) || die "could not count entries in '$dir'"
   # Everything downstream (comm, the read loops) is line-based, so a filename containing a
   # literal newline cannot be compared correctly. Refuse rather than emit a confident wrong
   # verdict; the bundle has no such name, so this is a guard, not a workflow.
@@ -138,20 +141,25 @@ list_files() {
 }
 
 drop_allowlisted() {
-  local list="$1" f
+  local list="$1" f status
   for f in "${MIRROR_ONLY[@]}"; do
-    list="$(printf '%s\n' "$list" | grep -vxF "$f" || true)"
+    # grep exits 1 when it selects nothing, which here means the allowlisted name was the
+    # only entry left - a legitimate empty list. Above 1 is grep failing, and swallowing
+    # that would hand back a truncated list whose missing names then read as one-sided.
+    list="$(printf '%s\n' "$list" | grep -vxF "$f")"; status=$?
+    (( status <= 1 )) || die "could not filter '$f' out of the file list"
   done
   printf '%s\n' "$list"
 }
 
-# list_files runs in a command substitution, so a die() inside it only kills that subshell.
-# Without propagating the status here the script would carry on with an empty file list and
-# report the resulting phantom differences as drift (exit 1) instead of the real error.
+# Both helpers run in a command substitution, so a die() inside one only kills that
+# subshell. Without propagating the status here the script would carry on with an empty file
+# list and report the resulting phantom differences as drift (exit 1) instead of the real
+# error. Every call below needs the `|| exit $?`, not just the list_files pair.
 gh_raw="$(list_files "$GITHUB_DIR")" || exit $?
 gl_raw="$(list_files "$GITLAB_DIR")" || exit $?
-gh_files="$(drop_allowlisted "$gh_raw")"
-gl_files="$(drop_allowlisted "$gl_raw")"
+gh_files="$(drop_allowlisted "$gh_raw")" || exit $?
+gl_files="$(drop_allowlisted "$gl_raw")" || exit $?
 
 drift=0
 report() { printf '  %-8s %s\n' "$1" "$2"; }
@@ -212,9 +220,15 @@ while IFS= read -r f; do
     fi
     continue
   fi
-  if diff -q "$gh_p" "$gl_p" >/dev/null 2>&1; then
+  # diff distinguishes "identical" (0) from "differs" (1) from "diff itself failed" (2+, an
+  # unreadable file or an I/O error). Folding 2 into the else branch would book an
+  # operational fault as drift and print an empty diff under it, so split the cases.
+  diff -q "$gh_p" "$gl_p" >/dev/null 2>&1; d_status=$?
+  if (( d_status == 0 )); then
     report "same" "$f"
     n_same=$((n_same + 1))
+  elif (( d_status > 1 )); then
+    die "diff failed on '$f' (exit $d_status); cannot tell whether it differs"
   else
     drift=1
     report "DIFFER" "$f"
