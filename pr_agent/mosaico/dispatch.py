@@ -314,13 +314,22 @@ async def _run_pr_agent(target: str, verb: str) -> "RouteResult":
 
     propagate_tool_errors makes the tool re-raise instead of swallowing, so handle_request
     returns False and a failed run stops looking like one that produced nothing. The flags go
-    through args, not get_settings(): _handle_request applies repo settings first."""
+    through args, not get_settings(): _handle_request applies repo settings first.
+
+    Restored in a finally: args are applied onto get_settings(), which is global_settings when
+    no request context is active, and leaking re-raise semantics into unrelated later runs in
+    the same process is exactly the blast radius this flag exists to avoid."""
     from pr_agent.agent.pr_agent import PRAgent
-    ok = await PRAgent().handle_request(
-        target,
-        ["/" + verb, "--config.publish_output=false", "--config.publish_output_progress=false",
-         "--config.propagate_tool_errors=true"],
-    )
+    settings = get_settings()
+    propagate_before = settings.get("CONFIG.PROPAGATE_TOOL_ERRORS", False)
+    try:
+        ok = await PRAgent().handle_request(
+            target,
+            ["/" + verb, "--config.publish_output=false", "--config.publish_output_progress=false",
+             "--config.propagate_tool_errors=true"],
+        )
+    finally:
+        settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", propagate_before)
     if ok is False:
         return RouteResult(_error_fallback(verb), ok=False)
     artifact = _capture_artifact()

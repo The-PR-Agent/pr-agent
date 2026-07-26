@@ -481,6 +481,30 @@ class TestDefensiveCapture:
         assert ok is True, "flag off must preserve the pre-existing swallow-and-succeed behaviour"
 
     @pytest.mark.asyncio
+    async def test_propagate_flag_does_not_leak_without_a_request_context(self, monkeypatch, restore_settings):
+        """Contextless callers (tests, library use) get global_settings back from
+        get_settings(), so the arg would otherwise persist and re-raise for everyone after."""
+        import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_mod
+        import pr_agent.mosaico.provider_registration  # noqa: F401
+        from pr_agent.mosaico.diff_provider import parse_unified_diff
+
+        async def failing_chat_completion(self, model, system, user, temperature=0.2, **kwargs):
+            raise RuntimeError("provider unavailable")
+
+        monkeypatch.setattr(litellm_mod.LiteLLMAIHandler, "chat_completion", failing_chat_completion)
+        global_settings.set("MOSAICO.INPUT", {"files": parse_unified_diff(SAMPLE_RAW_DIFF),
+                                              "languages": {"py": 1}, "title": "Supplied diff"})
+        global_settings.set("CONFIG.GIT_PROVIDER", "mosaico_diff")
+        global_settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", False)
+
+        result = await dispatch._run_pr_agent("mosaico://supplied-diff", "review")
+
+        assert result.ok is False
+        assert global_settings.config.get("propagate_tool_errors") is False, (
+            "the flag must not survive the call into global settings"
+        )
+
+    @pytest.mark.asyncio
     async def test_propagate_tool_errors_passed_to_handle_request(self, monkeypatch, restore_settings):
         """Pins the wiring: without this arg the tools swallow and a failure reads as empty."""
         seen = {}
