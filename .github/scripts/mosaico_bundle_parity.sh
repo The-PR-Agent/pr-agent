@@ -168,16 +168,35 @@ n_same=0
 while IFS= read -r f; do
   [[ -z "$f" ]] && continue
   n_total=$((n_total + 1))
+  gh_p="$GITHUB_DIR/$f"; gl_p="$GITLAB_DIR/$f"
   # A file git still tracks but that is gone from the working tree (an uncommitted delete)
   # is neither "same" nor a content difference; diff would just emit a bare "No such file"
   # to stderr in the middle of the report. Name the real condition instead.
-  if [[ ! -e "$GITHUB_DIR/$f" ]]; then
+  # -e follows the link, so a dangling symlink would read as absent; -L catches the entry
+  # itself, which is what is actually being compared.
+  if [[ ! -e "$gh_p" && ! -L "$gh_p" ]]; then
     drift=1; report "MISSING" "$f (tracked on GitHub side, absent from the working tree)"; continue
   fi
-  if [[ ! -e "$GITLAB_DIR/$f" ]]; then
+  if [[ ! -e "$gl_p" && ! -L "$gl_p" ]]; then
     drift=1; report "MISSING" "$f (tracked on the mirror, absent from its working tree)"; continue
   fi
-  if diff -q "$GITHUB_DIR/$f" "$GITLAB_DIR/$f" >/dev/null 2>&1; then
+  # Symlinks are compared by target, not by the bytes they resolve to. `diff` dereferences,
+  # so a link repointed on the mirror would read as identical whenever both targets happen
+  # to hold the same content - drift the mirror is supposed to surface, silently passing.
+  if [[ -L "$gh_p" || -L "$gl_p" ]]; then
+    if [[ ! -L "$gh_p" || ! -L "$gl_p" ]]; then
+      drift=1
+      report "DIFFER" "$f (symlink on one side, regular file on the other)"
+    elif [[ "$(readlink "$gh_p")" == "$(readlink "$gl_p")" ]]; then
+      report "same" "$f"
+      n_same=$((n_same + 1))
+    else
+      drift=1
+      report "DIFFER" "$f (symlink target: '$(readlink "$gh_p")' vs '$(readlink "$gl_p")')"
+    fi
+    continue
+  fi
+  if diff -q "$gh_p" "$gl_p" >/dev/null 2>&1; then
     report "same" "$f"
     n_same=$((n_same + 1))
   else
