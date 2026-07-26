@@ -15,7 +15,10 @@ MIRROR_ONLY=(".gitignore")
 die() { echo "error: $*" >&2; exit 2; }
 
 needval() {
-  [[ $# -ge 2 && -n "${2:-}" && "$2" != -* ]] || die "option $1 requires a value"
+  [[ $# -ge 2 && -n "${2:-}" ]] || die "option $1 requires a value"
+  case "$2" in
+    --github-dir|--gitlab-dir|--ref|-h|--help) die "option $1 requires a value, got option $2" ;;
+  esac
 }
 
 while [[ $# -gt 0 ]]; do
