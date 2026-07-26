@@ -9,7 +9,7 @@ import pytest
 
 import aiohttp
 
-from pr_agent.config_loader import global_settings
+from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.mosaico import dispatch
 from pr_agent.mosaico.dispatch import (_detect_verb, _diff_prose,
                                        _empty_fallback, _error_fallback,
@@ -496,6 +496,33 @@ class TestDefensiveCapture:
 
         await route_and_run_result(f"review {PR_URL}")
         assert "--config.propagate_tool_errors=true" in seen["args"]
+
+    @pytest.mark.asyncio
+    async def test_propagate_flag_does_not_outlive_a_contextless_run(self, monkeypatch, restore_settings):
+        """Runs the real arg-parsing path: the flag must be live at the tool run, and gone after.
+        Contextless, get_settings() is global_settings, so without the restore one dispatch call
+        would leave re-raising on for every later caller."""
+        import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_mod
+        import pr_agent.mosaico.provider_registration  # noqa: F401
+        from pr_agent.mosaico.diff_provider import parse_unified_diff
+
+        seen = {}
+
+        async def failing_chat_completion(self, model, system, user, temperature=0.2, **kwargs):
+            seen["during"] = get_settings().config.get("propagate_tool_errors")
+            raise RuntimeError("provider unavailable")
+
+        monkeypatch.setattr(litellm_mod.LiteLLMAIHandler, "chat_completion", failing_chat_completion)
+        global_settings.set("MOSAICO.INPUT", {"files": parse_unified_diff(SAMPLE_RAW_DIFF),
+                                              "languages": {"py": 1}, "title": "Supplied diff"})
+        global_settings.set("CONFIG.GIT_PROVIDER", "mosaico_diff")
+        global_settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", False)
+
+        result = await dispatch._run_pr_agent("mosaico://supplied-diff", "review")
+
+        assert seen["during"] is True, "the arg never reached the tool run"
+        assert result.ok is False, "the re-raise must surface as ok=False"
+        assert global_settings.config.get("propagate_tool_errors") is False, "flag leaked past the run"
 
     @pytest.mark.asyncio
     async def test_ask_that_raises_returns_error_fallback(self, monkeypatch, restore_settings):
