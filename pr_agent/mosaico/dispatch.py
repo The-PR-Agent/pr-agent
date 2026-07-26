@@ -314,9 +314,10 @@ async def _run_pr_agent(target: str, verb: str) -> "RouteResult":
     swallowing, so a failed run stops looking like an empty one. Both go through args, not
     get_settings(): _handle_request applies repo settings first."""
     from pr_agent.agent.pr_agent import PRAgent
-    # The arg lands on get_settings(), which is global_settings when no request context is
-    # installed, so restore it: a contextless call must not leave re-raising on for later runs.
-    prior_propagate = get_settings().config.get("propagate_tool_errors", False)
+    # Bind once: the arg is applied onto get_settings(), which is global_settings when no
+    # request context is installed, so a contextless call must not leave re-raising on.
+    settings = get_settings()
+    propagate_before = settings.get("CONFIG.PROPAGATE_TOOL_ERRORS", False)
     try:
         ok = await PRAgent().handle_request(
             target,
@@ -324,7 +325,7 @@ async def _run_pr_agent(target: str, verb: str) -> "RouteResult":
              "--config.propagate_tool_errors=true"],
         )
     finally:
-        get_settings().set("CONFIG.PROPAGATE_TOOL_ERRORS", prior_propagate)
+        settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", propagate_before)
     if ok is False:
         return RouteResult(_error_fallback(verb), ok=False)
     artifact = _capture_artifact()
