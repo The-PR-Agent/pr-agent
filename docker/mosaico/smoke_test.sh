@@ -31,7 +31,12 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 echo "==> Pulling $IMAGE"
 docker pull "$IMAGE" || fail "docker pull failed"
 
-run_args=(-d --rm --name "$CONTAINER" -p "${PORT}:9000")
+# AGENT_CARD_* must match the published host port, otherwise the card advertises
+# http://localhost:9000/ regardless of -p and the URL assertion below would be
+# meaningless. This is the misconfiguration the README calls out as the easiest to get
+# wrong, so the smoke test exercises it rather than sidestepping it.
+run_args=(-d --rm --name "$CONTAINER" -p "${PORT}:9000"
+          -e AGENT_CARD_HOST=localhost -e "AGENT_CARD_PORT=${PORT}")
 have_creds=0
 if [[ -f "$ENV_FILE" ]]; then
   run_args+=(--env-file "$ENV_FILE")
@@ -57,7 +62,7 @@ for _ in $(seq 1 30); do
 done
 [[ -n "$CARD" ]] || { docker logs "$CONTAINER" 2>&1 | tail -40; fail "card endpoint never served a body"; }
 
-CARD="$CARD" python3 - <<'PY' || fail "agent card invalid"
+CARD="$CARD" EXPECT_URL="$BASE/" python3 - <<'PY' || fail "agent card invalid"
 import json, os
 c = json.loads(os.environ["CARD"])
 assert c["name"] == "PR-Agent Solution Agent", c.get("name")
@@ -66,7 +71,12 @@ exts = c["capabilities"]["extensions"]
 assert any(e.get("required") and "observability" in e["uri"] for e in exts), "observability ext missing/required"
 ids = sorted(s["id"] for s in c["skills"])
 assert ids == ["ask", "describe", "improve", "review"], ids
+# The advertised URL is what MOSAICO stores and what clients dereference; if it does
+# not match the address we actually reached, the deployment is wrong.
+url = c["supportedInterfaces"][0]["url"]
+assert url == os.environ["EXPECT_URL"], f'advertised {url!r}, expected {os.environ["EXPECT_URL"]!r}'
 print("    card OK: name, streaming=False, observability required, skills", ids)
+print("    advertised URL OK:", url)
 PY
 
 if [[ $have_creds == 0 ]]; then
