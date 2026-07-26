@@ -21,8 +21,10 @@ services:
     # registration - intended: a registered card with a dead LLM is worse.
     # PORT comes from base-definitions.yml's `agent` service; the :-9000 fallback keeps
     # the probe correct even if this overlay is composed without it.
+    # timeout=25 sits between /health's own 10s LLM timeout and Docker's 30s default
+    # healthcheck timeout, so a stalled probe fails as unhealthy rather than being killed.
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:$${PORT:-9000}/health')\""]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:$${PORT:-9000}/health', timeout=25)\""]
 
   pr-agent-solution-agent-registration:
     extends:
