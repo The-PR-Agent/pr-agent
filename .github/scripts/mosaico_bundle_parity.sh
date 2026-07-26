@@ -49,7 +49,12 @@ die() { echo "error: $*" >&2; exit 2; }
 # Options take a value, so a missing one is a usage error (exit 2). Relying on bash's
 # ${2:?} here would abort with exit 1, which this script defines as "drift found" — a
 # mistyped flag would be indistinguishable from a real divergence.
-needval() { [[ $# -ge 2 && -n "${2:-}" ]] || die "option $1 requires a value"; }
+# A following token that is itself an option means the value was forgotten: `--github-dir
+# --ref main` would otherwise consume "--ref" as the directory and then trip over "main",
+# reporting "unknown argument: main" for what is really a missing value on --github-dir.
+needval() {
+  [[ $# -ge 2 && -n "${2:-}" && "$2" != -* ]] || die "option $1 requires a value"
+}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -195,8 +200,14 @@ report() { printf '  %-8s %s\n' "$1" "$2"; }
 echo "Comparing  $GITHUB_DIR  <->  mirror ref '$REF'"
 echo
 
-only_gh="$(LC_ALL=C comm -23 <(printf '%s\n' "$gh_files") <(printf '%s\n' "$gl_files"))"
-only_gl="$(LC_ALL=C comm -13 <(printf '%s\n' "$gh_files") <(printf '%s\n' "$gl_files"))"
+# comm exits 0 whether or not it finds anything, so unlike grep any non-zero status here is
+# a genuine failure. Left unchecked it would hand back an empty set, and an empty set of
+# one-sided files reads as "no drift" — a silent false parity, the one wrong answer this
+# check must never give.
+only_gh="$(LC_ALL=C comm -23 <(printf '%s\n' "$gh_files") <(printf '%s\n' "$gl_files"))" \
+  || die "could not compare the two file lists (GitHub-only set)"
+only_gl="$(LC_ALL=C comm -13 <(printf '%s\n' "$gh_files") <(printf '%s\n' "$gl_files"))" \
+  || die "could not compare the two file lists (mirror-only set)"
 
 if [[ -n "$only_gh" ]]; then
   drift=1
@@ -208,7 +219,8 @@ if [[ -n "$only_gl" ]]; then
 fi
 
 # --- byte-compare everything present on both sides ---------------------------------------
-shared="$(LC_ALL=C comm -12 <(printf '%s\n' "$gh_files") <(printf '%s\n' "$gl_files"))"
+shared="$(LC_ALL=C comm -12 <(printf '%s\n' "$gh_files") <(printf '%s\n' "$gl_files"))" \
+  || die "could not compare the two file lists (shared set)"
 n_total=0
 n_same=0
 while IFS= read -r f; do
@@ -233,6 +245,15 @@ while IFS= read -r f; do
     if [[ ! -L "$gh_p" || ! -L "$gl_p" ]]; then
       drift=1
       report "DIFFER" "$f (symlink on one side, regular file on the other)"
+    # `$(readlink ...; printf x)` takes printf's status, not readlink's, so a readlink that
+    # fails is invisible to the comparison below: both sides would collapse to the bare
+    # sentinel, compare equal, and a pair the script could not actually read would be
+    # reported "same". That is a false parity, the one answer this check must never give, so
+    # establish that both links are readable before trusting the comparison.
+    elif ! readlink "$gh_p" >/dev/null; then
+      die "could not read the symlink '$f' on the GitHub side"
+    elif ! readlink "$gl_p" >/dev/null; then
+      die "could not read the symlink '$f' on the mirror"
     # The trailing `printf x` keeps a target string that ends in a newline distinguishable:
     # command substitution strips trailing newlines, so 'a' and 'a\n' would otherwise be
     # reported as the same link. Verified on Linux, the CI platform, where dropping the
