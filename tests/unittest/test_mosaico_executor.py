@@ -234,10 +234,8 @@ class TestExecute:
 
     @pytest.mark.asyncio
     async def test_settings_writes_are_request_scoped_under_concurrency(self, monkeypatch, spy_updater):
-        """propagate_tool_errors is written per request, so concurrency is the risk case.
-
-        Each execute() gets its own deepcopy in starlette_context: two in-flight requests
-        must not observe each other's value, and global_settings must be left untouched."""
+        """Each execute() gets its own settings deepcopy: two in-flight requests must not
+        observe each other's propagate_tool_errors, and global_settings stays untouched."""
         seen = {}
 
         async def fake_route_and_run_result(text):

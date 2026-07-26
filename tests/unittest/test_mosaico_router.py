@@ -415,11 +415,9 @@ class TestDefensiveCapture:
 
     @pytest.mark.asyncio
     async def test_ok_but_no_artifact_returns_empty_fallback(self, monkeypatch, restore_settings):
-        """A tool that ran fine and produced nothing is a SUCCESS, not a failure.
-
-        Emptiness must never be read as an error: /improve on a trivial diff legitimately
-        yields no suggestions. Failure is signalled by the exception (propagate_tool_errors),
-        never by an empty artifact — see test_tool_exception_marks_failed for the contrast."""
+        """Empty is a legitimate SUCCESS: /improve on a trivial diff yields no suggestions.
+        Failure comes from the exception, never from emptiness. Mapping empty->ok=False fails
+        ONLY this test, so it is the sole guard on that property — do not loosen it."""
         async def fake_fetch_public_diff(pr_url):
             return SAMPLE_RAW_DIFF
 
@@ -439,10 +437,9 @@ class TestDefensiveCapture:
 
     @pytest.mark.asyncio
     async def test_tool_exception_marks_failed(self, monkeypatch, restore_settings):
-        """The contrast to the test above: same empty artifact, but the tool raised.
-
-        propagate_tool_errors makes the tool re-raise, handle_request's own except returns
-        False, and the router must report ok=False rather than the empty fallback."""
+        """The contrast to the test above: same empty artifact, but the tool raised. The
+        re-raise makes handle_request return False, so the router must report ok=False
+        rather than the empty fallback."""
         async def fake_fetch_public_diff(pr_url):
             return SAMPLE_RAW_DIFF
 
