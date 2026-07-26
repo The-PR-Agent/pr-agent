@@ -20,6 +20,10 @@
 # reason that forks receive no secrets. Set GITLAB_TOKEN to a token with read_repository
 # only if the mirror is ever made private; unset or empty takes the anonymous path.
 #
+# A token that IS supplied must work. It is sent on every request and a rejected one fails
+# the run — there is no fallback to anonymous, which on a public mirror would "succeed" and
+# leave a stale or misconfigured secret looking healthy indefinitely.
+#
 # There is deliberately no way to exit 0 without having compared the two trees. A clone that
 # fails is exit 2, never a skip: "could not verify" must not be able to read as "in parity".
 #
@@ -53,7 +57,7 @@ while [[ $# -gt 0 ]]; do
     --gitlab-dir) needval "$@"; GITLAB_DIR="$2"; shift 2 ;;
     --ref)        needval "$@"; REF="$2";        shift 2 ;;
     # Header comment block only; the line after it is `set -uo pipefail`, not documentation.
-    -h|--help)    sed -n '2,26p' "$0"; exit 0 ;;
+    -h|--help)    sed -n '2,30p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -68,31 +72,45 @@ trap cleanup EXIT
 if [[ -z "$GITLAB_DIR" ]]; then
   SCRATCH="$(mktemp -d)" || die "mktemp -d failed"
   GITLAB_DIR="$SCRATCH/mirror"
-  # Wrapped so the credential helper can be passed as an argument without either repeating
-  # the clone line or expanding a possibly-empty array — the latter is an unbound-variable
-  # error under `set -u` on bash 3.2, still the system bash on macOS. "$@" has no such flaw.
   clone_mirror() {
-    git "$@" clone --quiet --depth 1 --branch "$REF" "$MIRROR_URL" "$GITLAB_DIR" \
+    git clone --quiet --depth 1 --branch "$REF" "$MIRROR_URL" "$GITLAB_DIR" \
       2>"$SCRATCH/clone.err"
   }
   # The mirror is a public project, so the default path carries no credentials at all and
-  # needs no secret to be configured anywhere. A token is still honoured when one is set: it
-  # costs nothing and keeps this working unchanged should the project ever be made private.
-  # An empty value counts as absent rather than being passed through — an empty password
-  # would fail the very clone that succeeds anonymously.
+  # needs no secret configured anywhere. An empty GITLAB_TOKEN counts as absent rather than
+  # being passed through — an empty password would fail the very clone that succeeds
+  # anonymously.
+  #
+  # A token that IS supplied has to be exercised, not merely offered. Git only consults a
+  # credential helper after a 401, and a public project never returns one, so a wrong or
+  # expired token would go unused and unnoticed: the clone would succeed anonymously and the
+  # operator would keep believing authentication works. That is the silent-green failure
+  # this check exists to avoid, wearing a different hat. Sending the header on every request
+  # forces the server to judge it — GitLab answers 401 to bad credentials even on a public
+  # project (verified) — so a broken token fails the run instead of degrading quietly.
+  # There is deliberately no fallback to anonymous here: whoever supplied a credential is
+  # entitled to be told it is broken.
+  #
+  # The header travels in GIT_CONFIG_* rather than `git -c`, keeping the secret out of argv
+  # where any local process could read it off the process list. `printf` is a bash builtin,
+  # so the token never becomes a process argument there either.
   if [[ -n "${GITLAB_TOKEN:-}" ]]; then
-    # Token goes through a credential helper rather than the URL, so it never lands in the
-    # remote URL, the reflog, or a CI log line on failure.
-    clone_mirror -c 'credential.helper=!f(){ echo username=oauth2; echo "password=${GITLAB_TOKEN}"; };f'
+    (
+      export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraHeader
+      export GIT_CONFIG_VALUE_0="Authorization: Basic $(printf 'oauth2:%s' "$GITLAB_TOKEN" | base64 | tr -d '\n')"
+      clone_mirror
+    )
   else
     clone_mirror
   fi
   clone_status=$?
   if (( clone_status != 0 )); then
     echo "--- clone stderr ---" >&2
-    # Defensive: the token should never appear here, but strip anything token-shaped anyway
-    # rather than trust that and echo a secret into a public log.
-    sed -E 's#://[^@]*@#://***@#g; s#glpat-[A-Za-z0-9._-]+#***#g' "$SCRATCH/clone.err" >&2
+    # Defensive: no credential should ever appear here, but strip anything credential-shaped
+    # anyway rather than trust that and echo a secret into a public log. The Authorization
+    # rule matters most — that header carries the base64 of the token, which is reversible.
+    sed -E 's#://[^@]*@#://***@#g; s#glpat-[A-Za-z0-9._-]+#***#g; s#([Aa]uthorization:).*#\1 ***#g' \
+      "$SCRATCH/clone.err" >&2
     # Not a skip. Failing to reach the mirror means parity is unknown, and unknown is an
     # error here - the whole point of dropping the old SKIP branch.
     die "could not clone the mirror at ref '$REF'"
