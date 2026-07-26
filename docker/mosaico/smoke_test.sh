@@ -16,7 +16,7 @@
 #   MODEL_NAME=openrouter/mistralai/devstral-small
 set -uo pipefail
 
-IMAGE="${IMAGE:-pragent/pr-agent:0.40.0-mosaico_agent}"
+IMAGE="${IMAGE:-pragent/pr-agent:0.41.0-mosaico_agent}"
 PORT="${PORT:-9000}"
 CONTAINER="pr-agent-mosaico-test"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

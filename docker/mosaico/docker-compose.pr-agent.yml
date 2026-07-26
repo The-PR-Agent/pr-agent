@@ -10,7 +10,7 @@ services:
     extends:
       file: base-definitions.yml
       service: agent
-    image: pragent/pr-agent:0.40.0-mosaico_agent
+    image: pragent/pr-agent:0.41.0-mosaico_agent
     ports:
       - ${PR_AGENT_PORT:-23000}:9000
     environment:

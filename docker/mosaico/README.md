@@ -10,15 +10,15 @@ merged into `main` and ships in every release wheel and image starting at `v0.37
 
 This is not a fork and it never becomes one:
 
-- The MOSAICO A2A server is upstream code, released in tags `v0.37.0`–`v0.40.0`. This bundle
+- The MOSAICO A2A server is upstream code, released in tags `v0.37.0`–`v0.41.0`. This bundle
   holds zero Python — only a compose overlay, a registration template, an env template, a
   smoke test, and this README.
 - **Staying current is one line**: bump the pinned tag in `docker-compose.pr-agent.yml`, then
   re-run `./smoke_test.sh` to confirm the new image still boots and serves a valid card. That
   is the entire upgrade procedure:
   ```diff
-  -    image: pragent/pr-agent:0.40.0-mosaico_agent
-  +    image: pragent/pr-agent:0.41.0-mosaico_agent
+  -    image: pragent/pr-agent:0.41.0-mosaico_agent
+  +    image: pragent/pr-agent:0.42.0-mosaico_agent
   ```
 - Upstream publishes `pragent/pr-agent:<version>-mosaico_agent` for every release, from the
   same CI matrix that builds its other images — the MOSAICO target cannot silently stop being
@@ -31,12 +31,12 @@ This is not a fork and it never becomes one:
 Boots from a bare `docker pull` in a couple of seconds — no repo clone, no build:
 
 ```bash
-docker pull pragent/pr-agent:0.40.0-mosaico_agent
+docker pull pragent/pr-agent:0.41.0-mosaico_agent
 docker run -d --name pr-agent-mosaico -p 9000:9000 \
   -e API_BASE=https://your-openai-compatible-endpoint/v1 \
   -e API_KEY=sk-... \
   -e MODEL_NAME=openai/your-model-slug \
-  pragent/pr-agent:0.40.0-mosaico_agent
+  pragent/pr-agent:0.41.0-mosaico_agent
 
 curl -s http://localhost:9000/.well-known/agent-card.json | python3 -m json.tool
 ```
