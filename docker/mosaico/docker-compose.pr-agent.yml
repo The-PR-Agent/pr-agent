@@ -9,27 +9,28 @@ services:
     extends:
       file: base-definitions.yml
       service: agent
-    # Build: docker build --target mosaico_agent -t pr-agent-solution-agent:local -f docker/Dockerfile .
-    image: pr-agent-solution-agent:local
+    image: pragent/pr-agent:0.40.0-mosaico_agent
     ports:
-      - ${PR_AGENT_PORT:-22000}:9000
+      - ${PR_AGENT_PORT:-23000}:9000
     environment:
       AGENT_CARD_HOST: ${PR_AGENT_HOST:-${DEFAULT_TASK_AGENT_HOST}}
-      AGENT_CARD_PORT: ${PR_AGENT_PORT:-22000}
+      AGENT_CARD_PORT: ${PR_AGENT_PORT:-23000}
       MODEL_NAME: ${PR_AGENT_MODEL}
-    # Gate registration on card/HTTP readiness, not /health (a live LLM probe).
+    # Matches the peer agents' probe verbatim. /health is a live LLM check, so no LLM
+    # means no registration - intended: a registered card with a dead LLM is worse.
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:9000/.well-known/agent-card.json')\""]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:$${PORT}/health')\""]
 
   pr-agent-solution-agent-registration:
     extends:
       file: base-definitions.yml
       service: agent-registration
     environment:
-      AGENT_NAME: PR-Agent Solution Agent
+      AGENT_NAME: pr-agent-solution-agent
       AGENT_JSON: /app/pr-agent-solution-agent.json
-      # Fetched container-to-container: use the service name and in-container port 9000.
-      AGENT_CARD_URL: http://pr-agent-solution-agent:9000/.well-known/agent-card.json
+      # Stored in the repository and fetched by out-of-Docker clients, so it must be
+      # host-reachable, not a compose service name.
+      AGENT_CARD_URL: http://${PR_AGENT_HOST:-${DEFAULT_TASK_AGENT_HOST}}:${PR_AGENT_PORT:-23000}/.well-known/agent-card.json
     depends_on:
       pr-agent-solution-agent:
         condition: service_healthy
