@@ -94,6 +94,7 @@ def test_get_user_answers_collects_question_and_answer_from_issue_comments():
     assert answer == "/answer Because it fixes production."
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize("persistent", [True, False])
 @pytest.mark.parametrize("thread_enabled", [True, False])
 async def test_run_threads_only_the_final_review_comment(monkeypatch, persistent, thread_enabled):
