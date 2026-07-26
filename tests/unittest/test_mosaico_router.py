@@ -14,8 +14,7 @@ from pr_agent.mosaico import dispatch
 from pr_agent.mosaico.dispatch import (_detect_verb, _diff_prose,
                                        _empty_fallback, _error_fallback,
                                        _explicit_verb, _split_turns,
-                                       route_and_run, route_and_run_result,
-                                       RouteResult)
+                                       route_and_run, route_and_run_result)
 
 PR_URL = "https://github.com/org/repo/pull/123"
 DEAD_PR_URL = "https://github.com/org/repo/pull/999999999"
