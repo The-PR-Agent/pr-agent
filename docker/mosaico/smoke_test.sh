@@ -25,7 +25,7 @@ BASE="http://localhost:${PORT}"
 
 # 0700 by construction, so the /health body (which embeds the raw provider exception
 # when unhealthy) is neither world-readable nor writable at a predictable path.
-TMPDIR_RUN="$(mktemp -d)"
+TMPDIR_RUN="$(mktemp -d)" || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
 # Only tear down a container this run actually started: the name is fixed, so an early
 # exit (a failed pull, or a `docker run` that lost a name race) must not reap someone
 # else's container - including the one a concurrent run is still testing against.
