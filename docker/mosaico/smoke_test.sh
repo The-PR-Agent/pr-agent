@@ -136,7 +136,7 @@ parts = [p for a in (task.get("artifacts") or []) for p in (a.get("parts") or []
 text = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
 assert state == "TASK_STATE_COMPLETED", f"task state {state!r}: {text[:300]}"
 assert text.strip(), "empty agent reply"
-assert "(no output produced)" not in text, "publish_output capture regression"
+assert "no output produced" not in text, "publish_output capture regression"
 print(f"    review returned {len(text)} chars; first line:")
 print("    " + (text.strip().splitlines() or [""])[0][:100])
 PY
