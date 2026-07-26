@@ -9,6 +9,12 @@ Three paths:
       on the context settings, run the verb via DiffInputProvider.
   (c) free-text with no PR URL and no diff -> honest guidance (ask needs a PR/diff).
 
+The inbound text is not always a single fresh request: the MOSAICO reference agent
+forwards the WHOLE conversation, one A2A text part per turn shaped "{role}: {content}",
+which the A2A SDK's get_user_input() joins with newlines. Routing therefore resolves the
+LATEST user turn first (see _split_turns / _resolve_verb / route_and_run_result) instead
+of scanning the blob as if it were one fresh request.
+
 Capture is DEFENSIVE everywhere: get_settings().get("data", {}).get("artifact", "")
 (several tool paths never set it, and handle_request swallows exceptions -> False).
 route_and_run NEVER raises; on failure/empty it returns an honest fallback string."""
@@ -43,6 +49,34 @@ _DIFF_FENCE_RE = re.compile(r"```\s*diff", re.IGNORECASE)
 _DIFF_HEADER_RE = re.compile(r"^diff --git ", re.MULTILINE)
 _UNIFIED_HUNK_RE = re.compile(r"^@@ .* @@", re.MULTILINE)
 
+# Where a raw (unfenced) patch body starts, and the lines that belong to it: file/hunk
+# headers plus the context/added/removed lines that follow (an empty line is a context line
+# whose trailing space was stripped). Used to excise the body while keeping the prose.
+_DIFF_START_RE = re.compile(r"^(?:diff --git |@@ )")
+_DIFF_BODY_LINE_RE = re.compile(r"^(?:diff --git |index [0-9a-fA-F]|--- |\+\+\+ |@@ |[ +\-\\]|$)")
+
+# Conversation-blob detection. The reference agent labels each forwarded turn with the raw
+# role from the client ("user"/"agent"); "assistant" is accepted too since sibling handlers
+# normalise to it. Only the FIRST line of a turn carries the label — a turn's content is
+# routinely multi-line (a pasted diff, or a whole review), so turns are delimited by
+# label lines rather than by newlines.
+_ROLE_LINE_RE = re.compile(r"^(user|agent|assistant)[ \t]*:[ \t]?", re.IGNORECASE)
+_USER_ROLES = ("user",)
+
+# Negation immediately before a verb ("do not review", "instead of reviewing"): at most two
+# intervening words and no punctuation, so "there is no bug, review this" is NOT a negation.
+_NEGATION_RE = re.compile(
+    r"\b(?:no|not|never|avoid|skip|without|don'?t|do\s+not|instead\s+of|rather\s+than)\b"
+    r"(?:\s+\w+){0,2}\s*/?$",
+    re.IGNORECASE,
+)
+
+# An interrogative opener, EXCEPT when it is negated ("do not review" is an instruction, not
+# a question; a real negated question still has its '?' to fall back on).
+_QUESTION_OPENER_RE = re.compile(
+    r"\s*(what|why|how|when|where|who|which|is|are|does|do|can|should)\b(?!\s+not\b)", re.IGNORECASE
+)
+
 
 class RouteResult(NamedTuple):
     """Routing outcome: rendered text + whether it succeeded (drives A2A complete vs failed)."""
@@ -50,17 +84,94 @@ class RouteResult(NamedTuple):
     ok: bool
 
 
+class _Turn(NamedTuple):
+    """One forwarded conversation turn: a lowercased role and its (multi-line) content."""
+    role: str
+    content: str
+
+    @property
+    def is_user(self) -> bool:
+        return self.role in _USER_ROLES
+
+
+def _split_turns(text: str) -> list["_Turn"]:
+    """Split a forwarded conversation blob into turns (oldest first). Returns [] when the
+    text is not a blob, so a single-turn request keeps being handled as one whole segment.
+
+    Conservative on purpose — a blob must BOTH start with a role label (the reference agent
+    drops non-data parts, so the joined text always begins with one) AND carry at least two
+    of them. One stray 'user: ...' line inside an ordinary message is not enough."""
+    if not text:
+        return []
+    lines = text.split("\n")
+    starts = [i for i, line in enumerate(lines) if _ROLE_LINE_RE.match(line)]
+    if len(starts) < 2:
+        return []
+    first_content = next((i for i, line in enumerate(lines) if line.strip()), None)
+    if starts[0] != first_content:
+        return []
+    turns = []
+    for n, start in enumerate(starts):
+        end = starts[n + 1] if n + 1 < len(starts) else len(lines)
+        m = _ROLE_LINE_RE.match(lines[start])
+        body = "\n".join([lines[start][m.end():]] + lines[start + 1:end])
+        turns.append(_Turn(m.group(1).lower(), body.strip("\n")))
+    return turns
+
+
+def _explicit_verb(text: str) -> Optional[str]:
+    """The explicitly requested verb, chosen by POSITION IN THE TEXT (not by _VALID_VERBS
+    order, which used to make 'now describe it, do not review' resolve to 'review').
+    Negated occurrences are skipped. None when no verb is explicitly requested."""
+    low = (text or "").lower()
+    best = None
+    for verb in _VALID_VERBS:
+        for m in re.finditer(rf"(^|\s)/?{verb}\b", low):
+            at = m.end() - len(verb)
+            if _NEGATION_RE.search(low[:at]):
+                continue
+            if best is None or at < best[0]:
+                best = (at, verb)
+            break  # only the first non-negated occurrence of this verb can be the earliest
+    return best[1] if best else None
+
+
+def _reads_as_question(text: str) -> bool:
+    low = (text or "").lower()
+    return "?" in low or bool(_QUESTION_OPENER_RE.match(low))
+
+
 def _detect_verb(text: str) -> str:
     """Pick a verb from the text. Defaults to 'review'. 'ask' wins when the text reads
     like a question and no other explicit verb is present."""
-    low = (text or "").lower()
-    # explicit slash command takes precedence
-    for verb in _VALID_VERBS:
-        if re.search(rf"(^|\s)/?{verb}\b", low):
-            return verb
+    verb = _explicit_verb(text)
+    if verb:
+        return verb
     # heuristic: a question mark or interrogative opener -> ask
-    if "?" in low or re.match(r"\s*(what|why|how|when|where|who|which|is|are|does|do|can|should)\b", low):
+    if _reads_as_question(text):
         return "ask"
+    return _DEFAULT_VERB
+
+
+def _resolve_verb(user_segments: list) -> str:
+    """Resolve the verb from the LATEST user turn (segments are newest first).
+
+    Only when that turn expresses no intent at all — no explicit verb, no question — do we
+    look back at OLDER USER turns for one (e.g. 'describe this' followed by a bare corrected
+    diff). Agent turns are never consulted: pr-agent's own review output is full of the word
+    'review', which is what made the verb stick to 'review' for the rest of a conversation."""
+    prose = [_diff_prose(seg) for seg in user_segments]
+    if not prose:
+        return _DEFAULT_VERB
+    verb = _explicit_verb(prose[0])
+    if verb:
+        return verb
+    if _reads_as_question(prose[0]):
+        return "ask"
+    for older in prose[1:]:
+        verb = _explicit_verb(older)
+        if verb:
+            return verb
     return _DEFAULT_VERB
 
 
@@ -78,10 +189,12 @@ def _looks_like_diff(text: str) -> bool:
 
 
 def _extract_diff(text: str) -> str:
-    """Return the unified-diff body, unwrapping a ```diff fence if present."""
-    fence = re.search(r"```\s*diff\s*\n(.*?)```", text, re.IGNORECASE | re.DOTALL)
-    if fence:
-        return fence.group(1)
+    """Return the unified-diff body, unwrapping a ```diff fence if present. With several
+    fences the LAST one wins: a re-pasted diff supersedes the one it corrects. A raw
+    (unfenced) diff is returned whole, so a multi-file patch keeps all of its files."""
+    fences = re.findall(r"```\s*diff\s*\n(.*?)```", text, re.IGNORECASE | re.DOTALL)
+    if fences:
+        return fences[-1]
     return text
 
 
@@ -94,9 +207,20 @@ def _diff_prose(text: str) -> str:
     without_fence = re.sub(r"```\s*diff\s*\n.*?```", " ", text, flags=re.IGNORECASE | re.DOTALL)
     if without_fence != text:
         return without_fence
-    # Raw (unfenced) diff: keep only the text before the first diff/hunk header.
-    m = re.search(r"^(?:diff --git |@@ )", text, re.MULTILINE)
-    return text[:m.start()] if m else text
+    # Raw (unfenced) diff: drop the patch BODY but keep the prose on BOTH sides. Keeping only
+    # the text before the first marker discarded everything after it — including the request
+    # itself, which is routinely written after the pasted patch ("<diff>\nnow describe it").
+    kept, in_diff = [], False
+    for line in text.split("\n"):
+        if _DIFF_START_RE.match(line):
+            in_diff = True
+            continue
+        if in_diff:
+            if _DIFF_BODY_LINE_RE.match(line):
+                continue
+            in_diff = False
+        kept.append(line)
+    return "\n".join(kept)
 
 
 def _capture_artifact() -> str:
@@ -287,22 +411,33 @@ async def route_and_run_result(user_text: str) -> "RouteResult":
     """Route inbound text to a pr-agent command and return a RouteResult. Never raises."""
     try:
         text = user_text or ""
-        verb = _detect_verb(text)
+        turns = _split_turns(text)
+        # Newest first. A non-blob request is one segment, so single-turn routing is unchanged.
+        # Intent comes from user turns only; the diff/PR to act on may legitimately come from
+        # an agent turn (a coding agent posts a patch, the user then asks for a review of it).
+        user_segments = [t.content for t in reversed(turns) if t.is_user] or [text]
+        context_segments = [t.content for t in reversed(turns)] or [text]
 
-        # Path (a): a host PR URL — fetch the public unified diff and route through
-        # the token-free mosaico_diff provider.
-        pr_url = _find_pr_url(text)
-        if pr_url:
-            diff_body = await _fetch_public_diff(pr_url)
-            if not diff_body:
-                return RouteResult(_pr_fetch_failed_fallback(pr_url), ok=False)
-            return await _run_on_diff(diff_body, verb, text, title=pr_url, empty_ok=False)
+        # The verb is detected from the prose only: a '?' in a patch body must not flip review to ask.
+        verb = _resolve_verb(user_segments)
+        question = user_segments[0]
 
-        # Path (b): a supplied unified diff.
-        if _looks_like_diff(text):
-            # Detect the verb from the prose only: a '?' in the patch body must not flip review to ask.
-            verb = _detect_verb(_diff_prose(text))
-            return await _run_on_diff(_extract_diff(text), verb, text, title="Supplied diff")
+        # Take the PR URL / diff from the NEWEST turn that supplies one, so a fresh diff in the
+        # current turn beats a stale URL quoted earlier in the conversation. Within one turn the
+        # existing precedence holds: an explicit PR URL wins over an inline diff.
+        for segment in context_segments:
+            # Path (a): a host PR URL — fetch the public unified diff and route through
+            # the token-free mosaico_diff provider.
+            pr_url = _find_pr_url(segment)
+            if pr_url:
+                diff_body = await _fetch_public_diff(pr_url)
+                if not diff_body:
+                    return RouteResult(_pr_fetch_failed_fallback(pr_url), ok=False)
+                return await _run_on_diff(diff_body, verb, question, title=pr_url, empty_ok=False)
+
+            # Path (b): a supplied unified diff.
+            if _looks_like_diff(segment):
+                return await _run_on_diff(_extract_diff(segment), verb, question, title="Supplied diff")
 
         # Path (c): free-text with no PR URL and no supplied diff. PRQuestions needs a
         # diff/PR to answer, so return honest guidance rather than a false internal error.
