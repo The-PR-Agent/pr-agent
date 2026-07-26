@@ -26,11 +26,22 @@ BASE="http://localhost:${PORT}"
 # 0700 by construction, so the /health body (which embeds the raw provider exception
 # when unhealthy) is neither world-readable nor writable at a predictable path.
 TMPDIR_RUN="$(mktemp -d)"
+# Only tear down a container this run actually started: the name is fixed, so an early
+# exit (a failed pull, or a `docker run` that lost a name race) must not reap someone
+# else's container - including the one a concurrent run is still testing against.
+started=0
 cleanup() {
-  docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+  if [[ $started == 1 ]]; then
+    docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+  fi
   rm -rf "$TMPDIR_RUN"
 }
 trap cleanup EXIT
+
+# Bound every request: the header documents unattended poll-loop use, where a stalled
+# container would otherwise hang the loop forever. Limits are generous because /health
+# and SendMessage both wait on a live LLM.
+CURL_CONNECT=(--connect-timeout 5)
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
@@ -57,12 +68,13 @@ fi
 mode=$([[ $have_creds == 1 ]] && echo "full round-trip" || echo "smoke only")
 echo "==> Starting container ($mode)"
 docker run "${run_args[@]}" "$IMAGE" || fail "docker run failed"
+started=1
 
 # --- SMOKE: fetch the card (with retry; needs no LLM) and validate it ---
 echo "==> [smoke] fetching + validating agent card"
 CARD=""
 for _ in $(seq 1 30); do
-  CARD=$(curl -fsSL "$BASE/.well-known/agent-card.json" 2>/dev/null)
+  CARD=$(curl -fsSL "${CURL_CONNECT[@]}" --max-time 30 "$BASE/.well-known/agent-card.json" 2>/dev/null)
   [[ -n "$CARD" ]] && break
   sleep 2
 done
@@ -93,7 +105,7 @@ fi
 
 # --- FULL: /health (live LLM ping -> 200/503) ---
 echo "==> [full] GET /health (live LLM probe)"
-code=$(curl -s -o "$TMPDIR_RUN/health.json" -w '%{http_code}' "$BASE/health")
+code=$(curl -s "${CURL_CONNECT[@]}" --max-time 120 -o "$TMPDIR_RUN/health.json" -w '%{http_code}' "$BASE/health")
 # On 503 the body is a raw provider exception (it can name the endpoint), which is
 # exactly the diagnostic you want here - just don't paste it into a public issue.
 cat "$TMPDIR_RUN/health.json"; echo
@@ -108,7 +120,8 @@ read -r -d '' BODY <<'JSON'
 {"id":"smoke-1","jsonrpc":"2.0","method":"SendMessage","params":{"message":{"messageId":"smoke-msg-1","role":"ROLE_USER","parts":[{"text":"review the following\n```diff\ndiff --git a/foo.py b/foo.py\nindex 1111111..2222222 100644\n--- a/foo.py\n+++ b/foo.py\n@@ -1,2 +1,2 @@\n-x = 1\n+x = 2\n y = 3\n```"}]}}}
 JSON
 
-curl -fsS -X POST "$BASE/" -H 'Content-Type: application/json' -H 'A2A-Version: 1.0' \
+curl -fsS "${CURL_CONNECT[@]}" --max-time 300 \
+  -X POST "$BASE/" -H 'Content-Type: application/json' -H 'A2A-Version: 1.0' \
   -d "$BODY" -o "$TMPDIR_RUN/resp.json" || fail "SendMessage request failed"
 RESP="$TMPDIR_RUN/resp.json" python3 - <<'PY' || fail "SendMessage response invalid"
 import json, os
