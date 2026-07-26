@@ -14,12 +14,14 @@
 #   mosaico_bundle_parity.sh --gitlab-dir DIR     # compare against an already-fetched copy
 #   mosaico_bundle_parity.sh --github-dir DIR     # override the local side
 #   mosaico_bundle_parity.sh --ref BRANCH         # mirror ref to compare (default: main)
-#   mosaico_bundle_parity.sh --require-token      # treat a missing token as an error
 #
-# Auth: set GITLAB_TOKEN to a token with read_repository. Without it the script cannot see
-# the mirror, so it reports SKIP and exits 0 — correct only where secrets are legitimately
-# unavailable (fork PRs). Everywhere else pass --require-token, otherwise an expired or
-# unset secret degrades into a permanently green check that verifies nothing.
+# Auth: none. The mirror is a public project, so the clone is anonymous and every run really
+# compares — including fork PRs, which used to be exempted from this check for the sole
+# reason that forks receive no secrets. Set GITLAB_TOKEN to a token with read_repository
+# only if the mirror is ever made private; unset or empty takes the anonymous path.
+#
+# There is deliberately no way to exit 0 without having compared the two trees. A clone that
+# fails is exit 2, never a skip: "could not verify" must not be able to read as "in parity".
 #
 # Exit: 0 parity, 1 drift, 2 usage/fetch error.
 set -uo pipefail
@@ -27,7 +29,6 @@ set -uo pipefail
 GITHUB_DIR="docker/mosaico"
 GITLAB_DIR=""
 REF="main"
-REQUIRE_TOKEN=0
 MIRROR_URL="https://gitlab.eclipse.org/eclipse-research-labs/mosaico-project/mosaico-extra/qodo-pr-agent.git"
 
 # Tracked on the mirror but deliberately absent from docker/mosaico/. The mirror is a
@@ -51,9 +52,8 @@ while [[ $# -gt 0 ]]; do
     --github-dir) needval "$@"; GITHUB_DIR="$2"; shift 2 ;;
     --gitlab-dir) needval "$@"; GITLAB_DIR="$2"; shift 2 ;;
     --ref)        needval "$@"; REF="$2";        shift 2 ;;
-    --require-token) REQUIRE_TOKEN=1;            shift ;;
-    # Header comment block only; line 25 is `set -uo pipefail`, not documentation.
-    -h|--help)    sed -n '2,24p' "$0"; exit 0 ;;
+    # Header comment block only; the line after it is `set -uo pipefail`, not documentation.
+    -h|--help)    sed -n '2,26p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -66,25 +66,35 @@ trap cleanup EXIT
 
 # --- obtain the mirror side -------------------------------------------------------------
 if [[ -z "$GITLAB_DIR" ]]; then
-  if [[ -z "${GITLAB_TOKEN:-}" ]]; then
-    if [[ $REQUIRE_TOKEN == 1 ]]; then
-      die "GITLAB_TOKEN is unset or empty and --require-token was given"
-    fi
-    echo "SKIP: GITLAB_TOKEN unset — cannot reach the mirror, so parity is unverified."
-    echo "      Legitimate only on fork PRs, where secrets are withheld. A maintainer push"
-    echo "      or the scheduled run covers it; both pass --require-token."
-    exit 0
-  fi
   SCRATCH="$(mktemp -d)" || die "mktemp -d failed"
   GITLAB_DIR="$SCRATCH/mirror"
-  # Token goes through a credential helper rather than the URL, so it never lands in the
-  # remote URL, the reflog, or a CI log line on failure.
-  if ! git -c credential.helper='!f(){ echo username=oauth2; echo "password=${GITLAB_TOKEN}"; };f' \
-         clone --quiet --depth 1 --branch "$REF" "$MIRROR_URL" "$GITLAB_DIR" 2>"$SCRATCH/clone.err"; then
+  # Wrapped so the credential helper can be passed as an argument without either repeating
+  # the clone line or expanding a possibly-empty array — the latter is an unbound-variable
+  # error under `set -u` on bash 3.2, still the system bash on macOS. "$@" has no such flaw.
+  clone_mirror() {
+    git "$@" clone --quiet --depth 1 --branch "$REF" "$MIRROR_URL" "$GITLAB_DIR" \
+      2>"$SCRATCH/clone.err"
+  }
+  # The mirror is a public project, so the default path carries no credentials at all and
+  # needs no secret to be configured anywhere. A token is still honoured when one is set: it
+  # costs nothing and keeps this working unchanged should the project ever be made private.
+  # An empty value counts as absent rather than being passed through — an empty password
+  # would fail the very clone that succeeds anonymously.
+  if [[ -n "${GITLAB_TOKEN:-}" ]]; then
+    # Token goes through a credential helper rather than the URL, so it never lands in the
+    # remote URL, the reflog, or a CI log line on failure.
+    clone_mirror -c 'credential.helper=!f(){ echo username=oauth2; echo "password=${GITLAB_TOKEN}"; };f'
+  else
+    clone_mirror
+  fi
+  clone_status=$?
+  if (( clone_status != 0 )); then
     echo "--- clone stderr ---" >&2
     # Defensive: the token should never appear here, but strip anything token-shaped anyway
     # rather than trust that and echo a secret into a public log.
     sed -E 's#://[^@]*@#://***@#g; s#glpat-[A-Za-z0-9._-]+#***#g' "$SCRATCH/clone.err" >&2
+    # Not a skip. Failing to reach the mirror means parity is unknown, and unknown is an
+    # error here - the whole point of dropping the old SKIP branch.
     die "could not clone the mirror at ref '$REF'"
   fi
 fi

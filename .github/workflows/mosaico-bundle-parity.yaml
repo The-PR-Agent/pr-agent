@@ -8,9 +8,9 @@ name: Mosaico-bundle-parity
 # Runs on PRs that touch the bundle (so drift is caught before merge), on merges to main,
 # and weekly (so an edit made directly on the mirror surfaces even if nothing changes here).
 #
-# Requires the GITLAB_MIRROR_TOKEN secret: a GitLab token with read_repository on that
-# project. Fork PRs get no secrets, so the script skips cleanly rather than failing — the
-# push-to-main and scheduled runs still cover those changes.
+# Needs no secret: the mirror is a public project, so the clone is anonymous. That also
+# means fork PRs are really checked rather than exempted, which is what they had to be back
+# when the only way to reach the mirror was a token forks never receive.
 
 on:
   pull_request:
@@ -34,9 +34,9 @@ on:
     - cron: '0 6 * * 1'
   workflow_dispatch:
 
-# Checkout and compare, nothing else: the job reads this repo and reaches the mirror with a
-# separate GitLab token. Stated explicitly so the boundary does not move when the
-# repository or org default for GITHUB_TOKEN changes.
+# Checkout and compare, nothing else: the job reads this repo and clones a public mirror.
+# Stated explicitly so the boundary does not move when the repository or org default for
+# GITHUB_TOKEN changes.
 permissions:
   contents: read
 
@@ -51,15 +51,13 @@ jobs:
       - id: parity
         name: Compare docker/mosaico against the GitLab mirror
         env:
+          # Optional, and absent today. The mirror is public, so an unset or empty value
+          # takes the anonymous path; the line exists only so this job keeps working without
+          # edits if the project is ever made private and the secret is added then.
           GITLAB_TOKEN: ${{ secrets.GITLAB_MIRROR_TOKEN }}
-          # Fork PRs are the only runs that legitimately have no secret.
-          IS_FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
         run: |
           chmod +x .github/scripts/mosaico_bundle_parity.sh
-          # Everywhere a secret IS expected, demand it. Without --require-token an expired
-          # or unset GITLAB_MIRROR_TOKEN would make the script skip and exit 0 on every
-          # scheduled run - a permanently green check that verifies nothing, which is worse
-          # than having no check at all.
-          args=()
-          [[ "$IS_FORK_PR" == "true" ]] || args+=(--require-token)
-          .github/scripts/mosaico_bundle_parity.sh "${args[@]}"
+          # No flags left to tune: the script cannot exit 0 without having compared the two
+          # trees, and a mirror it cannot reach is exit 2. There is no path by which this
+          # check goes green while verifying nothing.
+          .github/scripts/mosaico_bundle_parity.sh
