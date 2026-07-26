@@ -9,10 +9,8 @@ Three paths:
       on the context settings, run the verb via DiffInputProvider.
   (c) free-text with no PR URL and no diff -> honest guidance (ask needs a PR/diff).
 
-The inbound text is not always a single fresh request: the MOSAICO reference agent
-forwards the WHOLE conversation, one A2A text part per turn shaped "{role}: {content}",
-which the A2A SDK's get_user_input() joins with newlines. Routing therefore resolves
-intent from the LATEST user turn rather than from the blob as a whole.
+Inbound text may be a WHOLE forwarded conversation, one part per turn shaped
+"{role}: {content}"; intent then resolves from the latest user turn.
 
 Capture is DEFENSIVE everywhere: get_settings().get("data", {}).get("artifact", "")
 (several tool paths never set it, and handle_request swallows exceptions -> False).
@@ -48,12 +46,8 @@ _DIFF_FENCE_RE = re.compile(r"```\s*diff", re.IGNORECASE)
 _DIFF_HEADER_RE = re.compile(r"^diff --git ", re.MULTILINE)
 _UNIFIED_HUNK_RE = re.compile(r"^@@ .* @@", re.MULTILINE)
 
-# Where a raw (unfenced) patch body starts, and the lines that belong to it. Besides the
-# file/hunk headers this must list git's extended header (mode/rename/copy/similarity/binary),
-# which sits between "diff --git" and the first hunk: an unlisted line there ends body mode
-# and leaks the rest of the header into the prose that picks the verb, letting the patch
-# override the request. An empty line is a context line whose trailing space was stripped.
-# These only apply once a body is open, so they cannot swallow loose prose.
+# Lines counting as raw-patch body; an unlisted git extended-header prefix leaks the rest of
+# the header into the prose that picks the verb.
 _DIFF_START_RE = re.compile(r"^(?:diff --git |@@ )")
 _DIFF_BODY_LINE_RE = re.compile(
     r"^(?:diff --git |index [0-9a-fA-F]|--- |\+\+\+ |@@ "
@@ -63,27 +57,19 @@ _DIFF_BODY_LINE_RE = re.compile(
     r"|[ +\-\\]|$)"
 )
 
-# Conversation-blob detection. The reference agent labels each forwarded turn with the raw
-# role from the client ("user"/"agent"); "assistant" is accepted too since sibling handlers
-# normalise to it. Only the FIRST line of a turn carries the label — a turn's content is
-# routinely multi-line (a pasted diff, or a whole review), so turns are delimited by label
-# lines, not by newlines. All whitespace after the colon is consumed: content that itself
-# starts with a space would otherwise leave "diff --git" indented, and parse_unified_diff
-# needs it at column 0.
+# The live label is "agent", not "assistant"; matching only "assistant" would be a no-op in
+# production. Only a turn's first line carries a label.
 _ROLE_LINE_RE = re.compile(r"^(user|agent|assistant)[ \t]*:[ \t]*", re.IGNORECASE)
 _USER_ROLES = ("user",)
 
-# Negation immediately before a verb ("do not review", "instead of reviewing"): at most two
-# intervening words and no punctuation, so "there is no bug, review this" is NOT a negation.
-# Adjacency is the whole rule: anything wider is intent classification, not routing.
+# Adjacent-only by design: at most two words before the verb, no punctuation crossed.
 _NEGATION_RE = re.compile(
     r"\b(?:no|not|never|avoid|skip|without|don'?t|do\s+not|instead\s+of|rather\s+than)\b"
     r"(?:\s+\w+){0,2}\s*/?$",
     re.IGNORECASE,
 )
 
-# An interrogative opener, EXCEPT when it is negated ("do not review" is an instruction, not
-# a question; a real negated question still has its '?' to fall back on).
+# The "not" guard keeps "do not review" an instruction; a real question still has its '?'.
 _QUESTION_OPENER_RE = re.compile(
     r"\s*(what|why|how|when|where|who|which|is|are|does|do|can|should)\b(?!\s+not\b)", re.IGNORECASE
 )
@@ -96,7 +82,6 @@ class RouteResult(NamedTuple):
 
 
 class _Turn(NamedTuple):
-    """One forwarded conversation turn: a lowercased role and its (multi-line) content."""
     role: str
     content: str
 
@@ -106,12 +91,8 @@ class _Turn(NamedTuple):
 
 
 def _split_turns(text: str) -> list["_Turn"]:
-    """Split a forwarded conversation blob into turns (oldest first). Returns [] when the
-    text is not a blob, so a single-turn request keeps being handled as one whole segment.
-
-    Conservative on purpose — a blob must BOTH start with a role label (the reference agent
-    drops non-data parts, so the joined text always begins with one) AND carry at least two
-    of them. One stray 'user: ...' line inside an ordinary message is not enough."""
+    """Turns oldest first, [] when not a blob. Conservative on purpose: the text must open
+    with a role label AND carry at least two."""
     if not text:
         return []
     lines = text.split("\n")
@@ -131,9 +112,8 @@ def _split_turns(text: str) -> list["_Turn"]:
 
 
 def _explicit_verb(text: str) -> Optional[str]:
-    """The explicitly requested verb, chosen by POSITION IN THE TEXT and not by _VALID_VERBS
-    order — by that order 'now describe it, do not review' resolves to 'review'. Negated
-    occurrences are skipped. None when no verb is explicitly requested."""
+    """The requested verb, by POSITION IN THE TEXT and not by _VALID_VERBS order. Negated
+    occurrences are skipped; None when no verb is requested."""
     low = (text or "").lower()
     best = None
     for verb in _VALID_VERBS:
@@ -165,12 +145,8 @@ def _detect_verb(text: str) -> str:
 
 
 def _resolve_verb(user_segments: list) -> str:
-    """Resolve the verb from the LATEST user turn (segments are newest first).
-
-    Only when that turn expresses no intent at all — no explicit verb, no question — do we
-    look back at OLDER USER turns for one (e.g. 'describe this' followed by a bare corrected
-    diff). Agent turns are never consulted: pr-agent's own output is full of the word
-    'review', which would otherwise make the verb stick for the rest of the conversation."""
+    """Verb from the LATEST user turn (segments newest first); an intentless turn falls back
+    to older USER turns. Agent turns are never consulted."""
     prose = [_diff_prose(seg) for seg in user_segments]
     if not prose:
         return _DEFAULT_VERB
@@ -200,9 +176,7 @@ def _looks_like_diff(text: str) -> bool:
 
 
 def _extract_diff(text: str) -> str:
-    """Return the unified-diff body, unwrapping a ```diff fence if present. With several
-    fences the LAST one wins: a re-pasted diff supersedes the one it corrects. A raw
-    (unfenced) diff is returned whole, so a multi-file patch keeps all of its files."""
+    """The unified-diff body, unwrapping a ```diff fence. With several fences the LAST wins."""
     fences = re.findall(r"```\s*diff\s*\n(.*?)```", text, re.IGNORECASE | re.DOTALL)
     if fences:
         return fences[-1]
@@ -218,9 +192,7 @@ def _diff_prose(text: str) -> str:
     without_fence = re.sub(r"```\s*diff\s*\n.*?```", " ", text, flags=re.IGNORECASE | re.DOTALL)
     if without_fence != text:
         return without_fence
-    # Raw (unfenced) diff: drop the patch BODY but keep the prose on BOTH sides. The request
-    # is routinely written AFTER the pasted patch ("<diff>\nnow describe it"), so trimming at
-    # the first marker would discard it.
+    # Raw diff: excise the body, keep prose on BOTH sides — the request often follows the patch.
     kept, in_diff = [], False
     for line in text.split("\n"):
         if _DIFF_START_RE.match(line):
@@ -423,21 +395,15 @@ async def route_and_run_result(user_text: str) -> "RouteResult":
     try:
         text = user_text or ""
         turns = _split_turns(text)
-        # Newest first. A non-blob request is one segment, so single-turn routing is unchanged.
-        # Intent comes from user turns only; the diff/PR to act on may legitimately come from
-        # an agent turn (a coding agent posts a patch, the user then asks for a review of it).
+        # Newest first. Intent comes from user turns only; context may come from an agent turn.
         user_segments = [t.content for t in reversed(turns) if t.is_user] or [text]
         context_segments = [t.content for t in reversed(turns)] or [text]
 
         verb = _resolve_verb(user_segments)
         question = user_segments[0]
 
-        # Take the PR URL / diff from the NEWEST turn that supplies one, so a fresh diff in the
-        # current turn beats a stale URL quoted earlier in the conversation. Within one turn an
-        # explicit PR URL still wins over an inline diff.
+        # Newest turn supplying context wins; within a turn a PR URL beats an inline diff.
         for segment in context_segments:
-            # Path (a): a host PR URL — fetch the public unified diff and route through
-            # the token-free mosaico_diff provider.
             pr_url = _find_pr_url(segment)
             if pr_url:
                 diff_body = await _fetch_public_diff(pr_url)
@@ -445,7 +411,6 @@ async def route_and_run_result(user_text: str) -> "RouteResult":
                     return RouteResult(_pr_fetch_failed_fallback(pr_url), ok=False)
                 return await _run_on_diff(diff_body, verb, question, title=pr_url, empty_ok=False)
 
-            # Path (b): a supplied unified diff.
             if _looks_like_diff(segment):
                 return await _run_on_diff(_extract_diff(segment), verb, question, title="Supplied diff")
 

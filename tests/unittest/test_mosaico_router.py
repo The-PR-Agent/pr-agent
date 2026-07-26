@@ -42,7 +42,6 @@ index 1111111..2222222 100644
  y = 3
 """
 
-# A second, distinct diff — used to prove which of two diffs in one conversation is acted on.
 CORRECTED_DIFF = """```diff
 diff --git a/bar.py b/bar.py
 index 3333333..4444444 100644
@@ -54,10 +53,8 @@ index 3333333..4444444 100644
  b = 3
 ```"""
 
-# Verbatim head of a real pr-agent review, captured from the deployed MOSAICO agent. The
-# token that makes the verb stick is 'Estimated effort to review:' — that is what r'review\b'
-# hits. Trimming this down to the 'PR Reviewer Guide' heading alone would make every test
-# using it vacuous: r'review\b' does not match 'reviewer'.
+# Keep the 'Estimated effort to review:' line: r'review\b' does not match 'reviewer', so the
+# heading alone would make every test using this fixture vacuous.
 AGENT_REVIEW_OUTPUT = """## PR Reviewer Guide 🔍
 
 Here are some key observations to aid the review process:
@@ -66,8 +63,6 @@ Here are some key observations to aid the review process:
 
 ### 🧪 No relevant tests"""
 
-# Two patches on unrelated subjects, so acting on the wrong one is visible in the assertion
-# rather than hidden behind similar-looking output.
 AUTH_DIFF = """```diff
 diff --git a/auth.py b/auth.py
 index 1111111..2222222 100644
@@ -90,7 +85,6 @@ index 3333333..4444444 100644
 +    return sum(i.price * i.quantity for i in items)
 ```"""
 
-# A raw (unfenced) patch: the shape where prose written after the body has to survive.
 RAW_DIFF_BODY = """diff --git a/bar.py b/bar.py
 index 3333333..4444444 100644
 --- a/bar.py
@@ -704,18 +698,13 @@ class TestPublishOutputForced:
 
 
 # ---------------------------------------------------------------------------
-# Forwarded conversation blobs: the MOSAICO reference agent sends the WHOLE conversation as
-# one "{role}: {content}" text part per turn, joined with newlines.
+# Forwarded conversation blobs
 # ---------------------------------------------------------------------------
 def _blob(*turns) -> str:
-    """Build a forwarded conversation blob from (role, content) pairs, exactly as the
-    reference agent's conversationDataToText + the A2A SDK's get_user_input() produce it."""
     return "\n".join(f"{role}: {content}" for role, content in turns)
 
 
 def _routed(monkeypatch):
-    """Stub the tool layer and report what the router decided to act on: the verb, the
-    files of the diff it installed, the title, and the question handed to the ask path."""
     seen = {"fetched": []}
 
     async def fake_handle_request(self, pr_url, request, notify=None):
@@ -750,9 +739,6 @@ def _routed(monkeypatch):
 
 
 class TestTurnSplitting:
-    """_split_turns is deliberately conservative: a blob must BOTH open with a role label
-    and carry at least two of them, so ordinary single-turn text is never segmented."""
-
     def test_splits_roles_and_keeps_multiline_content(self):
         turns = _split_turns(_blob(("user", "review this"),
                                    ("agent", AGENT_REVIEW_OUTPUT),
@@ -765,18 +751,15 @@ class TestTurnSplitting:
 
     @pytest.mark.parametrize("text", [
         "review this PR",
-        "user: alice\nplease review the config above",          # a single stray role line
-        "here is my config\nuser: alice\nagent: bob\nreview it",  # labels not at the start
-        "user: admin\npassword: hunter2\nreview this",            # yaml-ish, only one role label
+        "user: alice\nplease review the config above",
+        "here is my config\nuser: alice\nagent: bob\nreview it",
+        "user: admin\npassword: hunter2\nreview this",
         "",
     ])
     def test_not_a_conversation_blob(self, text):
         assert _split_turns(text) == []
 
     def test_content_indentation_after_the_label_is_dropped(self):
-        """A turn whose own content starts with a space arrives as 'user:  diff --git ...'.
-        parse_unified_diff needs 'diff --git' at column 0, so the label match consumes ALL
-        whitespace after the colon, not just the single separator space."""
         turns = _split_turns(_blob(("user", " diff --git a/x.py b/x.py"), ("agent", "ok")))
         assert turns[0].content == "diff --git a/x.py b/x.py"
 
@@ -791,9 +774,6 @@ class TestTurnSplitting:
 
 
 class TestConversationVerbRouting:
-    """The verb comes from the LATEST user turn, never from the agent's own output (which is
-    full of the word 'review')."""
-
     @pytest.mark.asyncio
     async def test_review_history_does_not_stick_to_later_describe(self, monkeypatch, restore_settings):
         seen = _routed(monkeypatch)
@@ -820,8 +800,6 @@ class TestConversationVerbRouting:
 
     @pytest.mark.asyncio
     async def test_bare_diff_turn_falls_back_to_earlier_user_verb(self, monkeypatch, restore_settings):
-        """A latest turn that expresses no intent at all (a bare re-paste) may inherit the
-        verb from an OLDER USER turn — never from an agent turn."""
         seen = _routed(monkeypatch)
         await route_and_run(_blob(("user", "describe this"),
                                   ("agent", AGENT_REVIEW_OUTPUT),
@@ -840,36 +818,29 @@ class TestConversationVerbRouting:
 
 
 class TestVerbNegationAndPosition:
-    """Verbs resolve by position in the text, not by _VALID_VERBS order, and a negated
-    occurrence does not count at all."""
-
     @pytest.mark.parametrize("text, expected", [
         ("Now describe it instead, do not review", "describe"),
         ("can you improve this? do not review", "improve"),
-        ("do not review, describe this", "describe"),          # negated verb comes FIRST
+        ("do not review, describe this", "describe"),
         ("skip the review, just describe", "describe"),
         ("instead of reviewing, describe this", "describe"),
-        ("describe this, then improve it", "describe"),        # plain position, no negation
+        ("describe this, then improve it", "describe"),
     ])
     def test_negated_and_positional_verbs(self, text, expected):
         assert _detect_verb(text) == expected
 
     @pytest.mark.parametrize("text, expected", [
-        ("there is no bug, review this", "review"),        # 'no' belongs to the prose, not the verb
+        ("there is no bug, review this", "review"),
         ("i do not have time, review this", "review"),
         ("nothing to improve here?", "improve"),
-        ("do not review", "review"),                       # every verb negated -> the default
+        ("do not review", "review"),
     ])
     def test_negation_does_not_fire_on_ordinary_prose(self, text, expected):
         assert _detect_verb(text) == expected
 
 
 class TestStickyReviewToken:
-    """Pins WHICH token in pr-agent's own output feeds back into verb detection, so the
-    stickiness regression tests cannot drift onto a false premise."""
-
     def test_reviewer_heading_alone_does_not_reach_the_matcher(self):
-        # r'review\b' does not match 'reviewer' — this heading resolves via _DEFAULT_VERB.
         assert _explicit_verb("## PR Reviewer Guide 🔍") is None
         assert _detect_verb("## PR Reviewer Guide 🔍") == "review"
 
@@ -878,8 +849,6 @@ class TestStickyReviewToken:
 
     @pytest.mark.asyncio
     async def test_real_review_output_in_history_does_not_capture_the_verb(self, monkeypatch, restore_settings):
-        """End to end with the verbatim review output: the matching token lives in an agent
-        turn, which intent resolution must never consult."""
         assert _explicit_verb(AGENT_REVIEW_OUTPUT) == "review", "guard: the constant must still be sticky"
         seen = _routed(monkeypatch)
         await route_and_run(_blob(("user", "review this"),
@@ -889,9 +858,6 @@ class TestStickyReviewToken:
 
 
 class TestProseAfterRawDiff:
-    """A request written after a pasted patch must survive _diff_prose and reach verb
-    detection; the patch body itself must not."""
-
     def test_prose_after_a_raw_diff_survives(self):
         prose = _diff_prose(f"here is the patch\n{RAW_DIFF_BODY}\nnow describe it please")
         assert "now describe it please" in prose
@@ -925,7 +891,6 @@ class TestProseAfterRawDiff:
 
     @pytest.mark.asyncio
     async def test_question_mark_inside_a_raw_patch_body_still_reviews(self, monkeypatch, restore_settings):
-        """Why _diff_prose exists: a '?' in the patch body must not flip the verb to ask."""
         seen = _routed(monkeypatch)
         raw_with_q = ("diff --git a/foo.py b/foo.py\n"
                       "@@ -1,2 +1,2 @@\n"
@@ -937,11 +902,6 @@ class TestProseAfterRawDiff:
 
 
 class TestExtendedHeaderNotLeaked:
-    """git's extended header (mode/rename/copy/similarity/binary) sits between 'diff --git'
-    and the first hunk. It all has to count as patch body: any line that does not ends body
-    mode and leaks the rest of the header into the prose that picks the verb, letting the
-    PATCH's own contents override what the user asked for."""
-
     RENAME_DIFF = ("diff --git a/a.py b/improve.py\n"
                    "similarity index 95%\n"
                    "rename from a.py\n"
@@ -963,24 +923,17 @@ class TestExtendedHeaderNotLeaked:
         assert _diff_prose(self.NEW_FILE_DIFF).strip() == ""
 
     def test_renamed_path_does_not_override_the_request(self):
-        """A leaked 'rename to improve.py' reads as an explicit /improve and would beat the
-        user's own 'review this' on position."""
         assert _detect_verb(_diff_prose(self.RENAME_DIFF)) == "review"
 
     def test_question_mark_in_a_leaked_path_does_not_flip_to_ask(self):
         assert _detect_verb(_diff_prose(self.NEW_FILE_DIFF)) == "review"
 
     def test_prose_after_an_extended_header_patch_still_survives(self):
-        """Widening the excision into 'swallow everything to the end' would fix the leak and
-        destroy the request written after the patch. Both have to hold at once."""
         prose = _diff_prose(f"{self.NEW_FILE_DIFF}\nnow describe it")
         assert prose.strip() == "now describe it"
 
 
 class TestNewestContextWins:
-    """Context comes from the NEWEST turn that supplies one, so a fresh diff beats both an
-    older diff and a stale PR URL quoted earlier in the conversation."""
-
     @pytest.mark.asyncio
     async def test_newest_diff_wins(self, monkeypatch, restore_settings):
         seen = _routed(monkeypatch)
@@ -998,9 +951,6 @@ class TestNewestContextWins:
     @pytest.mark.parametrize("stale_url", [DEAD_PR_URL, PRIVATE_PR_URL])
     @pytest.mark.asyncio
     async def test_fresh_diff_beats_stale_url_from_history(self, stale_url, monkeypatch, restore_settings):
-        """An unfetchable PR URL quoted earlier must not fail the request when the current
-        turn supplies a good inline diff. Parametrised over both failure reasons because a
-        private repo poisons the conversation just as a dead link does, and is commoner."""
         seen = _routed(monkeypatch)
         result = await route_and_run_result(
             _blob(("user", f"review {stale_url}"),
@@ -1014,8 +964,6 @@ class TestNewestContextWins:
 
     @pytest.mark.asyncio
     async def test_answers_about_the_newest_patch_not_the_oldest(self, monkeypatch, restore_settings):
-        """The failure this guards is silent: answering about a superseded patch produces a
-        well-formed description of the wrong subject, with no error to notice."""
         seen = _routed(monkeypatch)
         result = await route_and_run_result(
             _blob(("user", f"review this auth change\n{AUTH_DIFF}"),
@@ -1028,8 +976,6 @@ class TestNewestContextWins:
 
     @pytest.mark.asyncio
     async def test_diff_from_an_agent_turn_is_still_usable(self, monkeypatch, restore_settings):
-        """Intent comes from user turns only, but the patch to act on may legitimately have
-        been produced by another agent in the conversation."""
         seen = _routed(monkeypatch)
         await route_and_run(_blob(("user", "write me a patch"),
                                   ("agent", f"here you go\n{CORRECTED_DIFF}"),
@@ -1039,21 +985,16 @@ class TestNewestContextWins:
 
     @pytest.mark.asyncio
     async def test_current_turn_url_still_beats_older_diff(self, monkeypatch, restore_settings):
-        """The newest turn wins as a whole: an explicit URL in it is still preferred over a
-        diff from an earlier turn, and within one turn a URL still outranks an inline diff."""
         seen = _routed(monkeypatch)
         await route_and_run(_blob(("user", f"review this\n{CORRECTED_DIFF}"),
                                   ("agent", AGENT_REVIEW_OUTPUT),
                                   ("user", f"actually use {PR_URL}")))
         assert seen["fetched"] == [PR_URL]
         assert seen["title"] == PR_URL
-        assert seen["files"] == ["foo.py"]  # from the fetched diff, not the earlier paste
+        assert seen["files"] == ["foo.py"]
 
 
 class TestSingleTurnUnchanged:
-    """Plain single-turn requests must route exactly as if conversation handling did not
-    exist. This is what the conservative blob detection buys."""
-
     @pytest.mark.asyncio
     async def test_single_turn_diff_unchanged(self, monkeypatch, restore_settings):
         seen = _routed(monkeypatch)
@@ -1074,7 +1015,6 @@ class TestSingleTurnUnchanged:
 
     @pytest.mark.asyncio
     async def test_single_turn_unreachable_url_still_fails_honestly(self, monkeypatch, restore_settings):
-        """No diff anywhere to fall back on -> the honest fetch failure is preserved."""
         _routed(monkeypatch)
         result = await route_and_run_result(f"review {DEAD_PR_URL}")
         assert result.ok is False
