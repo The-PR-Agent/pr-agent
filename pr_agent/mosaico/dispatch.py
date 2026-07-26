@@ -11,9 +11,8 @@ Three paths:
 
 The inbound text is not always a single fresh request: the MOSAICO reference agent
 forwards the WHOLE conversation, one A2A text part per turn shaped "{role}: {content}",
-which the A2A SDK's get_user_input() joins with newlines. Routing therefore resolves the
-LATEST user turn first (see _split_turns / _resolve_verb / route_and_run_result) instead
-of scanning the blob as if it were one fresh request.
+which the A2A SDK's get_user_input() joins with newlines. Routing therefore resolves
+intent from the LATEST user turn rather than from the blob as a whole.
 
 Capture is DEFENSIVE everywhere: get_settings().get("data", {}).get("artifact", "")
 (several tool paths never set it, and handle_request swallows exceptions -> False).
@@ -49,16 +48,12 @@ _DIFF_FENCE_RE = re.compile(r"```\s*diff", re.IGNORECASE)
 _DIFF_HEADER_RE = re.compile(r"^diff --git ", re.MULTILINE)
 _UNIFIED_HUNK_RE = re.compile(r"^@@ .* @@", re.MULTILINE)
 
-# Where a raw (unfenced) patch body starts, and the lines that belong to it: file/hunk
-# headers, git's extended header (mode/rename/copy/similarity/binary), plus the
-# context/added/removed lines that follow (an empty line is a context line whose trailing
-# space was stripped). Used to excise the body while keeping the prose.
-#
-# The extended-header alternatives matter because they sit between "diff --git" and the first
-# hunk: without them the first one ends body mode, and the `index`/`---`/`+++` lines after it
-# leak into the prose that decides the verb. A leaked "rename to improve.py" then routes an
-# explicit "review this" to /improve, and a '?' in a leaked path routes it to /ask. They are
-# only ever consulted once a patch body is already open, so they cannot swallow loose prose.
+# Where a raw (unfenced) patch body starts, and the lines that belong to it. Besides the
+# file/hunk headers this must list git's extended header (mode/rename/copy/similarity/binary),
+# which sits between "diff --git" and the first hunk: an unlisted line there ends body mode
+# and leaks the rest of the header into the prose that picks the verb, letting the patch
+# override the request. An empty line is a context line whose trailing space was stripped.
+# These only apply once a body is open, so they cannot swallow loose prose.
 _DIFF_START_RE = re.compile(r"^(?:diff --git |@@ )")
 _DIFF_BODY_LINE_RE = re.compile(
     r"^(?:diff --git |index [0-9a-fA-F]|--- |\+\+\+ |@@ "
@@ -71,15 +66,16 @@ _DIFF_BODY_LINE_RE = re.compile(
 # Conversation-blob detection. The reference agent labels each forwarded turn with the raw
 # role from the client ("user"/"agent"); "assistant" is accepted too since sibling handlers
 # normalise to it. Only the FIRST line of a turn carries the label — a turn's content is
-# routinely multi-line (a pasted diff, or a whole review), so turns are delimited by
-# label lines rather than by newlines. All whitespace after the colon is consumed, not just
-# the single separator space: a turn whose own content starts with a space would otherwise
-# leave the patch header indented, and parse_unified_diff needs "diff --git" at column 0.
+# routinely multi-line (a pasted diff, or a whole review), so turns are delimited by label
+# lines, not by newlines. All whitespace after the colon is consumed: content that itself
+# starts with a space would otherwise leave "diff --git" indented, and parse_unified_diff
+# needs it at column 0.
 _ROLE_LINE_RE = re.compile(r"^(user|agent|assistant)[ \t]*:[ \t]*", re.IGNORECASE)
 _USER_ROLES = ("user",)
 
 # Negation immediately before a verb ("do not review", "instead of reviewing"): at most two
 # intervening words and no punctuation, so "there is no bug, review this" is NOT a negation.
+# Adjacency is the whole rule: anything wider is intent classification, not routing.
 _NEGATION_RE = re.compile(
     r"\b(?:no|not|never|avoid|skip|without|don'?t|do\s+not|instead\s+of|rather\s+than)\b"
     r"(?:\s+\w+){0,2}\s*/?$",
@@ -135,9 +131,9 @@ def _split_turns(text: str) -> list["_Turn"]:
 
 
 def _explicit_verb(text: str) -> Optional[str]:
-    """The explicitly requested verb, chosen by POSITION IN THE TEXT (not by _VALID_VERBS
-    order, which used to make 'now describe it, do not review' resolve to 'review').
-    Negated occurrences are skipped. None when no verb is explicitly requested."""
+    """The explicitly requested verb, chosen by POSITION IN THE TEXT and not by _VALID_VERBS
+    order — by that order 'now describe it, do not review' resolves to 'review'. Negated
+    occurrences are skipped. None when no verb is explicitly requested."""
     low = (text or "").lower()
     best = None
     for verb in _VALID_VERBS:
@@ -173,8 +169,8 @@ def _resolve_verb(user_segments: list) -> str:
 
     Only when that turn expresses no intent at all — no explicit verb, no question — do we
     look back at OLDER USER turns for one (e.g. 'describe this' followed by a bare corrected
-    diff). Agent turns are never consulted: pr-agent's own review output is full of the word
-    'review', which is what made the verb stick to 'review' for the rest of a conversation."""
+    diff). Agent turns are never consulted: pr-agent's own output is full of the word
+    'review', which would otherwise make the verb stick for the rest of the conversation."""
     prose = [_diff_prose(seg) for seg in user_segments]
     if not prose:
         return _DEFAULT_VERB
@@ -222,9 +218,9 @@ def _diff_prose(text: str) -> str:
     without_fence = re.sub(r"```\s*diff\s*\n.*?```", " ", text, flags=re.IGNORECASE | re.DOTALL)
     if without_fence != text:
         return without_fence
-    # Raw (unfenced) diff: drop the patch BODY but keep the prose on BOTH sides. Keeping only
-    # the text before the first marker discarded everything after it — including the request
-    # itself, which is routinely written after the pasted patch ("<diff>\nnow describe it").
+    # Raw (unfenced) diff: drop the patch BODY but keep the prose on BOTH sides. The request
+    # is routinely written AFTER the pasted patch ("<diff>\nnow describe it"), so trimming at
+    # the first marker would discard it.
     kept, in_diff = [], False
     for line in text.split("\n"):
         if _DIFF_START_RE.match(line):
@@ -433,13 +429,12 @@ async def route_and_run_result(user_text: str) -> "RouteResult":
         user_segments = [t.content for t in reversed(turns) if t.is_user] or [text]
         context_segments = [t.content for t in reversed(turns)] or [text]
 
-        # The verb is detected from the prose only: a '?' in a patch body must not flip review to ask.
         verb = _resolve_verb(user_segments)
         question = user_segments[0]
 
         # Take the PR URL / diff from the NEWEST turn that supplies one, so a fresh diff in the
-        # current turn beats a stale URL quoted earlier in the conversation. Within one turn the
-        # existing precedence holds: an explicit PR URL wins over an inline diff.
+        # current turn beats a stale URL quoted earlier in the conversation. Within one turn an
+        # explicit PR URL still wins over an inline diff.
         for segment in context_segments:
             # Path (a): a host PR URL — fetch the public unified diff and route through
             # the token-free mosaico_diff provider.
