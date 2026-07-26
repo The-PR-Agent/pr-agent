@@ -475,7 +475,7 @@ If you encounter rate limiting:
         OPENAI_KEY: ${{ secrets.OPENAI_KEY }}
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         # Add a fallback model for better reliability
-        config.fallback_models: '["gpt-5.4-mini"]'
+        config.fallback_models: '["gpt-5.6-terra"]'
         # Increase timeout for slower models
         config.ai_timeout: "300"
         github_action_config.auto_review: "true"
@@ -670,8 +670,11 @@ cp pr_agent/settings/.secrets_template.toml pr_agent/settings/.secrets.toml
 6) Build a Docker image for the app and optionally push it to a Docker repository. We'll use Dockerhub as an example:
 
     ```bash
-    docker build . -t pragent/pr-agent:github_app --target github_app -f docker/Dockerfile
-    docker push pragent/pr-agent:github_app  # Push to your Docker repository
+    docker build . -t pr-agent:github_app --target github_app -f docker/Dockerfile
+
+    # Optional, to push it to your own Docker repository:
+    docker tag pr-agent:github_app <your-registry>/pr-agent:github_app
+    docker push <your-registry>/pr-agent:github_app
     ```
 
 7. Host the app using a server, serverless function, or container environment. Alternatively, for development and
@@ -684,6 +687,8 @@ cp pr_agent/settings/.secrets_template.toml pr_agent/settings/.secrets.toml
    - Webhook secret: The secret you generated earlier.
 
 9. Install the app by navigating to the "Install App" tab and selecting your desired repositories.
+
+10. The app runs under gunicorn with multiple worker processes. See [Sizing a self-hosted webhook server](./index.md#sizing-a-self-hosted-webhook-server) for the `GUNICORN_WORKERS` / `GUNICORN_MAX_WORKERS` knobs and memory guidance — worth reading before setting a memory limit.
 
 > **Note:** When running PR-Agent from GitHub app, the default configuration file (configuration.toml) will be loaded.
 > However, you can override the default tool parameters by uploading a local configuration file `.pr_agent.toml`
@@ -703,7 +708,7 @@ For example: `GITHUB.WEBHOOK_SECRET` --> `GITHUB__WEBHOOK_SECRET`
 2. Build a docker image that can be used as a lambda function
 
     ```shell
-    docker buildx build --platform=linux/amd64 . -t pragent/pr-agent:github_lambda --target github_lambda -f docker/Dockerfile.lambda
+    docker buildx build --platform=linux/amd64 . -t pr-agent:github_lambda --target github_lambda -f docker/Dockerfile.lambda
    ```
    (Note: --target github_lambda is optional as it's the default target)
 
@@ -711,8 +716,8 @@ For example: `GITHUB.WEBHOOK_SECRET` --> `GITHUB__WEBHOOK_SECRET`
 3. Push image to ECR
 
     ```shell
-    docker tag pragent/pr-agent:github_lambda <AWS_ACCOUNT>.dkr.ecr.<AWS_REGION>.amazonaws.com/pragent/pr-agent:github_lambda
-    docker push <AWS_ACCOUNT>.dkr.ecr.<AWS_REGION>.amazonaws.com/pragent/pr-agent:github_lambda
+    docker tag pr-agent:github_lambda <AWS_ACCOUNT>.dkr.ecr.<AWS_REGION>.amazonaws.com/pr-agent:github_lambda
+    docker push <AWS_ACCOUNT>.dkr.ecr.<AWS_REGION>.amazonaws.com/pr-agent:github_lambda
     ```
 
 4. Create a lambda function that uses the uploaded image. Set the lambda timeout to be at least 3m.

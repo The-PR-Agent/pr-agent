@@ -2,10 +2,12 @@
 Tests for the litellm.api_key guard in LiteLLMAIHandler.chat_completion.
 
 Verifies:
-  - Placeholder key (DUMMY_LITELLM_API_KEY) is never injected into the call.
+  - Placeholder key (DUMMY_LITELLM_API_KEY) is never injected into the call, and never
+    occupies the global litellm.api_key (issue #2544).
   - None is not injected (e.g. when OpenAI key is set via litellm.openai_key).
   - Real provider keys (Groq, SambaNova, XAI, OpenRouter, Azure AD) ARE injected.
 """
+import contextlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import litellm
@@ -46,14 +48,29 @@ def _mock_response():
 
 @pytest.fixture(autouse=True)
 def patch_settings(monkeypatch):
-    monkeypatch.setattr(litellm_handler, "get_settings", lambda: _make_settings())
+    monkeypatch.setattr(litellm_handler, "get_settings", _make_settings)
+
+
+@pytest.fixture(autouse=True)
+def restore_litellm_globals():
+    """Undo the LiteLLM globals LiteLLMAIHandler.__init__ writes.
+
+    Constructing the handler mutates process-wide state (litellm.api_key and
+    litellm.openai_key). monkeypatch only reverts what a test set itself, so without
+    this the placeholder written during __init__ would outlive the test and make
+    later tests order-dependent.
+    """
+    saved = {name: getattr(litellm, name) for name in ("api_key", "openai_key")}
+    yield
+    for name, value in saved.items():
+        setattr(litellm, name, value)
 
 
 def _make_anthropic_settings():
     """Settings with ANTHROPIC.KEY configured, no OPENAI.KEY.
 
     This simulates the original bug scenario: ANTHROPIC.KEY is set,
-    but OPENAI.KEY is not, so litellm.api_key falls back to DUMMY_LITELLM_API_KEY.
+    but OPENAI.KEY is not, so __init__ falls back to the DUMMY_LITELLM_API_KEY placeholder.
     """
     anthropic_key = "test-anthropic-key-12345"
     return type("Settings", (), {
@@ -134,9 +151,9 @@ class TestApiKeyGuard:
     async def test_anthropic_key_not_shadowed_by_dummy_key(self, monkeypatch):
         """Original bug scenario: ANTHROPIC.KEY configured without OPENAI.KEY.
 
-        During __init__, litellm.api_key is set to DUMMY_LITELLM_API_KEY (fallback)
-        because OPENAI.KEY is not configured. But litellm.anthropic_key is also set.
-        The guard must prevent the dummy key from being passed to the call,
+        During __init__ the DUMMY_LITELLM_API_KEY placeholder is stored (as the OpenAI
+        fallback) because OPENAI.KEY is not configured. But litellm.anthropic_key is also
+        set. The guard must prevent the placeholder from being passed to the call,
         allowing litellm to use anthropic_key internally.
 
         This test replicates the exact bug from GitHub issue #2042.
@@ -145,7 +162,7 @@ class TestApiKeyGuard:
         monkeypatch.setattr(litellm_handler, "get_settings", _make_anthropic_settings)
 
         # Ensure deterministic preconditions: delete OPENAI_API_KEY env var so __init__
-        # will set litellm.api_key to DUMMY_LITELLM_API_KEY (line 42-43 of litellm_ai_handler.py)
+        # takes the placeholder branch in litellm_ai_handler.py
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
         # Reset litellm.api_key to avoid cross-test state pollution
@@ -156,9 +173,11 @@ class TestApiKeyGuard:
             mock_call.return_value = _mock_response()
             handler = LiteLLMAIHandler()
 
-            # After init: litellm.api_key should be the dummy (OpenAI fallback),
-            # but litellm.anthropic_key is the real Anthropic key
-            assert litellm.api_key == DUMMY_LITELLM_API_KEY
+            # After init: the placeholder lives in litellm.openai_key (OpenAI fallback)
+            # and never in litellm.api_key, which LiteLLM checks ahead of provider env
+            # vars. litellm.anthropic_key holds the real Anthropic key.
+            assert litellm.openai_key == DUMMY_LITELLM_API_KEY
+            assert litellm.api_key != DUMMY_LITELLM_API_KEY
 
             # Call with Anthropic model
             await handler.chat_completion(
@@ -472,3 +491,206 @@ class TestApiKeyGuard:
             # (which is Ollama in this case, but the guard correctly allows real keys through)
             await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
             assert mock_call.call_args[1]["api_key"] == ollama_key
+
+
+class _StopCall(Exception):
+    """Sentinel raised from a patched LiteLLM transport once the api_key is captured."""
+
+
+class TestPlaceholderDoesNotShadowProviderEnvVars:
+    """Regression tests for issue #2544.
+
+    The placeholder must not sit in the global ``litellm.api_key``: LiteLLM resolves
+    several providers as ``api_key or litellm.api_key or <provider attr> or
+    get_secret("<PROVIDER>_API_KEY")``, so a truthy placeholder there wins over the
+    user's provider env var (OpenRouter, Azure, Mistral, ... ) and the request goes
+    out with "dummy_key". Keeping the placeholder in ``litellm.openai_key`` — which
+    LiteLLM only consults on the OpenAI/OpenAI-compatible paths — preserves the
+    keyless local-endpoint use case without shadowing anything else.
+    """
+
+    @pytest.fixture(autouse=True)
+    def restore_openai_key(self, monkeypatch):
+        monkeypatch.setattr(litellm, "openai_key", None)
+        monkeypatch.setattr(litellm, "api_key", None)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    @pytest.mark.asyncio
+    async def test_keyless_init_clears_a_stale_provider_key(self, monkeypatch):
+        """A keyless request must not inherit the previous request's provider key.
+
+        __init__ mutates process-global LiteLLM state, so a provider branch from an
+        earlier request (Groq/xAI/SambaNova/OpenRouter all write litellm.api_key) can
+        still be sitting there. chat_completion() forwards any truthy non-placeholder
+        litellm.api_key, so without an explicit reset a keyless request would
+        authenticate with — and leak — the earlier request's credential.
+        """
+        groq_settings = type("Settings", (), {
+            "config": type("Config", (), {
+                "reasoning_effort": None,
+                "ai_timeout": 30,
+                "custom_reasoning_model": False,
+                "max_model_tokens": 32000,
+                "verbosity_level": 0,
+                "seed": -1,
+                "get": lambda self, key, default=None: default,
+            })(),
+            "litellm": type("LiteLLM", (), {
+                "get": lambda self, key, default=None: default,
+            })(),
+            "groq": type("Groq", (), {"key": "gsk-tenant-a"})(),
+            "get": lambda self, key, default=None: (
+                "gsk-tenant-a" if key == "GROQ.KEY" else default
+            ),
+        })()
+
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: groq_settings)
+        LiteLLMAIHandler()  # request 1: tenant A, Groq key lands in litellm.api_key
+        assert litellm.api_key == "gsk-tenant-a"
+
+        monkeypatch.setattr(litellm_handler, "get_settings", _make_settings)
+        with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion",
+                   new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = _mock_response()
+            handler = LiteLLMAIHandler()  # request 2: tenant B, no keys configured
+            await handler.chat_completion(
+                model="openai/local-model", system="sys", user="usr"
+            )
+
+        assert "api_key" not in mock_call.call_args[1], (
+            f"A keyless init must clear the previous request's provider key; "
+            f"kwargs had: {mock_call.call_args[1].get('api_key')!r}"
+        )
+
+    def test_placeholder_not_stored_in_global_litellm_api_key(self):
+        """With no OpenAI key configured, litellm.api_key must stay falsy."""
+        LiteLLMAIHandler()
+
+        assert litellm.api_key != DUMMY_LITELLM_API_KEY, (
+            "The placeholder must not occupy litellm.api_key — it shadows provider "
+            "env vars such as OPENROUTER_API_KEY in LiteLLM's resolution chain."
+        )
+        assert litellm.openai_key == DUMMY_LITELLM_API_KEY, (
+            "The placeholder must still be available on the OpenAI-compatible path, "
+            "so keyless local endpoints (vLLM, LM Studio, ...) keep working."
+        )
+
+    def test_placeholder_does_not_stick_across_handler_inits(self, monkeypatch):
+        """A keyless request must not poison later requests that do configure OPENAI.KEY.
+
+        LiteLLMAIHandler is constructed per request but writes to LiteLLM's process-wide
+        globals. With the placeholder on litellm.api_key a single keyless init left
+        "dummy_key" there for the lifetime of the process, and every later request
+        resolved the placeholder even with OPENAI.KEY set — because __init__ only ever
+        writes the real OpenAI key to litellm.openai_key, which sits *behind*
+        litellm.api_key in the chain. Keeping the placeholder on openai_key means the
+        real key simply replaces it.
+        """
+        from litellm import main as litellm_main
+
+        openai_settings = type("Settings", (), {
+            "config": type("Config", (), {
+                "reasoning_effort": None,
+                "ai_timeout": 30,
+                "custom_reasoning_model": False,
+                "max_model_tokens": 32000,
+                "verbosity_level": 0,
+                "seed": -1,
+                "get": lambda self, key, default=None: default,
+            })(),
+            "litellm": type("LiteLLM", (), {
+                "get": lambda self, key, default=None: default,
+            })(),
+            "openai": type("OpenAI", (), {"key": "sk-real-openai"})(),
+            "get": lambda self, key, default=None: (
+                "sk-real-openai" if key == "OPENAI.KEY" else default
+            ),
+        })()
+
+        LiteLLMAIHandler()  # request 1: no OpenAI key configured
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: openai_settings)
+        LiteLLMAIHandler()  # request 2: OPENAI.KEY configured
+
+        captured = {}
+
+        class _Capturing:
+            def completion(self, *args, **kwargs):
+                captured["api_key"] = kwargs.get("api_key")
+                raise _StopCall
+
+        monkeypatch.setattr(litellm_main, "openai_chat_completions", _Capturing())
+        monkeypatch.setattr(litellm_main, "base_llm_http_handler", _Capturing())
+        with contextlib.suppress(Exception):
+            litellm.completion(model="gpt-4o", messages=[{"role": "user", "content": "hi"}])
+
+        assert captured.get("api_key") == "sk-real-openai", (
+            f"A keyless init must not leave a placeholder that outlives it; "
+            f"LiteLLM resolved: {captured.get('api_key')!r}"
+        )
+
+    def test_openrouter_env_key_wins_over_placeholder(self, monkeypatch):
+        """End-to-end through LiteLLM's own resolution chain.
+
+        Patches LiteLLM's internal HTTP handler to capture the api_key that would be
+        sent for an ``openrouter/*`` model when the key comes from the native
+        OPENROUTER_API_KEY env var rather than PR-Agent's [openrouter] settings.
+        """
+        from litellm import main as litellm_main
+
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-real-key")
+        LiteLLMAIHandler()
+
+        captured = {}
+
+        class _CapturingHandler:
+            def completion(self, **kwargs):
+                captured["api_key"] = kwargs.get("api_key")
+                raise _StopCall
+
+        monkeypatch.setattr(litellm_main, "base_llm_http_handler", _CapturingHandler())
+        # LiteLLM maps whatever the transport raises onto its own exception types,
+        # so the sentinel comes back wrapped — the captured key is what matters.
+        with contextlib.suppress(Exception):
+            litellm.completion(
+                model="openrouter/deepseek/deepseek-chat",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert captured.get("api_key") == "sk-or-real-key", (
+            f"OPENROUTER_API_KEY must not be shadowed by the placeholder; "
+            f"LiteLLM resolved: {captured.get('api_key')!r}"
+        )
+
+    def test_openai_compatible_endpoint_still_gets_placeholder(self, monkeypatch):
+        """Keyless local endpoints must still receive a key.
+
+        The OpenAI SDK raises "The api_key client option must be set" when no key is
+        resolved, which is exactly why the placeholder exists. Dropping it entirely
+        (instead of moving it to litellm.openai_key) would break these setups.
+        """
+        from litellm import main as litellm_main
+
+        LiteLLMAIHandler()
+
+        captured = {}
+
+        class _CapturingOpenAI:
+            def completion(self, *args, **kwargs):
+                captured["api_key"] = kwargs.get("api_key")
+                raise _StopCall
+
+        # LiteLLM routes the OpenAI path through either handler depending on the
+        # EXPERIMENTAL_OPENAI_BASE_LLM_HTTP_HANDLER flag; capture on both.
+        monkeypatch.setattr(litellm_main, "openai_chat_completions", _CapturingOpenAI())
+        monkeypatch.setattr(litellm_main, "base_llm_http_handler", _CapturingOpenAI())
+        with contextlib.suppress(Exception):
+            litellm.completion(
+                model="openai/local-model",
+                api_base="http://localhost:8000/v1",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert captured.get("api_key") == DUMMY_LITELLM_API_KEY, (
+            f"Keyless OpenAI-compatible endpoints must still receive the placeholder; "
+            f"LiteLLM resolved: {captured.get('api_key')!r}"
+        )

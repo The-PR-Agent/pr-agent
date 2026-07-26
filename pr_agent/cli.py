@@ -4,6 +4,9 @@ import os
 import sys
 
 from pr_agent.agent.pr_agent import PRAgent, commands
+from pr_agent.algo.ai_handlers.litellm_helpers import (
+    DEFAULT_CALLBACK_TIMEOUT_SECONDS, drain_litellm_callbacks,
+    litellm_callbacks_registered)
 from pr_agent.algo.utils import get_version
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger, setup_logger
@@ -42,7 +45,7 @@ def set_parser():
     - add_docs
 
     - generate_labels
-    
+
     - help_docs - Ask a question, from either an issue or PR context, on a given repo (current context or a different one)
 
 
@@ -138,16 +141,14 @@ def run(inargs=None, args=None):
             target = args.pr_url if args.pr_url else "local_diff"
             result = await asyncio.create_task(PRAgent().handle_request(target, [command] + args.rest))
 
-        if get_settings().litellm.get("enable_callbacks", False):
-            # There may be additional events on the event queue from the run above. If there are give them time to complete.
+        # litellm defers its success/failure callbacks onto the event loop, which
+        # asyncio.run() below tears down the moment this coroutine returns. Give
+        # them a chance to run first, or they are silently dropped.
+        if litellm_callbacks_registered():
             get_logger().debug("Waiting for event queue to complete")
-            tasks = [task for task in asyncio.all_tasks() if task is not asyncio.current_task()]
-            if tasks:
-                _, pending = await asyncio.wait(tasks, timeout=30)
-                if pending:
-                    get_logger().warning(
-                        f"{len(pending)} callback tasks({[task.get_coro() for task in pending]}) did not complete within timeout"
-                    )
+            await drain_litellm_callbacks(
+                get_settings().litellm.get("callback_timeout_seconds", DEFAULT_CALLBACK_TIMEOUT_SECONDS)
+            )
 
         return result
 
