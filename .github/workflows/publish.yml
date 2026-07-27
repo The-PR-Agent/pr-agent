@@ -62,6 +62,11 @@ jobs:
     needs: prepare
     runs-on: ubuntu-latest
     environment: release
+    # A job-level block replaces the workflow-level `contents: read` outright,
+    # so checkout's read access has to be restated alongside the OIDC token.
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
         with:
@@ -79,9 +84,11 @@ jobs:
           python -m pip install --upgrade pip build
           python -m build
 
+      # Authenticates via Trusted Publishing (OIDC) — no API token. Passing an
+      # explicit password would disable it, and would also silently suppress the
+      # PEP 740 attestations the action publishes by default.
       - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # v1.14.0
         with:
-          password: ${{ secrets.PYPI_API_TOKEN }}
           # Re-running the workflow for the same version (e.g. after a
           # transient registry failure) should not fail because the wheel
           # already exists on PyPI.
