@@ -397,6 +397,44 @@ Run only specific tools automatically:
         github_action_config.pr_actions: '["opened", "reopened"]'
 ```
 
+##### CI artifact context
+
+A file produced by an earlier CI step — a test report, a coverage summary, a linter or SAST output — can be injected into the prompts of `/review`, `/describe` and `/improve`, so the model reviews the PR with your pipeline's own findings in hand.
+
+Point the action at the file with the `artifact_path` input. The path is resolved relative to `GITHUB_WORKSPACE` (an absolute path also works), so the file must already exist in the workspace when PR-Agent runs — produce it in a previous step, or download it with `actions/download-artifact`:
+
+```yaml
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run tests
+        run: pytest --junitxml=reports/pytest.xml || true
+      - name: PR Agent action step
+        uses: the-pr-agent/pr-agent@main
+        env:
+          OPENAI_KEY: ${{ secrets.OPENAI_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          artifact_path: reports/pytest.xml
+          artifact_instructions: "These are the failing tests from this PR's CI run. Call out any suggestion that would not fix them."
+```
+
+Setting `artifact_path` turns the feature on by itself; there is no separate enable switch to flip in the workflow. The file contents are wrapped in a labelled `CI Artifact` block and appended to the `extra_instructions` of each target tool.
+
+The remaining knobs live in the `[artifacts]` section of your configuration:
+
+```toml
+[artifacts]
+enable = false                                              # auto-enabled when artifact_path is set
+artifact_path = ""                                          # relative to GITHUB_WORKSPACE, or absolute
+artifact_instructions = ""                                  # empty = a generic "treat this as CI context" instruction
+artifact_label = ""                                         # empty = the file's name
+target_tools = ["pr_reviewer", "pr_description", "pr_code_suggestions"]
+max_artifact_size = 50000                                   # characters; longer files are truncated with a marker
+```
+
+!!! note
+    A path that resolves outside `GITHUB_WORKSPACE` is rejected, and a missing or unreadable file is skipped with a warning — in both cases the tools still run, just without the artifact context.
+
 #### Using Configuration Files
 
 Instead of setting all options via environment variables, you can use a `.pr_agent.toml` file in your repository root:
@@ -559,23 +597,23 @@ For more detailed configuration options, see:
 ### Using a specific release
 
 !!! tip ""
-    if you want to pin your action to a specific release (v0.34.2 for example) for stability reasons, use:
+    if you want to pin your action to a specific release (v0.41.0 for example) for stability reasons, use:
     ```yaml
     ...
         steps:
           - name: PR Agent action step
             id: pragent
-            uses: docker://pragent/pr-agent:0.34.2-github_action
+            uses: docker://pragent/pr-agent:0.41.0-github_action
     ...
     ```
 
-    For enhanced security, you can also specify the Docker image by its [digest](https://hub.docker.com/repository/docker/pragent/pr-agent/tags):
+    For enhanced security, you can also specify the Docker image by its [digest](https://hub.docker.com/repository/docker/pragent/pr-agent/tags). Resolve the digest for the version you are pinning with `docker buildx imagetools inspect pragent/pr-agent:0.41.0-github_action --format '{{.Manifest.Digest}}'`, then use it in place of the tag:
     ```yaml
     ...
         steps:
           - name: PR Agent action step
             id: pragent
-            uses: docker://pragent/pr-agent@sha256:a0b36966ca3a197ca739fa1e65c16703076fc1c744cd423ca203b8c21707d71c
+            uses: docker://pragent/pr-agent@sha256:<digest>
     ...
     ```
 
