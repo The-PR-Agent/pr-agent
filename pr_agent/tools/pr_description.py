@@ -79,6 +79,7 @@ class PRDescription:
             "include_file_summary_changes": len(self.git_provider.get_diff_files()) <= self.COLLAPSIBLE_FILE_LIST_THRESHOLD,
             "duplicate_prompt_examples": get_settings().config.get("duplicate_prompt_examples", False),
             "enable_pr_diagram": enable_pr_diagram,
+            "enable_pr_description": get_settings().pr_description.get("enable_pr_description", True),
         }
 
         self.user_description = self.git_provider.get_user_description()
@@ -569,6 +570,8 @@ class PRDescription:
             self.data.pop('labels')
         if not get_settings().pr_description.enable_pr_type:
             self.data.pop('type', None)
+        if not get_settings().pr_description.get("enable_pr_description", True):
+            self.data.pop('description', None)
 
         # Remove the 'PR Title' key from the dictionary
         ai_title = self.data.pop('title', self.vars["title"])

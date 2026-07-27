@@ -126,6 +126,7 @@ generate_ai_title=false
 use_bullet_points=true
 extra_instructions = ""
 enable_pr_type=true
+enable_pr_description=true # adds a section with an AI-generated summary of the PR changes
 final_update_message = true
 enable_help_text=false
 enable_help_comment=false

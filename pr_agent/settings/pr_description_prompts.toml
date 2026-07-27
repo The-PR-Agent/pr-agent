@@ -60,7 +60,9 @@ class FileDescription(BaseModel):
 
 class PRDescription(BaseModel):
     type: List[PRType] = Field(description="one or more types that describe the PR content. Return the label member value (e.g. 'Bug fix', not 'bug_fix')")
+{%- if enable_pr_description %}
     description: str = Field(description="summarize the PR changes with 1-4 bullet points, each up to 8 words. For large PRs, add sub-bullets for each bullet if needed. Order bullets by importance, with each bullet highlighting a key change group.")
+{%- endif %}
     title: str = Field(description="a concise and descriptive title that captures the PR's main theme")
 {%- if enable_pr_diagram %}
     changes_diagram: str = Field(description='a horizontal diagram that represents the main PR changes, in the format of a valid mermaid LR flowchart. The diagram should be concise and easy to read. Leave empty if no diagram is relevant. To create robust Mermaid diagrams, follow this two-step process: (1) Declare the nodes: nodeID["node description"]. (2) Then define the links: nodeID1 -- "link text" --> nodeID2. Node description must always be surrounded with double quotation marks')
@@ -77,9 +79,11 @@ Example output:
 type:
 - ...
 - ...
+{%- if enable_pr_description %}
 description: |
   - ...
   - ...
+{%- endif %}
 title: |
   ...
 {%- if enable_pr_diagram %}
@@ -166,9 +170,11 @@ type:
 - Bug fix
 - Refactoring
 - ...
+{%- if enable_pr_description %}
 description: |
   - ...
   - ...
+{%- endif %}
 title: |
   ...
 {%- if enable_pr_diagram %}

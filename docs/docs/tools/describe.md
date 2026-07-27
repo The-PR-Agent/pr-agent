@@ -117,6 +117,10 @@ This option is enabled by default via the `pr_description.enable_pr_diagram` par
         <td>If set to false, it will not show the `PR type` as a text value in the description content. Default is true.</td>
       </tr>
       <tr>
+        <td><b>enable_pr_description</b></td>
+        <td>If set to false, the AI-generated summary section will not be requested from the model, nor shown in the description content. The other sections (diagram, changes walkthrough) are unaffected. Default is true.</td>
+      </tr>
+      <tr>
         <td><b>final_update_message</b></td>
         <td>If set to true, it will add a comment message [`PR Description updated to latest commit...`](https://github.com/the-pr-agent/pr-agent/pull/499#issuecomment-1837412176) after finishing calling `/describe`. Default is true.</td>
       </tr>
