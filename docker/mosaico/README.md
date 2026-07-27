@@ -2,15 +2,15 @@
 
 Deployment assets for running **PR-Agent** as a [MOSAICO](https://mosaico-project.eu/) A2A
 *solution agent*. This directory contains no Python and no pr-agent source — it consumes
-PR-Agent as a published, version-pinned Docker image. The agent's source lives upstream in
-[`qodo-ai/pr-agent`](https://github.com/qodo-ai/pr-agent), under `pr_agent/mosaico/`; it is
-merged into `main` and ships in every release wheel and image starting at `v0.37.0`.
+PR-Agent as a published, version-pinned Docker image. The agent's source lives in
+[`The-PR-Agent/pr-agent`](https://github.com/The-PR-Agent/pr-agent), under `pr_agent/mosaico/`;
+it is merged into `main` and ships in every release wheel and image starting at `v0.37.0`.
 
-## Relationship to upstream
+## Relationship to the PR-Agent repository
 
 This is not a fork and it never becomes one:
 
-- The MOSAICO A2A server is upstream code, released in tags `v0.37.0`–`v0.41.0`. This bundle
+- The MOSAICO A2A server is PR-Agent code, released in tags `v0.37.0` onwards. This bundle
   holds zero Python — only a compose overlay, a registration template, an env template, a
   smoke test, and this README.
 - **Staying current is one line**: bump the pinned tag in `docker-compose.pr-agent.yml`, then
@@ -20,11 +20,12 @@ This is not a fork and it never becomes one:
   -    image: pragent/pr-agent:0.41.0-mosaico_agent
   +    image: pragent/pr-agent:0.42.0-mosaico_agent
   ```
-- Upstream publishes `pragent/pr-agent:<version>-mosaico_agent` for every release, from the
-  same CI matrix that builds its other images — the MOSAICO target cannot silently stop being
-  built without the whole release failing.
+- The release workflow publishes `pragent/pr-agent:<version>-mosaico_agent` for every release,
+  from the same CI matrix that builds its other images — the MOSAICO target cannot silently
+  stop being built without the whole release failing.
 - Canonical source of every file in this bundle is `docker/mosaico/` in
-  `github.com/qodo-ai/pr-agent`. Edit there, copy here. Never edit here directly.
+  `github.com/The-PR-Agent/pr-agent` — this directory. The GitLab deployment mirror holds
+  verbatim copies; edit here, and re-copy there. Never edit the mirror directly.
 
 ## Quick start (standalone, no demonstrator)
 
@@ -145,4 +146,4 @@ Two outcomes:
 
 ## License
 
-MIT — see the bundled [`LICENSE`](./LICENSE). Upstream `qodo-ai/pr-agent` is MIT-licensed too.
+MIT — see the bundled [`LICENSE`](./LICENSE). `The-PR-Agent/pr-agent` is MIT-licensed too.

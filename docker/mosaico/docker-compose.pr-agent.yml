@@ -1,5 +1,5 @@
 # PR-Agent MOSAICO solution-agent overlay. Canonical source is docker/mosaico/ in
-# github.com/qodo-ai/pr-agent - edit it there, never in a copy.
+# github.com/The-PR-Agent/pr-agent - edit it there, never in a copy.
 # Copy into the demonstrator's `compose/` dir, next to `base-definitions.yml`, so the
 # `extends:` refs resolve; see ./README.md for the full wiring steps.
 #

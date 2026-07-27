@@ -282,7 +282,7 @@ Set `AWS_USE_IMDS=true` in the environment. PR-Agent will resolve credentials vi
 Minimal GitHub Actions workflow (no AWS secret keys required):
 
 ```yaml
-- uses: Codium-ai/pr-agent@main
+- uses: the-pr-agent/pr-agent@main
   env:
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     AWS_USE_IMDS: "true"
