@@ -14,13 +14,15 @@ from pr_agent.algo.pr_processing import (OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
                                          get_pr_diff,
                                          get_pr_diff_multiple_patchs,
                                          retry_with_fallback_models)
+from pr_agent.algo.run_metadata import init_run_metadata
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (ModelType, PRDescriptionHeader, clip_tokens,
                                  get_max_tokens, get_user_labels, load_yaml,
                                  set_custom_labels,
-                                 show_relevant_configurations)
+                                 show_relevant_configurations,
+                                 show_run_metadata)
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import (GithubProvider, get_git_provider,
                                     get_git_provider_with_context)
@@ -97,6 +99,7 @@ class PRDescription:
         self.file_label_dict = None
 
     async def run(self):
+        init_run_metadata()
         try:
             get_logger().info(f"Generating a PR description for pr_id: {self.pr_id}")
             relevant_configs = {'pr_description': dict(get_settings().pr_description),
@@ -156,6 +159,10 @@ class PRDescription:
             # Output the relevant configurations if enabled
             if get_settings().get('config', {}).get('output_relevant_configurations', False):
                 pr_body += show_relevant_configurations(relevant_section='pr_description')
+
+            # Output the run metadata (model, tokens, time cost) if enabled
+            if get_settings().get('config', {}).get('output_run_metadata', False):
+                pr_body += show_run_metadata(self.git_provider.is_supported("gfm_markdown"))
 
             if get_settings().config.publish_output:
 

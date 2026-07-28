@@ -12,12 +12,14 @@ from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.pr_processing import (add_ai_metadata_to_diff_files,
                                          get_pr_diff,
                                          retry_with_fallback_models)
+from pr_agent.algo.run_metadata import init_run_metadata
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (ModelType, PRReviewHeader,
                                  convert_to_markdown_v2, github_action_output,
-                                 load_yaml, show_relevant_configurations)
+                                 load_yaml, show_relevant_configurations,
+                                 show_run_metadata)
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import (get_git_provider,
                                     get_git_provider_with_context)
@@ -122,6 +124,7 @@ class PRReviewer:
         return incremental
 
     async def run(self) -> None:
+        init_run_metadata()
         try:
             if not self.git_provider.get_files():
                 get_logger().info(f"PR has no files: {self.pr_url}, skipping review")
@@ -282,6 +285,10 @@ class PRReviewer:
         # Output the relevant configurations if enabled
         if get_settings().get('config', {}).get('output_relevant_configurations', False):
             markdown_text += show_relevant_configurations(relevant_section='pr_reviewer')
+
+        # Output the run metadata (model, tokens, time cost) if enabled
+        if get_settings().get('config', {}).get('output_run_metadata', False):
+            markdown_text += show_run_metadata(self.git_provider.is_supported("gfm_markdown"))
 
         # Add custom labels from the review prediction (effort, security)
         self.set_review_labels(data)
