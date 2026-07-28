@@ -18,6 +18,16 @@ _TRACKED_KEYS = (
 )
 
 
+@pytest.fixture(autouse=True)
+def isolate_run_metadata():
+    """Restore the run-metadata ContextVar after each test."""
+    from pr_agent.algo import run_metadata
+
+    token = run_metadata._run_metadata.set(run_metadata._run_metadata.get())
+    yield
+    run_metadata._run_metadata.reset(token)
+
+
 def _snapshot_settings():
     return snapshot_settings(_TRACKED_KEYS)
 

@@ -1,6 +1,18 @@
+import pytest
+
 from pr_agent.algo.run_metadata import (RunMetadata, add_token_usage,
                                         get_run_metadata, init_run_metadata,
                                         record_ai_call, record_model_used)
+
+
+@pytest.fixture(autouse=True)
+def isolate_run_metadata():
+    """Restore the run-metadata ContextVar after each test."""
+    from pr_agent.algo import run_metadata
+
+    token = run_metadata._run_metadata.set(run_metadata._run_metadata.get())
+    yield
+    run_metadata._run_metadata.reset(token)
 
 
 class _Usage:
