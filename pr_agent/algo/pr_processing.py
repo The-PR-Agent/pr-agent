@@ -10,6 +10,7 @@ from pr_agent.algo.git_patch_processing import (
     extend_patch, handle_patch_deletions,
     decouple_and_convert_to_hunks_with_lines_numbers)
 from pr_agent.algo.language_handler import sort_files_by_main_languages
+from pr_agent.algo.run_metadata import record_model_used
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.algo.utils import ModelType, clip_tokens, get_max_tokens, get_model
@@ -328,7 +329,9 @@ async def retry_with_fallback_models(f: Callable, model_type: ModelType = ModelT
                 f"{(' from deployment ' + deployment_id) if deployment_id else ''}"
             )
             get_settings().set("openai.deployment_id", deployment_id)
-            return await f(model)
+            result = await f(model)
+            record_model_used(model, is_fallback=i > 0)
+            return result
         except Exception as e:
             get_logger().warning(
                 f"Failed to generate prediction with {model}",
