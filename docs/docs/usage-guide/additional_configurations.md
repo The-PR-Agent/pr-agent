@@ -22,6 +22,26 @@ Will output an additional field showing the actual configurations used for the `
 
 ![possible_config2](https://codium.ai/images/pr_agent/possible_config2.png){width=512}
 
+### Showing the run metadata
+
+To see which model actually answered, how many tokens the run consumed, and how long it took, enable `config.output_run_metadata`:
+
+```
+/improve --config.output_run_metadata=true
+```
+
+This appends a collapsible section to the generated comment:
+
+```
+🔎 PR-Agent run metadata
+- Model: openai/gpt-5.4 (fallback)
+- Tokens: 12,340 in / 1,205 out / 13,545 total
+- Time cost: 8.2s
+- AI calls: 1
+```
+
+`Model` shows the model that produced the answer, marked `(fallback)` when the primary model failed and a fallback took over. The `Tokens` line appears only when the model provider reports usage. The flag is disabled by default and is supported by `/review`, `/describe`, and `/improve`.
+
 ## Ignoring files from analysis
 
 In some cases, you may want to exclude specific files or directories from the analysis performed by PR-Agent. This can be useful, for example, when you have files that are generated automatically or files that shouldn't be reviewed, like vendor code.
