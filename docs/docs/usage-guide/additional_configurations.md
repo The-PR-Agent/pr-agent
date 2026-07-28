@@ -30,7 +30,7 @@ To see which model actually answered, how many tokens the run consumed, and how 
 /improve --config.output_run_metadata=true
 ```
 
-This appends a collapsible section to the generated comment:
+On providers that support GitHub-Flavored Markdown this appends a collapsible section to the generated comment; elsewhere the same information is appended as plain text:
 
 ```
 🔎 PR-Agent run metadata
@@ -40,7 +40,7 @@ This appends a collapsible section to the generated comment:
 - AI calls: 1
 ```
 
-`Model` shows the model that produced the answer, marked `(fallback)` when the primary model failed and a fallback took over. The `Tokens` line appears only when the model provider reports usage. The flag is disabled by default and is supported by `/review`, `/describe`, and `/improve`.
+`Model` shows the model that produced the answer, marked `(fallback)` when the primary model failed and a fallback took over. The `Tokens` line appears only when the model provider reports usage. `AI calls` counts the successful LLM invocations made during the run. The flag is disabled by default and is supported by `/review`, `/describe`, and `/improve`.
 
 ## Ignoring files from analysis
 
