@@ -25,6 +25,7 @@ from starlette_context import context
 
 from pr_agent.algo import MAX_TOKENS
 from pr_agent.algo.git_patch_processing import extract_hunk_lines_from_patch
+from pr_agent.algo.run_metadata import get_run_metadata
 from pr_agent.algo.token_handler import TokenEncoder
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import get_settings, global_settings
@@ -1295,6 +1296,33 @@ def show_relevant_configurations(relevant_section: str) -> str:
     markdown_text += "\n```"
     markdown_text += "\n</details>\n"
     return markdown_text
+
+
+def show_run_metadata(gfm_supported: bool) -> str:
+    """Render the opt-in run-metadata section (model, tokens, time cost, AI calls).
+
+    Falls back to a plain, non-collapsible section when the provider does not
+    support GitHub-flavored markdown, so the information stays visible.
+    """
+    metadata = get_run_metadata()
+    if metadata is None or not metadata.model_used:
+        return ""
+
+    title = "🔎 PR-Agent run metadata"
+    lines = [f"- Model: {metadata.model_used}{' (fallback)' if metadata.fallback_used else ''}"]
+    if metadata.has_token_usage:
+        lines.append(f"- Tokens: {metadata.prompt_tokens:,} in / {metadata.completion_tokens:,} out / "
+                     f"{metadata.total_tokens:,} total")
+    lines.append(f"- Time cost: {metadata.duration_seconds:.1f}s")
+    if metadata.num_ai_calls:
+        lines.append(f"- AI calls: {metadata.num_ai_calls}")
+    body = "\n".join(lines)
+
+    if gfm_supported:
+        return (f"\n<hr>\n<details> <summary><strong>{title}</strong></summary>\n\n"
+                f"{body}\n\n</details>\n")
+    return f"\n___\n\n**{title}**\n\n{body}\n"
+
 
 def is_value_no(value):
     if not value:
