@@ -20,6 +20,7 @@ from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_helpers import (
     MockResponse, _get_azure_ad_token, _handle_streaming_response,
     _process_litellm_extra_body)
+from pr_agent.algo.run_metadata import record_ai_call
 from pr_agent.algo.utils import ReasoningEffort, get_version
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
@@ -332,6 +333,14 @@ class LiteLLMAIHandler(BaseAiHandler):
         else:
             response_log['main_pr_language'] = 'unknown'
         return response_log
+
+    @staticmethod
+    def _record_completion_metadata(response) -> None:
+        """Count the call and accumulate token usage when the provider reports it.
+
+        Streaming models return a MockResponse without `usage`, so tokens stay unset.
+        """
+        record_ai_call(getattr(response, "usage", None))
 
     def _configure_claude_extended_thinking(self, model: str, kwargs: dict) -> dict:
         """
@@ -721,6 +730,8 @@ class LiteLLMAIHandler(BaseAiHandler):
             # for CLI debugging
             if get_settings().config.verbosity_level >= 2:
                 get_logger().info(f"\nAI response:\n{resp}")
+
+            self._record_completion_metadata(response_obj)
 
             return resp, finish_reason
 
