@@ -7,8 +7,9 @@ from assessment.ai_reviewer.upstream_adapter import UpstreamAdapter
 
 
 class FakePullRequest:
-    def __init__(self) -> None:
-        self.head = SimpleNamespace(sha="b" * 40)
+    def __init__(self, sha: str = "b" * 40) -> None:
+        self.number = 17
+        self.head = SimpleNamespace(sha=sha)
         self.created: list[dict] = []
 
     def get_review_comments(self):
@@ -34,6 +35,16 @@ class FakeProvider:
             get_user=lambda: SimpleNamespace(login="review-bot")
         )
         self.commit = object()
+        self.fresh_shas = iter(("c" * 40, "d" * 40))
+        self.pull_refreshes: list[int] = []
+        self.repository = SimpleNamespace(
+            get_commit=lambda _: self.commit,
+            get_pull=self._get_pull,
+        )
+
+    def _get_pull(self, number: int) -> FakePullRequest:
+        self.pull_refreshes.append(number)
+        return FakePullRequest(next(self.fresh_shas))
 
     def get_files(self):
         return (
@@ -58,7 +69,7 @@ class FakeProvider:
         )
 
     def _get_repo(self):
-        return SimpleNamespace(get_commit=lambda _: self.commit)
+        return self.repository
 
 
 def test_adapter_builds_parseable_diff_for_file_statuses() -> None:
@@ -79,8 +90,18 @@ def test_adapter_reads_only_bot_comments_and_creates_one_review() -> None:
 
     adapter.create_review("b" * 40, comments)
 
-    assert adapter.current_head_sha() == "b" * 40
+    assert adapter.current_head_sha() == "c" * 40
     assert adapter.existing_review_bodies() == ("bot body",)
     assert provider.pr.created == [
         {"commit": provider.commit, "comments": comments}
     ]
+
+
+def test_current_head_sha_refetches_pr_instead_of_cached_object() -> None:
+    provider = FakeProvider()
+    adapter = UpstreamAdapter(provider)
+
+    assert provider.pr.head.sha == "b" * 40
+    assert adapter.current_head_sha() == "c" * 40
+    assert adapter.current_head_sha() == "d" * 40
+    assert provider.pull_refreshes == [17, 17]

@@ -63,7 +63,10 @@ class UpstreamAdapter:
         return "".join(chunks)
 
     def current_head_sha(self) -> str:
-        return str(self._provider.pr.head.sha)
+        pull_request = self._provider._get_repo().get_pull(
+            self._provider.pr.number
+        )
+        return str(pull_request.head.sha)
 
     def existing_review_bodies(self) -> tuple[str, ...]:
         actor = self._provider.github_client.get_user().login

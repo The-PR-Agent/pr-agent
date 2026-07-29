@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import time
 import uuid
 from collections.abc import Mapping, Sequence
@@ -50,7 +51,10 @@ def review(
 
     try:
         client = model_client or OpenAICompatibleModel()
-        tools = ContextTools(repo_root)
+        tools = ContextTools(
+            repo_root,
+            deadline_monotonic=deadline_monotonic,
+        )
         trace.append(_stage("analyze", "started"))
         analysis = client.complete(
             _analysis_messages(request, static_findings),
@@ -295,9 +299,21 @@ def _parse_json_object(content: str) -> dict[str, Any]:
             lines = lines[:-1]
         value = "\n".join(lines)
     parsed = json.loads(value)
+    _require_finite_json_numbers(parsed)
     if not isinstance(parsed, dict):
         raise ValueError("model response must be a JSON object")
     return parsed
+
+
+def _require_finite_json_numbers(value: Any) -> None:
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError("model response numbers must be finite")
+    if isinstance(value, dict):
+        for item in value.values():
+            _require_finite_json_numbers(item)
+    elif isinstance(value, list):
+        for item in value:
+            _require_finite_json_numbers(item)
 
 
 def _require_deadline(deadline_monotonic: float, operation: str) -> None:

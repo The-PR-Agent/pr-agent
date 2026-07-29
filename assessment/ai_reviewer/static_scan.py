@@ -65,6 +65,7 @@ def scan(
         "--json",
         "--metrics=off",
         "--disable-version-check",
+        "--",
         *files,
     ]
     try:

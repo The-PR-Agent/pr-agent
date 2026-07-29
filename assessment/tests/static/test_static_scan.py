@@ -65,6 +65,31 @@ def test_timeout_returns_warning_instead_of_finding(tmp_path: Path) -> None:
     assert warnings == ["semgrep exceeded the 90-second timeout"]
 
 
+def test_scan_terminates_options_for_leading_dash_file(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "-changed.py"
+    target.write_text("value = 1\n", encoding="utf-8")
+    request = _request(
+        changed_files=("-changed.py",),
+        changed_lines={"-changed.py": frozenset({1})},
+    )
+    captured: list[str] = []
+
+    def runner(command, **kwargs):
+        captured.extend(command)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout='{"results": [], "errors": []}',
+            stderr="",
+        )
+
+    scan(request, tmp_path, runner=runner)
+
+    assert captured[-2:] == ["--", "-changed.py"]
+
+
 def _request(
     changed_files: tuple[str, ...],
     changed_lines: dict[str, frozenset[int]],

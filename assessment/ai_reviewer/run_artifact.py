@@ -16,7 +16,10 @@ SENSITIVE_KEY = re.compile(
     re.IGNORECASE,
 )
 SENSITIVE_TEXT = (
-    re.compile(r"(?i)(authorization\s*[:=]\s*)(\S+)"),
+    re.compile(
+        r"(?i)((?:authorization|proxy-authorization|set-cookie|cookie)"
+        r"\s*[:=]\s*)[^\r\n]*"
+    ),
     re.compile(
         r"(?i)((?:api[_-]?key|token|password|cookie|secret)"
         r"\s*[:=]\s*)(\S+)"

@@ -44,6 +44,19 @@ class FakeModel:
         return self.responses.pop(0)
 
 
+class NonFiniteModel:
+    def complete(self, messages, deadline_monotonic):
+        return ModelResponse(
+            content=(
+                '{"context_requests":[{"tool":"search_code",'
+                '"arguments":{"query":"value","max_hits":1e999}}]}'
+            ),
+            model="deepseek-v4-pro",
+            request_id="non-finite",
+            usage={},
+        )
+
+
 def test_agent_runs_all_stages_and_a_read_only_tool(tmp_path: Path) -> None:
     source = tmp_path / "src" / "example.py"
     source.parent.mkdir()
@@ -84,3 +97,33 @@ def test_agent_runs_all_stages_and_a_read_only_tool(tmp_path: Path) -> None:
     assert result.trace_summary[0]["model_call"] == 1
     assert result.trace_summary[5]["model_call"] == 2
     assert "content" not in result.to_dict()["trace_summary"][3]
+
+
+def test_agent_returns_controlled_failure_for_non_finite_model_number(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "example.py").write_text("value = 1\n", encoding="utf-8")
+    request = ReviewRequest(
+        repository="owner/repo",
+        pr_number=17,
+        base_sha="a" * 40,
+        head_sha="b" * 40,
+        title="Non-finite response",
+        body="Synthetic request",
+        diff="synthetic diff",
+        changed_lines={"example.py": frozenset({1})},
+        changed_files=("example.py",),
+    )
+
+    result = review(
+        request,
+        [],
+        tmp_path,
+        time.monotonic() + 90,
+        model_client=NonFiniteModel(),
+    )
+
+    assert result.status == "failed"
+    assert result.findings == ()
+    assert result.errors
+    assert result.trace_summary[-1]["status"] == "failed"
