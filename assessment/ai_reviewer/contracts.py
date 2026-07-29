@@ -46,6 +46,8 @@ def _freeze_json(value: Any) -> Any:
         return MappingProxyType(frozen)
     if isinstance(value, (list, tuple)):
         return tuple(_freeze_json(item) for item in value)
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError("trace_summary numbers must be finite")
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     raise TypeError("trace_summary must contain only JSON-compatible values")
@@ -94,16 +96,31 @@ class ReviewRequest:
         ):
             raise ValueError("pr_number must be a positive integer")
 
-        copied_lines = {
-            path: frozenset(int(line) for line in lines)
-            for path, lines in self.changed_lines.items()
-        }
+        copied_lines: dict[str, frozenset[int]] = {}
+        for path, lines in self.changed_lines.items():
+            normalized_path = _required_text(path, "changed_lines path")
+            normalized_lines: set[int] = set()
+            for line in lines:
+                if (
+                    not isinstance(line, int)
+                    or isinstance(line, bool)
+                    or line <= 0
+                ):
+                    raise ValueError(
+                        "changed_lines values must be positive integers"
+                    )
+                normalized_lines.add(line)
+            copied_lines[normalized_path] = frozenset(normalized_lines)
+        copied_files = tuple(
+            _required_text(path, "changed_files path")
+            for path in self.changed_files
+        )
         object.__setattr__(
             self,
             "changed_lines",
             MappingProxyType(copied_lines),
         )
-        object.__setattr__(self, "changed_files", tuple(self.changed_files))
+        object.__setattr__(self, "changed_files", copied_files)
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> ReviewRequest:
@@ -157,6 +174,12 @@ class Finding:
             "title",
             _required_text(self.title, "title"),
         )
+        if (
+            not isinstance(self.line, int)
+            or isinstance(self.line, bool)
+            or self.line <= 0
+        ):
+            raise ValueError("line must be a positive integer")
         if self.category not in CATEGORIES:
             raise ValueError(f"category must be one of {sorted(CATEGORIES)}")
         if self.severity not in SEVERITIES:
@@ -164,11 +187,32 @@ class Finding:
         if self.source not in SOURCES:
             raise ValueError(f"source must be one of {sorted(SOURCES)}")
 
+        if isinstance(self.confidence, bool):
+            raise ValueError("confidence must be numeric, not boolean")
         confidence = float(self.confidence)
         if not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
             raise ValueError("confidence must be finite and between 0 and 1")
+        if isinstance(self.evidence, (str, bytes)):
+            raise TypeError("evidence must be a sequence of strings")
+        normalized_evidence: list[str] = []
+        for item in self.evidence:
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError("evidence entries must be non-empty strings")
+            normalized_evidence.append(item.strip())
+        if not normalized_evidence:
+            raise ValueError("evidence must not be empty")
         object.__setattr__(self, "confidence", confidence)
-        object.__setattr__(self, "evidence", tuple(self.evidence))
+        object.__setattr__(self, "evidence", tuple(normalized_evidence))
+        object.__setattr__(
+            self,
+            "impact",
+            _required_text(self.impact, "impact"),
+        )
+        object.__setattr__(
+            self,
+            "suggestion",
+            _required_text(self.suggestion, "suggestion"),
+        )
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Finding:
@@ -227,13 +271,22 @@ class ReviewResult:
         if self.status not in STATUSES:
             raise ValueError(f"status must be one of {sorted(STATUSES)}")
 
+        duration_seconds = float(self.duration_seconds)
+        if not math.isfinite(duration_seconds) or duration_seconds < 0:
+            raise ValueError(
+                "duration_seconds must be finite and non-negative"
+            )
+        if not all(isinstance(item, Finding) for item in self.findings):
+            raise TypeError("findings entries must be Finding instances")
+        if not all(isinstance(error, str) for error in self.errors):
+            raise TypeError("errors entries must be strings")
         frozen_trace = tuple(_freeze_json(item) for item in self.trace_summary)
         if not all(isinstance(item, Mapping) for item in frozen_trace):
             raise TypeError("trace_summary entries must be objects")
         object.__setattr__(
             self,
             "duration_seconds",
-            float(self.duration_seconds),
+            duration_seconds,
         )
         object.__setattr__(self, "findings", tuple(self.findings))
         object.__setattr__(self, "errors", tuple(self.errors))

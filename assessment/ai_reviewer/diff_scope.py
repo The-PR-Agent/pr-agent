@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from pathlib import PurePosixPath
+from pathlib import PurePosixPath, PureWindowsPath
 
 from unidiff import PatchSet
 
@@ -17,6 +17,7 @@ def safe_diff_path(path: str) -> str:
     candidate = PurePosixPath(value)
     if (
         candidate.is_absolute()
+        or PureWindowsPath(path).is_absolute()
         or ".." in candidate.parts
         or value in {"", "/dev/null"}
     ):

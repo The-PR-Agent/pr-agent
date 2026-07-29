@@ -4,7 +4,7 @@ import ast
 import json
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
-from pathlib import Path, PurePath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from .contracts import Finding, ReviewRequest
@@ -105,8 +105,13 @@ def _eligible_changed_files(
     files: list[str] = []
     warnings: list[str] = []
     for value in request.changed_files:
-        pure = PurePath(value)
-        if pure.is_absolute() or ".." in pure.parts:
+        normalized = value.replace("\\", "/")
+        pure = PurePosixPath(normalized)
+        if (
+            pure.is_absolute()
+            or PureWindowsPath(value).is_absolute()
+            or ".." in pure.parts
+        ):
             warnings.append(f"rejected unsafe changed path: {value}")
             continue
         lowered_parts = {part.lower() for part in pure.parts}

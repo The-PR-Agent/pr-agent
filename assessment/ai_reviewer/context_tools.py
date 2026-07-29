@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from pathlib import Path, PurePath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 MAX_READ_LINES = 200
@@ -138,17 +138,23 @@ class ContextTools:
         arguments = request.get("arguments") or {}
         if not isinstance(arguments, dict):
             raise ContextToolError("tool arguments must be an object")
+        normalized = _normalize_arguments(str(tool), arguments)
         if tool == "read_file":
-            return self.read_file(**arguments)
+            return self.read_file(**normalized)
         if tool == "search_code":
-            return self.search_code(**arguments)
+            return self.search_code(**normalized)
         if tool == "list_tree":
-            return self.list_tree(**arguments)
+            return self.list_tree(**normalized)
         raise ContextToolError(f"unsupported context tool: {tool}")
 
     def _resolve(self, relative_path: str, require_file: bool) -> Path:
-        pure = PurePath(relative_path)
-        if pure.is_absolute() or ".." in pure.parts:
+        normalized = relative_path.replace("\\", "/")
+        pure = PurePosixPath(normalized)
+        if (
+            pure.is_absolute()
+            or PureWindowsPath(relative_path).is_absolute()
+            or ".." in pure.parts
+        ):
             raise ContextToolError("path must be repository-relative")
         candidate = self.repo_root.joinpath(*pure.parts).resolve(strict=True)
         try:
@@ -182,3 +188,51 @@ class ContextTools:
     def _has_excluded_part(self, path: Path) -> bool:
         parts = set(path.relative_to(self.repo_root).parts)
         return bool(parts & EXCLUDED_PARTS)
+
+
+def _normalize_arguments(
+    tool: str,
+    arguments: dict[str, Any],
+) -> dict[str, Any]:
+    aliases = {
+        "read_file": {
+            "path": "relative_path",
+            "file_path": "relative_path",
+            "start": "start_line",
+            "end": "end_line",
+        },
+        "search_code": {
+            "path": "path_glob",
+            "glob": "path_glob",
+            "max_results": "max_hits",
+        },
+        "list_tree": {"path": "relative_path", "max_depth": "depth"},
+    }
+    allowed = {
+        "read_file": {"relative_path", "start_line", "end_line"},
+        "search_code": {"query", "path_glob", "max_hits"},
+        "list_tree": {"relative_path", "depth"},
+    }
+    if tool not in allowed:
+        return dict(arguments)
+    normalized: dict[str, Any] = {}
+    for key, value in arguments.items():
+        canonical = aliases[tool].get(key, key)
+        if canonical not in allowed[tool]:
+            raise ContextToolError(
+                f"unsupported argument for {tool}: {canonical}"
+            )
+        if canonical in normalized:
+            raise ContextToolError(
+                f"duplicate argument for {tool}: {canonical}"
+            )
+        normalized[canonical] = value
+    for key in {"start_line", "end_line", "max_hits", "depth"}:
+        if key in normalized:
+            try:
+                normalized[key] = int(normalized[key])
+            except (TypeError, ValueError) as error:
+                raise ContextToolError(
+                    f"{key} must be an integer"
+                ) from error
+    return normalized

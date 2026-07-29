@@ -41,7 +41,8 @@ def verify_findings(
             finding = Finding.from_dict(raw_finding)
         except (KeyError, TypeError, ValueError) as error:
             warnings.append(
-                f"candidate {index} rejected: {type(error).__name__}"
+                f"candidate {index} rejected: {type(error).__name__}: "
+                f"{str(error)[:160]}"
             )
             continue
         if finding.path not in request.changed_files:

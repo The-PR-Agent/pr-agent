@@ -8,8 +8,4 @@ rules:
       category: static
       impact: Unexpected failures can be swallowed and leave partial state.
       suggestion: Catch only the expected exception types and handle them explicitly.
-    pattern: |
-      try:
-        ...
-      except:
-        ...
+    pattern-regex: '(?m)^[ \t]*except[ \t]*:'

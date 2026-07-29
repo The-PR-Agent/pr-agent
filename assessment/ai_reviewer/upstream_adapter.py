@@ -42,12 +42,20 @@ class UpstreamAdapter:
             status = str(changed_file.status)
             old_path = "/dev/null" if status == "added" else f"a/{previous}"
             new_path = "/dev/null" if status == "removed" else f"b/{path}"
+            chunks.append(f"diff --git a/{previous} b/{path}\n")
+            if status == "added":
+                chunks.append("new file mode 100644\n")
+            elif status == "removed":
+                chunks.append("deleted file mode 100644\n")
+            elif status == "renamed":
+                chunks.extend(
+                    [
+                        f"rename from {previous}\n",
+                        f"rename to {path}\n",
+                    ]
+                )
             chunks.extend(
-                [
-                    f"diff --git a/{previous} b/{path}\n",
-                    f"--- {old_path}\n",
-                    f"+++ {new_path}\n",
-                ]
+                [f"--- {old_path}\n", f"+++ {new_path}\n"]
             )
             patch = getattr(changed_file, "patch", None)
             if patch:

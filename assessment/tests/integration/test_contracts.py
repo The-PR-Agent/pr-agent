@@ -143,6 +143,39 @@ def test_required_identifiers_reject_whitespace_only_values() -> None:
         Finding.from_dict({**raw_finding, "title": "\t"})
 
 
+@pytest.mark.parametrize("line", (0, -1, True, "10"))
+def test_finding_rejects_invalid_line_types_and_values(line: object) -> None:
+    raw_finding = load_json("static_findings.json")[0]
+
+    with pytest.raises(ValueError, match="line"):
+        Finding.from_dict({**raw_finding, "line": line})
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("evidence", [123]),
+        ("evidence", ["   "]),
+        ("impact", 123),
+        ("suggestion", None),
+        ("confidence", True),
+    ),
+)
+def test_finding_rejects_non_schema_values(field: str, value: object) -> None:
+    raw_finding = load_json("static_findings.json")[0]
+
+    with pytest.raises((TypeError, ValueError), match=field):
+        Finding.from_dict({**raw_finding, field: value})
+
+
+@pytest.mark.parametrize("duration", (-1.0, float("inf"), float("nan")))
+def test_result_rejects_invalid_duration(duration: float) -> None:
+    raw_result = load_json("review_result.json")
+
+    with pytest.raises(ValueError, match="duration_seconds"):
+        ReviewResult.from_dict({**raw_result, "duration_seconds": duration})
+
+
 def test_contracts_are_frozen_and_defensively_copy_input_containers() -> None:
     changed_line_values = [10, 11]
     changed_lines = {"src/calculator.py": changed_line_values}
