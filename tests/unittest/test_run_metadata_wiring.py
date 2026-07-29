@@ -8,6 +8,7 @@ from pr_agent.config_loader import get_settings
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.tools.pr_description import PRDescription
 from pr_agent.tools.pr_reviewer import PRReviewer
+from tests.unittest._run_metadata_test_helpers import isolate_run_metadata  # noqa: F401
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 _TRACKED_KEYS_REVIEW = (
@@ -38,16 +39,6 @@ _TRACKED_KEYS_SUGGESTIONS = (
     "pr_code_suggestions.persistent_comment",
     "pr_code_suggestions.dual_publishing_score_threshold",
 )
-
-
-@pytest.fixture(autouse=True)
-def isolate_run_metadata():
-    """Restore the run-metadata ContextVar after each test."""
-    from pr_agent.algo import run_metadata
-
-    token = run_metadata._run_metadata.set(run_metadata._run_metadata.get())
-    yield
-    run_metadata._run_metadata.reset(token)
 
 
 class _Usage:

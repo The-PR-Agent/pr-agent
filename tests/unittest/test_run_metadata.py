@@ -1,18 +1,11 @@
+import asyncio
+
 import pytest
 
 from pr_agent.algo.run_metadata import (RunMetadata, add_token_usage,
                                         get_run_metadata, init_run_metadata,
                                         record_ai_call, record_model_used)
-
-
-@pytest.fixture(autouse=True)
-def isolate_run_metadata():
-    """Restore the run-metadata ContextVar after each test."""
-    from pr_agent.algo import run_metadata
-
-    token = run_metadata._run_metadata.set(run_metadata._run_metadata.get())
-    yield
-    run_metadata._run_metadata.reset(token)
+from tests.unittest._run_metadata_test_helpers import isolate_run_metadata  # noqa: F401
 
 
 class _Usage:
@@ -115,6 +108,51 @@ def test_record_ai_call_counts_calls_even_without_usage():
     metadata = get_run_metadata()
     assert metadata.num_ai_calls == 2
     assert metadata.total_tokens == 12
+
+
+@pytest.mark.asyncio
+async def test_concurrent_child_tasks_accumulate_into_parent_collector():
+    init_run_metadata()
+
+    async def record(prompt_tokens, completion_tokens):
+        await asyncio.sleep(0)
+        record_ai_call(_Usage(prompt_tokens, completion_tokens, prompt_tokens + completion_tokens))
+
+    await asyncio.gather(
+        record(10, 1),
+        record(20, 2),
+        record(30, 3),
+    )
+
+    metadata = get_run_metadata()
+    assert metadata.num_ai_calls == 3
+    assert metadata.prompt_tokens == 60
+    assert metadata.completion_tokens == 6
+    assert metadata.total_tokens == 66
+
+
+@pytest.mark.asyncio
+async def test_concurrent_runs_keep_collectors_isolated():
+    async def run_with_usage(prompt_tokens, completion_tokens):
+        init_run_metadata()
+        await asyncio.sleep(0)
+        record_ai_call(_Usage(prompt_tokens, completion_tokens, prompt_tokens + completion_tokens))
+        return get_run_metadata()
+
+    first, second = await asyncio.gather(
+        run_with_usage(10, 1),
+        run_with_usage(20, 2),
+    )
+
+    assert first.num_ai_calls == 1
+    assert first.prompt_tokens == 10
+    assert first.completion_tokens == 1
+    assert first.total_tokens == 11
+
+    assert second.num_ai_calls == 1
+    assert second.prompt_tokens == 20
+    assert second.completion_tokens == 2
+    assert second.total_tokens == 22
 
 
 def test_helpers_are_noops_when_not_initialized():

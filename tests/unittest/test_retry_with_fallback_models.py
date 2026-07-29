@@ -6,6 +6,7 @@ from pr_agent.algo.pr_processing import retry_with_fallback_models
 from pr_agent.algo.run_metadata import get_run_metadata, init_run_metadata
 from pr_agent.algo.utils import ModelType
 from pr_agent.config_loader import get_settings
+from tests.unittest._run_metadata_test_helpers import isolate_run_metadata  # noqa: F401
 from tests.unittest._settings_helpers import SENTINEL, restore_settings, snapshot_settings
 
 _TRACKED_KEYS = (
@@ -16,16 +17,6 @@ _TRACKED_KEYS = (
     "openai.deployment_id",
     "openai.fallback_deployments",
 )
-
-
-@pytest.fixture(autouse=True)
-def isolate_run_metadata():
-    """Restore the run-metadata ContextVar after each test."""
-    from pr_agent.algo import run_metadata
-
-    token = run_metadata._run_metadata.set(run_metadata._run_metadata.get())
-    yield
-    run_metadata._run_metadata.reset(token)
 
 
 def _snapshot_settings():
@@ -278,5 +269,33 @@ def test_fallback_flag_set_even_when_fallback_repeats_primary_model_name():
         metadata = get_run_metadata()
         assert metadata.model_used == "same-model"
         assert metadata.fallback_used is True
+    finally:
+        _restore_settings(snapshot)
+
+
+def test_recording_successful_model_does_not_trigger_fallback_retry(monkeypatch):
+    snapshot = _snapshot_settings()
+    try:
+        get_settings().set("config.model", "primary-model")
+        get_settings().set("config.fallback_models", ["fallback-1"])
+        get_settings().set("openai.deployment_id", None)
+        get_settings().set("openai.fallback_deployments", [])
+        init_run_metadata()
+
+        calls = []
+
+        async def fake_f(model):
+            calls.append(model)
+            return "ok"
+
+        def boom(*_args, **_kwargs):
+            raise RuntimeError("telemetry failed")
+
+        monkeypatch.setattr("pr_agent.algo.pr_processing.record_model_used", boom)
+
+        with pytest.raises(RuntimeError, match="telemetry failed"):
+            asyncio.run(retry_with_fallback_models(fake_f))
+
+        assert calls == ["primary-model"]
     finally:
         _restore_settings(snapshot)

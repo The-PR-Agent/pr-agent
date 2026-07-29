@@ -1,18 +1,7 @@
-import pytest
-
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.ai_handlers.litellm_helpers import MockResponse
 from pr_agent.algo.run_metadata import get_run_metadata, init_run_metadata
-
-
-@pytest.fixture(autouse=True)
-def isolate_run_metadata():
-    """Restore the run-metadata ContextVar after each test."""
-    from pr_agent.algo import run_metadata
-
-    token = run_metadata._run_metadata.set(run_metadata._run_metadata.get())
-    yield
-    run_metadata._run_metadata.reset(token)
+from tests.unittest._run_metadata_test_helpers import isolate_run_metadata  # noqa: F401
 
 
 class _Usage:
