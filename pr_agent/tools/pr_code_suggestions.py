@@ -162,6 +162,8 @@ class PRCodeSuggestions:
 
                     # Output the run metadata (model, tokens, time cost) if enabled
                     if get_settings().get('config', {}).get('output_run_metadata', False):
+                        # This summary-comment branch already requires GFM support, so the argument is always True;
+                        # keep the call shaped like the reviewer/describe paths for consistency.
                         pr_body += show_run_metadata(self.git_provider.is_supported("gfm_markdown"))
 
                     # publish the PR comment

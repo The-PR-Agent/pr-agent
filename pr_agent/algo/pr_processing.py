@@ -330,8 +330,6 @@ async def retry_with_fallback_models(f: Callable, model_type: ModelType = ModelT
             )
             get_settings().set("openai.deployment_id", deployment_id)
             result = await f(model)
-            record_model_used(model, is_fallback=i > 0)
-            return result
         except Exception as e:
             get_logger().warning(
                 f"Failed to generate prediction with {model}",
@@ -339,6 +337,9 @@ async def retry_with_fallback_models(f: Callable, model_type: ModelType = ModelT
             )
             if i == len(all_models) - 1:  # If it's the last iteration
                 raise Exception(f"Failed to generate prediction with any model of {all_models}") from e
+        else:
+            record_model_used(model, is_fallback=i > 0)
+            return result
 
 
 def _get_all_models(model_type: ModelType = ModelType.REGULAR) -> List[str]:

@@ -98,6 +98,12 @@ class LangChainOpenAIHandler(BaseAiHandler):
                 resp = await llm.ainvoke(input=messages)
 
             finish_reason = "completed"
+            usage = getattr(resp, "usage_metadata", None)
+            if usage is None:
+                usage = getattr(resp, "usage", None)
+            from pr_agent.algo.run_metadata import record_ai_call
+
+            record_ai_call(usage)
             return resp.content, finish_reason
 
         except openai.RateLimitError as e:
