@@ -27,7 +27,7 @@ Will output an additional field showing the actual configurations used for the `
 To see which model actually answered, how many tokens the run consumed, and how long the AI processing phase took, enable `config.output_run_metadata`:
 
 ```
-/improve --config.output_run_metadata=true
+/review --config.output_run_metadata=true
 ```
 
 On providers that support GitHub-Flavored Markdown this appends a collapsible section to the generated comment; elsewhere `/review` and `/describe` append the same information as plain text:
