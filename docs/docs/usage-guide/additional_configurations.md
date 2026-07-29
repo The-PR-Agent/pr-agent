@@ -24,23 +24,28 @@ Will output an additional field showing the actual configurations used for the `
 
 ### Showing the run metadata
 
-To see which model actually answered, how many tokens the run consumed, and how long it took, enable `config.output_run_metadata`:
+To see which model actually answered, how many tokens the run consumed, and how long the AI processing phase took, enable `config.output_run_metadata`:
 
 ```
 /improve --config.output_run_metadata=true
 ```
 
-On providers that support GitHub-Flavored Markdown this appends a collapsible section to the generated comment; elsewhere the same information is appended as plain text:
+On providers that support GitHub-Flavored Markdown this appends a collapsible section to the generated comment; elsewhere `/review` and `/describe` append the same information as plain text:
 
 ```
 🔎 PR-Agent run metadata
-- Model: openai/gpt-5.4 (fallback)
+- Model: gpt-5.6-terra (fallback)
 - Tokens: 12,340 in / 1,205 out / 13,545 total
 - Time cost: 8.2s
 - AI calls: 1
 ```
 
-`Model` shows the model that produced the answer, marked `(fallback)` when the primary model failed and a fallback took over. The `Tokens` line appears only when the model provider reports usage. `AI calls` counts the successful LLM invocations made during the run. The flag is disabled by default and is supported by `/review`, `/describe`, and `/improve`.
+`Model` shows the model that produced the answer, marked `(fallback)` when the primary model failed and a fallback took over. The `Tokens` line appears only when the model provider reports usage. `AI calls` counts the successful LLM invocations made during the run. The flag is disabled by default.
+
+Notes:
+
+- `/improve` appends the section only when it publishes a summary comment. If the provider lacks GFM support or `pr_code_suggestions.commitable_code_suggestions` is enabled, `/improve` posts inline comments instead, so no run-metadata section appears.
+- With `pr_description.use_description_markers=true`, repeated `/describe` runs accumulate one run-metadata block per run because the existing PR description is preserved and only the markers are replaced.
 
 ## Ignoring files from analysis
 
