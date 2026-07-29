@@ -1,0 +1,30 @@
+[
+  {
+    "path": "src/calculator.py",
+    "line": 10,
+    "category": "static",
+    "severity": "low",
+    "confidence": 0.93,
+    "title": "Redundant branch in synthetic fixture",
+    "evidence": [
+      "The added branch duplicates a validated precondition."
+    ],
+    "impact": "The branch increases maintenance cost.",
+    "suggestion": "Keep the validation in one location.",
+    "source": "syntax"
+  },
+  {
+    "path": "src/calculator.py",
+    "line": 11,
+    "category": "security",
+    "severity": "high",
+    "confidence": 0.88,
+    "title": "Sensitive value may reach an exception",
+    "evidence": [
+      "The synthetic exception path receives an unredacted input."
+    ],
+    "impact": "A caller could expose sensitive input through logs.",
+    "suggestion": "Raise a fixed message and redact caller context.",
+    "source": "semgrep"
+  }
+]

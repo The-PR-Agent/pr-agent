@@ -1,0 +1,58 @@
+[
+  {
+    "path": "src/calculator.py",
+    "line": 10,
+    "category": "business_logic",
+    "severity": "medium",
+    "confidence": 0.84,
+    "title": "Zero has domain-specific meaning",
+    "evidence": [
+      "The caller contract distinguishes missing counts from zero counts."
+    ],
+    "impact": "Valid zero-count reports could be rejected.",
+    "suggestion": "Confirm the domain rule before rejecting zero.",
+    "source": "agent"
+  },
+  {
+    "path": "src/calculator.py",
+    "line": 12,
+    "category": "logic",
+    "severity": "high",
+    "confidence": 0.91,
+    "title": "Integer callers now receive a float",
+    "evidence": [
+      "The added division always uses true division."
+    ],
+    "impact": "Downstream equality checks can change behavior.",
+    "suggestion": "Preserve the documented numeric return type.",
+    "source": "agent"
+  },
+  {
+    "path": "src/calculator.py",
+    "line": 12,
+    "category": "memory",
+    "severity": "low",
+    "confidence": 0.72,
+    "title": "Unbounded numeric result retention",
+    "evidence": [
+      "The synthetic caller retains every calculated result."
+    ],
+    "impact": "Long-running batches can retain unnecessary objects.",
+    "suggestion": "Stream or bound retained results in the caller.",
+    "source": "agent"
+  },
+  {
+    "path": "src/calculator.py",
+    "line": 10,
+    "category": "architecture",
+    "severity": "medium",
+    "confidence": 0.79,
+    "title": "Domain validation is coupled to arithmetic",
+    "evidence": [
+      "The arithmetic helper now decides a reporting-domain policy."
+    ],
+    "impact": "Other callers cannot reuse the calculation with a different policy.",
+    "suggestion": "Validate domain rules at the service boundary.",
+    "source": "agent"
+  }
+]
