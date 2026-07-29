@@ -1,0 +1,15 @@
+rules:
+  - id: ai-review.python.subprocess-shell-true
+    languages: [python]
+    message: A subprocess call enables shell parsing.
+    severity: ERROR
+    metadata:
+      title: Shell-enabled subprocess can interpret attacker-controlled input
+      category: security
+      impact: Untrusted command text can execute additional shell commands.
+      suggestion: Pass an argument list with shell disabled and validate each argument.
+    patterns:
+      - pattern-either:
+          - pattern: subprocess.run(..., shell=True, ...)
+          - pattern: subprocess.call(..., shell=True, ...)
+          - pattern: subprocess.Popen(..., shell=True, ...)

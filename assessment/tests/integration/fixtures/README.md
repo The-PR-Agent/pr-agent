@@ -11,7 +11,11 @@ enumerations.
 The static-analysis branch exposes:
 
 ```python
-scan(request: ReviewRequest, budget: Budget) -> list[Finding]
+scan(
+    request: ReviewRequest,
+    repo_root: Path,
+    timeout_seconds: int,
+) -> tuple[list[Finding], list[str]]
 ```
 
 The Agent branch exposes:
@@ -20,8 +24,9 @@ The Agent branch exposes:
 review(
     request: ReviewRequest,
     static_findings: list[Finding],
-    budget: Budget,
-) -> tuple[list[Finding], list[dict]]
+    repo_root: Path,
+    deadline_monotonic: float,
+) -> ReviewResult
 ```
 
 All samples describe synthetic code. They contain no keys, tokens, local paths, or ground truth.

@@ -5,7 +5,12 @@ from dataclasses import FrozenInstanceError
 import pytest
 
 from assessment.ai_reviewer import Finding, ReviewRequest, ReviewResult
-from assessment.ai_reviewer.contracts import CATEGORIES, SOURCES
+from assessment.ai_reviewer.contracts import (
+    CATEGORIES,
+    SEVERITIES,
+    SOURCES,
+    STATUSES,
+)
 from assessment.tests.integration.fixtures import (
     load_json,
     load_request,
@@ -58,6 +63,84 @@ def test_finding_rejects_confidence_above_one() -> None:
 
     with pytest.raises(ValueError, match="confidence"):
         Finding.from_dict({**raw_finding, "confidence": 1.1})
+
+
+@pytest.mark.parametrize("severity", sorted(SEVERITIES))
+def test_finding_accepts_every_frozen_severity(severity: str) -> None:
+    raw_finding = load_json("static_findings.json")[0]
+
+    finding = Finding.from_dict({**raw_finding, "severity": severity})
+
+    assert finding.severity == severity
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (("severity", "urgent"), ("source", "llm")),
+)
+def test_finding_rejects_unknown_enums(field: str, value: str) -> None:
+    raw_finding = load_json("static_findings.json")[0]
+
+    with pytest.raises(ValueError, match=field):
+        Finding.from_dict({**raw_finding, field: value})
+
+
+@pytest.mark.parametrize(
+    "confidence",
+    (-0.01, float("inf"), float("-inf"), float("nan")),
+    ids=("negative", "positive-infinity", "negative-infinity", "nan"),
+)
+def test_finding_rejects_invalid_confidence(confidence: float) -> None:
+    raw_finding = load_json("static_findings.json")[0]
+
+    with pytest.raises(ValueError, match="confidence"):
+        Finding.from_dict({**raw_finding, "confidence": confidence})
+
+
+@pytest.mark.parametrize("status", sorted(STATUSES))
+def test_result_accepts_every_frozen_status(status: str) -> None:
+    raw_result = load_json("review_result.json")
+
+    result = ReviewResult.from_dict({**raw_result, "status": status})
+
+    assert result.status == status
+
+
+def test_result_rejects_unknown_status() -> None:
+    raw_result = load_json("review_result.json")
+
+    with pytest.raises(ValueError, match="status"):
+        ReviewResult.from_dict({**raw_result, "status": "cancelled"})
+
+
+@pytest.mark.parametrize(
+    ("contract", "fixture_name"),
+    (
+        (ReviewRequest, "review_request.json"),
+        (Finding, "static_findings.json"),
+        (ReviewResult, "review_result.json"),
+    ),
+)
+def test_frozen_contracts_reject_unapproved_fields(
+    contract: type[ReviewRequest] | type[Finding] | type[ReviewResult],
+    fixture_name: str,
+) -> None:
+    raw_value = load_json(fixture_name)
+    if isinstance(raw_value, list):
+        raw_value = raw_value[0]
+
+    with pytest.raises(ValueError, match="unexpected fields"):
+        contract.from_dict({**raw_value, "unapproved": "schema drift"})
+
+
+def test_required_identifiers_reject_whitespace_only_values() -> None:
+    raw_request = load_json("review_request.json")
+    raw_finding = load_json("static_findings.json")[0]
+
+    with pytest.raises(ValueError, match="repository"):
+        ReviewRequest.from_dict({**raw_request, "repository": "   "})
+    with pytest.raises(ValueError, match="title"):
+        Finding.from_dict({**raw_finding, "title": "\t"})
 
 
 def test_contracts_are_frozen_and_defensively_copy_input_containers() -> None:

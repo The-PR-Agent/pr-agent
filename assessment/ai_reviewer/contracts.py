@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from types import MappingProxyType
 from typing import Any
 
@@ -21,9 +21,21 @@ SOURCES = frozenset({"agent", "semgrep", "syntax"})
 STATUSES = frozenset({"success", "failed", "timeout"})
 
 
-def _require_non_empty(value: str, field_name: str) -> None:
-    if not isinstance(value, str) or not value:
+def _required_text(value: str, field_name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field_name} must be a non-empty string")
+    return value.strip()
+
+
+def _reject_unexpected_fields(
+    contract: type[Any],
+    data: Mapping[str, Any],
+) -> None:
+    expected = {field.name for field in fields(contract)}
+    unexpected = sorted(set(data) - expected)
+    if unexpected:
+        message = f"unexpected fields for {contract.__name__}: {unexpected}"
+        raise ValueError(message)
 
 
 def _freeze_json(value: Any) -> Any:
@@ -60,9 +72,21 @@ class ReviewRequest:
     changed_files: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        _require_non_empty(self.repository, "repository")
-        _require_non_empty(self.base_sha, "base_sha")
-        _require_non_empty(self.head_sha, "head_sha")
+        object.__setattr__(
+            self,
+            "repository",
+            _required_text(self.repository, "repository"),
+        )
+        object.__setattr__(
+            self,
+            "base_sha",
+            _required_text(self.base_sha, "base_sha"),
+        )
+        object.__setattr__(
+            self,
+            "head_sha",
+            _required_text(self.head_sha, "head_sha"),
+        )
         if (
             not isinstance(self.pr_number, int)
             or isinstance(self.pr_number, bool)
@@ -83,6 +107,7 @@ class ReviewRequest:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> ReviewRequest:
+        _reject_unexpected_fields(cls, data)
         return cls(
             repository=data["repository"],
             pr_number=data["pr_number"],
@@ -126,8 +151,12 @@ class Finding:
     source: str
 
     def __post_init__(self) -> None:
-        _require_non_empty(self.path, "path")
-        _require_non_empty(self.title, "title")
+        object.__setattr__(self, "path", _required_text(self.path, "path"))
+        object.__setattr__(
+            self,
+            "title",
+            _required_text(self.title, "title"),
+        )
         if self.category not in CATEGORIES:
             raise ValueError(f"category must be one of {sorted(CATEGORIES)}")
         if self.severity not in SEVERITIES:
@@ -143,6 +172,7 @@ class Finding:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Finding:
+        _reject_unexpected_fields(cls, data)
         return cls(
             path=data["path"],
             line=data["line"],
@@ -184,8 +214,16 @@ class ReviewResult:
     trace_summary: tuple[Mapping[str, Any], ...]
 
     def __post_init__(self) -> None:
-        _require_non_empty(self.run_id, "run_id")
-        _require_non_empty(self.model, "model")
+        object.__setattr__(
+            self,
+            "run_id",
+            _required_text(self.run_id, "run_id"),
+        )
+        object.__setattr__(
+            self,
+            "model",
+            _required_text(self.model, "model"),
+        )
         if self.status not in STATUSES:
             raise ValueError(f"status must be one of {sorted(STATUSES)}")
 
@@ -203,6 +241,7 @@ class ReviewResult:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> ReviewResult:
+        _reject_unexpected_fields(cls, data)
         return cls(
             run_id=data["run_id"],
             model=data["model"],
