@@ -1,5 +1,6 @@
 import git
 
+from pr_agent.algo.types import EDIT_TYPE
 from pr_agent.git_providers.local_git_provider import LocalGitProvider
 
 
@@ -54,3 +55,29 @@ def test_get_languages_matches_full_names_and_multipart_extensions(tmp_path):
     # One file each -> ~33.33% apiece, and none dropped as "unknown".
     assert set(languages) == {"Dockerfile", "CMake", "Python"}
     assert all(abs(v - 100 / 3) < 1e-6 for v in languages.values())
+
+
+def test_get_diff_files_deleted_file_falls_back_to_old_path(tmp_path):
+    # A plain deletion has no "new side": GitPython sets diff_item.b_path to None.
+    # The filename must fall back to a_path (the old path) instead of None, or
+    # downstream consumers keying on file.filename (e.g. set_file_languages'
+    # file.filename.rsplit('.')) hit AttributeError on NoneType. See issue #2580.
+    repo = _make_repo(tmp_path, ["keep.py", "gone.py"])
+    target_branch_name = repo.active_branch.name  # the branch that still has gone.py
+    repo.git.checkout("-b", "feature")
+    (tmp_path / "gone.py").unlink()
+    repo.index.remove(["gone.py"])
+    repo.index.commit("remove gone.py")
+
+    provider = object.__new__(LocalGitProvider)  # bypass heavy __init__
+    provider.repo = repo
+    provider.target_branch_name = target_branch_name
+
+    diff_files = provider.get_diff_files()  # must not raise
+
+    deleted = [f for f in diff_files if f.edit_type == EDIT_TYPE.DELETED]
+    assert len(deleted) == 1
+    # filename falls back to the old path rather than being None.
+    assert deleted[0].filename == "gone.py"
+    # every diff file exposes a usable filename for downstream consumers.
+    assert all(f.filename is not None for f in diff_files)

@@ -89,7 +89,7 @@ class LocalGitProvider(GitProvider):
                 FilePatchInfo(original_file_content_str,
                               new_file_content_str,
                               diff_item.diff.decode('utf-8'),
-                              diff_item.b_path,
+                              diff_item.b_path or diff_item.a_path,
                               edit_type=edit_type,
                               old_filename=None if diff_item.a_path == diff_item.b_path else diff_item.a_path
                               )
