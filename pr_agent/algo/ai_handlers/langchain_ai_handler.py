@@ -99,8 +99,11 @@ class LangChainOpenAIHandler(BaseAiHandler):
                 resp = await llm.ainvoke(input=messages)
 
             finish_reason = "completed"
-            # Count the call only: langchain reports usage under input_tokens/output_tokens,
-            # which the collector does not read, and partial counts would render as zeros.
+            # Count the call but not its tokens. Langchain does expose usage, only under its
+            # own key names (input_tokens/output_tokens), so forwarding it unmapped would
+            # render zeros. Mapping them is not worth it while this path stays cold: langchain
+            # is commented out in requirements.txt and no setting selects this handler, so it
+            # is reachable only by injecting it into a tool programmatically.
             record_ai_call()
             return resp.content, finish_reason
 

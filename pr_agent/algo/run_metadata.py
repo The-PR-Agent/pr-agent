@@ -19,12 +19,33 @@ _run_metadata: ContextVar[Optional["RunMetadata"]] = ContextVar(
 
 @dataclass
 class RunMetadata:
+    """Counters and identifiers accumulated over a single command run.
+
+    Every field is filled opportunistically: whatever the provider does not report
+    stays at its default, and the renderer omits the corresponding line rather than
+    displaying a zero.
+    """
+
+    # Model that produced the answer, which differs from `config.model` when a fallback
+    # took over. Stays None when no prediction succeeded, which the renderer reads as
+    # "nothing worth showing".
     model_used: Optional[str] = None
+    # Sticky: once a fallback has won, a later success on the primary model must not
+    # clear this, or the comment would hide that a fallback ran at all.
     fallback_used: bool = False
+    # Input/output tokens summed over every AI call of the run. Named after litellm's
+    # normalized usage object, which is what the collector reads. Both stay 0 when no usage
+    # reaches the collector, e.g. streaming responses or the langchain handler.
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    # Provider-reported total when available, otherwise derived from prompt + completion.
+    # Counts failed fallback attempts as well, so it reflects what the run really cost,
+    # while `model_used` names only the model behind the final answer.
     total_tokens: int = 0
+    # Successful LLM invocations, counted even when their token usage is unavailable.
     num_ai_calls: int = 0
+    # Monotonic reference taken when the collector is installed, i.e. at the top of the
+    # tool's run(). Monotonic so that wall-clock adjustments cannot yield a negative duration.
     start_time: float = field(default_factory=time.monotonic)
 
     @property
@@ -92,4 +113,5 @@ def record_ai_call(usage=None) -> None:
     if metadata is None:
         return
     metadata.num_ai_calls += 1
-    add_token_usage(usage)
+    if usage is not None:
+        add_token_usage(usage)
