@@ -323,6 +323,7 @@ avoid_full_files = false
 # LocalGitProvider settings - uncomment to use paths other than default
 # description_path= "path/to/description.md"
 # review_path= "path/to/review.md"
+# improve_path= "path/to/improve.md"
 
 [gerrit]
 # endpoint to the gerrit service
