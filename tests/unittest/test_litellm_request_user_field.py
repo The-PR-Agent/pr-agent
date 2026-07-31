@@ -110,6 +110,28 @@ class TestRequestUserField:
         assert long_url.startswith(payload["pr_url"])
 
     @pytest.mark.asyncio
+    async def test_concurrent_requests_do_not_cross_attribute(self, monkeypatch):
+        import asyncio
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: _make_settings(True))
+        with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion",
+                   new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = _mock_response()
+            handler = litellm_handler.LiteLLMAIHandler()
+
+            async def run(command, pr_url):
+                with get_logger().contextualize(command=command, pr_url=pr_url):
+                    await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
+
+            await asyncio.gather(
+                run("improve", "https://gitlab.example.com/a/-/merge_requests/1"),
+                run("review", "https://gitlab.example.com/b/-/merge_requests/2"),
+            )
+        payloads = [json.loads(c.kwargs["user"]) for c in mock_call.call_args_list]
+        by_command = {p["command"]: p["pr_url"] for p in payloads}
+        assert by_command["improve"].endswith("/a/-/merge_requests/1")
+        assert by_command["review"].endswith("/b/-/merge_requests/2")
+
+    @pytest.mark.asyncio
     async def test_unsupported_provider_is_skipped(self, monkeypatch):
         # gemini's parameter mapping does not accept "user": the field is skipped
         # instead of breaking the call when litellm.drop_params is off.

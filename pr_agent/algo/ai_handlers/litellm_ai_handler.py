@@ -431,20 +431,29 @@ class LiteLLMAIHandler(BaseAiHandler):
         e.g. {"command":"improve","pr_url":"https://..."}. Returns an empty string when
         no context is available.
         """
+        # The probe record is matched by identity, so a concurrent request adding
+        # its own sink at the same time cannot capture this request's context nor
+        # leak its own into it.
+        probe = object()
         captured_extra = []
 
         def capture_logs(message):
-            record = message.record
+            extra = message.record.get("extra") or {}
+            if extra.get("user_field_probe") is not probe:
+                return
             log_entry = {}
-            if record.get("extra", None).get("command", None) is not None:
-                log_entry.update({"command": record["extra"]["command"]})
-            if record.get("extra", {}).get("pr_url", None) is not None:
-                log_entry.update({"pr_url": record["extra"]["pr_url"]})
+            if extra.get("command") is not None:
+                log_entry.update({"command": extra["command"]})
+            if extra.get("pr_url") is not None:
+                log_entry.update({"pr_url": extra["pr_url"]})
             captured_extra.append(log_entry)
 
         handler_id = get_logger().add(capture_logs)
-        get_logger().debug("Capturing logs for the request user field")
-        get_logger().remove(handler_id)
+        try:
+            get_logger().debug("Capturing the request context for the user field",
+                               user_field_probe=probe)
+        finally:
+            get_logger().remove(handler_id)
 
         context = captured_extra[0] if len(captured_extra) > 0 else {}
         if not context:
@@ -669,7 +678,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                             # litellm.drop_params is off: skip the field instead of
                             # breaking the call.
                             get_logger().debug(
-                                f"add_user_to_requests: 'user' not supported for model {model}, skipping")
+                                f"add_user_to_requests: user field unsupported for {model}, skipped")
 
                 # Support for Bedrock custom inference profile via model_id
                 model_id = get_settings().get("litellm.model_id")
