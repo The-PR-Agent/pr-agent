@@ -100,6 +100,16 @@ class TestRequestUserField:
         assert json.loads(kwargs["extra_body"]["user"])["command"] == "review"
 
     @pytest.mark.asyncio
+    async def test_long_pr_url_keeps_valid_json_under_cap(self, monkeypatch):
+        long_url = "https://gitlab.example.com/group/" + "x" * 400 + "/-/merge_requests/9"
+        kwargs = await _run(monkeypatch, "gpt-4o", True,
+                            log_context={"command": "improve", "pr_url": long_url})
+        assert len(kwargs["user"]) <= 256
+        payload = json.loads(kwargs["user"])
+        assert payload["command"] == "improve"
+        assert long_url.startswith(payload["pr_url"])
+
+    @pytest.mark.asyncio
     async def test_unsupported_provider_is_skipped(self, monkeypatch):
         # gemini's parameter mapping does not accept "user": the field is skipped
         # instead of breaking the call when litellm.drop_params is off.

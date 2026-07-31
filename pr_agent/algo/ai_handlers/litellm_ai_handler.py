@@ -436,10 +436,10 @@ class LiteLLMAIHandler(BaseAiHandler):
         def capture_logs(message):
             record = message.record
             log_entry = {}
-            if record.get('extra', None).get('command', None) is not None:
-                log_entry.update({"command": record['extra']["command"]})
-            if record.get('extra', {}).get('pr_url', None) is not None:
-                log_entry.update({"pr_url": record['extra']["pr_url"]})
+            if record.get("extra", None).get("command", None) is not None:
+                log_entry.update({"command": record["extra"]["command"]})
+            if record.get("extra", {}).get("pr_url", None) is not None:
+                log_entry.update({"pr_url": record["extra"]["pr_url"]})
             captured_extra.append(log_entry)
 
         handler_id = get_logger().add(capture_logs)
@@ -449,7 +449,15 @@ class LiteLLMAIHandler(BaseAiHandler):
         context = captured_extra[0] if len(captured_extra) > 0 else {}
         if not context:
             return ""
-        return json.dumps(context, separators=(",", ":"))[:256]
+        # Cap the individual values before serialization, so the result stays
+        # valid JSON: slicing the serialized string could cut through closing
+        # quotes and braces. 30 chars cover every tool command; 200 chars of
+        # pr_url keep the total under 256 with the JSON overhead.
+        for key, max_len in (("command", 30), ("pr_url", 200)):
+            value = context.get(key)
+            if isinstance(value, str) and len(value) > max_len:
+                context[key] = value[:max_len]
+        return json.dumps(context, separators=(",", ":"))
 
     @property
     def deployment_id(self):
