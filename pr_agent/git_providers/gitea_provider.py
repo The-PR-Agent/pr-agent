@@ -115,13 +115,21 @@ class GiteaProvider(GitProvider):
             repo=self.repo,
             pr_number=self.pr_number
         ) or []
+        if not isinstance(raw_commits, list):
+            self.logger.error(f"Unexpected PR commits payload type: {type(raw_commits)}")
+            raw_commits = []
         # Gitea returns PR commits newest-first; oldest-first matches GitHub iteration order.
-        self.pr_commits = [_GiteaCommitAdapter(commit) for commit in reversed(raw_commits)]
+        self.pr_commits = [
+            _GiteaCommitAdapter(commit) for commit in reversed(raw_commits) if isinstance(commit, dict)
+        ]
         if not self.pr_commits:
             self.logger.error("Failed to get PR commits")
+        # Fall back to a commit wrapping the PR head SHA (rather than None) so callers that
+        # dereference last_commit/last_commit_id (e.g. publish_inline_comments, the description
+        # header) always have a valid .sha, even when the commits endpoint returns nothing.
         self.last_commit = next(
             (commit for commit in self.pr_commits if commit.sha and commit.sha == self.sha),
-            self.pr_commits[-1] if self.pr_commits else None
+            self.pr_commits[-1] if self.pr_commits else _GiteaCommitAdapter({"sha": self.sha})
         )
         self.last_commit_id = self.last_commit
 
