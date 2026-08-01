@@ -14,6 +14,8 @@ from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 _TRACKED_KEYS_REVIEW = (
     "config.output_run_details",
     "config.publish_output",
+    "config.is_auto_command",
+    "data",
     "pr_reviewer.enable_help_text",
 )
 _TRACKED_KEYS_DESCRIPTION = (
@@ -67,10 +69,13 @@ def test_flag_defaults_to_false():
     assert get_settings().config.get("output_run_details", None) is False
 
 
-def test_pr_reviewer_appends_run_details_only_when_enabled():
+@pytest.mark.asyncio
+async def test_pr_reviewer_appends_run_details_only_when_enabled(monkeypatch):
     snapshot = snapshot_settings(_TRACKED_KEYS_REVIEW)
     try:
         reviewer = PRReviewer.__new__(PRReviewer)
+        reviewer.pr_url = "https://example/pr/1"
+        reviewer.vars = {}
         reviewer.prediction = """
 review:
   estimated_effort_to_review_[1-5]: "2"
@@ -78,18 +83,28 @@ review:
 """
         reviewer.incremental = SimpleNamespace(is_incremental=False)
         reviewer.git_provider = MagicMock()
+        reviewer.git_provider.get_files.return_value = ["changed.py"]
         reviewer.git_provider.is_supported.side_effect = lambda cap: cap == "gfm_markdown"
         reviewer.git_provider.get_diff_files.return_value = []
 
-        _seed_run_details()
-        get_settings().set("config.publish_output", False)
-        get_settings().set("config.output_run_details", False)
-        get_settings().pr_reviewer.enable_help_text = False
-        without_details = reviewer._prepare_pr_review()
+        # Seeding through the tool's own init hook is what makes this a wiring test:
+        # drop init_run_details() from run() and the seed never lands, so the
+        # section cannot render and this test fails.
+        monkeypatch.setattr("pr_agent.tools.pr_reviewer.init_run_details", _seeded_init_run_details)
+        monkeypatch.setattr("pr_agent.tools.pr_reviewer.extract_and_cache_pr_tickets", _noop_async)
+        monkeypatch.setattr("pr_agent.tools.pr_reviewer.retry_with_fallback_models", _noop_async)
 
-        _seed_run_details()
+        get_settings().set("config.publish_output", False)
+        get_settings().set("config.is_auto_command", False)
+        get_settings().pr_reviewer.enable_help_text = False
+
+        get_settings().set("config.output_run_details", False)
+        await reviewer.run()
+        without_details = get_settings().data["artifact"]
+
         get_settings().set("config.output_run_details", True)
-        with_details = reviewer._prepare_pr_review()
+        await reviewer.run()
+        with_details = get_settings().data["artifact"]
 
         assert "⚙️ Agent run details" not in without_details
         assert "⚙️ Agent run details" in with_details
