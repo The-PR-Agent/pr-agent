@@ -22,18 +22,18 @@ Will output an additional field showing the actual configurations used for the `
 
 ![possible_config2](https://codium.ai/images/pr_agent/possible_config2.png){width=512}
 
-### Showing the run metadata
+### Showing the agent run details
 
-To see which model actually answered, how many tokens the run consumed, and how long the AI processing phase took, enable `config.output_run_metadata`:
+To see which model actually answered, how many tokens the run consumed, and how long the AI processing phase took, enable `config.output_run_details`:
 
 ```
-/review --config.output_run_metadata=true
+/review --config.output_run_details=true
 ```
 
 On providers that support GitHub-Flavored Markdown this appends a collapsible section to the generated comment; elsewhere `/review` and `/describe` append the same information as plain text:
 
 ```
-🔎 PR-Agent run metadata
+⚙️ Agent run details
 - Model: gpt-5.6-terra (fallback)
 - Tokens: 12,340 in / 1,205 out / 13,545 total
 - Time cost: 8.2s
@@ -44,8 +44,8 @@ On providers that support GitHub-Flavored Markdown this appends a collapsible se
 
 Notes:
 
-- `/improve` appends the section only when it publishes a summary comment. If the provider lacks GFM support or `pr_code_suggestions.commitable_code_suggestions` is enabled, `/improve` posts inline comments instead, so no run-metadata section appears.
-- With `pr_description.use_description_markers=true`, repeated `/describe` runs accumulate one run-metadata block per run because the existing PR description is preserved and only the markers are replaced.
+- `/improve` appends the section only when it publishes a summary comment. If the provider lacks GFM support or `pr_code_suggestions.commitable_code_suggestions` is enabled, `/improve` posts inline comments instead, so no run details section appears.
+- With `pr_description.use_description_markers=true`, repeated `/describe` runs accumulate one run details block per run because the existing PR description is preserved and only the markers are replaced.
 
 ## Ignoring files from analysis
 

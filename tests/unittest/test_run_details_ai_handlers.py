@@ -5,8 +5,8 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 import pr_agent.algo.ai_handlers.openai_ai_handler as openai_handler
-from pr_agent.algo.run_metadata import get_run_metadata, init_run_metadata
-from tests.unittest._run_metadata_test_helpers import isolate_run_metadata  # noqa: F401
+from pr_agent.algo.run_details import get_run_details, init_run_details
+from tests.unittest._run_details_test_helpers import isolate_run_details  # noqa: F401
 
 
 class _FakeSettings:
@@ -54,17 +54,17 @@ async def test_openai_handler_records_successful_call_with_usage(monkeypatch):
 
     monkeypatch.setattr(openai_handler, "AsyncOpenAI", _FakeClient)
 
-    init_run_metadata()
+    init_run_details()
     handler = openai_handler.OpenAIHandler()
 
     response = await handler.chat_completion(model="gpt-test", system="sys", user="usr")
 
-    metadata = get_run_metadata()
+    details = get_run_details()
     assert response == ("hello", "stop")
-    assert metadata.num_ai_calls == 1
-    assert metadata.prompt_tokens == 10
-    assert metadata.completion_tokens == 2
-    assert metadata.total_tokens == 12
+    assert details.num_ai_calls == 1
+    assert details.prompt_tokens == 10
+    assert details.completion_tokens == 2
+    assert details.total_tokens == 12
 
 
 @pytest.mark.asyncio
@@ -97,12 +97,12 @@ async def test_langchain_handler_records_successful_call_without_usage(monkeypat
 
     monkeypatch.setattr(langchain_handler.LangChainOpenAIHandler, "_create_chat_async", _fake_create_chat_async)
 
-    init_run_metadata()
+    init_run_details()
     handler = langchain_handler.LangChainOpenAIHandler()
 
     response = await handler.chat_completion(model="gpt-test", system="sys", user="usr")
 
-    metadata = get_run_metadata()
+    details = get_run_details()
     assert response == ("hello", "completed")
-    assert metadata.num_ai_calls == 1
-    assert metadata.has_token_usage is False
+    assert details.num_ai_calls == 1
+    assert details.has_token_usage is False

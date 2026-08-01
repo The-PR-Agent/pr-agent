@@ -1,9 +1,9 @@
-"""Per-run metadata collected while a PR-Agent command executes.
+"""Details of a single PR-Agent run, collected while the command executes.
 
 The data is held in a ``ContextVar`` so that the AI handler can record token
 usage without changing ``chat_completion``'s return signature. Context vars are
 copied into ``asyncio`` child tasks while still referencing the same mutable
-``RunMetadata`` object, so concurrent AI calls accumulate into one instance and
+``RunDetails`` object, so concurrent AI calls accumulate into one instance and
 stay isolated between concurrent requests.
 """
 
@@ -12,13 +12,13 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Optional
 
-_run_metadata: ContextVar[Optional["RunMetadata"]] = ContextVar(
-    "pr_agent_run_metadata", default=None
+_run_details: ContextVar[Optional["RunDetails"]] = ContextVar(
+    "pr_agent_run_details", default=None
 )
 
 
 @dataclass
-class RunMetadata:
+class RunDetails:
     """Counters and identifiers accumulated over a single command run.
 
     Every field is filled opportunistically: whatever the provider does not report
@@ -61,27 +61,27 @@ class RunMetadata:
         )
 
 
-def init_run_metadata() -> RunMetadata:
+def init_run_details() -> RunDetails:
     """Install a fresh collector for the current run and return it."""
-    metadata = RunMetadata()
-    _run_metadata.set(metadata)
-    return metadata
+    details = RunDetails()
+    _run_details.set(details)
+    return details
 
 
-def get_run_metadata() -> Optional[RunMetadata]:
+def get_run_details() -> Optional[RunDetails]:
     """Return the collector for the current run, or None if not initialized."""
-    return _run_metadata.get()
+    return _run_details.get()
 
 
 def record_model_used(model: str, is_fallback: bool) -> None:
     """Record the model that produced a successful completion."""
-    metadata = get_run_metadata()
-    if metadata is None:
+    details = get_run_details()
+    if details is None:
         return
-    metadata.model_used = model
+    details.model_used = model
     if is_fallback:
         # sticky: later primary success must not hide that a fallback ran
-        metadata.fallback_used = True
+        details.fallback_used = True
 
 
 def _read_token_field(usage, name: str) -> int:
@@ -94,24 +94,24 @@ def _read_token_field(usage, name: str) -> int:
 
 def add_token_usage(usage) -> None:
     """Accumulate token counts from a litellm usage object or dict."""
-    metadata = get_run_metadata()
-    if metadata is None or usage is None:
+    details = get_run_details()
+    if details is None or usage is None:
         return
     prompt_tokens = _read_token_field(usage, "prompt_tokens")
     completion_tokens = _read_token_field(usage, "completion_tokens")
     total_tokens = _read_token_field(usage, "total_tokens") or (
         prompt_tokens + completion_tokens
     )
-    metadata.prompt_tokens += prompt_tokens
-    metadata.completion_tokens += completion_tokens
-    metadata.total_tokens += total_tokens
+    details.prompt_tokens += prompt_tokens
+    details.completion_tokens += completion_tokens
+    details.total_tokens += total_tokens
 
 
 def record_ai_call(usage=None) -> None:
     """Count one AI call and accumulate token usage when available."""
-    metadata = get_run_metadata()
-    if metadata is None:
+    details = get_run_details()
+    if details is None:
         return
-    metadata.num_ai_calls += 1
+    details.num_ai_calls += 1
     if usage is not None:
         add_token_usage(usage)

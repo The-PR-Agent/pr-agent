@@ -25,7 +25,7 @@ from starlette_context import context
 
 from pr_agent.algo import MAX_TOKENS
 from pr_agent.algo.git_patch_processing import extract_hunk_lines_from_patch
-from pr_agent.algo.run_metadata import get_run_metadata
+from pr_agent.algo.run_details import get_run_details
 from pr_agent.algo.token_handler import TokenEncoder
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import get_settings, global_settings
@@ -1298,24 +1298,24 @@ def show_relevant_configurations(relevant_section: str) -> str:
     return markdown_text
 
 
-def show_run_metadata(gfm_supported: bool) -> str:
-    """Render the opt-in run-metadata section (model, tokens, time cost, AI calls).
+def show_run_details(gfm_supported: bool) -> str:
+    """Render the opt-in run-details section (model, tokens, time cost, AI calls).
 
     Falls back to a plain, non-collapsible section when the provider does not
     support GitHub-flavored markdown, so the information stays visible.
     """
-    metadata = get_run_metadata()
-    if metadata is None or not metadata.model_used:
+    details = get_run_details()
+    if details is None or not details.model_used:
         return ""
 
-    title = "🔎 PR-Agent run metadata"
-    lines = [f"- Model: {metadata.model_used}{' (fallback)' if metadata.fallback_used else ''}"]
-    if metadata.has_token_usage:
-        lines.append(f"- Tokens: {metadata.prompt_tokens:,} in / {metadata.completion_tokens:,} out / "
-                     f"{metadata.total_tokens:,} total")
-    lines.append(f"- Time cost: {metadata.duration_seconds:.1f}s")
-    if metadata.num_ai_calls:
-        lines.append(f"- AI calls: {metadata.num_ai_calls}")
+    title = "⚙️ Agent run details"
+    lines = [f"- Model: {details.model_used}{' (fallback)' if details.fallback_used else ''}"]
+    if details.has_token_usage:
+        lines.append(f"- Tokens: {details.prompt_tokens:,} in / {details.completion_tokens:,} out / "
+                     f"{details.total_tokens:,} total")
+    lines.append(f"- Time cost: {details.duration_seconds:.1f}s")
+    if details.num_ai_calls:
+        lines.append(f"- AI calls: {details.num_ai_calls}")
     body = "\n".join(lines)
 
     if gfm_supported:

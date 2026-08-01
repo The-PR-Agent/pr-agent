@@ -17,12 +17,12 @@ from pr_agent.algo.git_patch_processing import decouple_and_convert_to_hunks_wit
 from pr_agent.algo.pr_processing import (add_ai_metadata_to_diff_files,
                                          get_pr_diff, get_pr_multi_diffs,
                                          retry_with_fallback_models)
-from pr_agent.algo.run_metadata import init_run_metadata
+from pr_agent.algo.run_details import init_run_details
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (ModelType, load_yaml, replace_code_tags,
-                                 show_relevant_configurations, show_run_metadata,
+                                 show_relevant_configurations, show_run_details,
                                  get_max_tokens, clip_tokens, get_model)
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import (AzureDevopsProvider, GithubProvider,
@@ -97,7 +97,7 @@ class PRCodeSuggestions:
         self.progress_response = None
 
     async def run(self):
-        init_run_metadata()
+        init_run_details()
         try:
             if not self.git_provider.get_files():
                 get_logger().info(f"PR has no files: {self.pr_url}, skipping code suggestions")
@@ -160,11 +160,11 @@ class PRCodeSuggestions:
                     if get_settings().get('config', {}).get('output_relevant_configurations', False):
                         pr_body += show_relevant_configurations(relevant_section='pr_code_suggestions')
 
-                    # Output the run metadata (model, tokens, time cost) if enabled
-                    if get_settings().get('config', {}).get('output_run_metadata', False):
+                    # Output the agent run details (model, tokens, time cost) if enabled
+                    if get_settings().get('config', {}).get('output_run_details', False):
                         # This summary-comment branch already requires GFM support, so the argument is always True;
                         # keep the call shaped like the reviewer/describe paths for consistency.
-                        pr_body += show_run_metadata(self.git_provider.is_supported("gfm_markdown"))
+                        pr_body += show_run_details(self.git_provider.is_supported("gfm_markdown"))
 
                     # publish the PR comment
                     if get_settings().pr_code_suggestions.persistent_comment: # true by default

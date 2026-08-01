@@ -10,7 +10,7 @@ model = "..."
 fallback_models = ["..."]
 ```
 
-To see which of these models actually handled a given PR, enable `config.output_run_metadata` (see [Additional configurations](./additional_configurations.md#showing-the-run-metadata)).
+To see which of these models actually handled a given PR, enable `config.output_run_details` (see [Additional configurations](./additional_configurations.md#showing-the-agent-run-details)).
 
 For models and environments not from OpenAI, you might need to provide additional keys and other parameters.
 You can give parameters via a configuration file, or from environment variables.

@@ -3,10 +3,10 @@ import asyncio
 import pytest
 
 from pr_agent.algo.pr_processing import retry_with_fallback_models
-from pr_agent.algo.run_metadata import get_run_metadata, init_run_metadata
+from pr_agent.algo.run_details import get_run_details, init_run_details
 from pr_agent.algo.utils import ModelType
 from pr_agent.config_loader import get_settings
-from tests.unittest._run_metadata_test_helpers import isolate_run_metadata  # noqa: F401
+from tests.unittest._run_details_test_helpers import isolate_run_details  # noqa: F401
 from tests.unittest._settings_helpers import SENTINEL, restore_settings, snapshot_settings
 
 _TRACKED_KEYS = (
@@ -209,16 +209,16 @@ def test_records_primary_model_without_fallback_flag():
         get_settings().set("config.fallback_models", ["fallback-1"])
         get_settings().set("openai.deployment_id", None)
         get_settings().set("openai.fallback_deployments", [])
-        init_run_metadata()
+        init_run_details()
 
         async def fake_f(model):
             return "ok"
 
         asyncio.run(retry_with_fallback_models(fake_f))
 
-        metadata = get_run_metadata()
-        assert metadata.model_used == "primary-model"
-        assert metadata.fallback_used is False
+        details = get_run_details()
+        assert details.model_used == "primary-model"
+        assert details.fallback_used is False
     finally:
         _restore_settings(snapshot)
 
@@ -230,7 +230,7 @@ def test_records_fallback_model_with_fallback_flag():
         get_settings().set("config.fallback_models", ["fallback-1"])
         get_settings().set("openai.deployment_id", None)
         get_settings().set("openai.fallback_deployments", [])
-        init_run_metadata()
+        init_run_details()
 
         async def fake_f(model):
             if model == "primary-model":
@@ -239,9 +239,9 @@ def test_records_fallback_model_with_fallback_flag():
 
         asyncio.run(retry_with_fallback_models(fake_f))
 
-        metadata = get_run_metadata()
-        assert metadata.model_used == "fallback-1"
-        assert metadata.fallback_used is True
+        details = get_run_details()
+        assert details.model_used == "fallback-1"
+        assert details.fallback_used is True
     finally:
         _restore_settings(snapshot)
 
@@ -254,7 +254,7 @@ def test_fallback_flag_set_even_when_fallback_repeats_primary_model_name():
         get_settings().set("config.fallback_models", ["same-model"])
         get_settings().set("openai.deployment_id", None)
         get_settings().set("openai.fallback_deployments", [])
-        init_run_metadata()
+        init_run_details()
 
         attempts = []
 
@@ -266,9 +266,9 @@ def test_fallback_flag_set_even_when_fallback_repeats_primary_model_name():
 
         asyncio.run(retry_with_fallback_models(fake_f))
 
-        metadata = get_run_metadata()
-        assert metadata.model_used == "same-model"
-        assert metadata.fallback_used is True
+        details = get_run_details()
+        assert details.model_used == "same-model"
+        assert details.fallback_used is True
     finally:
         _restore_settings(snapshot)
 
@@ -280,7 +280,7 @@ def test_recording_successful_model_does_not_trigger_fallback_retry(monkeypatch)
         get_settings().set("config.fallback_models", ["fallback-1"])
         get_settings().set("openai.deployment_id", None)
         get_settings().set("openai.fallback_deployments", [])
-        init_run_metadata()
+        init_run_details()
 
         calls = []
 

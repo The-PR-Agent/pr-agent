@@ -3,21 +3,21 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from pr_agent.algo.run_metadata import init_run_metadata, record_ai_call, record_model_used
+from pr_agent.algo.run_details import init_run_details, record_ai_call, record_model_used
 from pr_agent.config_loader import get_settings
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.tools.pr_description import PRDescription
 from pr_agent.tools.pr_reviewer import PRReviewer
-from tests.unittest._run_metadata_test_helpers import isolate_run_metadata  # noqa: F401
+from tests.unittest._run_details_test_helpers import isolate_run_details  # noqa: F401
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 _TRACKED_KEYS_REVIEW = (
-    "config.output_run_metadata",
+    "config.output_run_details",
     "config.publish_output",
     "pr_reviewer.enable_help_text",
 )
 _TRACKED_KEYS_DESCRIPTION = (
-    "config.output_run_metadata",
+    "config.output_run_details",
     "config.publish_output",
     "config.is_auto_command",
     "data",
@@ -28,7 +28,7 @@ _TRACKED_KEYS_DESCRIPTION = (
     "pr_description.enable_help_comment",
 )
 _TRACKED_KEYS_SUGGESTIONS = (
-    "config.output_run_metadata",
+    "config.output_run_details",
     "config.publish_output",
     "config.publish_output_progress",
     "config.is_auto_command",
@@ -48,14 +48,14 @@ class _Usage:
         self.total_tokens = total_tokens
 
 
-def _seed_run_metadata():
-    init_run_metadata()
+def _seed_run_details():
+    init_run_details()
     record_model_used("openai/gpt-5.4", is_fallback=False)
     record_ai_call(_Usage(10, 2, 12))
 
 
-def _seeded_init_run_metadata():
-    _seed_run_metadata()
+def _seeded_init_run_details():
+    _seed_run_details()
     return None
 
 
@@ -64,10 +64,10 @@ async def _noop_async(*_args, **_kwargs):
 
 
 def test_flag_defaults_to_false():
-    assert get_settings().config.get("output_run_metadata", None) is False
+    assert get_settings().config.get("output_run_details", None) is False
 
 
-def test_pr_reviewer_appends_run_metadata_only_when_enabled():
+def test_pr_reviewer_appends_run_details_only_when_enabled():
     snapshot = snapshot_settings(_TRACKED_KEYS_REVIEW)
     try:
         reviewer = PRReviewer.__new__(PRReviewer)
@@ -81,24 +81,24 @@ review:
         reviewer.git_provider.is_supported.side_effect = lambda cap: cap == "gfm_markdown"
         reviewer.git_provider.get_diff_files.return_value = []
 
-        _seed_run_metadata()
+        _seed_run_details()
         get_settings().set("config.publish_output", False)
-        get_settings().set("config.output_run_metadata", False)
+        get_settings().set("config.output_run_details", False)
         get_settings().pr_reviewer.enable_help_text = False
-        without_metadata = reviewer._prepare_pr_review()
+        without_details = reviewer._prepare_pr_review()
 
-        _seed_run_metadata()
-        get_settings().set("config.output_run_metadata", True)
-        with_metadata = reviewer._prepare_pr_review()
+        _seed_run_details()
+        get_settings().set("config.output_run_details", True)
+        with_details = reviewer._prepare_pr_review()
 
-        assert "🔎 PR-Agent run metadata" not in without_metadata
-        assert "🔎 PR-Agent run metadata" in with_metadata
+        assert "⚙️ Agent run details" not in without_details
+        assert "⚙️ Agent run details" in with_details
     finally:
         restore_settings(snapshot)
 
 
 @pytest.mark.asyncio
-async def test_pr_description_appends_run_metadata_only_when_enabled(monkeypatch):
+async def test_pr_description_appends_run_details_only_when_enabled(monkeypatch):
     snapshot = snapshot_settings(_TRACKED_KEYS_DESCRIPTION)
     try:
         description = PRDescription.__new__(PRDescription)
@@ -112,7 +112,7 @@ async def test_pr_description_appends_run_metadata_only_when_enabled(monkeypatch
         description._prepare_data = MagicMock()
         description._prepare_pr_answer = MagicMock(return_value=("AI title", "Base description body", "", []))
 
-        monkeypatch.setattr("pr_agent.tools.pr_description.init_run_metadata", _seeded_init_run_metadata)
+        monkeypatch.setattr("pr_agent.tools.pr_description.init_run_details", _seeded_init_run_details)
         monkeypatch.setattr("pr_agent.tools.pr_description.extract_and_cache_pr_tickets", _noop_async)
         monkeypatch.setattr("pr_agent.tools.pr_description.retry_with_fallback_models", _noop_async)
 
@@ -124,22 +124,22 @@ async def test_pr_description_appends_run_metadata_only_when_enabled(monkeypatch
         get_settings().pr_description.enable_help_text = False
         get_settings().pr_description.enable_help_comment = False
 
-        get_settings().set("config.output_run_metadata", False)
+        get_settings().set("config.output_run_details", False)
         await description.run()
-        without_metadata = get_settings().data["artifact"]
+        without_details = get_settings().data["artifact"]
 
-        get_settings().set("config.output_run_metadata", True)
+        get_settings().set("config.output_run_details", True)
         await description.run()
-        with_metadata = get_settings().data["artifact"]
+        with_details = get_settings().data["artifact"]
 
-        assert "🔎 PR-Agent run metadata" not in without_metadata
-        assert "🔎 PR-Agent run metadata" in with_metadata
+        assert "⚙️ Agent run details" not in without_details
+        assert "⚙️ Agent run details" in with_details
     finally:
         restore_settings(snapshot)
 
 
 @pytest.mark.asyncio
-async def test_pr_code_suggestions_appends_run_metadata_only_when_enabled(monkeypatch):
+async def test_pr_code_suggestions_appends_run_details_only_when_enabled(monkeypatch):
     snapshot = snapshot_settings(_TRACKED_KEYS_SUGGESTIONS)
     try:
         suggestions = PRCodeSuggestions.__new__(PRCodeSuggestions)
@@ -154,7 +154,7 @@ async def test_pr_code_suggestions_appends_run_metadata_only_when_enabled(monkey
         async def _fake_retry(*_args, **_kwargs):
             return {"code_suggestions": [{"label": "style"}]}
 
-        monkeypatch.setattr("pr_agent.tools.pr_code_suggestions.init_run_metadata", _seeded_init_run_metadata)
+        monkeypatch.setattr("pr_agent.tools.pr_code_suggestions.init_run_details", _seeded_init_run_details)
         monkeypatch.setattr("pr_agent.tools.pr_code_suggestions.retry_with_fallback_models", _fake_retry)
 
         get_settings().set("config.publish_output", True)
@@ -167,17 +167,17 @@ async def test_pr_code_suggestions_appends_run_metadata_only_when_enabled(monkey
         get_settings().pr_code_suggestions.persistent_comment = False
         get_settings().pr_code_suggestions.dual_publishing_score_threshold = 0
 
-        get_settings().set("config.output_run_metadata", False)
+        get_settings().set("config.output_run_details", False)
         await suggestions.run()
-        without_metadata = suggestions.git_provider.publish_comment.call_args[0][0]
+        without_details = suggestions.git_provider.publish_comment.call_args[0][0]
 
         suggestions.git_provider.publish_comment.reset_mock()
 
-        get_settings().set("config.output_run_metadata", True)
+        get_settings().set("config.output_run_details", True)
         await suggestions.run()
-        with_metadata = suggestions.git_provider.publish_comment.call_args[0][0]
+        with_details = suggestions.git_provider.publish_comment.call_args[0][0]
 
-        assert "🔎 PR-Agent run metadata" not in without_metadata
-        assert "🔎 PR-Agent run metadata" in with_metadata
+        assert "⚙️ Agent run details" not in without_details
+        assert "⚙️ Agent run details" in with_details
     finally:
         restore_settings(snapshot)

@@ -46,7 +46,7 @@ patch_extra_lines_after = 1 # Number of extra lines (+3 default ones) to include
 secret_provider="" # "" (disabled), "google_cloud_storage", or "aws_secrets_manager" for secure secret management
 cli_mode=false
 output_relevant_configurations=false
-output_run_metadata=false # if true, append a run-metadata section (model, tokens, time cost, AI calls) to generated PR comments
+output_run_details=false # if true, append an agent run details section (model, tokens, time cost, AI calls) to generated PR comments
 large_patch_policy = "clip" # "clip", "skip"
 duplicate_prompt_examples = false
 # Persistent inline comments (issue #2037): when true, the GitHub and GitLab providers
