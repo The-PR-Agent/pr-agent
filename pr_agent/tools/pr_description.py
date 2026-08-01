@@ -531,10 +531,17 @@ class PRDescription:
             pr_type = f"{ai_header}{pr_type}"
             body = body.replace('pr_agent:type', pr_type)
 
+        enable_pr_description = get_settings().pr_description.get("enable_pr_description", True)
+        if not enable_pr_description:
+            self.data.pop('description', None)
+
         ai_summary = self.data.get('description')
         if ai_summary and not re.search(r'<!--\s*pr_agent:summary\s*-->', body):
             summary = f"{ai_header}{ai_summary}"
             body = body.replace('pr_agent:summary', summary)
+        elif not enable_pr_description:
+            # AI summary disabled by config - remove the marker instead of leaving it unreplaced
+            body = re.sub(r'<!--\s*pr_agent:summary\s*-->|pr_agent:summary', '', body)
 
         ai_walkthrough = self.data.get('pr_files')
         walkthrough_gfm = ""

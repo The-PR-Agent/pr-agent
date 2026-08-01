@@ -210,6 +210,32 @@ class TestPrepareAnswerWithMarkers:
         assert "pr_agent:summary" not in body
 
     @patch("pr_agent.tools.pr_description.get_settings")
+    def test_summary_marker_is_removed_when_description_disabled(self, mock_get_settings):
+        mock_get_settings.return_value = _settings(enable_pr_description=False)
+        obj = self._obj_with_user_description(
+            "Intro\npr_agent:summary\nOutro",
+            {"title": "AI", "description": "Adds caching layer."},
+        )
+
+        _, body, _, _ = obj._prepare_pr_answer_with_markers()
+
+        assert "Adds caching layer." not in body
+        assert "pr_agent:summary" not in body
+
+    @patch("pr_agent.tools.pr_description.get_settings")
+    def test_html_comment_summary_marker_is_removed_when_description_disabled(self, mock_get_settings):
+        mock_get_settings.return_value = _settings(enable_pr_description=False)
+        obj = self._obj_with_user_description(
+            "Intro\n<!-- pr_agent:summary -->\nOutro",
+            {"title": "AI", "description": "Adds caching layer."},
+        )
+
+        _, body, _, _ = obj._prepare_pr_answer_with_markers()
+
+        assert "Adds caching layer." not in body
+        assert "pr_agent:summary" not in body
+
+    @patch("pr_agent.tools.pr_description.get_settings")
     def test_generated_by_header_prefixes_replacements(self, mock_get_settings):
         mock_get_settings.return_value = _settings(include_generated_by_header=True)
         obj = self._obj_with_user_description(
