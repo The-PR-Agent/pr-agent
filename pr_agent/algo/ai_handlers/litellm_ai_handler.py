@@ -478,11 +478,7 @@ class LiteLLMAIHandler(BaseAiHandler):
     @retry(
         retry=retry_if_exception_type(openai.APIError) & retry_if_not_exception_type(openai.RateLimitError),
         stop=stop_after_attempt(MODEL_RETRIES),
-        # Without reraise, tenacity replaces the provider's exception with RetryError, whose message
-        # is just "RetryError[<Future ... raised BadRequestError>]" - the actionable text (e.g.
-        # "LLM Provider NOT provided. You passed model=...") is lost, so a misconfigured model looks
-        # like a silent failure. Re-raise the last underlying error instead.
-        reraise=True,
+        reraise=True,  # surface the provider's error; RetryError hides the reason
     )
     async def chat_completion(self, model: str, system: str, user: str, temperature: float = 0.2, img_path: str = None):
         # Serialize env-var mutation + Bedrock call for IMDS mode to prevent concurrent
@@ -789,9 +785,6 @@ class LiteLLMAIHandler(BaseAiHandler):
                     raise
             except Exception as e:
                 get_logger().warning(f"Unknown error during LLM inference: {e}")
-                # Wrap in APIError so the retry/fallback logic can classify it, but carry the
-                # original text over: raising the bare class instead fails to instantiate
-                # ("missing 2 required positional arguments") and loses the reason entirely.
                 raise openai.APIError(
                     str(e),
                     request=httpx.Request("POST", model),

@@ -58,8 +58,7 @@ async def test_chat_completion_passes_seed_when_temperature_is_zero(monkeypatch)
 @pytest.mark.asyncio
 async def test_chat_completion_rejects_seed_for_claude_opus_4_8_default_temperature(monkeypatch):
     class FakeAPIError(Exception):
-        # Mirrors openai.APIError's signature: the handler constructs it with a message and
-        # request/body so the original failure text survives the wrapping (see issue #2576).
+        # same signature as openai.APIError, which the handler constructs with a message
         def __init__(self, message="", request=None, body=None):
             super().__init__(message)
             self.request = request
