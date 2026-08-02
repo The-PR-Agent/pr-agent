@@ -1,0 +1,20 @@
+{
+  "action": "synchronize",
+  "repository": {
+    "full_name": "JiXia830/pr-agent"
+  },
+  "pull_request": {
+    "number": 17,
+    "title": "Handle zero divisors",
+    "body": "Synthetic contract fixture.",
+    "base": {
+      "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "head": {
+      "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "repo": {
+        "full_name": "JiXia830/pr-agent"
+      }
+    }
+  }
+}

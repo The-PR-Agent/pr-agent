@@ -1,0 +1,50 @@
+[
+  {
+    "case_id": "static-python-bare-except",
+    "category": "static",
+    "target_file": "static/python_bare_except.py",
+    "target_line": 4,
+    "expected_impact": "Unexpected failures can be swallowed and leave partial state.",
+    "expected_detector": "static"
+  },
+  {
+    "case_id": "business-logic-discount-without-role",
+    "category": "business_logic",
+    "target_file": "business_logic/discount_without_role.py",
+    "target_line": 4,
+    "expected_impact": "An unauthorized caller can reduce an account charge.",
+    "expected_detector": "agent"
+  },
+  {
+    "case_id": "logic-off-by-one",
+    "category": "logic",
+    "target_file": "logic/off_by_one.py",
+    "target_line": 4,
+    "expected_impact": "Exact page boundaries produce an extra empty page.",
+    "expected_detector": "agent"
+  },
+  {
+    "case_id": "memory-java-unclosed-stream",
+    "category": "memory",
+    "target_file": "memory/java_unclosed_stream.java",
+    "target_line": 7,
+    "expected_impact": "Repeated calls can exhaust file descriptors.",
+    "expected_detector": "agent"
+  },
+  {
+    "case_id": "security-python-shell-true",
+    "category": "security",
+    "target_file": "security/python_shell_true.py",
+    "target_line": 5,
+    "expected_impact": "Untrusted command text can execute additional shell commands.",
+    "expected_detector": "static"
+  },
+  {
+    "case_id": "architecture-handler-bypasses-service",
+    "category": "architecture",
+    "target_file": "architecture/handler_bypasses_service.py",
+    "target_line": 4,
+    "expected_impact": "The handler bypasses domain validation and transaction policy.",
+    "expected_detector": "agent"
+  }
+]

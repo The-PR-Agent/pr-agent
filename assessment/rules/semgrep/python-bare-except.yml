@@ -1,0 +1,11 @@
+rules:
+  - id: ai-review.python.bare-except
+    languages: [python]
+    message: Bare except catches termination and unrelated programming errors.
+    severity: WARNING
+    metadata:
+      title: Bare exception handler hides unrelated failures
+      category: static
+      impact: Unexpected failures can be swallowed and leave partial state.
+      suggestion: Catch only the expected exception types and handle them explicitly.
+    pattern-regex: '(?m)^[ \t]*except[ \t]*:'

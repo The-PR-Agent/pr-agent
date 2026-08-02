@@ -1,0 +1,9 @@
+diff --git a/src/calculator.py b/src/calculator.py
+index 1111111..2222222 100644
+--- a/src/calculator.py
++++ b/src/calculator.py
+@@ -9,1 +9,4 @@
+ def divide(total, count):
++    if count == 0:
++        raise ValueError("count must not be zero")
++    return total / count

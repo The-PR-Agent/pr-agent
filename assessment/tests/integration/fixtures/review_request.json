@@ -1,0 +1,19 @@
+{
+  "repository": "JiXia830/pr-agent",
+  "pr_number": 17,
+  "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "title": "Handle zero divisors",
+  "body": "Synthetic contract fixture.",
+  "diff": "diff --git a/src/calculator.py b/src/calculator.py\nindex 1111111..2222222 100644\n--- a/src/calculator.py\n+++ b/src/calculator.py\n@@ -9,1 +9,4 @@\n def divide(total, count):\n+    if count == 0:\n+        raise ValueError(\"count must not be zero\")\n+    return total / count\n",
+  "changed_lines": {
+    "src/calculator.py": [
+      10,
+      11,
+      12
+    ]
+  },
+  "changed_files": [
+    "src/calculator.py"
+  ]
+}

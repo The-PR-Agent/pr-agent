@@ -1,0 +1,79 @@
+name: AI Review Assessment
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: >-
+    ai-review-${{ github.repository }}-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out trusted reviewer baseline
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: _trusted_reviewer
+          persist-credentials: false
+          fetch-depth: 1
+          submodules: false
+          lfs: false
+
+      - name: Check out pull request as untrusted data
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: _pr_data
+          persist-credentials: false
+          fetch-depth: 1
+          submodules: false
+          lfs: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+
+      - name: Install reviewer dependencies
+        working-directory: _trusted_reviewer
+        run: >-
+          python -m pip install
+          --requirement "$GITHUB_WORKSPACE/_trusted_reviewer/assessment/requirements-integration.txt"
+          --requirement "$GITHUB_WORKSPACE/_trusted_reviewer/assessment/requirements-agent.txt"
+          --requirement "$GITHUB_WORKSPACE/_trusted_reviewer/assessment/requirements-static.txt"
+
+      - name: Run controlled review
+        working-directory: _trusted_reviewer
+        env:
+          AI_REVIEW_API_BASE: ${{ vars.AI_REVIEW_API_BASE || 'https://api.ai-native-x.site' }}
+          AI_REVIEW_API_KEY: ${{ secrets.AI_REVIEW_API_KEY }}
+          AI_REVIEW_MODEL: ${{ vars.AI_REVIEW_MODEL || 'deepseek-v4-pro' }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PYTHONPATH: ${{ github.workspace }}/_trusted_reviewer
+        run: >-
+          python -m assessment.ai_reviewer.cli
+          --event "$GITHUB_EVENT_PATH"
+          --artifact-dir "$RUNNER_TEMP/ai-review"
+          --repo-root "$GITHUB_WORKSPACE/_pr_data"
+          --mode "${{ vars.AI_REVIEW_MODE || 'full' }}"
+
+      - name: Upload run artifact
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: >-
+            ai-review-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+          path: ${{ runner.temp }}/ai-review/*.json
+          if-no-files-found: error
+          retention-days: 14

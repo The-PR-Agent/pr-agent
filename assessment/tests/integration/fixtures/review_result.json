@@ -1,0 +1,65 @@
+{
+  "run_id": "00000000-0000-4000-8000-000000000017",
+  "model": "glm-5.2",
+  "status": "success",
+  "started_at": "2026-07-29T10:00:00Z",
+  "finished_at": "2026-07-29T10:00:02.500000Z",
+  "duration_seconds": 2.5,
+  "findings": [
+    {
+      "path": "src/calculator.py",
+      "line": 11,
+      "category": "security",
+      "severity": "high",
+      "confidence": 0.88,
+      "title": "Sensitive value may reach an exception",
+      "evidence": [
+        "The synthetic exception path receives an unredacted input."
+      ],
+      "impact": "A caller could expose sensitive input through logs.",
+      "suggestion": "Raise a fixed message and redact caller context.",
+      "source": "semgrep"
+    },
+    {
+      "path": "src/calculator.py",
+      "line": 12,
+      "category": "logic",
+      "severity": "high",
+      "confidence": 0.91,
+      "title": "Integer callers now receive a float",
+      "evidence": [
+        "The added division always uses true division."
+      ],
+      "impact": "Downstream equality checks can change behavior.",
+      "suggestion": "Preserve the documented numeric return type.",
+      "source": "agent"
+    }
+  ],
+  "errors": [],
+  "trace_summary": [
+    {
+      "stage": "analyze",
+      "status": "completed"
+    },
+    {
+      "stage": "context_request",
+      "status": "completed",
+      "path": "src/calculator.py"
+    },
+    {
+      "stage": "tool_result",
+      "status": "completed",
+      "bytes": 128
+    },
+    {
+      "stage": "review",
+      "status": "completed",
+      "finding_count": 2
+    },
+    {
+      "stage": "verify",
+      "status": "completed",
+      "publishable_count": 2
+    }
+  ]
+}
