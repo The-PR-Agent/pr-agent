@@ -1311,8 +1311,12 @@ def show_run_details(gfm_supported: bool) -> str:
     title = "⚙️ Agent run details"
     lines = [f"- Model: {details.model_used}{' (fallback)' if details.fallback_used else ''}"]
     if details.has_token_usage:
-        lines.append(f"- Tokens: {details.prompt_tokens:,} in / {details.completion_tokens:,} out / "
-                     f"{details.total_tokens:,} total")
+        # A counter still at zero after a successful call means the provider never
+        # reported that component, so drop it instead of claiming it was zero.
+        counts = [(details.prompt_tokens, "in"), (details.completion_tokens, "out"),
+                  (details.total_tokens, "total")]
+        reported = [f"{value:,} {label}" for value, label in counts if value]
+        lines.append(f"- Tokens: {' / '.join(reported)}")
     lines.append(f"- Time cost: {details.duration_seconds:.1f}s")
     if details.num_ai_calls:
         lines.append(f"- AI calls: {details.num_ai_calls}")

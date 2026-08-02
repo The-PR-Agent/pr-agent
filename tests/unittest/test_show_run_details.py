@@ -37,6 +37,19 @@ def test_marks_fallback_model():
     assert "Model: openai/gpt-5.4 (fallback)" in output
 
 
+def test_omits_token_components_the_provider_did_not_report():
+    """A provider that reports only a total must not render "0 in / 0 out"."""
+    init_run_details()
+    record_model_used("openai/gpt-5.4", is_fallback=False)
+    record_ai_call({"total_tokens": 13545})
+
+    output = show_run_details(gfm_supported=True)
+
+    assert "Tokens: 13,545 total" in output
+    assert "0 in" not in output
+    assert "0 out" not in output
+
+
 def test_omits_token_line_when_usage_unavailable():
     init_run_details()
     record_model_used("openai/gpt-5.4", is_fallback=False)
