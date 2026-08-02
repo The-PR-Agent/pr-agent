@@ -12,8 +12,8 @@ from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.pr_processing import (add_ai_metadata_to_diff_files,
                                          get_pr_diff,
                                          retry_with_fallback_models)
-from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.repo_context import build_repo_context
+from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (ModelType, PRReviewHeader,
                                  convert_to_markdown_v2, github_action_output,
@@ -64,6 +64,7 @@ class PRReviewer:
         self.ai_handler = ai_handler()
         self.ai_handler.main_pr_language = self.main_language
         self.patches_diff = None
+        self.remaining_files_list = []
         self.prediction = None
         question_str, answer_str = self._get_user_answers()
         self.pr_description, self.pr_description_files = (
@@ -200,11 +201,17 @@ class PRReviewer:
         return get_settings().pr_reviewer.get('publish_output_no_suggestions', True) or "No major issues detected" not in pr_review
 
     async def _prepare_prediction(self, model: str) -> None:
-        self.patches_diff = get_pr_diff(self.git_provider,
-                                        self.token_handler,
-                                        model,
-                                        add_line_numbers_to_hunks=True,
-                                        disable_extra_lines=False,)
+        output = get_pr_diff(self.git_provider,
+                             self.token_handler,
+                             model,
+                             add_line_numbers_to_hunks=True,
+                             disable_extra_lines=False,
+                             return_remaining_files=True,)
+        if isinstance(output, tuple):
+            self.patches_diff, self.remaining_files_list = output
+        else:
+            self.patches_diff = output
+            self.remaining_files_list = []
 
         if self.patches_diff:
             get_logger().debug(f"PR diff", diff=self.patches_diff)
@@ -285,6 +292,14 @@ class PRReviewer:
 
         # Add custom labels from the review prediction (effort, security)
         self.set_review_labels(data)
+
+        if self.remaining_files_list:
+            markdown_text += (
+                "\n\n---\n\n"
+                "⚠️ **Review coverage:** The following files were not included in this review "
+                "because of the token budget:\n"
+                + "\n".join(f"- `{file}`" for file in self.remaining_files_list)
+            )
 
         if markdown_text == None or len(markdown_text) == 0:
             markdown_text = ""
