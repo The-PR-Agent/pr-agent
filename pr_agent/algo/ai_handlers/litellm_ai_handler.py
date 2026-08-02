@@ -683,7 +683,8 @@ class LiteLLMAIHandler(BaseAiHandler):
                             get_logger().debug(
                                 f"add_user_to_requests: user field unsupported for {model}, skipped")
 
-                # Support for Bedrock custom inference profile via model_id
+                # Classic `bedrock/` calls use model_id for Bedrock Runtime inference profiles.
+                # Bedrock Mantle uses Projects, so `bedrock_mantle/` intentionally omits it.
                 model_id = get_settings().get("litellm.model_id")
                 if model_id and 'bedrock/' in model:
                     kwargs["model_id"] = model_id
