@@ -56,6 +56,33 @@ async def test_chat_completion_passes_seed_when_temperature_is_zero(monkeypatch)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model", "expected_model_id"),
+    [
+        ("bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0", "profile-123"),
+        ("bedrock_mantle/xai.grok-4.3", None),
+    ],
+)
+async def test_chat_completion_scopes_model_id_to_classic_bedrock(monkeypatch, model, expected_model_id):
+    monkeypatch.setattr(
+        litellm_handler,
+        "get_settings",
+        lambda: FakeSettings(settings_values={"litellm.model_id": "profile-123"}),
+    )
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+
+        await handler.chat_completion(model=model, system="sys", user="usr")
+
+    if expected_model_id is None:
+        assert "model_id" not in mock_call.call_args.kwargs
+    else:
+        assert mock_call.call_args.kwargs["model_id"] == expected_model_id
+
+
+@pytest.mark.asyncio
 async def test_chat_completion_rejects_seed_for_claude_opus_4_8_default_temperature(monkeypatch):
     class FakeAPIError(Exception):
         # same signature as openai.APIError, which the handler constructs with a message

@@ -753,7 +753,8 @@ class LiteLLMAIHandler(BaseAiHandler):
                             f"cache_control_injection_points configured but not applied: {model} is not an "
                             "Anthropic (Claude) model")
 
-                # Support for Bedrock custom inference profile via model_id
+                # Classic `bedrock/` calls use model_id for Bedrock Runtime inference profiles.
+                # Bedrock Mantle uses Projects, so `bedrock_mantle/` intentionally omits it.
                 model_id = get_settings().get("litellm.model_id")
                 if model_id and 'bedrock/' in model:
                     kwargs["model_id"] = model_id
