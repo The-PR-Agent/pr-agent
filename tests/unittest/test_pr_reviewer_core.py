@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from pr_agent.config_loader import get_settings
 from pr_agent.tools.pr_reviewer import PRReviewer
@@ -10,6 +10,98 @@ def _make_reviewer(git_provider=None):
     reviewer.git_provider = git_provider or MagicMock()
     reviewer.pr_url = "https://example/pr/1"
     return reviewer
+
+
+def _make_prediction_reviewer(git_provider=None):
+    reviewer = _make_reviewer(git_provider)
+    reviewer.token_handler = MagicMock()
+    reviewer.remaining_files_list = []
+    reviewer.incremental = SimpleNamespace(is_incremental=False)
+    reviewer.prediction = None
+    return reviewer
+
+
+async def test_prepare_prediction_requests_remaining_files_and_preserves_tuple_result():
+    reviewer = _make_prediction_reviewer()
+    reviewer._get_prediction = AsyncMock(return_value="prediction")
+
+    with patch(
+        "pr_agent.tools.pr_reviewer.get_pr_diff",
+        return_value=("diff", ["src/one.py", "docs/two.md"]),
+    ) as get_pr_diff:
+        await reviewer._prepare_prediction("model")
+
+    get_pr_diff.assert_called_once_with(
+        reviewer.git_provider,
+        reviewer.token_handler,
+        "model",
+        add_line_numbers_to_hunks=True,
+        disable_extra_lines=False,
+        return_remaining_files=True,
+    )
+    assert reviewer.patches_diff == "diff"
+    assert reviewer.remaining_files_list == ["src/one.py", "docs/two.md"]
+    assert reviewer.prediction == "prediction"
+
+
+async def test_prepare_prediction_accepts_full_diff_string_when_token_budget_is_sufficient():
+    reviewer = _make_prediction_reviewer()
+    reviewer._get_prediction = AsyncMock(return_value="prediction")
+
+    with patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value="diff"):
+        await reviewer._prepare_prediction("model")
+
+    assert reviewer.patches_diff == "diff"
+    assert reviewer.remaining_files_list == []
+    assert reviewer.prediction == "prediction"
+
+
+async def test_prepare_prediction_keeps_incremental_review_compatible_with_tuple_result():
+    reviewer = _make_prediction_reviewer()
+    reviewer.incremental = SimpleNamespace(is_incremental=True)
+    reviewer._get_prediction = AsyncMock(return_value="prediction")
+
+    with patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["skipped.py"])):
+        await reviewer._prepare_prediction("model")
+
+    assert reviewer.patches_diff == "diff"
+    assert reviewer.remaining_files_list == ["skipped.py"]
+    assert reviewer.prediction == "prediction"
+
+
+def _render_review(reviewer, remaining_files):
+    reviewer.prediction = "review: {}"
+    reviewer.remaining_files_list = remaining_files
+    reviewer.git_provider.get_diff_files.return_value = []
+    reviewer.git_provider.is_supported.return_value = False
+    reviewer.set_review_labels = MagicMock()
+
+    with (
+        patch("pr_agent.tools.pr_reviewer.load_yaml", return_value={"review": {}}),
+        patch("pr_agent.tools.pr_reviewer.github_action_output"),
+        patch("pr_agent.tools.pr_reviewer.convert_to_markdown_v2", return_value="original review"),
+    ):
+        return reviewer._prepare_pr_review()
+
+
+def test_prepare_pr_review_appends_complete_coverage_footer():
+    reviewer = _make_prediction_reviewer()
+
+    review = _render_review(reviewer, ["src/one.py", "nested/two.md"])
+
+    assert review.startswith("original review")
+    assert "⚠️ **Review coverage:**" in review
+    assert "- `src/one.py`" in review
+    assert "- `nested/two.md`" in review
+
+
+def test_prepare_pr_review_leaves_original_content_unchanged_without_remaining_files():
+    reviewer = _make_prediction_reviewer()
+
+    review = _render_review(reviewer, [])
+
+    assert review == "original review"
+    assert "Review coverage" not in review
 
 
 def test_should_publish_review_no_suggestions_respects_config():
