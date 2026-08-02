@@ -266,6 +266,17 @@ model="bedrock/us.meta.llama4-scout-17b-instruct-v1:0"
 fallback_models=["bedrock/us.meta.llama4-maverick-17b-instruct-v1:0"]
 ```
 
+Grok 4.3 is available through Amazon Bedrock Mantle rather than the classic Bedrock runtime:
+
+```toml
+[config] # in configuration.toml
+model="bedrock_mantle/xai.grok-4.3"
+fallback_models=["bedrock_mantle/xai.grok-4.3"]
+```
+
+Bedrock Mantle uses the same AWS credential sources, but its IAM permissions differ from the classic runtime. See
+the [AWS Mantle inference permissions](https://docs.aws.amazon.com/bedrock/latest/userguide/inference.html).
+
 #### Using IAM Role Credentials (Recommended on AWS Compute)
 
 When running PR-Agent on AWS infrastructure (EC2, ECS/Fargate, EKS with IRSA, Lambda, or any self-hosted GitHub Actions runner on AWS), the instance or task already has an IAM role attached. You can use those ambient credentials directly instead of storing long-lived static keys.
