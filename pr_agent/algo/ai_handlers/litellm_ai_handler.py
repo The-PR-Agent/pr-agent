@@ -539,7 +539,9 @@ class LiteLLMAIHandler(BaseAiHandler):
         # Validate config-derived kwargs before the try/except below, so a malformed value raises a
         # ValueError config error instead of being wrapped as openai.APIError and retried.
         cache_control_injection_points = self._resolve_cache_control_injection_points()
-        _bedrock_imds = self._aws_imds_mode and 'bedrock/' in model
+        _bedrock_imds = self._aws_imds_mode and any(
+            provider in model for provider in ("bedrock/", "bedrock_mantle/")
+        )
         async with (self._aws_bedrock_lock if _bedrock_imds else contextlib.nullcontext()):
             if _bedrock_imds and not self._aws_imds_fell_back:
                 if not self._refresh_aws_imds_credentials() and self._aws_static_creds:
