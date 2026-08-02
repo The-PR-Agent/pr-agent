@@ -8,7 +8,6 @@ from pr_agent.config_loader import get_settings
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.tools.pr_description import PRDescription
 from pr_agent.tools.pr_reviewer import PRReviewer
-from tests.unittest._run_details_test_helpers import isolate_run_details  # noqa: F401
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 _TRACKED_KEYS_REVIEW = (

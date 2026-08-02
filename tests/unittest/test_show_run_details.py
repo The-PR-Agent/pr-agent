@@ -3,7 +3,6 @@ import re
 from pr_agent.algo.run_details import (get_run_details, init_run_details,
                                        record_ai_call, record_model_used)
 from pr_agent.algo.utils import show_run_details
-from tests.unittest._run_details_test_helpers import isolate_run_details  # noqa: F401
 
 
 class _Usage:

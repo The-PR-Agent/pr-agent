@@ -6,7 +6,6 @@ import pytest
 
 import pr_agent.algo.ai_handlers.openai_ai_handler as openai_handler
 from pr_agent.algo.run_details import get_run_details, init_run_details
-from tests.unittest._run_details_test_helpers import isolate_run_details  # noqa: F401
 
 
 class _FakeSettings:
@@ -39,7 +38,7 @@ class _Usage:
 
 @pytest.mark.asyncio
 async def test_openai_handler_records_successful_call_with_usage(monkeypatch):
-    monkeypatch.setattr(openai_handler, "get_settings", lambda: _FakeSettings())
+    monkeypatch.setattr(openai_handler, "get_settings", _FakeSettings)
 
     class _FakeCompletions:
         async def create(self, **_kwargs):
@@ -90,7 +89,7 @@ async def test_langchain_handler_records_successful_call_without_usage(monkeypat
     # delitem (not pop) so teardown evicts the copy that was built against the fake langchain modules
     monkeypatch.delitem(sys.modules, "pr_agent.algo.ai_handlers.langchain_ai_handler", raising=False)
     langchain_handler = importlib.import_module("pr_agent.algo.ai_handlers.langchain_ai_handler")
-    monkeypatch.setattr(langchain_handler, "get_settings", lambda: _FakeSettings())
+    monkeypatch.setattr(langchain_handler, "get_settings", _FakeSettings)
 
     async def _fake_create_chat_async(self, deployment_id=None):
         return _FakeRunnable()

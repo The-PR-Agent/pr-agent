@@ -5,7 +5,6 @@ import pytest
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.ai_handlers.litellm_helpers import MockResponse
 from pr_agent.algo.run_details import get_run_details, init_run_details
-from tests.unittest._run_details_test_helpers import isolate_run_details  # noqa: F401
 
 
 class _Usage:
