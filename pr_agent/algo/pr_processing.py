@@ -7,12 +7,13 @@ from github import RateLimitExceededException
 
 from pr_agent.algo.file_filter import filter_ignored
 from pr_agent.algo.git_patch_processing import (
-    extend_patch, handle_patch_deletions,
-    decouple_and_convert_to_hunks_with_lines_numbers)
+    decouple_and_convert_to_hunks_with_lines_numbers, extend_patch,
+    handle_patch_deletions)
 from pr_agent.algo.language_handler import sort_files_by_main_languages
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
-from pr_agent.algo.utils import ModelType, clip_tokens, get_max_tokens, get_model
+from pr_agent.algo.utils import (ModelType, clip_tokens, get_max_tokens,
+                                 get_model)
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.log import get_logger
@@ -292,6 +293,7 @@ def generate_full_patch(convert_hunks_to_line_numbers, file_dict, max_tokens_mod
         # Hard Stop, no more tokens
         if total_tokens > max_tokens_model - OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD:
             get_logger().warning(f"File was fully skipped, no more tokens: {filename}.")
+            remaining_files_list_new.append(filename)
             continue
 
         # If the patch is too large, just show the file name
