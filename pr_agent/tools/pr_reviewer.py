@@ -28,6 +28,8 @@ from pr_agent.servers.help import HelpMessage
 from pr_agent.tools.ticket_pr_compliance_check import (
     extract_and_cache_pr_tickets, extract_tickets)
 
+MAX_REVIEW_COVERAGE_FILES = 50
+
 
 class PRReviewer:
     """
@@ -294,12 +296,16 @@ class PRReviewer:
         self.set_review_labels(data)
 
         if self.remaining_files_list:
+            displayed_files = self.remaining_files_list[:MAX_REVIEW_COVERAGE_FILES]
             markdown_text += (
                 "\n\n---\n\n"
                 "⚠️ **Review coverage:** The following files were not included in this review "
                 "because of the token budget:\n"
-                + "\n".join(f"- `{file}`" for file in self.remaining_files_list)
+                + "\n".join(f"- `{file}`" for file in displayed_files)
             )
+            remaining_count = len(self.remaining_files_list) - len(displayed_files)
+            if remaining_count:
+                markdown_text += f"\n... and {remaining_count} more"
 
         if markdown_text == None or len(markdown_text) == 0:
             markdown_text = ""
