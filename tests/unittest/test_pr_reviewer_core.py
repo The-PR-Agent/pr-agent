@@ -104,6 +104,28 @@ def test_prepare_pr_review_leaves_original_content_unchanged_without_remaining_f
     assert "Review coverage" not in review
 
 
+def test_prepare_pr_review_limits_coverage_footer_to_50_files():
+    reviewer = _make_prediction_reviewer()
+    remaining_files = [f"file_{index}.py" for index in range(51)]
+
+    review = _render_review(reviewer, remaining_files)
+
+    assert review.count("- `file_") == 50
+    assert "- `file_0.py`" in review
+    assert "- `file_49.py`" in review
+    assert "- `file_50.py`" not in review
+
+
+def test_prepare_pr_review_reports_number_of_files_beyond_coverage_limit():
+    reviewer = _make_prediction_reviewer()
+    remaining_files = [f"file_{index}.py" for index in range(53)]
+
+    review = _render_review(reviewer, remaining_files)
+
+    assert "... and 3 more" in review
+    assert "- `file_50.py`" not in review
+
+
 def test_should_publish_review_no_suggestions_respects_config():
     reviewer = _make_reviewer()
     settings = get_settings()
