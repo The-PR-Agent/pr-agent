@@ -2,6 +2,7 @@ import asyncio.locks
 import copy
 import os
 import re
+import shlex
 import uuid
 from typing import Any, Dict, Tuple
 
@@ -380,7 +381,17 @@ def handle_line_comments(body: Dict, comment_body: [str, Any]) -> str:
     side = body["comment"]["side"]
     comment_id = body["comment"]["id"]
     if '/ask' in comment_body:
-        comment_body = f"/ask_line --line_start={start_line} --line_end={end_line} --side={side} --file_name={path} --comment_id={comment_id} {question}"
+        # shlex.quote each value so a webhook-controlled field that contains
+        # whitespace or leading "--" cannot inject additional CLI arguments
+        # (e.g. --local.description_path=/tmp/x).
+        comment_body = (
+            f"/ask_line --line_start={shlex.quote(str(start_line))} "
+            f"--line_end={shlex.quote(str(end_line))} "
+            f"--side={shlex.quote(str(side))} "
+            f"--file_name={shlex.quote(str(path))} "
+            f"--comment_id={shlex.quote(str(comment_id))} "
+            f"{shlex.quote(question)}"
+        )
     return comment_body
 
 
