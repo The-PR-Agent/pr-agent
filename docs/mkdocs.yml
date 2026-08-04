@@ -9,6 +9,8 @@ nav:
   - Installation:
     - 'installation/index.md'
     - PR-Agent: 'installation/pr_agent.md'
+  - Operations:
+    - Reviewer image swap: 'installation/reviewer_image_swap.md'
   - Usage Guide:
     - 'usage-guide/index.md'
     - Introduction: 'usage-guide/introduction.md'
