@@ -118,6 +118,7 @@ By default, PR-Agent posts the `/review` summary as a plain note. To post it as 
 publish_review_as_thread = true
 ```
 - With `pr_reviewer.persistent_comment=true` (the default), each run updates the existing review thread and reopens it if it was resolved, so the refreshed review gets another look.
+- Enabling the flag does not convert a review that was already posted as a plain note: it keeps being updated in place, and GitLab cannot promote a note to a thread. Only MRs whose first review runs after the flag is set get a thread.
 - Set `pr_reviewer.persistent_comment=false` to open a new review thread on each run instead.
 
 ## Log Level
