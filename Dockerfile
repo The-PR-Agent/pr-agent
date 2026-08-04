@@ -29,7 +29,7 @@
 #     docker inspect --format '{{.RepoDigests}}' python:3.12.13-slim
 # => python@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de
 # ---------------------------------------------------------------------------
-FROM python@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de AS base
+FROM python@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de
 
 RUN apt-get update \
     && apt-get install --no-install-recommends -y git curl \
@@ -38,20 +38,24 @@ RUN apt-get update \
 
 WORKDIR /app
 
-# Install the package once (dependencies are pulled from requirements.txt via
-# pyproject.toml) so this layer is cached independently of the app source.
-ADD pyproject.toml .
-ADD requirements.txt .
-ADD docs docs
-RUN pip install --no-cache-dir . && rm pyproject.toml requirements.txt
+# Copy EVERY build input `pip install .` needs. pyproject.toml declares
+# `readme = "README.md"` and `license = { file = "LICENSE" }`, and setuptools
+# must find the `pr_agent` package itself; MANIFEST.in ships the pr_agent/*.toml
+# settings (and excludes *.secrets.toml). Without these the build yields a
+# metadata-only wheel and/or fails -- a metadata-only install was rejected as
+# not actually shipping the package. `.dockerignore` keeps `.secrets.toml`/
+# `**/.env` out of the context.
+COPY pyproject.toml requirements.txt README.md LICENSE MANIFEST.in ./
+COPY pr_agent pr_agent
 
+# Install the package and its dependencies. This installs real `pr_agent`
+# modules (not a metadata-only wheel), so the image is correct on its own.
+# The deps layer is cached independently of later runtime changes.
+RUN pip install --no-cache-dir . && rm -f pyproject.toml requirements.txt MANIFEST.in
+
+# Keep `pr_agent` in /app so the app runs from source via PYTHONPATH=/app,
+# matching the upstream image's runtime layout (build_number.txt lookups, etc.).
 ENV PYTHONPATH=/app
-
-FROM base AS github_app
-
-# Application source only. No .secrets.toml / .env is copied here (see
-# `.dockerignore`); config_loader reads secrets from the runtime bind-mount.
-ADD pr_agent pr_agent
 
 # Same port the upstream image exposes and the captain's run config maps.
 EXPOSE 3000
