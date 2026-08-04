@@ -258,15 +258,38 @@ async def handle_github_webhooks(background_tasks: BackgroundTasks, request: Req
 
             sender_id = data.get("data", {}).get("actor", {}).get("account_id", "")
             log_context["sender_id"] = sender_id
+            # Decode the claims first so we can look up the shared secret, but
+            # treat the JWT as untrusted until jwt.decode() validates its
+            # signature against that secret. Using the unverified iss claim as
+            # the audience parameter (the previous behavior) meant the audience
+            # check was effectively tautological: an attacker could forge a JWT
+            # with iss == aud and skip signature verification by supplying their
+            # own secret via secret_provider. Look up the secret by the
+            # unverified iss, then validate the JWT with a fixed audience so
+            # the signature check actually rejects forged tokens.
             jwt_parts = input_jwt.split(".")
             claim_part = jwt_parts[1]
             claim_part += "=" * (-len(claim_part) % 4)
-            decoded_claims = base64.urlsafe_b64decode(claim_part)
-            claims = json.loads(decoded_claims)
-            client_key = claims["iss"]
-            secrets = json.loads(secret_provider.get_secret(client_key))
-            shared_secret = secrets["shared_secret"]
-            jwt.decode(input_jwt, shared_secret, audience=client_key, algorithms=["HS256"])
+            decoded_claims = json.loads(base64.urlsafe_b64decode(claim_part))
+            client_key = decoded_claims.get("iss", "")
+            if not client_key:
+                get_logger().error("Bitbucket webhook JWT is missing 'iss' claim")
+                return
+            try:
+                secrets = json.loads(secret_provider.get_secret(client_key))
+                shared_secret = secrets["shared_secret"]
+            except Exception as e:
+                get_logger().error(f"Failed to look up Bitbucket shared secret: {e}")
+                return
+            # Atlassian Connect issues JWTs with aud == uri of the app descriptor.
+            # Pin the audience to the configured base_url so a forged JWT cannot
+            # satisfy the audience check by mirroring its own iss.
+            expected_audience = get_settings().bitbucket.base_url
+            try:
+                jwt.decode(input_jwt, shared_secret, audience=expected_audience, algorithms=["HS256"])
+            except jwt.InvalidTokenError as e:
+                get_logger().error(f"Bitbucket webhook JWT validation failed: {e}")
+                return
             bearer_token = await get_bearer_token(shared_secret, client_key)
             context['bitbucket_bearer_token'] = bearer_token
             context["settings"] = copy.deepcopy(global_settings)
