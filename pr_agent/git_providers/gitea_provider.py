@@ -18,6 +18,15 @@ from pr_agent.git_providers.git_provider import (MAX_FILES_ALLOWED_FULL,
 from pr_agent.log import get_logger
 
 
+class _GiteaCommitAdapter:
+    """Mimics PyGithub `Commit` shape (.sha, .html_url) over a raw Gitea commit payload."""
+
+    def __init__(self, raw: Dict[str, Any]):
+        raw = raw or {}
+        self.sha = raw.get("sha", "")
+        self.html_url = raw.get("html_url", "")
+
+
 class GiteaProvider(GitProvider):
     def __init__(self, url: Optional[str] = None):
         super().__init__()
@@ -89,12 +98,7 @@ class GiteaProvider(GitProvider):
             self.sha = self.pr.head.sha if self.pr.head.sha else ""
             self.__add_file_content()
             self.__add_file_diff()
-            self.pr_commits = self.repo_api.list_all_commits(
-                owner=self.owner,
-                repo=self.repo
-            )
-            self.last_commit = self.pr_commits[-1]
-            self.last_commit_id = self.last_commit
+            self._set_pr_commits()
             self.base_sha = self.pr.base.sha if self.pr.base.sha else ""
             self.base_ref = self.pr.base.ref if self.pr.base.ref else ""
         elif "issues" in url:
@@ -103,6 +107,31 @@ class GiteaProvider(GitProvider):
             self.enabled_issue = True
         else:
             self.pr_commits = None
+
+    def _set_pr_commits(self):
+        """Load the commits of the PR itself, not the commits of the repository's default branch."""
+        raw_commits = self.repo_api.get_pr_commits(
+            owner=self.owner,
+            repo=self.repo,
+            pr_number=self.pr_number
+        ) or []
+        if not isinstance(raw_commits, list):
+            self.logger.error(f"Unexpected PR commits payload type: {type(raw_commits)}")
+            raw_commits = []
+        # Gitea returns PR commits newest-first; oldest-first matches GitHub iteration order.
+        self.pr_commits = [
+            _GiteaCommitAdapter(commit) for commit in reversed(raw_commits) if isinstance(commit, dict)
+        ]
+        if not self.pr_commits:
+            self.logger.error("Failed to get PR commits")
+        # Fall back to a commit wrapping the PR head SHA (rather than None) so callers that
+        # dereference last_commit/last_commit_id (e.g. publish_inline_comments, the description
+        # header) always have a valid .sha, even when the commits endpoint returns nothing.
+        self.last_commit = next(
+            (commit for commit in self.pr_commits if commit.sha and commit.sha == self.sha),
+            self.pr_commits[-1] if self.pr_commits else _GiteaCommitAdapter({"sha": self.sha})
+        )
+        self.last_commit_id = self.last_commit
 
     def __add_file_content(self):
         for file in self.git_files:
@@ -227,7 +256,7 @@ class GiteaProvider(GitProvider):
         return self.issue_url
 
     def get_latest_commit_url(self) -> str:
-        return self.last_commit.html_url
+        return self.last_commit.html_url if self.last_commit else ""
 
     def get_comment_url(self, comment) -> str:
         return comment.html_url
@@ -440,7 +469,7 @@ class GiteaProvider(GitProvider):
         return self.repo_api.get_file_content(
             owner=self.owner,
             repo=self.repo,
-            commit_sha=self.last_commit.sha,
+            commit_sha=self.last_commit.sha if self.last_commit else self.sha,
             filepath=filename
         )
 

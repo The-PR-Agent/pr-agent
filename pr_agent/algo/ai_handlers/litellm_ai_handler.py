@@ -424,6 +424,50 @@ class LiteLLMAIHandler(BaseAiHandler):
 
         return kwargs
 
+    def _get_request_user_field(self) -> str:
+        """
+        Build the value for the OpenAI-compatible "user" request field from the current
+        logging context: a compact JSON string carrying the command and the PR URL,
+        e.g. {"command":"improve","pr_url":"https://..."}. Returns an empty string when
+        no context is available.
+        """
+        # The probe record is matched by identity, so a concurrent request adding
+        # its own sink at the same time cannot capture this request's context nor
+        # leak its own into it.
+        probe = object()
+        captured_extra = []
+
+        def capture_logs(message):
+            extra = message.record.get("extra") or {}
+            if extra.get("user_field_probe") is not probe:
+                return
+            log_entry = {}
+            if extra.get("command") is not None:
+                log_entry.update({"command": extra["command"]})
+            if extra.get("pr_url") is not None:
+                log_entry.update({"pr_url": extra["pr_url"]})
+            captured_extra.append(log_entry)
+
+        handler_id = get_logger().add(capture_logs)
+        try:
+            get_logger().debug("Capturing the request context for the user field",
+                               user_field_probe=probe)
+        finally:
+            get_logger().remove(handler_id)
+
+        context = captured_extra[0] if len(captured_extra) > 0 else {}
+        if not context:
+            return ""
+        # Cap the individual values before serialization, so the result stays
+        # valid JSON: slicing the serialized string could cut through closing
+        # quotes and braces. 30 chars cover every tool command; 200 chars of
+        # pr_url keep the total under 256 with the JSON overhead.
+        for key, max_len in (("command", 30), ("pr_url", 200)):
+            value = context.get(key)
+            if isinstance(value, str) and len(value) > max_len:
+                context[key] = value[:max_len]
+        return json.dumps(context, separators=(",", ":"))
+
     @property
     def deployment_id(self):
         """
@@ -434,6 +478,7 @@ class LiteLLMAIHandler(BaseAiHandler):
     @retry(
         retry=retry_if_exception_type(openai.APIError) & retry_if_not_exception_type(openai.RateLimitError),
         stop=stop_after_attempt(MODEL_RETRIES),
+        reraise=True,  # surface the provider's error; RetryError hides the reason
     )
     async def chat_completion(self, model: str, system: str, user: str, temperature: float = 0.2, img_path: str = None):
         # Serialize env-var mutation + Bedrock call for IMDS mode to prevent concurrent
@@ -606,6 +651,36 @@ class LiteLLMAIHandler(BaseAiHandler):
                 # Support for custom OpenAI body fields (e.g., Flex Processing)
                 kwargs = _process_litellm_extra_body(kwargs)
 
+                # Optional provider-side request attribution: when config.add_user_to_requests
+                # is enabled, send the current command and PR URL in the OpenAI-compatible
+                # "user" field, so provider logs and usage exports can be attributed to a
+                # specific PR without timestamp correlation (OpenRouter shows it as
+                # "external_user" and includes it in the activity export). Disabled by
+                # default: it shares request-attribution data with the model provider.
+                if get_settings().config.get("add_user_to_requests", False):
+                    request_user = self._get_request_user_field()
+                    if request_user:
+                        try:
+                            supported_params = litellm.get_supported_openai_params(model=model) or []
+                        except Exception:
+                            supported_params = []
+                        if "user" in supported_params:
+                            kwargs["user"] = request_user
+                        elif isinstance(model, str) and model.startswith("openrouter/"):
+                            # LiteLLM's OpenRouter transformation does not forward the
+                            # standard "user" parameter; extra_body reaches the
+                            # OpenAI-compatible request body verbatim.
+                            user_extra_body = kwargs.get("extra_body") or {}
+                            user_extra_body["user"] = request_user
+                            kwargs["extra_body"] = user_extra_body
+                        else:
+                            # Providers whose parameter mapping does not accept "user"
+                            # (e.g. gemini, deepseek) would reject the request when
+                            # litellm.drop_params is off: skip the field instead of
+                            # breaking the call.
+                            get_logger().debug(
+                                f"add_user_to_requests: user field unsupported for {model}, skipped")
+
                 # Support for Bedrock custom inference profile via model_id
                 model_id = get_settings().get("litellm.model_id")
                 if model_id and 'bedrock/' in model:
@@ -710,7 +785,11 @@ class LiteLLMAIHandler(BaseAiHandler):
                     raise
             except Exception as e:
                 get_logger().warning(f"Unknown error during LLM inference: {e}")
-                raise openai.APIError from e
+                raise openai.APIError(
+                    str(e),
+                    request=httpx.Request("POST", model),
+                    body=None,
+                ) from e
 
             get_logger().debug(f"\nAI response:\n{resp}")
 
@@ -740,7 +819,11 @@ class LiteLLMAIHandler(BaseAiHandler):
         else:
             response = await acompletion(**kwargs)
             if response is None or len(response["choices"]) == 0:
-                raise openai.APIError
+                raise openai.APIError(
+                    f"No choices in model response from {model}",
+                    request=httpx.Request("POST", model),
+                    body=None,
+                )
             content = response["choices"][0]['message']['content']
             finish_reason = response["choices"][0]["finish_reason"]
             if not content:

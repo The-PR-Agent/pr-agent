@@ -282,7 +282,7 @@ Set `AWS_USE_IMDS=true` in the environment. PR-Agent will resolve credentials vi
 Minimal GitHub Actions workflow (no AWS secret keys required):
 
 ```yaml
-- uses: Codium-ai/pr-agent@main
+- uses: the-pr-agent/pr-agent@main
   env:
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     AWS_USE_IMDS: "true"
@@ -433,6 +433,37 @@ For `openrouter/...` models you can optionally restrict which upstream providers
 ```
 
 `provider_only` and `reasoning_effort = "none"` are useful to pin a specific provider and to bound the cost of reasoning models. See the Openrouter [provider routing](https://openrouter.ai/docs/features/provider-routing) and [reasoning tokens](https://openrouter.ai/docs/use-cases/reasoning-tokens) docs.
+
+### Neon AI Gateway
+
+[Neon AI Gateway](https://neon.com/docs/ai-gateway/overview) is an OpenAI-compatible inference gateway. Each Neon branch has its own gateway host, so the base URL points at a single branch and not at an account. Neon publishes that host alongside the credential as `NEON_AI_GATEWAY_BASE_URL`. The value has no path, so append `/v1` to reach chat completions.
+
+To use a model served by a Neon branch, set:
+
+```toml
+[config] # in configuration.toml
+model = "openai/gpt-5-mini"
+fallback_models = ["openai/gpt-5-mini"]
+custom_model_max_tokens = 400000 # the context window Neon publishes for the model
+
+[openai] # in .secrets.toml
+api_base = "https://<your-neon-branch-host>/v1"
+key = "..." # your Neon AI Gateway credential
+```
+
+or use the environment variables (make sure to use double underscores `__`):
+
+```bash
+OPENAI__API_BASE=https://<your-neon-branch-host>/v1
+OPENAI__KEY=...
+```
+
+Keep the `openai/` prefix on the model name, whichever Neon model ID you use: the prefix routes the request through litellm's OpenAI-compatible path. A prefixed name is not in the `MAX_TOKENS` table [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py), so you also have to set `custom_model_max_tokens`. Take the value from Neon's [model catalog](https://neon.com/docs/ai-gateway/models).
+
+Create the credential per branch in the [Neon Console](https://console.neon.tech/) with the `ai_gateway:invoke` scope. The credential also works on branches descended from the one it was created on. The gateway is in beta and requires a paid Neon plan. It runs only in AWS US East (Ohio), `aws-us-east-2`.
+
+!!! note "Chat completions only"
+    Some model IDs in Neon's catalog are served through the OpenAI Responses API, which Neon exposes under `/openai/v1` instead of `/v1`. The configuration above points at the chat-completions endpoint, so it cannot reach those models. Neon also documents a few models that return `message.content` as an array of typed blocks rather than a string, and PR-Agent reads the reply as a string.
 
 ### Custom models
 
