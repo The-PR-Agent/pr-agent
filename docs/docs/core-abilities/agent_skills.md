@@ -53,6 +53,23 @@ The agent-skills standard supports bundled files alongside `SKILL.md`. PR-Agent 
 
 In short, PR-Agent supports **text-only** agent skills.
 
+## Official skills repository
+
+An official collection of curated skills is maintained at [The-PR-Agent/skills](https://github.com/The-PR-Agent/skills). The repository hosts ready-to-use skills contributed by the community and maintainers, including:
+
+- **GitHub Action configuration** — a skill that helps developers generate the correct `.github/workflows/pr_agent.yml` file for their PR-Agent deployment, covering triggers, permissions, model selection, and environment variable setup.
+- Additional skills for common review scenarios.
+
+To use skills from the official repository, clone it to your PR-Agent host and add its path to `skills.paths`:
+
+```toml
+[skills]
+enabled = true
+paths = ["/path/to/the-pr-agent-skills"]
+```
+
+Contributions of new skills are welcome — see the repository's README for guidelines on submitting your own.
+
 ## Limitations
 
 PR-Agent dispatches single-shot model calls, so the agent-skills standard's *progressive disclosure* model (the model reads `SKILL.md` only after selecting it by `description`, and reads `references/*.md` only on demand) is not implementable on the current architecture — an architecture change to support this is planned for the future. Until then, every enabled skill's text is loaded into every PR's prompt, bounded by `max_skills_tokens`. Skills that depend on script execution or binary assets will not work.
