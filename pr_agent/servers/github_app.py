@@ -57,8 +57,17 @@ async def handle_github_webhooks(background_tasks: BackgroundTasks, request: Req
 
 @router.post("/api/v1/marketplace_webhooks")
 async def handle_marketplace_webhooks(request: Request, response: Response):
-    body = await get_body(request)
-    get_logger().info(f'Request body:\n{body}')
+    # Marketplace webhooks do not carry the same x-hub-signature-256 header as
+    # PR webhooks, so they bypass the signature check in get_body. The handler
+    # is intentionally a no-op aside from logging: it never publishes comments,
+    # mutates PR state, or triggers AI calls, so a forged request can only
+    # poison logs.
+    try:
+        body = await request.json()
+    except Exception as e:
+        get_logger().error("Error parsing marketplace request body", artifact={'error': e})
+        raise HTTPException(status_code=400, detail="Error parsing request body") from e
+    get_logger().info(f'Marketplace request body received')
 
 
 async def get_body(request):
