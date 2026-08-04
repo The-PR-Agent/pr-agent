@@ -62,15 +62,24 @@ async def handle_marketplace_webhooks(request: Request, response: Response):
 
 async def get_body(request):
     try:
+        body_bytes = await request.body()
+    except Exception as e:
+        get_logger().error("Error reading request body", artifact={'error': e})
+        raise HTTPException(status_code=400, detail="Error reading request body") from e
+    try:
         body = await request.json()
     except Exception as e:
         get_logger().error("Error parsing request body", artifact={'error': e})
         raise HTTPException(status_code=400, detail="Error parsing request body") from e
     webhook_secret = getattr(get_settings().github, 'webhook_secret', None)
-    if webhook_secret:
-        body_bytes = await request.body()
-        signature_header = request.headers.get('x-hub-signature-256', None)
-        verify_signature(body_bytes, webhook_secret, signature_header)
+    if not webhook_secret:
+        # Refuse unauthenticated webhooks. Silently accepting requests when
+        # the secret is not configured used to allow any internet caller to
+        # trigger expensive AI commands against arbitrary PRs.
+        get_logger().error("Rejecting GitHub webhook: GITHUB.WEBHOOK_SECRET is not configured")
+        raise HTTPException(status_code=403, detail="Webhook secret not configured")
+    signature_header = request.headers.get('x-hub-signature-256', None)
+    verify_signature(body_bytes, webhook_secret, signature_header)
     return body
 
 
