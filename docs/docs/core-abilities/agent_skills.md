@@ -57,7 +57,7 @@ In short, PR-Agent supports **text-only** agent skills.
 
 An official collection of curated skills is maintained at [The-PR-Agent/skills](https://github.com/The-PR-Agent/skills). The repository hosts ready-to-use skills contributed by the community and maintainers, including:
 
-- **GitHub Action configuration** — a skill that helps developers generate the correct `.github/workflows/pr_agent.yml` file for their PR-Agent deployment, covering triggers, permissions, model selection, and environment variable setup.
+- **GitHub Action configuration** — a skill that helps developers generate the correct `.github/workflows/pr-agent.yml` file for their PR-Agent deployment, covering triggers, permissions, model selection, and environment variable setup.
 - Additional skills for common review scenarios.
 
 To use skills from the official repository, clone it to your PR-Agent host and add its path to `skills.paths`:
