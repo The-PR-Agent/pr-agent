@@ -804,6 +804,84 @@ def sanitize_diagram(diagram_raw: str) -> str:
     return '\n' + '\n'.join(result)
 
 
+DIAGRAM_HEADER_PATTERN = re.compile(r'^(\s*)(flowchart|graph)(\s+)(TB|TD|BT|RL|LR)\b(.*)$')
+DIAGRAM_CONNECTOR_PATTERN = re.compile(r'<?[-=.~]{2,}[->ox]?')
+DIAGRAM_NODE_ID_PATTERN = re.compile(r'[A-Za-z0-9_]+')
+DIAGRAM_STATEMENT_KEYWORDS = ('subgraph', 'end', 'direction', 'style', 'classDef', 'linkStyle', 'click')
+
+
+def _strip_diagram_labels(line: str) -> str:
+    """Remove label text, so that arrows written inside a label are not read as edges."""
+    line = re.sub(r'"[^"]*"', '', line)  # quoted labels, which is what the prompt asks the model for
+    line = re.sub(r'\|[^|]*\|', '', line)  # pipe-form edge labels: -->|text|
+    for pattern in (r'\[[^\[\]]*\]', r'\([^()]*\)', r'\{[^{}]*\}'):
+        previous = None
+        while previous != line:  # nested shapes such as [[...]] need more than one pass
+            previous = line
+            line = re.sub(pattern, '', line)
+    return line
+
+
+def _parse_diagram_edges(lines: List[str]) -> List[Tuple[str, str]]:
+    """Extract the directed edges of a mermaid flowchart body, tolerating its syntax variants."""
+    edges = []
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith('%%'):
+            continue
+        if line.split(' ')[0].rstrip(';') in DIAGRAM_STATEMENT_KEYWORDS:
+            continue
+
+        cleaned = _strip_diagram_labels(line)
+        if not DIAGRAM_CONNECTOR_PATTERN.search(cleaned):
+            continue
+
+        # Split on connectors; each remaining chunk holds one or more node ids joined by '&'.
+        # Chunks left empty once labels are stripped collapse away, which is what makes
+        # `A -- "text" --> B` read as the single edge A -> B.
+        node_groups = []
+        for chunk in DIAGRAM_CONNECTOR_PATTERN.split(cleaned):
+            node_ids = []
+            for token in chunk.split('&'):
+                match = DIAGRAM_NODE_ID_PATTERN.match(token.strip().lstrip(';'))
+                if match:
+                    node_ids.append(match.group(0))
+            if node_ids:
+                node_groups.append(node_ids)
+
+        for left, right in zip(node_groups, node_groups[1:]):
+            edges.extend((source, target) for source in left for target in right)
+    return edges
+
+
+def _longest_diagram_chain(edges: List[Tuple[str, str]]) -> int:
+    """Length, in nodes, of the longest path through the graph. Raises ValueError on a cycle."""
+    adjacency = {}
+    nodes = set()
+    for source, target in edges:
+        adjacency.setdefault(source, []).append(target)
+        nodes.add(source)
+        nodes.add(target)
+
+    longest_from = {}
+    in_progress = set()
+
+    def walk(node: str) -> int:
+        if node in in_progress:
+            raise ValueError(f"cycle detected at node '{node}'")
+        if node in longest_from:
+            return longest_from[node]
+        in_progress.add(node)
+        longest = 1
+        for neighbour in adjacency.get(node, []):
+            longest = max(longest, 1 + walk(neighbour))
+        in_progress.discard(node)
+        longest_from[node] = longest
+        return longest
+
+    return max((walk(node) for node in nodes), default=0)
+
+
 def count_chars_without_html(string):
     if '<' not in string:
         return len(string)

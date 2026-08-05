@@ -4,7 +4,10 @@ import pytest
 import yaml
 
 from pr_agent.algo.types import FilePatchInfo
-from pr_agent.tools.pr_description import PRDescription, sanitize_diagram
+from pr_agent.tools.pr_description import (PRDescription,
+                                           _longest_diagram_chain,
+                                           _parse_diagram_edges,
+                                           sanitize_diagram)
 
 KEYS_FIX = ["filename:", "language:", "changes_summary:", "changes_title:", "description:", "title:"]
 
@@ -169,3 +172,58 @@ pr_files:
 
         assert [file["filename"].strip() for file in loaded["pr_files"]] == ["shown.py", "missing.py"]
         assert loaded["pr_files"][1]["label"].strip() == "additional files"
+
+
+class TestDiagramEdgeParsing:
+
+    def test_simple_edge(self):
+        assert _parse_diagram_edges(['A --> B']) == [('A', 'B')]
+
+    def test_chained_statement_becomes_consecutive_edges(self):
+        assert _parse_diagram_edges(['A --> B --> C']) == [('A', 'B'), ('B', 'C')]
+
+    def test_node_shapes_are_stripped(self):
+        assert _parse_diagram_edges(['A["file.py"] --> B("output")']) == [('A', 'B')]
+
+    def test_quoted_middle_label_does_not_create_a_node(self):
+        assert _parse_diagram_edges(['A -- "calls" --> B']) == [('A', 'B')]
+
+    def test_pipe_edge_label_does_not_create_a_node(self):
+        assert _parse_diagram_edges(['A -->|calls| B']) == [('A', 'B')]
+
+    def test_arrow_inside_a_label_is_not_an_edge(self):
+        assert _parse_diagram_edges(['A["a --> b"]']) == []
+
+    @pytest.mark.parametrize('line', ['A --- B', 'A -.-> B', 'A ==> B', 'A --o B'])
+    def test_arrow_variants(self, line):
+        assert _parse_diagram_edges([line]) == [('A', 'B')]
+
+    def test_fan_out_shorthand_expands(self):
+        assert _parse_diagram_edges(['A --> B & C']) == [('A', 'B'), ('A', 'C')]
+
+    def test_structural_statements_are_ignored(self):
+        lines = ['subgraph one', 'direction LR', 'A --> B', 'end', 'style A fill:#fff', '%% A --> Z']
+        assert _parse_diagram_edges(lines) == [('A', 'B')]
+
+    def test_fence_and_frontmatter_lines_produce_no_edges(self):
+        assert _parse_diagram_edges(['```', '---', 'config:', '---']) == []
+
+
+class TestLongestDiagramChain:
+
+    def test_empty_graph_is_zero(self):
+        assert _longest_diagram_chain([]) == 0
+
+    def test_chain_length_counts_nodes(self):
+        assert _longest_diagram_chain([('A', 'B'), ('B', 'C')]) == 3
+
+    def test_fan_out_is_two_regardless_of_width(self):
+        edges = [('A', chr(ord('B') + i)) for i in range(8)]
+        assert _longest_diagram_chain(edges) == 2
+
+    def test_longest_branch_wins(self):
+        assert _longest_diagram_chain([('A', 'B'), ('B', 'C'), ('C', 'D'), ('A', 'E')]) == 4
+
+    def test_cycle_raises(self):
+        with pytest.raises(ValueError):
+            _longest_diagram_chain([('A', 'B'), ('B', 'A')])
