@@ -4,11 +4,13 @@ import pytest
 import yaml
 
 from pr_agent.algo.types import FilePatchInfo
-from pr_agent.tools.pr_description import (PRDescription,
-                                           _longest_diagram_chain,
-                                           _parse_diagram_edges,
-                                           apply_diagram_direction,
-                                           sanitize_diagram)
+from pr_agent.tools.pr_description import (
+    PRDescription,
+    _longest_diagram_chain,
+    _parse_diagram_edges,
+    apply_diagram_direction,
+    sanitize_diagram,
+)
 
 KEYS_FIX = ["filename:", "language:", "changes_summary:", "changes_title:", "description:", "title:"]
 
@@ -22,10 +24,14 @@ def _make_instance(prediction_yaml: str):
     return obj
 
 
-def _mock_settings():
+def _mock_settings(pr_diagram_direction: str = 'adaptive', pr_diagram_direction_threshold: int = 5):
     """Mock get_settings used by _prepare_data."""
     settings = MagicMock()
     settings.pr_description.add_original_user_description = False
+    settings.pr_description.get.side_effect = lambda key, default=None: {
+        'pr_diagram_direction': pr_diagram_direction,
+        'pr_diagram_direction_threshold': pr_diagram_direction_threshold,
+    }.get(key, default)
     return settings
 
 
@@ -74,6 +80,22 @@ class TestPRDescriptionDiagram:
         obj = _make_instance(_prediction_with_diagram('```mermaid\ngraph LR\nA["file.py"] --> B["output"]\n```'))
         obj._prepare_data()
         assert obj.data['changes_diagram'] == '\n```mermaid\ngraph LR\nA["file.py"] --> B["output"]\n```'
+
+    @patch('pr_agent.tools.pr_description.get_settings')
+    def test_long_chain_diagram_is_flipped_during_prepare_data(self, mock_get_settings):
+        mock_get_settings.return_value = _mock_settings()
+        body = 'A --> B --> C --> D --> E --> F'
+        obj = _make_instance(_prediction_with_diagram(f'```mermaid\nflowchart LR\n{body}\n```'))
+        obj._prepare_data()
+        assert obj.data['changes_diagram'] == f'\n```mermaid\nflowchart TD\n{body}\n```'
+
+    @patch('pr_agent.tools.pr_description.get_settings')
+    def test_pinned_direction_is_respected_during_prepare_data(self, mock_get_settings):
+        mock_get_settings.return_value = _mock_settings(pr_diagram_direction='LR')
+        body = 'A --> B --> C --> D --> E --> F'
+        obj = _make_instance(_prediction_with_diagram(f'```mermaid\nflowchart LR\n{body}\n```'))
+        obj._prepare_data()
+        assert obj.data['changes_diagram'] == f'\n```mermaid\nflowchart LR\n{body}\n```'
 
     def test_none_input_returns_empty(self):
         assert sanitize_diagram(None) == ''

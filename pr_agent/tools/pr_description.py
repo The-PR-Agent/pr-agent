@@ -472,7 +472,11 @@ class PRDescription:
         if 'changes_diagram' in self.data:
             sanitized = sanitize_diagram(self.data.pop('changes_diagram'))
             if sanitized:
-                self.data['changes_diagram'] = sanitized
+                self.data['changes_diagram'] = apply_diagram_direction(
+                    sanitized,
+                    get_settings().pr_description.get("pr_diagram_direction", "adaptive"),
+                    get_settings().pr_description.get("pr_diagram_direction_threshold", 5),
+                )
         if 'pr_files' in self.data:
             self.data['pr_files'] = self.data.pop('pr_files')
 
@@ -849,7 +853,7 @@ def _parse_diagram_edges(lines: List[str]) -> List[Tuple[str, str]]:
             if node_ids:
                 node_groups.append(node_ids)
 
-        for left, right in zip(node_groups, node_groups[1:]):
+        for left, right in zip(node_groups, node_groups[1:], strict=False):
             edges.extend((source, target) for source in left for target in right)
     return edges
 
