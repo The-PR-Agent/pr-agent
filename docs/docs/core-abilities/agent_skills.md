@@ -60,7 +60,7 @@ An official collection of curated skills is maintained at [The-PR-Agent/skills](
 - **GitHub Action configuration** — a skill that helps developers generate the correct `.github/workflows/pr-agent.yml` file for their PR-Agent deployment, covering triggers, permissions, model selection, and environment variable setup.
 - Additional skills for common review scenarios.
 
-To use skills from the official repository, clone it to your PR-Agent host and add its path to `skills.paths`:
+To use skills from the official repository, clone it to your PR-Agent host and add its path to `skills.paths` in your **host-level** `configuration.toml` (not `.pr_agent.toml` — see the warning above about why `skills.paths` is host-level only):
 
 ```toml
 [skills]
