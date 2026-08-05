@@ -64,21 +64,21 @@ async def handle_marketplace_webhooks(request: Request, response: Response):
     try:
         body = await request.json()
     except Exception as e:
-        get_logger().error("Error parsing marketplace request body", artifact={'error': e})
+        get_logger().error("Error parsing marketplace request body", artifact={"error": e})
         raise HTTPException(status_code=400, detail="Error parsing request body") from e
-    get_logger().info(f'Marketplace request body received')
+    get_logger().info("Marketplace request body received")
 
 
 async def get_body(request):
     try:
         body_bytes = await request.body()
     except Exception as e:
-        get_logger().error("Error reading request body", artifact={'error': e})
+        get_logger().error("Error reading request body", artifact={"error": e})
         raise HTTPException(status_code=400, detail="Error reading request body") from e
     try:
         body = await request.json()
     except Exception as e:
-        get_logger().error("Error parsing request body", artifact={'error': e})
+        get_logger().error("Error parsing request body", artifact={"error": e})
         raise HTTPException(status_code=400, detail="Error parsing request body") from e
     webhook_secret = getattr(get_settings().github, 'webhook_secret', None)
     if not webhook_secret:
