@@ -900,7 +900,7 @@ def apply_diagram_direction(diagram: str, direction: str, threshold: int) -> str
             chosen = requested
         else:
             if requested != 'ADAPTIVE':
-                get_logger().debug(f"Unknown pr_diagram_direction '{direction}', using adaptive")
+                get_logger().warning(f"Unknown pr_diagram_direction '{direction}', using adaptive")
             edges = _parse_diagram_edges(lines[header_index + 1:])
             if not edges:
                 return diagram
