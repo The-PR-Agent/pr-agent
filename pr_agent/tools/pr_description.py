@@ -3,6 +3,7 @@ import copy
 import re
 import traceback
 from functools import partial
+from graphlib import TopologicalSorter
 from typing import List, Tuple
 
 import yaml
@@ -472,10 +473,12 @@ class PRDescription:
         if 'changes_diagram' in self.data:
             sanitized = sanitize_diagram(self.data.pop('changes_diagram'))
             if sanitized:
+                description_settings = get_settings().pr_description
                 self.data['changes_diagram'] = apply_diagram_direction(
                     sanitized,
-                    get_settings().pr_description.get("pr_diagram_direction", "adaptive"),
-                    get_settings().pr_description.get("pr_diagram_direction_threshold", 5),
+                    description_settings.get("pr_diagram_direction", DEFAULT_DIAGRAM_DIRECTION),
+                    description_settings.get("pr_diagram_direction_threshold",
+                                             DEFAULT_DIAGRAM_DIRECTION_THRESHOLD),
                 )
         if 'pr_files' in self.data:
             self.data['pr_files'] = self.data.pop('pr_files')
@@ -808,21 +811,24 @@ def sanitize_diagram(diagram_raw: str) -> str:
     return '\n' + '\n'.join(result)
 
 
-DIAGRAM_HEADER_PATTERN = re.compile(r'^(\s*)(flowchart|graph)(\s+)(TB|TD|BT|RL|LR)\b(.*)$')
+DIAGRAM_HEADER_PATTERN = re.compile(r'^(\s*(?:flowchart|graph)\s+)(?:TB|TD|BT|RL|LR)\b(.*)$')
 DIAGRAM_CONNECTOR_PATTERN = re.compile(r'<?[-=.~]{2,}[->ox]?')
 DIAGRAM_NODE_ID_PATTERN = re.compile(r'[A-Za-z0-9_]+')
-DIAGRAM_STATEMENT_KEYWORDS = ('subgraph', 'end', 'direction', 'style', 'classDef', 'linkStyle', 'click')
+DIAGRAM_QUOTED_LABEL_PATTERN = re.compile(r'"[^"]*"')
+DIAGRAM_PIPE_LABEL_PATTERN = re.compile(r'\|[^|]*\|')  # pipe-form edge labels: -->|text|
+DIAGRAM_SHAPE_PATTERN = re.compile(r'\[[^\[\]]*\]|\([^()]*\)|\{[^{}]*\}')
+DEFAULT_DIAGRAM_DIRECTION = 'adaptive'
+DEFAULT_DIAGRAM_DIRECTION_THRESHOLD = 5
 
 
 def _strip_diagram_labels(line: str) -> str:
     """Remove label text, so that arrows written inside a label are not read as edges."""
-    line = re.sub(r'"[^"]*"', '', line)  # quoted labels, which is what the prompt asks the model for
-    line = re.sub(r'\|[^|]*\|', '', line)  # pipe-form edge labels: -->|text|
-    for pattern in (r'\[[^\[\]]*\]', r'\([^()]*\)', r'\{[^{}]*\}'):
-        previous = None
-        while previous != line:  # nested shapes such as [[...]] need more than one pass
-            previous = line
-            line = re.sub(pattern, '', line)
+    line = DIAGRAM_QUOTED_LABEL_PATTERN.sub('', line)
+    line = DIAGRAM_PIPE_LABEL_PATTERN.sub('', line)
+    previous = None
+    while previous != line:  # nested shapes such as [[...]] need more than one pass
+        previous = line
+        line = DIAGRAM_SHAPE_PATTERN.sub('', line)
     return line
 
 
@@ -831,12 +837,12 @@ def _parse_diagram_edges(lines: List[str]) -> List[Tuple[str, str]]:
     edges = []
     for raw_line in lines:
         line = raw_line.strip()
-        if not line or line.startswith('%%'):
-            continue
-        if line.split(' ')[0].rstrip(';') in DIAGRAM_STATEMENT_KEYWORDS:
+        if not line or line.startswith('%%'):  # a comment can still hold arrow-looking text
             continue
 
         cleaned = _strip_diagram_labels(line)
+        # No connector left also means no edge, which is how subgraph/style/classDef/direction
+        # statements drop out without needing a keyword list to keep in sync with mermaid.
         if not DIAGRAM_CONNECTOR_PATTERN.search(cleaned):
             continue
 
@@ -847,7 +853,7 @@ def _parse_diagram_edges(lines: List[str]) -> List[Tuple[str, str]]:
         for chunk in DIAGRAM_CONNECTOR_PATTERN.split(cleaned):
             node_ids = []
             for token in chunk.split('&'):
-                match = DIAGRAM_NODE_ID_PATTERN.match(token.strip().lstrip(';'))
+                match = DIAGRAM_NODE_ID_PATTERN.search(token)
                 if match:
                     node_ids.append(match.group(0))
             if node_ids:
@@ -860,33 +866,20 @@ def _parse_diagram_edges(lines: List[str]) -> List[Tuple[str, str]]:
 
 def _longest_diagram_chain(edges: List[Tuple[str, str]]) -> int:
     """Length, in nodes, of the longest path through the graph. Raises ValueError on a cycle."""
-    adjacency = {}
-    nodes = set()
+    predecessors = {}
     for source, target in edges:
-        adjacency.setdefault(source, []).append(target)
-        nodes.add(source)
-        nodes.add(target)
+        predecessors.setdefault(source, set())
+        predecessors.setdefault(target, set()).add(source)
 
-    longest_from = {}
-    in_progress = set()
-
-    def walk(node: str) -> int:
-        if node in in_progress:
-            raise ValueError(f"cycle detected at node '{node}'")
-        if node in longest_from:
-            return longest_from[node]
-        in_progress.add(node)
-        longest = 1
-        for neighbour in adjacency.get(node, []):
-            longest = max(longest, 1 + walk(neighbour))
-        in_progress.discard(node)
-        longest_from[node] = longest
-        return longest
-
-    return max((walk(node) for node in nodes), default=0)
+    longest = {}
+    for node in TopologicalSorter(predecessors).static_order():  # CycleError is a ValueError
+        longest[node] = 1 + max((longest[p] for p in predecessors[node]), default=0)
+    return max(longest.values(), default=0)
 
 
-def apply_diagram_direction(diagram: str, direction: str = 'adaptive', threshold: int = 5) -> str:
+def apply_diagram_direction(diagram: str,
+                            direction: str = DEFAULT_DIAGRAM_DIRECTION,
+                            threshold: int = DEFAULT_DIAGRAM_DIRECTION_THRESHOLD) -> str:
     """Set the flowchart direction, adapting it to the shape of the graph unless one is pinned.
 
     Width in an LR flowchart is set by the longest path rather than by the node count, so the
@@ -895,14 +888,11 @@ def apply_diagram_direction(diagram: str, direction: str = 'adaptive', threshold
     """
     try:
         lines = diagram.split('\n')
-        header_index, header_match = None, None
-        for index, line in enumerate(lines):
-            header_match = DIAGRAM_HEADER_PATTERN.match(line)
-            if header_match:
-                header_index = index
-                break
-        if header_index is None:
+        header = next(((index, match) for index, line in enumerate(lines)
+                       if (match := DIAGRAM_HEADER_PATTERN.match(line))), None)
+        if header is None:
             return diagram
+        header_index, header_match = header
 
         requested = str(direction).strip().upper()
         if requested in ('LR', 'TD'):
@@ -913,8 +903,7 @@ def apply_diagram_direction(diagram: str, direction: str = 'adaptive', threshold
                 return diagram
             chosen = 'LR' if _longest_diagram_chain(edges) <= int(threshold) else 'TD'
 
-        lines[header_index] = (f"{header_match.group(1)}{header_match.group(2)}"
-                               f"{header_match.group(3)}{chosen}{header_match.group(5)}")
+        lines[header_index] = f"{header_match.group(1)}{chosen}{header_match.group(2)}"
         return '\n'.join(lines)
     except Exception as e:
         get_logger().debug(f"Failed to adapt the diagram direction: {e}")

@@ -14,6 +14,11 @@ from pr_agent.tools.pr_description import (
 
 KEYS_FIX = ["filename:", "language:", "changes_summary:", "changes_title:", "description:", "title:"]
 
+# Chains named relative to the default pr_diagram_direction_threshold of 5 nodes.
+SHORT_CHAIN = 'A --> B --> C'
+THRESHOLD_CHAIN = 'A --> B --> C --> D --> E'
+LONG_CHAIN = 'A --> B --> C --> D --> E --> F'
+
 def _make_instance(prediction_yaml: str):
     """Create a PRDescription instance, bypassing __init__."""
     with patch.object(PRDescription, '__init__', lambda self, *a, **kw: None):
@@ -84,7 +89,7 @@ class TestPRDescriptionDiagram:
     @patch('pr_agent.tools.pr_description.get_settings')
     def test_long_chain_diagram_is_flipped_during_prepare_data(self, mock_get_settings):
         mock_get_settings.return_value = _mock_settings()
-        body = 'A --> B --> C --> D --> E --> F'
+        body = LONG_CHAIN
         obj = _make_instance(_prediction_with_diagram(f'```mermaid\nflowchart LR\n{body}\n```'))
         obj._prepare_data()
         assert obj.data['changes_diagram'] == f'\n```mermaid\nflowchart TD\n{body}\n```'
@@ -92,7 +97,7 @@ class TestPRDescriptionDiagram:
     @patch('pr_agent.tools.pr_description.get_settings')
     def test_pinned_direction_is_respected_during_prepare_data(self, mock_get_settings):
         mock_get_settings.return_value = _mock_settings(pr_diagram_direction='LR')
-        body = 'A --> B --> C --> D --> E --> F'
+        body = LONG_CHAIN
         obj = _make_instance(_prediction_with_diagram(f'```mermaid\nflowchart LR\n{body}\n```'))
         obj._prepare_data()
         assert obj.data['changes_diagram'] == f'\n```mermaid\nflowchart LR\n{body}\n```'
@@ -258,59 +263,42 @@ def _fenced(body: str) -> str:
 
 class TestApplyDiagramDirection:
 
-    def test_short_chain_stays_horizontal(self):
-        diagram = _fenced('flowchart LR\nA --> B --> C')
+    @pytest.mark.parametrize('body', [
+        pytest.param(f'flowchart LR\n{SHORT_CHAIN}', id='short_chain'),
+        pytest.param(f'flowchart LR\n{THRESHOLD_CHAIN}', id='chain_exactly_at_threshold'),
+        pytest.param('flowchart LR\n' + '\n'.join(f'A --> {node}' for node in 'BCDEFGHI'), id='wide_fan_out'),
+        pytest.param('sequenceDiagram\nA->>B: hello', id='not_a_flowchart'),
+        pytest.param('flowchart LR\nA["only a node"]', id='no_edges'),
+        pytest.param(f'flowchart LR\n{LONG_CHAIN} --> A', id='cycle'),
+    ])
+    def test_diagram_is_left_untouched(self, body):
+        diagram = _fenced(body)
         assert apply_diagram_direction(diagram) == diagram
 
-    def test_long_chain_becomes_vertical(self):
-        body = 'A --> B --> C --> D --> E --> F'
-        assert apply_diagram_direction(_fenced(f'flowchart LR\n{body}')) == _fenced(f'flowchart TD\n{body}')
-
-    def test_chain_exactly_at_threshold_stays_horizontal(self):
-        diagram = _fenced('flowchart LR\nA --> B --> C --> D --> E')
-        assert apply_diagram_direction(diagram) == diagram
-
-    def test_wide_fan_out_stays_horizontal(self):
-        body = 'A --> B\nA --> C\nA --> D\nA --> E\nA --> F\nA --> G\nA --> H\nA --> I'
-        diagram = _fenced(f'flowchart LR\n{body}')
-        assert apply_diagram_direction(diagram) == diagram
-
-    def test_graph_alias_is_rewritten_too(self):
-        body = 'A --> B --> C --> D --> E --> F'
-        assert apply_diagram_direction(_fenced(f'graph LR\n{body}')) == _fenced(f'graph TD\n{body}')
+    @pytest.mark.parametrize('header_in, header_out', [
+        pytest.param('flowchart LR', 'flowchart TD', id='flowchart'),
+        pytest.param('graph LR', 'graph TD', id='graph_alias'),
+        pytest.param('  graph LR;', '  graph TD;', id='indent_and_semicolon_preserved'),
+    ])
+    def test_long_chain_becomes_vertical(self, header_in, header_out):
+        assert apply_diagram_direction(_fenced(f'{header_in}\n{LONG_CHAIN}')) == \
+            _fenced(f'{header_out}\n{LONG_CHAIN}')
 
     def test_vertical_short_diagram_is_flipped_back_to_horizontal(self):
         assert apply_diagram_direction(_fenced('flowchart TD\nA --> B')) == _fenced('flowchart LR\nA --> B')
 
     def test_explicit_direction_pins_and_ignores_shape(self):
-        diagram = _fenced('flowchart LR\nA --> B --> C --> D --> E --> F')
+        diagram = _fenced(f'flowchart LR\n{LONG_CHAIN}')
         assert apply_diagram_direction(diagram, direction='LR') == diagram
         assert apply_diagram_direction(_fenced('flowchart LR\nA --> B'), direction='TD') == \
             _fenced('flowchart TD\nA --> B')
 
     def test_custom_threshold_is_honoured(self):
-        body = 'A --> B --> C'
-        assert apply_diagram_direction(_fenced(f'flowchart LR\n{body}'), threshold=2) == \
-            _fenced(f'flowchart TD\n{body}')
-
-    def test_indentation_and_trailing_semicolon_are_preserved(self):
-        body = 'A --> B --> C --> D --> E --> F'
-        assert apply_diagram_direction(_fenced(f'  graph LR;\n{body}')) == _fenced(f'  graph TD;\n{body}')
-
-    def test_sequence_diagram_is_untouched(self):
-        diagram = _fenced('sequenceDiagram\nA->>B: hello')
-        assert apply_diagram_direction(diagram) == diagram
-
-    def test_diagram_without_edges_is_untouched(self):
-        diagram = _fenced('flowchart LR\nA["only a node"]')
-        assert apply_diagram_direction(diagram) == diagram
-
-    def test_cyclic_graph_is_untouched(self):
-        diagram = _fenced('flowchart LR\nA --> B --> C --> D --> E --> F --> A')
-        assert apply_diagram_direction(diagram) == diagram
+        assert apply_diagram_direction(_fenced(f'flowchart LR\n{SHORT_CHAIN}'), threshold=2) == \
+            _fenced(f'flowchart TD\n{SHORT_CHAIN}')
 
     def test_unparseable_threshold_leaves_diagram_untouched(self):
-        diagram = _fenced('flowchart LR\nA --> B --> C --> D --> E --> F')
+        diagram = _fenced(f'flowchart LR\n{LONG_CHAIN}')
         assert apply_diagram_direction(diagram, threshold='not-a-number') == diagram
 
     def test_subgraph_edges_are_counted(self):

@@ -144,7 +144,7 @@ The direction of the diagram adapts to its shape. A diagram whose longest chain 
       </tr>
       <tr>
         <td><b>enable_pr_diagram</b></td>
-        <td>If set to true, the tool will generate a horizontal Mermaid flowchart summarizing the main pull request changes. This field remains empty if not applicable. Default is true.</td>
+        <td>If set to true, the tool will generate a Mermaid flowchart summarizing the main pull request changes. This field remains empty if not applicable. Default is true.</td>
       </tr>
       <tr>
         <td><b>pr_diagram_direction</b></td>
