@@ -2,7 +2,6 @@ import asyncio.locks
 import copy
 import os
 import re
-import shlex
 import uuid
 from typing import Any, Dict, Tuple
 
@@ -377,7 +376,7 @@ async def handle_request(body: Dict[str, Any], event: str):
     return {}
 
 
-def handle_line_comments(body: Dict, comment_body: [str, Any]) -> str:
+def handle_line_comments(body: Dict, comment_body: [str, Any]):
     if not comment_body:
         return ""
     start_line = body["comment"]["start_line"]
@@ -390,17 +389,23 @@ def handle_line_comments(body: Dict, comment_body: [str, Any]) -> str:
     side = body["comment"]["side"]
     comment_id = body["comment"]["id"]
     if '/ask' in comment_body:
-        # shlex.quote each value so a webhook-controlled field that contains
-        # whitespace or leading "--" cannot inject additional CLI arguments
-        # (e.g. --local.description_path=/tmp/x).
-        comment_body = (
-            f"/ask_line --line_start={shlex.quote(str(start_line))} "
-            f"--line_end={shlex.quote(str(end_line))} "
-            f"--side={shlex.quote(str(side))} "
-            f"--file_name={shlex.quote(str(path))} "
-            f"--comment_id={shlex.quote(str(comment_id))} "
-            f"{shlex.quote(question)}"
-        )
+        # Build an argv list rather than concatenating into a shell-style
+        # command string. PRAgent._handle_request() tokenises string requests
+        # with shlex.shlex after escaping single quotes, which neutralises any
+        # shlex.quote() output and re-introduces the CLI-argument injection
+        # vector (a quoted value containing whitespace splits into multiple
+        # argv tokens). Passing a list bypasses the shlex path entirely.
+        cmd = [
+            "/ask_line",
+            f"--line_start={start_line}",
+            f"--line_end={end_line}",
+            f"--side={side}",
+            f"--file_name={path}",
+            f"--comment_id={comment_id}",
+        ]
+        if question:
+            cmd.append(question)
+        return cmd
     return comment_body
 
 
