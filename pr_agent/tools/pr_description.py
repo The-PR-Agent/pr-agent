@@ -882,6 +882,41 @@ def _longest_diagram_chain(edges: List[Tuple[str, str]]) -> int:
     return max((walk(node) for node in nodes), default=0)
 
 
+def apply_diagram_direction(diagram: str, direction: str = 'adaptive', threshold: int = 5) -> str:
+    """Set the flowchart direction, adapting it to the shape of the graph unless one is pinned.
+
+    Width in an LR flowchart is set by the longest path rather than by the node count, so the
+    longest chain is what decides. Anything unexpected - no flowchart header, no edges, a cycle,
+    an unusable setting - returns the diagram untouched.
+    """
+    try:
+        lines = diagram.split('\n')
+        header_index, header_match = None, None
+        for index, line in enumerate(lines):
+            header_match = DIAGRAM_HEADER_PATTERN.match(line)
+            if header_match:
+                header_index = index
+                break
+        if header_index is None:
+            return diagram
+
+        requested = str(direction).strip().upper()
+        if requested in ('LR', 'TD'):
+            chosen = requested
+        else:
+            edges = _parse_diagram_edges(lines[header_index + 1:])
+            if not edges:
+                return diagram
+            chosen = 'LR' if _longest_diagram_chain(edges) <= int(threshold) else 'TD'
+
+        lines[header_index] = (f"{header_match.group(1)}{header_match.group(2)}"
+                               f"{header_match.group(3)}{chosen}{header_match.group(5)}")
+        return '\n'.join(lines)
+    except Exception as e:
+        get_logger().debug(f"Failed to adapt the diagram direction: {e}")
+        return diagram
+
+
 def count_chars_without_html(string):
     if '<' not in string:
         return len(string)
