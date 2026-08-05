@@ -476,9 +476,8 @@ class PRDescription:
                 description_settings = get_settings().pr_description
                 self.data['changes_diagram'] = apply_diagram_direction(
                     sanitized,
-                    description_settings.get("pr_diagram_direction", DEFAULT_DIAGRAM_DIRECTION),
-                    description_settings.get("pr_diagram_direction_threshold",
-                                             DEFAULT_DIAGRAM_DIRECTION_THRESHOLD),
+                    description_settings.pr_diagram_direction,
+                    description_settings.pr_diagram_direction_threshold,
                 )
         if 'pr_files' in self.data:
             self.data['pr_files'] = self.data.pop('pr_files')
@@ -812,13 +811,14 @@ def sanitize_diagram(diagram_raw: str) -> str:
 
 
 DIAGRAM_HEADER_PATTERN = re.compile(r'^(\s*(?:flowchart|graph)\s+)(?:TB|TD|BT|RL|LR)\b(.*)$')
-DIAGRAM_CONNECTOR_PATTERN = re.compile(r'<?[-=.~]{2,}[->ox]?')
+DIAGRAM_CONNECTOR_PATTERN = re.compile(r'(<?[-=.~]{2,}[->ox]?)')
 DIAGRAM_NODE_ID_PATTERN = re.compile(r'[A-Za-z0-9_]+')
 DIAGRAM_QUOTED_LABEL_PATTERN = re.compile(r'"[^"]*"')
 DIAGRAM_PIPE_LABEL_PATTERN = re.compile(r'\|[^|]*\|')  # pipe-form edge labels: -->|text|
 DIAGRAM_SHAPE_PATTERN = re.compile(r'\[[^\[\]]*\]|\([^()]*\)|\{[^{}]*\}')
-DEFAULT_DIAGRAM_DIRECTION = 'adaptive'
-DEFAULT_DIAGRAM_DIRECTION_THRESHOLD = 5
+# A two-character connector opens a middle label (`A -- text --> B`); a longer one is a real link,
+# so `A --- B --> C` still reads as a three-node chain.
+DIAGRAM_LABEL_OPENERS = ('--', '==', '-.')
 
 
 def _strip_diagram_labels(line: str) -> str:
@@ -846,11 +846,13 @@ def _parse_diagram_edges(lines: List[str]) -> List[Tuple[str, str]]:
         if not DIAGRAM_CONNECTOR_PATTERN.search(cleaned):
             continue
 
-        # Split on connectors; each remaining chunk holds one or more node ids joined by '&'.
-        # Chunks left empty once labels are stripped collapse away, which is what makes
-        # `A -- "text" --> B` read as the single edge A -> B.
+        # The capturing split yields chunk, connector, chunk, connector, ... Each chunk holds one
+        # or more node ids joined by '&', unless the connector before it opened a middle label.
+        parts = DIAGRAM_CONNECTOR_PATTERN.split(cleaned)
         node_groups = []
-        for chunk in DIAGRAM_CONNECTOR_PATTERN.split(cleaned):
+        for index, chunk in enumerate(parts[::2]):
+            if index and parts[index * 2 - 1] in DIAGRAM_LABEL_OPENERS:
+                continue  # `A -- text --> B`: this chunk is the edge label, not a node
             node_ids = []
             for token in chunk.split('&'):
                 match = DIAGRAM_NODE_ID_PATTERN.search(token)
@@ -877,14 +879,13 @@ def _longest_diagram_chain(edges: List[Tuple[str, str]]) -> int:
     return max(longest.values(), default=0)
 
 
-def apply_diagram_direction(diagram: str,
-                            direction: str = DEFAULT_DIAGRAM_DIRECTION,
-                            threshold: int = DEFAULT_DIAGRAM_DIRECTION_THRESHOLD) -> str:
+def apply_diagram_direction(diagram: str, direction: str, threshold: int) -> str:
     """Set the flowchart direction, adapting it to the shape of the graph unless one is pinned.
 
     Width in an LR flowchart is set by the longest path rather than by the node count, so the
-    longest chain is what decides. Anything unexpected - no flowchart header, no edges, a cycle,
-    an unusable setting - returns the diagram untouched.
+    longest chain is what decides. 'LR' or 'TD' pins the result; any other value is treated as
+    'adaptive'. Anything unexpected - no flowchart header, no edges, a cycle, an unusable
+    threshold - returns the diagram untouched.
     """
     try:
         lines = diagram.split('\n')
@@ -898,6 +899,8 @@ def apply_diagram_direction(diagram: str,
         if requested in ('LR', 'TD'):
             chosen = requested
         else:
+            if requested != 'ADAPTIVE':
+                get_logger().debug(f"Unknown pr_diagram_direction '{direction}', using adaptive")
             edges = _parse_diagram_edges(lines[header_index + 1:])
             if not edges:
                 return diagram

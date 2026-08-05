@@ -33,10 +33,8 @@ def _mock_settings(pr_diagram_direction: str = 'adaptive', pr_diagram_direction_
     """Mock get_settings used by _prepare_data."""
     settings = MagicMock()
     settings.pr_description.add_original_user_description = False
-    settings.pr_description.get.side_effect = lambda key, default=None: {
-        'pr_diagram_direction': pr_diagram_direction,
-        'pr_diagram_direction_threshold': pr_diagram_direction_threshold,
-    }.get(key, default)
+    settings.pr_description.pr_diagram_direction = pr_diagram_direction
+    settings.pr_description.pr_diagram_direction_threshold = pr_diagram_direction_threshold
     return settings
 
 
@@ -216,6 +214,13 @@ class TestDiagramEdgeParsing:
     def test_quoted_middle_label_does_not_create_a_node(self):
         assert _parse_diagram_edges(['A -- "calls" --> B']) == [('A', 'B')]
 
+    def test_unquoted_middle_label_does_not_create_a_node(self):
+        assert _parse_diagram_edges(['A -- calls --> B']) == [('A', 'B')]
+
+    def test_open_link_still_chains(self):
+        # `---` is a real link rather than a label opener, so B stays a node.
+        assert _parse_diagram_edges(['A --- B --> C']) == [('A', 'B'), ('B', 'C')]
+
     def test_pipe_edge_label_does_not_create_a_node(self):
         assert _parse_diagram_edges(['A -->|calls| B']) == [('A', 'B')]
 
@@ -261,6 +266,18 @@ def _fenced(body: str) -> str:
     return f'\n```mermaid\n{body}\n```'
 
 
+def _adapt(diagram: str, direction: str = 'adaptive', threshold: int = 5) -> str:
+    """Call the SUT with the settings configuration.toml ships, unless a test overrides them."""
+    return apply_diagram_direction(diagram, direction, threshold)
+
+
+def test_shipped_defaults_match_what_these_tests_assume():
+    """Guards the test defaults above against drift in configuration.toml."""
+    from pr_agent.config_loader import get_settings
+    assert get_settings().pr_description.pr_diagram_direction == 'adaptive'
+    assert get_settings().pr_description.pr_diagram_direction_threshold == 5
+
+
 class TestApplyDiagramDirection:
 
     @pytest.mark.parametrize('body', [
@@ -273,7 +290,7 @@ class TestApplyDiagramDirection:
     ])
     def test_diagram_is_left_untouched(self, body):
         diagram = _fenced(body)
-        assert apply_diagram_direction(diagram) == diagram
+        assert _adapt(diagram) == diagram
 
     @pytest.mark.parametrize('header_in, header_out', [
         pytest.param('flowchart LR', 'flowchart TD', id='flowchart'),
@@ -281,26 +298,35 @@ class TestApplyDiagramDirection:
         pytest.param('  graph LR;', '  graph TD;', id='indent_and_semicolon_preserved'),
     ])
     def test_long_chain_becomes_vertical(self, header_in, header_out):
-        assert apply_diagram_direction(_fenced(f'{header_in}\n{LONG_CHAIN}')) == \
-            _fenced(f'{header_out}\n{LONG_CHAIN}')
+        assert _adapt(_fenced(f'{header_in}\n{LONG_CHAIN}')) == _fenced(f'{header_out}\n{LONG_CHAIN}')
 
     def test_vertical_short_diagram_is_flipped_back_to_horizontal(self):
-        assert apply_diagram_direction(_fenced('flowchart TD\nA --> B')) == _fenced('flowchart LR\nA --> B')
+        assert _adapt(_fenced('flowchart TD\nA --> B')) == _fenced('flowchart LR\nA --> B')
 
     def test_explicit_direction_pins_and_ignores_shape(self):
         diagram = _fenced(f'flowchart LR\n{LONG_CHAIN}')
-        assert apply_diagram_direction(diagram, direction='LR') == diagram
-        assert apply_diagram_direction(_fenced('flowchart LR\nA --> B'), direction='TD') == \
-            _fenced('flowchart TD\nA --> B')
+        assert _adapt(diagram, direction='LR') == diagram
+        assert _adapt(_fenced('flowchart LR\nA --> B'), direction='TD') == _fenced('flowchart TD\nA --> B')
+
+    @pytest.mark.parametrize('direction', ['adaptive', 'ADAPTIVE', ' adaptive ', 'sideways', '', None])
+    def test_unrecognised_direction_falls_back_to_adaptive(self, direction):
+        assert _adapt(_fenced(f'flowchart LR\n{LONG_CHAIN}'), direction=direction) == \
+            _fenced(f'flowchart TD\n{LONG_CHAIN}')
 
     def test_custom_threshold_is_honoured(self):
-        assert apply_diagram_direction(_fenced(f'flowchart LR\n{SHORT_CHAIN}'), threshold=2) == \
+        assert _adapt(_fenced(f'flowchart LR\n{SHORT_CHAIN}'), threshold=2) == \
             _fenced(f'flowchart TD\n{SHORT_CHAIN}')
 
     def test_unparseable_threshold_leaves_diagram_untouched(self):
         diagram = _fenced(f'flowchart LR\n{LONG_CHAIN}')
-        assert apply_diagram_direction(diagram, threshold='not-a-number') == diagram
+        assert _adapt(diagram, threshold='not-a-number') == diagram
 
     def test_subgraph_edges_are_counted(self):
         body = 'subgraph one\nA --> B --> C\nend\nsubgraph two\nC --> D --> E --> F\nend'
-        assert apply_diagram_direction(_fenced(f'flowchart LR\n{body}')) == _fenced(f'flowchart TD\n{body}')
+        assert _adapt(_fenced(f'flowchart LR\n{body}')) == _fenced(f'flowchart TD\n{body}')
+
+    def test_unquoted_edge_labels_do_not_inflate_the_chain(self):
+        # Five real nodes joined by unquoted labels: the labels must not count as nodes.
+        body = 'A -- calls --> B -- reads --> C -- writes --> D -- returns --> E'
+        diagram = _fenced(f'flowchart LR\n{body}')
+        assert _adapt(diagram) == diagram
