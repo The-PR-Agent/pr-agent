@@ -120,6 +120,28 @@ log_level = "DEBUG"  # Options: "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"
 
 The default log level is "DEBUG", which provides detailed output of all operations. If you prefer less verbose logs, you can set higher log levels like "INFO" or "WARNING".
 
+## Attributing requests to a PR on the provider side
+
+When `add_user_to_requests` is enabled, PR-Agent sends the current command and PR URL in the
+OpenAI-compatible `user` request field, as a compact JSON string:
+
+```
+{"command":"improve","pr_url":"https://gitlab.example.com/group/project/-/merge_requests/171"}
+```
+
+Providers that record this field per request (for example OpenRouter, which shows it as
+`external_user` in the generation details and includes it in the activity export) can then
+attribute every request, its cost and its outcome to a specific PR and command, without
+timestamp correlation.
+
+```
+[config]
+add_user_to_requests = true
+```
+
+The setting is disabled by default, since it shares request-attribution data with the model
+provider: enabling it is an explicit operator choice.
+
 ## Integrating with Logging Observability Platforms
 
 Various logging observability tools can be used out-of-the box when using the default LiteLLM AI Handler. Simply configure the LiteLLM callback settings in `configuration.toml` and set environment variables according to the LiteLLM [documentation](https://docs.litellm.ai/docs/).
@@ -140,6 +162,33 @@ Then set the following environment variables:
 LANGSMITH_API_KEY=<api_key>
 LANGSMITH_PROJECT=<project>
 LANGSMITH_BASE_URL=<url>
+```
+
+### Custom callbacks
+
+If you embed PR-Agent in your own code, you can also register callbacks programmatically — for example a
+`litellm.CustomLogger` that records per-call token usage and cost:
+
+```python
+import litellm
+from pr_agent import cli
+
+class UsageLogger(litellm.integrations.custom_logger.CustomLogger):
+    async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
+        record_usage(kwargs.get("model"), response_obj)
+
+litellm.callbacks = [UsageLogger()]
+cli.run_command("<pr_url>", "/review")
+```
+
+LiteLLM dispatches these callbacks asynchronously, after the completion call has already returned. PR-Agent
+flushes any pending callbacks before the CLI (and the GitHub Action runner) exits, so they are not lost when
+the event loop is torn down — no configuration required. Use `callback_timeout_seconds` to bound how long
+that flush may take:
+
+```
+[litellm]
+callback_timeout_seconds = 30 # default
 ```
 
 ## Bringing per-repo context files to PR-Agent

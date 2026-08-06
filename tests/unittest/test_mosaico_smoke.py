@@ -13,6 +13,7 @@ This test passing is the end-to-end proof that the middleware->executor->dispatc
 provider->render chain works through the wire."""
 import uuid
 
+import pytest
 from google.protobuf.json_format import MessageToDict
 from starlette.testclient import TestClient
 
@@ -143,3 +144,31 @@ class TestSmokeFullPath:
         text = _extract_text(result)
         assert "no output produced" in text, text
         assert not text.startswith("Error:"), text
+
+    @pytest.mark.parametrize("verb", ["review", "improve", "describe", "ask"])
+    def test_llm_outage_yields_failed_not_completed(self, monkeypatch, verb):
+        """A total model outage must reach the caller as TASK_STATE_FAILED. review/improve/
+        describe used to swallow it and report success with 'no output produced'; 'ask' was
+        already correct and is pinned here so the fix does not regress it."""
+        async def failing_chat_completion(self, model, system, user, temperature=0.2, **kwargs):
+            raise RuntimeError("provider unavailable")
+
+        monkeypatch.setattr(litellm_mod.LiteLLMAIHandler, "chat_completion", failing_chat_completion)
+
+        client = TestClient(build_app())
+        resp = client.post("/", json=_send_message_payload(f"{verb} this\n{REVIEW_DIFF}"),
+                           headers=_A2A_HEADERS)
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert "error" not in body, body
+        result = body["result"]
+
+        task = result.get("task", result)
+        state = task.get("status", {}).get("state", "")
+        assert state == "TASK_STATE_FAILED", (
+            f"{verb}: an LLM outage must fail the task, got {state}: {task}"
+        )
+        text = _extract_text(result)
+        assert "no output produced" not in text, (
+            f"{verb}: outage must not be reported as an empty result: {text}"
+        )

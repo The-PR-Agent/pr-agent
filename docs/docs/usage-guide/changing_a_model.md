@@ -1,7 +1,7 @@
 ## Changing a model in PR-Agent
 
 See [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py) for a list of supported models in PR-Agent.
-The default model of PR-Agent is `GPT-5` from OpenAI.
+The default model of PR-Agent is `GPT-5.6` from OpenAI.
 To use a different model than the default, you need to edit in the [configuration file](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml#L7) the fields:
 
 ```toml
@@ -282,7 +282,7 @@ Set `AWS_USE_IMDS=true` in the environment. PR-Agent will resolve credentials vi
 Minimal GitHub Actions workflow (no AWS secret keys required):
 
 ```yaml
-- uses: Codium-ai/pr-agent@main
+- uses: the-pr-agent/pr-agent@main
   env:
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     AWS_USE_IMDS: "true"
@@ -417,6 +417,54 @@ key = "..." # your openrouter api key
 
 (you can obtain an Openrouter API key from [here](https://openrouter.ai/settings/keys))
 
+#### Openrouter provider routing, reasoning and output cap
+
+For `openrouter/...` models you can optionally restrict which upstream providers Openrouter uses, control reasoning, and cap the completion length. All keys live in the `[openrouter]` section of `configuration.toml` and default to unset (no change to Openrouter's default behavior):
+
+```toml
+[openrouter]
+# Uncomment and adjust the keys you need; unset keys keep Openrouter's defaults.
+# provider_only = ["z-ai"]             # hard allowlist of upstream providers; empty = default routing
+# provider_order = ["z-ai", "novita"]  # preferred order instead of an allowlist; ignored when provider_only is set
+# allow_fallbacks = true               # when provider_order is set, allow routing beyond the list
+# reasoning_effort = "low"             # "none" disables reasoning; otherwise "low", "medium" or "high"
+# reasoning_max_tokens = 2048          # cap the reasoning budget in tokens
+# max_tokens = 16000                   # hard cap on completion tokens for the request
+```
+
+`provider_only` and `reasoning_effort = "none"` are useful to pin a specific provider and to bound the cost of reasoning models. See the Openrouter [provider routing](https://openrouter.ai/docs/features/provider-routing) and [reasoning tokens](https://openrouter.ai/docs/use-cases/reasoning-tokens) docs.
+
+### Neon AI Gateway
+
+[Neon AI Gateway](https://neon.com/docs/ai-gateway/overview) is an OpenAI-compatible inference gateway. Each Neon branch has its own gateway host, so the base URL points at a single branch and not at an account. Neon publishes that host alongside the credential as `NEON_AI_GATEWAY_BASE_URL`. The value has no path, so append `/v1` to reach chat completions.
+
+To use a model served by a Neon branch, set:
+
+```toml
+[config] # in configuration.toml
+model = "openai/gpt-5-mini"
+fallback_models = ["openai/gpt-5-mini"]
+custom_model_max_tokens = 400000 # the context window Neon publishes for the model
+
+[openai] # in .secrets.toml
+api_base = "https://<your-neon-branch-host>/v1"
+key = "..." # your Neon AI Gateway credential
+```
+
+or use the environment variables (make sure to use double underscores `__`):
+
+```bash
+OPENAI__API_BASE=https://<your-neon-branch-host>/v1
+OPENAI__KEY=...
+```
+
+Keep the `openai/` prefix on the model name, whichever Neon model ID you use: the prefix routes the request through litellm's OpenAI-compatible path. A prefixed name is not in the `MAX_TOKENS` table [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py), so you also have to set `custom_model_max_tokens`. Take the value from Neon's [model catalog](https://neon.com/docs/ai-gateway/models).
+
+Create the credential per branch in the [Neon Console](https://console.neon.tech/) with the `ai_gateway:invoke` scope. The credential also works on branches descended from the one it was created on. The gateway is in beta and requires a paid Neon plan. It runs only in AWS US East (Ohio), `aws-us-east-2`.
+
+!!! note "Chat completions only"
+    Some model IDs in Neon's catalog are served through the OpenAI Responses API, which Neon exposes under `/openai/v1` instead of `/v1`. The configuration above points at the chat-completions endpoint, so it cannot reach those models. Neon also documents a few models that return `message.content` as an array of typed blocks rather than a string, and PR-Agent reads the reply as a string.
+
 ### Custom models
 
 If the relevant model doesn't appear [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py), you can still use it as a custom model:
@@ -450,7 +498,7 @@ custom_model_max_tokens= ...
 reasoning_effort = "medium" # "none", "minimal", "low", "medium", "high", "xhigh"
 ```
 
-With the OpenAI models that support reasoning effort (eg: gpt-5.4-mini), you can specify its reasoning effort via `config` section. The default value is `medium`. You can change it to any supported value based on your usage. Available values depend on the model and provider.
+With the OpenAI models that support reasoning effort (eg: gpt-5.6-terra), you can specify its reasoning effort via `config` section. The default value is `medium`. You can change it to any supported value based on your usage. Available values depend on the model and provider.
 
 ### Anthropic models
 
