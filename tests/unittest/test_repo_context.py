@@ -115,7 +115,8 @@ def test_build_repo_context_fetches_and_formats_configured_files(repo_context_se
         "CONTRIBUTING.md": "Keep PRs small.",
     })
 
-    context = build_repo_context(provider)
+    with patch("pr_agent.algo.repo_context.get_logger") as mock_get_logger:
+        context = build_repo_context(provider)
 
     assert context == (
         "You are being given instruction files. Follow them as project-specific guidance when reviewing code.\n"
@@ -134,6 +135,10 @@ def test_build_repo_context_fetches_and_formats_configured_files(repo_context_se
         "</instruction_files>"
     )
     assert provider.requested_paths == ["AGENTS.md", "CONTRIBUTING.md"]
+    mock_get_logger.return_value.info.assert_called_once_with(
+        "Loaded repo context files",
+        artifact={"files": ["AGENTS.md", "CONTRIBUTING.md"], "truncated": False},
+    )
 
 
 def test_build_repo_context_reuses_provider_cache_for_same_config(repo_context_settings):
@@ -410,7 +415,8 @@ def test_build_repo_context_enforces_total_line_cap(repo_context_settings):
         "CONTRIBUTING.md": "four\nfive",
     })
 
-    context = build_repo_context(provider)
+    with patch("pr_agent.algo.repo_context.get_logger") as mock_get_logger:
+        context = build_repo_context(provider)
 
     assert context == (
         "You are being given instruction files. Follow them as project-specific guidance when reviewing code.\n"
@@ -418,6 +424,10 @@ def test_build_repo_context_enforces_total_line_cap(repo_context_settings):
         "</instruction_files>"
     )
     assert len(context.splitlines()) <= 4
+    mock_get_logger.return_value.info.assert_called_once_with(
+        "Loaded repo context files",
+        artifact={"files": ["AGENTS.md", "CONTRIBUTING.md"], "truncated": True},
+    )
 
 
 def test_render_instruction_files_with_line_budget_returns_empty_when_wrapper_exceeds_budget():

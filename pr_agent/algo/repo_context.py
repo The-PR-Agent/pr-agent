@@ -214,15 +214,16 @@ def render_instruction_files(files: dict[str, str]) -> str:
     return "\n".join(parts)
 
 
-def render_instruction_files_with_line_budget(files: dict[str, str], max_lines: int) -> str:
+def _render_instruction_files_with_line_budget(files: dict[str, str], max_lines: int) -> tuple[str, bool]:
     parts = [
         INSTRUCTION_FILES_INTRO,
         "<instruction_files>",
     ]
     closing_tag = "</instruction_files>"
     if max_lines < len(parts) + 1:
-        return ""
+        return "", True
 
+    truncated = False
     for path, content in files.items():
         scope = path.rsplit("/", 1)[0] if "/" in path else "repo-root"
         fence = _get_markdown_fence(content)
@@ -239,12 +240,14 @@ def render_instruction_files_with_line_budget(files: dict[str, str], max_lines: 
         reserved_file_and_closing_lines = len(file_header) + len(file_footer) + 1
         available_content_lines = max_lines - len(parts) - reserved_file_and_closing_lines
         if available_content_lines < 0 or (content_lines and available_content_lines < 1):
+            truncated = True
             break
 
         parts.extend(file_header)
         if available_content_lines >= len(content_lines):
             parts.extend(content_lines)
         else:
+            truncated = True
             if available_content_lines > 1:
                 parts.extend(content_lines[: available_content_lines - 1])
             parts.append(TRUNCATION_MARKER)
@@ -254,7 +257,11 @@ def render_instruction_files_with_line_budget(files: dict[str, str], max_lines: 
         parts.extend(file_footer)
 
     parts.append(closing_tag)
-    return "\n".join(parts).strip()
+    return "\n".join(parts).strip(), truncated
+
+
+def render_instruction_files_with_line_budget(files: dict[str, str], max_lines: int) -> str:
+    return _render_instruction_files_with_line_budget(files, max_lines)[0]
 
 
 def build_repo_context(git_provider) -> str:
@@ -272,7 +279,13 @@ def build_repo_context(git_provider) -> str:
 
     files, had_fetch_error = _load_repo_context_files(git_provider, context_files)
 
-    repo_context = render_instruction_files_with_line_budget(files, max_lines) if files else ""
+    repo_context = ""
+    if files:
+        repo_context, truncated = _render_instruction_files_with_line_budget(files, max_lines)
+        get_logger().info(
+            "Loaded repo context files",
+            artifact={"files": list(files), "truncated": truncated},
+        )
 
     # Only cache when every file was fetched successfully. A transient/unexpected fetch error must
     # not be cached as a real result, so it is retried instead of being served until the TTL expires.
