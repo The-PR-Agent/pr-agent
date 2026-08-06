@@ -504,3 +504,53 @@ class TestGitLabGlobalSettings:
             provider._get_global_repo_settings()
         # Only one lookup for the settings project despite two calls (cached).
         assert provider.gl.projects.get.call_count == 1
+
+
+class TestGitLabRelevantDiff:
+    """Inline comment positions are pinned to a diff version's SHAs, so picking the wrong
+    version anchors the comment to a superseded diff — the state a force-push leaves behind."""
+
+    # the versions endpoint is ordered newest-first
+    VERSIONS = ["newest", "older", "oldest"]
+
+    def _provider(self, changes):
+        provider = GitLabProvider.__new__(GitLabProvider)
+        provider.mr = MagicMock()
+        provider.mr.diffs.list.return_value = list(self.VERSIONS)
+        provider.mr.changes.return_value = {"changes": changes}
+        provider.last_diff = "latest-at-construction"
+        return provider
+
+    def test_matching_change_resolves_to_the_newest_version(self):
+        provider = self._provider([{"new_path": "app.py", "diff": "@@\n+added line\n"}])
+
+        assert provider.get_relevant_diff("app.py", "+added line") == "newest"
+
+    def test_fallback_uses_the_latest_version_not_the_oldest(self):
+        provider = self._provider([{"new_path": "other.py", "diff": "@@\n+unrelated\n"}])
+
+        assert provider.get_relevant_diff("app.py", "+added line") == "latest-at-construction"
+
+    def test_returns_none_when_the_mr_has_no_diff_versions(self):
+        provider = self._provider([{"new_path": "app.py", "diff": "@@\n+added line\n"}])
+        provider.mr.diffs.list.return_value = []
+
+        assert provider.get_relevant_diff("app.py", "+added line") is None
+
+    def test_set_merge_request_snapshots_the_newest_version(self):
+        provider = GitLabProvider.__new__(GitLabProvider)
+        mr = MagicMock()
+        mr.diffs.list.return_value = list(self.VERSIONS)
+        with patch.object(GitLabProvider, "_parse_merge_request_url", return_value=("group/repo", 1)), \
+             patch.object(GitLabProvider, "_get_merge_request", return_value=mr):
+            provider._set_merge_request("https://gitlab.com/group/repo/-/merge_requests/1")
+
+        assert provider.last_diff == "newest"
+
+    def test_fallback_is_logged_once_not_once_per_version(self):
+        provider = self._provider([{"new_path": "other.py", "diff": "@@\n+unrelated\n"}])
+
+        with patch("pr_agent.git_providers.gitlab_provider.get_logger") as mock_logger:
+            provider.get_relevant_diff("app.py", "+added line")
+
+        assert mock_logger.return_value.debug.call_count == 1

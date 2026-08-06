@@ -348,7 +348,8 @@ class GitLabProvider(GitProvider):
         self.id_project, self.id_mr = self._parse_merge_request_url(merge_request_url)
         self.mr = self._get_merge_request()
         try:
-            self.last_diff = self.mr.diffs.list(get_all=True)[-1]
+            # the versions endpoint is ordered newest-first, so the latest diff is the first entry
+            self.last_diff = self.mr.diffs.list(get_all=True)[0]
         except IndexError as e:
             get_logger().error(f"Could not get diff for merge request {self.id_mr}")
             raise DiffNotFoundError(f"Could not get diff for merge request {self.id_mr}") from e
@@ -679,13 +680,12 @@ class GitLabProvider(GitProvider):
         if not all_diffs:
             get_logger().error('No diffs found for the merge request.')
             return None
-        for diff in all_diffs:
-            for change in changes['changes']:
-                if change['new_path'] == relevant_file and relevant_line_in_file in change['diff']:
-                    return diff
-            get_logger().debug(
-                f'No relevant diff found for {relevant_file} {relevant_line_in_file}. Falling back to last diff.')
-        return self.last_diff  # fallback to last_diff if no relevant diff is found
+        for change in changes['changes']:
+            if change['new_path'] == relevant_file and relevant_line_in_file in change['diff']:
+                return all_diffs[0]
+        get_logger().debug(
+            f'No relevant diff found for {relevant_file} {relevant_line_in_file}. Falling back to latest diff.')
+        return self.last_diff  # fallback to the latest diff if no relevant diff is found
 
     def publish_code_suggestions(self, code_suggestions: list) -> bool:
         for suggestion in code_suggestions:
