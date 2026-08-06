@@ -2,7 +2,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from gitlab import Gitlab
-from gitlab.exceptions import GitlabGetError
+from gitlab.exceptions import GitlabGetError, GitlabMRApprovalError
 from gitlab.v4.objects import ProjectFile, ProjectMergeRequest, ProjectMergeRequestManager
 
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
@@ -341,6 +341,44 @@ class TestGitLabProvider:
         gitlab_provider.auto_unapprove()
 
         gitlab_provider.mr.unapprove.assert_called_once()
+
+    def test_auto_approve_returns_true_when_already_approved(self, gitlab_provider):
+        # GitLab returns 404 if this account already approved - already in the
+        # desired state, not a failure.
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.approve.side_effect = GitlabMRApprovalError(response_code=404)
+        gitlab_provider.id_mr = 1
+
+        result = gitlab_provider.auto_approve()
+
+        assert result is True
+
+    def test_auto_unapprove_is_a_noop_when_not_approved(self, gitlab_provider):
+        # GitLab returns 404 if this account never approved - nothing to remove,
+        # not a failure. This is the common case on a normal /improve run.
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.unapprove.side_effect = GitlabMRApprovalError(response_code=404)
+        gitlab_provider.id_mr = 1
+
+        # Should not raise
+        gitlab_provider.auto_unapprove()
+
+    def test_auto_approve_returns_false_on_non_404_approval_error(self, gitlab_provider):
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.approve.side_effect = GitlabMRApprovalError(response_code=403)
+        gitlab_provider.id_mr = 1
+
+        result = gitlab_provider.auto_approve()
+
+        assert result is False
+
+    def test_auto_unapprove_logs_on_non_404_approval_error(self, gitlab_provider):
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.unapprove.side_effect = GitlabMRApprovalError(response_code=403)
+        gitlab_provider.id_mr = 1
+
+        # Should not raise, just log the error
+        gitlab_provider.auto_unapprove()
 
     # ---- publish_labels / get_pr_labels tests ----
 

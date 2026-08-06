@@ -8,7 +8,8 @@ from urllib.parse import parse_qs, urlparse
 import gitlab
 import requests
 from gitlab import (GitlabAuthenticationError, GitlabCreateError,
-                    GitlabGetError, GitlabUpdateError)
+                    GitlabGetError, GitlabMRApprovalError,
+                    GitlabUpdateError)
 
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 
@@ -1111,6 +1112,14 @@ class GitLabProvider(GitProvider):
             self.mr.approve()
             get_logger().info(f"Auto-approved MR {self.id_mr}")
             return True
+        except GitlabMRApprovalError as e:
+            if getattr(e, 'response_code', None) == 404:
+                # GitLab returns 404 when this account has already approved - already
+                # in the desired state, not a failure.
+                get_logger().debug(f"MR {self.id_mr} already approved by the bot")
+                return True
+            get_logger().error(f"Failed to auto-approve MR {self.id_mr}: {e}")
+            return False
         except Exception as e:
             get_logger().error(f"Failed to auto-approve MR {self.id_mr}: {e}")
             return False
@@ -1120,6 +1129,13 @@ class GitLabProvider(GitProvider):
         try:
             self.mr.unapprove()
             get_logger().info(f"Auto-unapproved MR {self.id_mr}")
+        except GitlabMRApprovalError as e:
+            if getattr(e, 'response_code', None) == 404:
+                # GitLab returns 404 when this account has not approved the MR - the
+                # common case when suggestions were never auto-approved away, not a failure.
+                get_logger().debug(f"MR {self.id_mr} was not approved by the bot; nothing to remove")
+                return
+            get_logger().error(f"Failed to auto-unapprove MR {self.id_mr}: {e}")
         except Exception as e:
             get_logger().error(f"Failed to auto-unapprove MR {self.id_mr}: {e}")
 
