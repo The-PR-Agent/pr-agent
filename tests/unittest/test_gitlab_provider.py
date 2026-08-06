@@ -560,6 +560,35 @@ class TestGitLabIncrementalHelpers:
         assert adapter.html_url == "https://gitlab.com/x/y/-/merge_requests/1#note_42"
         assert adapter.created_at == datetime(2024, 5, 1, 10, 0, 0)
 
+    def test_note_adapter_anchor_time_prefers_later_updated_at(self):
+        # Persistent comments are edited in place: created_at stays frozen at the first
+        # run while updated_at tracks the latest one. anchor_time must follow updated_at.
+        note = MagicMock()
+        note.id = 42
+        note.body = "## PR Code Suggestions ✨\n..."
+        note.created_at = "2024-05-01T10:00:00Z"
+        note.updated_at = "2024-05-03T12:00:00Z"
+
+        adapter = _GitlabIncrementalNote(note)
+
+        assert adapter.created_at == datetime(2024, 5, 1, 10, 0, 0)
+        assert adapter.updated_at == datetime(2024, 5, 3, 12, 0, 0)
+        assert adapter.anchor_time == datetime(2024, 5, 3, 12, 0, 0)
+
+    def test_note_adapter_anchor_time_falls_back_to_created_at(self):
+        # No parseable updated_at -> anchor on created_at; nothing parseable -> None.
+        note = MagicMock()
+        note.id = 42
+        note.body = "## PR Reviewer Guide 🔍\n..."
+        note.created_at = "2024-05-01T10:00:00Z"
+        note.updated_at = None
+
+        adapter = _GitlabIncrementalNote(note)
+        assert adapter.anchor_time == datetime(2024, 5, 1, 10, 0, 0)
+
+        note.created_at = None
+        assert _GitlabIncrementalNote(note).anchor_time is None
+
 
 class TestGitLabIncrementalReview:
     """Tests for the GitLab incremental-review flow."""
@@ -590,11 +619,12 @@ class TestGitLabIncrementalReview:
             return provider
 
     @staticmethod
-    def _make_note(note_id, body, created_at):
+    def _make_note(note_id, body, created_at, updated_at=None):
         n = MagicMock()
         n.id = note_id
         n.body = body
         n.created_at = created_at
+        n.updated_at = updated_at
         return n
 
     @staticmethod
@@ -849,6 +879,36 @@ class TestGitLabIncrementalReview:
         assert gitlab_provider.incremental.first_new_commit_sha == "c2"
         assert gitlab_provider.incremental.last_seen_commit_sha == "c0"
         mock_project.repository_compare.assert_called_once_with("c0", "head")
+
+    def test_incremental_suggestions_anchor_advances_with_in_place_edits(self, gitlab_provider, mock_project):
+        # Default /improve config (persistent_comment=true, commitable_code_suggestions=false)
+        # EDITS the "## PR Code Suggestions ✨" summary note in place on every run, so its
+        # created_at stays frozen at the first run. The incremental window must anchor on
+        # updated_at (the latest run), otherwise it grows from the first run and keeps
+        # re-including commits that were already covered.
+        gitlab_provider.mr.notes.list.return_value = [
+            self._make_note(8, "## PR Code Suggestions ✨\ntable",
+                            created_at="2026-05-15T09:00:00Z",   # first /improve run
+                            updated_at="2026-05-15T11:00:00Z"),  # latest /improve run
+        ]
+        gitlab_provider.mr.commits.return_value = [
+            self._make_commit("c2", "2026-05-15T11:30:00Z"),  # new since the latest run
+            self._make_commit("c1", "2026-05-15T10:00:00Z"),  # already covered by the 11:00 run
+            self._make_commit("c0", "2026-05-15T08:30:00Z"),  # predates the first run
+        ]
+        mock_project.repository_compare.return_value = {
+            "diffs": [{"new_path": "a.py", "old_path": "a.py", "diff": "@@ ... @@",
+                       "new_file": False, "deleted_file": False, "renamed_file": False}],
+        }
+        gitlab_provider.mr.changes.return_value = {"changes": [{"new_path": "a.py"}]}
+
+        gitlab_provider.get_incremental_commits(IncrementalPR(True), kind="suggestions")
+
+        # Only c2 is in scope; c1 must NOT be re-included (that was the reported bug).
+        assert gitlab_provider.incremental.is_incremental is True
+        assert gitlab_provider.incremental.first_new_commit_sha == "c2"
+        assert gitlab_provider.incremental.last_seen_commit_sha == "c1"
+        mock_project.repository_compare.assert_called_once_with("c1", "head")
 
     def test_incremental_kind_suggestions_falls_back_when_no_prior_suggestion(self, gitlab_provider, mock_project):
         # A /review note exists, but no /improve has ever run. /improve -i must fall back to

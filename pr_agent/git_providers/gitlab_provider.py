@@ -81,7 +81,15 @@ class _GitlabIncrementalCommit:
 class _GitlabIncrementalNote:
     """Adapter exposing a GitLab note (issue comment) with attributes the reviewer expects.
 
-    The reviewer reads `.created_at` (datetime) and `.html_url` from `previous_review`.
+    The reviewer reads `.created_at` (datetime) and `.html_url` from `previous_review`;
+    the incremental timeline anchors on `.anchor_time`.
+
+    `anchor_time` is the max of `created_at`/`updated_at`: persistent comments (the
+    `## PR Code Suggestions ✨` summary in the default `/improve` config, or the
+    `## PR Reviewer Guide` note for full `/review`) are edited in place on re-runs, so
+    their `created_at` stays frozen at the first run and only `updated_at` tracks the
+    latest pass. Anchoring on `created_at` alone would make the "since last run" window
+    grow from the very first run instead.
     """
 
     def __init__(self, note, mr_web_url: Optional[str] = None):
@@ -89,6 +97,9 @@ class _GitlabIncrementalNote:
         self.id = getattr(note, 'id', None)
         self.body = getattr(note, 'body', '') or ''
         self.created_at = _parse_gitlab_iso_datetime(getattr(note, 'created_at', None))
+        self.updated_at = _parse_gitlab_iso_datetime(getattr(note, 'updated_at', None))
+        candidates = [t for t in (self.created_at, self.updated_at) if t is not None]
+        self.anchor_time = max(candidates) if candidates else None
         self.html_url = f"{mr_web_url}#note_{self.id}" if mr_web_url else ""
 
 class GitLabProvider(GitProvider):
@@ -548,7 +559,7 @@ class GitLabProvider(GitProvider):
             self.unreviewed_files_set[new_path] = diff
 
     def get_commit_range(self):
-        last_review_time = getattr(self.previous_review, 'created_at', None)
+        last_review_time = getattr(self.previous_review, 'anchor_time', None)
         if last_review_time is None:
             return []
         first_new_commit_index = None
