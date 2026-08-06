@@ -880,6 +880,20 @@ class TestGitLabIncrementalReview:
         assert gitlab_provider.incremental.last_seen_commit_sha == "c0"
         mock_project.repository_compare.assert_called_once_with("c0", "head")
 
+    def test_supports_incremental_kind(self, gitlab_provider):
+        assert gitlab_provider.supports_incremental_kind("review") is True
+        assert gitlab_provider.supports_incremental_kind("suggestions") is True
+        assert gitlab_provider.supports_incremental_kind("something-else") is False
+
+    def test_get_incremental_commits_invalidates_cached_diff_files(self, gitlab_provider):
+        # Server mode caches the provider per PR URL: a diff computed by an earlier command
+        # (e.g. a full /review) must not leak into a later run with a different scope.
+        gitlab_provider.diff_files = ["stale-diff"]
+
+        gitlab_provider.get_incremental_commits(IncrementalPR(False))
+
+        assert gitlab_provider.diff_files is None
+
     def test_incremental_suggestions_anchor_advances_with_in_place_edits(self, gitlab_provider, mock_project):
         # Default /improve config (persistent_comment=true, commitable_code_suggestions=false)
         # EDITS the "## PR Code Suggestions ✨" summary note in place on every run, so its

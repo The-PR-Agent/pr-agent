@@ -45,16 +45,7 @@ class PRCodeSuggestions:
         # When invoked as `/improve -i`, narrow `git_provider.get_diff_files()` to the files
         # changed since the previous suggestions pass. Falls back to full when the provider
         # doesn't support incremental scope or no prior suggestion comment exists.
-        if self.incremental.is_incremental and hasattr(self.git_provider, "get_incremental_commits"):
-            try:
-                self.git_provider.get_incremental_commits(self.incremental, kind="suggestions")
-            except TypeError:
-                # Older provider signature without the `kind` kwarg — skip incremental scope.
-                get_logger().info(
-                    "Provider does not support kind-based incremental commits; "
-                    "running /improve on the full MR diff"
-                )
-                self.incremental = IncrementalPR(False)
+        self._setup_incremental_scope()
         # If incremental is active but the scope came back empty (no files changed since the
         # previous suggestions pass), short-circuit init now. `run()` checks the same flag and
         # exits without touching the model. This avoids a wasted `mr.changes()` round-trip via
@@ -125,6 +116,23 @@ class PRCodeSuggestions:
         """Parse the `-i` flag for `/improve` exactly like `PRReviewer.parse_incremental`."""
         is_incremental = bool(args and len(args) >= 1 and args[0] == "-i")
         return IncrementalPR(is_incremental)
+
+    def _setup_incremental_scope(self):
+        """Configure the provider's suggestions-scoped incremental state for `/improve -i`.
+
+        Falls back to a full run (incremental disabled) when the provider doesn't
+        support kind-scoped incremental anchoring.
+        """
+        if not self.incremental.is_incremental:
+            return
+        if self.git_provider.supports_incremental_kind("suggestions"):
+            self.git_provider.get_incremental_commits(self.incremental, kind="suggestions")
+        else:
+            get_logger().info(
+                "Provider does not support incremental suggestions scope; "
+                "running /improve on the full diff"
+            )
+            self.incremental = IncrementalPR(False)
 
     async def run(self):
         try:

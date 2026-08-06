@@ -369,6 +369,9 @@ class GitLabProvider(GitProvider):
             return False
         return True
 
+    def supports_incremental_kind(self, kind: str) -> bool:
+        return kind in self._INCREMENTAL_ANCHOR_PREFIXES
+
     def _get_project_path_from_pr_or_issue_url(self, pr_or_issue_url: str) -> str:
         repo_project_path = None
         if 'issues' in pr_or_issue_url:
@@ -448,6 +451,10 @@ class GitLabProvider(GitProvider):
         if incremental is None:
             incremental = IncrementalPR(False)
         self.incremental = incremental
+        # Provider instances are cached per PR URL in server mode, so `diff_files` may hold
+        # a diff computed under a different incremental scope (or none). Invalidate it so the
+        # next get_diff_files() call reflects the scope configured here.
+        self.diff_files = None
         if not self.incremental.is_incremental:
             return
         self.unreviewed_files_set = {}
