@@ -86,25 +86,51 @@ def _render_review(reviewer, remaining_files, supports_gfm_markdown=False):
 
 def test_prepare_pr_review_appends_complete_coverage_footer():
     reviewer = _make_prediction_reviewer()
+    settings = get_settings()
+    original_enable_review_coverage_footer = settings.pr_reviewer.enable_review_coverage_footer
 
-    review = _render_review(reviewer, ["src/one.py", "nested/two.md"])
+    try:
+        settings.pr_reviewer.enable_review_coverage_footer = True
+        review = _render_review(reviewer, ["src/one.py", "nested/two.md"])
+    finally:
+        settings.pr_reviewer.enable_review_coverage_footer = original_enable_review_coverage_footer
 
     assert review.startswith("original review")
     assert "⚠️ **Review coverage:**" in review
     assert "- `src/one.py`" in review
     assert "- `nested/two.md`" in review
+    assert "\n\n<hr>\n\n" in review
+    assert "\n\n---\n\n" not in review
+
+
+def test_prepare_pr_review_hides_coverage_footer_when_disabled():
+    reviewer = _make_prediction_reviewer()
+    settings = get_settings()
+    original_enable_review_coverage_footer = settings.pr_reviewer.enable_review_coverage_footer
+
+    try:
+        settings.pr_reviewer.enable_review_coverage_footer = False
+        review = _render_review(reviewer, ["skipped.py"])
+    finally:
+        settings.pr_reviewer.enable_review_coverage_footer = original_enable_review_coverage_footer
+
+    assert review == "original review"
+    assert "Review coverage" not in review
 
 
 def test_prepare_pr_review_places_coverage_footer_before_help_text():
     reviewer = _make_prediction_reviewer()
     settings = get_settings()
+    original_enable_review_coverage_footer = settings.pr_reviewer.enable_review_coverage_footer
     original_enable_help_text = settings.pr_reviewer.enable_help_text
-    settings.pr_reviewer.enable_help_text = True
 
     try:
+        settings.pr_reviewer.enable_review_coverage_footer = True
+        settings.pr_reviewer.enable_help_text = True
         with patch("pr_agent.tools.pr_reviewer.HelpMessage.get_review_usage_guide", return_value="help text"):
             review = _render_review(reviewer, ["skipped.py"], supports_gfm_markdown=True)
     finally:
+        settings.pr_reviewer.enable_review_coverage_footer = original_enable_review_coverage_footer
         settings.pr_reviewer.enable_help_text = original_enable_help_text
 
     assert review.index("⚠️ **Review coverage:**") < review.index("help text")

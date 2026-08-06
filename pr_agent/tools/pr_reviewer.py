@@ -282,10 +282,10 @@ class PRReviewer:
                                                git_provider=self.git_provider,
                                                files=self.git_provider.get_diff_files())
 
-        if self.remaining_files_list:
+        if self.remaining_files_list and get_settings().pr_reviewer.enable_review_coverage_footer:
             displayed_files = self.remaining_files_list[:MAX_REVIEW_COVERAGE_FILES]
             markdown_text += (
-                "\n\n---\n\n"
+                "\n\n<hr>\n\n"
                 "⚠️ **Review coverage:** The following files were not included in this review "
                 "because of the token budget:\n"
                 + "\n".join(f"- `{file}`" for file in displayed_files)
