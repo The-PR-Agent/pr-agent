@@ -207,6 +207,13 @@ jobs:
 
   finalize:
     needs: [prepare, publish-pypi, publish-docker]
+    # Not gated on publish-pypi: the bump and the dispatch-path tag are about
+    # this repo's state, not the index. Coupling them meant one PyPI failure
+    # left main on the old version with all images already published (v0.40.0).
+    if: >-
+      always()
+      && needs.prepare.result == 'success'
+      && needs.publish-docker.result == 'success'
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -215,9 +222,9 @@ jobs:
       # Check out the exact commit publish-pypi/publish-docker built from, so
       # the bump commit's parent equals what was actually published. We push
       # to main fast-forward only — if main has moved during the run, we skip
-      # the push (and the tag move below) rather than rebasing onto a newer
-      # commit that wasn't built. This preserves the invariant that
-      # `git checkout vX.Y.Z` resolves to a commit whose tree was published.
+      # the push rather than rebasing onto a newer commit that wasn't built.
+      # This preserves the invariant that `git checkout vX.Y.Z` resolves to a
+      # commit whose tree was published.
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
         with:
           ref: ${{ needs.prepare.outputs.sha }}
@@ -227,6 +234,13 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: '3.12'
+
+      - name: Flag missing PyPI publish
+        if: needs.publish-pypi.result != 'success'
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          echo "::warning::publish-pypi ${{ needs.publish-pypi.result }}; $VERSION is not on PyPI. Images and the version bump went through - re-run publish-pypi once the cause is fixed."
 
       - name: Configure git identity
         run: |
@@ -254,7 +268,7 @@ jobs:
             echo "bumped=true" >> "$GITHUB_OUTPUT"
             echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::main has moved past the published commit ($PUBLISHED_SHA); skipping bump push and tag-move so the tag continues to point at built artifacts. Bump pyproject.toml on main manually:  git checkout main && python scripts/set_pyproject_version.py $VERSION && git commit -am 'chore(release): bump version to $VERSION' && git push"
+            echo "::warning::main has moved past the published commit ($PUBLISHED_SHA); skipping the bump push rather than rebasing onto a commit that was not built. Bump pyproject.toml on main manually:  git checkout main && python scripts/set_pyproject_version.py $VERSION && git commit -am 'chore(release): bump version to $VERSION' && git push"
             echo "bumped=false" >> "$GITHUB_OUTPUT"
             echo "sha=$PUBLISHED_SHA" >> "$GITHUB_OUTPUT"
           fi
@@ -272,17 +286,14 @@ jobs:
             gh release create "$TAG" --target "$SHA" --title "$TAG" --generate-notes
           fi
 
-      # Tag move runs after PyPI/Docker have already published. We don't want a
-      # tag-protection failure or transient push error to fail the workflow at
-      # this point — surface a warning so a maintainer can sync the tag manually.
-      - name: Move release tag to bump commit (release event only)
+      # The tag is created when the release is published and immutable releases
+      # make it unmovable, so the bump lands on main only. Wheels and images are
+      # built after set_pyproject_version, so it's just the tagged tree that lags.
+      - name: Note tag/bump commit split (release event only)
         if: github.event_name == 'release' && steps.commit.outputs.bumped == 'true'
         env:
           TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
           SHA: ${{ steps.commit.outputs.sha }}
         run: |
-          if git tag -f "$TAG" "$SHA" && git push --force origin "refs/tags/$TAG"; then
-            echo "Moved tag $TAG to $SHA so it matches the published version."
-          else
-            echo "::warning::Failed to force-update tag $TAG to bump commit $SHA. PyPI and Docker artifacts are already published. The tag may be protected; align it manually with: git tag -f $TAG $SHA && git push --force origin refs/tags/$TAG"
-          fi
+          echo "::notice::$TAG points at the published commit; the bump to $VERSION is $SHA on main. A source checkout of $TAG shows the previous version."

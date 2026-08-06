@@ -18,13 +18,34 @@ from pr_agent.algo.utils import update_settings_from_args
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
-from pr_agent.secret_providers import get_secret_provider
+from pr_agent.secret_providers import (get_secret_provider,
+                                       validate_secret_provider_setting)
 from pr_agent.git_providers import get_git_provider_with_context
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
 router = APIRouter()
 
-secret_provider = get_secret_provider() if get_settings().get("CONFIG.SECRET_PROVIDER") else None
+
+# Validated at import so a typo in CONFIG.SECRET_PROVIDER still fails at startup. The
+# client itself is deliberately not built here - see get_fork_safe_secret_provider.
+validate_secret_provider_setting()
+
+_secret_provider_state = {}
+
+
+def get_fork_safe_secret_provider():
+    """Return this process's secret provider, building it on first use.
+
+    Nothing is constructed at import because gunicorn runs with `preload_app`: a client
+    built there would belong to the master, and every worker would inherit its pooled
+    connection. Keying the cache on the pid means a forked worker always builds its own,
+    and never adopts one created in another process.
+    """
+    pid = os.getpid()
+    if _secret_provider_state.get("pid") != pid:
+        _secret_provider_state["provider"] = get_secret_provider()
+        _secret_provider_state["pid"] = pid
+    return _secret_provider_state["provider"]
 
 
 async def handle_request(api_url: str, body: str, log_context: dict, sender_id: str, notify=None):
@@ -64,7 +85,22 @@ def is_bot_user(data) -> bool:
     try:
         # logic to ignore bot users (unlike Github, no direct flag for bot users in gitlab)
         sender_name = data.get("user", {}).get("name", "unknown").lower()
-        bot_indicators = ['codium', 'bot_', 'bot-', '_bot', '-bot']
+        # Indicators are sourced from config.bot_user_indicators in configuration.toml so the
+        # default list has a single source of truth and can be reused by other providers in
+        # the future. Normalize the value defensively: a misconfigured .pr_agent.toml (string
+        # instead of list, non-string entries) should not break bot detection, and matching
+        # is documented as case-insensitive.
+        raw_indicators = get_settings().get("config.bot_user_indicators", [])
+        if isinstance(raw_indicators, str):
+            raw_indicators = [raw_indicators]
+        try:
+            raw_indicators = list(raw_indicators)
+        except TypeError:
+            get_logger().warning(
+                f"Ignoring non-iterable gitlab.bot_user_indicators value: {raw_indicators!r}"
+            )
+            raw_indicators = []
+        bot_indicators = [s.lower() for s in raw_indicators if isinstance(s, str)]
         if any(indicator in sender_name for indicator in bot_indicators):
             get_logger().info(f"Skipping GitLab bot user: {sender_name}")
             return True
@@ -176,8 +212,11 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
     async def inner(data: dict):
         log_context = {"server_type": "gitlab_app"}
         get_logger().debug("Received a GitLab webhook")
-        if request.headers.get("X-Gitlab-Token") and secret_provider:
-            request_token = request.headers.get("X-Gitlab-Token")
+        request_token = request.headers.get("X-Gitlab-Token")
+        # Built only for a request that will actually consult it, so a cloud client that
+        # fails to initialize cannot drop webhooks authenticated by shared secret instead.
+        secret_provider = get_fork_safe_secret_provider() if request_token else None
+        if request_token and secret_provider:
             secret = secret_provider.get_secret(request_token)
             if not secret:
                 get_logger().warning(f"Empty secret retrieved, request_token: {request_token}")
@@ -193,7 +232,7 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                 return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content=jsonable_encoder({"message": "unauthorized"}))
         elif get_settings().get("GITLAB.SHARED_SECRET"):
             secret = get_settings().get("GITLAB.SHARED_SECRET")
-            if not request.headers.get("X-Gitlab-Token") == secret:
+            if not request_token == secret:
                 get_logger().error("Failed to validate secret")
                 return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content=jsonable_encoder({"message": "unauthorized"}))
         else:

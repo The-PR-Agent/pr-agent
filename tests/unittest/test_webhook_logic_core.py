@@ -191,3 +191,96 @@ def test_gitlab_handle_ask_line_converts_new_line_diff_note_to_right_side_comman
         "/ask_line --line_start=10 --line_end=12 --side=RIGHT "
         "--file_name=src/app.py --comment_id=disc-1 why this change?"
     )
+
+
+@pytest.mark.parametrize(
+    "sender_name, expected",
+    [
+        ("Codium Bot", True),
+        ("release_bot", True),
+        ("release-bot", True),
+        ("bot-release", True),
+        ("bot_release", True),
+        ("Jane Developer", False),
+        ("renovate[bot]", False),  # 'renovate' is not in the default list
+    ],
+)
+def test_gitlab_is_bot_user_uses_default_indicators(
+    gitlab_webhook_module, sender_name, expected
+):
+    # No override applied: fall back to the authoritative default in configuration.toml.
+    data = {"user": {"name": sender_name}}
+    assert gitlab_webhook_module.is_bot_user(data) is expected
+
+
+def test_gitlab_is_bot_user_honors_configured_indicators(gitlab_webhook_module):
+    settings = get_settings()
+    original_override = settings.get("CONFIG.BOT_USER_INDICATORS")
+    settings.set("CONFIG.BOT_USER_INDICATORS", ["renovate", "dependabot"])
+    try:
+        assert gitlab_webhook_module.is_bot_user(
+            {"user": {"name": "renovate[bot]"}}
+        ) is True
+        assert gitlab_webhook_module.is_bot_user(
+            {"user": {"name": "dependabot"}}
+        ) is True
+        # A name matching the built-in default list must NOT be flagged when the
+        # override is set: configured indicators fully replace the defaults.
+        assert gitlab_webhook_module.is_bot_user(
+            {"user": {"name": "codium-agent"}}
+        ) is False
+    finally:
+        settings.set("CONFIG.BOT_USER_INDICATORS", original_override)
+
+
+def test_gitlab_is_bot_user_matches_case_insensitively(gitlab_webhook_module):
+    # Operator supplies indicators with varied casing; matching must be case-insensitive
+    # against the (already lowercased) sender display name.
+    settings = get_settings()
+    original_override = settings.get("CONFIG.BOT_USER_INDICATORS")
+    settings.set("CONFIG.BOT_USER_INDICATORS", ["Renovate", "DEPENDABOT"])
+    try:
+        assert gitlab_webhook_module.is_bot_user(
+            {"user": {"name": "renovate[bot]"}}
+        ) is True
+        assert gitlab_webhook_module.is_bot_user(
+            {"user": {"name": "dependabot"}}
+        ) is True
+    finally:
+        settings.set("CONFIG.BOT_USER_INDICATORS", original_override)
+
+
+def test_gitlab_is_bot_user_normalizes_string_value(gitlab_webhook_module):
+    # A misconfigured .pr_agent.toml that sets a bare string instead of a list must not
+    # trigger per-character iteration; the value should be treated as a single indicator.
+    settings = get_settings()
+    original_override = settings.get("CONFIG.BOT_USER_INDICATORS")
+    settings.set("CONFIG.BOT_USER_INDICATORS", "renovate")
+    try:
+        assert gitlab_webhook_module.is_bot_user(
+            {"user": {"name": "renovate[bot]"}}
+        ) is True
+        # 'r', 'e', 'n', 'o', 'v', 'a', 't', 'e' are individual chars — none of these
+        # should have matched 'Jane Developer' if the normalization treated the string
+        # as a list of characters. Guard against that regression.
+        assert gitlab_webhook_module.is_bot_user(
+            {"user": {"name": "Jane Developer"}}
+        ) is False
+    finally:
+        settings.set("CONFIG.BOT_USER_INDICATORS", original_override)
+
+
+def test_gitlab_is_bot_user_skips_non_string_entries(gitlab_webhook_module):
+    # Non-string entries in the list should be silently dropped, not crash detection.
+    settings = get_settings()
+    original_override = settings.get("CONFIG.BOT_USER_INDICATORS")
+    settings.set("CONFIG.BOT_USER_INDICATORS", ["renovate", 42, None, "bot"])
+    try:
+        assert gitlab_webhook_module.is_bot_user(
+            {"user": {"name": "renovate[bot]"}}
+        ) is True
+        assert gitlab_webhook_module.is_bot_user(
+            {"user": {"name": "Jane Developer"}}
+        ) is False
+    finally:
+        settings.set("CONFIG.BOT_USER_INDICATORS", original_override)
