@@ -282,6 +282,18 @@ class PRReviewer:
                                                git_provider=self.git_provider,
                                                files=self.git_provider.get_diff_files())
 
+        if self.remaining_files_list:
+            displayed_files = self.remaining_files_list[:MAX_REVIEW_COVERAGE_FILES]
+            markdown_text += (
+                "\n\n---\n\n"
+                "⚠️ **Review coverage:** The following files were not included in this review "
+                "because of the token budget:\n"
+                + "\n".join(f"- `{file}`" for file in displayed_files)
+            )
+            remaining_count = len(self.remaining_files_list) - len(displayed_files)
+            if remaining_count:
+                markdown_text += f"\n... and {remaining_count} more"
+
         # Add help text if gfm_markdown is supported
         if self.git_provider.is_supported("gfm_markdown") and get_settings().pr_reviewer.enable_help_text:
             markdown_text += "<hr>\n\n<details> <summary><strong>💡 Tool usage guide:</strong></summary><hr> \n\n"
@@ -294,18 +306,6 @@ class PRReviewer:
 
         # Add custom labels from the review prediction (effort, security)
         self.set_review_labels(data)
-
-        if self.remaining_files_list:
-            displayed_files = self.remaining_files_list[:MAX_REVIEW_COVERAGE_FILES]
-            markdown_text += (
-                "\n\n---\n\n"
-                "⚠️ **Review coverage:** The following files were not included in this review "
-                "because of the token budget:\n"
-                + "\n".join(f"- `{file}`" for file in displayed_files)
-            )
-            remaining_count = len(self.remaining_files_list) - len(displayed_files)
-            if remaining_count:
-                markdown_text += f"\n... and {remaining_count} more"
 
         if markdown_text == None or len(markdown_text) == 0:
             markdown_text = ""

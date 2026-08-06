@@ -69,11 +69,11 @@ async def test_prepare_prediction_keeps_incremental_review_compatible_with_tuple
     assert reviewer.prediction == "prediction"
 
 
-def _render_review(reviewer, remaining_files):
+def _render_review(reviewer, remaining_files, supports_gfm_markdown=False):
     reviewer.prediction = "review: {}"
     reviewer.remaining_files_list = remaining_files
     reviewer.git_provider.get_diff_files.return_value = []
-    reviewer.git_provider.is_supported.return_value = False
+    reviewer.git_provider.is_supported.return_value = supports_gfm_markdown
     reviewer.set_review_labels = MagicMock()
 
     with (
@@ -93,6 +93,21 @@ def test_prepare_pr_review_appends_complete_coverage_footer():
     assert "⚠️ **Review coverage:**" in review
     assert "- `src/one.py`" in review
     assert "- `nested/two.md`" in review
+
+
+def test_prepare_pr_review_places_coverage_footer_before_help_text():
+    reviewer = _make_prediction_reviewer()
+    settings = get_settings()
+    original_enable_help_text = settings.pr_reviewer.enable_help_text
+    settings.pr_reviewer.enable_help_text = True
+
+    try:
+        with patch("pr_agent.tools.pr_reviewer.HelpMessage.get_review_usage_guide", return_value="help text"):
+            review = _render_review(reviewer, ["skipped.py"], supports_gfm_markdown=True)
+    finally:
+        settings.pr_reviewer.enable_help_text = original_enable_help_text
+
+    assert review.index("⚠️ **Review coverage:**") < review.index("help text")
 
 
 def test_prepare_pr_review_leaves_original_content_unchanged_without_remaining_files():
