@@ -303,6 +303,45 @@ class TestGitLabProvider:
         assert gitlab_provider.mr.description == "Updated description"
         gitlab_provider.mr.save.assert_called_once()
 
+    # ---- auto_approve / auto_unapprove tests ----
+
+    def test_auto_approve_calls_mr_approve_and_returns_true(self, gitlab_provider):
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.id_mr = 1
+
+        result = gitlab_provider.auto_approve()
+
+        assert result is True
+        gitlab_provider.mr.approve.assert_called_once()
+
+    def test_auto_approve_returns_false_on_exception(self, gitlab_provider):
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.approve.side_effect = Exception("Network error")
+        gitlab_provider.id_mr = 1
+
+        result = gitlab_provider.auto_approve()
+
+        assert result is False
+        gitlab_provider.mr.approve.assert_called_once()
+
+    def test_auto_unapprove_calls_mr_unapprove(self, gitlab_provider):
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.id_mr = 1
+
+        gitlab_provider.auto_unapprove()
+
+        gitlab_provider.mr.unapprove.assert_called_once()
+
+    def test_auto_unapprove_logs_on_exception(self, gitlab_provider):
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.unapprove.side_effect = Exception("Network error")
+        gitlab_provider.id_mr = 1
+
+        # Should not raise, just log the error
+        gitlab_provider.auto_unapprove()
+
+        gitlab_provider.mr.unapprove.assert_called_once()
+
     # ---- publish_labels / get_pr_labels tests ----
 
     def _real_mr(self, snapshot_labels, update_result=None, update_error=None):

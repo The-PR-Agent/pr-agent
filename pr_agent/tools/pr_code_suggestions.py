@@ -130,6 +130,10 @@ class PRCodeSuggestions:
                 await self.publish_no_suggestions()
                 return
 
+            # Auto-unapprove: suggestions were found, remove any prior bot approval
+            if get_settings().config.get('enable_auto_approval', False):
+                self.git_provider.auto_unapprove()
+
             # publish the suggestions
             if get_settings().config.publish_output:
                 # If a temporary comment was published, remove it
@@ -228,6 +232,12 @@ class PRCodeSuggestions:
                 self.git_provider.publish_comment(pr_body)
         else:
             get_settings().data = {"artifact": ""}
+
+        # Auto-approve if enabled and no suggestions found
+        if get_settings().config.get('enable_auto_approval', False):
+            is_approved = self.git_provider.auto_approve()
+            if is_approved:
+                get_logger().info(f"Auto-approved MR {self.git_provider.id_mr}: no code suggestions found")
 
     async def dual_publishing(self, data):
         data_above_threshold = {'code_suggestions': []}

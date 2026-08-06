@@ -1105,6 +1105,24 @@ class GitLabProvider(GitProvider):
         mr = self.gl.projects.get(self.id_project).mergerequests.get(self.id_mr)
         return mr
 
+    def auto_approve(self) -> bool:
+        """Approve the merge request using the bot account."""
+        try:
+            self.mr.approve()
+            get_logger().info(f"Auto-approved MR {self.id_mr}")
+            return True
+        except Exception as e:
+            get_logger().error(f"Failed to auto-approve MR {self.id_mr}: {e}")
+            return False
+
+    def auto_unapprove(self) -> None:
+        """Remove this bot's approval from the merge request."""
+        try:
+            self.mr.unapprove()
+            get_logger().info(f"Auto-unapproved MR {self.id_mr}")
+        except Exception as e:
+            get_logger().error(f"Failed to auto-unapprove MR {self.id_mr}: {e}")
+
     def get_user_id(self):
         return None
 
