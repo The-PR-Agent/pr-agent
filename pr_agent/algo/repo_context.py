@@ -283,8 +283,7 @@ def build_repo_context(git_provider) -> str:
     if files:
         repo_context, truncated = _render_instruction_files_with_line_budget(files, max_lines)
         get_logger().info(
-            "Loaded repo context files",
-            artifact={"files": list(files), "truncated": truncated},
+            f"Loaded repo context files: files={list(files)}, truncated={str(truncated).lower()}"
         )
 
     # Only cache when every file was fetched successfully. A transient/unexpected fetch error must

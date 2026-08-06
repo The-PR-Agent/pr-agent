@@ -136,8 +136,7 @@ def test_build_repo_context_fetches_and_formats_configured_files(repo_context_se
     )
     assert provider.requested_paths == ["AGENTS.md", "CONTRIBUTING.md"]
     mock_get_logger.return_value.info.assert_called_once_with(
-        "Loaded repo context files",
-        artifact={"files": ["AGENTS.md", "CONTRIBUTING.md"], "truncated": False},
+        "Loaded repo context files: files=['AGENTS.md', 'CONTRIBUTING.md'], truncated=false"
     )
 
 
@@ -425,8 +424,7 @@ def test_build_repo_context_enforces_total_line_cap(repo_context_settings):
     )
     assert len(context.splitlines()) <= 4
     mock_get_logger.return_value.info.assert_called_once_with(
-        "Loaded repo context files",
-        artifact={"files": ["AGENTS.md", "CONTRIBUTING.md"], "truncated": True},
+        "Loaded repo context files: files=['AGENTS.md', 'CONTRIBUTING.md'], truncated=true"
     )
 
 
