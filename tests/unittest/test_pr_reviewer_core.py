@@ -174,6 +174,33 @@ def test_answer_mode_reads_comments_from_a_non_list_iterable(monkeypatch):
     assert reviewer.vars["answer_str"] == "/answer Because it fixes production."
 
 
+def test_answer_mode_uses_the_lazy_reversed_view_when_the_provider_offers_one(monkeypatch):
+    """PyGithub reverses a PaginatedList lazily, walking pages from the end.
+
+    Materialising it instead would page the whole thread just to read the last exchange,
+    so the lazy view must win when it exists.
+    """
+
+    class _LazyPaginated:
+        def __init__(self, items):
+            self._items = items
+
+        @property
+        def reversed(self):
+            return list(reversed(self._items))
+
+        def __iter__(self):
+            raise AssertionError("the lazy reversed view should have been used")
+
+    reviewer = _build_answer_mode_reviewer(monkeypatch, _LazyPaginated([
+        SimpleNamespace(body="Questions to better understand the PR:\n- Why?"),
+        SimpleNamespace(body="/answer Because it fixes production."),
+    ]))
+
+    assert reviewer.vars["question_str"] == "Questions to better understand the PR:\n- Why?"
+    assert reviewer.vars["answer_str"] == "/answer Because it fixes production."
+
+
 def test_answer_mode_prefers_the_newest_question_and_answer(monkeypatch):
     """Comments arrive oldest-first, so the walk must run newest-first to pick the latest exchange."""
     reviewer = _build_answer_mode_reviewer(monkeypatch, [
