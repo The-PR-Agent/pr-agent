@@ -62,7 +62,10 @@ async def handle_marketplace_webhooks(request: Request, response: Response):
     # mutates PR state, or triggers AI calls, so a forged request can only
     # poison logs.
     try:
-        body = await request.json()
+        # Parse the JSON body so a malformed payload returns HTTP 400, but the
+        # handler is a no-op aside from logging - assign to _ to satisfy Ruff
+        # F841 (unused-local) without losing the validation side effect.
+        _ = await request.json()
     except Exception as e:
         get_logger().error("Error parsing marketplace request body", artifact={"error": e})
         raise HTTPException(status_code=400, detail="Error parsing request body") from e
