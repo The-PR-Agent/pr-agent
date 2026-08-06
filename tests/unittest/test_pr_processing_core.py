@@ -131,3 +131,23 @@ def test_get_pr_multi_diffs_clips_large_patch_when_policy_is_clip(monkeypatch):
         settings.config.patch_extra_lines_after = original["patch_extra_lines_after"]
         settings.config.large_patch_policy = original["large_patch_policy"]
         settings.config.verbosity_level = original["verbosity_level"]
+
+
+def test_pr_description_reads_fall_back_when_keys_missing():
+    # Regression for "'DynaBox' object has no attribute 'enable_large_pr_handling'":
+    # custom_merge_loader replaces a section instead of merging it, so a custom
+    # .pr_agent.toml that defines [pr_description] without the large-PR keys drops
+    # their defaults. /describe must still work via .get(..., default) instead of crashing.
+    from dynaconf.utils.boxing import DynaBox
+
+    # A [pr_description] section overridden without the large-PR keys
+    pr_description = DynaBox({"publish_labels": False})
+
+    # Bare attribute access is what used to raise and abort the run
+    with pytest.raises(AttributeError):
+        _ = pr_description.enable_large_pr_handling
+
+    # Guarded reads (matching the call sites) resolve to the documented defaults
+    assert pr_description.get("enable_large_pr_handling", True) is True
+    assert pr_description.get("async_ai_calls", True) is True
+    assert pr_description.get("max_ai_calls", 4) == 4

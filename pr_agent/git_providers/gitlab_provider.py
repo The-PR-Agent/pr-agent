@@ -16,13 +16,17 @@ from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 
 from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import decode_if_bytes
+from ..algo.inline_comment_dedup import (body_fingerprint, body_with_markers,
+                                         code_fingerprint,
+                                         get_inline_comment_store)
 from ..algo.language_handler import is_valid_file
 from ..algo.utils import (PRReviewHeader, clip_tokens,
                           find_line_number_of_relevant_line_in_file,
                           load_large_diff)
 from ..config_loader import get_settings
 from ..log import get_logger
-from .git_provider import MAX_FILES_ALLOWED_FULL, GitProvider, IncrementalPR
+from .git_provider import (MAX_FILES_ALLOWED_FULL, GitProvider, IncrementalPR,
+                           get_cached_global_settings)
 
 
 class DiffNotFoundError(Exception):
@@ -349,6 +353,8 @@ class GitLabProvider(GitProvider):
     def is_supported(self, capability: str) -> bool:
         if capability in ['get_issue_comments', 'create_inline_comment', 'publish_inline_comments',
             'publish_file_comments']: # gfm_markdown is supported in gitlab !
+            return False
+        if capability == "push_code" and get_settings().config.restricted_mode:
             return False
         return True
 
@@ -770,7 +776,8 @@ class GitLabProvider(GitProvider):
 
     def publish_description(self, pr_title: str, pr_body: str):
         try:
-            self.mr.title = pr_title
+            if pr_title is not None:
+                self.mr.title = pr_title
             self.mr.description = pr_body
             self.mr.save()
         except Exception as e:
@@ -844,6 +851,23 @@ class GitLabProvider(GitProvider):
         if not found:
             get_logger().info(f"Could not find position for {relevant_file} {relevant_line_in_file}")
         else:
+            store = None
+            body_fp = code_fp = None
+            if get_settings().get("config.persistent_inline_comments", False):
+                store = get_inline_comment_store(self)
+                # Anchor the fingerprint on the line the comment is actually
+                # attached to: deletions anchor on the old line (source), all
+                # other edits on the new line (target).
+                anchor_line = source_line_no if edit_type == "deletion" else target_line_no
+                body_fp = body_fingerprint(relevant_file, anchor_line, body)
+                code_fp = code_fingerprint(relevant_file, anchor_line, body)
+                if store.seen(body_fp) or store.seen(code_fp):
+                    get_logger().info(
+                        f"Persistent inline comments: skipping duplicate inline "
+                        f"comment on {relevant_file}:{anchor_line}")
+                    return
+                body = body_with_markers(
+                    body, body_fp, code_fp, getattr(self, "max_comment_chars", None))
             # in order to have exact sha's we have to find correct diff for this change
             diff = self.get_relevant_diff(relevant_file, relevant_line_in_file)
             if diff is None:
@@ -863,6 +887,9 @@ class GitLabProvider(GitProvider):
             get_logger().debug(f"Creating comment in MR {self.id_mr} with body {body} and position {pos_obj}")
             try:
                 self.mr.discussions.create({'body': body, 'position': pos_obj})
+                if store is not None:
+                    store.add(body_fp)
+                    store.add(code_fp)
             except Exception as e:
                 try:
                     # fallback - create a general note on the file in the MR
@@ -902,6 +929,9 @@ class GitLabProvider(GitProvider):
                     diff_code = f"\n\n```diff\n{patch.rstrip()}\n```"
                     body_fallback += diff_code
 
+                    if store is not None:
+                        body_fallback = body_with_markers(
+                            body_fallback, body_fp, code_fp, getattr(self, "max_comment_chars", None))
                     # Create a general note on the file in the MR
                     self.mr.notes.create({
                         'body': body_fallback,
@@ -914,6 +944,9 @@ class GitLabProvider(GitProvider):
                         }
                     })
                     get_logger().debug(f"Created fallback comment in MR {self.id_mr} with position {pos_obj}")
+                    if store is not None:
+                        store.add(body_fp)
+                        store.add(code_fp)
 
                     # get_logger().debug(
                     #     f"Failed to create comment in MR {self.id_mr} with position {pos_obj} (probably not a '+' line)")
@@ -955,9 +988,11 @@ class GitLabProvider(GitProvider):
                 target_file = None
                 for file in diff_files:
                     if file.filename == relevant_file:
-                        if file.filename == relevant_file:
-                            target_file = file
-                            break
+                        target_file = file
+                        break
+                if target_file is None:
+                    get_logger().warning(f"Skipping suggestion: file '{relevant_file}' not found in diff")
+                    continue
                 range = relevant_lines_end - relevant_lines_start # no need to add 1
                 body = body.replace('```suggestion', f'```suggestion:-0+{range}')
                 lines = target_file.head_file.splitlines()
@@ -1075,11 +1110,59 @@ class GitLabProvider(GitProvider):
         return self.mr.notes.list(get_all=True)[::-1]
 
     def get_repo_settings(self):
+        settings_files = []
+        global_settings = self._get_global_repo_settings()
+        if global_settings:
+            settings_files.append(("global", global_settings))
         try:
             main_branch = self.gl.projects.get(self.id_project).default_branch
             contents = self.gl.projects.get(self.id_project).files.get(file_path='.pr_agent.toml', ref=main_branch).decode()
-            return contents
-        except Exception:
+            if contents:
+                settings_files.append(("local", contents))
+        except GitlabGetError:
+            pass  # a missing local .pr_agent.toml is expected
+        except Exception as e:
+            get_logger().warning(f"Failed to load local .pr_agent.toml file, error: {e}")
+        return settings_files if settings_files else ""
+
+    def _get_global_repo_settings(self):
+        # Load an org-wide <group>/pr-agent-settings/.pr_agent.toml (GitLab.com groups only).
+        if not get_settings().config.use_global_settings_file:
+            return ""
+        if not getattr(self, "gl", None) or not getattr(self, "id_project", None):
+            return ""
+        # Group-level global settings are GitLab.com only. Match the host exactly so a self-hosted
+        # instance whose hostname merely contains "gitlab.com" (e.g. "mygitlab.com") is not treated
+        # as GitLab.com. get_pr_owner_id returns the top-level group on gitlab.com.
+        host = (urlparse(self.gitlab_url).hostname or "").lower() if self.gitlab_url else ""
+        group = self.get_pr_owner_id()
+        if not group or host != "gitlab.com":
+            return ""
+        return get_cached_global_settings(
+            f"gitlab:{group}", lambda: self._fetch_global_repo_settings(group))
+
+    def _fetch_global_repo_settings(self, group):
+        try:
+            project = self.gl.projects.get(f"{group}/pr-agent-settings")
+            return project.files.get(file_path='.pr_agent.toml', ref=project.default_branch).decode()
+        except GitlabGetError:
+            # A missing pr-agent-settings project/file is an expected fallback -> return "" (cached).
+            return ""
+        # Transient/unexpected errors propagate so the caller does not cache the failure.
+
+    def get_repo_file_content(self, file_path: str, from_default_branch: bool = False):
+        try:
+            project = self.gl.projects.get(self.id_project)
+            # Read from the MR target branch (the branch being merged into), matching the other
+            # providers; fall back to the project default branch outside of an MR context, or
+            # always when from_default_branch is requested.
+            if from_default_branch:
+                ref = project.default_branch
+            else:
+                ref = getattr(self.mr, "target_branch", None) or project.default_branch
+            contents = project.files.get(file_path=file_path, ref=ref).decode()
+            return decode_if_bytes(contents)
+        except GitlabGetError:
             return ""
 
     def get_workspace_name(self):
@@ -1167,16 +1250,70 @@ class GitLabProvider(GitProvider):
 
     def publish_labels(self, pr_types):
         try:
-            self.mr.labels = list(set(pr_types))
-            self.mr.save()
+            # Send an incremental diff instead of assigning ``self.mr.labels``, which
+            # would PUT the whole array and wipe any label added to the MR after this
+            # snapshot was taken. python-gitlab forwards ``add_labels`` /
+            # ``remove_labels`` to the identically named parameters of
+            # ``PUT /projects/:id/merge_requests/:merge_request_iid``, so labels the
+            # snapshot never saw are left untouched by the server.
+            desired = set(pr_types)
+            current = set(self._read_mr_labels())
+            to_add = sorted(desired - current)
+            to_remove = sorted(current - desired)
+            if not to_add and not to_remove:
+                return
+            try:
+                if to_add:
+                    self.mr.add_labels = ",".join(to_add)
+                if to_remove:
+                    self.mr.remove_labels = ",".join(to_remove)
+                self.mr.save()
+            finally:
+                # save() clears pending attributes on success, but not when it raises.
+                # Drop them so an unrelated later save() (publish_description runs
+                # moments later) cannot resend the diff.
+                self._clear_pending_mr_attrs("add_labels", "remove_labels")
         except Exception as e:
             get_logger().warning(f"Failed to publish labels, error: {e}")
+
+    def _read_mr_labels(self):
+        # Reading ``mr.labels`` is not free of side effects: python-gitlab cannot detect
+        # in-place list edits, so __getattr__ copies every list attribute into the
+        # pending-attribute set to make sure it gets saved. Left there, the next save()
+        # on this MR would PUT the whole labels array — exactly the overwrite the
+        # add/remove diff exists to avoid. Drop it again so a read stays a read.
+        labels = self.mr.labels or []
+        self._clear_pending_mr_attrs("labels")
+        return list(labels)
+
+    def _clear_pending_mr_attrs(self, *names):
+        # python-gitlab keeps attributes assigned on a merge request in ``_updated_attrs``
+        # rather than ``__dict__``, so ``delattr`` cannot reach them. That is private API
+        # and ``self.mr`` is not guaranteed to be a python-gitlab object, so check before
+        # touching it: failing to clear a pending write must not break the caller.
+        pending = getattr(self.mr, "_updated_attrs", None)
+        if not isinstance(pending, dict):
+            return
+        for name in names:
+            pending.pop(name, None)
 
     def publish_inline_comments(self, comments: list[dict]):
         pass
 
     def get_pr_labels(self, update=False):
-        return self.mr.labels
+        # ``update`` used to be ignored, so callers that re-read labels to preserve
+        # user additions (PRReviewer.set_review_labels, PRDescription.run) kept seeing
+        # the snapshot cached when the provider was built, and dropped any label added
+        # after the webhook fired.
+        if update:
+            try:
+                self.mr = self._get_merge_request()
+            except Exception as e:
+                # Best-effort, like the other providers: fall back to the cached
+                # snapshot. publish_labels diffs against that same snapshot, so a
+                # stale read narrows what gets updated rather than clobbering labels.
+                get_logger().warning(f"Failed to refresh merge request {self.id_mr}, using cached labels, error: {e}")
+        return self._read_mr_labels()
 
     def get_repo_labels(self):
         return self.gl.projects.get(self.id_project).labels.list()

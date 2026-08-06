@@ -3,6 +3,7 @@ from abc import ABC, abstractmethod
 import os
 import shutil
 import subprocess
+import time
 from typing import Optional, Tuple
 
 from pr_agent.algo.types import FilePatchInfo
@@ -11,6 +12,48 @@ from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
 MAX_FILES_ALLOWED_FULL = 50
+
+_GLOBAL_SETTINGS_CACHE: dict = {}
+_GLOBAL_SETTINGS_CACHE_TTL_SECONDS = 15 * 60
+_GLOBAL_SETTINGS_CACHE_MAX_SIZE = 256
+# Only cache reasonably-sized settings blobs; a valid .pr_agent.toml is tiny. This bounds the
+# process-wide cache memory (256 entries x this) regardless of the much larger apply-time size cap.
+_GLOBAL_SETTINGS_CACHE_MAX_VALUE_BYTES = 1024 * 1024
+
+
+def get_cached_global_settings(cache_key, fetch_fn):
+    """Return the org/group/workspace global .pr_agent.toml via a bounded TTL cache.
+
+    Global settings change rarely, so caching avoids a provider API lookup (and repeated
+    403/404 fallbacks) on every webhook event. Empty/"not found" results are cached too, to
+    prevent repeated failed lookups. Oversized values are returned but not cached (to bound
+    memory). Pass a falsy cache_key to bypass the cache.
+    """
+    def _fetch_safely():
+        # A transient/unexpected fetch failure must NOT be cached, so it is retried instead of
+        # disabling global settings for the whole TTL. fetch_fn returns "" for expected "not found".
+        try:
+            return fetch_fn(), True
+        except Exception as e:
+            get_logger().warning(f"Failed to load global settings, error: {e}")
+            return "", False
+
+    if not cache_key:
+        return _fetch_safely()[0]
+    now = time.monotonic()
+    entry = _GLOBAL_SETTINGS_CACHE.get(cache_key)
+    if entry is not None and entry[1] > now:
+        return entry[0]
+    value, cacheable = _fetch_safely()
+    if not cacheable:
+        return value
+    value_size = len(value) if isinstance(value, (bytes, str)) else 0
+    if value_size <= _GLOBAL_SETTINGS_CACHE_MAX_VALUE_BYTES:
+        _GLOBAL_SETTINGS_CACHE[cache_key] = (value, now + _GLOBAL_SETTINGS_CACHE_TTL_SECONDS)
+        while len(_GLOBAL_SETTINGS_CACHE) > _GLOBAL_SETTINGS_CACHE_MAX_SIZE:
+            oldest_key = min(_GLOBAL_SETTINGS_CACHE, key=lambda k: _GLOBAL_SETTINGS_CACHE[k][1])
+            _GLOBAL_SETTINGS_CACHE.pop(oldest_key, None)
+    return value
 
 def get_git_ssl_env() -> dict[str, str]:
     """
@@ -167,6 +210,9 @@ class GitProvider(ABC):
 
     @abstractmethod
     def publish_description(self, pr_title: str, pr_body: str):
+        # pr_title may be None, which means "leave the existing title unchanged"
+        # and update only the description. Implementations must not write the
+        # title in that case.
         pass
 
     @abstractmethod
@@ -273,6 +319,9 @@ class GitProvider(ABC):
     @abstractmethod
     def get_repo_settings(self):
         pass
+
+    def get_repo_file_content(self, file_path: str, from_default_branch: bool = False):
+        return ""
 
     def get_workspace_name(self):
         return ""

@@ -8,6 +8,14 @@ Your task is to provide a full description for the PR content: type, description
 - When quoting variables, names or file paths from the code, use backticks (`) instead of single quote (').
 - When needed, use '- ' as bullets
 
+{%- if skills_context %}
+
+Organizational standards and review skills (apply the ones relevant to this PR):
+=====
+{{ skills_context }}
+=====
+{%- endif %}
+
 {%- if extra_instructions %}
 
 Extra instructions from the user:
@@ -16,6 +24,13 @@ Extra instructions from the user:
 =====
 {% endif %}
 
+{%- if repo_context %}
+
+Repository context:
+=====
+{{ repo_context }}
+=====
+{% endif %}
 
 The output must be a YAML object equivalent to type $PRDescription, according to the following Pydantic definitions:
 =====
@@ -99,7 +114,7 @@ Related Ticket Info:
 {% for ticket in related_tickets %}
 =====
 Ticket Title: '{{ ticket.title }}'
-{%- if ticket.labels %}
+{%- if ticket.labels is defined and ticket.labels %}
 Ticket Labels: {{ ticket.labels }}
 {%- endif %}
 {%- if ticket.body %}

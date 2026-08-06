@@ -17,6 +17,7 @@ nav:
     - Managing Mail Notifications: 'usage-guide/mail_notifications.md'
     - Changing a Model: 'usage-guide/changing_a_model.md'
     - Additional Configurations: 'usage-guide/additional_configurations.md'
+    - Plain-Diff Mode: 'usage-guide/plain_diff_mode.md'
     - Frequently Asked Questions: 'faq/index.md'
   - Tools:
      - 'tools/index.md'
@@ -32,6 +33,7 @@ nav:
      - Update Changelog: 'tools/update_changelog.md'
   - Core Abilities:
       - 'core-abilities/index.md'
+      - Agent skills: 'core-abilities/agent_skills.md'
       - Compression strategy: 'core-abilities/compression_strategy.md'
       - Dynamic context: 'core-abilities/dynamic_context.md'
       - Fetching ticket context: 'core-abilities/fetching_ticket_context.md'

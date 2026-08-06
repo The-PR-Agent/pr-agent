@@ -12,6 +12,8 @@ from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.pr_processing import (add_ai_metadata_to_diff_files,
                                          get_pr_diff,
                                          retry_with_fallback_models)
+from pr_agent.algo.skills_loader import get_skills_context
+from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (ModelType, PRReviewHeader,
                                  convert_to_markdown_v2, github_action_output,
@@ -63,7 +65,7 @@ class PRReviewer:
         self.ai_handler.main_pr_language = self.main_language
         self.patches_diff = None
         self.prediction = None
-        answer_str, question_str = self._get_user_answers()
+        question_str, answer_str = self._get_user_answers()
         self.pr_description, self.pr_description_files = (
             self.git_provider.get_pr_description(split_changes_walkthrough=True))
         if (self.pr_description_files and get_settings().get("config.is_auto_command", False) and
@@ -92,6 +94,8 @@ class PRReviewer:
             'question_str': question_str,
             'answer_str': answer_str,
             "extra_instructions": get_settings().pr_reviewer.extra_instructions,
+            "skills_context": get_skills_context(),
+            "repo_context": build_repo_context(self.git_provider),
             "commit_messages_str": self.git_provider.get_commit_messages(),
             "custom_labels": "",
             "enable_custom_labels": get_settings().config.enable_custom_labels,
@@ -123,8 +127,11 @@ class PRReviewer:
                 get_logger().info(f"PR has no files: {self.pr_url}, skipping review")
                 return None
 
-            if self.incremental.is_incremental and not self._can_run_incremental_review():
-                return None
+            if self.incremental.is_incremental:
+                can_run = self._can_run_incremental_review()
+                # If the gate disabled incremental (e.g., commits_range is None), fall through to full review.
+                if not can_run and self.incremental.is_incremental:
+                    return None
 
             # if isinstance(self.args, list) and self.args and self.args[0] == 'auto_approve':
             #     get_logger().info(f'Auto approve flow PR: {self.pr_url} ...')
@@ -139,11 +146,15 @@ class PRReviewer:
             # ticket extraction if exists
             await extract_and_cache_pr_tickets(self.git_provider, self.vars)
 
-            if self.incremental.is_incremental and hasattr(self.git_provider, "unreviewed_files_set") and not self.git_provider.unreviewed_files_set:
+            if (
+                self.incremental.is_incremental
+                and hasattr(self.git_provider, "unreviewed_files_map")
+                and not self.git_provider.unreviewed_files_map
+            ):
                 get_logger().info(f"Incremental review is enabled for {self.pr_url} but there are no new files")
                 previous_review_url = ""
-                if hasattr(self.git_provider, "previous_review"):
-                    previous_review_url = self.git_provider.previous_review.html_url
+                if hasattr(self.git_provider, "previous_review") and self.git_provider.previous_review is not None:
+                    previous_review_url = getattr(self.git_provider.previous_review, "html_url", "") or ""
                 if get_settings().config.publish_output:
                     self.git_provider.publish_comment(f"Incremental Review Skipped\n"
                                     f"No files were changed since the [previous PR Review]({previous_review_url})")
@@ -182,6 +193,8 @@ class PRReviewer:
             self.git_provider.remove_initial_comment()
         except Exception as e:
             get_logger().error(f"Failed to review PR: {e}")
+            if get_settings().config.get("propagate_tool_errors", False):
+                raise
 
     def _should_publish_review_no_suggestions(self, pr_review: str) -> bool:
         return get_settings().pr_reviewer.get('publish_output_no_suggestions', True) or "No major issues detected" not in pr_review
@@ -336,6 +349,13 @@ class PRReviewer:
 
         if not hasattr(self.git_provider, "get_incremental_commits"):
             get_logger().info(f"Incremental review is not supported for {get_settings().config.git_provider}")
+            return False
+        if self.incremental.commits_range is None:
+            get_logger().info(
+                f"Incremental review not initialized for {get_settings().config.git_provider}; "
+                f"falling back to full review."
+            )
+            self.incremental.is_incremental = False
             return False
         # checking if there are enough commits to start the review
         num_new_commits = len(self.incremental.commits_range)

@@ -113,8 +113,21 @@ class BitbucketServerProvider(GitProvider):
                 if e.response.status_code == 404:  # not found
                     return ""
 
-            get_logger().error(f"Failed to load .pr_agent.toml file, error: {e}")
+            # A missing .pr_agent.toml is an expected, optional case (like the other
+            # git providers), so don't report it as an error. Log at info level to keep
+            # visibility for genuinely unexpected failures without alarming users.
+            get_logger().info(f"Failed to load .pr_agent.toml file, error: {e}")
             return ""
+
+    def get_repo_file_content(self, file_path: str, from_default_branch: bool = False):
+        # Read from the PR target ref (the branch being merged into), matching the other providers,
+        # or from the repository default branch when from_default_branch is requested.
+        if from_default_branch:
+            default_branch_dict = self.bitbucket_client.get_default_branch(self.workspace_slug, self.repo_slug)
+            ref = default_branch_dict.get('displayId') or self.pr.toRef['latestCommit']
+        else:
+            ref = self.pr.toRef['latestCommit']
+        return self.get_file(file_path, ref)
 
     def get_pr_id(self):
         return self.pr_num
@@ -513,11 +526,17 @@ class BitbucketServerProvider(GitProvider):
 
     # bitbucket does not support labels
     def publish_description(self, pr_title: str, description: str):
+        pr = self.pr
+        if pr_title is None:
+            # Replace-style update: an omitted/stale title would be lost, so
+            # re-fetch to preserve a title edited during the describe run.
+            pr = self._get_pr()
+            self.pr = pr
         payload = {
-            "version": self.pr.version,
+            "version": pr.version,
             "description": description,
-            "title": pr_title,
-            "reviewers": self.pr.reviewers  # needs to be sent otherwise gets wiped
+            "title": pr_title if pr_title is not None else pr.title,
+            "reviewers": pr.reviewers  # needs to be sent otherwise gets wiped
         }
         try:
             self.bitbucket_client.update_pull_request(self.workspace_slug, self.repo_slug, str(self.pr_num), payload)

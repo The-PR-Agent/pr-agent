@@ -6,6 +6,7 @@ import giteapy
 from giteapy.rest import ApiException
 
 from pr_agent.algo.file_filter import filter_ignored
+from pr_agent.algo.git_patch_processing import decode_if_bytes
 from pr_agent.algo.language_handler import is_valid_file
 from pr_agent.algo.types import EDIT_TYPE
 from pr_agent.algo.utils import (clip_tokens,
@@ -15,6 +16,15 @@ from pr_agent.git_providers.git_provider import (MAX_FILES_ALLOWED_FULL,
                                                  FilePatchInfo, GitProvider,
                                                  IncrementalPR)
 from pr_agent.log import get_logger
+
+
+class _GiteaCommitAdapter:
+    """Mimics PyGithub `Commit` shape (.sha, .html_url) over a raw Gitea commit payload."""
+
+    def __init__(self, raw: Dict[str, Any]):
+        raw = raw or {}
+        self.sha = raw.get("sha", "")
+        self.html_url = raw.get("html_url", "")
 
 
 class GiteaProvider(GitProvider):
@@ -61,10 +71,12 @@ class GiteaProvider(GitProvider):
         self.file_contents = {}
         self.file_diffs = {}
         self.sha = None
+        self.base_sha = ""
+        self.base_ref = ""
         self.diff_files = []
         self.incremental = IncrementalPR(False)
         self.comments_list = []
-        self.unreviewed_files_set = dict()
+        self.unreviewed_files_map = dict()
 
         if "pulls" in url:
             self.pr_url = url
@@ -86,12 +98,7 @@ class GiteaProvider(GitProvider):
             self.sha = self.pr.head.sha if self.pr.head.sha else ""
             self.__add_file_content()
             self.__add_file_diff()
-            self.pr_commits = self.repo_api.list_all_commits(
-                owner=self.owner,
-                repo=self.repo
-            )
-            self.last_commit = self.pr_commits[-1]
-            self.last_commit_id = self.last_commit
+            self._set_pr_commits()
             self.base_sha = self.pr.base.sha if self.pr.base.sha else ""
             self.base_ref = self.pr.base.ref if self.pr.base.ref else ""
         elif "issues" in url:
@@ -100,6 +107,31 @@ class GiteaProvider(GitProvider):
             self.enabled_issue = True
         else:
             self.pr_commits = None
+
+    def _set_pr_commits(self):
+        """Load the commits of the PR itself, not the commits of the repository's default branch."""
+        raw_commits = self.repo_api.get_pr_commits(
+            owner=self.owner,
+            repo=self.repo,
+            pr_number=self.pr_number
+        ) or []
+        if not isinstance(raw_commits, list):
+            self.logger.error(f"Unexpected PR commits payload type: {type(raw_commits)}")
+            raw_commits = []
+        # Gitea returns PR commits newest-first; oldest-first matches GitHub iteration order.
+        self.pr_commits = [
+            _GiteaCommitAdapter(commit) for commit in reversed(raw_commits) if isinstance(commit, dict)
+        ]
+        if not self.pr_commits:
+            self.logger.error("Failed to get PR commits")
+        # Fall back to a commit wrapping the PR head SHA (rather than None) so callers that
+        # dereference last_commit/last_commit_id (e.g. publish_inline_comments, the description
+        # header) always have a valid .sha, even when the commits endpoint returns nothing.
+        self.last_commit = next(
+            (commit for commit in self.pr_commits if commit.sha and commit.sha == self.sha),
+            self.pr_commits[-1] if self.pr_commits else _GiteaCommitAdapter({"sha": self.sha})
+        )
+        self.last_commit_id = self.last_commit
 
     def __add_file_content(self):
         for file in self.git_files:
@@ -139,7 +171,7 @@ class GiteaProvider(GitProvider):
                         file_patches[current_file] = '\n'.join(current_patch)
                         current_patch = []
                     current_file = line.split(' b/')[-1]
-                elif line.startswith('@@'):
+                elif line.startswith('@@') and not current_patch:
                     current_patch = [line]
                 elif current_patch:
                     current_patch.append(line)
@@ -224,7 +256,7 @@ class GiteaProvider(GitProvider):
         return self.issue_url
 
     def get_latest_commit_url(self) -> str:
-        return self.last_commit.html_url
+        return self.last_commit.html_url if self.last_commit else ""
 
     def get_comment_url(self, comment) -> str:
         return comment.html_url
@@ -239,7 +271,7 @@ class GiteaProvider(GitProvider):
     def publish_comment(self, comment: str,is_temporary: bool = False) -> None:
         """Publish a comment to the pull request"""
         if is_temporary and not get_settings().config.publish_output_progress:
-            get_logger().debug(f"Skipping publish_comment for temporary comment")
+            get_logger().debug("Skipping publish_comment for temporary comment")
             return None
 
         if self.enabled_issue:
@@ -437,7 +469,7 @@ class GiteaProvider(GitProvider):
         return self.repo_api.get_file_content(
             owner=self.owner,
             repo=self.repo,
-            commit_sha=self.last_commit.sha,
+            commit_sha=self.last_commit.sha if self.last_commit else self.sha,
             filepath=filename
         )
 
@@ -475,9 +507,9 @@ class GiteaProvider(GitProvider):
                 # Get file content from this pr
                 head_file = self.file_contents.get(filename,"")
 
-            if self.incremental.is_incremental and self.unreviewed_files_set:
+            if self.incremental.is_incremental and self.unreviewed_files_map:
                 base_file = self._get_file_content_from_latest_commit(filename)
-                self.unreviewed_files_set[filename] = patch
+                self.unreviewed_files_map[filename] = patch
             else:
                 if avoid_load:
                     base_file = ""
@@ -605,11 +637,11 @@ class GiteaProvider(GitProvider):
 
         return [label.name for label in labels]
 
-    def get_repo_settings(self) -> str:
+    def get_repo_settings(self) -> bytes:
         """Get repository settings"""
         if not self.repo_settings:
             self.logger.error("Repository settings not found")
-            return ""
+            return b""
 
         response = self.repo_api.get_file_content(
             owner=self.owner,
@@ -619,9 +651,13 @@ class GiteaProvider(GitProvider):
         )
         if not response:
             self.logger.error("Failed to get repository settings")
-            return ""
+            return b""
 
-        return response
+        # utils.apply_repo_settings() writes this via os.write() and later
+        # calls .decode() on it, so it must be bytes to match the GitHub/
+        # GitLab/Bitbucket contract. get_file_content() decodes the raw bytes
+        # to str, so re-encode here (see issue #2347).
+        return response.encode('utf-8')
 
     def get_user_id(self) -> str:
         """Get the ID of the authenticated user"""
@@ -636,13 +672,15 @@ class GiteaProvider(GitProvider):
 
     def publish_description(self, pr_title: str, pr_body: str) -> None:
         """Publish PR description"""
-        response = self.repo_api.edit_pull_request(
+        edit_kwargs = dict(
             owner=self.owner,
             repo=self.repo,
             pr_number=self.pr_number if self.enabled_pr else self.issue_number,
-            title=pr_title,
-            body=pr_body
+            body=pr_body,
         )
+        if pr_title is not None:
+            edit_kwargs["title"] = pr_title
+        response = self.repo_api.edit_pull_request(**edit_kwargs)
 
         if not response:
             self.logger.error("Failed to publish PR description")
@@ -738,6 +776,43 @@ class GiteaProvider(GitProvider):
         clone_url += f"{gitea_token}@{base_url}{repo_full_name}"
         return clone_url
 
+    def get_repo_file_content(self, file_path: str, from_default_branch: bool = False) -> str:
+        """Get content of a file from the PR target (base) branch.
+
+        This method implements the interface required by PR #2387 repo_context feature.
+        It reads only from the PR target ref (base sha/ref) and never from the PR head,
+        so a PR cannot supply its own instruction files to influence its own review.
+        When from_default_branch is set, it reads from the repository default branch instead.
+        """
+        try:
+            if not self.owner or not self.repo:
+                self.logger.warning("Cannot get repo file content: owner or repo not set")
+                return ""
+
+            if from_default_branch:
+                ref = self.repo_api.repo_get(self.owner, self.repo).default_branch
+            else:
+                # Only trust the PR target (base) ref — never fall back to the PR head (self.sha).
+                ref = self.base_sha or self.base_ref
+            if not ref:
+                self.logger.warning("Cannot get repo file content: no target/base ref available")
+                return ""
+
+            content = self.repo_api.get_file_content(
+                owner=self.owner,
+                repo=self.repo,
+                commit_sha=ref,
+                filepath=file_path
+            )
+            return content
+        except ApiException as e:
+            # A missing file is an expected "no context" outcome. Let transient/unexpected
+            # errors propagate so build_repo_context() treats them as a fetch error and does
+            # not cache an empty result until the TTL expires.
+            if getattr(e, "status", None) == 404:
+                return ""
+            raise
+
 class RepoApi(giteapy.RepositoryApi):
     def __init__(self, client: giteapy.ApiClient):
         self.repository = giteapy.RepositoryApi(client)
@@ -813,10 +888,10 @@ class RepoApi(giteapy.RepositoryApi):
 
             if hasattr(response, 'data'):
                 raw_data = response.data.read()
-                return raw_data.decode('utf-8')
+                return raw_data.decode('utf-8', errors='replace')
             elif isinstance(response, tuple):
                 raw_data = response[0].read()
-                return raw_data.decode('utf-8')
+                return raw_data.decode('utf-8', errors='replace')
             else:
                 error_msg = f"Unexpected response format received from API: {type(response)}"
                 self.logger.error(error_msg)
@@ -837,12 +912,13 @@ class RepoApi(giteapy.RepositoryApi):
             index=pr_number
         )
 
-    def edit_pull_request(self, owner: str, repo: str, pr_number: int,title : str, body: str):
+    def edit_pull_request(self, owner: str, repo: str, pr_number: int, body: str, title: Optional[str] = None):
         """Edit pull request description"""
         body = {
-            "body": body,
-            "title" : title
+            "body": body
         }
+        if title is not None:
+            body["title"] = title
         return self.repository.repo_edit_pull_request(
             owner=owner,
             repo=repo,
@@ -934,12 +1010,17 @@ class RepoApi(giteapy.RepositoryApi):
                 auth_settings=['AuthorizationHeaderToken']
             )
 
+            # Decode via the shared fallback chain (utf-8, then iso-8859-1/latin-1/
+            # ascii/utf-16) so legitimate non-UTF-8 *text* (e.g. UTF-16) is preserved
+            # rather than dropped, while binary payloads no longer crash the provider.
+            # decode_if_bytes returns "" only if every encoding fails; binary files are
+            # filtered downstream by extension (should_skip_patch).
             if hasattr(response, 'data'):
                 raw_data = response.data.read()
-                return raw_data.decode('utf-8')
+                return decode_if_bytes(raw_data)
             elif isinstance(response, tuple):
                 raw_data = response[0].read()
-                return raw_data.decode('utf-8')
+                return decode_if_bytes(raw_data)
 
             return ""
 

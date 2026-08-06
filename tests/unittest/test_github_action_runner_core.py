@@ -103,3 +103,357 @@ async def test_run_action_invokes_enabled_auto_tools_for_pull_request_event(monk
             settings.set("GITHUB_ACTION_CONFIG", original_github_action_config)
         else:
             settings.unset("GITHUB_ACTION_CONFIG", force=True)
+
+
+@pytest.fixture
+def restore_github_settings():
+    """run_action mutates global GITHUB/GITHUB_ACTION_CONFIG/GITHUB_APP settings; snapshot
+    and restore them so these tests don't leak state into others."""
+    settings = get_settings()
+    had_github = "GITHUB" in settings
+    original_github = copy.deepcopy(settings.get("GITHUB", None))
+    had_cfg = "GITHUB_ACTION_CONFIG" in settings
+    original_cfg = copy.deepcopy(settings.get("GITHUB_ACTION_CONFIG", None))
+    had_app = "GITHUB_APP" in settings
+    original_app = copy.deepcopy(settings.get("GITHUB_APP", None))
+    original_is_auto = getattr(settings.config, "is_auto_command", None)
+    original_final_update = getattr(settings.pr_description, "final_update_message", None)
+    yield
+    if had_github:
+        settings.set("GITHUB", original_github)
+    else:
+        settings.unset("GITHUB", force=True)
+    if had_cfg:
+        settings.set("GITHUB_ACTION_CONFIG", original_cfg)
+    else:
+        settings.unset("GITHUB_ACTION_CONFIG", force=True)
+    if had_app:
+        settings.set("GITHUB_APP", original_app)
+    else:
+        settings.unset("GITHUB_APP", force=True)
+    if original_is_auto is not None:
+        settings.config.is_auto_command = original_is_auto
+    if original_final_update is not None:
+        settings.pr_description.final_update_message = original_final_update
+
+
+def _write_synchronize_event(tmp_path, before_sha="abc", after_sha="def", merge_commit_sha=None, sender_type="User"):
+    payload = {
+        "action": "synchronize",
+        "before": before_sha,
+        "after": after_sha,
+        "sender": {"type": sender_type},
+        "pull_request": {
+            "url": "https://api.github.com/repos/org/repo/pulls/1",
+            "html_url": "https://github.com/org/repo/pull/1",
+        },
+    }
+    if merge_commit_sha is not None:
+        payload["pull_request"]["merge_commit_sha"] = merge_commit_sha
+    event_path = tmp_path / "event.json"
+    event_path.write_text(json.dumps(payload))
+    return event_path
+
+
+def _write_issue_comment_event(tmp_path, sender_type):
+    event_path = tmp_path / "event.json"
+    event_path.write_text(json.dumps({
+        "action": "created",
+        "comment": {"body": "/review", "id": 123},
+        "issue": {
+            "pull_request": {"url": "https://api.github.com/repos/org/repo/pulls/1"},
+            "url": "https://api.github.com/repos/org/repo/issues/1",
+        },
+        "sender": {"type": sender_type},
+    }))
+    return event_path
+
+
+def _patch_issue_comment_deps(monkeypatch, handled):
+    monkeypatch.setattr(github_action_runner, "apply_repo_settings", lambda pr_url: None)
+
+    class FakeProvider:
+        def __init__(self, pr_url=None):
+            self.pr_url = pr_url
+
+        def add_eyes_reaction(self, comment_id, disable_eyes=False):
+            return None
+
+    monkeypatch.setattr(github_action_runner, "get_git_provider", lambda: FakeProvider)
+
+    class FakeAgent:
+        async def handle_request(self, url, body, notify=None):
+            handled.append((url, body))
+
+    monkeypatch.setattr(github_action_runner, "PRAgent", FakeAgent)
+
+
+@pytest.mark.asyncio
+async def test_issue_comment_from_bot_sender_is_skipped(monkeypatch, tmp_path, restore_github_settings):
+    """Regression for #2398: a comment authored by a bot (e.g. pr-agent's own
+    'Preparing review...' message) must not be parsed as a command, which would
+    re-trigger the action in a feedback loop."""
+    handled = []
+    _patch_issue_comment_deps(monkeypatch, handled)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "issue_comment")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_issue_comment_event(tmp_path, "Bot")))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    await github_action_runner.run_action()
+
+    assert handled == []  # bot comment skipped; no command handled
+
+
+@pytest.mark.asyncio
+async def test_issue_comment_calls_inject_artifact_context(monkeypatch, tmp_path, restore_github_settings):
+    """_inject_artifact_context must be called for comment-triggered runs."""
+    handled = []
+    _patch_issue_comment_deps(monkeypatch, handled)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "issue_comment")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_issue_comment_event(tmp_path, "User")))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    inject_calls = []
+    monkeypatch.setattr(github_action_runner, "_inject_artifact_context", lambda: inject_calls.append(1))
+
+    await github_action_runner.run_action()
+
+    assert inject_calls, "_inject_artifact_context was not called for issue_comment event"
+
+
+def _patch_synchronize_deps(monkeypatch, handled, push_commands, handle_push_trigger=True):
+    monkeypatch.setattr(github_action_runner, "apply_repo_settings", lambda pr_url: None)
+    settings = get_settings()
+    monkeypatch.setitem(settings.store["github_app"], "push_commands", list(push_commands))
+    settings.set("github_action_config", {
+        "handle_push_trigger": handle_push_trigger,
+        "push_trigger_ignore_merge_commits": False,
+        "push_trigger_ignore_bot_commits": False,
+    }, merge=False)
+
+    class FakeAgent:
+        async def handle_request(self, url, body, notify=None):
+            handled.append((url, body))
+
+    monkeypatch.setattr(github_action_runner, "PRAgent", FakeAgent)
+
+
+@pytest.mark.asyncio
+async def test_synchronize_event_triggers_push_commands(monkeypatch, tmp_path, restore_github_settings):
+    handled = []
+    _patch_synchronize_deps(monkeypatch, handled, ["/describe", "/improve"])
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_synchronize_event(tmp_path)))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    await github_action_runner.run_action()
+
+    assert handled == [
+        ("https://api.github.com/repos/org/repo/pulls/1", "/describe"),
+        ("https://api.github.com/repos/org/repo/pulls/1", "/improve"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_synchronize_skips_when_push_trigger_disabled(monkeypatch, tmp_path, restore_github_settings):
+    handled = []
+    _patch_synchronize_deps(monkeypatch, handled, ["/describe"], handle_push_trigger=False)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_synchronize_event(tmp_path)))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    await github_action_runner.run_action()
+
+    assert handled == []
+
+
+@pytest.mark.asyncio
+async def test_synchronize_skips_equal_before_after_sha(monkeypatch, tmp_path, restore_github_settings):
+    handled = []
+    _patch_synchronize_deps(monkeypatch, handled, ["/describe"])
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    event_path = _write_synchronize_event(tmp_path, before_sha="same", after_sha="same")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    await github_action_runner.run_action()
+
+    assert handled == []
+
+
+@pytest.mark.asyncio
+async def test_synchronize_event_triggers_push_commands_on_pull_request_target(
+    monkeypatch, tmp_path, restore_github_settings
+):
+    handled = []
+    _patch_synchronize_deps(monkeypatch, handled, ["/describe", "/improve"])
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request_target")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_synchronize_event(tmp_path)))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    await github_action_runner.run_action()
+
+    assert handled == [
+        ("https://api.github.com/repos/org/repo/pulls/1", "/describe"),
+        ("https://api.github.com/repos/org/repo/pulls/1", "/improve"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_synchronize_skips_merge_commit(monkeypatch, tmp_path, restore_github_settings):
+    handled = []
+    _patch_synchronize_deps(monkeypatch, handled, ["/describe"])
+    settings = get_settings()
+    monkeypatch.setitem(settings.store["github_action_config"], "push_trigger_ignore_merge_commits", True)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_synchronize_event(
+        tmp_path, before_sha="abc", after_sha="merge123", merge_commit_sha="merge123"
+    )))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    await github_action_runner.run_action()
+
+    assert handled == []
+
+
+@pytest.mark.asyncio
+async def test_synchronize_skips_bot_commit(monkeypatch, tmp_path, restore_github_settings):
+    handled = []
+    _patch_synchronize_deps(monkeypatch, handled, ["/describe"])
+    settings = get_settings()
+    monkeypatch.setitem(settings.store["github_action_config"], "push_trigger_ignore_bot_commits", True)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_synchronize_event(
+        tmp_path, sender_type="Bot"
+    )))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    await github_action_runner.run_action()
+
+    assert handled == []
+
+
+@pytest.mark.asyncio
+async def test_synchronize_uses_github_action_config_push_commands(monkeypatch, tmp_path, restore_github_settings):
+    handled = []
+    _patch_synchronize_deps(monkeypatch, handled, ["/review"], handle_push_trigger=True)
+    settings = get_settings()
+    monkeypatch.setitem(settings.store["github_action_config"], "push_commands", ["/describe"])
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_synchronize_event(tmp_path)))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    await github_action_runner.run_action()
+
+    assert handled == [
+        ("https://api.github.com/repos/org/repo/pulls/1", "/describe"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_issue_comment_from_user_is_processed(monkeypatch, tmp_path, restore_github_settings):
+    """The bot guard must not over-skip: a human comment is still handled."""
+    handled = []
+    _patch_issue_comment_deps(monkeypatch, handled)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "issue_comment")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_issue_comment_event(tmp_path, "User")))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    await github_action_runner.run_action()
+
+    assert handled == [("https://api.github.com/repos/org/repo/pulls/1", "/review")]
+
+
+def _write_workflow_run_event(tmp_path, originating_event="pull_request", pull_requests=None):
+    if pull_requests is None:
+        pull_requests = [{"url": "https://api.github.com/repos/org/repo/pulls/42", "number": 42}]
+    event_path = tmp_path / "event.json"
+    event_path.write_text(json.dumps({
+        "action": "completed",
+        "workflow_run": {
+            "id": 9999,
+            "event": originating_event,
+            "conclusion": "success",
+            "pull_requests": pull_requests,
+        },
+    }))
+    return event_path
+
+
+def _patch_workflow_run_deps(monkeypatch, runs):
+    monkeypatch.setattr(github_action_runner, "apply_repo_settings", lambda pr_url: None)
+
+    class FakeTool:
+        name = "base"
+
+        def __init__(self, pr_url):
+            self.pr_url = pr_url
+
+        async def run(self):
+            runs.append((self.name, self.pr_url))
+
+    class FakeDescription(FakeTool):
+        name = "describe"
+
+    class FakeReviewer(FakeTool):
+        name = "review"
+
+    class FakeSuggestions(FakeTool):
+        name = "improve"
+
+    monkeypatch.setattr(github_action_runner, "PRDescription", FakeDescription)
+    monkeypatch.setattr(github_action_runner, "PRReviewer", FakeReviewer)
+    monkeypatch.setattr(github_action_runner, "PRCodeSuggestions", FakeSuggestions)
+
+
+@pytest.mark.asyncio
+async def test_workflow_run_runs_auto_tools(monkeypatch, tmp_path, restore_github_settings):
+    runs = []
+    _patch_workflow_run_deps(monkeypatch, runs)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_run")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_workflow_run_event(tmp_path)))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    def fake_get_setting_or_env(key, default=None):
+        values = {
+            "GITHUB_ACTION.AUTO_DESCRIBE": True,
+            "GITHUB_ACTION.AUTO_REVIEW": True,
+            "GITHUB_ACTION.AUTO_IMPROVE": False,
+            "GITHUB_ACTION_CONFIG.ENABLE_OUTPUT": True,
+        }
+        return values.get(key, default)
+
+    monkeypatch.setattr(github_action_runner, "get_setting_or_env", fake_get_setting_or_env)
+
+    await github_action_runner.run_action()
+
+    assert runs == [
+        ("describe", "https://api.github.com/repos/org/repo/pulls/42"),
+        ("review", "https://api.github.com/repos/org/repo/pulls/42"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_workflow_run_skips_non_pull_request_origin(monkeypatch, tmp_path, restore_github_settings):
+    runs = []
+    _patch_workflow_run_deps(monkeypatch, runs)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_run")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_workflow_run_event(tmp_path, originating_event="push")))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    await github_action_runner.run_action()
+
+    assert runs == []
+
+
+@pytest.mark.asyncio
+async def test_workflow_run_skips_when_pull_requests_empty(monkeypatch, tmp_path, restore_github_settings):
+    runs = []
+    _patch_workflow_run_deps(monkeypatch, runs)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_run")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_workflow_run_event(tmp_path, pull_requests=[])))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    await github_action_runner.run_action()
+
+    assert runs == []

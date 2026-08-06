@@ -60,12 +60,30 @@ Constructing comments:
 - Keep each issue description concise. Write so the reader grasps the point immediately without close reading.
 - Use a matter-of-fact, helpful tone. Avoid accusatory language, excessive praise, or filler phrases like 'Great job', 'Thanks for'.
 
+{%- if skills_context %}
+
+
+Organizational standards and review skills (apply the ones relevant to this PR):
+======
+{{ skills_context }}
+======
+{%- endif %}
+
 {%- if extra_instructions %}
 
 
 Extra instructions from the user:
 ======
 {{ extra_instructions }}
+======
+{% endif %}
+
+{%- if repo_context %}
+
+
+Repository context:
+======
+{{ repo_context }}
 ======
 {% endif %}
 
@@ -217,7 +235,7 @@ Ticket URL: '{{ ticket.ticket_url }}'
 
 Ticket Title: '{{ ticket.title }}'
 
-{%- if ticket.labels %}
+{%- if ticket.labels is defined and ticket.labels %}
 
 Ticket Labels: {{ ticket.labels }}
 
