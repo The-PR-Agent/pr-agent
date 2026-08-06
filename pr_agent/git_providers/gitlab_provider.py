@@ -59,7 +59,7 @@ def _parse_gitlab_iso_datetime(value) -> Optional[datetime]:
         return None
 
 
-class _GitlabIncrementalCommit:
+class _GitLabIncrementalCommit:
     """Adapter exposing a GitLab ProjectCommit with the attribute shape PyGithub Commit objects use.
 
     Shared incremental-review code reads `.sha` and `.commit.author.date`; we mimic that surface
@@ -78,7 +78,7 @@ class _GitlabIncrementalCommit:
         self.commit = SimpleNamespace(author=SimpleNamespace(date=date))
 
 
-class _GitlabIncrementalNote:
+class _GitLabIncrementalNote:
     """Adapter exposing a GitLab note (issue comment) with attributes the reviewer expects.
 
     The reviewer reads `.created_at` (datetime) and `.html_url` from `previous_review`;
@@ -550,11 +550,14 @@ class GitLabProvider(GitProvider):
         for diff in diffs:
             # `repository_compare` normally yields dict entries, but defend against object-shaped
             # responses too — otherwise a stricter library or stubbed client silently empties the
-            # incremental set and we degrade to "no new files".
-            if isinstance(diff, dict):
-                new_path = diff.get('new_path')
-            else:
-                new_path = getattr(diff, 'new_path', None)
+            # incremental set and we degrade to "no new files". Downstream consumers
+            # (`filter_ignored`, `get_diff_files`) subscript entries as dicts, so normalize
+            # object-shaped entries to the standard compare-diff dict here.
+            if not isinstance(diff, dict):
+                diff = {key: getattr(diff, key, None)
+                        for key in ('new_path', 'old_path', 'diff',
+                                    'new_file', 'deleted_file', 'renamed_file')}
+            new_path = diff.get('new_path')
             if not new_path:
                 continue
             if mr_change_paths is not None and new_path not in mr_change_paths:
@@ -571,7 +574,7 @@ class GitLabProvider(GitProvider):
             return []
         first_new_commit_index = None
         for index in range(len(self.mr_commits) - 1, -1, -1):
-            adapter = _GitlabIncrementalCommit(self.mr_commits[index])
+            adapter = _GitLabIncrementalCommit(self.mr_commits[index])
             commit_time = adapter.commit.author.date
             if commit_time is None:
                 # A commit without a parseable timestamp cannot be placed on the timeline;
@@ -603,7 +606,7 @@ class GitLabProvider(GitProvider):
         """Return the most recent MR note whose body starts with any of `prefixes`.
 
         Used by incremental flows (`/review -i`, `/improve -i`) to find the timestamp
-        we anchor the commit timeline on. Returns a `_GitlabIncrementalNote` adapter
+        we anchor the commit timeline on. Returns a `_GitLabIncrementalNote` adapter
         with `.created_at` parsed to a naive UTC datetime (possibly `None` when the
         GitLab payload had an unexpected shape), or `None` if no match.
 
@@ -613,6 +616,11 @@ class GitLabProvider(GitProvider):
         of an older parseable one, leading to commits being re-reviewed. If the chosen
         anchor's timestamp doesn't parse, `_get_incremental_commits` falls back to a
         full run via the existing `last_seen_commit is None` branch.
+
+        Notes authored by other users are skipped when the authenticated (bot) user is
+        known: a human comment that merely starts with `**Suggestion:**` must not shift
+        the anchor. When authorship can't be established (e.g. job-token auth), we keep
+        the prefix-only behaviour rather than disabling incremental runs.
         """
         if not prefixes:
             return None
@@ -625,13 +633,39 @@ class GitLabProvider(GitProvider):
                 get_logger().error(f"Failed to list MR notes for incremental review: {e}")
                 return None
         mr_web_url = getattr(self.mr, 'web_url', None)
+        own_user_id = self._get_own_user_id()
         for note in self._incremental_notes_cache:
             body = getattr(note, 'body', None)
             if not isinstance(body, str):
                 continue
-            if any(body.startswith(prefix) for prefix in prefixes):
-                return _GitlabIncrementalNote(note, mr_web_url=mr_web_url)
+            if not any(body.startswith(prefix) for prefix in prefixes):
+                continue
+            if own_user_id is not None:
+                author = getattr(note, 'author', None)
+                author_id = author.get('id') if isinstance(author, dict) else None
+                if author_id is not None and author_id != own_user_id:
+                    get_logger().debug(
+                        f"Skipping anchor-shaped note {getattr(note, 'id', None)} from another "
+                        f"user (author {author_id}, bot {own_user_id})"
+                    )
+                    continue
+            return _GitLabIncrementalNote(note, mr_web_url=mr_web_url)
         return None
+
+    def _get_own_user_id(self) -> Optional[int]:
+        """ID of the authenticated user (the one posting pr-agent notes), or None when
+        it cannot be determined. Cached per provider instance."""
+        if not hasattr(self, '_own_user_id'):
+            try:
+                self.gl.auth()
+                self._own_user_id = getattr(self.gl.user, 'id', None)
+            except Exception as e:
+                get_logger().warning(
+                    f"Could not resolve the authenticated GitLab user; "
+                    f"incremental anchor notes will not be filtered by author: {e}"
+                )
+                self._own_user_id = None
+        return self._own_user_id
 
     def get_pr_file_content(self, file_path: str, branch: str) -> str:
         try:

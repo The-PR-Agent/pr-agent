@@ -9,8 +9,8 @@ from gitlab.v4.objects import ProjectFile, ProjectMergeRequest, ProjectMergeRequ
 from pr_agent.git_providers.git_provider import IncrementalPR
 from pr_agent.git_providers.gitlab_provider import (
     GitLabProvider,
-    _GitlabIncrementalCommit,
-    _GitlabIncrementalNote,
+    _GitLabIncrementalCommit,
+    _GitLabIncrementalNote,
     _parse_gitlab_iso_datetime,
 )
 
@@ -533,7 +533,7 @@ class TestGitLabIncrementalHelpers:
         gl_commit.committed_date = "2024-05-01T10:00:00.000Z"
         gl_commit.authored_date = "2024-04-30T10:00:00.000Z"
 
-        adapter = _GitlabIncrementalCommit(gl_commit)
+        adapter = _GitLabIncrementalCommit(gl_commit)
 
         assert adapter.sha == "abc123"
         # committed_date takes precedence over authored_date
@@ -544,7 +544,7 @@ class TestGitLabIncrementalHelpers:
         gl_commit.id = "abc"
         gl_commit.authored_date = "2024-04-30T10:00:00Z"
 
-        adapter = _GitlabIncrementalCommit(gl_commit)
+        adapter = _GitLabIncrementalCommit(gl_commit)
 
         assert adapter.commit.author.date == datetime(2024, 4, 30, 10, 0, 0)
 
@@ -554,7 +554,7 @@ class TestGitLabIncrementalHelpers:
         note.body = "## PR Reviewer Guide 🔍\n..."
         note.created_at = "2024-05-01T10:00:00Z"
 
-        adapter = _GitlabIncrementalNote(note, mr_web_url="https://gitlab.com/x/y/-/merge_requests/1")
+        adapter = _GitLabIncrementalNote(note, mr_web_url="https://gitlab.com/x/y/-/merge_requests/1")
 
         assert adapter.id == 42
         assert adapter.html_url == "https://gitlab.com/x/y/-/merge_requests/1#note_42"
@@ -569,7 +569,7 @@ class TestGitLabIncrementalHelpers:
         note.created_at = "2024-05-01T10:00:00Z"
         note.updated_at = "2024-05-03T12:00:00Z"
 
-        adapter = _GitlabIncrementalNote(note)
+        adapter = _GitLabIncrementalNote(note)
 
         assert adapter.created_at == datetime(2024, 5, 1, 10, 0, 0)
         assert adapter.updated_at == datetime(2024, 5, 3, 12, 0, 0)
@@ -583,11 +583,11 @@ class TestGitLabIncrementalHelpers:
         note.created_at = "2024-05-01T10:00:00Z"
         note.updated_at = None
 
-        adapter = _GitlabIncrementalNote(note)
+        adapter = _GitLabIncrementalNote(note)
         assert adapter.anchor_time == datetime(2024, 5, 1, 10, 0, 0)
 
         note.created_at = None
-        assert _GitlabIncrementalNote(note).anchor_time is None
+        assert _GitLabIncrementalNote(note).anchor_time is None
 
 
 class TestGitLabIncrementalReview:
@@ -619,12 +619,13 @@ class TestGitLabIncrementalReview:
             return provider
 
     @staticmethod
-    def _make_note(note_id, body, created_at, updated_at=None):
+    def _make_note(note_id, body, created_at, updated_at=None, author=None):
         n = MagicMock()
         n.id = note_id
         n.body = body
         n.created_at = created_at
         n.updated_at = updated_at
+        n.author = author
         return n
 
     @staticmethod
@@ -880,6 +881,83 @@ class TestGitLabIncrementalReview:
         assert gitlab_provider.incremental.last_seen_commit_sha == "c0"
         mock_project.repository_compare.assert_called_once_with("c0", "head")
 
+    def test_object_shaped_compare_diffs_are_normalized_to_dicts(self, gitlab_provider, mock_project):
+        # repository_compare may yield object-shaped entries; downstream consumers
+        # (filter_ignored, get_diff_files) subscript entries as dicts, so the collector
+        # must normalize objects instead of storing them as-is.
+        from types import SimpleNamespace
+        gitlab_provider.mr.notes.list.return_value = [
+            self._make_note(7, "## PR Reviewer Guide 🔍\nbody", "2024-05-01T10:00:00Z"),
+        ]
+        gitlab_provider.mr.commits.return_value = [
+            self._make_commit("c1", "2024-05-01T11:00:00Z"),
+            self._make_commit("c0", "2024-05-01T09:00:00Z"),
+        ]
+        obj_diff = SimpleNamespace(new_path="a.py", old_path="a.py", diff="@@ ... @@",
+                                   new_file=False, deleted_file=False, renamed_file=False)
+        mock_project.repository_compare.return_value = SimpleNamespace(diffs=[obj_diff])
+        gitlab_provider.mr.changes.return_value = {"changes": [{"new_path": "a.py"}]}
+
+        gitlab_provider.get_incremental_commits(IncrementalPR(True))
+
+        stored = gitlab_provider.unreviewed_files_set["a.py"]
+        assert isinstance(stored, dict)
+        assert stored["new_path"] == "a.py"
+        assert stored["diff"] == "@@ ... @@"
+        assert stored["deleted_file"] is False
+
+    def test_anchor_note_from_another_user_is_skipped(self, gitlab_provider, mock_project):
+        # A human comment that merely starts with "**Suggestion:**" must not shift the
+        # anchor when the bot's own user id is known.
+        gitlab_provider.gl.user.id = 42
+        gitlab_provider.mr.notes.list.return_value = [
+            # Newest: user-authored note that looks like a suggestion anchor.
+            self._make_note(9, "**Suggestion:** try this instead", "2026-05-15T12:00:00Z",
+                            author={"id": 999}),
+            # The real bot-authored anchor, older.
+            self._make_note(8, "## PR Code Suggestions ✨\ntable", "2026-05-15T10:00:00Z",
+                            author={"id": 42}),
+        ]
+        gitlab_provider.mr.commits.return_value = [
+            self._make_commit("c2", "2026-05-15T11:00:00Z"),  # between bot anchor and user note
+            self._make_commit("c0", "2026-05-15T09:30:00Z"),
+        ]
+        mock_project.repository_compare.return_value = {
+            "diffs": [{"new_path": "a.py", "old_path": "a.py", "diff": "@@ ... @@",
+                       "new_file": False, "deleted_file": False, "renamed_file": False}],
+        }
+        gitlab_provider.mr.changes.return_value = {"changes": [{"new_path": "a.py"}]}
+
+        gitlab_provider.get_incremental_commits(IncrementalPR(True), kind="suggestions")
+
+        # Anchored on the bot note (10:00), so c2 (11:00) is in scope — the forged
+        # 12:00 note would have wrongly excluded it.
+        assert gitlab_provider.incremental.is_incremental is True
+        assert gitlab_provider.incremental.first_new_commit_sha == "c2"
+
+    def test_anchor_author_check_fails_open_when_user_unresolvable(self, gitlab_provider, mock_project):
+        # Job-token auth can't resolve the current user; anchoring must stay prefix-only
+        # rather than breaking incremental runs.
+        gitlab_provider.gl.auth.side_effect = Exception("401 insufficient scope")
+        gitlab_provider.mr.notes.list.return_value = [
+            self._make_note(8, "## PR Code Suggestions ✨\ntable", "2026-05-15T10:00:00Z",
+                            author={"id": 999}),
+        ]
+        gitlab_provider.mr.commits.return_value = [
+            self._make_commit("c2", "2026-05-15T11:00:00Z"),
+            self._make_commit("c0", "2026-05-15T09:30:00Z"),
+        ]
+        mock_project.repository_compare.return_value = {
+            "diffs": [{"new_path": "a.py", "old_path": "a.py", "diff": "@@ ... @@",
+                       "new_file": False, "deleted_file": False, "renamed_file": False}],
+        }
+        gitlab_provider.mr.changes.return_value = {"changes": [{"new_path": "a.py"}]}
+
+        gitlab_provider.get_incremental_commits(IncrementalPR(True), kind="suggestions")
+
+        assert gitlab_provider.incremental.is_incremental is True
+        assert gitlab_provider.incremental.first_new_commit_sha == "c2"
+
     def test_supports_incremental_kind(self, gitlab_provider):
         assert gitlab_provider.supports_incremental_kind("review") is True
         assert gitlab_provider.supports_incremental_kind("suggestions") is True
@@ -964,7 +1042,7 @@ class TestGitLabIncrementalReview:
                           "new_file": False, "deleted_file": False, "renamed_file": False}
         }
         gitlab_provider._incremental_head_sha = "head"
-        gitlab_provider.incremental.last_seen_commit = _GitlabIncrementalCommit(
+        gitlab_provider.incremental.last_seen_commit = _GitLabIncrementalCommit(
             self._make_commit("c0", "2024-05-01T09:00:00Z")
         )
 
