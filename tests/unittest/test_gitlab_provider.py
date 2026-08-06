@@ -504,3 +504,33 @@ class TestGitLabGlobalSettings:
             provider._get_global_repo_settings()
         # Only one lookup for the settings project despite two calls (cached).
         assert provider.gl.projects.get.call_count == 1
+
+
+class TestGitLabCapabilities:
+    def _provider(self):
+        provider = GitLabProvider.__new__(GitLabProvider)
+        provider.mr = MagicMock()
+        return provider
+
+    def test_get_issue_comments_is_reported_as_supported(self):
+        """The capability flag used to contradict the working implementation below it,
+        which was the only thing blocking ``/answer`` on GitLab."""
+        assert self._provider().is_supported("get_issue_comments") is True
+
+    def test_get_issue_comments_returns_notes_oldest_first(self):
+        provider = self._provider()
+        # GitLab's notes API returns newest-first; the provider flips it to match GitHub.
+        provider.mr.notes.list.return_value = ["newest", "middle", "oldest"]
+
+        assert provider.get_issue_comments() == ["oldest", "middle", "newest"]
+
+    @pytest.mark.parametrize("capability", [
+        "create_inline_comment",
+        "publish_inline_comments",
+        "publish_file_comments",
+    ])
+    def test_unimplemented_capabilities_stay_unsupported(self, capability):
+        assert self._provider().is_supported(capability) is False
+
+    def test_gfm_markdown_is_supported(self):
+        assert self._provider().is_supported("gfm_markdown") is True

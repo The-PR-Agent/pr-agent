@@ -291,7 +291,7 @@ class GitLabProvider(GitProvider):
         return out
 
     def is_supported(self, capability: str) -> bool:
-        if capability in ['get_issue_comments', 'create_inline_comment', 'publish_inline_comments',
+        if capability in ['create_inline_comment', 'publish_inline_comments',
             'publish_file_comments']: # gfm_markdown is supported in gitlab !
             return False
         if capability == "push_code" and get_settings().config.restricted_mode:

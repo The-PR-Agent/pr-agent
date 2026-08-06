@@ -78,11 +78,11 @@ def test_set_review_labels_replaces_stale_review_labels_and_keeps_user_labels():
 
 def test_get_user_answers_collects_question_and_answer_from_issue_comments():
     git_provider = MagicMock()
-    git_provider.get_issue_comments.return_value = SimpleNamespace(reversed=[
+    git_provider.get_issue_comments.return_value = [
         SimpleNamespace(body="Unrelated"),
         SimpleNamespace(body="Questions to better understand the PR:\n- Why?"),
         SimpleNamespace(body="/answer Because it fixes production."),
-    ])
+    ]
     reviewer = _make_reviewer(git_provider)
     reviewer.is_answer = True
 
@@ -109,10 +109,10 @@ def test_init_maps_user_question_and_answer_to_correct_prompt_vars(monkeypatch):
     provider.is_supported.return_value = True
     provider.get_languages.return_value = {}
     provider.get_files.return_value = []
-    provider.get_issue_comments.return_value = SimpleNamespace(reversed=[
+    provider.get_issue_comments.return_value = [
         SimpleNamespace(body="Questions to better understand the PR:\n- Why?"),
         SimpleNamespace(body="/answer Because it fixes production."),
-    ])
+    ]
     provider.get_pr_description.return_value = ("desc", [])
 
     monkeypatch.setattr(pr_reviewer_module, "get_git_provider_with_context", lambda pr_url: provider)
@@ -127,3 +127,61 @@ def test_init_maps_user_question_and_answer_to_correct_prompt_vars(monkeypatch):
 
     assert reviewer.vars["question_str"] == "Questions to better understand the PR:\n- Why?"
     assert reviewer.vars["answer_str"] == "/answer Because it fixes production."
+
+
+def _build_answer_mode_reviewer(monkeypatch, issue_comments):
+    """Drive the real ``PRReviewer.__init__`` in answer mode over ``issue_comments``."""
+    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+
+    provider = MagicMock()
+    provider.is_supported.return_value = True
+    provider.get_languages.return_value = {}
+    provider.get_files.return_value = []
+    provider.get_issue_comments.return_value = issue_comments
+    provider.get_pr_description.return_value = ("desc", [])
+
+    monkeypatch.setattr(pr_reviewer_module, "get_git_provider_with_context", lambda pr_url: provider)
+    monkeypatch.setattr(pr_reviewer_module, "get_main_pr_language", lambda languages, files: "Python")
+    monkeypatch.setattr(pr_reviewer_module, "TokenHandler", MagicMock())
+
+    return PRReviewer(
+        "https://example/pr/1",
+        is_answer=True,
+        ai_handler=lambda: SimpleNamespace(main_pr_language=None),
+    )
+
+
+def test_answer_mode_reads_comments_from_a_non_list_iterable(monkeypatch):
+    """GitHub hands back a PyGithub ``PaginatedList``, GitLab a plain list.
+
+    Answer mode used to reach for the PyGithub-only ``.reversed`` property, which meant
+    it could only ever consume the GitHub shape. Any lazily-paginated iterable must work.
+    """
+
+    class _Paginated:
+        def __init__(self, items):
+            self._items = items
+
+        def __iter__(self):
+            return iter(self._items)
+
+    reviewer = _build_answer_mode_reviewer(monkeypatch, _Paginated([
+        SimpleNamespace(body="Questions to better understand the PR:\n- Why?"),
+        SimpleNamespace(body="/answer Because it fixes production."),
+    ]))
+
+    assert reviewer.vars["question_str"] == "Questions to better understand the PR:\n- Why?"
+    assert reviewer.vars["answer_str"] == "/answer Because it fixes production."
+
+
+def test_answer_mode_prefers_the_newest_question_and_answer(monkeypatch):
+    """Comments arrive oldest-first, so the walk must run newest-first to pick the latest exchange."""
+    reviewer = _build_answer_mode_reviewer(monkeypatch, [
+        SimpleNamespace(body="Questions to better understand the PR:\n- Stale question?"),
+        SimpleNamespace(body="/answer Stale answer."),
+        SimpleNamespace(body="Questions to better understand the PR:\n- Current question?"),
+        SimpleNamespace(body="/answer Current answer."),
+    ])
+
+    assert reviewer.vars["question_str"] == "Questions to better understand the PR:\n- Current question?"
+    assert reviewer.vars["answer_str"] == "/answer Current answer."
