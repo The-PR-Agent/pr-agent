@@ -3,6 +3,7 @@ import contextlib
 import json
 import os
 
+import httpx
 import litellm
 import openai
 import requests
@@ -55,7 +56,19 @@ class LiteLLMAIHandler(BaseAiHandler):
             openai.api_key = get_settings().openai.key
             litellm.openai_key = get_settings().openai.key
         elif 'OPENAI_API_KEY' not in os.environ:
-            litellm.api_key = DUMMY_LITELLM_API_KEY
+            # These are process-wide globals and __init__ runs per request, so drop any
+            # key a previous request's provider branch left behind — chat_completion()
+            # forwards a truthy litellm.api_key, which would authenticate this request
+            # with (and leak) the earlier one's credential. The provider branches below
+            # repopulate it for the current request.
+            litellm.api_key = None
+            # Keyless OpenAI-compatible endpoints (vLLM, LM Studio, ...) still need *some*
+            # key or the OpenAI SDK raises "The api_key client option must be set".
+            # The placeholder must live in litellm.openai_key, which LiteLLM only consults
+            # on the OpenAI-compatible path: the global litellm.api_key is checked ahead of
+            # provider env vars (OPENROUTER_API_KEY, AZURE_API_KEY, ...) in LiteLLM's
+            # resolution chain, so a placeholder there silently shadows them.
+            litellm.openai_key = DUMMY_LITELLM_API_KEY
         if os.environ.get("AWS_USE_IMDS", "").strip().lower() in ("1", "true", "yes"):
             import boto3
             import botocore.exceptions
@@ -414,6 +427,50 @@ class LiteLLMAIHandler(BaseAiHandler):
 
         return kwargs
 
+    def _get_request_user_field(self) -> str:
+        """
+        Build the value for the OpenAI-compatible "user" request field from the current
+        logging context: a compact JSON string carrying the command and the PR URL,
+        e.g. {"command":"improve","pr_url":"https://..."}. Returns an empty string when
+        no context is available.
+        """
+        # The probe record is matched by identity, so a concurrent request adding
+        # its own sink at the same time cannot capture this request's context nor
+        # leak its own into it.
+        probe = object()
+        captured_extra = []
+
+        def capture_logs(message):
+            extra = message.record.get("extra") or {}
+            if extra.get("user_field_probe") is not probe:
+                return
+            log_entry = {}
+            if extra.get("command") is not None:
+                log_entry.update({"command": extra["command"]})
+            if extra.get("pr_url") is not None:
+                log_entry.update({"pr_url": extra["pr_url"]})
+            captured_extra.append(log_entry)
+
+        handler_id = get_logger().add(capture_logs)
+        try:
+            get_logger().debug("Capturing the request context for the user field",
+                               user_field_probe=probe)
+        finally:
+            get_logger().remove(handler_id)
+
+        context = captured_extra[0] if len(captured_extra) > 0 else {}
+        if not context:
+            return ""
+        # Cap the individual values before serialization, so the result stays
+        # valid JSON: slicing the serialized string could cut through closing
+        # quotes and braces. 30 chars cover every tool command; 200 chars of
+        # pr_url keep the total under 256 with the JSON overhead.
+        for key, max_len in (("command", 30), ("pr_url", 200)):
+            value = context.get(key)
+            if isinstance(value, str) and len(value) > max_len:
+                context[key] = value[:max_len]
+        return json.dumps(context, separators=(",", ":"))
+
     @property
     def deployment_id(self):
         """
@@ -424,6 +481,7 @@ class LiteLLMAIHandler(BaseAiHandler):
     @retry(
         retry=retry_if_exception_type(openai.APIError) & retry_if_not_exception_type(openai.RateLimitError),
         stop=stop_after_attempt(MODEL_RETRIES),
+        reraise=True,  # surface the provider's error; RetryError hides the reason
     )
     async def chat_completion(self, model: str, system: str, user: str, temperature: float = 0.2, img_path: str = None):
         # Serialize env-var mutation + Bedrock call for IMDS mode to prevent concurrent
@@ -446,7 +504,12 @@ class LiteLLMAIHandler(BaseAiHandler):
                 # a multi-provider config) would otherwise hide the 'databricks/' prefix and bypass
                 # the guards that keep Databricks on its own DATABRICKS_API_KEY/DATABRICKS_API_BASE.
                 is_databricks = model.startswith("databricks/")
-                if self.azure and not is_databricks:
+                # OpenRouter models keep their "openrouter/" prefix: __init__ already
+                # routed them to the OpenRouter api_key/api_base, and rewriting to
+                # "azure/openrouter/..." would both misroute the request and skip the
+                # OpenRouter controls block below (guarded by the same prefix).
+                is_openrouter = isinstance(model, str) and model.startswith("openrouter/")
+                if self.azure and not is_databricks and not is_openrouter:
                     model = 'azure/' + model
                 if 'claude' in model and not system:
                     system = "No system prompt provided"
@@ -545,8 +608,12 @@ class LiteLLMAIHandler(BaseAiHandler):
                     if 'temperature' in kwargs:
                         del kwargs['temperature']
 
-                # Add reasoning_effort if model supports it
-                if model in self.support_reasoning_models:
+                # Add reasoning_effort if model supports it. Match the bare model
+                # id as well as any provider-prefixed form (e.g.
+                # "openrouter/google/gemini-2.5-pro", "gemini/gemini-2.5-pro"), so a
+                # configured reasoning_effort is not silently dropped for models the
+                # user references with a provider prefix.
+                if any(model == m or model.endswith("/" + m) for m in self.support_reasoning_models):
                     config_effort = get_settings().config.reasoning_effort
                     try:
                         ReasoningEffort(config_effort)
@@ -592,11 +659,106 @@ class LiteLLMAIHandler(BaseAiHandler):
                 # Support for custom OpenAI body fields (e.g., Flex Processing)
                 kwargs = _process_litellm_extra_body(kwargs)
 
+                # Optional provider-side request attribution: when config.add_user_to_requests
+                # is enabled, send the current command and PR URL in the OpenAI-compatible
+                # "user" field, so provider logs and usage exports can be attributed to a
+                # specific PR without timestamp correlation (OpenRouter shows it as
+                # "external_user" and includes it in the activity export). Disabled by
+                # default: it shares request-attribution data with the model provider.
+                if get_settings().config.get("add_user_to_requests", False):
+                    request_user = self._get_request_user_field()
+                    if request_user:
+                        try:
+                            supported_params = litellm.get_supported_openai_params(model=model) or []
+                        except Exception:
+                            supported_params = []
+                        if "user" in supported_params:
+                            kwargs["user"] = request_user
+                        elif isinstance(model, str) and model.startswith("openrouter/"):
+                            # LiteLLM's OpenRouter transformation does not forward the
+                            # standard "user" parameter; extra_body reaches the
+                            # OpenAI-compatible request body verbatim.
+                            user_extra_body = kwargs.get("extra_body") or {}
+                            user_extra_body["user"] = request_user
+                            kwargs["extra_body"] = user_extra_body
+                        else:
+                            # Providers whose parameter mapping does not accept "user"
+                            # (e.g. gemini, deepseek) would reject the request when
+                            # litellm.drop_params is off: skip the field instead of
+                            # breaking the call.
+                            get_logger().debug(
+                                f"add_user_to_requests: user field unsupported for {model}, skipped")
+
                 # Support for Bedrock custom inference profile via model_id
                 model_id = get_settings().get("litellm.model_id")
                 if model_id and 'bedrock/' in model:
                     kwargs["model_id"] = model_id
                     get_logger().info(f"Using Bedrock custom inference profile: {model_id}")
+
+                # OpenRouter provider routing, reasoning control and output cap.
+                # Applied only to "openrouter/*" models. Every key defaults to unset in
+                # the [openrouter] section of configuration.toml, so this block is a
+                # no-op unless explicitly configured, and never affects other providers.
+                if isinstance(model, str) and model.startswith("openrouter/"):
+                    openrouter_settings = get_settings().get("openrouter", {})
+                    extra_body = kwargs.get("extra_body") or {}
+
+                    # Normalize operator-controlled config: Dynaconf/env overrides can
+                    # arrive as strings (AUTO_CAST_FOR_DYNACONF is disabled), so coerce
+                    # defensively instead of trusting the declared types.
+                    def _as_list(value):
+                        if isinstance(value, (list, tuple)):
+                            return [str(v).strip() for v in value if str(v).strip()]
+                        if isinstance(value, str):
+                            return [v.strip() for v in value.split(",") if v.strip()]
+                        return []
+
+                    def _as_bool(value, default=True):
+                        if isinstance(value, bool):
+                            return value
+                        if isinstance(value, str):
+                            return value.strip().lower() in ("1", "true", "yes", "on")
+                        return default
+
+                    def _as_int(value):
+                        try:
+                            return int(value)
+                        except (TypeError, ValueError):
+                            return 0
+
+                    provider_only = _as_list(openrouter_settings.get("provider_only", []))
+                    provider_order = _as_list(openrouter_settings.get("provider_order", []))
+                    if provider_only:
+                        extra_body.setdefault("provider", {})["only"] = provider_only
+                    elif provider_order:
+                        provider = extra_body.setdefault("provider", {})
+                        provider["order"] = provider_order
+                        provider["allow_fallbacks"] = _as_bool(openrouter_settings.get("allow_fallbacks", True))
+
+                    reasoning = {}
+                    reasoning_effort = str(openrouter_settings.get("reasoning_effort", "") or "").strip().lower()
+                    if reasoning_effort == "none":
+                        reasoning["enabled"] = False
+                    elif reasoning_effort in ("low", "medium", "high"):
+                        reasoning["effort"] = reasoning_effort
+                    elif reasoning_effort:
+                        get_logger().warning(
+                            f"Ignoring invalid openrouter.reasoning_effort '{reasoning_effort}'. "
+                            "Valid values: none, low, medium, high."
+                        )
+                    reasoning_max_tokens = _as_int(openrouter_settings.get("reasoning_max_tokens", 0))
+                    if reasoning_max_tokens > 0 and reasoning.get("enabled") is not False:
+                        reasoning["max_tokens"] = reasoning_max_tokens
+                    if reasoning:
+                        extra_body["reasoning"] = reasoning
+
+                    if extra_body:
+                        kwargs["extra_body"] = extra_body
+
+                    max_tokens = _as_int(openrouter_settings.get("max_tokens", 0))
+                    if max_tokens > 0:
+                        existing = _as_int(kwargs.get("max_tokens", 0))
+                        kwargs["max_tokens"] = min(existing, max_tokens) if existing > 0 else max_tokens
 
                 get_logger().debug("Prompts", artifact={"system": system, "user": user})
 
@@ -631,7 +793,11 @@ class LiteLLMAIHandler(BaseAiHandler):
                     raise
             except Exception as e:
                 get_logger().warning(f"Unknown error during LLM inference: {e}")
-                raise openai.APIError from e
+                raise openai.APIError(
+                    str(e),
+                    request=httpx.Request("POST", model),
+                    body=None,
+                ) from e
 
             get_logger().debug(f"\nAI response:\n{resp}")
 
@@ -661,7 +827,19 @@ class LiteLLMAIHandler(BaseAiHandler):
         else:
             response = await acompletion(**kwargs)
             if response is None or len(response["choices"]) == 0:
-                raise openai.APIError
-            return (response["choices"][0]['message']['content'],
-                    response["choices"][0]["finish_reason"],
-                    response)
+                raise openai.APIError(
+                    f"No choices in model response from {model}",
+                    request=httpx.Request("POST", model),
+                    body=None,
+                )
+            content = response["choices"][0]['message']['content']
+            finish_reason = response["choices"][0]["finish_reason"]
+            if not content:
+                get_logger().warning(
+                    f"Empty content in model response, finish_reason: {finish_reason}")
+                raise openai.APIError(
+                    f"Empty content in model response (finish_reason: {finish_reason})",
+                    request=httpx.Request("POST", model),
+                    body=None,
+                )
+            return content, finish_reason, response

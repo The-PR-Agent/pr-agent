@@ -77,8 +77,11 @@ git clone https://github.com/the-pr-agent/pr-agent.git
 6. Build a Docker image for the app and optionally push it to a Docker repository. We'll use Dockerhub as an example:
 
 ```bash
-docker build . -t gitlab_pr_agent --target gitlab_webhook -f docker/Dockerfile
-docker push pragent/pr-agent:gitlab_webhook  # Push to your Docker repository
+docker build . -t pr-agent:gitlab_webhook --target gitlab_webhook -f docker/Dockerfile
+
+# Optional, to push it to your own Docker repository:
+docker tag pr-agent:gitlab_webhook <your-registry>/pr-agent:gitlab_webhook
+docker push <your-registry>/pr-agent:gitlab_webhook
 ```
 
 7. Set the environmental variables, the method depends on your docker runtime. Skip this step if you included your secrets/configuration directly in the Docker image.
@@ -97,6 +100,8 @@ PORT=3000  # Optional: override the webhook server port
 
 9. Test your installation by opening a merge request or commenting on a merge request using one of PR Agent's commands.
 
+10. The webhook server runs under gunicorn with multiple worker processes. See [Sizing a self-hosted webhook server](./index.md#sizing-a-self-hosted-webhook-server) for the `GUNICORN_WORKERS` / `GUNICORN_MAX_WORKERS` knobs and memory guidance — worth reading before setting a memory limit.
+
 ## Deploy as a Lambda Function
 
 Note that since AWS Lambda env vars cannot have "." in the name, you can replace each "." in an env variable with "__".<br>
@@ -106,14 +111,14 @@ For example: `GITLAB.PERSONAL_ACCESS_TOKEN` --> `GITLAB__PERSONAL_ACCESS_TOKEN`
 2. Build a docker image that can be used as a lambda function
 
     ```shell
-    docker buildx build --platform=linux/amd64 . -t pragent/pr-agent:gitlab_lambda --target gitlab_lambda -f docker/Dockerfile.lambda
+    docker buildx build --platform=linux/amd64 . -t pr-agent:gitlab_lambda --target gitlab_lambda -f docker/Dockerfile.lambda
    ```
 
 3. Push image to ECR
 
     ```shell
-    docker tag pragent/pr-agent:gitlab_lambda <AWS_ACCOUNT>.dkr.ecr.<AWS_REGION>.amazonaws.com/pragent/pr-agent:gitlab_lambda
-    docker push <AWS_ACCOUNT>.dkr.ecr.<AWS_REGION>.amazonaws.com/pragent/pr-agent:gitlab_lambda
+    docker tag pr-agent:gitlab_lambda <AWS_ACCOUNT>.dkr.ecr.<AWS_REGION>.amazonaws.com/pr-agent:gitlab_lambda
+    docker push <AWS_ACCOUNT>.dkr.ecr.<AWS_REGION>.amazonaws.com/pr-agent:gitlab_lambda
     ```
 
 4. Create a lambda function that uses the uploaded image. Set the lambda timeout to be at least 3m.

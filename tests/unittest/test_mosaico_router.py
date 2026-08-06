@@ -9,13 +9,16 @@ import pytest
 
 import aiohttp
 
-from pr_agent.config_loader import global_settings
+from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.mosaico import dispatch
-from pr_agent.mosaico.dispatch import (_detect_verb, _empty_fallback,
-                                       _error_fallback, route_and_run,
-                                       route_and_run_result, RouteResult)
+from pr_agent.mosaico.dispatch import (_detect_verb, _diff_prose,
+                                       _empty_fallback, _error_fallback,
+                                       _explicit_verb, _split_turns,
+                                       route_and_run, route_and_run_result)
 
 PR_URL = "https://github.com/org/repo/pull/123"
+DEAD_PR_URL = "https://github.com/org/repo/pull/999999999"
+PRIVATE_PR_URL = "https://github.com/acme/private-repo/pull/7"
 
 SAMPLE_DIFF = """```diff
 diff --git a/foo.py b/foo.py
@@ -39,6 +42,57 @@ index 1111111..2222222 100644
  y = 3
 """
 
+CORRECTED_DIFF = """```diff
+diff --git a/bar.py b/bar.py
+index 3333333..4444444 100644
+--- a/bar.py
++++ b/bar.py
+@@ -1,2 +1,2 @@
+-a = 1
++a = 2
+ b = 3
+```"""
+
+# Keep the 'Estimated effort to review:' line: r'review\b' does not match 'reviewer'.
+AGENT_REVIEW_OUTPUT = """## PR Reviewer Guide 🔍
+
+Here are some key observations to aid the review process:
+
+### ⏱️ Estimated effort to review: 1 🔵⚪⚪⚪⚪
+
+### 🧪 No relevant tests"""
+
+AUTH_DIFF = """```diff
+diff --git a/auth.py b/auth.py
+index 1111111..2222222 100644
+--- a/auth.py
++++ b/auth.py
+@@ -1,3 +1,3 @@
+ def check_password(user, pw):
+-    return user.password == pw
++    return constant_time_compare(user.password_hash, hash_pw(pw))
+```"""
+
+BILLING_DIFF = """```diff
+diff --git a/billing/invoice.py b/billing/invoice.py
+index 3333333..4444444 100644
+--- a/billing/invoice.py
++++ b/billing/invoice.py
+@@ -1,3 +1,3 @@
+ def total(items):
+-    return sum(i.price for i in items)
++    return sum(i.price * i.quantity for i in items)
+```"""
+
+RAW_DIFF_BODY = """diff --git a/bar.py b/bar.py
+index 3333333..4444444 100644
+--- a/bar.py
++++ b/bar.py
+@@ -1,2 +1,2 @@
+-a = 1
++a = 2
+ b = 3"""
+
 _SENTINEL = object()
 
 
@@ -46,7 +100,8 @@ _SENTINEL = object()
 def restore_settings():
     """Snapshot/restore the settings keys the router mutates, leaving global_settings
     exactly as found."""
-    keys = ["CONFIG.GIT_PROVIDER", "CONFIG.PUBLISH_OUTPUT", "CONFIG.PUBLISH_OUTPUT_PROGRESS"]
+    keys = ["CONFIG.GIT_PROVIDER", "CONFIG.PUBLISH_OUTPUT", "CONFIG.PUBLISH_OUTPUT_PROGRESS",
+            "CONFIG.PROPAGATE_TOOL_ERRORS"]
     before = {k: global_settings.get(k, _SENTINEL) for k in keys}
     mosaico_existed = "MOSAICO" in global_settings
     mosaico_input = global_settings.get("MOSAICO.INPUT", _SENTINEL)
@@ -360,6 +415,9 @@ class TestDefensiveCapture:
 
     @pytest.mark.asyncio
     async def test_ok_but_no_artifact_returns_empty_fallback(self, monkeypatch, restore_settings):
+        """Empty is a legitimate SUCCESS: /improve on a trivial diff yields no suggestions.
+        Failure comes from the exception, never from emptiness. Mapping empty->ok=False fails
+        ONLY this test, so it is the sole guard on that property — do not loosen it."""
         async def fake_fetch_public_diff(pr_url):
             return SAMPLE_RAW_DIFF
 
@@ -373,8 +431,98 @@ class TestDefensiveCapture:
         # ensure no stale artifact from a prior test
         _clear_artifact()
 
-        out = await route_and_run(f"review {PR_URL}")
-        assert out == _empty_fallback("review")
+        result = await route_and_run_result(f"review {PR_URL}")
+        assert result.text == _empty_fallback("review")
+        assert result.ok is True
+
+    @pytest.mark.asyncio
+    async def test_tool_exception_marks_failed(self, monkeypatch, restore_settings):
+        """The contrast to the test above: same empty artifact, but the tool raised. The
+        re-raise makes handle_request return False, so the router must report ok=False
+        rather than the empty fallback."""
+        async def fake_fetch_public_diff(pr_url):
+            return SAMPLE_RAW_DIFF
+
+        async def raising_handle_request(self, pr_url, request, notify=None):
+            raise RuntimeError("Failed to generate prediction with any model of ['m1', 'm2']")
+
+        monkeypatch.setattr(dispatch, "_fetch_public_diff", fake_fetch_public_diff)
+        from pr_agent.agent.pr_agent import PRAgent
+        monkeypatch.setattr(PRAgent, "_handle_request", raising_handle_request)
+        _clear_artifact()
+
+        result = await route_and_run_result(f"review {PR_URL}")
+        assert result.ok is False
+        assert result.text == _error_fallback("review")
+        assert "no output produced" not in result.text
+
+    @pytest.mark.asyncio
+    async def test_legacy_callers_unaffected_when_flag_off(self, monkeypatch, restore_settings):
+        """Blast-radius guard for CLI/webhook callers, which pass no propagate_tool_errors
+        arg: a tool failing internally must still swallow and still return True, unchanged."""
+        import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_mod
+        import pr_agent.mosaico.provider_registration  # noqa: F401
+        from pr_agent.agent.pr_agent import PRAgent
+        from pr_agent.mosaico.diff_provider import parse_unified_diff
+
+        async def failing_chat_completion(self, model, system, user, temperature=0.2, **kwargs):
+            raise RuntimeError("provider unavailable")
+
+        monkeypatch.setattr(litellm_mod.LiteLLMAIHandler, "chat_completion", failing_chat_completion)
+        global_settings.set("MOSAICO.INPUT", {"files": parse_unified_diff(SAMPLE_RAW_DIFF),
+                                              "languages": {"py": 1}, "title": "Supplied diff"})
+        global_settings.set("CONFIG.GIT_PROVIDER", "mosaico_diff")
+
+        ok = await PRAgent().handle_request("mosaico://supplied-diff",
+                                            ["/review", "--config.publish_output=false"])
+        assert ok is True, "flag off must preserve the pre-existing swallow-and-succeed behaviour"
+
+    @pytest.mark.asyncio
+    async def test_propagate_tool_errors_passed_to_handle_request(self, monkeypatch, restore_settings):
+        """Pins the wiring: without this arg the tools swallow and a failure reads as empty."""
+        seen = {}
+
+        async def fake_fetch_public_diff(pr_url):
+            return SAMPLE_RAW_DIFF
+
+        async def fake_handle_request(self, pr_url, request, notify=None):
+            seen["args"] = list(request)
+            global_settings.data = {"artifact": "OK"}
+            return True
+
+        monkeypatch.setattr(dispatch, "_fetch_public_diff", fake_fetch_public_diff)
+        from pr_agent.agent.pr_agent import PRAgent
+        monkeypatch.setattr(PRAgent, "handle_request", fake_handle_request)
+
+        await route_and_run_result(f"review {PR_URL}")
+        assert "--config.propagate_tool_errors=true" in seen["args"]
+
+    @pytest.mark.asyncio
+    async def test_propagate_flag_does_not_outlive_a_contextless_run(self, monkeypatch, restore_settings):
+        """Runs the real arg-parsing path: the flag must be live at the tool run, and gone after.
+        Contextless, get_settings() is global_settings, so without the restore one dispatch call
+        would leave re-raising on for every later caller."""
+        import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_mod
+        import pr_agent.mosaico.provider_registration  # noqa: F401
+        from pr_agent.mosaico.diff_provider import parse_unified_diff
+
+        seen = {}
+
+        async def failing_chat_completion(self, model, system, user, temperature=0.2, **kwargs):
+            seen["during"] = get_settings().config.get("propagate_tool_errors")
+            raise RuntimeError("provider unavailable")
+
+        monkeypatch.setattr(litellm_mod.LiteLLMAIHandler, "chat_completion", failing_chat_completion)
+        global_settings.set("MOSAICO.INPUT", {"files": parse_unified_diff(SAMPLE_RAW_DIFF),
+                                              "languages": {"py": 1}, "title": "Supplied diff"})
+        global_settings.set("CONFIG.GIT_PROVIDER", "mosaico_diff")
+        global_settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", False)
+
+        result = await dispatch._run_pr_agent("mosaico://supplied-diff", "review")
+
+        assert seen["during"] is True, "the arg never reached the tool run"
+        assert result.ok is False, "the re-raise must surface as ok=False"
+        assert global_settings.config.get("propagate_tool_errors") is False, "flag leaked past the run"
 
     @pytest.mark.asyncio
     async def test_ask_that_raises_returns_error_fallback(self, monkeypatch, restore_settings):
@@ -640,3 +788,331 @@ class TestPublishOutputForced:
             "CONFIG.PUBLISH_OUTPUT must be False when PRQuestions.run() is called; "
             "without this, run()'s publish guards post comments to the real PR."
         )
+
+
+def _blob(*turns) -> str:
+    return "\n".join(f"{role}: {content}" for role, content in turns)
+
+
+def _routed(monkeypatch):
+    seen = {"fetched": []}
+
+    async def fake_handle_request(self, pr_url, request, notify=None):
+        seen["verb"] = next((a.lstrip("/") for a in request if a.startswith("/")), None)
+        mosaico_input = global_settings.get("MOSAICO.INPUT") or {}
+        seen["files"] = [f.filename for f in mosaico_input.get("files", [])]
+        seen["title"] = mosaico_input.get("title")
+        _set_artifact("ROUTED")
+        return True
+
+    class FakePRQuestions:
+        def __init__(self, pr_url, args=None, ai_handler=None):
+            seen["verb"] = "ask"
+            seen["question"] = (args or [""])[0]
+            mosaico_input = global_settings.get("MOSAICO.INPUT") or {}
+            seen["files"] = [f.filename for f in mosaico_input.get("files", [])]
+            seen["title"] = mosaico_input.get("title")
+            self.prediction = "ROUTED"
+
+        async def run(self):
+            return ""
+
+    async def fake_fetch_public_diff(pr_url):
+        seen["fetched"].append(pr_url)
+        return SAMPLE_RAW_DIFF if pr_url == PR_URL else None
+
+    from pr_agent.agent.pr_agent import PRAgent
+    monkeypatch.setattr(PRAgent, "handle_request", fake_handle_request)
+    monkeypatch.setattr("pr_agent.tools.pr_questions.PRQuestions", FakePRQuestions)
+    monkeypatch.setattr(dispatch, "_fetch_public_diff", fake_fetch_public_diff)
+    return seen
+
+
+class TestTurnSplitting:
+    def test_splits_roles_and_keeps_multiline_content(self):
+        turns = _split_turns(_blob(("user", "review this"),
+                                   ("agent", AGENT_REVIEW_OUTPUT),
+                                   ("user", "now describe it")))
+        assert [t.role for t in turns] == ["user", "agent", "user"]
+        assert [t.is_user for t in turns] == [True, False, True]
+        assert turns[1].content == AGENT_REVIEW_OUTPUT
+        assert turns[2].content == "now describe it"
+
+    @pytest.mark.parametrize("text", [
+        "review this PR",
+        "user: alice\nplease review the config above",
+        "here is my config\nuser: alice\nagent: bob\nreview it",
+        "user: admin\npassword: hunter2\nreview this",
+        "",
+    ])
+    def test_not_a_conversation_blob(self, text):
+        assert _split_turns(text) == []
+
+    def test_content_indentation_after_the_label_is_dropped(self):
+        turns = _split_turns(_blob(("user", " diff --git a/x.py b/x.py"), ("agent", "ok")))
+        assert turns[0].content == "diff --git a/x.py b/x.py"
+
+    @pytest.mark.asyncio
+    async def test_indented_raw_diff_in_a_turn_still_routes(self, monkeypatch, restore_settings):
+        seen = _routed(monkeypatch)
+        await route_and_run(_blob(("user", "here is a patch"),
+                                  ("agent", "thanks"),
+                                  ("user", f" {RAW_DIFF_BODY}\nnow describe it")))
+        assert seen["verb"] == "describe"
+        assert seen["files"] == ["bar.py"]
+
+
+class TestConversationVerbRouting:
+    @pytest.mark.asyncio
+    async def test_review_history_does_not_stick_to_later_describe(self, monkeypatch, restore_settings):
+        seen = _routed(monkeypatch)
+        await route_and_run(_blob(("user", "review this"),
+                                  ("agent", AGENT_REVIEW_OUTPUT),
+                                  ("user", f"Now describe this diff\n{CORRECTED_DIFF}")))
+        assert seen["verb"] == "describe"
+
+    @pytest.mark.asyncio
+    async def test_describe_history_does_not_stick_to_later_review(self, monkeypatch, restore_settings):
+        seen = _routed(monkeypatch)
+        await route_and_run(_blob(("user", "describe this"),
+                                  ("agent", "### PR Type\nEnhancement"),
+                                  ("user", f"now review it\n{CORRECTED_DIFF}")))
+        assert seen["verb"] == "review"
+
+    @pytest.mark.asyncio
+    async def test_latest_turn_wins_over_earlier_user_verb(self, monkeypatch, restore_settings):
+        seen = _routed(monkeypatch)
+        await route_and_run(_blob(("user", "describe this"),
+                                  ("agent", "### PR Type\nEnhancement"),
+                                  ("user", f"now improve it\n{CORRECTED_DIFF}")))
+        assert seen["verb"] == "improve"
+
+    @pytest.mark.asyncio
+    async def test_bare_diff_turn_falls_back_to_earlier_user_verb(self, monkeypatch, restore_settings):
+        seen = _routed(monkeypatch)
+        await route_and_run(_blob(("user", "describe this"),
+                                  ("agent", AGENT_REVIEW_OUTPUT),
+                                  ("user", CORRECTED_DIFF)))
+        assert seen["verb"] == "describe"
+
+    @pytest.mark.asyncio
+    async def test_follow_up_question_routes_to_ask_with_latest_turn_only(self, monkeypatch, restore_settings):
+        seen = _routed(monkeypatch)
+        await route_and_run(_blob(("user", "review this"),
+                                  ("agent", AGENT_REVIEW_OUTPUT),
+                                  ("user", f"why is that a bug?\n{CORRECTED_DIFF}")))
+        assert seen["verb"] == "ask"
+        assert seen["question"].startswith("why is that a bug?")
+        assert "PR Reviewer Guide" not in seen["question"]
+
+
+class TestVerbNegationAndPosition:
+    @pytest.mark.parametrize("text, expected", [
+        ("Now describe it instead, do not review", "describe"),
+        ("can you improve this? do not review", "improve"),
+        ("do not review, describe this", "describe"),
+        ("skip the review, just describe", "describe"),
+        ("instead of reviewing, describe this", "describe"),
+        ("describe this, then improve it", "describe"),
+    ])
+    def test_negated_and_positional_verbs(self, text, expected):
+        assert _detect_verb(text) == expected
+
+    @pytest.mark.parametrize("text, expected", [
+        ("there is no bug, review this", "review"),
+        ("i do not have time, review this", "review"),
+        ("nothing to improve here?", "improve"),
+        ("do not review", "review"),
+    ])
+    def test_negation_does_not_fire_on_ordinary_prose(self, text, expected):
+        assert _detect_verb(text) == expected
+
+
+class TestStickyReviewToken:
+    def test_reviewer_heading_alone_does_not_reach_the_matcher(self):
+        assert _explicit_verb("## PR Reviewer Guide 🔍") is None
+        assert _detect_verb("## PR Reviewer Guide 🔍") == "review"
+
+    def test_estimated_effort_line_is_the_token_that_matches(self):
+        assert _explicit_verb("### ⏱️ Estimated effort to review: 1 🔵⚪⚪⚪⚪") == "review"
+
+    @pytest.mark.asyncio
+    async def test_real_review_output_in_history_does_not_capture_the_verb(self, monkeypatch, restore_settings):
+        assert _explicit_verb(AGENT_REVIEW_OUTPUT) == "review", "guard: the constant must still be sticky"
+        seen = _routed(monkeypatch)
+        await route_and_run(_blob(("user", "review this"),
+                                  ("agent", AGENT_REVIEW_OUTPUT),
+                                  ("user", f"now describe it\n{CORRECTED_DIFF}")))
+        assert seen["verb"] == "describe"
+
+
+class TestProseAfterRawDiff:
+    def test_prose_after_a_raw_diff_survives(self):
+        prose = _diff_prose(f"here is the patch\n{RAW_DIFF_BODY}\nnow describe it please")
+        assert "now describe it please" in prose
+        assert "here is the patch" in prose
+        assert "+a = 2" not in prose, "the patch body must still be excised"
+
+    def test_prose_after_a_blank_separated_raw_diff_survives(self):
+        prose = _diff_prose(f"{RAW_DIFF_BODY}\n\nnow describe it please")
+        assert "now describe it please" in prose
+
+    def test_fenced_diff_prose_is_unchanged(self):
+        prose = _diff_prose(f"what changed here?\n{SAMPLE_DIFF}")
+        assert "what changed here?" in prose
+        assert "+x = 2" not in prose
+
+    @pytest.mark.asyncio
+    async def test_verb_written_after_a_raw_diff_is_honoured(self, monkeypatch, restore_settings):
+        seen = _routed(monkeypatch)
+        await route_and_run(f"{RAW_DIFF_BODY}\n\nnow describe it please")
+        assert seen["verb"] == "describe"
+        assert seen["files"] == ["bar.py"]
+
+    @pytest.mark.asyncio
+    async def test_verb_after_a_raw_diff_in_the_latest_turn_is_honoured(self, monkeypatch, restore_settings):
+        seen = _routed(monkeypatch)
+        await route_and_run(_blob(("user", "review this"),
+                                  ("agent", AGENT_REVIEW_OUTPUT),
+                                  ("user", f"{RAW_DIFF_BODY}\n\nnow describe it please")))
+        assert seen["verb"] == "describe"
+        assert seen["files"] == ["bar.py"]
+
+    @pytest.mark.asyncio
+    async def test_question_mark_inside_a_raw_patch_body_still_reviews(self, monkeypatch, restore_settings):
+        seen = _routed(monkeypatch)
+        raw_with_q = ("diff --git a/foo.py b/foo.py\n"
+                      "@@ -1,2 +1,2 @@\n"
+                      "-y = a if b else c\n"
+                      "+y = a ? b : c  # is this right?\n"
+                      " z = 3")
+        await route_and_run(raw_with_q)
+        assert seen["verb"] == "review"
+
+
+class TestExtendedHeaderNotLeaked:
+    RENAME_DIFF = ("diff --git a/a.py b/improve.py\n"
+                   "similarity index 95%\n"
+                   "rename from a.py\n"
+                   "rename to improve.py\n"
+                   "review this")
+
+    NEW_FILE_DIFF = ("diff --git a/x.py b/x.py\n"
+                     "new file mode 100644\n"
+                     "index 0000000..1111111\n"
+                     "--- /dev/null\n"
+                     "+++ b/is_it_ok?.py\n"
+                     "@@ -0,0 +1 @@\n"
+                     "+x = 1")
+
+    def test_rename_metadata_does_not_leak(self):
+        assert _diff_prose(self.RENAME_DIFF).strip() == "review this"
+
+    def test_new_file_metadata_does_not_leak(self):
+        assert _diff_prose(self.NEW_FILE_DIFF).strip() == ""
+
+    def test_renamed_path_does_not_override_the_request(self):
+        assert _detect_verb(_diff_prose(self.RENAME_DIFF)) == "review"
+
+    def test_question_mark_in_a_leaked_path_does_not_flip_to_ask(self):
+        assert _detect_verb(_diff_prose(self.NEW_FILE_DIFF)) == "review"
+
+    def test_prose_after_an_extended_header_patch_still_survives(self):
+        prose = _diff_prose(f"{self.NEW_FILE_DIFF}\nnow describe it")
+        assert prose.strip() == "now describe it"
+
+
+class TestNewestContextWins:
+    @pytest.mark.asyncio
+    async def test_newest_diff_wins(self, monkeypatch, restore_settings):
+        seen = _routed(monkeypatch)
+        await route_and_run(_blob(("user", f"review this\n{SAMPLE_DIFF}"),
+                                  ("agent", AGENT_REVIEW_OUTPUT),
+                                  ("user", f"here is the corrected diff\n{CORRECTED_DIFF}")))
+        assert seen["files"] == ["bar.py"], "the corrected diff must supersede the one it replaces"
+
+    @pytest.mark.asyncio
+    async def test_last_diff_wins_within_a_single_turn(self, monkeypatch, restore_settings):
+        seen = _routed(monkeypatch)
+        await route_and_run(f"review this\n{SAMPLE_DIFF}\nsorry, this one:\n{CORRECTED_DIFF}")
+        assert seen["files"] == ["bar.py"]
+
+    @pytest.mark.parametrize("stale_url", [DEAD_PR_URL, PRIVATE_PR_URL])
+    @pytest.mark.asyncio
+    async def test_fresh_diff_beats_stale_url_from_history(self, stale_url, monkeypatch, restore_settings):
+        seen = _routed(monkeypatch)
+        result = await route_and_run_result(
+            _blob(("user", f"review {stale_url}"),
+                  ("agent", AGENT_REVIEW_OUTPUT),
+                  ("user", f"that URL is wrong, here is the diff instead\n{CORRECTED_DIFF}")))
+        assert result.ok is True
+        assert result.text == "ROUTED"
+        assert seen["title"] == "Supplied diff"
+        assert seen["files"] == ["bar.py"]
+        assert seen["fetched"] == [], "the stale URL must never be fetched"
+
+    @pytest.mark.asyncio
+    async def test_answers_about_the_newest_patch_not_the_oldest(self, monkeypatch, restore_settings):
+        seen = _routed(monkeypatch)
+        result = await route_and_run_result(
+            _blob(("user", f"review this auth change\n{AUTH_DIFF}"),
+                  ("agent", AGENT_REVIEW_OUTPUT),
+                  ("user", f"forget that, describe this new billing patch instead\n{BILLING_DIFF}")))
+        assert result.ok is True
+        assert seen["verb"] == "describe"
+        assert seen["files"] == ["billing/invoice.py"]
+        assert "auth.py" not in seen["files"], "answering about the superseded patch is silent wrongness"
+
+    @pytest.mark.asyncio
+    async def test_diff_from_an_agent_turn_is_still_usable(self, monkeypatch, restore_settings):
+        seen = _routed(monkeypatch)
+        await route_and_run(_blob(("user", "write me a patch"),
+                                  ("agent", f"here you go\n{CORRECTED_DIFF}"),
+                                  ("user", "review it")))
+        assert seen["verb"] == "review"
+        assert seen["files"] == ["bar.py"]
+
+    @pytest.mark.asyncio
+    async def test_current_turn_url_still_beats_older_diff(self, monkeypatch, restore_settings):
+        seen = _routed(monkeypatch)
+        await route_and_run(_blob(("user", f"review this\n{CORRECTED_DIFF}"),
+                                  ("agent", AGENT_REVIEW_OUTPUT),
+                                  ("user", f"actually use {PR_URL}")))
+        assert seen["fetched"] == [PR_URL]
+        assert seen["title"] == PR_URL
+        assert seen["files"] == ["foo.py"]
+
+
+class TestSingleTurnUnchanged:
+    @pytest.mark.asyncio
+    async def test_single_turn_diff_unchanged(self, monkeypatch, restore_settings):
+        seen = _routed(monkeypatch)
+        out = await route_and_run(f"review the following\n{SAMPLE_DIFF}")
+        assert out == "ROUTED"
+        assert seen["verb"] == "review"
+        assert seen["title"] == "Supplied diff"
+        assert seen["files"] == ["foo.py"]
+
+    @pytest.mark.asyncio
+    async def test_single_turn_pr_url_unchanged(self, monkeypatch, restore_settings):
+        seen = _routed(monkeypatch)
+        out = await route_and_run(f"describe {PR_URL}")
+        assert out == "ROUTED"
+        assert seen["verb"] == "describe"
+        assert seen["fetched"] == [PR_URL]
+        assert seen["title"] == PR_URL
+
+    @pytest.mark.asyncio
+    async def test_single_turn_unreachable_url_still_fails_honestly(self, monkeypatch, restore_settings):
+        _routed(monkeypatch)
+        result = await route_and_run_result(f"review {DEAD_PR_URL}")
+        assert result.ok is False
+        assert "could not fetch" in result.text
+
+    @pytest.mark.asyncio
+    async def test_conversation_with_no_context_returns_guidance(self, monkeypatch, restore_settings):
+        _routed(monkeypatch)
+        out = await route_and_run(_blob(("user", "hello"),
+                                        ("agent", "hi, what can I do?"),
+                                        ("user", "review my code please")))
+        assert out == "PR-Agent requires a PR URL or a supplied diff."

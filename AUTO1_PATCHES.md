@@ -7,8 +7,8 @@ Keep this list minimal to ease upstream rebases.
 
 - Upstream repo: The-PR-Agent/pr-agent
 - Upstream tag: main
-- Upstream commit: 01569655d8b4825bbe599fd5b2a8de59d5c58390
-- Synced on: 2026-07-14
+- Upstream commit: 4a26c38d33d16ea490d6f0dd5c11b06e6c2f2cac
+- Synced on: 2026-08-06
 
 ## Local patches
 

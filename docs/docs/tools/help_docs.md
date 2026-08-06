@@ -1,3 +1,13 @@
+!!! warning "`/help_docs` is currently disabled"
+    As of **v0.36.1**, the `/help_docs` command is temporarily disabled as a mitigation for a
+    credential-exposure vulnerability ([#2445](https://github.com/The-PR-Agent/pr-agent/issues/2445)):
+    the command accepted an untrusted runtime override of its git clone target, and the clone-URL
+    host validation only checked substring containment, so a host that merely *contained* the
+    allowed host could receive the git provider token.
+
+    The command is not registered in `PRAgent`, so invoking it has no effect on any provider. The
+    page below documents the tool as it behaves once it is re-enabled.
+
 ## Overview
 
 The `help_docs` tool can answer a free-text question based on a git documentation folder.

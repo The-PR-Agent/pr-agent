@@ -4,6 +4,9 @@ import os
 from typing import Union
 
 from pr_agent.agent.pr_agent import PRAgent
+from pr_agent.algo.ai_handlers.litellm_helpers import (
+    DEFAULT_CALLBACK_TIMEOUT_SECONDS, drain_litellm_callbacks,
+    litellm_callbacks_registered)
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.utils import apply_repo_settings
@@ -339,5 +342,21 @@ async def run_action():
             await PRCodeSuggestions(pr_url).run()
 
 
+async def _run_action_and_drain():
+    """
+    Run the action, then flush litellm's deferred callbacks before the loop closes.
+
+    Wrapping here rather than at the end of run_action() covers its many early
+    returns too, and keeps run_action() itself free of teardown concerns.
+    """
+    try:
+        return await run_action()
+    finally:
+        if litellm_callbacks_registered():
+            await drain_litellm_callbacks(
+                get_settings().litellm.get("callback_timeout_seconds", DEFAULT_CALLBACK_TIMEOUT_SECONDS)
+            )
+
+
 if __name__ == '__main__':
-    asyncio.run(run_action())
+    asyncio.run(_run_action_and_drain())

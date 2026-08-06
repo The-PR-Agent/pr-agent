@@ -4,10 +4,10 @@
 
 [config]
 # models
-model="gpt-5.5-2026-04-23"
-fallback_models=["gpt-5.4-mini"]
-#model_reasoning="gpt-5.4-mini" # dedicated reasoning model for self-reflection
-#model_weak="gpt-5.4-nano" # optional, a weaker model to use for some easier tasks
+model="gpt-5.6"
+fallback_models=["gpt-5.6-terra"]
+#model_reasoning="gpt-5.6-terra" # dedicated reasoning model for self-reflection
+#model_weak="gpt-5.6-luna" # optional, a weaker model to use for some easier tasks
 # CLI
 git_provider="github"
 publish_output=true
@@ -48,6 +48,10 @@ cli_mode=false
 output_relevant_configurations=false
 large_patch_policy = "clip" # "clip", "skip"
 duplicate_prompt_examples = false
+# Persistent inline comments (issue #2037): when true, the GitHub and GitLab providers
+# fingerprint each inline comment, embed the fingerprint as an HTML marker, and skip
+# re-posting suggestions already present on the PR/MR across runs.
+persistent_inline_comments = false
 # seed
 seed=-1 # set positive value to fix the seed (and ensure temperature=0)
 temperature=0.2
@@ -59,10 +63,18 @@ ignore_pr_labels = [] # labels to ignore from PR agent when an PR is created
 ignore_pr_authors = [] # authors to ignore from PR agent when an PR is created
 ignore_repositories = [] # a list of regular expressions of repository full names (e.g. "org/repo") to ignore from PR agent processing
 ignore_language_framework = [] # a list of code-generation languages or frameworks (e.g. 'protobuf', 'go_gen') whose auto-generated source files will be excluded from analysis
+# Substring indicators used to skip bot users on webhook events. Currently consumed by
+# the GitLab webhook (`is_bot_user`); other providers may adopt this list in future.
+# The match is case-insensitive against the sender's display name. Overriding this
+# setting REPLACES the default list — include the entries below in your override if
+# you want to keep them (e.g. `["codium", "bot_", "bot-", "_bot", "-bot", "renovate"]`).
+bot_user_indicators = ["codium", "bot_", "bot-", "_bot", "-bot"]
 #
 restricted_mode = false # when true, skip operations that require elevated permissions (e.g. pushing code to the repository)
 is_auto_command = false # will be auto-set to true if the command is triggered by an automation
+propagate_tool_errors = false # when true, a tool re-raises instead of swallowing an internal error, so a caller can tell a failed run from an empty one
 enable_ai_metadata = false # will enable adding ai metadata
+add_user_to_requests = false # send the current command and PR URL in the OpenAI-compatible "user" request field, for provider-side attribution of requests (e.g. OpenRouter "external_user")
 reasoning_effort = "medium" # "none", "minimal", "low", "medium", "high", "xhigh"
 # extended thinking for Claude reasoning models
 enable_claude_extended_thinking = false # Set to true to enable extended thinking feature
@@ -325,6 +337,7 @@ avoid_full_files = false
 # LocalGitProvider settings - uncomment to use paths other than default
 # description_path= "path/to/description.md"
 # review_path= "path/to/review.md"
+# improve_path= "path/to/improve.md"
 
 [gerrit]
 # endpoint to the gerrit service
@@ -353,7 +366,21 @@ enable_callbacks = false
 success_callback = []
 failure_callback = []
 service_callback = []
+callback_timeout_seconds = 30 # max seconds to wait for pending litellm callbacks to flush before exiting
 # model_id = "" # Optional: Custom inference profile ID for Amazon Bedrock
+
+[openrouter]
+# OpenRouter provider routing, reasoning control and output cap. These apply only
+# to models addressed as "openrouter/...". The API key and api_base live in
+# .secrets.toml (or the openrouter__key env var); the keys below are non-secret.
+# Refs: https://openrouter.ai/docs/features/provider-routing
+#       https://openrouter.ai/docs/use-cases/reasoning-tokens
+provider_only = [] # restrict routing to these upstream providers only, a hard allowlist (e.g. ["z-ai"]); empty = OpenRouter default routing
+provider_order = [] # preferred provider order; ignored when provider_only is set; empty = unset
+allow_fallbacks = true # when provider_order is set, allow routing beyond the listed providers
+reasoning_effort = "" # "" leaves reasoning to the model default; "none" disables it; otherwise "low", "medium" or "high"
+reasoning_max_tokens = 0 # cap the reasoning budget in tokens; 0 = unset
+max_tokens = 0 # hard cap on completion tokens for the request; 0 = unset
 
 [pr_similar_issue]
 skip_comments = false
