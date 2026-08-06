@@ -26,7 +26,7 @@ from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import (AzureDevopsProvider, GithubProvider,
                                     GitLabProvider, get_git_provider,
                                     get_git_provider_with_context)
-from pr_agent.git_providers.git_provider import get_main_pr_language, GitProvider
+from pr_agent.git_providers.git_provider import GitProvider, IncrementalPR, get_main_pr_language
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
 from pr_agent.tools.pr_description import insert_br_after_x_chars
@@ -38,6 +38,24 @@ class PRCodeSuggestions:
                  ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
 
         self.git_provider = get_git_provider_with_context(pr_url)
+        self.pr_url = pr_url  # set early so the no-op log line in `run()` can reference it
+        self.args = args
+        self.incremental = self._parse_incremental(args)
+        self._incremental_empty_scope = False
+        # When invoked as `/improve -i`, narrow `git_provider.get_diff_files()` to the files
+        # changed since the previous suggestions pass. Falls back to full when the provider
+        # doesn't support incremental scope or no prior suggestion comment exists.
+        self._setup_incremental_scope()
+        # If incremental is active but the scope came back empty (no files changed since the
+        # previous suggestions pass), short-circuit init now. `run()` checks the same flag and
+        # exits without touching the model. This avoids a wasted `mr.changes()` round-trip via
+        # `get_files()` — when `unreviewed_files_set` is `{}` it's falsy and `get_files()` falls
+        # back to the full MR file list, which is pure waste on the "nothing new" path.
+        if (self.incremental.is_incremental
+                and hasattr(self.git_provider, "unreviewed_files_set")
+                and not self.git_provider.unreviewed_files_set):
+            self._incremental_empty_scope = True
+            return
         self.main_language = get_main_pr_language(
             self.git_provider.get_languages(), self.git_provider.get_files()
         )
@@ -48,7 +66,6 @@ class PRCodeSuggestions:
         self.ai_handler.main_pr_language = self.main_language
         self.patches_diff = None
         self.prediction = None
-        self.pr_url = pr_url
         self.cli_mode = cli_mode
         self.pr_description, self.pr_description_files = (
             self.git_provider.get_pr_description(split_changes_walkthrough=True))
@@ -94,8 +111,41 @@ class PRCodeSuggestions:
         self.progress = build_progress_comment()
         self.progress_response = None
 
+    @staticmethod
+    def _parse_incremental(args):
+        """Parse the `-i` flag for `/improve` exactly like `PRReviewer.parse_incremental`."""
+        is_incremental = bool(args and len(args) >= 1 and args[0] == "-i")
+        return IncrementalPR(is_incremental)
+
+    def _setup_incremental_scope(self):
+        """Configure the provider's suggestions-scoped incremental state for `/improve -i`.
+
+        Falls back to a full run (incremental disabled) when the provider doesn't
+        support kind-scoped incremental anchoring.
+        """
+        if not self.incremental.is_incremental:
+            return
+        if self.git_provider.supports_incremental_kind("suggestions"):
+            self.git_provider.get_incremental_commits(self.incremental, kind="suggestions")
+        else:
+            get_logger().info(
+                "Provider does not support incremental suggestions scope; "
+                "running /improve on the full diff"
+            )
+            self.incremental = IncrementalPR(False)
+
     async def run(self):
         try:
+            if getattr(self, "_incremental_empty_scope", False):
+                # Set by `__init__` when incremental anchored cleanly but no files changed
+                # since the previous suggestions pass. Skip silently — re-running on the
+                # full MR diff here would just re-post the same inline suggestions.
+                get_logger().info(
+                    f"Incremental /improve for {self.pr_url}: no files changed since the previous "
+                    f"suggestions pass; skipping"
+                )
+                return None
+
             if not self.git_provider.get_files():
                 get_logger().info(f"PR has no files: {self.pr_url}, skipping code suggestions")
                 return None
