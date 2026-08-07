@@ -5,7 +5,7 @@ import pytest
 from pr_agent.algo.pr_processing import retry_with_fallback_models
 from pr_agent.algo.utils import ModelType
 from pr_agent.config_loader import get_settings
-from tests.unittest._settings_helpers import SENTINEL, restore_settings, snapshot_settings
+from tests.unittest._settings_helpers import SENTINEL, restore_settings, snapshot_settings, _remove_key
 
 _TRACKED_KEYS = (
     "config.model",
@@ -28,10 +28,13 @@ def _restore_settings(snapshot):
 def test_primary_model_success_invoked_once_and_returns_value():
     snapshot = _snapshot_settings()
     try:
-        get_settings().set("config.model", "primary-model")
-        get_settings().set("config.fallback_models", ["fallback-1", "fallback-2"])
-        get_settings().set("openai.deployment_id", None)
-        get_settings().set("openai.fallback_deployments", [])
+        settings = get_settings()
+        _remove_key(settings, "config.fallback_models")
+        settings.set("config.model", "primary-model")
+        settings.set("config.fallback_models", ["fallback-1", "fallback-2"])
+        _remove_key(settings, "openai.fallback_deployments")
+        settings.set("openai.deployment_id", None)
+        settings.set("openai.fallback_deployments", [])
 
         calls = []
 
@@ -50,10 +53,13 @@ def test_primary_model_success_invoked_once_and_returns_value():
 def test_primary_fails_fallback_succeeds():
     snapshot = _snapshot_settings()
     try:
-        get_settings().set("config.model", "primary-model")
-        get_settings().set("config.fallback_models", ["fallback-1", "fallback-2"])
-        get_settings().set("openai.deployment_id", None)
-        get_settings().set("openai.fallback_deployments", [])
+        settings = get_settings()
+        _remove_key(settings, "config.fallback_models")
+        settings.set("config.model", "primary-model")
+        settings.set("config.fallback_models", ["fallback-1", "fallback-2"])
+        _remove_key(settings, "openai.fallback_deployments")
+        settings.set("openai.deployment_id", None)
+        settings.set("openai.fallback_deployments", [])
 
         calls = []
 
@@ -74,10 +80,13 @@ def test_primary_fails_fallback_succeeds():
 def test_all_models_fail_raises_with_aggregate_message_and_cause():
     snapshot = _snapshot_settings()
     try:
-        get_settings().set("config.model", "primary-model")
-        get_settings().set("config.fallback_models", ["fallback-1"])
-        get_settings().set("openai.deployment_id", None)
-        get_settings().set("openai.fallback_deployments", [])
+        settings = get_settings()
+        _remove_key(settings, "config.fallback_models")
+        settings.set("config.model", "primary-model")
+        settings.set("config.fallback_models", ["fallback-1"])
+        _remove_key(settings, "openai.fallback_deployments")
+        settings.set("openai.deployment_id", None)
+        settings.set("openai.fallback_deployments", [])
 
         last_error = ValueError("last failure")
         attempted = []
@@ -102,10 +111,13 @@ def test_all_models_fail_raises_with_aggregate_message_and_cause():
 def test_deployment_id_updated_per_attempt():
     snapshot = _snapshot_settings()
     try:
-        get_settings().set("config.model", "primary-model")
-        get_settings().set("config.fallback_models", ["fallback-1", "fallback-2"])
-        get_settings().set("openai.deployment_id", "deployment-primary")
-        get_settings().set(
+        settings = get_settings()
+        _remove_key(settings, "config.fallback_models")
+        _remove_key(settings, "openai.fallback_deployments")
+        settings.set("config.model", "primary-model")
+        settings.set("config.fallback_models", ["fallback-1", "fallback-2"])
+        settings.set("openai.deployment_id", "deployment-primary")
+        settings.set(
             "openai.fallback_deployments",
             ["deployment-fb1", "deployment-fb2"],
         )
@@ -134,11 +146,14 @@ def test_deployment_id_updated_per_attempt():
 def test_weak_model_type_uses_weak_setting_and_forwards_identifier():
     snapshot = _snapshot_settings()
     try:
-        get_settings().set("config.model", "regular-model")
-        get_settings().set("config.model_weak", "weak-model-id")
-        get_settings().set("config.fallback_models", [])
-        get_settings().set("openai.deployment_id", None)
-        get_settings().set("openai.fallback_deployments", [])
+        settings = get_settings()
+        _remove_key(settings, "config.fallback_models")
+        _remove_key(settings, "openai.fallback_deployments")
+        settings.set("config.model", "regular-model")
+        settings.set("config.model_weak", "weak-model-id")
+        settings.set("config.fallback_models", [])
+        settings.set("openai.deployment_id", None)
+        settings.set("openai.fallback_deployments", [])
 
         calls = []
 
@@ -159,11 +174,14 @@ def test_weak_model_type_uses_weak_setting_and_forwards_identifier():
 def test_reasoning_model_type_uses_reasoning_setting():
     snapshot = _snapshot_settings()
     try:
-        get_settings().set("config.model", "regular-model")
-        get_settings().set("config.model_reasoning", "reasoning-model-id")
-        get_settings().set("config.fallback_models", [])
-        get_settings().set("openai.deployment_id", None)
-        get_settings().set("openai.fallback_deployments", [])
+        settings = get_settings()
+        _remove_key(settings, "config.fallback_models")
+        _remove_key(settings, "openai.fallback_deployments")
+        settings.set("config.model", "regular-model")
+        settings.set("config.model_reasoning", "reasoning-model-id")
+        settings.set("config.fallback_models", [])
+        settings.set("openai.deployment_id", None)
+        settings.set("openai.fallback_deployments", [])
 
         calls = []
 

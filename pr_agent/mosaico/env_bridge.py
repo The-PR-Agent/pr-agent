@@ -39,6 +39,12 @@ def apply_mosaico_env() -> None:
     if model_name:
         model = model_name if "/" in model_name else f"openai/{model_name}"
         settings.set("CONFIG.MODEL", model)
+        # Dynaconf merge_enabled=True appends list values instead of replacing;
+        # pop the leaf first so the subsequent .set() produces a fresh list.
+        # Use case-insensitive matching because Dynaconf can normalize key casing.
+        for _k in list(settings.CONFIG.keys()):
+            if _k.lower() == "fallback_models":
+                settings.CONFIG.pop(_k, None)
         settings.set("CONFIG.FALLBACK_MODELS", [])
         # MOSAICO models are not in pr-agent's built-in MAX_TOKENS table; declare a budget
         # so reviews don't fail with "not defined in MAX_TOKENS". Overridable via env.
@@ -68,6 +74,12 @@ def _register_langfuse_callback(settings) -> None:
         current = [c for c in (settings.get(key, []) or []) if c != LEGACY_LANGFUSE_CALLBACK]
         if LANGFUSE_CALLBACK_NAME not in current:
             current.append(LANGFUSE_CALLBACK_NAME)
+        # Dynaconf merge_enabled=True appends list values; pop the leaf first.
+        # Use case-insensitive matching because Dynaconf can normalize key casing.
+        leaf = key.split(".", 1)[-1]
+        for _k in list(settings.LITELLM.keys()):
+            if _k.lower() == leaf.lower():
+                settings.LITELLM.pop(_k, None)
         settings.set(key, current)
     settings.set("LITELLM.ENABLE_CALLBACKS", True)
     get_logger().info("MOSAICO: registered Langfuse litellm callback.")
