@@ -23,6 +23,7 @@ def _make_prediction_reviewer(git_provider=None):
     return reviewer
 
 
+@pytest.mark.asyncio
 async def test_prepare_prediction_requests_remaining_files_and_preserves_tuple_result():
     reviewer = _make_prediction_reviewer()
     reviewer._get_prediction = AsyncMock(return_value="prediction")
@@ -46,6 +47,7 @@ async def test_prepare_prediction_requests_remaining_files_and_preserves_tuple_r
     assert reviewer.prediction == "prediction"
 
 
+@pytest.mark.asyncio
 async def test_prepare_prediction_accepts_full_diff_string_when_token_budget_is_sufficient():
     reviewer = _make_prediction_reviewer()
     reviewer._get_prediction = AsyncMock(return_value="prediction")
@@ -58,6 +60,7 @@ async def test_prepare_prediction_accepts_full_diff_string_when_token_budget_is_
     assert reviewer.prediction == "prediction"
 
 
+@pytest.mark.asyncio
 async def test_prepare_prediction_keeps_incremental_review_compatible_with_tuple_result():
     reviewer = _make_prediction_reviewer()
     reviewer.incremental = SimpleNamespace(is_incremental=True)
