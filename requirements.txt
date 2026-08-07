@@ -38,7 +38,7 @@ langfuse==3.14.5
 gunicorn==23.0.0
 pytest-cov==7.0.0
 pydantic==2.13.3
-# litellm 1.94.0 imports pydantic-settings unconditionally (litellm/integrations/otel/__init__.py) but declares it
+# litellm 1.94.0 imports pydantic-settings unconditionally (litellm/integrations/otel/model/config.py) but declares it
 # only under its optional 'proxy' extra; without it the 'langfuse_otel' callback silently fails to load and no LLM
 # call is traced. Version matches litellm's own constraint (>=2.14.1,<3.0).
 pydantic-settings==2.14.2

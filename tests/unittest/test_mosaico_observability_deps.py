@@ -3,7 +3,7 @@
 pr_agent/mosaico/env_bridge.py registers 'langfuse_otel' as the Langfuse callback
 (the legacy 'langfuse' callback raises a ``sdk_integration`` TypeError against
 langfuse 3.x). litellm imports pydantic-settings unconditionally from
-``litellm/integrations/otel/__init__.py`` but declares it only under its optional
+``litellm/integrations/otel/model/config.py`` but declares it only under its optional
 'proxy' extra, so an environment built from requirements.txt without that pin makes
 litellm's callback factory return None -- silently, because the factory swallows the
 ImportError -- and not a single LLM call is traced.
@@ -19,13 +19,13 @@ import importlib
 import pytest
 
 CALLBACK_NAME = "langfuse_otel"
-# Imported at module scope by litellm/integrations/otel/__init__.py, declared only under
+# Imported at module scope by litellm/integrations/otel/model/config.py, declared only under
 # litellm's 'proxy' extra, so it must be pinned explicitly in pr-agent's requirements.txt.
 UNDECLARED_LITELLM_DEP = "pydantic_settings"
 
 _REMEDY = (
     f"'{UNDECLARED_LITELLM_DEP}' must be pinned in requirements.txt: litellm imports it "
-    f"unconditionally from litellm/integrations/otel/__init__.py but declares it only under "
+    f"unconditionally from litellm/integrations/otel/model/config.py but declares it only under "
     f"its optional 'proxy' extra."
 )
 
@@ -61,10 +61,10 @@ class TestLangfuseOtelCallbackDeps:
         err = _import_error(UNDECLARED_LITELLM_DEP)
         assert err is None, f"{_REMEDY} Import failed with: {err!r}"
 
-    def test_litellm_otel_integration_imports(self):
+    def test_litellm_otel_config_imports(self):
         """The unconditional import site itself -- fails before the callback factory is reached."""
-        err = _import_error("litellm.integrations.otel")
-        assert err is None, f"litellm.integrations.otel is not importable ({err!r}). {_REMEDY}"
+        err = _import_error("litellm.integrations.otel.model.config")
+        assert err is None, f"litellm.integrations.otel.model.config is not importable ({err!r}). {_REMEDY}"
 
     def test_langfuse_otel_callback_constructs(self, restore_in_memory_loggers):
         """The behaviour MOSAICO actually depends on: env_bridge registers this callback name,
@@ -78,7 +78,7 @@ class TestLangfuseOtelCallbackDeps:
         assert logger is not None, (
             f"litellm returned no logger for the '{CALLBACK_NAME}' callback, so MOSAICO's Langfuse "
             f"tracing is dead. The factory swallows the underlying error; the likely cause is "
-            f"{_import_error('litellm.integrations.otel')!r}. {_REMEDY}"
+            f"{_import_error('litellm.integrations.otel.model.config')!r}. {_REMEDY}"
         )
         # Substring, not equality: `is not None` above is the assertion that catches the
         # actual defect. This one only guards against litellm handing back some unrelated
