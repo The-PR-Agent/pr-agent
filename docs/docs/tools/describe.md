@@ -66,6 +66,8 @@ The `/describe` tool includes a Mermaid sequence diagram showing component/funct
 
 This option is enabled by default via the `pr_description.enable_pr_diagram` param.
 
+The direction of the diagram adapts to its shape. A diagram whose longest chain of nodes exceeds `pr_description.pr_diagram_direction_threshold` is drawn top-down rather than left-to-right, so that wide diagrams are not scaled down until they become unreadable. Set `pr_description.pr_diagram_direction` to `LR` or `TD` to pin the direction instead.
+
 
 [//]: # (### How to enable\disable)
 
@@ -117,6 +119,10 @@ This option is enabled by default via the `pr_description.enable_pr_diagram` par
         <td>If set to false, it will not show the `PR type` as a text value in the description content. Default is true.</td>
       </tr>
       <tr>
+        <td><b>enable_pr_description</b></td>
+        <td>If set to false, the AI-generated summary section will not be requested from the model, nor shown in the description content. The other sections (diagram, changes walkthrough) are unaffected. Default is true.</td>
+      </tr>
+      <tr>
         <td><b>final_update_message</b></td>
         <td>If set to true, it will add a comment message [`PR Description updated to latest commit...`](https://github.com/the-pr-agent/pr-agent/pull/499#issuecomment-1837412176) after finishing calling `/describe`. Default is true.</td>
       </tr>
@@ -142,7 +148,15 @@ This option is enabled by default via the `pr_description.enable_pr_diagram` par
       </tr>
       <tr>
         <td><b>enable_pr_diagram</b></td>
-        <td>If set to true, the tool will generate a horizontal Mermaid flowchart summarizing the main pull request changes. This field remains empty if not applicable. Default is true.</td>
+        <td>If set to true, the tool will generate a Mermaid flowchart summarizing the main pull request changes. This field remains empty if not applicable. Default is true.</td>
+      </tr>
+      <tr>
+        <td><b>pr_diagram_direction</b></td>
+        <td>Direction of the generated Mermaid flowchart: <b>adaptive</b>, <b>LR</b> or <b>TD</b>. With adaptive, the direction is chosen from the shape of the diagram. Default is adaptive.</td>
+      </tr>
+      <tr>
+        <td><b>pr_diagram_direction_threshold</b></td>
+        <td>With <b>adaptive</b> direction, a diagram whose longest chain exceeds this many nodes is drawn top-down instead of left-to-right. Default is 5.</td>
       </tr>
       <tr>
         <td><b>auto_create_ticket</b></td>

@@ -3,6 +3,7 @@ import copy
 import re
 import traceback
 from functools import partial
+from graphlib import TopologicalSorter
 from typing import List, Tuple
 
 import yaml
@@ -79,6 +80,7 @@ class PRDescription:
             "include_file_summary_changes": len(self.git_provider.get_diff_files()) <= self.COLLAPSIBLE_FILE_LIST_THRESHOLD,
             "duplicate_prompt_examples": get_settings().config.get("duplicate_prompt_examples", False),
             "enable_pr_diagram": enable_pr_diagram,
+            "enable_pr_description": get_settings().pr_description.get("enable_pr_description", True),
         }
 
         self.user_description = self.git_provider.get_user_description()
@@ -472,7 +474,12 @@ class PRDescription:
         if 'changes_diagram' in self.data:
             sanitized = sanitize_diagram(self.data.pop('changes_diagram'))
             if sanitized:
-                self.data['changes_diagram'] = sanitized
+                description_settings = get_settings().pr_description
+                self.data['changes_diagram'] = apply_diagram_direction(
+                    sanitized,
+                    description_settings.pr_diagram_direction,
+                    description_settings.pr_diagram_direction_threshold,
+                )
         if 'pr_files' in self.data:
             self.data['pr_files'] = self.data.pop('pr_files')
 
@@ -530,10 +537,17 @@ class PRDescription:
             pr_type = f"{ai_header}{pr_type}"
             body = body.replace('pr_agent:type', pr_type)
 
+        enable_pr_description = get_settings().pr_description.get("enable_pr_description", True)
+        if not enable_pr_description:
+            self.data.pop('description', None)
+
         ai_summary = self.data.get('description')
         if ai_summary and not re.search(r'<!--\s*pr_agent:summary\s*-->', body):
             summary = f"{ai_header}{ai_summary}"
             body = body.replace('pr_agent:summary', summary)
+        elif not enable_pr_description:
+            # AI summary disabled by config - remove the marker instead of leaving it unreplaced
+            body = re.sub(r'<!--\s*pr_agent:summary\s*-->|pr_agent:summary', '', body)
 
         ai_walkthrough = self.data.get('pr_files')
         walkthrough_gfm = ""
@@ -569,6 +583,8 @@ class PRDescription:
             self.data.pop('labels')
         if not get_settings().pr_description.enable_pr_type:
             self.data.pop('type', None)
+        if not get_settings().pr_description.get("enable_pr_description", True):
+            self.data.pop('description', None)
 
         # Remove the 'PR Title' key from the dictionary
         ai_title = self.data.pop('title', self.vars["title"])
@@ -802,6 +818,109 @@ def sanitize_diagram(diagram_raw: str) -> str:
         )
         result.append(line)
     return '\n' + '\n'.join(result)
+
+
+DIAGRAM_HEADER_PATTERN = re.compile(r'^(\s*(?:flowchart|graph)\s+)(?:TB|TD|BT|RL|LR)\b(.*)$')
+DIAGRAM_CONNECTOR_PATTERN = re.compile(r'(<?[-=.~]{2,}[->ox]?)')
+DIAGRAM_NODE_ID_PATTERN = re.compile(r'[A-Za-z0-9_]+')
+DIAGRAM_QUOTED_LABEL_PATTERN = re.compile(r'"[^"]*"')
+DIAGRAM_PIPE_LABEL_PATTERN = re.compile(r'\|[^|]*\|')  # pipe-form edge labels: -->|text|
+DIAGRAM_SHAPE_PATTERN = re.compile(r'\[[^\[\]]*\]|\([^()]*\)|\{[^{}]*\}')
+# A two-character connector opens a middle label (`A -- text --> B`); a longer one is a real link,
+# so `A --- B --> C` still reads as a three-node chain.
+DIAGRAM_LABEL_OPENERS = ('--', '==', '-.')
+
+
+def _strip_diagram_labels(line: str) -> str:
+    """Remove label text, so that arrows written inside a label are not read as edges."""
+    line = DIAGRAM_QUOTED_LABEL_PATTERN.sub('', line)
+    line = DIAGRAM_PIPE_LABEL_PATTERN.sub('', line)
+    previous = None
+    while previous != line:  # nested shapes such as [[...]] need more than one pass
+        previous = line
+        line = DIAGRAM_SHAPE_PATTERN.sub('', line)
+    return line
+
+
+def _parse_diagram_edges(lines: List[str]) -> List[Tuple[str, str]]:
+    """Extract the directed edges of a mermaid flowchart body, tolerating its syntax variants."""
+    edges = []
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith('%%'):  # a comment can still hold arrow-looking text
+            continue
+
+        cleaned = _strip_diagram_labels(line)
+        # No connector left also means no edge, which is how subgraph/style/classDef/direction
+        # statements drop out without needing a keyword list to keep in sync with mermaid.
+        if not DIAGRAM_CONNECTOR_PATTERN.search(cleaned):
+            continue
+
+        # The capturing split yields chunk, connector, chunk, connector, ... Each chunk holds one
+        # or more node ids joined by '&', unless the connector before it opened a middle label.
+        parts = DIAGRAM_CONNECTOR_PATTERN.split(cleaned)
+        node_groups = []
+        for index, chunk in enumerate(parts[::2]):
+            if index and parts[index * 2 - 1] in DIAGRAM_LABEL_OPENERS:
+                continue  # `A -- text --> B`: this chunk is the edge label, not a node
+            node_ids = []
+            for token in chunk.split('&'):
+                match = DIAGRAM_NODE_ID_PATTERN.search(token)
+                if match:
+                    node_ids.append(match.group(0))
+            if node_ids:
+                node_groups.append(node_ids)
+
+        for left, right in zip(node_groups, node_groups[1:], strict=False):
+            edges.extend((source, target) for source in left for target in right)
+    return edges
+
+
+def _longest_diagram_chain(edges: List[Tuple[str, str]]) -> int:
+    """Length, in nodes, of the longest path through the graph. Raises ValueError on a cycle."""
+    predecessors = {}
+    for source, target in edges:
+        predecessors.setdefault(source, set())
+        predecessors.setdefault(target, set()).add(source)
+
+    longest = {}
+    for node in TopologicalSorter(predecessors).static_order():  # CycleError is a ValueError
+        longest[node] = 1 + max((longest[p] for p in predecessors[node]), default=0)
+    return max(longest.values(), default=0)
+
+
+def apply_diagram_direction(diagram: str, direction: str, threshold: int) -> str:
+    """Set the flowchart direction, adapting it to the shape of the graph unless one is pinned.
+
+    Width in an LR flowchart is set by the longest path rather than by the node count, so the
+    longest chain is what decides. 'LR' or 'TD' pins the result; any other value is treated as
+    'adaptive'. Anything unexpected - no flowchart header, no edges, a cycle, an unusable
+    threshold - returns the diagram untouched.
+    """
+    try:
+        lines = diagram.split('\n')
+        header = next(((index, match) for index, line in enumerate(lines)
+                       if (match := DIAGRAM_HEADER_PATTERN.match(line))), None)
+        if header is None:
+            return diagram
+        header_index, header_match = header
+
+        requested = str(direction).strip().upper()
+        if requested in ('LR', 'TD'):
+            chosen = requested
+        else:
+            if requested != 'ADAPTIVE':
+                get_logger().warning(f"Unknown pr_diagram_direction '{direction}', using adaptive")
+            edges = _parse_diagram_edges(lines[header_index + 1:])
+            if not edges:
+                return diagram
+            chosen = 'LR' if _longest_diagram_chain(edges) <= int(threshold) else 'TD'
+
+        lines[header_index] = f"{header_match.group(1)}{chosen}{header_match.group(2)}"
+        return '\n'.join(lines)
+    except Exception as e:
+        get_logger().debug(f"Failed to adapt the diagram direction: {e}")
+        return diagram
 
 
 def count_chars_without_html(string):

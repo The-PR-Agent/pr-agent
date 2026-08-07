@@ -16,7 +16,7 @@ google-cloud-storage==2.10.0; python_version < "3.13"
 google-cloud-storage==3.12.0; python_version >= "3.13"
 protobuf==6.33.6  # grpcio-status 1.80.0 forces >=6.31.1,<7; pinned to lock the resolved transitive version
 Jinja2==3.1.6
-litellm==1.93.0
+litellm==1.94.0
 loguru==0.7.2
 msrest==0.7.1
 openai>=1.55.3
@@ -38,7 +38,7 @@ langfuse==3.14.5
 gunicorn==23.0.0
 pytest-cov==7.0.0
 pydantic==2.13.3
-# litellm 1.93.0 imports pydantic-settings unconditionally (litellm/integrations/otel/__init__.py) but declares it
+# litellm 1.94.0 imports pydantic-settings unconditionally (litellm/integrations/otel/__init__.py) but declares it
 # only under its optional 'proxy' extra; without it the 'langfuse_otel' callback silently fails to load and no LLM
 # call is traced. Version matches litellm's own constraint (>=2.14.1,<3.0).
 pydantic-settings==2.14.2

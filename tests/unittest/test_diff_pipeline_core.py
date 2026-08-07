@@ -12,11 +12,12 @@ rather than on full golden strings, so they remain robust to minor
 formatting tweaks.
 """
 
+from unittest.mock import patch
+
 import pr_agent.algo.pr_processing as pr_processing
 from pr_agent.algo.git_patch_processing import (
     decouple_and_convert_to_hunks_with_lines_numbers,
-    extract_hunk_lines_from_patch,
-)
+    extract_hunk_lines_from_patch)
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 
 # ---------------------------------------------------------------------------
@@ -400,6 +401,73 @@ class TestPrGenerateCompressedDiff:
             assert files_in_patches_list == [["f0.py"], ["f1.py"], ["f2.py"]]
             assert remaining_files_list == []
             assert deleted_files_list == []
+        finally:
+            settings.pr_description.max_ai_calls = original_max_ai_calls
+
+    def test_large_pr_handling_retries_file_after_hard_stop(self, monkeypatch):
+        """A hard-stopped file remains eligible for the next large-PR iteration."""
+
+        prompt_tokens = 100
+        max_tokens = 3_000
+        monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: max_tokens)
+
+        class HardStopAcrossIterationsTokenHandler(FakeTokenHandler):
+            def __init__(self):
+                super().__init__(prompt_tokens=prompt_tokens)
+                self.first_marker_calls = 0
+
+            def count_tokens(self, patch):
+                if "FIRST_MARKER" in patch:
+                    self.first_marker_calls += 1
+                    # The compressed file entry fits, and its final rendered
+                    # patch count crosses the hard-stop threshold after the
+                    # first file is included.
+                    return {1: 100, 2: 2_500}[self.first_marker_calls]
+                return super().count_tokens(patch)
+
+        token_handler = HardStopAcrossIterationsTokenHandler()
+        settings = self._settings()
+        original_max_ai_calls = settings.pr_description.max_ai_calls
+        settings.pr_description.max_ai_calls = 3
+
+        try:
+            files = [
+                _make_file(
+                    filename="first.py",
+                    patch="@@ -1 +1 @@\n+FIRST_MARKER\n",
+                    tokens=10,
+                ),
+                _make_file(
+                    filename="hard_stop.py",
+                    patch="@@ -1 +1 @@\n+SECOND_MARKER\n",
+                    tokens=5,
+                ),
+            ]
+
+            with patch.object(pr_processing, "get_logger") as logger:
+                (patches_list, _, deleted_files_list, remaining_files_list,
+                 file_dict, files_in_patches_list) = \
+                    pr_processing.pr_generate_compressed_diff(
+                        top_langs=[{"files": files}],
+                        token_handler=token_handler,
+                        model="some-model",
+                        convert_hunks_to_line_numbers=False,
+                        large_pr_handling=True,
+                    )
+
+            assert token_handler.first_marker_calls == 2
+            assert prompt_tokens + 2_500 > max_tokens - pr_processing.OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD
+            logger.return_value.warning.assert_any_call(
+                "File was fully skipped, no more tokens: hard_stop.py."
+            )
+            assert file_dict["first.py"]["tokens"] == 100
+            assert len(patches_list) == 2
+            assert files_in_patches_list == [["first.py"], ["hard_stop.py"]]
+            assert remaining_files_list == []
+            assert deleted_files_list == []
+            processed_files = [filename for batch in files_in_patches_list for filename in batch]
+            assert processed_files == ["first.py", "hard_stop.py"]
+            assert len(processed_files) == len(set(processed_files))
         finally:
             settings.pr_description.max_ai_calls = original_max_ai_calls
 

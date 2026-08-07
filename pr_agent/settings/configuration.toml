@@ -119,6 +119,7 @@ minimal_commits_for_incremental_review=0
 minimal_minutes_for_incremental_review=0
 enable_intro_text=true
 enable_help_text=false # Determines whether to include help text in the PR review. Enabled by default.
+enable_review_coverage_footer=true
 
 [pr_description] # /describe #
 publish_labels=false
@@ -127,10 +128,13 @@ generate_ai_title=false
 use_bullet_points=true
 extra_instructions = ""
 enable_pr_type=true
+enable_pr_description=true # adds a section with an AI-generated summary of the PR changes
 final_update_message = true
 enable_help_text=false
 enable_help_comment=false
 enable_pr_diagram=true # adds a section with a diagram of the PR changes
+pr_diagram_direction='adaptive' # 'adaptive', 'LR', 'TD'. 'adaptive' picks the direction from the shape of the diagram
+pr_diagram_direction_threshold=5 # with 'adaptive', a chain longer than this many nodes is drawn top-down
 # describe as comment
 publish_description_as_comment=false
 publish_description_as_comment_persistent=true
@@ -286,6 +290,8 @@ push_commands = [
 [gitlab]
 url = "https://gitlab.com"
 expand_submodule_diffs = false
+# Post the /review summary as a resolvable thread (discussion) instead of a plain note.
+publish_review_as_thread = false
 pr_commands = [
     "/describe --pr_description.final_update_message=false",
     "/review",

@@ -12,8 +12,8 @@ from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.pr_processing import (add_ai_metadata_to_diff_files,
                                          get_pr_diff,
                                          retry_with_fallback_models)
-from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.repo_context import build_repo_context
+from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (ModelType, PRReviewHeader,
                                  convert_to_markdown_v2, github_action_output,
@@ -27,6 +27,8 @@ from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
 from pr_agent.tools.ticket_pr_compliance_check import (
     extract_and_cache_pr_tickets, extract_tickets)
+
+MAX_REVIEW_COVERAGE_FILES = 50
 
 
 class PRReviewer:
@@ -64,6 +66,7 @@ class PRReviewer:
         self.ai_handler = ai_handler()
         self.ai_handler.main_pr_language = self.main_language
         self.patches_diff = None
+        self.remaining_files_list = []
         self.prediction = None
         question_str, answer_str = self._get_user_answers()
         self.pr_description, self.pr_description_files = (
@@ -181,14 +184,18 @@ class PRReviewer:
                 return
 
             # publish the review
+            # Providers that support it (GitLab) can post the review's final comment as a resolvable thread.
+            # This intent applies to the review only - never to status comments or the output of other tools.
+            review_thread_kwargs = {"as_thread": True} if self.git_provider.should_publish_review_as_thread() else {}
             if get_settings().pr_reviewer.persistent_comment and not self.incremental.is_incremental:
                 final_update_message = get_settings().pr_reviewer.final_update_message
                 self.git_provider.publish_persistent_comment(pr_review,
                                                             initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
                                                             update_header=True,
-                                                            final_update_message=final_update_message, )
+                                                            final_update_message=final_update_message,
+                                                            **review_thread_kwargs)
             else:
-                self.git_provider.publish_comment(pr_review)
+                self.git_provider.publish_comment(pr_review, **review_thread_kwargs)
 
             self.git_provider.remove_initial_comment()
         except Exception as e:
@@ -200,11 +207,17 @@ class PRReviewer:
         return get_settings().pr_reviewer.get('publish_output_no_suggestions', True) or "No major issues detected" not in pr_review
 
     async def _prepare_prediction(self, model: str) -> None:
-        self.patches_diff = get_pr_diff(self.git_provider,
-                                        self.token_handler,
-                                        model,
-                                        add_line_numbers_to_hunks=True,
-                                        disable_extra_lines=False,)
+        output = get_pr_diff(self.git_provider,
+                             self.token_handler,
+                             model,
+                             add_line_numbers_to_hunks=True,
+                             disable_extra_lines=False,
+                             return_remaining_files=True,)
+        if isinstance(output, tuple):
+            self.patches_diff, self.remaining_files_list = output
+        else:
+            self.patches_diff = output
+            self.remaining_files_list = []
 
         if self.patches_diff:
             get_logger().debug(f"PR diff", diff=self.patches_diff)
@@ -273,6 +286,18 @@ class PRReviewer:
                                                git_provider=self.git_provider,
                                                files=self.git_provider.get_diff_files())
 
+        if self.remaining_files_list and get_settings().pr_reviewer.enable_review_coverage_footer:
+            displayed_files = self.remaining_files_list[:MAX_REVIEW_COVERAGE_FILES]
+            markdown_text += (
+                "\n\n<hr>\n\n"
+                "⚠️ **Review coverage:** The following files were not included in this review "
+                "because of the token budget:\n"
+                + "\n".join(f"- `{file}`" for file in displayed_files)
+            )
+            remaining_count = len(self.remaining_files_list) - len(displayed_files)
+            if remaining_count:
+                markdown_text += f"\n... and {remaining_count} more"
+
         # Add help text if gfm_markdown is supported
         if self.git_provider.is_supported("gfm_markdown") and get_settings().pr_reviewer.enable_help_text:
             markdown_text += "<hr>\n\n<details> <summary><strong>💡 Tool usage guide:</strong></summary><hr> \n\n"
@@ -304,7 +329,13 @@ class PRReviewer:
         if self.is_answer:
             discussion_messages = self.git_provider.get_issue_comments()
 
-            for message in discussion_messages.reversed:
+            # providers return the comments oldest-first. PyGithub's PaginatedList reverses lazily,
+            # so prefer it and only materialise the plain lists other providers return.
+            newest_first = getattr(discussion_messages, "reversed", None)
+            if newest_first is None:
+                newest_first = reversed(list(discussion_messages))
+
+            for message in newest_first:
                 if "Questions to better understand the PR:" in message.body:
                     question_str = message.body
                 elif '/answer' in message.body:

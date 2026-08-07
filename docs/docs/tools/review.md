@@ -71,6 +71,10 @@ extra_instructions = "..."
         <td>If set to true, the tool will display a help text in the comment. Default is false.</td>
       </tr>
       <tr>
+        <td><b>enable_review_coverage_footer</b></td>
+        <td>If set to true, the tool will display a review coverage footer when the token budget leaves files out of the review. Default is true.</td>
+      </tr>
+      <tr>
         <td><b>num_max_findings</b></td>
         <td>Number of maximum returned findings. Default is 3.</td>
       </tr>
@@ -176,7 +180,7 @@ extra_instructions = "..."
 
 ### Extra instructions
 
-!!! tip "" 
+!!! tip ""
 
     Extra instructions are important.
     The `review` tool can be configured with extra instructions, which can be used to guide the model to a feedback tailored to the needs of your project.
