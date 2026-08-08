@@ -56,21 +56,42 @@ async def handle_github_webhooks(background_tasks: BackgroundTasks, request: Req
 
 @router.post("/api/v1/marketplace_webhooks")
 async def handle_marketplace_webhooks(request: Request, response: Response):
-    body = await get_body(request)
-    get_logger().info(f'Request body:\n{body}')
+    # Marketplace webhooks do not carry the same x-hub-signature-256 header as
+    # PR webhooks, so they bypass the signature check in get_body. The handler
+    # is intentionally a no-op aside from logging: it never publishes comments,
+    # mutates PR state, or triggers AI calls, so a forged request can only
+    # poison logs.
+    try:
+        # Parse the JSON body so a malformed payload returns HTTP 400, but the
+        # handler is a no-op aside from logging - assign to _ to satisfy Ruff
+        # F841 (unused-local) without losing the validation side effect.
+        _ = await request.json()
+    except Exception as e:
+        get_logger().error("Error parsing marketplace request body", artifact={"error": e})
+        raise HTTPException(status_code=400, detail="Error parsing request body") from e
+    get_logger().info("Marketplace request body received")
 
 
 async def get_body(request):
     try:
+        body_bytes = await request.body()
+    except Exception as e:
+        get_logger().error("Error reading request body", artifact={"error": e})
+        raise HTTPException(status_code=400, detail="Error reading request body") from e
+    try:
         body = await request.json()
     except Exception as e:
-        get_logger().error("Error parsing request body", artifact={'error': e})
+        get_logger().error("Error parsing request body", artifact={"error": e})
         raise HTTPException(status_code=400, detail="Error parsing request body") from e
     webhook_secret = getattr(get_settings().github, 'webhook_secret', None)
-    if webhook_secret:
-        body_bytes = await request.body()
-        signature_header = request.headers.get('x-hub-signature-256', None)
-        verify_signature(body_bytes, webhook_secret, signature_header)
+    if not webhook_secret:
+        # Refuse unauthenticated webhooks. Silently accepting requests when
+        # the secret is not configured used to allow any internet caller to
+        # trigger expensive AI commands against arbitrary PRs.
+        get_logger().error("Rejecting GitHub webhook: GITHUB.WEBHOOK_SECRET is not configured")
+        raise HTTPException(status_code=403, detail="Webhook secret not configured")
+    signature_header = request.headers.get('x-hub-signature-256', None)
+    verify_signature(body_bytes, webhook_secret, signature_header)
     return body
 
 
@@ -358,7 +379,7 @@ async def handle_request(body: Dict[str, Any], event: str):
     return {}
 
 
-def handle_line_comments(body: Dict, comment_body: [str, Any]) -> str:
+def handle_line_comments(body: Dict, comment_body: [str, Any]):
     if not comment_body:
         return ""
     start_line = body["comment"]["start_line"]
@@ -371,7 +392,23 @@ def handle_line_comments(body: Dict, comment_body: [str, Any]) -> str:
     side = body["comment"]["side"]
     comment_id = body["comment"]["id"]
     if '/ask' in comment_body:
-        comment_body = f"/ask_line --line_start={start_line} --line_end={end_line} --side={side} --file_name={path} --comment_id={comment_id} {question}"
+        # Build an argv list rather than concatenating into a shell-style
+        # command string. PRAgent._handle_request() tokenises string requests
+        # with shlex.shlex after escaping single quotes, which neutralises any
+        # shlex.quote() output and re-introduces the CLI-argument injection
+        # vector (a quoted value containing whitespace splits into multiple
+        # argv tokens). Passing a list bypasses the shlex path entirely.
+        cmd = [
+            "/ask_line",
+            f"--line_start={start_line}",
+            f"--line_end={end_line}",
+            f"--side={side}",
+            f"--file_name={path}",
+            f"--comment_id={comment_id}",
+        ]
+        if question:
+            cmd.append(question)
+        return cmd
     return comment_body
 
 
