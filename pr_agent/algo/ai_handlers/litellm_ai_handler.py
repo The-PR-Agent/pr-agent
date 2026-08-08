@@ -511,11 +511,13 @@ class LiteLLMAIHandler(BaseAiHandler):
         Accepts a native TOML array in the [litellm] section of configuration.toml / .pr_agent.toml,
         e.g. ``cache_control_injection_points = [{location = "message", role = "system"}]``; a
         JSON-string form is also accepted so the value can be supplied via an environment-variable
-        override. Returns the parsed list, or None when unset. Raises ValueError on a malformed
-        value so the caller can surface it as a configuration error rather than retrying it.
+        override. Returns the parsed list, or None when unset/disabled. Raises ValueError on a
+        malformed value so the caller can surface it as a configuration error rather than retrying it.
         """
         cache_control_injection_points = get_settings().get("LITELLM.CACHE_CONTROL_INJECTION_POINTS", None)
-        if not cache_control_injection_points:
+        # Only genuinely unset/disabled values short-circuit. Other falsy-but-malformed values
+        # (e.g. 0, False, {}) fall through to type validation below and raise ValueError.
+        if cache_control_injection_points in (None, "", []):
             return None
         if isinstance(cache_control_injection_points, str):
             try:
@@ -737,10 +739,17 @@ class LiteLLMAIHandler(BaseAiHandler):
 
                 # Anthropic prompt caching via LiteLLM's cache_control_injection_points. The value
                 # is validated before the try/except (see above) so a malformed config surfaces as
-                # a ValueError instead of being retried. setdefault guards against overwriting a
-                # value already merged into kwargs.
+                # a ValueError instead of being retried. The kwarg is Anthropic-specific (Claude via
+                # the Anthropic API, Bedrock or Vertex), so gate on the model to avoid passing an
+                # unsupported param to other providers when litellm.drop_params is off. setdefault
+                # guards against overwriting a value already merged into kwargs.
                 if cache_control_injection_points:
-                    kwargs.setdefault("cache_control_injection_points", cache_control_injection_points)
+                    if isinstance(model, str) and "claude" in model.lower():
+                        kwargs.setdefault("cache_control_injection_points", cache_control_injection_points)
+                    else:
+                        get_logger().debug(
+                            f"cache_control_injection_points configured but not applied: {model} is not an "
+                            "Anthropic (Claude) model")
 
                 # Support for Bedrock custom inference profile via model_id
                 model_id = get_settings().get("litellm.model_id")

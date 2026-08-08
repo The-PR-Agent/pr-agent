@@ -112,7 +112,8 @@ async def test_invalid_json_string_raises_value_error_and_is_not_retried(monkeyp
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("value", [{"location": "message"}, 42])
+# Includes falsy-but-malformed values (0, False, {}) that must NOT be silently treated as "unset".
+@pytest.mark.parametrize("value", [{"location": "message"}, 42, {}, 0, False])
 async def test_non_list_value_raises_value_error(monkeypatch, value):
     monkeypatch.setattr(litellm_handler, "get_settings", _settings(value))
 
@@ -125,3 +126,18 @@ async def test_non_list_value_raises_value_error(monkeypatch, value):
 
     assert "must be a JSON/TOML array" in str(exc_info.value)
     assert mock_call.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_not_injected_for_non_anthropic_model(monkeypatch):
+    # The kwarg is Anthropic-specific; a valid config must not be passed through for other providers,
+    # so litellm.drop_params=off deployments don't get their request rejected.
+    points = [{"location": "message", "role": "system"}]
+    monkeypatch.setattr(litellm_handler, "get_settings", _settings(points))
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+        await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
+
+    assert "cache_control_injection_points" not in mock_call.call_args.kwargs
