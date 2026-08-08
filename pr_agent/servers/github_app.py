@@ -384,7 +384,7 @@ def _check_pull_request_event(action: str, body: dict, log_context: dict) -> Tup
     if not api_url:
         return invalid_result
     log_context["api_url"] = api_url
-    if pull_request.get("draft", True) or pull_request.get("state") != "open":
+    if pull_request.get("draft", False) or pull_request.get("state") != "open":
         return invalid_result
     if action in ("review_requested", "synchronize") and pull_request.get("created_at") == pull_request.get("updated_at"):
         # avoid double reviews when opening a PR for the first time
