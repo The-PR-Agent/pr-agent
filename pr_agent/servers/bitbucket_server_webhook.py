@@ -134,7 +134,6 @@ async def redirect_to_webhook():
 async def handle_webhook(background_tasks: BackgroundTasks, request: Request):
     log_context = {"server_type": "bitbucket_server"}
     data = await request.json()
-    context["settings"] = copy.deepcopy(global_settings)
     get_logger().info(json.dumps(data))
 
     webhook_secret = get_settings().get("BITBUCKET_SERVER.WEBHOOK_SECRET", None)
@@ -146,6 +145,11 @@ async def handle_webhook(background_tasks: BackgroundTasks, request: Request):
             )
         signature_header = request.headers.get("x-hub-signature", None)
         verify_signature(body_bytes, webhook_secret, signature_header)
+
+    # Install a per-request settings clone only after auth/connection-test checks, so
+    # rejected traffic doesn't pay the deepcopy cost. Must precede apply_repo_settings(),
+    # which mutates get_settings() (context["settings"] when present).
+    context["settings"] = copy.deepcopy(global_settings)
 
     pr_id = data["pullRequest"]["id"]
     repository_name = data["pullRequest"]["toRef"]["repository"]["slug"]
