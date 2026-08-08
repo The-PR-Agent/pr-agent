@@ -81,6 +81,7 @@ review:
   security_concerns: "No"
 """
         reviewer.incremental = SimpleNamespace(is_incremental=False)
+        reviewer.remaining_files_list = []
         reviewer.git_provider = MagicMock()
         reviewer.git_provider.get_files.return_value = ["changed.py"]
         reviewer.git_provider.is_supported.side_effect = lambda cap: cap == "gfm_markdown"
