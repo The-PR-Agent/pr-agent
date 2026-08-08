@@ -362,6 +362,7 @@ failure_callback = []
 service_callback = []
 callback_timeout_seconds = 30 # max seconds to wait for pending litellm callbacks to flush before exiting
 # model_id = "" # Optional: Custom inference profile ID for Amazon Bedrock
+cache_control_injection_points = [] # Optional: enable Anthropic prompt caching via LiteLLM, e.g. [{location = "message", role = "system"}] (https://docs.litellm.ai/docs/tutorials/prompt_caching)
 
 [openrouter]
 # OpenRouter provider routing, reasoning control and output cap. These apply only

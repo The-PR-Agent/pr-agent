@@ -503,6 +503,29 @@ class LiteLLMAIHandler(BaseAiHandler):
         """
         return get_settings().get("OPENAI.DEPLOYMENT_ID", None)
 
+    @staticmethod
+    def _resolve_cache_control_injection_points():
+        """Read and validate LITELLM.CACHE_CONTROL_INJECTION_POINTS for Anthropic prompt caching
+        via LiteLLM (https://docs.litellm.ai/docs/tutorials/prompt_caching).
+
+        Accepts a native TOML array in the [litellm] section of configuration.toml / .pr_agent.toml,
+        e.g. ``cache_control_injection_points = [{location = "message", role = "system"}]``; a
+        JSON-string form is also accepted so the value can be supplied via an environment-variable
+        override. Returns the parsed list, or None when unset. Raises ValueError on a malformed
+        value so the caller can surface it as a configuration error rather than retrying it.
+        """
+        cache_control_injection_points = get_settings().get("LITELLM.CACHE_CONTROL_INJECTION_POINTS", None)
+        if not cache_control_injection_points:
+            return None
+        if isinstance(cache_control_injection_points, str):
+            try:
+                cache_control_injection_points = json.loads(cache_control_injection_points)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"LITELLM.CACHE_CONTROL_INJECTION_POINTS contains invalid JSON: {str(e)}") from e
+        if not isinstance(cache_control_injection_points, list):
+            raise ValueError("LITELLM.CACHE_CONTROL_INJECTION_POINTS must be a JSON/TOML array")
+        return cache_control_injection_points
+
     @retry(
         retry=retry_if_exception_type(openai.APIError) & retry_if_not_exception_type(openai.RateLimitError),
         stop=stop_after_attempt(MODEL_RETRIES),
@@ -511,6 +534,9 @@ class LiteLLMAIHandler(BaseAiHandler):
     async def chat_completion(self, model: str, system: str, user: str, temperature: float = 0.2, img_path: str = None):
         # Serialize env-var mutation + Bedrock call for IMDS mode to prevent concurrent
         # requests from interleaving os.environ credentials during asyncio.gather usage.
+        # Validate config-derived kwargs before the try/except below, so a malformed value raises a
+        # ValueError config error instead of being wrapped as openai.APIError and retried.
+        cache_control_injection_points = self._resolve_cache_control_injection_points()
         _bedrock_imds = self._aws_imds_mode and 'bedrock/' in model
         async with (self._aws_bedrock_lock if _bedrock_imds else contextlib.nullcontext()):
             if _bedrock_imds and not self._aws_imds_fell_back:
@@ -708,6 +734,13 @@ class LiteLLMAIHandler(BaseAiHandler):
                             # breaking the call.
                             get_logger().debug(
                                 f"add_user_to_requests: user field unsupported for {model}, skipped")
+
+                # Anthropic prompt caching via LiteLLM's cache_control_injection_points. The value
+                # is validated before the try/except (see above) so a malformed config surfaces as
+                # a ValueError instead of being retried. setdefault guards against overwriting a
+                # value already merged into kwargs.
+                if cache_control_injection_points:
+                    kwargs.setdefault("cache_control_injection_points", cache_control_injection_points)
 
                 # Support for Bedrock custom inference profile via model_id
                 model_id = get_settings().get("litellm.model_id")
