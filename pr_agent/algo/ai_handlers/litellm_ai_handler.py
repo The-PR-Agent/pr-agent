@@ -492,7 +492,9 @@ class LiteLLMAIHandler(BaseAiHandler):
     async def chat_completion(self, model: str, system: str, user: str, temperature: float = 0.2, img_path: str = None):
         # Serialize env-var mutation + Bedrock call for IMDS mode to prevent concurrent
         # requests from interleaving os.environ credentials during asyncio.gather usage.
-        _bedrock_imds = self._aws_imds_mode and 'bedrock/' in model
+        _bedrock_imds = self._aws_imds_mode and any(
+            provider in model for provider in ("bedrock/", "bedrock_mantle/")
+        )
         async with (self._aws_bedrock_lock if _bedrock_imds else contextlib.nullcontext()):
             if _bedrock_imds and not self._aws_imds_fell_back:
                 if not self._refresh_aws_imds_credentials() and self._aws_static_creds:
@@ -690,7 +692,8 @@ class LiteLLMAIHandler(BaseAiHandler):
                             get_logger().debug(
                                 f"add_user_to_requests: user field unsupported for {model}, skipped")
 
-                # Support for Bedrock custom inference profile via model_id
+                # Classic `bedrock/` calls use model_id for Bedrock Runtime inference profiles.
+                # Bedrock Mantle uses Projects, so `bedrock_mantle/` intentionally omits it.
                 model_id = get_settings().get("litellm.model_id")
                 if model_id and 'bedrock/' in model:
                     kwargs["model_id"] = model_id
