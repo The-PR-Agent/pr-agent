@@ -1,3 +1,5 @@
+import copy
+import threading
 from os.path import abspath, dirname, join
 from pathlib import Path
 from typing import Optional
@@ -89,6 +91,83 @@ def _find_pyproject() -> Optional[Path]:
 pyproject_path = _find_pyproject()
 if pyproject_path is not None:
     get_settings().load_file(pyproject_path, env=f'tool.{PR_AGENT_TOML_KEY}')
+
+
+# --- State-leak fix (issue #2345) -------------------------------------------
+# apply_repo_settings() merges a repo's .pr_agent.toml into the shared settings
+# singleton. When a later PR comes from a repo with no .pr_agent.toml, the loader
+# early-exits and the previous repo's keys linger for the life of the process.
+#
+# Rather than snapshotting and restoring ALL settings (which would also wipe
+# legitimate per-request config set before apply_repo_settings — e.g.
+# config.extra_config_url, config.is_auto_command), we track the exact keys each
+# repo/extra .pr_agent.toml overrode and revert only those on the next load.
+_OVERRIDE_MISSING = object()  # sentinel: key did not exist before the override
+# {"SECTION.KEY" (upper, for dedup): (section, key, <pre-override value or _OVERRIDE_MISSING>)}
+_APPLIED_REPO_OVERRIDES: dict = {}
+# Serializes record/revert so overlapping background webhook tasks in one process
+# cannot interleave and corrupt the shared singleton. Full cross-request isolation
+# still relies on a per-request context["settings"] clone.
+_SETTINGS_RESET_LOCK = threading.RLock()
+
+
+def note_repo_setting_override(section: str, key: str):
+    """Record the pre-override value of ``settings[section][key]`` so the next
+    ``reset_repo_settings_overrides()`` can revert exactly this key.
+
+    Must be called from the repo/extra config merge BEFORE the value is written.
+    Reads via ``get_settings()`` so it captures the effective object (including a
+    per-request ``context["settings"]`` clone). The first recorded value for a key
+    wins, so repeated overrides within one load still revert to the pre-load value.
+    """
+    settings = get_settings()
+    dedup_key = f"{section}.{key}".upper()
+    with _SETTINGS_RESET_LOCK:
+        if dedup_key in _APPLIED_REPO_OVERRIDES:
+            return
+        prior = settings.get(f"{section}.{key}", _OVERRIDE_MISSING)
+        # Keep the sentinel's identity (don't deepcopy it) so revert can tell
+        # "did not exist" from a real stored value.
+        _APPLIED_REPO_OVERRIDES[dedup_key] = (
+            section, key, prior if prior is _OVERRIDE_MISSING else copy.deepcopy(prior)
+        )
+
+
+def reset_repo_settings_overrides():
+    """Revert the keys overridden by the previous repo/extra ``.pr_agent.toml`` load.
+
+    Invoked at the top of ``apply_repo_settings()`` so a previously-reviewed repo's
+    settings cannot leak into a subsequent PR. Only the specific keys recorded by
+    ``note_repo_setting_override()`` are touched, so runtime/base configuration set
+    outside the repo-settings merge (extra_config_url, is_auto_command, ...) is left
+    intact. Operates on ``get_settings()`` so it covers per-request clones too.
+
+    Reverts are applied by rebuilding each affected section once: Dynaconf's unset()
+    cannot drop a nested key, and a whole-section replace is the same mechanism the
+    merge uses. Sibling keys not in the ledger (e.g. config.is_auto_command) are
+    preserved because the rebuild starts from the section's current contents.
+    """
+    settings = get_settings()
+    with _SETTINGS_RESET_LOCK:
+        if not _APPLIED_REPO_OVERRIDES:
+            return
+        reverts_by_section: dict = {}
+        for section, key, prior in _APPLIED_REPO_OVERRIDES.values():
+            reverts_by_section.setdefault(section, []).append((key, prior))
+        for section, reverts in reverts_by_section.items():
+            section_dict = copy.deepcopy(settings.as_dict().get(section.upper(), {}))
+            for key, prior in reverts:
+                # Drop any existing spelling of the key (Dynaconf stores section keys
+                # in their original case), then restore the prior value if it existed.
+                for existing in [k for k in section_dict if k.upper() == key.upper()]:
+                    section_dict.pop(existing)
+                if prior is not _OVERRIDE_MISSING:
+                    section_dict[key] = copy.deepcopy(prior)
+            settings.unset(section, force=True)
+            if section_dict:
+                settings.set(section, section_dict, merge=False)
+        _APPLIED_REPO_OVERRIDES.clear()
+# ---------------------------------------------------------------------------
 
 
 def apply_secrets_manager_config():

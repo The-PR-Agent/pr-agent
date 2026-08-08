@@ -11,7 +11,9 @@ from dynaconf import Dynaconf
 from dynaconf.loaders import env_loader
 from starlette_context import context
 
-from pr_agent.config_loader import get_settings
+from pr_agent.config_loader import (get_settings,
+                                    note_repo_setting_override,
+                                    reset_repo_settings_overrides)
 from pr_agent.custom_merge_loader import (MAX_TOML_SIZE_IN_BYTES,
                                           validate_file_security)
 from pr_agent.git_providers import get_git_provider_with_context
@@ -218,6 +220,9 @@ def _apply_settings_from_file(path: str, label: str):
                 continue
             section_dict = copy.deepcopy(get_settings().as_dict().get(section, {}))
             for key, value in contents.items():
+                # Record the pre-override value first so it can be reverted on the
+                # next apply_repo_settings() (prevents cross-repo state leaks).
+                note_repo_setting_override(section, key)
                 section_dict[key] = value
             get_settings().unset(section)
             get_settings().set(section, section_dict, merge=False)
@@ -239,6 +244,12 @@ def _apply_settings_from_file(path: str, label: str):
 
 def apply_repo_settings(pr_url):
     os.environ["AUTO_CAST_FOR_DYNACONF"] = "false"
+
+    # Revert keys overridden by a previously-reviewed repo's .pr_agent.toml (or the extra
+    # config merged below) so they cannot leak into this call via the shared settings
+    # singleton. Only repo-settings-managed keys are touched — see
+    # reset_repo_settings_overrides().
+    reset_repo_settings_overrides()
 
     # Apply external/shared config FIRST, before constructing the git provider:
     # provider initialisers (e.g. GitLabProvider reads GITLAB.PERSONAL_ACCESS_TOKEN
@@ -365,6 +376,9 @@ def _apply_repo_settings_file(repo_settings_file):
                 continue
         section_dict = copy.deepcopy(get_settings().as_dict().get(section.upper(), {}))
         for key, value in contents.items():
+            # Record the pre-override value first so it can be reverted on the next
+            # apply_repo_settings() (prevents cross-repo state leaks, issue #2345).
+            note_repo_setting_override(section, key)
             section_dict[key] = value
         get_settings().unset(section)
         get_settings().set(section, section_dict, merge=False)
@@ -440,6 +454,11 @@ def set_claude_model():
     set the claude-sonnet-3.5 model easily (even by users), just by stating: --config.model='claude-3-5-sonnet'
     """
     model_claude = "bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0"
+    # Record the pre-override values so these derived keys are reverted alongside
+    # config.model on the next apply_repo_settings() — otherwise a repo that selects
+    # the claude shorthand would leak model_weak/fallback_models into later repos.
+    for key in ("model", "model_weak", "fallback_models"):
+        note_repo_setting_override("config", key)
     get_settings().set('config.model', model_claude)
     get_settings().set('config.model_weak', model_claude)
     get_settings().set('config.fallback_models', [model_claude])

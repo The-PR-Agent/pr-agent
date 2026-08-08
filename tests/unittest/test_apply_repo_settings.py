@@ -3,7 +3,13 @@ import copy
 import pytest
 from starlette_context import context, request_cycle_context
 
-from pr_agent.config_loader import get_settings, global_settings
+from pr_agent.config_loader import (
+    _APPLIED_REPO_OVERRIDES,
+    get_settings,
+    global_settings,
+    note_repo_setting_override,
+    reset_repo_settings_overrides,
+)
 from pr_agent.git_providers import utils as git_utils
 
 REPO_A_TOML = b"""
@@ -42,6 +48,17 @@ def fresh_global_settings():
     for section, contents in snapshot.items():
         global_settings.unset(section)
         global_settings.set(section, copy.deepcopy(contents), merge=False)
+
+
+@pytest.fixture
+def clean_repo_overrides():
+    """Isolate the module-level repo-override ledger around each test so recorded
+    overrides don't carry across tests."""
+    saved = dict(_APPLIED_REPO_OVERRIDES)
+    _APPLIED_REPO_OVERRIDES.clear()
+    yield
+    _APPLIED_REPO_OVERRIDES.clear()
+    _APPLIED_REPO_OVERRIDES.update(saved)
 
 
 def _extra_instructions(section: str) -> str:
@@ -119,3 +136,137 @@ foo = "X-FROM-REPO-A"
             git_utils.apply_repo_settings("https://git.example/projects/B/repos/b/pull-requests/1")
             assert get_settings().get("my_custom_repo_section.foo") is None, \
                 "repo A's [my_custom_repo_section] leaked into repo B"
+
+
+class TestRepoSettingsOverrideRevertWithoutClone:
+    """Verify the override-revert safety net in `apply_repo_settings()` itself.
+
+    The tests above cover callers that install a per-request `context['settings']`
+    clone (every webhook server). These tests deliberately run WITHOUT that clone,
+    so `get_settings()` returns the shared `global_settings` — the situation for
+    long-running non-webhook callers such as `github_polling`, which processes many
+    PRs in one process. There, cross-repo leaks are prevented by reverting exactly
+    the keys the previous repo's `.pr_agent.toml` overrode.
+    """
+
+    def test_leak_reverted_without_request_clone(
+        self, fresh_global_settings, clean_repo_overrides, monkeypatch
+    ):
+        """Repo A's extra_instructions must not survive into repo B when no
+        per-request clone isolates the two loads (issue #2345)."""
+        monkeypatch.setattr(
+            "pr_agent.git_providers.utils.get_git_provider_with_context",
+            lambda url: FakeGitProvider(REPO_A_TOML),
+        )
+        git_utils.apply_repo_settings("https://git.example/projects/A/repos/a/pull-requests/1")
+        assert "MARKER-FROM-REPO-A" in _extra_instructions("pr_reviewer"), "precondition"
+
+        monkeypatch.setattr(
+            "pr_agent.git_providers.utils.get_git_provider_with_context",
+            lambda url: FakeGitProvider(b""),
+        )
+        git_utils.apply_repo_settings("https://git.example/projects/B/repos/b/pull-requests/1")
+
+        assert "MARKER-FROM-REPO-A" not in _extra_instructions("pr_reviewer"), \
+            "repo A's [pr_reviewer].extra_instructions leaked into repo B"
+        assert "MARKER-FROM-REPO-A" not in _extra_instructions("pr_code_suggestions"), \
+            "repo A's [pr_code_suggestions].extra_instructions leaked into repo B"
+
+    def test_runtime_flags_not_reverted(
+        self, fresh_global_settings, clean_repo_overrides, monkeypatch
+    ):
+        """config.is_auto_command / config.is_new_pr are set outside the repo-settings
+        merge, so the revert on the second apply_repo_settings() (from
+        PRAgent._handle_request) must leave them intact — auto-command flows depend on it."""
+        monkeypatch.setattr(
+            "pr_agent.git_providers.utils.get_git_provider_with_context",
+            lambda url: FakeGitProvider(REPO_A_TOML),
+        )
+        git_utils.apply_repo_settings("https://git.example/projects/A/repos/a/pull-requests/1")
+        # Server sets request-scoped runtime flags after the first apply.
+        get_settings().set("config.is_auto_command", True)
+        get_settings().set("config.is_new_pr", False)
+
+        # Second apply for a repo without .pr_agent.toml (e.g. the per-command re-apply).
+        monkeypatch.setattr(
+            "pr_agent.git_providers.utils.get_git_provider_with_context",
+            lambda url: FakeGitProvider(b""),
+        )
+        git_utils.apply_repo_settings("https://git.example/projects/B/repos/b/pull-requests/1")
+
+        assert get_settings().config.is_auto_command is True, \
+            "is_auto_command was wiped by the second apply_repo_settings()"
+        assert get_settings().config.is_new_pr is False, \
+            "is_new_pr was wiped by the second apply_repo_settings()"
+        # ...while the actual repo-settings leak is still fixed.
+        assert "MARKER-FROM-REPO-A" not in _extra_instructions("pr_reviewer")
+
+    def test_non_repo_config_is_not_reverted(
+        self, fresh_global_settings, clean_repo_overrides, monkeypatch
+    ):
+        """Base/runtime config set outside the repo-settings merge (e.g. an operator's
+        config.extra_config_url) must survive a subsequent apply_repo_settings()."""
+        get_settings().set("config.extra_config_url", "")  # ensure no real fetch
+        get_settings().set("config.output_relevant_configurations", True)
+
+        monkeypatch.setattr(
+            "pr_agent.git_providers.utils.get_git_provider_with_context",
+            lambda url: FakeGitProvider(REPO_A_TOML),
+        )
+        git_utils.apply_repo_settings("https://git.example/projects/A/repos/a/pull-requests/1")
+        monkeypatch.setattr(
+            "pr_agent.git_providers.utils.get_git_provider_with_context",
+            lambda url: FakeGitProvider(b""),
+        )
+        git_utils.apply_repo_settings("https://git.example/projects/B/repos/b/pull-requests/1")
+
+        assert get_settings().config.output_relevant_configurations is True, \
+            "a non-repo config value was clobbered by the repo-settings revert"
+
+    def test_revert_targets_effective_settings_object(
+        self, fresh_global_settings, clean_repo_overrides, monkeypatch
+    ):
+        """Record/revert must operate on the object get_settings() returns (e.g. a
+        per-request context["settings"] clone), never only global_settings."""
+        clone = copy.deepcopy(global_settings)
+        monkeypatch.setattr("pr_agent.config_loader.get_settings", lambda *a, **k: clone)
+
+        # Simulate a repo override recorded + written on the effective (clone) object.
+        note_repo_setting_override("pr_reviewer", "extra_instructions")
+        clone.set("pr_reviewer.extra_instructions", "LEAK-ON-CLONE")
+        assert clone.get("pr_reviewer.extra_instructions") == "LEAK-ON-CLONE"
+
+        reset_repo_settings_overrides()
+
+        assert clone.get("pr_reviewer.extra_instructions") != "LEAK-ON-CLONE", \
+            "revert did not operate on the effective (context clone) settings object"
+        assert global_settings.get("pr_reviewer.extra_instructions") != "LEAK-ON-CLONE", \
+            "global_settings must be untouched when the effective object is a clone"
+
+    def test_claude_shorthand_model_keys_do_not_leak(
+        self, fresh_global_settings, clean_repo_overrides, monkeypatch
+    ):
+        """A repo selecting the 'claude-3-5-sonnet' shorthand triggers set_claude_model(),
+        which also rewrites config.model_weak / config.fallback_models. Those derived keys
+        must be reverted (not just config.model) for a later repo that doesn't use it."""
+        baseline_model_weak = get_settings().get("config.model_weak", None)
+        baseline_fallbacks = copy.deepcopy(get_settings().get("config.fallback_models", None))
+
+        monkeypatch.setattr(
+            "pr_agent.git_providers.utils.get_git_provider_with_context",
+            lambda url: FakeGitProvider(b'[config]\nmodel = "claude-3-5-sonnet"\n'),
+        )
+        git_utils.apply_repo_settings("https://git.example/projects/A/repos/a/pull-requests/1")
+        assert "claude" in (get_settings().get("config.model_weak", "") or "").lower(), \
+            "precondition: set_claude_model() should have rewritten model_weak"
+
+        monkeypatch.setattr(
+            "pr_agent.git_providers.utils.get_git_provider_with_context",
+            lambda url: FakeGitProvider(b""),
+        )
+        git_utils.apply_repo_settings("https://git.example/projects/B/repos/b/pull-requests/1")
+
+        assert get_settings().get("config.model_weak", None) == baseline_model_weak, \
+            "config.model_weak leaked from the claude shorthand into the next repo"
+        assert get_settings().get("config.fallback_models", None) == baseline_fallbacks, \
+            "config.fallback_models leaked from the claude shorthand into the next repo"
