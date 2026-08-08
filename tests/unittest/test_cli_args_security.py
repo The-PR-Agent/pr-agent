@@ -28,7 +28,6 @@ FORBIDDEN_ARGS = [
     "--config.uri=https://evil.example",
     # provider / auth selection and skip lists
     "--config.secret_provider=aws",
-    "--config.git_provider=github",
     "--config.skip_keys=foo",
     "--auth.bearer_token=abc",
     "--provider.personal_access_token=ghp_xxx",
@@ -58,6 +57,8 @@ ALLOWED_ARGS_SINGLE = [
     "--pr_reviewer.require_tests_review=true",
     "--config.response_language=zh-tw",
     "--pr_description.publish_labels=false",
+    # git_provider is allowed (removed from forbidden list so CLI can select provider)
+    "--config.git_provider=gitlab",
     # non-flag arguments are not validated against the forbidden list
     "some-positional-arg",
     "yes",
