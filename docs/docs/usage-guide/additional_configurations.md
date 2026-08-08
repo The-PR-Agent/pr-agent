@@ -134,6 +134,18 @@ expand_submodule_diffs = true
 
 When enabled, PR-Agent will fetch and attach diffs from the submodule repositories. The default is `false` to avoid extra GitLab API calls.
 
+## Post the review as a GitLab thread
+
+By default, PR-Agent posts the `/review` summary as a plain note. To post it as a resolvable thread (GitLab discussion) instead, enable (default: `false`):
+
+```toml
+[gitlab]
+publish_review_as_thread = true
+```
+- With `pr_reviewer.persistent_comment=true` (the default), each run updates the existing review thread and reopens it if it was resolved, so the refreshed review gets another look.
+- Enabling the flag does not convert a review that was already posted as a plain note: it keeps being updated in place, and GitLab cannot promote a note to a thread. Only MRs whose first review runs after the flag is set get a thread.
+- Set `pr_reviewer.persistent_comment=false` to open a new review thread on each run instead.
+
 ## Log Level
 
 PR-Agent allows you to control the verbosity of logging by using the `log_level` configuration parameter. This is particularly useful for troubleshooting and debugging issues with your PR workflows.
@@ -144,6 +156,28 @@ log_level = "DEBUG"  # Options: "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"
 ```
 
 The default log level is "DEBUG", which provides detailed output of all operations. If you prefer less verbose logs, you can set higher log levels like "INFO" or "WARNING".
+
+## Attributing requests to a PR on the provider side
+
+When `add_user_to_requests` is enabled, PR-Agent sends the current command and PR URL in the
+OpenAI-compatible `user` request field, as a compact JSON string:
+
+```
+{"command":"improve","pr_url":"https://gitlab.example.com/group/project/-/merge_requests/171"}
+```
+
+Providers that record this field per request (for example OpenRouter, which shows it as
+`external_user` in the generation details and includes it in the activity export) can then
+attribute every request, its cost and its outcome to a specific PR and command, without
+timestamp correlation.
+
+```
+[config]
+add_user_to_requests = true
+```
+
+The setting is disabled by default, since it shares request-attribution data with the model
+provider: enabling it is an explicit operator choice.
 
 ## Integrating with Logging Observability Platforms
 

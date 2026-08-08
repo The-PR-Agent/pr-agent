@@ -361,6 +361,103 @@ class TestGiteaProvider:
         provider.repo_api.get_file_content.assert_not_called()
 
 
+class TestGiteaProviderPRCommits:
+    """Regression tests for #2206: the provider must resolve ``last_commit`` from the
+    commits of the PR, not from the commits of the repository's default branch.
+
+    ``__init__`` performs network calls, so the instance is built with ``__new__`` and
+    only the attributes ``_set_pr_commits`` uses are wired up.
+    """
+
+    @staticmethod
+    def _provider(pr_commits, head_sha="head-sha"):
+        from pr_agent.git_providers.gitea_provider import GiteaProvider
+
+        provider = GiteaProvider.__new__(GiteaProvider)
+        provider.logger = MagicMock()
+        provider.owner = "owner"
+        provider.repo = "repo"
+        provider.pr_number = 123
+        provider.sha = head_sha
+        provider.repo_api = MagicMock()
+        provider.repo_api.get_pr_commits.return_value = pr_commits
+        return provider
+
+    def test_commits_are_fetched_from_the_pr_not_from_the_repository(self):
+        provider = self._provider([{"sha": "head-sha", "html_url": "url/head-sha"}])
+
+        provider._set_pr_commits()
+
+        provider.repo_api.get_pr_commits.assert_called_once_with(
+            owner="owner",
+            repo="repo",
+            pr_number=123
+        )
+        provider.repo_api.list_all_commits.assert_not_called()
+
+    def test_last_commit_is_the_pr_head_although_gitea_returns_newest_first(self):
+        # Gitea returns PR commits newest-first, so the head commit comes first.
+        provider = self._provider([
+            {"sha": "head-sha", "html_url": "url/head-sha"},
+            {"sha": "older-sha", "html_url": "url/older-sha"},
+        ])
+
+        provider._set_pr_commits()
+
+        assert provider.last_commit.sha == "head-sha"
+        assert provider.last_commit_id is provider.last_commit
+        assert provider.get_latest_commit_url() == "url/head-sha"
+        # Stored oldest-first, matching the iteration order of the other providers.
+        assert [commit.sha for commit in provider.pr_commits] == ["older-sha", "head-sha"]
+
+    def test_last_commit_falls_back_to_newest_commit_when_head_sha_is_unknown(self):
+        provider = self._provider([
+            {"sha": "newest-sha", "html_url": "url/newest-sha"},
+            {"sha": "older-sha", "html_url": "url/older-sha"},
+        ], head_sha="")
+
+        provider._set_pr_commits()
+
+        assert provider.last_commit.sha == "newest-sha"
+
+    def test_no_commits_falls_back_to_a_commit_wrapping_the_head_sha(self):
+        provider = self._provider([])
+
+        provider._set_pr_commits()
+
+        assert provider.pr_commits == []
+        # last_commit must stay a valid object (never None) so callers that dereference
+        # last_commit.sha / last_commit_id.sha don't crash, and get a real SHA instead of "".
+        assert provider.last_commit is not None
+        assert provider.last_commit.sha == "head-sha"
+        assert provider.last_commit_id is provider.last_commit
+        assert provider.get_latest_commit_url() == ""
+        provider.logger.error.assert_called_once()
+
+    def test_non_list_commits_payload_is_treated_as_empty(self):
+        provider = self._provider({"message": "not found"})
+
+        provider._set_pr_commits()
+
+        assert provider.pr_commits == []
+        assert provider.last_commit.sha == "head-sha"
+        provider.logger.error.assert_called()
+
+    def test_file_content_is_read_from_the_pr_head_commit(self):
+        provider = self._provider([{"sha": "head-sha", "html_url": "url/head-sha"}])
+        provider.repo_api.get_file_content.return_value = "content"
+
+        provider._set_pr_commits()
+        provider._get_file_content_from_latest_commit("main.py")
+
+        provider.repo_api.get_file_content.assert_called_once_with(
+            owner="owner",
+            repo="repo",
+            commit_sha="head-sha",
+            filepath="main.py"
+        )
+
+
 class TestGiteaProviderAddFileDiff:
     """Tests for GiteaProvider.__add_file_diff diff parsing.
 

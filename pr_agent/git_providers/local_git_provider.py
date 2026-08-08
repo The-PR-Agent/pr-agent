@@ -26,7 +26,8 @@ class LocalGitProvider(GitProvider):
     It mimics the PR functionality of the GitProvider interface,
     but does not require a hosted git repository.
     Instead of providing a PR url, the user provides a local branch path to generate a diff-patch.
-    For the MVP it only supports the /review and /describe capabilities.
+    It supports the /review, /describe and /improve capabilities; each writes its output to a
+    file (review.md, description.md, improve.md) since there is no hosted PR to comment on.
     """
 
     def __init__(self, target_branch_name, incremental=False):
@@ -43,6 +44,8 @@ class LocalGitProvider(GitProvider):
             if get_settings().get('local.description_path') is not None else self.repo_path / 'description.md'
         self.review_path = get_settings().get('local.review_path') \
             if get_settings().get('local.review_path') is not None else self.repo_path / 'review.md'
+        self.improve_path = get_settings().get('local.improve_path') \
+            if get_settings().get('local.improve_path') is not None else self.repo_path / 'improve.md'
         # inline code comments are not supported for local git repositories
         get_settings().pr_reviewer.inline_code_comments = False
 
@@ -89,7 +92,7 @@ class LocalGitProvider(GitProvider):
                 FilePatchInfo(original_file_content_str,
                               new_file_content_str,
                               diff_item.diff.decode('utf-8'),
-                              diff_item.b_path,
+                              diff_item.b_path or diff_item.a_path,
                               edit_type=edit_type,
                               old_filename=None if diff_item.a_path == diff_item.b_path else diff_item.a_path
                               )
@@ -115,7 +118,11 @@ class LocalGitProvider(GitProvider):
             file.write(title + '\n' + pr_body)
 
     def publish_comment(self, pr_comment: str, is_temporary: bool = False):
-        with open(self.review_path, "w") as file:
+        # Temporary comments (e.g. "Preparing suggestions...") have no place to live
+        # locally and would otherwise clobber the persisted review.md; skip them.
+        if is_temporary:
+            return
+        with open(self.review_path, "w", encoding="utf-8") as file:
             # Write the string to the file
             file.write(pr_comment)
 
@@ -130,7 +137,31 @@ class LocalGitProvider(GitProvider):
         raise NotImplementedError('Publishing code suggestions is not implemented for the local git provider')
 
     def publish_code_suggestions(self, code_suggestions: list) -> bool:
-        raise NotImplementedError('Publishing code suggestions is not implemented for the local git provider')
+        """
+        Write /improve output to a file (improve.md by default).
+
+        There is no hosted PR to attach inline suggestions to, so the suggestions the
+        tool built for inline publishing are rendered as a single markdown document,
+        mirroring how /review and /describe persist their output locally. Each entry
+        carries a rendered 'body' plus its file and line range; format them into a
+        readable section per suggestion. Returns True so the caller does not fall back
+        to publishing suggestions one by one.
+        """
+        sections = []
+        for suggestion in code_suggestions:
+            relevant_file = suggestion.get('relevant_file', '').strip()
+            start = suggestion.get('relevant_lines_start')
+            end = suggestion.get('relevant_lines_end')
+            location = relevant_file
+            if start is not None:
+                location += f" [{start}-{end}]" if end is not None and end != start else f" [{start}]"
+            header = f"### {location}" if location else "### Suggestion"
+            sections.append(f"{header}\n\n{suggestion.get('body', '').strip()}")
+        pr_body = "# PR Code Suggestions ✨\n\n" + "\n\n".join(sections) if sections \
+            else "# PR Code Suggestions ✨\n\nNo code suggestions found for the PR."
+        with open(self.improve_path, "w", encoding="utf-8") as file:
+            file.write(pr_body)
+        return True
 
     def publish_labels(self, labels):
         pass  # Not applicable to the local git provider, but required by the interface

@@ -5,7 +5,7 @@ Thank you for your interest in contributing to the PR-Agent project!
 ## Getting Started
 
 1. Fork the repository and clone your fork
-2. Install Python 3.10 or higher
+2. Install Python 3.12 or higher (the interpreter requirement declared in `pyproject.toml`)
 3. Install dependencies (`requirements.txt` and `requirements-dev.txt`)
 4. Create a new branch for your contribution:
    - For new features: `git checkout -b feature/your-feature-name`
@@ -34,5 +34,5 @@ Thank you for your interest in contributing to the PR-Agent project!
 ## Questions or Need Help?
 
 - Ask questions or start a discussion in [GitHub Discussions](https://github.com/the-pr-agent/pr-agent/discussions)
-- Check the [documentation](https://qodo-merge-docs.qodo.ai/) for detailed information
+- Check the [documentation](https://docs.pr-agent.ai/) for detailed information
 - Report bugs or request features through [GitHub Issues](https://github.com/the-pr-agent/pr-agent/issues)

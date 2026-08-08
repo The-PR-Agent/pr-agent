@@ -58,7 +58,11 @@ async def test_chat_completion_passes_seed_when_temperature_is_zero(monkeypatch)
 @pytest.mark.asyncio
 async def test_chat_completion_rejects_seed_for_claude_opus_4_8_default_temperature(monkeypatch):
     class FakeAPIError(Exception):
-        pass
+        # same signature as openai.APIError, which the handler constructs with a message
+        def __init__(self, message="", request=None, body=None):
+            super().__init__(message)
+            self.request = request
+            self.body = body
 
     monkeypatch.setattr(litellm_handler, "get_settings", lambda: FakeSettings(config_values={"seed": 123}))
     monkeypatch.setattr(litellm_handler.openai, "APIError", FakeAPIError)

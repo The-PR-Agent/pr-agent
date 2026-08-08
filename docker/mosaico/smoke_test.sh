@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Pull and test-run the MOSAICO A2A solution-agent image published by the
-# upstream qodo-ai/pr-agent release workflow (Docker target `mosaico_agent`).
+# The-PR-Agent/pr-agent release workflow (Docker target `mosaico_agent`).
 #
 #   Smoke (always):       boot the container and validate the A2A agent card.
 #   Full round-trip:      when LLM creds are present, also exercise GET /health

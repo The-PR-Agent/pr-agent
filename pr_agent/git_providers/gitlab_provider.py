@@ -291,7 +291,7 @@ class GitLabProvider(GitProvider):
         return out
 
     def is_supported(self, capability: str) -> bool:
-        if capability in ['get_issue_comments', 'create_inline_comment', 'publish_inline_comments',
+        if capability in ['create_inline_comment', 'publish_inline_comments',
             'publish_file_comments']: # gfm_markdown is supported in gitlab !
             return False
         if capability == "push_code" and get_settings().config.restricted_mode:
@@ -348,7 +348,8 @@ class GitLabProvider(GitProvider):
         self.id_project, self.id_mr = self._parse_merge_request_url(merge_request_url)
         self.mr = self._get_merge_request()
         try:
-            self.last_diff = self.mr.diffs.list(get_all=True)[-1]
+            # the versions endpoint is ordered newest-first, so the latest diff is the first entry
+            self.last_diff = self.mr.diffs.list(get_all=True)[0]
         except IndexError as e:
             get_logger().error(f"Could not get diff for merge request {self.id_mr}")
             raise DiffNotFoundError(f"Could not get diff for merge request {self.id_mr}") from e
@@ -510,18 +511,39 @@ class GitLabProvider(GitProvider):
     def get_comment_url(self, comment):
         return f"{self.mr.web_url}#note_{comment.id}"
 
+    def should_publish_review_as_thread(self) -> bool:
+        return bool(get_settings().get("GITLAB.PUBLISH_REVIEW_AS_THREAD", False))
+
     def publish_persistent_comment(self, pr_comment: str,
                                    initial_header: str,
                                    update_header: bool = True,
                                    name='review',
-                                   final_update_message=True):
-        self.publish_persistent_comment_full(pr_comment, initial_header, update_header, name, final_update_message)
+                                   final_update_message=True,
+                                   as_thread: bool = False):
+        self.publish_persistent_comment_full(pr_comment, initial_header, update_header, name, final_update_message,
+                                             as_thread=as_thread)
 
-    def publish_comment(self, mr_comment: str, is_temporary: bool = False):
+    def publish_comment(self, mr_comment: str, is_temporary: bool = False, as_thread: bool = False):
         if is_temporary and not get_settings().config.publish_output_progress:
             get_logger().debug(f"Skipping publish_comment for temporary comment: {mr_comment}")
             return None
         mr_comment = self.limit_output_characters(mr_comment, self.max_comment_chars)
+        # When as_thread is set (only the review's final comment requests this), post it as a resolvable
+        # thread (discussion) instead of a plain note. Temporary progress comments are never threaded.
+        if as_thread and not is_temporary:
+            try:
+                discussion = self.mr.discussions.create({'body': mr_comment})
+            except Exception as e:
+                get_logger().warning(f"Failed to publish comment as a thread, falling back to a note: {e}")
+            else:
+                # Return the underlying note so callers keep note-level semantics (edit/remove/url by id).
+                # The thread already exists here, so a failure must not fall back to a note
+                # (it would duplicate the review); return None instead.
+                try:
+                    return self.mr.notes.get(discussion.attributes['notes'][0]['id'])
+                except Exception as e:
+                    get_logger().warning(f"Published review thread but failed to fetch its note: {e}")
+                    return None
         comment = self.mr.notes.create({'body': mr_comment})
         if is_temporary:
             self.temp_comments.append(comment)
@@ -530,6 +552,23 @@ class GitLabProvider(GitProvider):
     def edit_comment(self, comment, body: str):
         body = self.limit_output_characters(body, self.max_comment_chars)
         self.mr.notes.update(comment.id,{'body': body} )
+
+    def unresolve_comment_thread(self, comment):
+        try:
+            # Notes carry their own resolution state; skip the full discussions scan (the API offers no
+            # note -> discussion lookup) unless the note reports it is actually resolved.
+            if getattr(comment, 'resolvable', None) is False or getattr(comment, 'resolved', None) is False:
+                return
+            for discussion in self.mr.discussions.list(get_all=True):
+                notes = discussion.attributes.get('notes', [])
+                if not any(note.get('id') == comment.id for note in notes):
+                    continue
+                if any(note.get('resolvable') and note.get('resolved') for note in notes):
+                    discussion.resolved = False
+                    discussion.save()
+                return
+        except Exception as e:
+            get_logger().warning(f"Failed to reopen resolved review thread: {e}")
 
     def edit_comment_from_comment_id(self, comment_id: int, body: str):
         body = self.limit_output_characters(body, self.max_comment_chars)
@@ -679,13 +718,12 @@ class GitLabProvider(GitProvider):
         if not all_diffs:
             get_logger().error('No diffs found for the merge request.')
             return None
-        for diff in all_diffs:
-            for change in changes['changes']:
-                if change['new_path'] == relevant_file and relevant_line_in_file in change['diff']:
-                    return diff
-            get_logger().debug(
-                f'No relevant diff found for {relevant_file} {relevant_line_in_file}. Falling back to last diff.')
-        return self.last_diff  # fallback to last_diff if no relevant diff is found
+        for change in changes['changes']:
+            if change['new_path'] == relevant_file and relevant_line_in_file in change['diff']:
+                return all_diffs[0]
+        get_logger().debug(
+            f'No relevant diff found for {relevant_file} {relevant_line_in_file}. Falling back to latest diff.')
+        return self.last_diff  # fallback to the latest diff if no relevant diff is found
 
     def publish_code_suggestions(self, code_suggestions: list) -> bool:
         for suggestion in code_suggestions:

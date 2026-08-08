@@ -21,10 +21,13 @@ Coverage:
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
 import yaml
+from jinja2 import Environment, StrictUndefined, select_autoescape
 
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import PRDescriptionHeader, process_description
+from pr_agent.config_loader import get_settings
 from pr_agent.tools.pr_description import PRDescription
 
 KEYS_FIX = ["filename:", "language:", "changes_summary:", "changes_title:", "description:", "title:"]
@@ -50,6 +53,7 @@ def _settings(
     add_original_user_description: bool = False,
     publish_labels: bool = False,
     enable_pr_type: bool = True,
+    enable_pr_description: bool = True,
     generate_ai_title: bool = True,
     include_generated_by_header: bool = False,
     enable_semantic_files_types: bool = True,
@@ -68,6 +72,7 @@ def _settings(
     pd.collapsible_file_list = collapsible_file_list
     pd.get.side_effect = lambda key, default=None: {
         "file_table_collapsible_open_by_default": file_table_collapsible_open_by_default,
+        "enable_pr_description": enable_pr_description,
     }.get(key, default)
     return settings
 
@@ -205,6 +210,32 @@ class TestPrepareAnswerWithMarkers:
         assert "pr_agent:summary" not in body
 
     @patch("pr_agent.tools.pr_description.get_settings")
+    def test_summary_marker_is_removed_when_description_disabled(self, mock_get_settings):
+        mock_get_settings.return_value = _settings(enable_pr_description=False)
+        obj = self._obj_with_user_description(
+            "Intro\npr_agent:summary\nOutro",
+            {"title": "AI", "description": "Adds caching layer."},
+        )
+
+        _, body, _, _ = obj._prepare_pr_answer_with_markers()
+
+        assert "Adds caching layer." not in body
+        assert "pr_agent:summary" not in body
+
+    @patch("pr_agent.tools.pr_description.get_settings")
+    def test_html_comment_summary_marker_is_removed_when_description_disabled(self, mock_get_settings):
+        mock_get_settings.return_value = _settings(enable_pr_description=False)
+        obj = self._obj_with_user_description(
+            "Intro\n<!-- pr_agent:summary -->\nOutro",
+            {"title": "AI", "description": "Adds caching layer."},
+        )
+
+        _, body, _, _ = obj._prepare_pr_answer_with_markers()
+
+        assert "Adds caching layer." not in body
+        assert "pr_agent:summary" not in body
+
+    @patch("pr_agent.tools.pr_description.get_settings")
     def test_generated_by_header_prefixes_replacements(self, mock_get_settings):
         mock_get_settings.return_value = _settings(include_generated_by_header=True)
         obj = self._obj_with_user_description(
@@ -298,6 +329,47 @@ class TestPrepareAnswer:
 
         assert "PR Type" not in body
         assert "Bug fix" not in body
+
+    @patch("pr_agent.tools.pr_description.get_settings")
+    def test_description_section_removed_when_disabled(self, mock_get_settings):
+        mock_get_settings.return_value = _settings(enable_pr_description=False)
+        obj = self._obj({"title": "t", "type": "Bug fix", "description": "AI summary"})
+
+        _, body, _, _ = obj._prepare_pr_answer()
+
+        assert "AI summary" not in body
+        # The other sections are untouched.
+        assert "Bug fix" in body
+
+    @patch("pr_agent.tools.pr_description.get_settings")
+    def test_diagram_and_walkthrough_survive_a_disabled_description(self, mock_get_settings):
+        """#2516: the point of the flag is to keep the diagram and the file walkthrough."""
+        mock_get_settings.return_value = _settings(enable_pr_description=False, enable_pr_type=False)
+        diagram = "\n```mermaid\ngraph LR\nA --> B\n```"
+        obj = self._obj({
+            "title": "t",
+            "description": "AI summary",
+            "changes_diagram": diagram,
+            "pr_files": [{"filename": "app.py", "changes_title": "c", "label": "enhancement"}],
+        })
+
+        _, body, walkthrough, _ = obj._prepare_pr_answer()
+
+        assert "AI summary" not in body
+        assert f"### {PRDescriptionHeader.DIAGRAM_WALKTHROUGH.value}" in body
+        assert "```mermaid" in body
+        assert PRDescriptionHeader.FILE_WALKTHROUGH.value in walkthrough
+        # No section separator is left dangling once the description is gone.
+        assert not body.rstrip().endswith("___")
+
+    @patch("pr_agent.tools.pr_description.get_settings")
+    def test_description_kept_by_default(self, mock_get_settings):
+        mock_get_settings.return_value = _settings()
+        obj = self._obj({"title": "t", "description": "AI summary"})
+
+        _, body, _, _ = obj._prepare_pr_answer()
+
+        assert "AI summary" in body
 
     @patch("pr_agent.tools.pr_description.get_settings")
     def test_description_list_value_is_joined_and_bullets_spaced(self, mock_get_settings):
@@ -472,6 +544,54 @@ class TestPrepareFileLabelsEdgeCases:
         recovered_name = labels["backend"][0][0]
         assert "'" not in recovered_name
         assert '"' not in recovered_name
+
+
+# ---------------------------------------------------------------------------
+# prompt gating for enable_pr_description
+# ---------------------------------------------------------------------------
+class TestDescriptionPromptGating:
+    """The model should not be asked for a summary the tool is going to drop."""
+
+    PROMPT_VARS = {
+        "title": "t",
+        "branch": "main",
+        "description": "",
+        "language": "python",
+        "diff": "diff",
+        "extra_instructions": "",
+        "skills_context": "",
+        "repo_context": "",
+        "commit_messages_str": "",
+        "enable_custom_labels": False,
+        "custom_labels_class": "",
+        "enable_semantic_files_types": True,
+        "related_tickets": "",
+        "include_file_summary_changes": True,
+        "duplicate_prompt_examples": True,
+        "enable_pr_diagram": True,
+    }
+
+    def _render(self, part: str, enable_pr_description: bool) -> str:
+        template = getattr(get_settings().pr_description_prompt, part)
+        environment = Environment(
+            autoescape=select_autoescape(default_for_string=False), undefined=StrictUndefined)
+        return environment.from_string(template).render(
+            {**self.PROMPT_VARS, "enable_pr_description": enable_pr_description})
+
+    @pytest.mark.parametrize("part", ["system", "user"])
+    def test_description_field_is_dropped_when_disabled(self, part):
+        rendered = self._render(part, enable_pr_description=False)
+
+        assert "description: str" not in rendered
+        assert "description: |" not in rendered
+        # The remaining output fields are still requested.
+        assert "title" in rendered
+
+    @pytest.mark.parametrize("part", ["system", "user"])
+    def test_description_field_is_requested_by_default(self, part):
+        rendered = self._render(part, enable_pr_description=True)
+
+        assert "description: |" in rendered
 
 
 # Ensure SimpleNamespace import is used (kept for potential future fixtures);

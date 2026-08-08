@@ -574,6 +574,7 @@ def test_github_provider_reads_from_default_branch_when_requested():
                 "enable_semantic_files_types": True,
                 "include_file_summary_changes": True,
                 "enable_pr_diagram": False,
+                "enable_pr_description": True,
             },
         ),
         (
