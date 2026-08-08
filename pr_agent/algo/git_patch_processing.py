@@ -354,8 +354,9 @@ __old hunk__
 
         if line.startswith('@@'):
             header_line = line
+            prev_match = match  # save previous match before overwriting
             match = RE_HUNK_HEADER.match(line)
-            if match and (new_content_lines or old_content_lines):  # found a new hunk, split the previous lines
+            if prev_match and (new_content_lines or old_content_lines):  # flush the previous hunk
                 if prev_header_line:
                     patch_with_lines_str += f'\n{prev_header_line}\n'
                 is_plus_lines = is_minus_lines = False
@@ -371,12 +372,16 @@ __old hunk__
                     patch_with_lines_str = patch_with_lines_str.rstrip() + '\n__old hunk__\n'
                     for line_old in old_content_lines:
                         patch_with_lines_str += f"{line_old}\n"
-                new_content_lines = []
-                old_content_lines = []
+            # Always reset buffers on any @@ line — whether prev_match flushed
+            # or not. This prevents orphan lines (collected after a malformed @@
+            # that set match=None) from leaking into the next valid hunk.
+            new_content_lines = []
+            old_content_lines = []
             if match:
                 prev_header_line = header_line
-
-            section_header, size1, size2, start1, start2 = extract_hunk_headers(match)
+                section_header, size1, size2, start1, start2 = extract_hunk_headers(match)
+            else:
+                continue  # skip lines that start with @@ but don't match the hunk header pattern
 
         elif line.startswith('+'):
             new_content_lines.append(line)
@@ -391,9 +396,11 @@ __old hunk__
             new_content_lines.append(line)
             old_content_lines.append(line)
 
-    # finishing last hunk
-    if match and new_content_lines:
-        patch_with_lines_str += f'\n{header_line}\n'
+    # finishing last hunk — use prev_header_line (not match/header_line) because
+    # match may have been set to None by a trailing malformed @@ line, and
+    # header_line may point to that malformed line instead of the last valid hunk
+    if prev_header_line and new_content_lines:
+        patch_with_lines_str += f'\n{prev_header_line}\n'
         is_plus_lines = is_minus_lines = False
         if new_content_lines:
             is_plus_lines = any([line.startswith('+') for line in new_content_lines])
@@ -430,6 +437,9 @@ def extract_hunk_lines_from_patch(patch: str, file_name, line_start, line_end, s
                 header_line = line
 
                 match = RE_HUNK_HEADER.match(line)
+                if not match:
+                    skip_hunk = True
+                    continue
 
                 section_header, size1, size2, start1, start2 = extract_hunk_headers(match)
 
