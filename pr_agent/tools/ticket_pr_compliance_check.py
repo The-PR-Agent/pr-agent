@@ -2,8 +2,7 @@ import re
 import traceback
 
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers import GithubProvider
-from pr_agent.git_providers import AzureDevopsProvider
+from pr_agent.git_providers import AzureDevopsProvider, GithubProvider
 from pr_agent.log import get_logger
 
 # Compile the regex pattern once, outside the function
@@ -33,6 +32,72 @@ def find_jira_tickets(text):
                 tickets.add(ticket)
 
     return list(tickets)
+
+
+_ASANA_TASK_URL_PATTERN = re.compile(
+    r"https://app\.asana\.com/0/(\d+)/(\d+)"
+)
+DEFAULT_MAX_RELATED_TICKETS = 3
+
+
+def find_asana_tickets(text: str | None) -> list:
+    """Extract Asana task references from text.
+
+    Supports full Asana URLs (``https://app.asana.com/0/{project_id}/{task_id}``).
+    Returns a list of unique task URLs.
+
+    Args:
+        text: The text to scan for Asana task references.
+
+    Returns:
+        A list of Asana task URLs.
+    """
+    if not isinstance(text, str) or not text:
+        return []
+
+    tickets = set()
+    for match in _ASANA_TASK_URL_PATTERN.finditer(text):
+        tickets.add(match.group(0))
+    return sorted(tickets)
+
+
+def _make_asana_ticket_content(ticket: str) -> dict:
+    return {
+        "ticket_id": ticket,
+        "ticket_url": ticket,
+        "title": f"Asana Task: {ticket}",
+        "body": (
+            "Asana task referenced in PR description. "
+            "Fetch task details from Asana for full context."
+        ),
+        "labels": "",
+    }
+
+
+def _append_asana_ticket_content(
+    tickets_content: list,
+    asana_tickets: list,
+    max_tickets: int,
+) -> None:
+    seen_ticket_urls = {ticket.get("ticket_url") for ticket in tickets_content}
+    for ticket in asana_tickets:
+        if len(tickets_content) >= max_tickets:
+            break
+        if ticket not in seen_ticket_urls:
+            tickets_content.append(_make_asana_ticket_content(ticket))
+            seen_ticket_urls.add(ticket)
+
+
+def _get_max_related_tickets() -> int:
+    max_tickets = get_settings().get(
+        "pr_reviewer.max_related_tickets",
+        DEFAULT_MAX_RELATED_TICKETS,
+    )
+    try:
+        max_tickets = int(max_tickets)
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_RELATED_TICKETS
+    return max(max_tickets, 1)
 
 
 def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url_html='https://github.com'):
@@ -94,7 +159,8 @@ def extract_ticket_links_from_branch_name(branch_name, repo_path, base_url_html=
             pattern = re.compile(custom_regex_str)
             if pattern.groups < 1:
                 get_logger().error(
-                    "branch_issue_regex must contain at least one capturing group for the issue number; using default pattern."
+                    "branch_issue_regex must contain at least one capturing group for the issue number; "
+                    "using default pattern."
                 )
                 pattern = BRANCH_ISSUE_PATTERN
         except re.error as e:
@@ -116,9 +182,14 @@ def extract_ticket_links_from_branch_name(branch_name, repo_path, base_url_html=
 
 async def extract_tickets(git_provider):
     MAX_TICKET_CHARACTERS = 10000
+    max_tickets = _get_max_related_tickets()
     try:
+        user_description = git_provider.get_user_description()
+        asana_tickets = find_asana_tickets(user_description)
+        tickets_content = []
+        asana_tickets_to_include = asana_tickets
+
         if isinstance(git_provider, GithubProvider):
-            user_description = git_provider.get_user_description()
             description_tickets = extract_ticket_links_from_pr_description(
                 user_description, git_provider.repo, git_provider.base_url_html
             )
@@ -132,12 +203,19 @@ async def extract_tickets(git_provider):
                 if link not in seen:
                     seen.add(link)
                     merged.append(link)
-            if len(merged) > 3:
-                get_logger().info(f"Too many tickets (description + branch): {len(merged)}")
-                tickets = merged[:3]
+
+            total_tickets = len(merged) + len(asana_tickets)
+            if total_tickets > max_tickets:
+                get_logger().info(
+                    f"Too many tickets (description + branch + Asana): {total_tickets}"
+                )
+                # Reserve at least one slot for an Asana reference when
+                # present so it is not systematically dropped.
+                reserved_asana_slots = 1 if asana_tickets else 0
+                github_slots = max_tickets - reserved_asana_slots
+                tickets = merged[:github_slots]
             else:
                 tickets = merged
-            tickets_content = []
 
             if tickets:
 
@@ -207,11 +285,8 @@ async def extract_tickets(git_provider):
                         'sub_issues': sub_issues_content  # Store sub-issues content
                     })
 
-                return tickets_content
-
         elif isinstance(git_provider, AzureDevopsProvider):
             tickets_info = git_provider.get_linked_work_items()
-            tickets_content = []
             for ticket in tickets_info:
                 try:
                     ticket_body_str = ticket.get("body", "")
@@ -233,11 +308,20 @@ async def extract_tickets(git_provider):
                         f"Error processing Azure DevOps ticket: {e}",
                         artifact={"traceback": traceback.format_exc()},
                     )
-            return tickets_content
+            azure_slots = max_tickets - (1 if asana_tickets else 0)
+            tickets_content = tickets_content[:azure_slots]
+
+        _append_asana_ticket_content(
+            tickets_content,
+            asana_tickets_to_include,
+            max_tickets,
+        )
+        return tickets_content
 
     except Exception as e:
         get_logger().error(f"Error extracting tickets error= {e}",
                            artifact={"traceback": traceback.format_exc()})
+    return []
 
 
 async def extract_and_cache_pr_tickets(git_provider, vars):
