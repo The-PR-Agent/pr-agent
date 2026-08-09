@@ -7,6 +7,7 @@ Time-dependent behavior is exercised by monkeypatching ``time.monotonic`` on the
 """
 
 import asyncio
+import copy
 from types import SimpleNamespace
 
 import pytest
@@ -497,6 +498,29 @@ class TestPushTriggerDedupe:
         assert push_trigger_env["count"] == 0
 
 
+@pytest.fixture
+def bot_pr_settings():
+    """Isolate the ``ignore_bot_pr`` lookup from the shared global settings.
+
+    Dynaconf's ``unset`` does not remove a dotted key, so a test that adds
+    ``GITHUB_APP.IGNORE_BOT_PR`` cannot take it back off again.  Both sections are
+    therefore snapshotted and restored wholesale, which does drop keys the test
+    introduced.
+    """
+    from pr_agent.config_loader import get_settings
+
+    settings = get_settings()
+    originals = {
+        name: copy.deepcopy(settings.get(name)) for name in ("GITHUB", "GITHUB_APP")
+    }
+    try:
+        yield settings
+    finally:
+        for name, original in originals.items():
+            settings.unset(name, force=True)
+            settings.set(name, original)
+
+
 class TestIsBotUser:
     """``is_bot_user`` must read ``ignore_bot_pr`` from the section it ships in.
 
@@ -521,48 +545,23 @@ class TestIsBotUser:
         assert "ignore_bot_pr" in shipped["github"]
         assert "ignore_bot_pr" not in shipped.get("github_app", {})
 
-    def test_legacy_github_app_override_is_honoured(self):
-        from pr_agent.config_loader import get_settings
+    def test_legacy_github_app_override_is_honoured(self, bot_pr_settings):
+        bot_pr_settings.set("GITHUB.IGNORE_BOT_PR", True)
+        bot_pr_settings.set("GITHUB_APP.IGNORE_BOT_PR", False)
 
-        settings = get_settings()
-        original = settings.get("GITHUB.IGNORE_BOT_PR")
-        settings.set("GITHUB.IGNORE_BOT_PR", True)
-        settings.set("GITHUB_APP.IGNORE_BOT_PR", False)
-        try:
-            assert github_app.is_bot_user("dependabot[bot]", "Bot") is False
-        finally:
-            settings.set("GITHUB.IGNORE_BOT_PR", original)
-            settings.set("GITHUB_APP.IGNORE_BOT_PR", None)
+        assert github_app.is_bot_user("dependabot[bot]", "Bot") is False
 
-    def test_bot_sender_is_ignored_when_enabled(self):
-        from pr_agent.config_loader import get_settings
+    def test_bot_sender_is_ignored_when_enabled(self, bot_pr_settings):
+        bot_pr_settings.set("GITHUB.IGNORE_BOT_PR", True)
 
-        settings = get_settings()
-        original = settings.get("GITHUB.IGNORE_BOT_PR")
-        settings.set("GITHUB.IGNORE_BOT_PR", True)
-        try:
-            assert github_app.is_bot_user("dependabot[bot]", "Bot") is True
-        finally:
-            settings.set("GITHUB.IGNORE_BOT_PR", original)
+        assert github_app.is_bot_user("dependabot[bot]", "Bot") is True
 
-    def test_bot_sender_is_processed_when_disabled(self):
-        from pr_agent.config_loader import get_settings
+    def test_bot_sender_is_processed_when_disabled(self, bot_pr_settings):
+        bot_pr_settings.set("GITHUB.IGNORE_BOT_PR", False)
 
-        settings = get_settings()
-        original = settings.get("GITHUB.IGNORE_BOT_PR")
-        settings.set("GITHUB.IGNORE_BOT_PR", False)
-        try:
-            assert github_app.is_bot_user("dependabot[bot]", "Bot") is False
-        finally:
-            settings.set("GITHUB.IGNORE_BOT_PR", original)
+        assert github_app.is_bot_user("dependabot[bot]", "Bot") is False
 
-    def test_human_sender_is_never_ignored(self):
-        from pr_agent.config_loader import get_settings
+    def test_human_sender_is_never_ignored(self, bot_pr_settings):
+        bot_pr_settings.set("GITHUB.IGNORE_BOT_PR", True)
 
-        settings = get_settings()
-        original = settings.get("GITHUB.IGNORE_BOT_PR")
-        settings.set("GITHUB.IGNORE_BOT_PR", True)
-        try:
-            assert github_app.is_bot_user("alice", "User") is False
-        finally:
-            settings.set("GITHUB.IGNORE_BOT_PR", original)
+        assert github_app.is_bot_user("alice", "User") is False
