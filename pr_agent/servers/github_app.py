@@ -240,9 +240,7 @@ def get_log_context(body, event, action, build_number):
 
 def is_bot_user(sender, sender_type):
     try:
-        # logic to ignore PRs opened by bot.
-        # `ignore_bot_pr` ships under [github]; the [github_app] spelling this lookup
-        # used to read is still honoured for deployments that set it.
+        # logic to ignore PRs opened by bot
         ignore_bot_pr = get_settings().get("GITHUB_APP.IGNORE_BOT_PR", None)
         if ignore_bot_pr is None:
             ignore_bot_pr = get_settings().get("GITHUB.IGNORE_BOT_PR", False)

@@ -500,12 +500,8 @@ class TestPushTriggerDedupe:
 
 @pytest.fixture
 def bot_pr_settings():
-    """Isolate the ``ignore_bot_pr`` lookup from the shared global settings.
-
-    Dynaconf's ``unset`` does not remove a dotted key, so a test that adds
-    ``GITHUB_APP.IGNORE_BOT_PR`` cannot take it back off again.  Both sections are
-    therefore snapshotted and restored wholesale, which does drop keys the test
-    introduced.
+    """Snapshot both sections wholesale: Dynaconf's ``unset`` does not remove a
+    dotted key, so a key a test adds can only be dropped by restoring its section.
     """
     from pr_agent.config_loader import get_settings
 
@@ -522,13 +518,6 @@ def bot_pr_settings():
 
 
 class TestIsBotUser:
-    """``is_bot_user`` must read ``ignore_bot_pr`` from the section it ships in.
-
-    The option is defined under ``[github]`` in configuration.toml, so a lookup
-    against any other section resolves to the default and leaves the filter
-    silently inert.
-    """
-
     def test_option_ships_under_the_github_section(self):
         import tomllib
         from pathlib import Path
@@ -539,9 +528,7 @@ class TestIsBotUser:
         with config_path.open("rb") as handle:
             shipped = tomllib.load(handle)
 
-        # Read the file rather than the merged settings so environment overrides
-        # cannot skew this: it pins where the option is defined, which is what the
-        # lookup in is_bot_user has to agree with.
+        # Read the file, not the merged settings, so env overrides cannot skew this.
         assert "ignore_bot_pr" in shipped["github"]
         assert "ignore_bot_pr" not in shipped.get("github_app", {})
 
