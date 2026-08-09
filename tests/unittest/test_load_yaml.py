@@ -47,3 +47,13 @@ PR Feedback:
 
         expected_output = [{'relevant file': 'src/app.py:\n', 'suggestion content': 'The print statement is outside inside the if __name__ ==:'}]
         assert load_yaml(yaml_str) == expected_output
+
+    # Tests that a fenced block whose info string is separated by a space
+    # (CommonMark allows whitespace after the opening fence) parses the same
+    # as the flush form.
+    def test_space_before_yaml_info_string(self):
+        expected = {"name": "John"}
+
+        assert load_yaml("```yaml\nname: John\n```") == expected
+        assert load_yaml("``` yaml\nname: John\n```") == expected
+        assert load_yaml("``` yml\nname: John\n```") == expected
