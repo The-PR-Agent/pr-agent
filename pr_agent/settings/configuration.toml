@@ -308,6 +308,10 @@ push_commands = [
 
 [gitea]
 url = "https://gitea.com"
+# Optional user-facing base URL used to build links published in comments, for
+# self-hosted instances where the API is reached via an internal address but
+# users browse a different external URL. Defaults to `url`.
+# web_url = ""
 handle_push_trigger = false
 pr_commands = [
     "/describe",

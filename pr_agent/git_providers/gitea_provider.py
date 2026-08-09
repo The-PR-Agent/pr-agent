@@ -108,6 +108,29 @@ class GiteaProvider(GitProvider):
         else:
             self.pr_commits = None
 
+        self.base_url_html = self._resolve_base_url_html()
+
+    def _resolve_base_url_html(self) -> str:
+        """User-facing base URL interpolated into links published in comments.
+
+        ``base_url`` is where PR-Agent reaches the API, which may be an internal
+        address (Docker service name, cluster DNS) that users cannot browse, so
+        generated links must not be built from it. Resolution order:
+
+        1. The optional ``GITEA.WEB_URL`` setting.
+        2. Derived from ``pr.html_url``, which Gitea/Forgejo builds from its own
+           external ``ROOT_URL``.
+        3. ``base_url``, so existing single-URL deployments are unaffected.
+        """
+        web_url = (get_settings().get("GITEA.WEB_URL", "") or "").rstrip("/")
+        if web_url:
+            return web_url
+        pr_html_url = getattr(self.pr, "html_url", "") if self.pr else ""
+        pr_url_suffix = f"/{self.owner}/{self.repo}/pulls/{self.pr_number}"
+        if pr_html_url and pr_html_url.endswith(pr_url_suffix):
+            return pr_html_url[: -len(pr_url_suffix)]
+        return self.base_url
+
     def _set_pr_commits(self):
         """Load the commits of the PR itself, not the commits of the repository's default branch."""
         raw_commits = self.repo_api.get_pr_commits(
@@ -250,6 +273,10 @@ class GiteaProvider(GitProvider):
             self.logger.error(f"Unexpected error: {str(e)}")
 
     def get_pr_url(self) -> str:
+        # pr.html_url is the user-facing page; self.pr_url may carry the API-form
+        # URL (e.g. when the run was triggered by a webhook payload).
+        if self.pr and getattr(self.pr, "html_url", ""):
+            return self.pr.html_url
         return self.pr_url
 
     def get_issue_url(self) -> str:
@@ -550,12 +577,13 @@ class GiteaProvider(GitProvider):
         return diff_files
 
     def get_line_link(self, relevant_file, relevant_line_start, relevant_line_end = None) -> str:
+        link = f"{self.base_url_html}/{self.owner}/{self.repo}/src/branch/{self.get_pr_branch()}/{relevant_file}"
         if relevant_line_start == -1:
-            link = f"{self.base_url}/{self.owner}/{self.repo}/src/branch/{self.get_pr_branch()}/{relevant_file}"
+            pass
         elif relevant_line_end:
-            link = f"{self.base_url}/{self.owner}/{self.repo}/src/branch/{self.get_pr_branch()}/{relevant_file}#L{relevant_line_start}-L{relevant_line_end}"
+            link += f"#L{relevant_line_start}-L{relevant_line_end}"
         else:
-            link = f"{self.base_url}/{self.owner}/{self.repo}/src/branch/{self.get_pr_branch()}/{relevant_file}#L{relevant_line_start}"
+            link += f"#L{relevant_line_start}"
 
         self.logger.info(f"Generated link: {link}")
         return link

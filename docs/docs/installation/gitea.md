@@ -40,6 +40,7 @@
     GITEA__PERSONAL_ACCESS_TOKEN=<personal_access_token>
     GITEA__WEBHOOK_SECRET=<webhook_secret>
     GITEA__URL=https://gitea.com # Or self host
+    GITEA__WEB_URL=https://git.example.com # Optional: user-facing URL for links, if it differs from GITEA__URL
     OPENAI__KEY=<your_openai_api_key>
     GITEA__SKIP_SSL_VERIFICATION=false # or true
     GITEA__SSL_CA_CERT=/path/to/cacert.pem

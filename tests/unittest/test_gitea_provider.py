@@ -625,3 +625,87 @@ class TestGiteaProviderAddFileDiff:
             index=123,
             body={"body": "Updated description", "title": "Updated title"}
         )
+
+
+class TestGiteaProviderUserFacingLinks:
+    """Regression tests for #2612: links published in comments must use the
+    user-facing base URL, not the (possibly internal) API base URL.
+
+    ``__init__`` performs network calls, so instances are built with ``__new__``
+    and only the attributes under test are wired up. ``base_url`` below stands
+    in for an internal address (e.g. a Docker service name) that users cannot
+    browse.
+    """
+
+    @staticmethod
+    def _provider(pr_html_url="", pr_url="http://forgejo:3000/api/v1/repos/owner/repo/pulls/4"):
+        from pr_agent.git_providers.gitea_provider import GiteaProvider
+
+        provider = GiteaProvider.__new__(GiteaProvider)
+        provider.logger = MagicMock()
+        provider.owner = "owner"
+        provider.repo = "repo"
+        provider.pr_number = 4
+        provider.base_url = "http://forgejo:3000"
+        provider.pr_url = pr_url
+        provider.pr = None if pr_html_url is None else MagicMock(html_url=pr_html_url)
+        return provider
+
+    @staticmethod
+    def _settings(web_url=""):
+        settings = MagicMock()
+        settings.get.side_effect = lambda k, d=None: {"GITEA.WEB_URL": web_url}.get(k, d)
+        return settings
+
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_web_url_setting_takes_precedence(self, mock_get_settings):
+        mock_get_settings.return_value = self._settings("https://git.example.com/forgejo/")
+        provider = self._provider(pr_html_url="https://other.example.com/owner/repo/pulls/4")
+
+        assert provider._resolve_base_url_html() == "https://git.example.com/forgejo"
+
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_derives_base_url_from_pr_html_url(self, mock_get_settings):
+        # Zero-config case: Forgejo/Gitea builds html_url from its external ROOT_URL,
+        # so the user-facing base URL can be derived even without a web_url setting.
+        mock_get_settings.return_value = self._settings()
+        provider = self._provider(pr_html_url="https://git.example.com/forgejo/owner/repo/pulls/4")
+
+        assert provider._resolve_base_url_html() == "https://git.example.com/forgejo"
+
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_falls_back_to_base_url_without_pr(self, mock_get_settings):
+        # Issue flow has no PR object; existing single-URL deployments stay unchanged.
+        mock_get_settings.return_value = self._settings()
+        provider = self._provider(pr_html_url=None)
+
+        assert provider._resolve_base_url_html() == "http://forgejo:3000"
+
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_falls_back_to_base_url_when_html_url_missing_or_foreign(self, mock_get_settings):
+        mock_get_settings.return_value = self._settings()
+
+        assert self._provider(pr_html_url="")._resolve_base_url_html() == "http://forgejo:3000"
+        foreign = self._provider(pr_html_url="https://ci.example.com/artifacts/owner/repo")
+        assert foreign._resolve_base_url_html() == "http://forgejo:3000"
+
+    def test_get_line_link_uses_user_facing_base_url(self):
+        provider = self._provider()
+        provider.base_url_html = "https://git.example.com/forgejo"
+        provider.get_pr_branch = MagicMock(return_value="feat/retry")
+
+        prefix = "https://git.example.com/forgejo/owner/repo/src/branch/feat/retry/app/storage.py"
+        assert provider.get_line_link("app/storage.py", 24) == f"{prefix}#L24"
+        assert provider.get_line_link("app/storage.py", 24, 30) == f"{prefix}#L24-L30"
+        assert provider.get_line_link("app/storage.py", -1) == prefix
+
+    def test_get_pr_url_prefers_html_url(self):
+        provider = self._provider(pr_html_url="https://git.example.com/forgejo/owner/repo/pulls/4")
+
+        assert provider.get_pr_url() == "https://git.example.com/forgejo/owner/repo/pulls/4"
+
+    def test_get_pr_url_falls_back_to_raw_pr_url(self):
+        assert self._provider(pr_html_url=None).get_pr_url() == \
+            "http://forgejo:3000/api/v1/repos/owner/repo/pulls/4"
+        assert self._provider(pr_html_url="").get_pr_url() == \
+            "http://forgejo:3000/api/v1/repos/owner/repo/pulls/4"
