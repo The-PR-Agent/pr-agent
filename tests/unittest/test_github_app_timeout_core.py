@@ -505,11 +505,34 @@ class TestIsBotUser:
     silently inert.
     """
 
-    def test_reads_the_shipped_configuration_key(self):
+    def test_option_ships_under_the_github_section(self):
+        import tomllib
+        from pathlib import Path
+
+        import pr_agent
+
+        config_path = Path(pr_agent.__file__).parent / "settings" / "configuration.toml"
+        with config_path.open("rb") as handle:
+            shipped = tomllib.load(handle)
+
+        # Read the file rather than the merged settings so environment overrides
+        # cannot skew this: it pins where the option is defined, which is what the
+        # lookup in is_bot_user has to agree with.
+        assert "ignore_bot_pr" in shipped["github"]
+        assert "ignore_bot_pr" not in shipped.get("github_app", {})
+
+    def test_legacy_github_app_override_is_honoured(self):
         from pr_agent.config_loader import get_settings
 
-        # Guards against the lookup drifting away from configuration.toml again.
-        assert get_settings().get("GITHUB.IGNORE_BOT_PR") is True
+        settings = get_settings()
+        original = settings.get("GITHUB.IGNORE_BOT_PR")
+        settings.set("GITHUB.IGNORE_BOT_PR", True)
+        settings.set("GITHUB_APP.IGNORE_BOT_PR", False)
+        try:
+            assert github_app.is_bot_user("dependabot[bot]", "Bot") is False
+        finally:
+            settings.set("GITHUB.IGNORE_BOT_PR", original)
+            settings.set("GITHUB_APP.IGNORE_BOT_PR", None)
 
     def test_bot_sender_is_ignored_when_enabled(self):
         from pr_agent.config_loader import get_settings
