@@ -246,9 +246,12 @@ def omit_deletion_hunks(patch_lines) -> str:
         if line.startswith('@@'):
             match = RE_HUNK_HEADER.match(line)
             if match:
-                # finish previous hunk
-                if inside_hunk and add_hunk:
-                    added_patched.extend(temp_hunk)
+                # finish previous hunk: keep it only if it had additions,
+                # otherwise drop it entirely (a deletion-only hunk must not
+                # leak into the next hunk's output)
+                if inside_hunk:
+                    if add_hunk:
+                        added_patched.extend(temp_hunk)
                     temp_hunk = []
                     add_hunk = False
                 temp_hunk.append(line)
