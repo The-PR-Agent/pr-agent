@@ -809,7 +809,7 @@ def sanitize_yaml_control_chars(text: str, log: bool = True) -> str:
 
 def load_yaml(response_text: str, keys_fix_yaml: List[str] = [], first_key="", last_key="") -> dict:
     response_text_original = copy.deepcopy(response_text)
-    response_text = response_text.strip('\n').removeprefix('yaml').removeprefix('```yaml').rstrip().removesuffix('```')
+    response_text = response_text.strip('\n').removeprefix('yaml').removeprefix('yml').removeprefix('```yaml').removeprefix('``` yaml').removeprefix('```yml').removeprefix('``` yml').rstrip().removesuffix('```')
     response_text = sanitize_yaml_control_chars(response_text)
     response_text_original_sanitized = sanitize_yaml_control_chars(response_text_original, log=False)
     try:
@@ -887,7 +887,7 @@ def try_fix_yaml(response_text: str,
         pass
 
     # second fallback - try to extract only range from first ```yaml to the last ```
-    snippet_pattern = r'```(yaml|yml)?([\s\S]*?)```(?=\s*$|")'
+    snippet_pattern = r'```[ \t]*(yaml|yml)?([\s\S]*?)```(?=\s*$|")'
     snippet = re.search(snippet_pattern, '\n'.join(response_text_lines_copy))
     if not snippet:
         snippet = re.search(snippet_pattern, response_text_original) # before we removed the "```"
