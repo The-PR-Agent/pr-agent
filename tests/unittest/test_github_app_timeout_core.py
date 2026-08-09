@@ -495,3 +495,51 @@ class TestPushTriggerDedupe:
         )
 
         assert push_trigger_env["count"] == 0
+
+
+class TestIsBotUser:
+    """``is_bot_user`` must read ``ignore_bot_pr`` from the section it ships in.
+
+    The option is defined under ``[github]`` in configuration.toml, so a lookup
+    against any other section resolves to the default and leaves the filter
+    silently inert.
+    """
+
+    def test_reads_the_shipped_configuration_key(self):
+        from pr_agent.config_loader import get_settings
+
+        # Guards against the lookup drifting away from configuration.toml again.
+        assert get_settings().get("GITHUB.IGNORE_BOT_PR") is True
+
+    def test_bot_sender_is_ignored_when_enabled(self):
+        from pr_agent.config_loader import get_settings
+
+        settings = get_settings()
+        original = settings.get("GITHUB.IGNORE_BOT_PR")
+        settings.set("GITHUB.IGNORE_BOT_PR", True)
+        try:
+            assert github_app.is_bot_user("dependabot[bot]", "Bot") is True
+        finally:
+            settings.set("GITHUB.IGNORE_BOT_PR", original)
+
+    def test_bot_sender_is_processed_when_disabled(self):
+        from pr_agent.config_loader import get_settings
+
+        settings = get_settings()
+        original = settings.get("GITHUB.IGNORE_BOT_PR")
+        settings.set("GITHUB.IGNORE_BOT_PR", False)
+        try:
+            assert github_app.is_bot_user("dependabot[bot]", "Bot") is False
+        finally:
+            settings.set("GITHUB.IGNORE_BOT_PR", original)
+
+    def test_human_sender_is_never_ignored(self):
+        from pr_agent.config_loader import get_settings
+
+        settings = get_settings()
+        original = settings.get("GITHUB.IGNORE_BOT_PR")
+        settings.set("GITHUB.IGNORE_BOT_PR", True)
+        try:
+            assert github_app.is_bot_user("alice", "User") is False
+        finally:
+            settings.set("GITHUB.IGNORE_BOT_PR", original)
