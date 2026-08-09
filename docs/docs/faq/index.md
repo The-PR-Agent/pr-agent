@@ -107,5 +107,4 @@ ___
     Examples of ways to increase feedback include:
 
     - [Dual-publishing mode](../tools/improve.md#dual-publishing-mode)
-    - [Interactive usage](../core-abilities/interactivity.md)
 ___

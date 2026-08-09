@@ -69,7 +69,6 @@ The table format offers several key advantages:
 - **Reduced noise**: Creates a cleaner PR experience with less clutter
 - **Quick overview and prioritization**: Enables quick review of one-liner summaries, impact levels, and easy prioritization
 - **High-level suggestions**: High-level suggestions that aren't tied to specific code chunks are presented only in the table mode
-- **Interactive features**: Provides 'more' and 'update' functionality via clickable buttons
 - **Centralized tracking**: Shows suggestion implementation status in one place
 - **IDE integration**: Allows applying suggestions directly in your IDE via the CLI tool
 
@@ -246,31 +245,9 @@ code_suggestions_self_review_text = "... (your text here) ..."
 
 ![self_review_1](https://codium.ai/images/pr_agent/self_review_1.png){width=512}
 
-!!! tip "Tip - Reducing visual footprint after self-review"
+!!! note "The checkbox is a visual marker only"
 
-    The configuration parameter `pr_code_suggestions.fold_suggestions_on_self_review` (default is True)
-    can be used to automatically fold the suggestions after the user clicks the self-review checkbox.
-
-    This reduces the visual footprint of the suggestions, and also indicates to the PR reviewer that the suggestions have been reviewed by the PR author, and don't require further attention.
-
-!!! tip "Tip - Demanding self-review from the PR author"
-
-    By setting:
-    ```toml
-    [pr_code_suggestions]
-    approve_pr_on_self_review = true
-    ```
-    the tool can automatically add an approval when the PR author clicks the self-review checkbox.
-
-
-    - If you set the number of required reviewers for a PR to 2, this effectively means that the PR author must click the self-review checkbox before the PR can be merged (in addition to a human reviewer).
-
-    ![self_review_2](https://codium.ai/images/pr_agent/self_review_2.png){width=512}
-
-    - If you keep the number of required reviewers for a PR to 1 and enable this configuration, this effectively means that the PR author can approve the PR by actively clicking the self-review checkbox.
-
-        To prevent unauthorized approvals, this configuration defaults to false, and cannot be altered through online comments; enabling requires a direct update to the configuration file and a commit to the repository. This ensures that utilizing the feature demands a deliberate documented decision by the repository owner.
-
+    PR-Agent renders the checkbox, but does not react to it being ticked. Nothing is folded, and no approval is added, when the PR author clicks it.
 
 ### How many code suggestions are generated?
 
