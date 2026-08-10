@@ -47,3 +47,20 @@ PR Feedback:
 
         expected_output = [{'relevant file': 'src/app.py:\n', 'suggestion content': 'The print statement is outside inside the if __name__ ==:'}]
         assert load_yaml(yaml_str) == expected_output
+
+    def test_load_yaml_with_illegal_control_character(self):
+        # A stray C0 control character (e.g. BACKSPACE, 0x08) can end up in an LLM response - commonly when an
+        # upstream diff-pruning step truncates the prompt mid multi-byte character. PyYAML's reader rejects such
+        # characters outright with a ReaderError, even though the rest of the document is well-formed YAML.
+        yaml_str = 'name: John\x08 Smith\nage: 35'
+        expected_output = {'name': 'John Smith', 'age': 35}
+        with pytest.raises(yaml.reader.ReaderError):
+            yaml.safe_load(yaml_str)
+        assert load_yaml(yaml_str) == expected_output
+
+    def test_load_yaml_with_illegal_control_character_and_broken_structure(self):
+        # Same as above, but combined with a structural issue that requires the try_fix_yaml fallbacks to run,
+        # to make sure the sanitized text is what actually reaches those fallbacks.
+        yaml_str = 'relevant line: value\x08: 3\n'
+        expected_output = {'relevant line': 'value: 3'}
+        assert load_yaml(yaml_str) == expected_output
