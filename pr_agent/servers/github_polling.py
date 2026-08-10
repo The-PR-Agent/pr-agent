@@ -74,12 +74,12 @@ def run_handle_request(pr_url, rest_of_comment, comment_id, git_provider):
 
 
 def _polling_request_settings():
-    """A per-comment settings scope, like the webhook servers' per-request clone.
+    """Clone global settings with the polling-mode overrides applied.
 
-    Also carries the polling-mode overrides: applying them here instead of in
-    ``polling_loop`` makes them reach the task regardless of the multiprocessing
-    start method (fork children inherit the parent's globals, spawn/forkserver
-    children do not - and forkserver is the Linux default from Python 3.14).
+    Applying the overrides here instead of in ``polling_loop`` makes them reach
+    the task regardless of the multiprocessing start method: fork children
+    inherit the parent's globals, spawn/forkserver children do not - and
+    forkserver is the Linux default from Python 3.14.
     """
     settings = copy.deepcopy(global_settings)
     settings.set("CONFIG.PUBLISH_OUTPUT_PROGRESS", False)
@@ -89,9 +89,10 @@ def _polling_request_settings():
 
 @contextmanager
 def _polling_settings_scope():
-    """request_cycle_context with a guaranteed reset: its bare yield skips the
-    ContextVar reset when an exception crosses the with-body, so enter and exit
-    are driven explicitly and the reset runs on any exit, BaseException included.
+    """request_cycle_context with a guaranteed reset: its bare yield (unfixed
+    upstream as of starlette-context 0.5.1) skips the ContextVar reset when an
+    exception crosses the with-body, so enter and exit are driven explicitly
+    and the reset runs on any exit, BaseException included.
     """
     cm = request_cycle_context({"settings": _polling_request_settings()})
     cm.__enter__()
