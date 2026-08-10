@@ -94,7 +94,7 @@ def process_comment_sync(pr_url, rest_of_comment, comment_id):
         try:
             # Run the async handle_request in a separate function
             git_provider = get_git_provider()(pr_url=pr_url)
-            success = run_handle_request(pr_url, rest_of_comment, comment_id, git_provider)
+            run_handle_request(pr_url, rest_of_comment, comment_id, git_provider)
         except Exception as e:
             get_logger().error(f"Error processing comment: {e}", artifact={"traceback": traceback.format_exc()})
 
@@ -105,7 +105,7 @@ async def process_comment(pr_url, rest_of_comment, comment_id):
             git_provider = get_git_provider()(pr_url=pr_url)
             git_provider.set_pr(pr_url)
             agent = PRAgent()
-            success = await agent.handle_request(
+            await agent.handle_request(
                 pr_url,
                 rest_of_comment,
                 notify=lambda: git_provider.add_eyes_reaction(comment_id)
