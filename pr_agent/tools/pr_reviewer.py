@@ -648,6 +648,8 @@ class PRReviewer:
                         estimated_effort_number = max(1, min(5, int(estimated_effort_number)))
                         review_labels.append(f'Review effort {estimated_effort_number}/5')
                 if get_settings().pr_reviewer.enable_review_labels_security and get_settings().pr_reviewer.require_security_review:
+                    if 'security_concerns' not in data['review']:
+                        get_logger().warning("Missing security_concerns in review data")
                     if not is_value_no(data['review'].get('security_concerns')):
                         review_labels.append('Possible security concern')
 
