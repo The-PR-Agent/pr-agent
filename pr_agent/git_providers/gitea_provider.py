@@ -103,8 +103,6 @@ class GiteaProvider(GitProvider):
                 repo=self.repo,
                 pr_number=self.pr_number
             )
-            # Optional ignore with user custom
-            self.git_files = filter_ignored(self.git_files, platform="gitea")
 
             self.sha = self.pr.head.sha if self.pr.head.sha else ""
             self.__add_file_content()
@@ -578,6 +576,12 @@ class GiteaProvider(GitProvider):
         """Get files that were modified in the PR"""
         if self.diff_files:
             return self.diff_files
+
+        # Apply [ignore] rules at diff time, after apply_repo_settings() has merged
+        # the repository-level .pr_agent.toml (the provider is constructed before
+        # those settings exist). This matches the other providers, which filter
+        # lazily inside their diff fetch. See #2620.
+        self.git_files = filter_ignored(self.git_files, platform="gitea")
 
         invalid_files_names = []
         counter_valid = 0
