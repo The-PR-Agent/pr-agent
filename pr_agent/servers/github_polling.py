@@ -88,18 +88,21 @@ def _polling_request_settings():
 
 
 def process_comment_sync(pr_url, rest_of_comment, comment_id):
-    try:
-        # Run the async handle_request in a separate function
-        with request_cycle_context({"settings": _polling_request_settings()}):
+    # The except stays inside the scope: request_cycle_context has no try/finally
+    # around its yield, so an exception crossing the with-body would skip the
+    # ContextVar reset and pin this comment's settings on the surrounding context.
+    with request_cycle_context({"settings": _polling_request_settings()}):
+        try:
+            # Run the async handle_request in a separate function
             git_provider = get_git_provider()(pr_url=pr_url)
             success = run_handle_request(pr_url, rest_of_comment, comment_id, git_provider)
-    except Exception as e:
-        get_logger().error(f"Error processing comment: {e}", artifact={"traceback": traceback.format_exc()})
+        except Exception as e:
+            get_logger().error(f"Error processing comment: {e}", artifact={"traceback": traceback.format_exc()})
 
 
 async def process_comment(pr_url, rest_of_comment, comment_id):
-    try:
-        with request_cycle_context({"settings": _polling_request_settings()}):
+    with request_cycle_context({"settings": _polling_request_settings()}):
+        try:
             git_provider = get_git_provider()(pr_url=pr_url)
             git_provider.set_pr(pr_url)
             agent = PRAgent()
@@ -108,9 +111,9 @@ async def process_comment(pr_url, rest_of_comment, comment_id):
                 rest_of_comment,
                 notify=lambda: git_provider.add_eyes_reaction(comment_id)
             )
-        get_logger().info(f"Finished processing comment for PR: {pr_url}")
-    except Exception as e:
-        get_logger().error(f"Error processing comment: {e}", artifact={"traceback": traceback.format_exc()})
+            get_logger().info(f"Finished processing comment for PR: {pr_url}")
+        except Exception as e:
+            get_logger().error(f"Error processing comment: {e}", artifact={"traceback": traceback.format_exc()})
 
 async def is_valid_notification(notification, headers, handled_ids, session, user_id):
     try:
