@@ -118,13 +118,18 @@ class GiteaProvider(GitProvider):
         generated links must not be built from it. Resolution order:
 
         1. The optional ``GITEA.WEB_URL`` setting.
-        2. Derived from ``pr.html_url``, which Gitea/Forgejo builds from its own
-           external ``ROOT_URL``.
-        3. ``base_url``, so existing single-URL deployments are unaffected.
+        2. An explicitly configured ``GITEA.URL``: an operator-set value wins
+           over the server's self-reported ``ROOT_URL``, which ``pr.html_url``
+           is built from and which may still be the default on some instances.
+        3. Derived from ``pr.html_url``, which Gitea/Forgejo builds from its
+           own external ``ROOT_URL``.
+        4. ``base_url``, so existing single-URL deployments are unaffected.
         """
         web_url = (get_settings().get("GITEA.WEB_URL", "") or "").rstrip("/")
         if web_url:
             return web_url
+        if get_settings().get("GITEA.URL", None):
+            return self.base_url
         pr_html_url = getattr(self.pr, "html_url", "") if self.pr else ""
         pr_url_suffix = f"/{self.owner}/{self.repo}/pulls/{self.pr_number}"
         if pr_html_url and pr_html_url.endswith(pr_url_suffix):
@@ -273,10 +278,14 @@ class GiteaProvider(GitProvider):
             self.logger.error(f"Unexpected error: {str(e)}")
 
     def get_pr_url(self) -> str:
-        # pr.html_url is the user-facing page; self.pr_url may carry the API-form
-        # URL (e.g. when the run was triggered by a webhook payload).
-        if self.pr and getattr(self.pr, "html_url", ""):
-            return self.pr.html_url
+        # Gitea sets url and html_url identically on the PR payload (the
+        # user-facing page), and self.pr_url comes from _parse_pr_url, which
+        # rejects the API form - so rebuild the page URL from base_url_html,
+        # letting a configured GITEA.WEB_URL reach the links built from here.
+        # Call sites are user-facing output only (pr_description, pr_reviewer,
+        # pr_update_changelog); API and clone paths use base_url directly.
+        if self.owner and self.repo and self.pr_number:
+            return f"{self.base_url_html}/{self.owner}/{self.repo}/pulls/{self.pr_number}"
         return self.pr_url
 
     def get_issue_url(self) -> str:

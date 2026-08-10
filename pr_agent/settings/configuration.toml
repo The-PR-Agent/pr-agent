@@ -310,7 +310,11 @@ push_commands = [
 url = "https://gitea.com"
 # Optional user-facing base URL used to build links published in comments, for
 # self-hosted instances where the API is reached via an internal address but
-# users browse a different external URL. Defaults to `url`.
+# users browse a different external URL, or where the server's own ROOT_URL is
+# misconfigured. Defaults to `url` when set, else derived from the PR's html_url.
+# Like `url`, this is read when the provider is constructed, before repo-level
+# .pr_agent.toml settings are merged, so a per-repo override does not apply to
+# /describe, /review and /improve - set it globally or via GITEA__WEB_URL.
 # web_url = ""
 handle_push_trigger = false
 pr_commands = [
