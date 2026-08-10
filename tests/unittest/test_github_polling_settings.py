@@ -97,3 +97,15 @@ async def test_failed_comment_does_not_pin_settings_on_the_calling_context():
         await github_polling.process_comment("https://example/pr/3", "/review", 789)
 
     assert get_settings() is settings_before
+
+
+def test_cancellation_does_not_pin_settings_on_the_calling_context():
+    # BaseException is not caught by the handlers' except Exception, so it must
+    # still leave the scope through _polling_settings_scope's finally.
+    settings_before = get_settings()
+
+    with patch.object(github_polling, "get_git_provider", side_effect=KeyboardInterrupt):
+        with pytest.raises(KeyboardInterrupt):
+            github_polling.process_comment_sync("https://example/pr/4", "/review", 999)
+
+    assert get_settings() is settings_before

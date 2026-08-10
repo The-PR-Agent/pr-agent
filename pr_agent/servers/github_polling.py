@@ -3,6 +3,7 @@ import copy
 import multiprocessing
 import traceback
 from collections import deque
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 import aiohttp
@@ -87,22 +88,33 @@ def _polling_request_settings():
     return settings
 
 
+@contextmanager
+def _polling_settings_scope():
+    """request_cycle_context with a guaranteed reset: its bare yield skips the
+    ContextVar reset when an exception crosses the with-body, so enter and exit
+    are driven explicitly and the reset runs on any exit, BaseException included.
+    """
+    cm = request_cycle_context({"settings": _polling_request_settings()})
+    cm.__enter__()
+    try:
+        yield
+    finally:
+        cm.__exit__(None, None, None)
+
+
 def process_comment_sync(pr_url, rest_of_comment, comment_id):
-    # The except stays inside the scope: request_cycle_context has no try/finally
-    # around its yield, so an exception crossing the with-body would skip the
-    # ContextVar reset and pin this comment's settings on the surrounding context.
-    with request_cycle_context({"settings": _polling_request_settings()}):
-        try:
+    try:
+        with _polling_settings_scope():
             # Run the async handle_request in a separate function
             git_provider = get_git_provider()(pr_url=pr_url)
             run_handle_request(pr_url, rest_of_comment, comment_id, git_provider)
-        except Exception as e:
-            get_logger().error(f"Error processing comment: {e}", artifact={"traceback": traceback.format_exc()})
+    except Exception as e:
+        get_logger().error(f"Error processing comment: {e}", artifact={"traceback": traceback.format_exc()})
 
 
 async def process_comment(pr_url, rest_of_comment, comment_id):
-    with request_cycle_context({"settings": _polling_request_settings()}):
-        try:
+    try:
+        with _polling_settings_scope():
             git_provider = get_git_provider()(pr_url=pr_url)
             git_provider.set_pr(pr_url)
             agent = PRAgent()
@@ -111,9 +123,9 @@ async def process_comment(pr_url, rest_of_comment, comment_id):
                 rest_of_comment,
                 notify=lambda: git_provider.add_eyes_reaction(comment_id)
             )
-            get_logger().info(f"Finished processing comment for PR: {pr_url}")
-        except Exception as e:
-            get_logger().error(f"Error processing comment: {e}", artifact={"traceback": traceback.format_exc()})
+        get_logger().info(f"Finished processing comment for PR: {pr_url}")
+    except Exception as e:
+        get_logger().error(f"Error processing comment: {e}", artifact={"traceback": traceback.format_exc()})
 
 async def is_valid_notification(notification, headers, handled_ids, session, user_id):
     try:
