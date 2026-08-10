@@ -9,7 +9,8 @@ from pr_agent.algo.inline_comment_dedup import (
     key_issue_fingerprint,
 )
 from pr_agent.algo.types import FilePatchInfo
-from pr_agent.algo.utils import PRReviewHeader, PRReviewIdentity
+from pr_agent.algo.utils import (PRReviewHeader, PRReviewIdentity,
+                                 is_value_no)
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
 from pr_agent.tools.pr_reviewer import PRReviewer
@@ -892,7 +893,8 @@ def test_can_run_incremental_review_skips_auto_mode_without_new_commit():
     assert reviewer._can_run_incremental_review() is False
 
 
-def test_set_review_labels_replaces_stale_review_labels_and_keeps_user_labels():
+@pytest.fixture
+def review_label_settings():
     settings = get_settings()
     original = {
         "publish_output": settings.config.publish_output,
@@ -906,30 +908,59 @@ def test_set_review_labels_replaces_stale_review_labels_and_keeps_user_labels():
     settings.pr_reviewer.require_security_review = True
     settings.pr_reviewer.enable_review_labels_effort = True
     settings.pr_reviewer.enable_review_labels_security = True
+    yield
+    settings.config.publish_output = original["publish_output"]
+    settings.pr_reviewer.require_estimate_effort_to_review = original["require_estimate_effort_to_review"]
+    settings.pr_reviewer.require_security_review = original["require_security_review"]
+    settings.pr_reviewer.enable_review_labels_effort = original["enable_review_labels_effort"]
+    settings.pr_reviewer.enable_review_labels_security = original["enable_review_labels_security"]
+
+
+def test_set_review_labels_replaces_stale_review_labels_and_keeps_user_labels(review_label_settings):
     git_provider = MagicMock()
     git_provider.get_pr_labels.return_value = ["Review effort 1/5", "Possible security concern", "keep-me"]
     reviewer = _make_reviewer(git_provider)
     data = {
         "review": {
             "estimated_effort_to_review_[1-5]": "3, moderate",
-            "security_concerns": "yes",
+            "security_concerns": "SQL injection: the order id is concatenated into the query\n",
         }
     }
 
-    try:
-        reviewer.set_review_labels(data)
+    reviewer.set_review_labels(data)
 
-        git_provider.publish_labels.assert_called_once_with([
-            "Review effort 3/5",
-            "Possible security concern",
-            "keep-me",
-        ])
-    finally:
-        settings.config.publish_output = original["publish_output"]
-        settings.pr_reviewer.require_estimate_effort_to_review = original["require_estimate_effort_to_review"]
-        settings.pr_reviewer.require_security_review = original["require_security_review"]
-        settings.pr_reviewer.enable_review_labels_effort = original["enable_review_labels_effort"]
-        settings.pr_reviewer.enable_review_labels_security = original["enable_review_labels_security"]
+    git_provider.publish_labels.assert_called_once_with([
+        "Review effort 3/5",
+        "Possible security concern",
+        "keep-me",
+    ])
+
+
+@pytest.mark.parametrize(
+    "security_concerns, expect_label",
+    [
+        ("SQL injection: the order id is concatenated into the query\n", True),
+        ("Sensitive information exposure: the API key is written to the log\n", True),
+        ("No\n", False),
+        ("no", False),
+        ("  No  \n", False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_set_review_labels_security_label_matches_the_rendered_review_body(
+    review_label_settings, security_concerns, expect_label
+):
+    git_provider = MagicMock()
+    git_provider.get_pr_labels.return_value = []
+    reviewer = _make_reviewer(git_provider)
+    data = {"review": {"estimated_effort_to_review_[1-5]": "2", "security_concerns": security_concerns}}
+
+    reviewer.set_review_labels(data)
+
+    published = git_provider.publish_labels.call_args[0][0]
+    assert ("Possible security concern" in published) is expect_label
+    assert is_value_no(security_concerns) is not expect_label
 
 
 def test_get_user_answers_collects_question_and_answer_from_issue_comments():

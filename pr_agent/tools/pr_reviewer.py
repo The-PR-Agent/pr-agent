@@ -28,6 +28,7 @@ from pr_agent.algo.utils import (
     add_pr_review_identity,
     convert_to_markdown_v2,
     github_action_output,
+    is_value_no,
     load_yaml,
     show_relevant_configurations,
     show_run_details,
@@ -647,9 +648,7 @@ class PRReviewer:
                         estimated_effort_number = max(1, min(5, int(estimated_effort_number)))
                         review_labels.append(f'Review effort {estimated_effort_number}/5')
                 if get_settings().pr_reviewer.enable_review_labels_security and get_settings().pr_reviewer.require_security_review:
-                    security_concerns = data['review']['security_concerns']  # yes, because ...
-                    security_concerns_bool = 'yes' in security_concerns.lower() or 'true' in security_concerns.lower()
-                    if security_concerns_bool:
+                    if not is_value_no(data['review'].get('security_concerns')):
                         review_labels.append('Possible security concern')
 
                 current_labels = self.git_provider.get_pr_labels(update=True)
