@@ -9,7 +9,7 @@ from pr_agent.algo.inline_comment_dedup import (
     key_issue_fingerprint,
 )
 from pr_agent.algo.types import FilePatchInfo
-from pr_agent.algo.utils import is_value_no
+from pr_agent.algo.utils import convert_to_markdown_v2
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
 from pr_agent.tools.pr_reviewer import PRReviewer
@@ -582,6 +582,8 @@ def test_set_review_labels_replaces_stale_review_labels_and_keeps_user_labels(re
         ("  No  \n", False),
         ("", False),
         (None, False),
+        # A punctuated negative is not a recognised "no", so it labels and renders as a concern.
+        ("No.", True),
     ],
 )
 def test_set_review_labels_security_label_matches_the_rendered_review_body(
@@ -596,7 +598,9 @@ def test_set_review_labels_security_label_matches_the_rendered_review_body(
 
     published = git_provider.publish_labels.call_args[0][0]
     assert ("Possible security concern" in published) is expect_label
-    assert is_value_no(security_concerns) is not expect_label
+
+    body = convert_to_markdown_v2(data)
+    assert ("<strong>Security concerns</strong>" in body) is expect_label
 
 
 def test_get_user_answers_collects_question_and_answer_from_issue_comments():

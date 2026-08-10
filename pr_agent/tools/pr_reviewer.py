@@ -604,6 +604,8 @@ class PRReviewer:
                     if 1 <= estimated_effort_number <= 5:  # 1, because ...
                         review_labels.append(f'Review effort {estimated_effort_number}/5')
                 if get_settings().pr_reviewer.enable_review_labels_security and get_settings().pr_reviewer.require_security_review:
+                    if 'security_concerns' not in data['review']:
+                        get_logger().warning("Missing security_concerns in review data")
                     if not is_value_no(data['review'].get('security_concerns')):
                         review_labels.append('Possible security concern')
 
