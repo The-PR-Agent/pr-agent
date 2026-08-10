@@ -1,9 +1,23 @@
+import copy
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.servers import github_polling
+
+
+@pytest.fixture(autouse=True)
+def fresh_global_settings():
+    """Restore global_settings afterwards so a failing isolation test cannot
+    pollute the rest of the suite with the very leak it is asserting against."""
+    snapshot = copy.deepcopy(global_settings.as_dict())
+    yield
+    for section in set(global_settings.as_dict().keys()) - set(snapshot.keys()):
+        global_settings.unset(section)
+    for section, contents in snapshot.items():
+        global_settings.unset(section)
+        global_settings.set(section, copy.deepcopy(contents), merge=False)
 
 
 def test_process_comment_sync_scopes_settings_per_comment():
