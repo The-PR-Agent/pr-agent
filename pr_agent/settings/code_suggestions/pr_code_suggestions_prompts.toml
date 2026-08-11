@@ -124,6 +124,7 @@ class PRCodeSuggestions(BaseModel):
 
 Example output:
 ```yaml
+# '...' is placeholder text - replace it with actual content
 code_suggestions:
 - relevant_file: |
     src/file1.py
@@ -140,7 +141,6 @@ code_suggestions:
   label: |
     ...
 ```
-(replace '...' with actual content)
 
 Each YAML output MUST be after a newline, indented, with block scalar indicator ('|').
 """
