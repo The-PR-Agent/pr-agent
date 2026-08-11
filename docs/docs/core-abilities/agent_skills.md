@@ -53,6 +53,13 @@ The agent-skills standard supports bundled files alongside `SKILL.md`. PR-Agent 
 
 In short, PR-Agent supports **text-only** agent skills.
 
+## Example: delegate bounded external work
+
+The [TaskMarket delegation example](../examples/skills/taskmarket-delegation/SKILL.md) shows how a
+review can turn an unavailable environment, independent benchmark, or specialist check into an
+optional task draft with objective acceptance criteria. It keeps task creation, wallet access,
+budget selection, spending, and result acceptance behind explicit user authorization.
+
 ## Limitations
 
 PR-Agent dispatches single-shot model calls, so the agent-skills standard's *progressive disclosure* model (the model reads `SKILL.md` only after selecting it by `description`, and reads `references/*.md` only on demand) is not implementable on the current architecture — an architecture change to support this is planned for the future. Until then, every enabled skill's text is loaded into every PR's prompt, bounded by `max_skills_tokens`. Skills that depend on script execution or binary assets will not work.
