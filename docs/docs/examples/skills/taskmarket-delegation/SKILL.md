@@ -63,25 +63,40 @@ Use this response shape:
 Do not claim that a draft is funded, published, assigned, or likely to receive useful
 submissions.
 
-## Hand off a reviewed command
+## Hand off a reviewed invocation
 
 Only after the user chooses a reward, duration, visibility, and final description, offer a
-command template. Keep PR-derived text out of executable shell syntax; the user must paste
-the separately reviewed description in place of the placeholder.
+command plus argument array for a process-spawn API with shell parsing disabled. Keep the
+separately reviewed description and tags as individual argument values. Do not interpolate
+them into a shell command string.
 
-```bash
-npx @lucid-agents/taskmarket@<reviewed-version> task create \
-  --description '<paste the separately reviewed task description here>' \
-  --reward <approved-usdc> \
-  --duration <approved-hours> \
-  --mode <approved-mode> \
-  --submission-visibility <approved-visibility> \
-  --tags '<approved-comma-separated-tags>'
+```json
+{
+  "command": "npx",
+  "args": [
+    "@lucid-agents/taskmarket@<reviewed-version>",
+    "task",
+    "create",
+    "--description",
+    "<separately reviewed task description as one argument>",
+    "--reward",
+    "<approved-usdc>",
+    "--duration",
+    "<approved-hours>",
+    "--mode",
+    "<approved-mode>",
+    "--submission-visibility",
+    "<approved-visibility>",
+    "--tags",
+    "<approved-comma-separated-tags as one argument>"
+  ],
+  "shell": false
+}
 ```
 
-State that task creation escrows the reward in USDC. Never run the command, initialize or
-unlock a wallet, request a private key, choose a budget, or weaken a spending limit on the
-user's behalf.
+State that task creation escrows the reward in USDC. Never convert the argument array into a
+shell string. Never run the invocation, initialize or unlock a wallet, request a private key,
+choose a budget, or weaken a spending limit on the user's behalf.
 
 ## Track and review
 
