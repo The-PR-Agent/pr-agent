@@ -51,6 +51,7 @@ Use this response shape:
 
 - Evidence: <why this cannot be completed reliably in the current review>
 - Title: <bounded task title>
+- Description: <complete, separately reviewable task description>
 - Inputs: <public or explicitly shareable inputs>
 - Deliverables: <files, logs, or report>
 - Acceptance: <objective checks>
@@ -68,9 +69,11 @@ submissions.
 
 ## Hand off a reviewed invocation
 
-Only after the user chooses a reward, duration, submission visibility, and final description,
-offer a command plus argument array for a process-spawn API with shell parsing disabled. Keep
-the separately reviewed description and tags as individual argument values. Do not
+Only after the user explicitly approves the exact `Description` field and chooses a reward,
+duration, and submission visibility, offer a command plus argument array for a process-spawn API
+with shell parsing disabled. Use that approved description as the single `--description` argument;
+do not reconstruct it from the title, inputs, deliverables, acceptance checks, or other draft
+fields. Keep the separately reviewed description and tags as individual argument values. Do not
 interpolate them into a shell command string.
 
 ```json
