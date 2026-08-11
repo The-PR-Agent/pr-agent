@@ -622,3 +622,6 @@ count against that budget, the visible answer can come back empty or truncated. 
 `config.max_output_tokens` to a positive value (e.g. `16000`) to send it as `max_tokens` on every
 completion call. When Claude extended thinking is enabled, `extended_thinking_max_output_tokens`
 takes precedence.
+For models with small context windows, keep in mind that prompt and completion tokens share the
+model's context window: size `config.max_model_tokens` so the packed prompt leaves room for the
+configured output limit.
