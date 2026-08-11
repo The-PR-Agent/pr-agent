@@ -164,6 +164,7 @@ The PR Diff:
 
 Example output:
 ```yaml
+# '...' is placeholder text - replace it with actual content
 code_suggestions:
 - relevant_file: |
     src/file1.py
@@ -180,7 +181,6 @@ code_suggestions:
   label: |
     ...
 ```
-(replace '...' with actual content)
 {%- endif %}
 
 
