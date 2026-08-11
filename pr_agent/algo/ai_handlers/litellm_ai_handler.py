@@ -681,6 +681,17 @@ class LiteLLMAIHandler(BaseAiHandler):
                 if (model in self.claude_extended_thinking_models) and get_settings().config.get("enable_claude_extended_thinking", False):
                     kwargs = self._configure_claude_extended_thinking(model, kwargs)
 
+                # Optional output token limit; 0 = unset. Without max_tokens some
+                # providers apply a low service-side default (Bedrock Converse: 4096,
+                # which reasoning can fully consume, returning empty content).
+                # setdefault keeps the extended-thinking limit authoritative.
+                try:
+                    max_output_tokens = int(get_settings().config.get("max_output_tokens", 0))
+                except (TypeError, ValueError):
+                    max_output_tokens = 0
+                if max_output_tokens > 0:
+                    kwargs.setdefault("max_tokens", max_output_tokens)
+
                 if get_settings().litellm.get("enable_callbacks", False):
                     kwargs = self.add_litellm_callbacks(kwargs)
 
