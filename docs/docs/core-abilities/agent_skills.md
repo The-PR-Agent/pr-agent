@@ -58,7 +58,8 @@ In short, PR-Agent supports **text-only** agent skills.
 The [TaskMarket delegation example](https://github.com/The-PR-Agent/pr-agent/blob/main/examples/skills/taskmarket-delegation/SKILL.md) shows how a
 review can turn an unavailable environment, independent benchmark, or specialist check into an
 optional task draft with objective acceptance criteria. It keeps task creation, wallet access,
-budget selection, spending, and result acceptance behind explicit user authorization.
+budget selection, spending, and result acceptance behind explicit user authorization, and defines
+a fail-closed, read-only snapshot for presenting submissions against those criteria.
 
 ## Limitations
 
