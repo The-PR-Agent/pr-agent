@@ -17,6 +17,12 @@ from pr_agent.git_providers.git_provider import (MAX_FILES_ALLOWED_FULL,
                                                  IncrementalPR)
 from pr_agent.log import get_logger
 
+# Shipped default for the [gitea] url setting in configuration.toml. A value
+# equal to this must be treated as "unset" when resolving the user-facing base
+# URL: the default is always present in production, so a bare truthiness check
+# on GITEA.URL would make the pr.html_url derivation unreachable.
+DEFAULT_GITEA_URL = "https://gitea.com"
+
 
 class _GiteaCommitAdapter:
     """Mimics PyGithub `Commit` shape (.sha, .html_url) over a raw Gitea commit payload."""
@@ -36,7 +42,7 @@ class GiteaProvider(GitProvider):
             self.logger.error("PR URL not provided.")
             raise ValueError("PR URL not provided.")
 
-        self.base_url = get_settings().get("GITEA.URL", "https://gitea.com").rstrip("/")
+        self.base_url = get_settings().get("GITEA.URL", DEFAULT_GITEA_URL).rstrip("/")
         self.pr_url = ""
         self.issue_url = ""
 
@@ -121,6 +127,9 @@ class GiteaProvider(GitProvider):
         2. An explicitly configured ``GITEA.URL``: an operator-set value wins
            over the server's self-reported ``ROOT_URL``, which ``pr.html_url``
            is built from and which may still be the default on some instances.
+           The shipped default (``DEFAULT_GITEA_URL``) does not count here -
+           configuration.toml always provides it, so a plain truthiness check
+           would leave the derivation below unreachable.
         3. Derived from ``pr.html_url``, which Gitea/Forgejo builds from its
            own external ``ROOT_URL``.
         4. ``base_url``, so existing single-URL deployments are unaffected.
@@ -128,7 +137,8 @@ class GiteaProvider(GitProvider):
         web_url = (get_settings().get("GITEA.WEB_URL", "") or "").rstrip("/")
         if web_url:
             return web_url
-        if get_settings().get("GITEA.URL", None):
+        configured_url = (get_settings().get("GITEA.URL", "") or "").rstrip("/")
+        if configured_url and configured_url != DEFAULT_GITEA_URL:
             return self.base_url
         pr_html_url = getattr(self.pr, "html_url", "") if self.pr else ""
         pr_url_suffix = f"/{self.owner}/{self.repo}/pulls/{self.pr_number}"

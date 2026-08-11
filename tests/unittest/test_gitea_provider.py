@@ -681,6 +681,23 @@ class TestGiteaProviderUserFacingLinks:
         assert provider._resolve_base_url_html() == "http://forgejo:3000"
 
     @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_shipped_default_url_does_not_shadow_pr_html_url(self, mock_get_settings):
+        # configuration.toml always ships url = "https://gitea.com", so the default must not
+        # count as operator-set - otherwise the html_url derivation is unreachable in
+        # production and the #2612 scenario regresses (review feedback on #2617).
+        mock_get_settings.return_value = self._settings(configured_url="https://gitea.com")
+        provider = self._provider(pr_html_url="https://git.example.com/forgejo/owner/repo/pulls/4")
+
+        assert provider._resolve_base_url_html() == "https://git.example.com/forgejo"
+
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_shipped_default_url_with_trailing_slash_does_not_shadow(self, mock_get_settings):
+        mock_get_settings.return_value = self._settings(configured_url="https://gitea.com/")
+        provider = self._provider(pr_html_url="https://git.example.com/forgejo/owner/repo/pulls/4")
+
+        assert provider._resolve_base_url_html() == "https://git.example.com/forgejo"
+
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
     def test_derives_base_url_from_pr_html_url(self, mock_get_settings):
         # Zero-config case: Forgejo/Gitea builds html_url from its external ROOT_URL,
         # so the user-facing base URL can be derived even without a web_url setting.

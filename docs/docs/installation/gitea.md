@@ -46,8 +46,9 @@
     GITEA__SSL_CA_CERT=/path/to/cacert.pem
     ```
 
-    Links published in comments are built from `GITEA__WEB_URL` when set, else from `GITEA__URL`,
-    else derived from the PR's `html_url` (which Gitea/Forgejo builds from its own `ROOT_URL`).
+    Links published in comments are built from `GITEA__WEB_URL` when set, else from `GITEA__URL`
+    when it differs from the shipped default (`https://gitea.com`), else derived from the PR's
+    `html_url` (which Gitea/Forgejo builds from its own `ROOT_URL`).
     Set `GITEA__WEB_URL` explicitly when `GITEA__URL` is an internal address users cannot browse
     (e.g. a Docker service name), or when the server's `ROOT_URL` is misconfigured.
 
