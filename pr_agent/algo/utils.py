@@ -761,13 +761,17 @@ _YAML_ILLEGAL_CHARS_RE = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
 
 
 def sanitize_yaml_control_chars(text: str) -> str:
-    """Remove control characters that are illegal in YAML and would otherwise make yaml.safe_load raise
-    a ReaderError regardless of the document's structure (see PyYAML's Reader.NON_PRINTABLE)."""
+    """Strip control characters that can never be part of valid YAML content and would otherwise make yaml.safe_load
+    raise a ReaderError regardless of the document's structure.
+
+    Note: this deliberately removes only a subset of PyYAML's non-printable set - C0 controls other than TAB/LF/CR,
+    plus DEL. The \\x80-\\x9f C1 range is intentionally preserved because try_fix_yaml's latin-1->utf-8 fallback
+    relies on those bytes to repair mojibake; they must survive to reach the repair logic."""
     if not text:
         return text
     sanitized, count = _YAML_ILLEGAL_CHARS_RE.subn('', text)
     if count:
-        get_logger().warning(f"Removed {count} illegal control character(s) from AI prediction before YAML parsing")
+        get_logger().warning(f"Removed {count} unambiguous illegal control character(s) from AI prediction before YAML parsing")
     return sanitized
 
 
@@ -775,12 +779,13 @@ def load_yaml(response_text: str, keys_fix_yaml: List[str] = [], first_key="", l
     response_text_original = copy.deepcopy(response_text)
     response_text = response_text.strip('\n').removeprefix('yaml').removeprefix('```yaml').rstrip().removesuffix('```')
     response_text = sanitize_yaml_control_chars(response_text)
+    response_text_original_sanitized = sanitize_yaml_control_chars(response_text_original)
     try:
         data = yaml.safe_load(response_text)
     except Exception as e:
         get_logger().warning(f"Initial failure to parse AI prediction: {e}")
         data = try_fix_yaml(response_text, keys_fix_yaml=keys_fix_yaml, first_key=first_key, last_key=last_key,
-                            response_text_original=sanitize_yaml_control_chars(response_text_original))
+                            response_text_original=response_text_original_sanitized)
         if not data:
             get_logger().error(f"Failed to parse AI prediction after fallbacks",
                                artifact={'response_text': response_text})
