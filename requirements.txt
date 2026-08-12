@@ -1,4 +1,4 @@
-aiohttp==3.13.4
+aiohttp==3.14.3
 anthropic>=0.69.0
 #anthropic[vertex]==0.47.1
 atlassian-python-api==3.41.4
@@ -16,7 +16,7 @@ google-cloud-storage==2.10.0; python_version < "3.13"
 google-cloud-storage==3.12.0; python_version >= "3.13"
 protobuf==6.33.6  # grpcio-status 1.80.0 forces >=6.31.1,<7; pinned to lock the resolved transitive version
 Jinja2==3.1.6
-litellm==1.95.0
+litellm==1.96.2
 loguru==0.7.2
 msrest==0.7.1
 openai>=1.55.3
@@ -38,9 +38,9 @@ langfuse==3.14.5
 gunicorn==23.0.0
 pytest-cov==7.0.0
 pydantic==2.13.3
-# litellm 1.95.0 imports pydantic-settings unconditionally (litellm/integrations/otel/model/config.py) but declares it
-# only under its optional 'proxy' extra; without it the 'langfuse_otel' callback silently fails to load and no LLM
-# call is traced. Version matches litellm's own constraint (>=2.14.1,<3.0).
+# litellm 1.96.2 declares pydantic-settings as a base dependency and imports it unconditionally from
+# litellm/integrations/otel/model/config.py. Keep the exact pin to lock the resolved transitive version.
+# Version matches litellm's own constraint (>=2.14.1,<3.0); the existing observability guard covers the callback import.
 pydantic-settings==2.14.2
 html2text==2024.2.26
 giteapy==1.0.8
