@@ -760,17 +760,20 @@ def _fix_key_value(key: str, value: str):
 _YAML_ILLEGAL_CHARS_RE = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
 
 
-def sanitize_yaml_control_chars(text: str) -> str:
+def sanitize_yaml_control_chars(text: str, log: bool = True) -> str:
     """Strip control characters that can never be part of valid YAML content and would otherwise make yaml.safe_load
     raise a ReaderError regardless of the document's structure.
 
     Note: this deliberately removes only a subset of PyYAML's non-printable set - C0 controls other than TAB/LF/CR,
     plus DEL. The \\x80-\\x9f C1 range is intentionally preserved because try_fix_yaml's latin-1->utf-8 fallback
-    relies on those bytes to repair mojibake; they must survive to reach the repair logic."""
+    relies on those bytes to repair mojibake; they must survive to reach the repair logic.
+
+    Set log=False to suppress the removal warning, e.g. when sanitizing a second, largely-overlapping copy of
+    text that was already sanitized and logged once."""
     if not text:
         return text
     sanitized, count = _YAML_ILLEGAL_CHARS_RE.subn('', text)
-    if count:
+    if count and log:
         get_logger().warning(f"Removed {count} unambiguous illegal control character(s) from AI prediction before YAML parsing")
     return sanitized
 
@@ -779,7 +782,7 @@ def load_yaml(response_text: str, keys_fix_yaml: List[str] = [], first_key="", l
     response_text_original = copy.deepcopy(response_text)
     response_text = response_text.strip('\n').removeprefix('yaml').removeprefix('```yaml').rstrip().removesuffix('```')
     response_text = sanitize_yaml_control_chars(response_text)
-    response_text_original_sanitized = sanitize_yaml_control_chars(response_text_original)
+    response_text_original_sanitized = sanitize_yaml_control_chars(response_text_original, log=False)
     try:
         data = yaml.safe_load(response_text)
     except Exception as e:
