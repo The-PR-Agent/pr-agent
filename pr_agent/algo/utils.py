@@ -750,14 +750,14 @@ def _fix_key_value(key: str, value: str):
     return key, value
 
 
-# Control characters that the YAML spec forbids in plain (unescaped) form.
-# c-printable excludes: C0 controls other than TAB/LF/CR, DEL, and most C1 controls (NEL 0x85 is allowed).
-# LLM output occasionally contains a stray byte in these ranges (e.g. 0x08 BACKSPACE) - most often introduced
-# when an upstream diff-pruning step truncates the prompt mid multi-byte-character - which makes PyYAML's
-# strict reader raise `ReaderError: unacceptable character ...` before any of the fallbacks below get a chance
-# to run. Stripping these illegal characters up front is a cheap, purely-defensive step: they can never be part
-# of valid YAML content, so removing them cannot turn a correct parse into an incorrect one.
-_YAML_ILLEGAL_CHARS_RE = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x84\x86-\x9f]')
+# Control characters that are unambiguously illegal in YAML and never carry meaningful information on their own
+# (unlike the \x80-\x9f C1 range, which the "ninth fallback" below relies on being intact to repair latin-1/utf-8
+# mojibake - see try_fix_yaml). LLM output occasionally contains a stray byte in this range (e.g. 0x08 BACKSPACE),
+# most often introduced when an upstream diff-pruning step truncates the prompt mid multi-byte character, which
+# makes PyYAML's strict reader raise `ReaderError: unacceptable character ...` before any fallback gets a chance
+# to run. Stripping these characters up front is a cheap, purely-defensive step: they can never be part of valid
+# YAML content, so removing them cannot turn a correct parse into an incorrect one.
+_YAML_ILLEGAL_CHARS_RE = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
 
 
 def sanitize_yaml_control_chars(text: str) -> str:

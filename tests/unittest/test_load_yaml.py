@@ -64,3 +64,13 @@ PR Feedback:
         yaml_str = 'relevant line: value\x08: 3\n'
         expected_output = {'relevant line': 'value: 3'}
         assert load_yaml(yaml_str) == expected_output
+
+    def test_load_yaml_does_not_strip_mojibake_repair_range(self):
+        # Text that was correctly produced as UTF-8 but got wrongly decoded as latin-1 somewhere upstream turns
+        # into "mojibake": multi-byte characters (e.g. Chinese) get split into several bytes that mostly land in
+        # the \x7f-\x9f C1 control range. The ninth fallback in try_fix_yaml repairs this by re-encoding as
+        # latin-1 and decoding as utf-8. If load_yaml's control-character sanitizer strips \x7f-\x9f, it deletes
+        # the very bytes that fallback needs, so this must keep working after the illegal-character fix.
+        original = {'suggestion content': '修复空指针异常'}
+        mojibake = yaml.safe_dump(original, allow_unicode=True).encode('utf-8').decode('latin-1')
+        assert load_yaml(mojibake) == original
