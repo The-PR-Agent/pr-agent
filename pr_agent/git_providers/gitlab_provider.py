@@ -601,7 +601,7 @@ class GitLabProvider(GitProvider):
     def send_inline_comment(self, body: str, edit_type: str, found: bool, relevant_file: str,
                             relevant_line_in_file: str,
                             source_line_no: int, target_file: str, target_line_no: int,
-                            original_suggestion=None) -> None:
+                            original_suggestion=None, as_draft: bool = False) -> None:
         if not found:
             get_logger().info(f"Could not find position for {relevant_file} {relevant_line_in_file}")
         else:
@@ -640,7 +640,10 @@ class GitLabProvider(GitProvider):
                 pos_obj['old_line'] = source_line_no - 1
             get_logger().debug(f"Creating comment in MR {self.id_mr} with body {body} and position {pos_obj}")
             try:
-                self.mr.discussions.create({'body': body, 'position': pos_obj})
+                if as_draft:
+                    self.mr.draft_notes.create({'note': body, 'position': pos_obj})
+                else:
+                    self.mr.discussions.create({'body': body, 'position': pos_obj})
                 if store is not None:
                     store.add(body_fp)
                     store.add(code_fp)
@@ -687,16 +690,17 @@ class GitLabProvider(GitProvider):
                         body_fallback = body_with_markers(
                             body_fallback, body_fp, code_fp, getattr(self, "max_comment_chars", None))
                     # Create a general note on the file in the MR
-                    self.mr.notes.create({
-                        'body': body_fallback,
-                        'position': {
-                            'base_sha': diff.base_commit_sha,
-                            'start_sha': diff.start_commit_sha,
-                            'head_sha': diff.head_commit_sha,
-                            'position_type': 'text',
-                            'file_path': f'{target_file.filename}',
-                        }
-                    })
+                    fallback_position = {
+                        'base_sha': diff.base_commit_sha,
+                        'start_sha': diff.start_commit_sha,
+                        'head_sha': diff.head_commit_sha,
+                        'position_type': 'text',
+                        'file_path': f'{target_file.filename}',
+                    }
+                    if as_draft:
+                        self.mr.draft_notes.create({'note': body_fallback, 'position': fallback_position})
+                    else:
+                        self.mr.notes.create({'body': body_fallback, 'position': fallback_position})
                     get_logger().debug(f"Created fallback comment in MR {self.id_mr} with position {pos_obj}")
                     if store is not None:
                         store.add(body_fp)
@@ -726,6 +730,10 @@ class GitLabProvider(GitProvider):
         return self.last_diff  # fallback to the latest diff if no relevant diff is found
 
     def publish_code_suggestions(self, code_suggestions: list) -> bool:
+        # When true, suggestions are queued as GitLab draft notes and published together in a single
+        # batch at the end, instead of each one going out as its own live discussion (and its own
+        # notification/email) as soon as it's created.
+        as_review = get_settings().get("gitlab.publish_code_suggestions_as_review", False)
         for suggestion in code_suggestions:
             try:
                 if suggestion and 'original_suggestion' in suggestion:
@@ -760,9 +768,23 @@ class GitLabProvider(GitProvider):
                 edit_type = 'addition'
 
                 self.send_inline_comment(body, edit_type, found, relevant_file, relevant_line_in_file, source_line_no,
-                                         target_file, target_line_no, original_suggestion)
+                                         target_file, target_line_no, original_suggestion, as_draft=as_review)
             except Exception as e:
                 get_logger().exception(f"Could not publish code suggestion:\nsuggestion: {suggestion}\nerror: {e}")
+
+        if as_review:
+            try:
+                self.mr.draft_notes.bulk_publish()
+            except Exception as e:
+                # Draft notes are only visible to the posting user until published, so a failure here
+                # leaves the suggestions invisible to everyone else. They aren't lost: GitLab keeps
+                # pending drafts on the MR, so a manual publish from the GitLab UI, or the next
+                # successful run of this method (which also ends in a bulk_publish call), will surface
+                # them - but that won't happen automatically, so this needs to be visible in logs/alerts.
+                get_logger().exception(
+                    f"Failed to bulk-publish draft code-suggestion notes for MR {self.id_mr}; they remain "
+                    f"as pending drafts, visible only to the posting user, until published manually from "
+                    f"the GitLab UI or by a subsequent successful run: {e}")
 
         # note that we publish suggestions one-by-one. so, if one fails, the rest will still be published
         return True
