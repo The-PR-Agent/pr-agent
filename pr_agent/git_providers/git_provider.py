@@ -1120,6 +1120,16 @@ class GitProvider(ABC):
     def auto_approve(self) -> bool:
         return False
 
+    def dismiss_stale_changes_requested_reviews(self) -> int:
+        """Dismiss the bot's own prior CHANGES_REQUESTED reviews on this PR.
+
+        Called when a fresh review of the current head finds no key issues and no
+        security concerns, so the review gate can be cleared.  Only reviews
+        authored by the bot itself are ever dismissed.  Returns the number of
+        reviews dismissed.  No-op for providers that don\'t support it.
+        """
+        return 0
+
     def calc_pr_statistics(self, pull_request_data: dict):
         return {}
 

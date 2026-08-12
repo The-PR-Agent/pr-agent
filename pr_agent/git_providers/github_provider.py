@@ -2014,6 +2014,39 @@ class GithubProvider(GitProvider):
             get_logger().exception(f"Failed to auto-approve, error: {e}")
             return False
 
+    def dismiss_stale_changes_requested_reviews(self) -> int:
+        """Dismiss the bot\'s own prior CHANGES_REQUESTED reviews on this PR.
+
+        Only reviews authored by the bot itself are dismissed -- never a human\'s.
+        A fresh review that finds no key issues and no security concerns triggers
+        this, so the review gate can clear on the current head.
+        """
+        try:
+            bot_login = self.get_user_id()
+            if not bot_login:
+                return 0
+            current_commit = self.pr.head.sha
+            dismiss_message = (
+                f"Re-review on commit {current_commit}: no key issues or security "
+                f"concerns found."
+            )
+            dismissed = 0
+            for review in self.pr.get_reviews():
+                if review.state != "CHANGES_REQUESTED":
+                    continue
+                if getattr(review.user, "login", None) != bot_login:
+                    continue
+                review.dismiss(dismiss_message)
+                dismissed += 1
+                get_logger().info(
+                    "Dismissed bot CHANGES_REQUESTED review",
+                    artifact={"review_id": review.id, "commit": review.commit_id},
+                )
+            return dismissed
+        except Exception as e:
+            get_logger().exception(f"Failed to dismiss CHANGES_REQUESTED reviews: {e}")
+            return 0
+
     def calc_pr_statistics(self, pull_request_data: dict):
             return {}
 

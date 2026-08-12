@@ -159,7 +159,14 @@ workers = compute_workers()
 # pid-guarded secret provider in servers/gitlab_webhook.py).
 preload_app = True
 worker_connections = 1000
-timeout = 240
+# The AI-side timeout (ai_timeout) can be up to 600s for long reviews.  Gunicorn\'s sync
+# timeout must be >= that, otherwise the master SIGABRTs the worker mid-request,
+# killing it before the review is published and orphaning the "Preparing review..."
+# placeholder comment on the PR.
+# 240s was the old default; it was shorter than ai_timeout=600 and silently killed
+# slow reviews.
+# Override with the GUNICORN_TIMEOUT env var if you need a different ceiling.
+timeout = int(os.environ.get("GUNICORN_TIMEOUT", "600"))
 keepalive = 2
 
 #

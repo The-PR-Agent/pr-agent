@@ -1,170 +1,39 @@
-import asyncio
 import copy
 import datetime
-import re
 from functools import partial
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
-from pydantic import ValidationError
+from jinja2 import Environment, StrictUndefined
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
-from pr_agent.algo.comment_identity import (
-    PRReviewHeader,
-    PRReviewIdentity,
-    add_pr_review_identity,
-    get_pr_review_comment_identifiers,
-    hidden_marker_forms,
-    render_hidden_marker,
-)
-from pr_agent.algo.inline_comment_dedup import (
-    InlineCommentStore,
-    can_verify_inline_comment_publication,
-    get_inline_comment_store,
-    key_issue_body_with_markers,
-    key_issue_fingerprint,
-    key_issue_location_fingerprint,
-)
-from pr_agent.algo.output_models import PRReview
-from pr_agent.algo.pr_processing import (
-    OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
-    OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
-    FallbackEligibleError,
-    PreparedPRDiff,
-    add_ai_metadata_to_diff_files,
-    get_pr_diff,
-    get_pr_multi_diffs,
-    retry_with_fallback_models,
-)
-from pr_agent.algo.prompt_fragments import render_diff_hunk_format
+from pr_agent.algo.pr_processing import (add_ai_metadata_to_diff_files,
+                                         get_pr_diff,
+                                         retry_with_fallback_models)
 from pr_agent.algo.repo_context import build_repo_context
-from pr_agent.algo.review_finding_state import (
-    append_review_state,
-    parse_review_state,
-    reconcile_review_findings,
-)
-from pr_agent.algo.review_merge import merge_review_chunks
-from pr_agent.algo.run_details import get_run_details, init_run_details, record_command_failure, record_model_used
-from pr_agent.algo.run_output import (
-    github_action_output,
-    push_outputs,
-    show_relevant_configurations,
-    show_run_details,
-)
+from pr_agent.algo.run_details import init_run_details
 from pr_agent.algo.skills_loader import get_skills_context
-from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
-from pr_agent.algo.utils import (
-    ModelType,
-    convert_to_markdown_v2,
-    is_value_no,
-    load_yaml,
-)
+from pr_agent.algo.utils import (ModelType, PRReviewHeader,
+                                 convert_to_markdown_v2, github_action_output,
+                                 load_yaml, show_relevant_configurations,
+                                 show_run_details)
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers import get_git_provider_with_context
-from pr_agent.git_providers.git_provider import GitProvider, IncrementalPR, get_main_pr_language
+from pr_agent.git_providers import (get_git_provider_with_context)
+from pr_agent.git_providers.git_provider import (IncrementalPR,
+                                                 get_main_pr_language)
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
 from pr_agent.tools.ticket_pr_compliance_check import (
-    extract_and_cache_pr_tickets,
-    fit_related_tickets_to_prompt_budget,
-)
+    extract_and_cache_pr_tickets)
 
 MAX_REVIEW_COVERAGE_FILES = 50
-_SUGGESTION_FENCE_RE = re.compile(r"```[ \t]*suggestion\b", re.IGNORECASE)
-
-_REVIEW_FAILURE_REASONS = (
-    (
-        ("credit balance is too low", "insufficient credits", "insufficient balance", "insufficient_quota"),
-        "The model provider rejected the request because the API account has insufficient credits. "
-        "Add credits, then retry the command.",
-    ),
-    (
-        ("authenticationerror", "authentication error", "invalid api key", "invalid x-api-key"),
-        "PR-Agent could not authenticate with the model provider. Check the configured API credentials, then retry.",
-    ),
-    (
-        ("ratelimiterror", "rate limit", "too many requests"),
-        "The model provider rate-limited the request. Wait for the limit to reset, then retry.",
-    ),
-    (
-        ("apitimeouterror", "timeout error", "timed out"),
-        "The model provider timed out before completing the review. Retry the command or adjust the provider timeout.",
-    ),
-    (
-        ("context_length_exceeded", "maximum context length", "input is too long", "too many tokens"),
-        "The pull request exceeded the selected model's context limit. Retry with a larger-context model or an "
-        "incremental review.",
-    ),
-    (
-        ("apiconnectionerror", "connection error"),
-        "PR-Agent could not reach the model provider. Check provider availability and network access, then retry.",
-    ),
-    (
-        ("failed to generate prediction with any model",),
-        "Every configured model attempt failed. Check the PR-Agent service logs for the provider error, then retry.",
-    ),
-)
-_UNKNOWN_REVIEW_FAILURE_REASON = (
-    "PR-Agent encountered an unexpected internal error. Check the PR-Agent service logs for details."
-)
-
-
-def _exception_chain_text(error: Exception) -> str:
-    """Return exception types and messages for classification without publishing them."""
-    parts = []
-    current = error
-    seen = set()
-    while current is not None and id(current) not in seen and len(parts) < 8:
-        seen.add(id(current))
-        try:
-            message = str(current)
-        except Exception:
-            message = ""
-        parts.append(f"{type(current).__name__}: {message}")
-        current = current.__cause__ or current.__context__
-    return "\n".join(parts).casefold()
-
-
-def _as_bool(value) -> bool:
-    """Interpret configured boolean values without treating non-empty strings as true."""
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().casefold() in ("1", "true", "yes", "on")
-    return False
-
-
-def _review_failure_comment(error: Exception) -> str:
-    """Build an optional deterministic failure explanation from an allowlist of safe messages."""
-    if not _as_bool(get_settings().pr_reviewer.get("publish_error_details", False)):
-        return "Failed to review PR"
-
-    error_text = _exception_chain_text(error)
-    reason = _UNKNOWN_REVIEW_FAILURE_REASON
-    for patterns, candidate in _REVIEW_FAILURE_REASONS:
-        if any(pattern in error_text for pattern in patterns):
-            reason = candidate
-            break
-    return f"Failed to review PR\n\n**Reason:** {reason}"
-
-
-_STATE_BLOCK_INVALID_MARKER = "invalid_marker"
-_STATE_BLOCK_READ_ERROR = "read_error"
-_STATE_BLOCK_REVIEW_DATA = "review_data"
-_STATE_BLOCK_SIZE = "state_size"
 
 
 class PRReviewer:
     """
     The PRReviewer class is responsible for reviewing a pull request and generating feedback using an AI model.
     """
-
-    # State of the chunked flow, rebound by _prepare_chunked_prediction. Class-level immutable
-    # defaults, so the single-call flow carries no bookkeeping.
-    prediction_data = None  # merged review dict; None means "parse self.prediction instead"
-    review_chunk_count = 1
-    review_failed_chunk_count = 0
 
     def __init__(self, pr_url: str, is_answer: bool = False, is_auto: bool = False, args: list = None,
                  ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
@@ -198,23 +67,18 @@ class PRReviewer:
         self.patches_diff = None
         self.remaining_files_list = []
         self.prediction = None
-        self._review_state_result = None
-        self._review_state_blocked = False
-        self._review_state_block_reason = None
-        self._review_finding_previous_state = None
-        self._review_state_preserved = False
+        self.review_data = None
         question_str, answer_str = self._get_user_answers()
         self.pr_description, self.pr_description_files = (
             self.git_provider.get_pr_description(split_changes_walkthrough=True))
         if (self.pr_description_files and get_settings().get("config.is_auto_command", False) and
                 get_settings().get("config.enable_ai_metadata", False)):
             add_ai_metadata_to_diff_files(self.git_provider, self.pr_description_files)
-            get_logger().debug("AI metadata added to the this command")
+            get_logger().debug(f"AI metadata added to the this command")
         else:
             get_settings().set("config.enable_ai_metadata", False)
-            get_logger().debug("AI metadata is disabled for this command")
+            get_logger().debug(f"AI metadata is disabled for this command")
 
-        is_ai_metadata = get_settings().get("config.enable_ai_metadata", False)
         self.vars = {
             "title": self.git_provider.pr.title,
             "branch": self.git_provider.get_pr_branch(),
@@ -226,12 +90,7 @@ class PRReviewer:
             "require_score": get_settings().pr_reviewer.require_score_review,
             "require_tests": get_settings().pr_reviewer.require_tests_review,
             "require_estimate_effort_to_review": get_settings().pr_reviewer.require_estimate_effort_to_review,
-            "require_risk_assessment": get_settings().pr_reviewer.get("require_risk_assessment", False),
-            "require_merge_recommendation": get_settings().pr_reviewer.get("require_merge_recommendation", False),
-            "require_priority_files": get_settings().pr_reviewer.get("require_priority_files", False),
-            "require_estimate_contribution_time_cost": (
-                get_settings().pr_reviewer.require_estimate_contribution_time_cost
-            ),
+            "require_estimate_contribution_time_cost": get_settings().pr_reviewer.require_estimate_contribution_time_cost,
             'require_can_be_split_review': get_settings().pr_reviewer.require_can_be_split_review,
             'require_security_review': get_settings().pr_reviewer.require_security_review,
             'require_todo_scan': get_settings().pr_reviewer.get("require_todo_scan", False),
@@ -243,13 +102,8 @@ class PRReviewer:
             "commit_messages_str": self.git_provider.get_commit_messages(),
             "custom_labels": "",
             "enable_custom_labels": get_settings().config.enable_custom_labels,
-            "is_ai_metadata": is_ai_metadata,
-            "diff_hunk_format": render_diff_hunk_format(
-                include_line_numbers=True,
-                include_ai_metadata=is_ai_metadata,
-            ),
+            "is_ai_metadata":  get_settings().get("config.enable_ai_metadata", False),
             "related_tickets": get_settings().get('related_tickets', []),
-            "related_tickets_omitted": 0,
             'duplicate_prompt_examples': get_settings().config.get('duplicate_prompt_examples', False),
             "date": datetime.datetime.now().strftime('%Y-%m-%d'),
         }
@@ -272,14 +126,6 @@ class PRReviewer:
 
     async def run(self) -> None:
         init_run_details()
-        for name in ("_chunked_patches_diff_list", "_chunked_remaining_files_list", "_chunked_results",
-                     "_chunked_primary_model"):
-            self.__dict__.pop(name, None)
-        progress_response = None
-        partial_review_error = None
-        review_error = None
-        review_failed = False
-        persistent_write_failed = False
         try:
             if not self.git_provider.get_files():
                 get_logger().info(f"PR has no files: {self.pr_url}, skipping review")
@@ -303,7 +149,6 @@ class PRReviewer:
 
             # ticket extraction if exists
             await extract_and_cache_pr_tickets(self.git_provider, self.vars)
-            self._raw_prompt_vars = copy.deepcopy(self.vars)
 
             if (
                 self.incremental.is_incremental
@@ -320,34 +165,22 @@ class PRReviewer:
                 return None
 
             if get_settings().config.publish_output and not get_settings().config.get('is_auto_command', False):
-                progress_response = self.git_provider.publish_comment("Preparing review...", is_temporary=True)
+                self.git_provider.publish_comment("Preparing review...", is_temporary=True)
 
-            try:
-                await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.REGULAR,
-                                                 git_provider=self.git_provider)
-            except Exception as error:
-                if not self._merge_cached_review_chunks():
-                    raise
-                partial_review_error = error
-                get_logger().warning("Fallback models exhausted; publishing successful review chunks")
+            await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.REGULAR)
             if not self.prediction:
                 return None
 
             pr_review = self._prepare_pr_review()
-            get_logger().debug("PR output", artifact=pr_review)
+            get_logger().debug(f"PR output", artifact=pr_review)
 
-            if not pr_review:
-                raise ValueError("Failed to prepare review output")
+            # When a fresh review of the current head finds no key issues and no security
+            # concerns, dismiss the bot's own prior CHANGES_REQUESTED reviews so the PR
+            # can become mergeable again. Only the bot's own reviews are ever dismissed.
+            if self._review_has_no_key_issues_or_security_concerns():
+                self.git_provider.dismiss_stale_changes_requested_reviews()
 
-            state_result = getattr(self, "_review_state_result", None)
-            state_changed = bool(state_result and state_result.changed)
-            state_blocked = getattr(self, "_review_state_blocked", False)
-            should_publish = get_settings().config.publish_output and (
-                self._should_publish_review_no_suggestions(pr_review)
-                or state_changed
-                or state_blocked
-                or self.review_failed_chunk_count > 0
-            )
+            should_publish = get_settings().config.publish_output and self._should_publish_review_no_suggestions(pr_review)
             if not should_publish:
                 reason = "Review output is not published"
                 if get_settings().config.publish_output:
@@ -360,810 +193,113 @@ class PRReviewer:
             # Providers that support it (GitLab) can post the review's final comment as a resolvable thread.
             # This intent applies to the review only - never to status comments or the output of other tools.
             review_thread_kwargs = {"as_thread": True} if self.git_provider.should_publish_review_as_thread() else {}
-            state_block_reason = getattr(self, "_review_state_block_reason", None)
-            if state_blocked and (
-                state_block_reason == _STATE_BLOCK_INVALID_MARKER
-                or (
-                    state_block_reason == _STATE_BLOCK_SIZE
-                    and getattr(self, "_review_state_preserved", False)
-                )
-            ):
-                get_logger().warning(
-                    "Review finding state cannot be written safely; replacing the persistent review "
-                    "with a clean state marker"
-                )
-                persistent_args = dict(
-                    initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
-                    update_header=True,
-                    final_update_message=False,
-                    identity_marker=PRReviewIdentity.REGULAR.value,
-                    legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
-                    require_agent_authorship=True,
-                    fallback_on_error=False,
-                    **review_thread_kwargs,
-                )
-                persistent_write_failed = True
-                result = self.git_provider.publish_persistent_comment_full(
-                    pr_review, **persistent_args
-                )
-                persistent_write_failed = not self._persistent_publish_succeeded(result)
-                if persistent_write_failed:
-                    review_failed = True
-            elif state_blocked:
-                get_logger().warning(
-                    "Review finding state is blocked by review data or provider read failure; "
-                    "publishing without changing persistent state"
-                )
-                self.git_provider.publish_comment(
-                    self._as_non_authoritative_review(pr_review),
-                    **review_thread_kwargs,
-                )
-            elif get_settings().pr_reviewer.persistent_comment and not self.incremental.is_incremental:
+            if get_settings().pr_reviewer.persistent_comment and not self.incremental.is_incremental:
                 final_update_message = get_settings().pr_reviewer.final_update_message
-                persistent_args = dict(
-                    initial_header=pr_review.split("\n", 1)[0],
-                    update_header=True,
-                    final_update_message=final_update_message,
-                    identity_marker=PRReviewIdentity.REGULAR.value,
-                    legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
-                    **review_thread_kwargs,
-                )
-                if not self._review_finding_state_in_play():
-                    self.git_provider.publish_persistent_comment(pr_review, **persistent_args)
-                elif state_result is not None:
-                    persistent_args["require_agent_authorship"] = True
-                    persistent_args["fallback_on_error"] = False
-                    persistent_write_failed = True
-                    result = self.git_provider.publish_persistent_comment_full(
-                        pr_review, **persistent_args
-                    )
-                    persistent_write_failed = not self._persistent_publish_succeeded(result)
-                    if persistent_write_failed:
-                        review_failed = True
-                elif self._publish_review_check_run(pr_review):
-                    pass
-                elif self._review_comment_authorship_available():
-                    persistent_args["require_agent_authorship"] = True
-                    persistent_args["fallback_on_error"] = False
-                    persistent_write_failed = True
-                    result = self.git_provider.publish_persistent_comment_full(
-                        pr_review, **persistent_args
-                    )
-                    persistent_write_failed = not self._persistent_publish_succeeded(result)
-                    if persistent_write_failed:
-                        review_failed = True
-                elif self._persistent_review_comment_exists() is False:
-                    # There is no review comment to replace, so creating one cannot overwrite
-                    # a comment PR-Agent did not author. An identity this deployment cannot
-                    # resolve is not a reason to demote the canonical review.
-                    self.git_provider.publish_persistent_comment(pr_review, **persistent_args)
-                else:
-                    # An unverified provider identity must never update a canonical review.
-                    self.git_provider.publish_comment(
-                        self._as_non_authoritative_review(pr_review),
-                        **review_thread_kwargs,
-                    )
-
+                self.git_provider.publish_persistent_comment(pr_review,
+                                                            initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
+                                                            update_header=True,
+                                                            final_update_message=final_update_message,
+                                                            **review_thread_kwargs)
             else:
-                if self.git_provider.supports_review_comment_identity() is True:
-                    identity_marker = (
-                        PRReviewIdentity.INCREMENTAL.value
-                        if self.incremental.is_incremental
-                        else PRReviewIdentity.REGULAR.value
-                    )
-                    pr_review = add_pr_review_identity(pr_review, identity_marker, self.git_provider)
                 self.git_provider.publish_comment(pr_review, **review_thread_kwargs)
+
         except Exception as e:
-            review_error = e
-            review_failed = True
             get_logger().error(f"Failed to review PR: {e}")
-            # The status of the whole run must not read as success just because the error stopped here.
-            record_command_failure()
             if get_settings().config.get("propagate_tool_errors", False):
                 raise
         finally:
-            if progress_response is not None:
-                try:
-                    self.git_provider.remove_comment(progress_response)
-                except Exception as e:
-                    get_logger().exception(f"Failed to remove review progress comment, error: {e}")
-            if (
-                review_failed
-                and get_settings().config.publish_output
-                and (
-                    persistent_write_failed
-                    or not get_settings().config.get("is_auto_command", False)
-                )
-            ):
-                try:
-                    self.git_provider.publish_comment(_review_failure_comment(review_error))
-                except Exception as e:
-                    get_logger().exception(f"Failed to publish review failure result, error: {e}")
-            if (partial_review_error is not None and not review_failed
-                    and get_settings().config.get("propagate_tool_errors", False)):
-                raise partial_review_error
-
-    def _review_finding_state_enabled(self) -> bool:
-        settings = get_settings()
-        if not settings.config.publish_output:
-            return False
-        if not settings.pr_reviewer.get("persistent_comment", True):
-            return False
-        if not settings.pr_reviewer.get("persistent_finding_state", True):
-            return False
-        provider = getattr(self, "git_provider", None)
-        if provider is None:
-            return False
-        if (
-            getattr(getattr(settings, "github", None), "publish_as_check_run", False)
-            and callable(getattr(provider, "_publish_check_run", None))
-        ):
-            return False
-        if getattr(getattr(self, "incremental", None), "is_incremental", False):
-            return False
-        try:
-            if provider.supports_review_finding_state() is not True:
-                return False
-            return bool(provider.is_supported("get_issue_comments"))
-        except Exception as e:
-            get_logger().warning(f"Review finding state is not supported by this provider, error: {e}")
-            return False
-
-    @staticmethod
-    def _persistent_publish_succeeded(result) -> bool:
-        return result is not None and result is not False
-
-    @staticmethod
-    def _as_non_authoritative_review(pr_review: str) -> str:
-        identity_markers = {
-            *hidden_marker_forms(PRReviewIdentity.REGULAR.value),
-            *hidden_marker_forms(PRReviewIdentity.INCREMENTAL.value),
-        }
-        markerless_review = "\n".join(
-            line
-            for line in str(pr_review).splitlines()
-            if line.strip() not in identity_markers
-        ).strip()
-        return (
-            "## Standalone PR Review\n\n"
-            "_PR-Agent could not safely update the persistent review. "
-            "This standalone result will not replace the canonical review._\n\n"
-            f"{markerless_review}"
-        )
-
-    def _publish_review_check_run(self, pr_review: str) -> bool:
-        if not getattr(
-            getattr(get_settings(), "github", None),
-            "publish_as_check_run",
-            False,
-        ):
-            return False
-        publisher = getattr(self.git_provider, "_publish_check_run", None)
-        if not callable(publisher):
-            return False
-        try:
-            return publisher(pr_review, "review") is True
-        except Exception as error:
-            get_logger().warning(
-                f"Failed to publish review check run, error: {error}"
-            )
-            return False
-
-    def _review_finding_state_in_play(self) -> bool:
-        if not get_settings().pr_reviewer.get("persistent_finding_state", True):
-            return False
-        provider = getattr(self, "git_provider", None)
-        if provider is None:
-            return False
-        capability = getattr(provider, "supports_review_finding_state", None)
-        implementation = getattr(capability, "__func__", capability)
-        return (
-            callable(capability)
-            and implementation is not GitProvider.supports_review_finding_state
-        )
-
-    def _persistent_review_comment_exists(self) -> Optional[bool]:
-        """Whether a comment already carries the full-review identity.
-
-        Returns None when the provider's comments could not be read at all, so a caller
-        that must not overwrite an existing review can stay conservative.
-        """
-        provider = getattr(self, "git_provider", None)
-        if provider is None:
-            return None
-        try:
-            for _comment, _body in GitProvider._iter_persistent_comments(
-                provider,
-                get_pr_review_comment_identifiers(full=True, incremental=False),
-                identity_marker=PRReviewIdentity.REGULAR.value,
-            ):
-                return True
-            return False
-        except Exception as error:
-            get_logger().warning(f"Could not read the existing review comments: {error}")
-            return None
-
-    def _review_comment_authorship_available(self) -> bool:
-        provider = getattr(self, "git_provider", None)
-        if provider is None:
-            return False
-        try:
-            return (
-                provider.supports_review_finding_state() is True
-                and provider.is_supported("get_issue_comments") is True
-            )
-        except Exception as error:
-            get_logger().warning(
-                f"Review comment authorship is not available, error: {error}"
-            )
-            return False
-
-    def _load_review_finding_state(self):
-        identifiers = get_pr_review_comment_identifiers(full=True, incremental=False)
-        try:
-            invalid_marker_found = False
-            for _comment, body in GitProvider._iter_persistent_comments(
-                self.git_provider,
-                identifiers,
-                identity_marker=PRReviewIdentity.REGULAR.value,
-                require_agent_authorship=True,
-            ):
-                parsed = parse_review_state(body)
-                if parsed.valid and parsed.present:
-                    self._review_state_blocked = False
-                    self._review_state_block_reason = None
-                    return parsed
-                if not parsed.valid and parsed.present:
-                    invalid_marker_found = True
-                    get_logger().warning(
-                        "Review finding state marker is malformed or unsupported; "
-                        "trying an older persistent review"
-                    )
-            if invalid_marker_found:
-                self._review_state_blocked = True
-                self._review_state_block_reason = _STATE_BLOCK_INVALID_MARKER
-                return None
-        except Exception as e:
-            self._review_state_blocked = True
-            self._review_state_block_reason = _STATE_BLOCK_READ_ERROR
-            get_logger().warning(f"Could not read persistent review state; skipping persistent update, error: {e}")
-            return None
-        self._review_state_blocked = False
-        self._review_state_block_reason = None
-        return parse_review_state("")
-
-    @staticmethod
-    def _review_finding_from_issue(issue: dict) -> Optional[dict]:
-        if not isinstance(issue, dict):
-            return None
-        path = str(issue.get("relevant_file") or issue.get("path") or "").strip()
-        raw_content = issue.get("issue_content") or issue.get("body") or ""
-        content = _SUGGESTION_FENCE_RE.sub("```text", str(raw_content).strip())
-        header = str(issue.get("issue_header") or "").strip()
-        if header.lower() == "possible bug":
-            header = "Possible Issue"
-        if not path or not content:
-            return None
-
-        finding = {
-            "path": path,
-            "body": f"**{header}**\n\n{content}" if header else content,
-        }
-        try:
-            start = int(str(issue.get("start_line", 0)).strip())
-            end = int(str(issue.get("end_line", start)).strip())
-        except (TypeError, ValueError):
-            start, end = 0, 0
-        if start > 0:
-            finding["line_start"] = start
-            finding["line_end"] = max(start, end)
-        return finding
-
-    @classmethod
-    def _review_findings_from_data(cls, data: dict) -> Optional[list[dict]]:
-        review = data.get("review")
-        if not isinstance(review, dict):
-            return None
-        if "key_issues_to_review" not in review:
-            return None
-        issues = review["key_issues_to_review"]
-        if not isinstance(issues, list):
-            return None
-        findings = []
-        for issue in issues:
-            finding = cls._review_finding_from_issue(issue)
-            if finding is None:
-                # A key issue without a file or a body cannot be tracked across runs, but the
-                # review summary still renders it; dropping the entry keeps the lifecycle state
-                # of every other finding instead of discarding the whole review.
-                get_logger().debug("Skipping a key issue that carries no trackable location",
-                                   artifact={"issue": issue})
-                continue
-            findings.append(finding)
-        return findings
-
-    def _review_head_sha(self) -> str:
-        # Resolve the head commit through the provider's own hook, so the reviewer does not
-        # need to know which field each API carries it in.
-        get_head_sha = getattr(self.git_provider, "get_pr_head_sha", None)
-        if callable(get_head_sha):
-            head_sha = get_head_sha()
-            if isinstance(head_sha, str) and head_sha:
-                return head_sha
-
-        last_commit = getattr(self.git_provider, "last_commit_id", None)
-        if isinstance(last_commit, str):
-            return last_commit
-        for attribute in ("sha", "id"):
-            value = getattr(last_commit, attribute, None)
-            if isinstance(value, str):
-                return value
-        return ""
-
-    def _review_run_id(self) -> str:
-        try:
-            value = self.git_provider.get_latest_commit_url()
-        except Exception:
-            return ""
-        return value if isinstance(value, str) else ""
-
-    def _review_comment_max_chars(self) -> int | None:
-        for attribute in ("max_comment_chars", "max_comment_length"):
-            value = getattr(self.git_provider, attribute, None)
-            if isinstance(value, int) and value > 0:
-                update_suffix = f"\n\n#### (Review updated until commit {self._review_run_id()})\n"
-                # The shared persistent publisher adds the full-review identity
-                # before inserting the update suffix. Reserve both pieces so a
-                # complete state marker remains inside the provider limit.
-                identity_overhead = len(render_hidden_marker(PRReviewIdentity.REGULAR.value, self.git_provider)) + 2
-                return value - len(update_suffix) - identity_overhead
-        return None
-
-    def _prepare_review_finding_state(self, data: dict) -> None:
-        self._review_state_result = None
-        self._review_state_blocked = False
-        self._review_state_block_reason = None
-        self._review_finding_previous_state = None
-        self._review_state_preserved = False
-        if not self._review_finding_state_enabled():
-            return
-        if not isinstance(data.get("review"), dict):
-            self._review_state_blocked = True
-            self._review_state_block_reason = _STATE_BLOCK_REVIEW_DATA
-            get_logger().warning("Review data is invalid; preserving persistent finding state")
-            return
-
-        parsed = self._load_review_finding_state()
-        if parsed is not None and parsed.valid:
-            self._review_finding_previous_state = parsed.state
-        if parsed is None and self._review_state_block_reason != _STATE_BLOCK_INVALID_MARKER:
-            return
-        current_findings = self._review_findings_from_data(data)
-        if current_findings is None:
-            self._review_state_blocked = True
-            self._review_state_block_reason = _STATE_BLOCK_REVIEW_DATA
-            get_logger().warning("Review finding data is invalid; skipping persistent state update")
-            return
-        if self._review_state_blocked:
-            if self._review_state_block_reason == _STATE_BLOCK_INVALID_MARKER:
-                self._review_state_result = reconcile_review_findings(
-                    None,
-                    current_findings,
-                    allow_resolution=False,
-                    excluded_files=self.remaining_files_list,
-                    head_sha=self._review_head_sha(),
-                    run_id=self._review_run_id(),
-                )
-            return
-        try:
-            max_findings = int(get_settings().pr_reviewer.num_max_findings)
-        except (TypeError, ValueError):
-            max_findings = 0
-        reported_issues = data["review"].get("key_issues_to_review")
-        dropped_findings = (
-            isinstance(reported_issues, list)
-            and len(current_findings) < len(reported_issues)
-        )
-        allow_resolution = (
-            bool(self.prediction)
-            and not bool(getattr(self.incremental, "is_incremental", False))
-            # A merged result with failed chunks is still partial, even when chunking left
-            # no additional token-budget files to report.
-            and not bool(self.review_failed_chunk_count)
-            and not bool(self.remaining_files_list)
-            and parsed.valid
-            and current_findings is not None
-            # a dropped finding is not an absent one, so this run cannot resolve anything
-            and not dropped_findings
-            and len(current_findings) < max_findings
-        )
-        result = reconcile_review_findings(
-            parsed.state,
-            current_findings,
-            allow_resolution=allow_resolution,
-            excluded_files=self.remaining_files_list,
-            head_sha=self._review_head_sha(),
-            run_id=self._review_run_id(),
-        )
-        if parsed.state is not None or result.changed:
-            self._review_state_result = result
+            # Ensure the 'Preparing review...' placeholder is always cleaned up,
+            # even when the LLM call or downstream publishing fails -- otherwise it
+            # leaves the PR looking hung indefinitely.
+            self.git_provider.remove_initial_comment()
 
     def _should_publish_review_no_suggestions(self, pr_review: str) -> bool:
-        return (
-            get_settings().pr_reviewer.get('publish_output_no_suggestions', True)
-            or "No major issues detected" not in pr_review
+        return get_settings().pr_reviewer.get('publish_output_no_suggestions', True) or "No major issues detected" not in pr_review
+
+    def _review_has_no_key_issues_or_security_concerns(self) -> bool:
+        """Return True when the parsed review found no key issues and no security concerns.
+
+        Mirrors the same heuristic used by ``set_review_labels``: an empty/
+        missing ``key_issues_to_review`` list and a ``security_concerns`` string
+        that does not contain "yes" or "true".
+        """
+        review = (getattr(self, "review_data", None) or {}).get("review") or {}
+        key_issues = review.get("key_issues_to_review")
+        has_key_issues = bool(key_issues) if isinstance(key_issues, list) else False
+        security_concerns = review.get("security_concerns") or ""
+        has_security = (
+            "yes" in security_concerns.lower() or "true" in security_concerns.lower()
         )
+        return not has_key_issues and not has_security
 
     async def _prepare_prediction(self, model: str) -> None:
-        # Each model attempt owns a fresh result. A malformed primary must not
-        # leave state that can be mistaken for a successful fallback response.
-        self.prediction = None
-        self.prediction_data = None
-        self.review_chunk_count = 1
-        self.review_failed_chunk_count = 0
-        raw_prompt_vars = getattr(self, "_raw_prompt_vars", getattr(self, "vars", None))
-        ai_handler = getattr(self, "ai_handler", None)
-        output_token_reserve = getattr(
-            ai_handler, "get_output_token_reserve", None
-        )
-        if raw_prompt_vars is not None:
-            self.vars, self.token_handler = fit_related_tickets_to_prompt_budget(
-                self.git_provider.pr,
-                raw_prompt_vars,
-                get_settings().pr_review_prompt.system,
-                get_settings().pr_review_prompt.user,
-                model,
-                ai_handler=ai_handler,
-                output_token_reserve=output_token_reserve,
-            )
-        chunking_enabled = get_settings().pr_reviewer.get("enable_large_pr_chunking", False)
-        diff_kwargs = {
-            "add_line_numbers_to_hunks": True,
-            "disable_extra_lines": False,
-            "return_remaining_files": True,
-        }
-        if callable(output_token_reserve):
-            diff_kwargs["output_token_reserve"] = output_token_reserve
-        if chunking_enabled:
-            diff_kwargs["return_prepared"] = True
-        output = get_pr_diff(self.git_provider, self.token_handler, model, **diff_kwargs)
-        if isinstance(output, PreparedPRDiff):
-            self.patches_diff = output.diff
-            self.remaining_files_list = output.remaining_files_list
-        elif isinstance(output, tuple):
+        output = get_pr_diff(self.git_provider,
+                             self.token_handler,
+                             model,
+                             add_line_numbers_to_hunks=True,
+                             disable_extra_lines=False,
+                             return_remaining_files=True,)
+        if isinstance(output, tuple):
             self.patches_diff, self.remaining_files_list = output
         else:
             self.patches_diff = output
             self.remaining_files_list = []
 
-        # Resume an incomplete chunk plan even when a fallback model can fit the full diff.
-        # Otherwise, the single-call path would bypass cached successful chunks.
-        has_incomplete_chunk_plan = hasattr(self, "_chunked_patches_diff_list")
-        if chunking_enabled and (self.remaining_files_list or has_incomplete_chunk_plan):
-            prepared_diff = output if isinstance(output, PreparedPRDiff) else None
-            if await self._prepare_chunked_prediction(model, prepared_diff):
-                return
-
         if self.patches_diff:
-            get_logger().debug("PR diff", diff=self.patches_diff)
-            prediction = await self._get_prediction(model)
-            self._load_valid_review_yaml(prediction)
-            self.prediction = prediction
+            get_logger().debug(f"PR diff", diff=self.patches_diff)
+            self.prediction = await self._get_prediction(model)
         else:
             get_logger().warning(f"Empty diff for PR: {self.pr_url}")
-            raise FallbackEligibleError(f"No PR diff fits the /review request for {model}")
+            self.prediction = None
 
-    async def _prepare_chunked_prediction(self, model: str,
-                                          prepared_diff: PreparedPRDiff | None = None) -> bool:
-        """Review a too-large diff in chunks and merge the per-chunk verdicts.
-
-        Returns False when chunking does not apply, leaving the single-call flow in place.
-        """
-        patches_diff_list = getattr(self, "_chunked_patches_diff_list", None)
-        if patches_diff_list is not None:
-            self._resize_pending_review_chunks(model)
-            patches_diff_list = self._chunked_patches_diff_list
-        if patches_diff_list is not None and self._chunked_remaining_files_list:
-            self._include_newly_reviewable_files(model)
-        if patches_diff_list is None:
-            multi_diff_kwargs = {
-                "max_calls": get_settings().pr_reviewer.get("max_number_of_calls", 3),
-                "add_line_numbers": True,
-                "return_remaining_files": True,
-            }
-            output_token_reserve = getattr(
-                getattr(self, "ai_handler", None), "get_output_token_reserve", None
-            )
-            if callable(output_token_reserve):
-                multi_diff_kwargs["output_token_reserve"] = output_token_reserve
-            if prepared_diff is not None:
-                multi_diff_kwargs["prepared_diff"] = prepared_diff
-            patches_diff_list, remaining_files_list = get_pr_multi_diffs(
-                self.git_provider,
-                self.token_handler,
-                model,
-                **multi_diff_kwargs)
-            self._chunked_patches_diff_list = patches_diff_list
-            self._chunked_remaining_files_list = remaining_files_list
-            self._chunked_primary_model = model
-        if len(patches_diff_list) < 2:
-            get_logger().info("Large-diff chunking produced a single chunk, reviewing the PR in one call")
-            return False
-
-        get_logger().info(f"Number of PR chunk calls: {len(patches_diff_list)}")
-        get_logger().debug("PR diff chunks", artifact=patches_diff_list)
-        chunk_results = getattr(self, "_chunked_results", {})
-        pending_indices = [index for index in range(len(patches_diff_list)) if index not in chunk_results]
-        predictions = await asyncio.gather(
-            *[self._get_prediction(model, patches_diff_list[index]) for index in pending_indices],
-            return_exceptions=True)
-
-        chunk_errors = []
-        for chunk_index, prediction in zip(pending_indices, predictions, strict=True):
-            if isinstance(prediction, Exception):
-                chunk_errors.append(prediction)
-                get_logger().warning(f"Failed to review chunk {chunk_index + 1}; retaining successful chunks",
-                                     artifact={"error": prediction})
-                continue
-            if isinstance(prediction, BaseException):
-                raise prediction
-            try:
-                data = self._load_valid_review_yaml(prediction, source=f"review chunk {chunk_index + 1}")
-            except Exception as error:
-                chunk_errors.append(error)
-                get_logger().warning(f"Failed to parse review chunk {chunk_index + 1}; retrying it with fallback",
-                                     artifact={"error": error})
-                continue
-            self._validate_review_schema(data)
-            chunk_results[chunk_index] = (prediction, data, model)
-        self._chunked_results = chunk_results
-
-        if len(chunk_results) < len(patches_diff_list):
-            if chunk_errors:
-                raise chunk_errors[0]
-            raise FallbackEligibleError("No valid review output was produced for one or more chunks")
-
-        return self._merge_cached_review_chunks()
-
-    def _resize_pending_review_chunks(self, model: str) -> None:
-        """Split oversized pending chunks at file boundaries while preserving result order."""
-        chunks = self._chunked_patches_diff_list
-        results = getattr(self, "_chunked_results", {})
-        attempt_budget = self._review_attempt_budget(model)
-        chunk_limit = attempt_budget.available_tokens(
-            OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
-            preserve_minimum=True,
-        )
-        max_calls = get_settings().pr_reviewer.get("max_number_of_calls", 3)
-        resized, retained = [], {}
-        for index, chunk in enumerate(chunks):
-            if index in results:
-                retained[len(resized)] = results[index]
-                resized.append(chunk)
-                continue
-            if attempt_budget.count_tokens(chunk) <= chunk_limit:
-                resized.append(chunk)
-                continue
-            sections = re.split(r"(?=^## File: ')", chunk, flags=re.MULTILINE)
-            parts, current = [], ""
-            for section in sections:
-                if current and attempt_budget.count_tokens(current + section) > chunk_limit:
-                    parts.append(current)
-                    current = ""
-                current += section
-            if current:
-                parts.append(current)
-            reserved = len(chunks) - index - 1
-            if (parts and len(resized) + len(parts) + reserved <= max_calls
-                    and all(attempt_budget.count_tokens(part) <= chunk_limit for part in parts)):
-                resized.extend(parts)
-            else:
-                # Retain unsplittable work for a later model and report it as failed if none can fit it.
-                resized.append(chunk)
-        self._chunked_patches_diff_list = resized
-        self._chunked_results = retained
-
-    def _include_newly_reviewable_files(self, model: str) -> None:
-        """Add newly fitting files to pending work without resending successful chunks."""
-        chunks = self._chunked_patches_diff_list
-        results = getattr(self, "_chunked_results", {})
-        remaining = self._chunked_remaining_files_list
-        pending = [index for index in range(len(chunks)) if index not in results]
-        attempt_budget = self._review_attempt_budget(model)
-        chunk_limit = attempt_budget.available_tokens(
-            OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
-            preserve_minimum=True,
-        )
-        max_calls = get_settings().pr_reviewer.get("max_number_of_calls", 3)
-        included = set()
-        for section in re.split(r"(?=^## File: ')", self.patches_diff or "", flags=re.MULTILINE):
-            match = re.match(r"## File: '(.*)'\n", section)
-            if not match or match[1] not in remaining or match[1] in included:
-                continue
-            for index in pending:
-                combined = chunks[index] + "\n\n" + section
-                if attempt_budget.count_tokens(combined) <= chunk_limit:
-                    chunks[index] = combined
-                    included.add(match[1])
-                    break
-            else:
-                if len(chunks) < max_calls and attempt_budget.count_tokens(section) <= chunk_limit:
-                    pending.append(len(chunks))
-                    chunks.append(section)
-                    included.add(match[1])
-        self._chunked_remaining_files_list = [name for name in remaining if name not in included]
-
-    def _review_attempt_budget(self, model: str) -> AttemptTokenBudget:
-        """Return the model-bound budget used for review chunk planning and dispatch."""
-        return AttemptTokenBudget.for_attempt(
-            model,
-            self.token_handler,
-            output_token_reserve=getattr(self.ai_handler, "get_output_token_reserve", None),
-        )
-
-    def _merge_cached_review_chunks(self) -> bool:
-        """Merge successful chunks in order, retaining incomplete coverage after exhausted retries."""
-        chunk_results = getattr(self, "_chunked_results", {})
-        if not chunk_results:
-            return False
-
-        # Keep raw text for logging only; use the merged verdict from self.prediction_data.
-        indices = sorted(chunk_results)
-        raw_predictions = [chunk_results[index][0] for index in indices]
-        chunk_outputs = [chunk_results[index][1] for index in indices]
-        self.prediction = "\n".join(raw_predictions)
-        self.prediction_data = merge_review_chunks(chunk_outputs)
-        self.review_chunk_count = len(self._chunked_patches_diff_list)
-        self.review_failed_chunk_count = self.review_chunk_count - len(chunk_results)
-        self.remaining_files_list = self._chunked_remaining_files_list
-        models = list(dict.fromkeys(chunk_results[index][2] for index in indices))
-        details = get_run_details()
-        if details is not None:
-            details.models_used = models
-            for model in models:
-                record_model_used(model, is_fallback=model != self._chunked_primary_model)
-        return True
-
-    async def _get_prediction(self, model: str, patches_diff: Optional[str] = None) -> str:
+    async def _get_prediction(self, model: str) -> str:
         """
         Generate an AI prediction for the pull request review.
 
         Args:
             model: A string representing the AI model to be used for the prediction.
-            patches_diff: The diff to review. Defaults to the whole prepared diff; the chunked
-                flow passes one chunk per call.
 
         Returns:
             A string representing the AI prediction for the pull request review.
         """
         variables = copy.deepcopy(self.vars)
-        patches_diff = self.patches_diff if patches_diff is None else patches_diff
-        budget = self._review_attempt_budget(model)
-        fitted = budget.fit_prompt_variable(
-            variables,
-            "diff",
-            patches_diff,
-            ai_handler=self.ai_handler,
-            default_output_tokens=OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
-            preserve_minimum=True,
-        )
-        if fitted.optional_text != patches_diff:
-            raise FallbackEligibleError(
-                f"The complete packed review diff does not fit the token limit for {model}"
-            )
+        variables["diff"] = self.patches_diff  # update diff
+
+        environment = Environment(undefined=StrictUndefined)
+        system_prompt = environment.from_string(get_settings().pr_review_prompt.system).render(variables)
+        user_prompt = environment.from_string(get_settings().pr_review_prompt.user).render(variables)
 
         response, finish_reason = await self.ai_handler.chat_completion(
             model=model,
             temperature=get_settings().config.temperature,
-            system=fitted.system_prompt,
-            user=fitted.user_prompt,
+            system=system_prompt,
+            user=user_prompt
         )
 
         return response
-
-    @staticmethod
-    def _load_review_yaml(prediction: str) -> dict:
-        return load_yaml(prediction.strip(),
-                         keys_fix_yaml=["ticket_compliance_check", "estimated_effort_to_review_[1-5]:", "risk_level:",
-                                        "merge_recommendation:", "security_concerns:", "key_issues_to_review:",
-                                        "relevant_file:", "relevant_line:", "suggestion:"],
-                        first_key='review', last_key='security_concerns')
-
-    def _validate_review_schema(self, data: object) -> bool:
-        try:
-            PRReview.model_validate(data)
-        except ValidationError as error:
-            first_error = error.errors()[0]
-            field_path = ".".join(str(part) for part in first_error.get("loc", ())) or "$"
-            value = None if first_error.get("type") == "missing" else first_error.get("input")
-            get_logger().warning(
-                "Review output failed schema validation",
-                artifact={
-                    "field": field_path,
-                    "value": value,
-                },
-            )
-            return False
-
-        if isinstance(data, dict) and isinstance(data.get("review"), dict):
-            review = data["review"]
-            required_fields = (
-                ("ticket_compliance_check", "related_tickets"),
-                ("estimated_effort_to_review_[1-5]", "require_estimate_effort_to_review"),
-                ("risk_level", "require_risk_assessment"),
-                ("merge_recommendation", "require_merge_recommendation"),
-                ("review_priority_files", "require_priority_files"),
-                ("contribution_time_cost_estimate", "require_estimate_contribution_time_cost"),
-                ("score", "require_score"),
-                ("relevant_tests", "require_tests"),
-                ("insights_from_user_answers", "question_str"),
-                ("security_concerns", "require_security_review"),
-                ("todo_sections", "require_todo_scan"),
-                ("can_be_split", "require_can_be_split_review"),
-            )
-            vars_ = getattr(self, "vars", {})
-            for field_name, setting_name in required_fields:
-                if not vars_.get(setting_name) or field_name in review and review[field_name] is not None:
-                    continue
-                get_logger().warning(
-                    "Review output failed schema validation",
-                    artifact={"field": f"review.{field_name}", "value": None},
-                )
-                return False
-        return True
-
-    @classmethod
-    def _load_valid_review_yaml(cls, prediction: str, *, source: str = "model response") -> dict:
-        """Parse one prediction and require the minimum publishable review shape."""
-        data = cls._load_review_yaml(prediction)
-        if not isinstance(data, dict) or not isinstance(data.get("review"), dict) or not data["review"]:
-            raise FallbackEligibleError(f"{source} did not contain a non-empty review mapping")
-        return data
 
     def _prepare_pr_review(self) -> str:
         """
         Prepare the PR review by processing the AI prediction and generating a markdown-formatted text that summarizes
         the feedback.
         """
-        data = self.prediction_data if self.prediction_data is not None else self._load_review_yaml(self.prediction)
-        if self.prediction_data is None:
-            self._validate_review_schema(data)
+        first_key = 'review'
+        last_key = 'security_concerns'
+        data = load_yaml(self.prediction.strip(),
+                         keys_fix_yaml=["ticket_compliance_check", "estimated_effort_to_review_[1-5]:", "security_concerns:", "key_issues_to_review:",
+                                        "relevant_file:", "relevant_line:", "suggestion:"],
+                         first_key=first_key, last_key=last_key)
+        self.review_data = data
         github_action_output(data, 'review')
 
-        if not isinstance(data, dict) or not isinstance(data.get('review'), dict) or not data['review']:
-            if self._review_finding_state_enabled():
-                self._review_state_blocked = True
-                self._review_state_block_reason = _STATE_BLOCK_REVIEW_DATA
-                get_logger().warning("Review data is invalid; preserving persistent finding state")
+        if 'review' not in data:
             get_logger().exception("Failed to parse review data", artifact={"data": data})
             return ""
-
-        structured_publisher = getattr(self.git_provider, "publish_structured_review", None)
-        if callable(structured_publisher):
-            # Deep-copy the data: dict(data) is shallow, so structured_data["review"]
-            # would alias data["review"], which is mutated right below (key reordering).
-            # Hand implementers an isolated snapshot, since the hook is provider-neutral
-            # and a provider that defers serialization would observe the mutation.
-            structured_data = copy.deepcopy(data)
-            details = get_run_details()
-            usage = {}
-            if details is not None and details.has_token_usage:
-                usage = {
-                    "prompt_tokens": details.prompt_tokens,
-                    "completion_tokens": details.completion_tokens,
-                    "total_tokens": details.total_tokens,
-                }
-            structured_data["usage"] = usage
-            structured_publisher(structured_data)
 
         # move data['review'] 'key_issues_to_review' key to the end of the dictionary
         if 'key_issues_to_review' in data['review']:
             key_issues_to_review = data['review'].pop('key_issues_to_review')
             data['review']['key_issues_to_review'] = key_issues_to_review
-
-        self._prepare_review_finding_state(data)
-        if get_settings().config.publish_output and get_settings().pr_reviewer.get('inline_key_issues', False):
-            data = self._publish_key_issues_as_inline_comments(data)
 
         incremental_review_markdown_text = None
         # Add incremental review section
@@ -1176,16 +312,6 @@ class PRReviewer:
                                             incremental_review_markdown_text,
                                                git_provider=self.git_provider,
                                                files=self.git_provider.get_diff_files())
-
-        if self.review_chunk_count > 1:
-            markdown_text += (
-                "\n\n<hr>\n\n"
-                "ℹ️ **Chunked review:** the diff exceeded the model token budget, so it was reviewed in "
-                f"{self.review_chunk_count} chunks and the per-chunk results were merged."
-            )
-            if self.review_failed_chunk_count:
-                markdown_text += (f" {self.review_failed_chunk_count} chunk(s) failed and are not covered "
-                                  "by this review.")
 
         if self.remaining_files_list and get_settings().pr_reviewer.enable_review_coverage_footer:
             displayed_files = self.remaining_files_list[:MAX_REVIEW_COVERAGE_FILES]
@@ -1213,201 +339,13 @@ class PRReviewer:
         if get_settings().get('config', {}).get('output_run_details', False):
             markdown_text += show_run_details(self.git_provider.is_supported("gfm_markdown"))
 
-        if self._review_state_result is not None:
-            state_result = self._review_state_result
-            try:
-                markdown_text = append_review_state(
-                    markdown_text or "",
-                    state_result.state,
-                    max_chars=self._review_comment_max_chars(),
-                )
-            except ValueError as error:
-                previous_state = getattr(self, "_review_finding_previous_state", None)
-                self._review_state_result = None
-                self._review_state_blocked = True
-                self._review_state_block_reason = _STATE_BLOCK_SIZE
-                get_logger().warning(
-                    f"Persistent review state did not fit the provider comment limit; "
-                    f"publishing the review without advancing state: {error}"
-                )
-                if previous_state is not None:
-                    try:
-                        markdown_text = append_review_state(
-                            markdown_text or "",
-                            previous_state,
-                            max_chars=self._review_comment_max_chars(),
-                        )
-                    except ValueError as previous_error:
-                        get_logger().warning(
-                            f"Previous persistent review state also did not fit the provider "
-                            f"comment limit; leaving the existing state untouched: {previous_error}"
-                        )
-                    else:
-                        self._review_state_preserved = True
-
-        # Emit the review to optional external sinks (stdout/file/webhook/slack); no-op unless enabled.
-        # publish_output gates it so a dry run makes no external calls. The "no major issues"
-        # suppression deliberately does not: that only silences the PR comment.
-        if get_settings().config.publish_output:
-            push_outputs("review", payload=data.get('review', {}), markdown=markdown_text)
-
         # Add custom labels from the review prediction (effort, security)
         self.set_review_labels(data)
 
-        if markdown_text is None or len(markdown_text) == 0:
+        if markdown_text == None or len(markdown_text) == 0:
             markdown_text = ""
 
         return markdown_text
-
-    def _build_key_issue_comment(self, issue, diff_files: dict) -> Optional[dict]:
-        if not isinstance(issue, dict):
-            return None
-        relevant_file = (issue.get("relevant_file") or "").strip()
-        issue_content = _SUGGESTION_FENCE_RE.sub("```text", (issue.get("issue_content") or "").strip())
-        issue_header = (issue.get("issue_header") or "").strip()
-        if issue_header.lower() == "possible bug":
-            issue_header = "Possible Issue"
-        try:
-            start_line = int(str(issue.get("start_line", 0)).strip())
-            end_line = int(str(issue.get("end_line", 0)).strip())
-        except ValueError:
-            start_line, end_line = 0, 0
-
-        if not relevant_file or not issue_content or start_line < 1 or end_line < start_line:
-            get_logger().warning("Review finding has no usable location, keeping it in the summary",
-                                 artifact={"relevant_file": relevant_file, "start_line": start_line,
-                                           "end_line": end_line})
-            return None
-
-        file = diff_files.get(relevant_file) or diff_files.get(relevant_file.lstrip("/"))
-        if file is None:
-            get_logger().warning("Review finding points at a file that is not in the diff, "
-                                 "keeping it in the summary", artifact={"relevant_file": relevant_file})
-            return None
-        if not file.head_file or end_line > len(file.head_file.splitlines()):
-            get_logger().warning("Review finding points past the end of the file, keeping it in the summary",
-                                 artifact={"relevant_file": relevant_file, "start_line": start_line,
-                                           "end_line": end_line})
-            return None
-
-        relevant_file = file.filename.strip()
-        body = f"**{issue_header}**\n\n{issue_content}" if issue_header else issue_content
-        return {"body": body,
-                "relevant_file": relevant_file,
-                "relevant_lines_start": start_line,
-                "relevant_lines_end": end_line,
-                "fallback_to_pr_comment": False}
-
-    def _can_verify_inline_key_issue_publication(self) -> bool:
-        return can_verify_inline_comment_publication(self.git_provider)
-
-    def _published_inline_key_issue_fingerprints(self, store: InlineCommentStore,
-                                                 fingerprints: set[str]) -> set[str]:
-        try:
-            for body in self.git_provider.get_recent_inline_comment_bodies():
-                store.add_body(body)
-        except Exception as e:
-            get_logger().warning(
-                f"Inline key-issue publishing cannot verify newly published comments, error: {e}; "
-                "keeping findings in the review summary")
-            return set()
-        return {fingerprint for fingerprint in fingerprints if store.seen(fingerprint)}
-
-    def _publish_key_issues_as_inline_comments(self, data: dict) -> dict:
-        issues = (data.get("review") or {}).get("key_issues_to_review")
-        if not isinstance(issues, list) or not issues:
-            return data
-        if not self._can_verify_inline_key_issue_publication():
-            get_logger().info("Inline key-issue publishing is not verifiable for this provider; "
-                              "keeping findings in the review summary")
-            return data
-
-        diff_files = {}
-        for file in self.git_provider.get_diff_files() or []:
-            if not file.filename:
-                continue
-            path = file.filename.strip()
-            diff_files[path] = file
-            diff_files.setdefault(path.lstrip("/"), file)
-        store = get_inline_comment_store(self.git_provider)
-        store.load()
-        if store.load_failed:
-            get_logger().warning("Inline key-issue publishing cannot verify existing provider comments; "
-                                 "keeping findings in the review summary")
-            return data
-        remaining_issues = []
-        candidate_comments = {}
-        candidate_issues = {}
-        candidate_fingerprints = {}
-        published = 0
-        for issue in issues:
-            try:
-                comment = self._build_key_issue_comment(issue, diff_files)
-                if comment is None:
-                    remaining_issues.append(issue)
-                    continue
-                fingerprint = key_issue_fingerprint(comment["relevant_file"], comment["body"])
-                if store.seen(fingerprint):
-                    published += 1
-                    continue
-                location_fingerprint = key_issue_location_fingerprint(
-                    fingerprint, comment["relevant_lines_start"], comment["relevant_lines_end"])
-                if location_fingerprint in candidate_comments:
-                    candidate_issues[location_fingerprint].append(issue)
-                    continue
-                max_chars = next(
-                    (getattr(self.git_provider, attr) for attr in
-                     ("max_comment_chars", "max_comment_length")
-                     if isinstance(getattr(self.git_provider, attr, None), int)),
-                    None,
-                )
-                comment["body"] = key_issue_body_with_markers(
-                    comment["body"], fingerprint, location_fingerprint,
-                    max_chars, self.git_provider)
-                candidate_comments[location_fingerprint] = comment
-                candidate_issues[location_fingerprint] = [issue]
-                candidate_fingerprints[location_fingerprint] = fingerprint
-            except Exception as e:
-                get_logger().warning(f"Failed to prepare a review finding for inline publication, error: {e}",
-                                     artifact={"issue": issue})
-                remaining_issues.append(issue)
-
-        if candidate_comments:
-            try:
-                self.git_provider.publish_code_suggestions(list(candidate_comments.values()))
-            except Exception as e:
-                locations = [{"relevant_file": comment["relevant_file"],
-                              "start_line": comment["relevant_lines_start"],
-                              "end_line": comment["relevant_lines_end"]}
-                             for comment in candidate_comments.values()]
-                get_logger().warning(
-                    f"Failed to publish review findings as inline comments, error: {e}",
-                    artifact={"locations": locations})
-            verified_locations = self._published_inline_key_issue_fingerprints(store, set(candidate_comments))
-            for location_fingerprint, comment in candidate_comments.items():
-                issues_for_location = candidate_issues[location_fingerprint]
-                if location_fingerprint in verified_locations:
-                    store.add(candidate_fingerprints[location_fingerprint])
-                    store.add(location_fingerprint)
-                    published += len(issues_for_location)
-                    continue
-                get_logger().warning("Failed to publish a review finding as an inline comment, "
-                                     "keeping it in the summary",
-                                     artifact={"relevant_file": comment["relevant_file"],
-                                               "start_line": comment["relevant_lines_start"],
-                                               "end_line": comment["relevant_lines_end"]})
-                remaining_issues.extend(issues_for_location)
-
-        if not published:
-            return data
-        get_logger().info(f"Published {published} review finding(s) as inline comments")
-
-        data = copy.deepcopy(data)
-        if remaining_issues:
-            data["review"]["key_issues_to_review"] = remaining_issues
-        else:
-            data["review"].pop("key_issues_to_review", None)
-        return data
 
     def _get_user_answers(self) -> Tuple[str, str]:
         """
@@ -1419,9 +357,7 @@ class PRReviewer:
         question_str = ""
         answer_str = ""
 
-        if self.is_answer and self.git_provider.is_supported("get_issue_comments"):
-            # __init__ already raises when is_answer is True and this is unsupported, so
-            # this repeats that check locally rather than relying on the caller for it.
+        if self.is_answer:
             discussion_messages = self.git_provider.get_issue_comments()
 
             # providers return the comments oldest-first. PyGithub's PaginatedList reverses lazily,
@@ -1440,6 +376,29 @@ class PRReviewer:
                     break
 
         return question_str, answer_str
+
+    def _get_previous_review_comment(self):
+        """
+        Get the previous review comment if it exists.
+        """
+        try:
+            if hasattr(self.git_provider, "get_previous_review"):
+                return self.git_provider.get_previous_review(
+                    full=not self.incremental.is_incremental,
+                    incremental=self.incremental.is_incremental,
+                )
+        except Exception as e:
+            get_logger().exception(f"Failed to get previous review comment, error: {e}")
+
+    def _remove_previous_review_comment(self, comment):
+        """
+        Remove the previous review comment if it exists.
+        """
+        try:
+            if comment:
+                self.git_provider.remove_comment(comment)
+        except Exception as e:
+            get_logger().exception(f"Failed to remove previous review comment, error: {e}")
 
     def _can_run_incremental_review(self) -> bool:
         """
@@ -1465,18 +424,12 @@ class PRReviewer:
         num_commits_threshold = get_settings().pr_reviewer.minimal_commits_for_incremental_review
         not_enough_commits = num_new_commits < num_commits_threshold
         # checking if the commits are not too recent to start the review
-        recent_commits_threshold = (
-            datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
-            - datetime.timedelta(minutes=get_settings().pr_reviewer.minimal_minutes_for_incremental_review)
+        recent_commits_threshold = datetime.datetime.now() - datetime.timedelta(
+            minutes=get_settings().pr_reviewer.minimal_minutes_for_incremental_review
         )
         last_seen_commit_date = (
             self.incremental.last_seen_commit.commit.author.date if self.incremental.last_seen_commit else None
         )
-        # PyGithub returns timezone-aware UTC commit dates; the threshold below is a
-        # naive datetime. Normalize to naive UTC so the comparison cannot raise
-        # TypeError, matching how the GitLab and Azure providers emit commit dates.
-        if last_seen_commit_date is not None and last_seen_commit_date.tzinfo is not None:
-            last_seen_commit_date = last_seen_commit_date.astimezone(datetime.timezone.utc).replace(tzinfo=None)
         all_commits_too_recent = (
             last_seen_commit_date > recent_commits_threshold if self.incremental.last_seen_commit else False
         )
@@ -1500,15 +453,13 @@ class PRReviewer:
         if not get_settings().pr_reviewer.require_security_review:
             get_settings().pr_reviewer.enable_review_labels_security = False # we did not generate this output
 
-        if ((get_settings().pr_reviewer.enable_review_labels_security or
-                get_settings().pr_reviewer.enable_review_labels_effort) and
-                self.git_provider.is_supported("get_labels")):
+        if (get_settings().pr_reviewer.enable_review_labels_security or
+                get_settings().pr_reviewer.enable_review_labels_effort):
             try:
                 review_labels = []
-                has_valid_security_verdict = False
                 if get_settings().pr_reviewer.enable_review_labels_effort:
                     estimated_effort = data['review']['estimated_effort_to_review_[1-5]']
-                    estimated_effort_number = None
+                    estimated_effort_number = 0
                     if isinstance(estimated_effort, str):
                         try:
                             estimated_effort_number = int(estimated_effort.split(',')[0])
@@ -1518,20 +469,13 @@ class PRReviewer:
                         estimated_effort_number = estimated_effort
                     else:
                         get_logger().warning(f"Unexpected type for estimated_effort: {type(estimated_effort)}")
-                    if estimated_effort_number is not None:
-                        estimated_effort_number = max(1, min(5, int(estimated_effort_number)))
+                    if 1 <= estimated_effort_number <= 5:  # 1, because ...
                         review_labels.append(f'Review effort {estimated_effort_number}/5')
-                if (
-                        get_settings().pr_reviewer.enable_review_labels_security
-                        and get_settings().pr_reviewer.require_security_review
-                    ):
-                    security_concerns = data['review'].get('security_concerns')
-                    if security_concerns is None:
-                        get_logger().warning("Missing security_concerns in review data")
-                    else:
-                        has_valid_security_verdict = True
-                        if not is_value_no(security_concerns):
-                            review_labels.append('Possible security concern')
+                if get_settings().pr_reviewer.enable_review_labels_security and get_settings().pr_reviewer.require_security_review:
+                    security_concerns = data['review']['security_concerns']  # yes, because ...
+                    security_concerns_bool = 'yes' in security_concerns.lower() or 'true' in security_concerns.lower()
+                    if security_concerns_bool:
+                        review_labels.append('Possible security concern')
 
                 current_labels = self.git_provider.get_pr_labels(update=True)
                 if not current_labels:
@@ -1539,9 +483,8 @@ class PRReviewer:
                 get_logger().debug(f"Current labels:\n{current_labels}")
                 if current_labels:
                     current_labels_filtered = [label for label in current_labels if
-                                               (not label.lower().startswith('review effort') and
-                                                not (label.lower().startswith(
-                                                    'possible security concern') and has_valid_security_verdict))]
+                                               not label.lower().startswith('review effort') and not label.lower().startswith(
+                                                   'possible security concern')]
                 else:
                     current_labels_filtered = []
                 new_labels = review_labels + current_labels_filtered
@@ -1565,4 +508,4 @@ class PRReviewer:
         else:
             get_logger().info("Auto-approval option is disabled")
             self.git_provider.publish_comment("Auto-approval option for PR-Agent is disabled. "
-                                              "You can enable it via a [configuration file](https://docs.pr-agent.ai/usage-guide/configuration_reference/#config)")
+                                              "You can enable it via a [configuration file](https://github.com/Codium-ai/pr-agent/blob/main/docs/REVIEW.md#auto-approval-1)")
