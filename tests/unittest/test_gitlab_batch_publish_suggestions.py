@@ -113,3 +113,32 @@ def test_bulk_publish_failure_is_caught_and_does_not_propagate():
         gs.stop()
 
     p.mr.draft_notes.bulk_publish.assert_called_once()
+
+
+def test_empty_suggestions_does_not_bulk_publish_unrelated_pending_drafts():
+    # Regression: bulk_publish() must not fire when this call queued nothing, since it
+    # would otherwise publish any unrelated drafts already pending on the MR for this
+    # user (e.g. left over from a previous failed run).
+    p = _gl_provider()
+    gs = _settings(as_review=True)
+    try:
+        assert p.publish_code_suggestions([]) is True
+    finally:
+        gs.stop()
+
+    p.mr.draft_notes.create.assert_not_called()
+    p.mr.draft_notes.bulk_publish.assert_not_called()
+
+
+def test_all_suggestions_failing_to_queue_does_not_bulk_publish():
+    p = _gl_provider()
+    # file lookup will fail for every suggestion -> zero drafts actually queued
+    p.get_diff_files = MagicMock(return_value=[])
+    gs = _settings(as_review=True)
+    try:
+        assert p.publish_code_suggestions([_suggestion()]) is True
+    finally:
+        gs.stop()
+
+    p.mr.draft_notes.create.assert_not_called()
+    p.mr.draft_notes.bulk_publish.assert_not_called()

@@ -601,9 +601,11 @@ class GitLabProvider(GitProvider):
     def send_inline_comment(self, body: str, edit_type: str, found: bool, relevant_file: str,
                             relevant_line_in_file: str,
                             source_line_no: int, target_file: str, target_line_no: int,
-                            original_suggestion=None, as_draft: bool = False) -> None:
+                            original_suggestion=None, as_draft: bool = False) -> bool:
+        """Returns True iff a comment (live or draft, primary or fallback) was created."""
         if not found:
             get_logger().info(f"Could not find position for {relevant_file} {relevant_line_in_file}")
+            return False
         else:
             store = None
             body_fp = code_fp = None
@@ -619,7 +621,7 @@ class GitLabProvider(GitProvider):
                     get_logger().info(
                         f"Persistent inline comments: skipping duplicate inline "
                         f"comment on {relevant_file}:{anchor_line}")
-                    return
+                    return False
                 body = body_with_markers(
                     body, body_fp, code_fp, getattr(self, "max_comment_chars", None))
             # in order to have exact sha's we have to find correct diff for this change
@@ -647,6 +649,7 @@ class GitLabProvider(GitProvider):
                 if store is not None:
                     store.add(body_fp)
                     store.add(code_fp)
+                return True
             except Exception as e:
                 try:
                     # fallback - create a general note on the file in the MR
@@ -705,11 +708,13 @@ class GitLabProvider(GitProvider):
                     if store is not None:
                         store.add(body_fp)
                         store.add(code_fp)
+                    return True
 
                     # get_logger().debug(
                     #     f"Failed to create comment in MR {self.id_mr} with position {pos_obj} (probably not a '+' line)")
                 except Exception as e:
                     get_logger().exception(f"Failed to create comment in MR {self.id_mr}")
+                    return False
 
     def get_relevant_diff(self, relevant_file: str, relevant_line_in_file: str) -> Optional[dict]:
         _changes = self.mr.changes()  # dict
@@ -734,6 +739,7 @@ class GitLabProvider(GitProvider):
         # batch at the end, instead of each one going out as its own live discussion (and its own
         # notification/email) as soon as it's created.
         as_review = get_settings().get("gitlab.publish_code_suggestions_as_review", False)
+        any_draft_created = False
         for suggestion in code_suggestions:
             try:
                 if suggestion and 'original_suggestion' in suggestion:
@@ -767,12 +773,17 @@ class GitLabProvider(GitProvider):
                 found = True
                 edit_type = 'addition'
 
-                self.send_inline_comment(body, edit_type, found, relevant_file, relevant_line_in_file, source_line_no,
-                                         target_file, target_line_no, original_suggestion, as_draft=as_review)
+                created = self.send_inline_comment(body, edit_type, found, relevant_file, relevant_line_in_file,
+                                                   source_line_no, target_file, target_line_no, original_suggestion,
+                                                   as_draft=as_review)
+                any_draft_created = any_draft_created or created
             except Exception as e:
                 get_logger().exception(f"Could not publish code suggestion:\nsuggestion: {suggestion}\nerror: {e}")
 
-        if as_review:
+        # Only bulk-publish if this call actually queued at least one draft note - otherwise (e.g. an
+        # empty/all-failed code_suggestions list) this would publish any unrelated drafts already
+        # pending on the MR for this user, from a previous run or a manual draft review in progress.
+        if as_review and any_draft_created:
             try:
                 self.mr.draft_notes.bulk_publish()
             except Exception as e:

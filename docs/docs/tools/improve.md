@@ -235,7 +235,7 @@ By default, when `commitable_code_suggestions` is enabled, GitLab posts each sug
 publish_code_suggestions_as_review = true
 ```
 
-Suggestions are posted as GitLab draft notes (visible only to PR-Agent's user until published) and published together with a single API call once all suggestions have been queued. The suggestions remain fully committable either way - this setting only changes how they're delivered.
+Suggestions are posted as GitLab draft notes (visible only to PR-Agent's user until published) and published together with a single API call once all suggestions have been queued. The suggestions remain fully committable either way - this setting only changes how they're delivered. The publish call is only made if at least one suggestion was actually queued, so a run with nothing to post won't accidentally publish unrelated drafts already pending on the MR.
 
 ### Self-review
 
