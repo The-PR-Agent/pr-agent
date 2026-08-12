@@ -641,80 +641,99 @@ class GitLabProvider(GitProvider):
                 pos_obj['new_line'] = target_line_no - 1
                 pos_obj['old_line'] = source_line_no - 1
             get_logger().debug(f"Creating comment in MR {self.id_mr} with body {body} and position {pos_obj}")
+            created = self._create_suggestion_note(as_draft, body, pos_obj, diff, target_file, relevant_file,
+                                                    original_suggestion, store, body_fp, code_fp)
+            if not created and as_draft:
+                # Draft notes are unavailable/erroring outright for this MR (unsupported GitLab
+                # version, insufficient permissions, ...) - degrade to a normal live comment rather
+                # than silently dropping the suggestion. It publishes immediately and falls outside
+                # the batch, which is an acceptable trade-off against losing it entirely.
+                get_logger().warning(
+                    f"Draft note creation failed for MR {self.id_mr}; retrying this suggestion as a "
+                    f"live comment instead of a draft")
+                created = self._create_suggestion_note(False, body, pos_obj, diff, target_file, relevant_file,
+                                                        original_suggestion, store, body_fp, code_fp)
+            return created
+
+    def _create_suggestion_note(self, as_draft: bool, body: str, pos_obj: dict, diff, target_file,
+                                relevant_file: str, original_suggestion, store, body_fp, code_fp) -> bool:
+        """Creates the anchored suggestion comment, falling back to a general file note if GitLab
+        rejects the position (e.g. the suggestion isn't on a '+' line). Returns True iff either
+        attempt succeeded."""
+        try:
+            if as_draft:
+                self.mr.draft_notes.create({'note': body, 'position': pos_obj})
+            else:
+                self.mr.discussions.create({'body': body, 'position': pos_obj})
+            if store is not None:
+                store.add(body_fp)
+                store.add(code_fp)
+            return True
+        except Exception as e:
             try:
-                if as_draft:
-                    self.mr.draft_notes.create({'note': body, 'position': pos_obj})
+                # fallback - create a general note on the file in the MR
+                if 'suggestion_orig_location' in original_suggestion:
+                    line_start = original_suggestion['suggestion_orig_location']['start_line']
+                    line_end = original_suggestion['suggestion_orig_location']['end_line']
+                    old_code_snippet = original_suggestion['prev_code_snippet']
+                    new_code_snippet = original_suggestion['new_code_snippet']
+                    content = original_suggestion['suggestion_summary']
+                    label = original_suggestion['category']
+                    if 'score' in original_suggestion:
+                        score = original_suggestion['score']
+                    else:
+                        score = 7
                 else:
-                    self.mr.discussions.create({'body': body, 'position': pos_obj})
+                    line_start = original_suggestion['relevant_lines_start']
+                    line_end = original_suggestion['relevant_lines_end']
+                    old_code_snippet = original_suggestion['existing_code']
+                    new_code_snippet = original_suggestion['improved_code']
+                    content = original_suggestion['suggestion_content']
+                    label = original_suggestion['label']
+                    score = original_suggestion.get('score', 7)
+
+                if hasattr(self, 'main_language'):
+                    language = self.main_language
+                else:
+                    language = ''
+                link = self.get_line_link(relevant_file, line_start, line_end)
+                body_fallback =f"**Suggestion:** {content} [{label}, importance: {score}]\n\n"
+                body_fallback +=f"\n\n<details><summary>[{target_file.filename} [{line_start}-{line_end}]]({link}):</summary>\n\n"
+                body_fallback += f"\n\n___\n\n`(Cannot implement directly - GitLab API allows committable suggestions strictly on MR diff lines)`"
+                body_fallback+="</details>\n\n"
+                diff_patch = difflib.unified_diff(old_code_snippet.split('\n'),
+                                            new_code_snippet.split('\n'), n=999)
+                patch_orig = "\n".join(diff_patch)
+                patch = "\n".join(patch_orig.splitlines()[5:]).strip('\n')
+                diff_code = f"\n\n```diff\n{patch.rstrip()}\n```"
+                body_fallback += diff_code
+
+                if store is not None:
+                    body_fallback = body_with_markers(
+                        body_fallback, body_fp, code_fp, getattr(self, "max_comment_chars", None))
+                # Create a general note on the file in the MR
+                fallback_position = {
+                    'base_sha': diff.base_commit_sha,
+                    'start_sha': diff.start_commit_sha,
+                    'head_sha': diff.head_commit_sha,
+                    'position_type': 'text',
+                    'file_path': f'{target_file.filename}',
+                }
+                if as_draft:
+                    self.mr.draft_notes.create({'note': body_fallback, 'position': fallback_position})
+                else:
+                    self.mr.notes.create({'body': body_fallback, 'position': fallback_position})
+                get_logger().debug(f"Created fallback comment in MR {self.id_mr} with position {pos_obj}")
                 if store is not None:
                     store.add(body_fp)
                     store.add(code_fp)
                 return True
+
+                # get_logger().debug(
+                #     f"Failed to create comment in MR {self.id_mr} with position {pos_obj} (probably not a '+' line)")
             except Exception as e:
-                try:
-                    # fallback - create a general note on the file in the MR
-                    if 'suggestion_orig_location' in original_suggestion:
-                        line_start = original_suggestion['suggestion_orig_location']['start_line']
-                        line_end = original_suggestion['suggestion_orig_location']['end_line']
-                        old_code_snippet = original_suggestion['prev_code_snippet']
-                        new_code_snippet = original_suggestion['new_code_snippet']
-                        content = original_suggestion['suggestion_summary']
-                        label = original_suggestion['category']
-                        if 'score' in original_suggestion:
-                            score = original_suggestion['score']
-                        else:
-                            score = 7
-                    else:
-                        line_start = original_suggestion['relevant_lines_start']
-                        line_end = original_suggestion['relevant_lines_end']
-                        old_code_snippet = original_suggestion['existing_code']
-                        new_code_snippet = original_suggestion['improved_code']
-                        content = original_suggestion['suggestion_content']
-                        label = original_suggestion['label']
-                        score = original_suggestion.get('score', 7)
-
-                    if hasattr(self, 'main_language'):
-                        language = self.main_language
-                    else:
-                        language = ''
-                    link = self.get_line_link(relevant_file, line_start, line_end)
-                    body_fallback =f"**Suggestion:** {content} [{label}, importance: {score}]\n\n"
-                    body_fallback +=f"\n\n<details><summary>[{target_file.filename} [{line_start}-{line_end}]]({link}):</summary>\n\n"
-                    body_fallback += f"\n\n___\n\n`(Cannot implement directly - GitLab API allows committable suggestions strictly on MR diff lines)`"
-                    body_fallback+="</details>\n\n"
-                    diff_patch = difflib.unified_diff(old_code_snippet.split('\n'),
-                                                new_code_snippet.split('\n'), n=999)
-                    patch_orig = "\n".join(diff_patch)
-                    patch = "\n".join(patch_orig.splitlines()[5:]).strip('\n')
-                    diff_code = f"\n\n```diff\n{patch.rstrip()}\n```"
-                    body_fallback += diff_code
-
-                    if store is not None:
-                        body_fallback = body_with_markers(
-                            body_fallback, body_fp, code_fp, getattr(self, "max_comment_chars", None))
-                    # Create a general note on the file in the MR
-                    fallback_position = {
-                        'base_sha': diff.base_commit_sha,
-                        'start_sha': diff.start_commit_sha,
-                        'head_sha': diff.head_commit_sha,
-                        'position_type': 'text',
-                        'file_path': f'{target_file.filename}',
-                    }
-                    if as_draft:
-                        self.mr.draft_notes.create({'note': body_fallback, 'position': fallback_position})
-                    else:
-                        self.mr.notes.create({'body': body_fallback, 'position': fallback_position})
-                    get_logger().debug(f"Created fallback comment in MR {self.id_mr} with position {pos_obj}")
-                    if store is not None:
-                        store.add(body_fp)
-                        store.add(code_fp)
-                    return True
-
-                    # get_logger().debug(
-                    #     f"Failed to create comment in MR {self.id_mr} with position {pos_obj} (probably not a '+' line)")
-                except Exception as e:
-                    get_logger().exception(f"Failed to create comment in MR {self.id_mr}")
-                    return False
+                get_logger().exception(f"Failed to create comment in MR {self.id_mr}")
+                return False
 
     def get_relevant_diff(self, relevant_file: str, relevant_line_in_file: str) -> Optional[dict]:
         _changes = self.mr.changes()  # dict
@@ -739,7 +758,6 @@ class GitLabProvider(GitProvider):
         # batch at the end, instead of each one going out as its own live discussion (and its own
         # notification/email) as soon as it's created.
         as_review = get_settings().get("gitlab.publish_code_suggestions_as_review", False)
-        any_draft_created = False
         for suggestion in code_suggestions:
             try:
                 if suggestion and 'original_suggestion' in suggestion:
@@ -773,19 +791,23 @@ class GitLabProvider(GitProvider):
                 found = True
                 edit_type = 'addition'
 
-                created = self.send_inline_comment(body, edit_type, found, relevant_file, relevant_line_in_file,
-                                                   source_line_no, target_file, target_line_no, original_suggestion,
-                                                   as_draft=as_review)
-                any_draft_created = any_draft_created or created
+                self.send_inline_comment(body, edit_type, found, relevant_file, relevant_line_in_file,
+                                         source_line_no, target_file, target_line_no, original_suggestion,
+                                         as_draft=as_review)
             except Exception as e:
                 get_logger().exception(f"Could not publish code suggestion:\nsuggestion: {suggestion}\nerror: {e}")
 
-        # Only bulk-publish if this call actually queued at least one draft note - otherwise (e.g. an
-        # empty/all-failed code_suggestions list) this would publish any unrelated drafts already
-        # pending on the MR for this user, from a previous run or a manual draft review in progress.
-        if as_review and any_draft_created:
+        if as_review:
             try:
-                self.mr.draft_notes.bulk_publish()
+                # Check the MR's actual pending drafts rather than tracking creations from this call
+                # alone: this correctly skips bulk-publish when nothing is pending (e.g. an empty or
+                # all-failed suggestion list, which would otherwise publish unrelated drafts already on
+                # the MR from a previous run or a manual draft review in progress), while still
+                # retrying to publish drafts left over from an earlier run whose bulk_publish failed -
+                # even if every suggestion in this run was skipped as a dedup-detected duplicate of one
+                # of those still-pending drafts.
+                if self.mr.draft_notes.list(get_all=True):
+                    self.mr.draft_notes.bulk_publish()
             except Exception as e:
                 # Draft notes are only visible to the posting user until published, so a failure here
                 # leaves the suggestions invisible to everyone else. They aren't lost: GitLab keeps
