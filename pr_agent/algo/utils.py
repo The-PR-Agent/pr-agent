@@ -784,6 +784,13 @@ def load_yaml(response_text: str, keys_fix_yaml: List[str] = [], first_key="", l
     response_text = sanitize_yaml_control_chars(response_text)
     response_text_original_sanitized = sanitize_yaml_control_chars(response_text_original, log=False)
     try:
+        # yaml.safe_load('') / yaml.safe_load(' ') returns None without raising, so a response that was
+        # non-empty before preprocessing/sanitization but is blank afterwards (e.g. it consisted entirely of
+        # illegal control characters) would otherwise silently produce None here — skipping every fallback
+        # below and every log line — and then blow up in a caller that assumes a dict. Route this case
+        # through the same exception handling as a normal parse failure instead.
+        if response_text_original.strip() and not response_text.strip():
+            raise ValueError("Preprocessing/sanitization removed all content from a non-empty AI prediction")
         data = yaml.safe_load(response_text)
     except Exception as e:
         get_logger().warning(f"Initial failure to parse AI prediction: {e}")

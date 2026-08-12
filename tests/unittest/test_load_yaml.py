@@ -6,6 +6,7 @@ import yaml
 from yaml.scanner import ScannerError
 
 from pr_agent.algo.utils import load_yaml
+from pr_agent.log import get_logger
 
 
 class TestLoadYaml:
@@ -74,3 +75,29 @@ PR Feedback:
         original = {'suggestion content': '修复空指针异常'}
         mojibake = yaml.safe_dump(original, allow_unicode=True).encode('utf-8').decode('latin-1')
         assert load_yaml(mojibake) == original
+
+    def test_load_yaml_sanitized_to_empty_does_not_return_none_silently(self):
+        # When the input consists entirely of illegal control characters, sanitize_yaml_control_chars()
+        # strips them all and yaml.safe_load('') returns None without raising — which would skip all
+        # fallback/logging and return None to callers that assume a dict. The fix raises ValueError to
+        # route through the existing failure path, so at minimum a parse-failure log is emitted.
+        captured = []
+        sink_id = get_logger().add(lambda msg: captured.append(msg), level="WARNING")
+        try:
+            result = load_yaml('\x08\x08\x08')
+            assert result is None
+            assert any("Initial failure to parse AI prediction" in m for m in captured)
+        finally:
+            get_logger().remove(sink_id)
+
+    def test_load_yaml_genuinely_empty_input_unaffected(self):
+        # Genuinely empty/whitespace input should not trigger the new pre-sanitization emptiness
+        # check — it must behave exactly as before, producing no extra warnings.
+        captured = []
+        sink_id = get_logger().add(lambda msg: captured.append(msg), level="WARNING")
+        try:
+            result = load_yaml('')
+            assert result is None
+            assert not any("Preprocessing/sanitization removed all content" in m for m in captured)
+        finally:
+            get_logger().remove(sink_id)
