@@ -266,7 +266,7 @@ int sub(int a, int b) {
         # When all fallbacks produce None from yaml.safe_load (e.g. sanitized-to-empty input), no fallback
         # should log "Successfully parsed" — that would contradict the "Failed to parse" error that follows.
         captured = []
-        sink_id = get_logger().add(lambda msg: captured.append(msg), level="WARNING")
+        sink_id = get_logger().add(lambda msg: captured.append(msg), level="INFO")
         try:
             result = load_yaml('\x08\x08\x08')
             assert result is None
