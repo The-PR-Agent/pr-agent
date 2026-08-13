@@ -383,7 +383,7 @@ def ticket_markdown_logic(emoji, markdown_text, value, gfm_supported) -> str:
                 requires_further_human_verification = ticket_analysis.get('requires_further_human_verification',
                                                                           '').strip()
 
-                if not fully_compliant_str and not not_compliant_str:
+                if not fully_compliant_str and not not_compliant_str and not requires_further_human_verification:
                     get_logger().debug(f"Ticket compliance has no requirements",
                                        artifact={'ticket_url': ticket_url})
                     continue
@@ -399,6 +399,8 @@ def ticket_markdown_logic(emoji, markdown_text, value, gfm_supported) -> str:
                             ticket_compliance_level = 'PR Code Verified'
                 elif not_compliant_str:
                     ticket_compliance_level = 'Not compliant'
+                elif requires_further_human_verification:
+                    ticket_compliance_level = 'PR Code Verified'
 
                 # Store the compliance level for aggregation
                 if ticket_compliance_level:
