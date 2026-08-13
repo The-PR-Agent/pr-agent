@@ -226,6 +226,10 @@ class PRCodeSuggestions:
         pr_body = "## PR Code Suggestions ✨\n\nNo code suggestions found for the PR."
         if (get_settings().config.publish_output and
                 get_settings().pr_code_suggestions.get('publish_output_no_suggestions', True)):
+            # Output the agent run details (model, tokens, time cost) if enabled, so the
+            # "no suggestions" result still shows which model produced it.
+            if get_settings().get('config', {}).get('output_run_details', False):
+                pr_body += show_run_details(self.git_provider.is_supported("gfm_markdown"))
             get_logger().warning('No code suggestions found for the PR.')
             get_logger().debug(f"PR output", artifact=pr_body)
             if self.progress_response:

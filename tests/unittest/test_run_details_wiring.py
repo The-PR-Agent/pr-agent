@@ -40,6 +40,13 @@ _TRACKED_KEYS_SUGGESTIONS = (
     "pr_code_suggestions.persistent_comment",
     "pr_code_suggestions.dual_publishing_score_threshold",
 )
+_TRACKED_KEYS_NO_SUGGESTIONS = (
+    "config.output_run_details",
+    "config.publish_output",
+    "config.publish_output_progress",
+    "config.is_auto_command",
+    "pr_code_suggestions.publish_output_no_suggestions",
+)
 
 
 class _Usage:
@@ -192,6 +199,48 @@ async def test_pr_code_suggestions_appends_run_details_only_when_enabled(monkeyp
         await suggestions.run()
         with_details = suggestions.git_provider.publish_comment.call_args[0][0]
 
+        assert "⚙️ Agent run details" not in without_details
+        assert "⚙️ Agent run details" in with_details
+    finally:
+        restore_settings(snapshot)
+
+
+@pytest.mark.asyncio
+async def test_pr_code_suggestions_appends_run_details_when_no_suggestions(monkeypatch):
+    # When /improve finds nothing it still called the model, so the "No code
+    # suggestions found" comment must carry the run details when enabled.
+    snapshot = snapshot_settings(_TRACKED_KEYS_NO_SUGGESTIONS)
+    try:
+        suggestions = PRCodeSuggestions.__new__(PRCodeSuggestions)
+        suggestions.pr_url = "https://example/pr/1"
+        suggestions.progress = "progress"
+        suggestions.progress_response = None
+        suggestions.git_provider = MagicMock()
+        suggestions.git_provider.get_files.return_value = ["changed.py"]
+        suggestions.git_provider.is_supported.side_effect = lambda cap: cap == "gfm_markdown"
+
+        async def _fake_retry_empty(*_args, **_kwargs):
+            return {"code_suggestions": []}
+
+        monkeypatch.setattr("pr_agent.tools.pr_code_suggestions.init_run_details", _seeded_init_run_details)
+        monkeypatch.setattr("pr_agent.tools.pr_code_suggestions.retry_with_fallback_models", _fake_retry_empty)
+
+        get_settings().set("config.publish_output", True)
+        get_settings().set("config.publish_output_progress", False)
+        get_settings().set("config.is_auto_command", False)
+        get_settings().pr_code_suggestions.publish_output_no_suggestions = True
+
+        get_settings().set("config.output_run_details", False)
+        await suggestions.run()
+        without_details = suggestions.git_provider.publish_comment.call_args[0][0]
+
+        suggestions.git_provider.publish_comment.reset_mock()
+
+        get_settings().set("config.output_run_details", True)
+        await suggestions.run()
+        with_details = suggestions.git_provider.publish_comment.call_args[0][0]
+
+        assert "No code suggestions found for the PR." in without_details
         assert "⚙️ Agent run details" not in without_details
         assert "⚙️ Agent run details" in with_details
     finally:
