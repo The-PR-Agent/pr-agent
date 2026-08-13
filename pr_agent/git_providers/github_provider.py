@@ -2004,6 +2004,30 @@ class GithubProvider(GitProvider):
 
         return sub_issues
 
+    def create_review(self, event: str = "APPROVE", body: str = "") -> bool:
+        """Post a formal review with the given event (APPROVE / COMMENT).
+
+        pr_reviewer.py's review gate calls this on the provider; without it every
+        APPROVE aborts with AttributeError and the PR keeps any stale blocking
+        review. Mirrors request_changes, which posts REQUEST_CHANGES the same way.
+        """
+        try:
+            res = self.pr.create_review(body=body, event=event)
+            return getattr(res, "state", "") in ("APPROVED", "COMMENTED", "CHANGES_REQUESTED")
+        except Exception as e:
+            get_logger().exception(f"Failed to create {event} review, error: {e}")
+            return False
+
+    def request_changes(self, body: str) -> bool:
+        try:
+            res = self.pr.create_review(body=body, event="REQUEST_CHANGES")
+            if res.state == "CHANGES_REQUESTED":
+                return True
+            return False
+        except Exception as e:
+            get_logger().exception(f"Failed to request changes, error: {e}")
+            return False
+
     def auto_approve(self) -> bool:
         try:
             res = self.pr.create_review(event="APPROVE")
