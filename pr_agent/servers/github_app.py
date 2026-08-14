@@ -395,6 +395,9 @@ def _check_pull_request_event(action: str, body: dict, log_context: dict) -> Tup
 async def _perform_auto_commands_github(commands_conf: str, agent: PRAgent, body: dict, api_url: str,
                                         log_context: dict):
     feedback_on_draft = get_settings().github_app.feedback_on_draft_pr
+    if commands_conf == "pr_commands" and body.get("action") == "ready_for_review" and feedback_on_draft:
+        get_logger().info(f"Skipping draft-ready commands because draft feedback is enabled: {api_url}")
+        return
     is_draft = body.get("pull_request", {}).get("draft", True)
     if is_draft and not feedback_on_draft:
         get_logger().info(f"Skipping draft PR {api_url=}")

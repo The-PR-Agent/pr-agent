@@ -290,8 +290,10 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                 url = object_attributes.get('url')
                 get_logger().info(f"Draft MR is ready: {url}")
 
-                # same as open MR
                 apply_repo_settings(url)
+                if get_settings().get("gitlab.feedback_on_draft_pr", False):
+                    get_logger().info(f"Skipping draft-ready commands because draft feedback is enabled: {url}")
+                    return
                 await _perform_commands_gitlab("pr_commands", PRAgent(), url, log_context, data)
 
         elif data.get('object_kind') == 'note' and data.get('event_type') == 'note': # comment on MR
