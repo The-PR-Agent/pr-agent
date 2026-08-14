@@ -14,7 +14,8 @@ from pr_agent.algo import MAX_TOKENS
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.git_patch_processing import decouple_and_convert_to_hunks_with_lines_numbers
-from pr_agent.algo.pr_processing import (add_ai_metadata_to_diff_files,
+from pr_agent.algo.pr_processing import (_get_all_models,
+                                         add_ai_metadata_to_diff_files,
                                          get_pr_diff, get_pr_multi_diffs,
                                          retry_with_fallback_models)
 from pr_agent.algo.run_details import init_run_details
@@ -23,7 +24,7 @@ from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (ModelType, load_yaml, replace_code_tags,
                                  show_relevant_configurations, show_run_details,
-                                 get_max_tokens, clip_tokens)
+                                 get_max_tokens, clip_tokens, get_model)
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import (AzureDevopsProvider, GithubProvider,
                                     GitLabProvider, get_git_provider,
@@ -422,7 +423,7 @@ class PRCodeSuggestions:
         data = self._prepare_pr_code_suggestions(response)
 
         # self-reflect on suggestions (mandatory, since line numbers are generated now here)
-        response_reflect = await self._self_reflect_with_fallback(data["code_suggestions"], patches_diff)
+        response_reflect = await self._self_reflect_with_fallback(data["code_suggestions"], patches_diff, model)
         if response_reflect:
             await self.analyze_self_reflection_response(data, response_reflect)
         else:
@@ -433,24 +434,31 @@ class PRCodeSuggestions:
 
         return data
 
-    async def _self_reflect_with_fallback(self, suggestion_list: List, patches_diff: str) -> str:
-        # self_reflect_on_suggestions swallows its errors and returns "", so treat an empty
-        # response as a failure to let retry_with_fallback_models move to the next model.
+    async def _self_reflect_with_fallback(self, suggestion_list: List, patches_diff: str, model: str) -> str:
+        """Reflect over the reasoning models, returning the first non-empty response.
+
+        self_reflect_on_suggestions swallows its errors and returns "", so an empty response is
+        treated as a failure. This walks the chain itself rather than nesting
+        retry_with_fallback_models, which sets the global openai.deployment_id without restoring
+        it - nested, that would leak the reflection's deployment into the rest of the run and race
+        the other chunk calls, since parallel_calls is on by default.
+        """
         if not suggestion_list:
             return ""
 
-        async def reflect(reflection_model: str) -> str:
+        models = _get_all_models(ModelType.REASONING)
+        if get_model('model_reasoning') == get_settings().config.model and model in models:
+            # No dedicated reasoning model, so this is the regular chain and the outer fallback
+            # loop has already burned everything before the model it settled on.
+            models = models[models.index(model):]
+
+        for reflection_model in models:
             response = await self.self_reflect_on_suggestions(suggestion_list, patches_diff,
                                                               model=reflection_model)
-            if not response:
-                raise ValueError(f"Empty self-reflection response from {reflection_model}")
-            return response
-
-        try:
-            return await retry_with_fallback_models(reflect, model_type=ModelType.REASONING)
-        except Exception as e:
-            get_logger().warning("Self-reflection failed on all models", artifact={"error": e})
-            return ""
+            if response:
+                return response
+            get_logger().warning(f"Empty self-reflection response from {reflection_model}")
+        return ""
 
     async def analyze_self_reflection_response(self, data, response_reflect):
         response_reflect_yaml = load_yaml(response_reflect)
