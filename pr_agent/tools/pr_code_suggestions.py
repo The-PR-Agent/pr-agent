@@ -23,7 +23,7 @@ from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (ModelType, load_yaml, replace_code_tags,
                                  show_relevant_configurations, show_run_details,
-                                 get_max_tokens, clip_tokens, get_model)
+                                 get_max_tokens, clip_tokens)
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import (AzureDevopsProvider, GithubProvider,
                                     GitLabProvider, get_git_provider,
@@ -422,15 +422,7 @@ class PRCodeSuggestions:
         data = self._prepare_pr_code_suggestions(response)
 
         # self-reflect on suggestions (mandatory, since line numbers are generated now here)
-        model_reflect_with_reasoning = get_model('model_reasoning')
-        fallbacks = get_settings().config.fallback_models
-        if model_reflect_with_reasoning == get_settings().config.model and model != get_settings().config.model and fallbacks and model == \
-                fallbacks[0]:
-            # we are using a fallback model (should not happen on regular conditions)
-            get_logger().warning(f"Using the same model for self-reflection as the one used for suggestions")
-            model_reflect_with_reasoning = model
-        response_reflect = await self.self_reflect_on_suggestions(data["code_suggestions"],
-                                                                  patches_diff, model=model_reflect_with_reasoning)
+        response_reflect = await self._self_reflect_with_fallback(data["code_suggestions"], patches_diff)
         if response_reflect:
             await self.analyze_self_reflection_response(data, response_reflect)
         else:
@@ -440,6 +432,25 @@ class PRCodeSuggestions:
                 suggestion["score_why"] = ""
 
         return data
+
+    async def _self_reflect_with_fallback(self, suggestion_list: List, patches_diff: str) -> str:
+        # self_reflect_on_suggestions swallows its errors and returns "", so treat an empty
+        # response as a failure to let retry_with_fallback_models move to the next model.
+        if not suggestion_list:
+            return ""
+
+        async def reflect(reflection_model: str) -> str:
+            response = await self.self_reflect_on_suggestions(suggestion_list, patches_diff,
+                                                              model=reflection_model)
+            if not response:
+                raise ValueError(f"Empty self-reflection response from {reflection_model}")
+            return response
+
+        try:
+            return await retry_with_fallback_models(reflect, model_type=ModelType.REASONING)
+        except Exception as e:
+            get_logger().warning("Self-reflection failed on all models", artifact={"error": e})
+            return ""
 
     async def analyze_self_reflection_response(self, data, response_reflect):
         response_reflect_yaml = load_yaml(response_reflect)
