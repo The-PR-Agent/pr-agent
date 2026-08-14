@@ -384,7 +384,7 @@ def _check_pull_request_event(action: str, body: dict, log_context: dict) -> Tup
     if not api_url:
         return invalid_result
     log_context["api_url"] = api_url
-    if pull_request.get("draft", True) or pull_request.get("state") != "open":
+    if pull_request.get("state") != "open":
         return invalid_result
     if action in ("review_requested", "synchronize") and pull_request.get("created_at") == pull_request.get("updated_at"):
         # avoid double reviews when opening a PR for the first time
@@ -395,6 +395,11 @@ def _check_pull_request_event(action: str, body: dict, log_context: dict) -> Tup
 async def _perform_auto_commands_github(commands_conf: str, agent: PRAgent, body: dict, api_url: str,
                                         log_context: dict):
     apply_repo_settings(api_url)
+    feedback_on_draft = get_settings().github_app.feedback_on_draft_pr
+    is_draft = body.get("pull_request", {}).get("draft", True)
+    if is_draft and not feedback_on_draft:
+        get_logger().info(f"Skipping draft PR {api_url=}")
+        return
     if commands_conf == "pr_commands" and get_settings().config.disable_auto_feedback:  # auto commands for PR, and auto feedback is disabled
         get_logger().info(f"Auto feedback is disabled, skipping auto commands for PR {api_url=}")
         return

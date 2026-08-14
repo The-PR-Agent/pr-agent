@@ -321,18 +321,6 @@ class TestCheckPullRequestEvent:
         body = {"pull_request": self._pr(state="closed")}
         assert github_app._check_pull_request_event("opened", body, {}) == ({}, "")
 
-    def test_rejects_draft_pr(self):
-        body = {"pull_request": self._pr(draft=True)}
-        assert github_app._check_pull_request_event("opened", body, {}) == ({}, "")
-
-    def test_rejects_when_draft_field_missing(self):
-        # pull_request.get("draft", True) defaults to True, so a missing draft
-        # field is treated as draft and rejected.
-        pr = self._pr()
-        pr.pop("draft")
-        body = {"pull_request": pr}
-        assert github_app._check_pull_request_event("opened", body, {}) == ({}, "")
-
     def test_rejects_synchronize_when_created_equals_updated(self):
         body = {
             "pull_request": self._pr(

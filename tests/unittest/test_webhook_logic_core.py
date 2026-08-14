@@ -1,10 +1,14 @@
 import copy
 import importlib
+from types import SimpleNamespace
 
 import pytest
+from starlette.testclient import TestClient
 
 import pr_agent.servers.bitbucket_server_webhook as bitbucket_server_webhook
 from pr_agent.config_loader import get_settings
+from pr_agent.identity_providers.identity_provider import Eligibility
+from pr_agent.servers import github_app
 
 
 @pytest.fixture
@@ -169,6 +173,124 @@ def test_gitlab_is_draft_ready_accepts_string_booleans(gitlab_webhook_module):
     }
 
     assert gitlab_webhook_module.is_draft_ready(data) is True
+
+
+class RecordingAgent:
+    def __init__(self):
+        self.commands = []
+
+    async def handle_request(self, _url, command):
+        self.commands.append(command)
+
+
+async def _run_github_pr_commands(monkeypatch, repo_setting):
+    settings = get_settings()
+    original_github_app = copy.deepcopy(settings.get("GITHUB_APP"))
+    original_is_auto_command = settings.get("CONFIG.IS_AUTO_COMMAND")
+    settings.set("GITHUB_APP.PR_COMMANDS", ["/review"])
+    # Prove the repo setting, not the global default, decides.
+    settings.set("GITHUB_APP.FEEDBACK_ON_DRAFT_PR", not repo_setting)
+
+    def apply_repo_settings(_):
+        get_settings().set("GITHUB_APP.FEEDBACK_ON_DRAFT_PR", repo_setting)
+
+    agent = RecordingAgent()
+    monkeypatch.setattr(github_app, "apply_repo_settings", apply_repo_settings)
+    monkeypatch.setattr(github_app, "PRAgent", lambda: agent)
+    identity_provider = SimpleNamespace(
+        verify_eligibility=lambda *args, **kwargs: Eligibility.ELIGIBLE
+    )
+    monkeypatch.setattr(
+        github_app, "get_identity_provider", lambda: identity_provider
+    )
+    try:
+        await github_app.handle_request(
+            {
+                "action": "opened",
+                "pull_request": {
+                    "url": "https://api.github.com/repos/org/repo/pulls/1",
+                    "state": "open",
+                    "draft": True,
+                },
+                "sender": {"login": "alice", "id": 1, "type": "User"},
+                "repository": {"full_name": "org/repo"},
+            },
+            "pull_request",
+        )
+    finally:
+        settings.set("GITHUB_APP", original_github_app)
+        settings.set("CONFIG.IS_AUTO_COMMAND", original_is_auto_command)
+    return agent.commands
+
+
+@pytest.mark.parametrize(
+    ("feedback_on_draft_pr", "expected_commands"),
+    [
+        (False, []),
+        (True, ["/review"]),
+    ],
+)
+async def test_github_draft_pr_feedback_follows_repo_setting(
+    monkeypatch, feedback_on_draft_pr, expected_commands
+):
+    commands = await _run_github_pr_commands(monkeypatch, feedback_on_draft_pr)
+
+    assert commands == expected_commands
+
+
+def _run_gitlab_pr_commands(module, monkeypatch, draft, repo_setting):
+    settings = get_settings()
+    settings.set("GITLAB.PR_COMMANDS", ["/review"])
+    # Prove repo settings are applied before draft filtering.
+    settings.set("GITLAB.FEEDBACK_ON_DRAFT_PR", not repo_setting)
+
+    def apply_repo_settings(_):
+        get_settings().set("GITLAB.FEEDBACK_ON_DRAFT_PR", repo_setting)
+
+    agent = RecordingAgent()
+    monkeypatch.setattr(module, "apply_repo_settings", apply_repo_settings)
+    monkeypatch.setattr(module, "PRAgent", lambda: agent)
+    secret_provider = SimpleNamespace(
+        get_secret=lambda _: '{"gitlab_token": "token"}'
+    )
+    monkeypatch.setattr(
+        module, "get_fork_safe_secret_provider", lambda: secret_provider
+    )
+    data = _gitlab_payload(
+        action="open",
+        draft=draft,
+        url="https://gitlab.com/org/repo/-/merge_requests/1",
+    )
+    data["object_kind"] = "merge_request"
+    with TestClient(module.app) as client:
+        response = client.post(
+            "/webhook", headers={"X-Gitlab-Token": "secret-id"}, json=data
+        )
+
+    assert response.status_code == 200
+    return agent.commands
+
+
+@pytest.mark.parametrize(
+    ("draft", "feedback_on_draft_pr", "expected_commands"),
+    [
+        (True, False, []),
+        (True, True, ["/review"]),
+        (False, False, ["/review"]),
+    ],
+)
+def test_gitlab_automatic_feedback_follows_draft_setting(
+    gitlab_webhook_module,
+    monkeypatch,
+    draft,
+    feedback_on_draft_pr,
+    expected_commands,
+):
+    commands = _run_gitlab_pr_commands(
+        gitlab_webhook_module, monkeypatch, draft, feedback_on_draft_pr
+    )
+
+    assert commands == expected_commands
 
 
 def test_gitlab_handle_ask_line_converts_new_line_diff_note_to_right_side_command(gitlab_webhook_module):

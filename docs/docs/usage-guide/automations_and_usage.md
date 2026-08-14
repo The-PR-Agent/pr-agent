@@ -264,6 +264,8 @@ pr_commands = [
 ]
 ```
 
+Draft MRs are skipped by default. Set `feedback_on_draft_pr = true` under `[gitlab]` to enable automatic feedback.
+
 the GitLab webhook can also respond to new code that is pushed to an open MR.
 The configuration toggle `handle_push_trigger` can be used to enable this feature.
 The configuration parameter `push_commands` defines the list of tools that will be **run automatically** when new code is pushed to the MR.
