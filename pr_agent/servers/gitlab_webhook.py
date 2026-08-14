@@ -59,7 +59,6 @@ async def handle_request(api_url: str, body: str, log_context: dict, sender_id: 
 
 async def _perform_commands_gitlab(commands_conf: str, agent: PRAgent, api_url: str,
                                    log_context: dict, data: dict):
-    apply_repo_settings(api_url)
     feedback_on_draft = get_settings().get(
         "gitlab.feedback_on_draft_pr", False
     )
@@ -266,6 +265,7 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
             if object_attributes.get('action') in ['open', 'reopen']:
                 url = object_attributes.get('url')
                 get_logger().info(f"New merge request: {url}")
+                apply_repo_settings(url)
                 await _perform_commands_gitlab("pr_commands", PRAgent(), url, log_context, data)
 
             # for push event triggered merge requests
@@ -291,6 +291,7 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                 get_logger().info(f"Draft MR is ready: {url}")
 
                 # same as open MR
+                apply_repo_settings(url)
                 await _perform_commands_gitlab("pr_commands", PRAgent(), url, log_context, data)
 
         elif data.get('object_kind') == 'note' and data.get('event_type') == 'note': # comment on MR
