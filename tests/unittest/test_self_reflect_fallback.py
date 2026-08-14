@@ -12,8 +12,9 @@ from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 class _Settings:
     """Minimal settings object exposing only what the reflection path reads."""
 
-    def __init__(self, model_reasoning="reasoning-model"):
+    def __init__(self, model_reasoning="reasoning-model", fallback_deployments=()):
         self._model_reasoning = model_reasoning
+        self._fallback_deployments = fallback_deployments
         self.set_calls = []
 
         class config:
@@ -28,7 +29,7 @@ class _Settings:
             "config.model_weak": None,
             "config.model_reasoning": self._model_reasoning,
             "openai.deployment_id": None,
-            "openai.fallback_deployments": [],
+            "openai.fallback_deployments": self._fallback_deployments,
         }.get(key, default)
 
     def set(self, key, value):
@@ -51,6 +52,11 @@ def settings(monkeypatch):
 @pytest.fixture
 def settings_no_reasoning_model(monkeypatch):
     return _install(monkeypatch, _Settings(model_reasoning=None))
+
+
+@pytest.fixture
+def settings_pinned_deployments(monkeypatch):
+    return _install(monkeypatch, _Settings(fallback_deployments=["fallback-deployment"]))
 
 
 def _tool():
@@ -123,6 +129,22 @@ class TestSelfReflectFallback:
         assert result == "reflection"
         reflect.assert_awaited_once()
         assert reflect.call_args.kwargs["model"] == "fallback-model"
+
+    @pytest.mark.asyncio
+    async def test_pinned_deployments_do_not_retry_other_models(self, settings_pinned_deployments):
+        # With fallback_deployments configured each model lives on its own deployment, and
+        # openai.deployment_id is global. Retrying the next model here would send it to the
+        # current model's deployment, so reflection stops after one attempt.
+        tool = _tool()
+        with patch.object(PRCodeSuggestions, "self_reflect_on_suggestions",
+                          new_callable=AsyncMock) as reflect:
+            reflect.return_value = ""
+            result = await tool._self_reflect_with_fallback([{"suggestion": "a"}], "diff",
+                                                            "primary-model")
+
+        assert result == ""
+        reflect.assert_awaited_once()
+        assert reflect.call_args.kwargs["model"] == "reasoning-model"
 
     @pytest.mark.asyncio
     async def test_reflection_does_not_mutate_the_global_deployment_id(self, settings):

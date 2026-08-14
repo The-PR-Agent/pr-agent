@@ -451,6 +451,11 @@ class PRCodeSuggestions:
             # No dedicated reasoning model, so this is the regular chain and the outer fallback
             # loop has already burned everything before the model it settled on.
             models = models[models.index(model):]
+        if get_settings().get("openai.fallback_deployments", []):
+            # Each model is pinned to its own deployment, and openai.deployment_id is global to a
+            # run whose chunk calls are already in flight concurrently. Retrying another model here
+            # would route it to the deployment this one is pinned to, so stop at the first.
+            models = models[:1]
 
         for reflection_model in models:
             response = await self.self_reflect_on_suggestions(suggestion_list, patches_diff,
