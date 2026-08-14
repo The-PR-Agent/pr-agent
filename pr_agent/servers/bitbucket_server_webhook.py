@@ -163,7 +163,7 @@ async def handle_webhook(background_tasks: BackgroundTasks, request: Request):
     commands_to_run = []
 
     if (data["eventKey"] == "pr:opened"
-            or (data["eventKey"] == "pr:from_ref_updated" and data.get("pullRequest", {}).get("id", -1) != -1)):  # push event; -1 for push unassigned to a PR: #Check auto commands for creation/updating
+            or (data["eventKey"] in ["pr:from_ref_updated", "repo:refs_changed"] and data.get("pullRequest", {}).get("id", -1) != -1)): # push event; -1 for push unassigned to a PR: #Check auto commands for creation/updating
         apply_repo_settings(pr_url)
         if not should_process_pr_logic(data):
             get_logger().info(f"PR ignored due to config settings", **log_context)
@@ -178,7 +178,7 @@ async def handle_webhook(background_tasks: BackgroundTasks, request: Request):
         get_settings().set("config.is_auto_command", True)
         if data["eventKey"] == "pr:opened":
             commands_to_run.extend(_get_commands_list_from_settings('BITBUCKET_SERVER.PR_COMMANDS'))
-        else: #Has to be: data["eventKey"] == "pr:from_ref_updated"
+        else: # Has to be: data["eventKey"] == "pr:from_ref_updated" or "repo:refs_changed"
             if not get_settings().get("BITBUCKET_SERVER.HANDLE_PUSH_TRIGGER"):
                 get_logger().info(f"Push trigger is disabled, skipping push commands for PR {pr_url}", **log_context)
                 return JSONResponse(
