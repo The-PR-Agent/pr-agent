@@ -69,6 +69,10 @@ class LiteLLMAIHandler(BaseAiHandler):
             # provider env vars (OPENROUTER_API_KEY, AZURE_API_KEY, ...) in LiteLLM's
             # resolution chain, so a placeholder there silently shadows them.
             litellm.openai_key = DUMMY_LITELLM_API_KEY
+        # Custom Bedrock endpoint (e.g. a VPC endpoint interface endpoint); litellm reads this
+        # directly from the environment regardless of the credentials model below
+        if not os.environ.get("AWS_BEDROCK_RUNTIME_ENDPOINT") and get_settings().get("aws.AWS_BEDROCK_RUNTIME_ENDPOINT"):
+            os.environ["AWS_BEDROCK_RUNTIME_ENDPOINT"] = get_settings().aws.AWS_BEDROCK_RUNTIME_ENDPOINT
         if os.environ.get("AWS_USE_IMDS", "").strip().lower() in ("1", "true", "yes"):
             import boto3
             import botocore.exceptions
