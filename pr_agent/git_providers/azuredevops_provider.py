@@ -985,13 +985,13 @@ class AzureDevopsProvider(GitProvider):
             self.azure_devops_client.create_like(self.repo_slug, self.pr_num, thread_id, comment_id, project=self.workspace_slug)
         else:
             self.azure_devops_client.delete_like(self.repo_slug, self.pr_num, thread_id, comment_id, project=self.workspace_slug)
-            
+
     def set_thread_status(self, thread_id: int, status: str):
         try:
             self.azure_devops_client.update_thread(CommentThread(status=status), self.repo_slug, self.pr_num, thread_id, self.workspace_slug)
         except Exception as e:
             get_logger().exception(f"Failed to set thread status, error: {e}")
-            
+
     def reply_to_thread(self, thread_id: int, body: str, is_temporary: bool = False) -> Comment:
         try:
             comment = Comment(content=body)
@@ -1002,14 +1002,14 @@ class AzureDevopsProvider(GitProvider):
             return response
         except Exception as e:
             get_logger().exception(f"Failed to reply to thread, error: {e}")
-    
+
     def get_thread_context(self, thread_id: int) -> CommentThreadContext:
         try:
             thread = self.azure_devops_client.get_pull_request_thread(self.repo_slug, self.pr_num, thread_id, self.workspace_slug)
             return thread.thread_context
         except Exception as e:
             get_logger().exception(f"Failed to set thread status, error: {e}")
-    
+
     @staticmethod
     def _parse_pr_url(pr_url: str) -> Tuple[str, str, int]:
         parsed_url = urlparse(pr_url)
@@ -1017,7 +1017,7 @@ class AzureDevopsProvider(GitProvider):
         num_parts = len(path_parts)
         if num_parts < 5:
             raise ValueError("The provided URL has insufficient path components for an Azure DevOps PR URL")
-        
+
         # Verify that the second-to-last path component is "pullrequest"
         if path_parts[num_parts - 2] != "pullrequest":
             raise ValueError("The provided URL does not follow the expected Azure DevOps PR URL format")

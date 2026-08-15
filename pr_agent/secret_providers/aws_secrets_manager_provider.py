@@ -54,4 +54,4 @@ class AWSSecretsManagerProvider(SecretProvider):
             )
         except Exception as e:
             get_logger().error(f"Failed to store secret {secret_name} in AWS Secrets Manager: {e}")
-            raise e 
+            raise e

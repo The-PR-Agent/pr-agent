@@ -203,7 +203,7 @@ review:
 {%- if require_todo_scan %}
   todo_sections: |
     No
-{%- endif %} 
+{%- endif %}
 {%- if require_can_be_split_review %}
   can_be_split:
   - relevant_files:

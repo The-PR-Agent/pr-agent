@@ -48,7 +48,7 @@ class BitbucketServerProvider(GitProvider):
             self.bitbucket_server_url = self._parse_bitbucket_server(pr_url)
             if not self.bitbucket_server_url:
                 raise ValueError("Invalid or missing Bitbucket Server URL parsed from PR URL.")
-            
+
             if self.bearer_token:  # if bearer token is provided, use it
                 self.bitbucket_client = Bitbucket(
                     url=self.bitbucket_server_url,

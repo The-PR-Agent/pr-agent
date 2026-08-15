@@ -87,4 +87,4 @@ class TestAWSSecretsManagerProvider:
         mock_client.put_secret_value.side_effect = Exception("AWS error")
 
         with pytest.raises(Exception):
-            provider.store_secret('test-secret', 'test-value') 
+            provider.store_secret('test-secret', 'test-value')
