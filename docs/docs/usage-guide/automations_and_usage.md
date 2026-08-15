@@ -122,7 +122,7 @@ feedback_on_draft_pr = true
 
 **Changing default tool parameters:**
 
-You can override the default tool parameters by using one the three options for a [configuration file](./configuration_options.md): **wiki**, **local**, or **global**.
+You can override the default tool parameters by using one the three options for a [configuration file](./configuration_options.md): **local**, **global**, or **external URL**.
 For example, if your configuration file contains:
 
 ```toml

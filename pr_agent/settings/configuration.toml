@@ -19,7 +19,6 @@ use_extra_bad_extensions=false
 # Log
 log_level="DEBUG"
 # Configurations
-use_wiki_settings_file=true
 use_repo_settings_file=true
 use_global_settings_file=true
 extra_config_url="" # optional URL or path to an additional .pr_agent.toml merged before the repo-local config; also settable via --extra_config_url or PR_AGENT_EXTRA_CONFIG_URL. See docs/docs/usage-guide/configuration_options.md#external-configuration-url.
