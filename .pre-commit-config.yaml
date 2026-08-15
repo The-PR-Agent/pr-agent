@@ -23,6 +23,7 @@ repos:
       - id: mixed-line-ending
         args: ["--fix=lf"]
       - id: trailing-whitespace
+        exclude: ^tests/unittest/test_extend_patch\.py$
 
   # - repo: https://github.com/rhysd/actionlint
   #   rev: v1.7.3
