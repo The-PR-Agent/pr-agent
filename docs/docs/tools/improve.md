@@ -58,9 +58,9 @@ num_code_suggestions_per_chunk = ...
 
 ### Table vs Committable code comments
 
-PR-Agent supports two modes for presenting code suggestions: 
+PR-Agent supports two modes for presenting code suggestions:
 
-1) [Table](https://codium.ai/images/pr_agent/code_suggestions_as_comment_closed.png) mode 
+1) [Table](https://codium.ai/images/pr_agent/code_suggestions_as_comment_closed.png) mode
 
 2) [Inline Committable](https://codium.ai/images/pr_agent/improve.png) code comments mode.
 
@@ -72,7 +72,7 @@ The table format offers several key advantages:
 - **Centralized tracking**: Shows suggestion implementation status in one place
 - **IDE integration**: Allows applying suggestions directly in your IDE via the CLI tool
 
-Table mode is the default of PR-Agent, and is recommended approach for most users due to these benefits. 
+Table mode is the default of PR-Agent, and is recommended approach for most users due to these benefits.
 
 ![code_suggestions_as_comment_closed.png](https://codium.ai/images/pr_agent/code_suggestions_as_comment_closed.png){width=512}
 
@@ -111,9 +111,9 @@ Use triple quotes to write multi-line instructions. Use bullet points or numbers
 PR-Agent supports both simple and hierarchical best practices configurations to provide guidance to the AI model for generating relevant code suggestions.
 
 ???- tip "Writing effective best practices files"
-    
+
     The following guidelines apply to all best practices files:
-    
+
     - Write clearly and concisely
     - Include brief code examples when helpful with before/after patterns
     - Focus on project-specific guidelines that will result in relevant suggestions you actually want to get
@@ -124,9 +124,9 @@ PR-Agent supports both simple and hierarchical best practices configurations to 
     - Use pattern-based structure rather than simple bullet points for better clarity
 
 ???- tip "Example of a best practices file"
- 
+
     Pattern 1: Add proper error handling with try-except blocks around external function calls.
-    
+
     Example code before:
 
     ```python
@@ -145,7 +145,7 @@ PR-Agent supports both simple and hierarchical best practices configurations to 
     ```
 
     Pattern 2: Add defensive null/empty checks before accessing object properties or performing operations on potentially null variables to prevent runtime errors.
-    
+
     Example code before:
 
     ```python
@@ -288,7 +288,7 @@ Note: Chunking is primarily relevant for large PRs. For most PRs (up to 600 line
       </tr>
       <tr>
         <td><b>focus_only_on_problems</b></td>
-        <td>If set to true, suggestions will focus primarily on identifying and fixing code problems, and less on style considerations like best practices, maintainability, or readability. Default is true.</td> 
+        <td>If set to true, suggestions will focus primarily on identifying and fixing code problems, and less on style considerations like best practices, maintainability, or readability. Default is true.</td>
       </tr>
       <tr>
         <td><b>persistent_comment</b></td>

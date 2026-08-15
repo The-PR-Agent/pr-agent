@@ -13,7 +13,7 @@ class ModelTypeValidator:
     @staticmethod
     def is_openai_model(model_name: str) -> bool:
         return 'gpt' in model_name or re.match(r"^o[1-9](-mini|-preview)?$", model_name)
-    
+
     @staticmethod
     def is_anthropic_model(model_name: str) -> bool:
         return 'claude' in model_name
@@ -67,7 +67,7 @@ class TokenHandler:
         - user: The user string.
         """
         self.encoder = TokenEncoder.get_token_encoder()
-        
+
         if pr is not None:
             self.prompt_tokens = self._get_system_user_tokens(pr, self.encoder, vars, system, user)
 
@@ -100,7 +100,7 @@ class TokenHandler:
         try:
             import anthropic
             from pr_agent.algo import MAX_TOKENS
-            
+
             client = anthropic.Anthropic(api_key=get_settings(use_context=False).get('anthropic.key'))
             max_tokens = MAX_TOKENS[get_settings().config.model]
 
@@ -127,7 +127,7 @@ class TokenHandler:
     def _apply_estimation_factor(self, model_name: str, default_estimate: int) -> int:
         factor = 1 + get_settings().get('config.model_token_count_estimate_factor', 0)
         get_logger().warning(f"{model_name}'s token count cannot be accurately estimated. Using factor of {factor}")
-        
+
         return ceil(factor * default_estimate)
 
     def _get_token_count_by_model_type(self, patch: str, default_estimate: int) -> int:
@@ -142,15 +142,15 @@ class TokenHandler:
             int: The calculated token count.
         """
         model_name = get_settings().config.model.lower()
-        
+
         if ModelTypeValidator.is_openai_model(model_name) and get_settings(use_context=False).get('openai.key'):
             return default_estimate
 
         if ModelTypeValidator.is_anthropic_model(model_name) and get_settings(use_context=False).get('anthropic.key'):
             return self._calc_claude_tokens(patch)
-        
+
         return self._apply_estimation_factor(model_name, default_estimate)
-    
+
     def count_tokens(self, patch: str, force_accurate: bool = False) -> int:
         """
         Counts the number of tokens in a given patch string.

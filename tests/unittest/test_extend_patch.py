@@ -178,8 +178,8 @@ class TestLoadLargeDiff:
                                 old content 2""")
 
         patch_expected="""\
---- 
-+++ 
+---
++++
 @@ -1,3 +1,3 @@
 -
                                  old content 1
