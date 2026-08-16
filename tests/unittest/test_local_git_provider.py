@@ -128,3 +128,23 @@ def test_publish_comment_skips_temporary(tmp_path):
 
     provider.publish_comment("real review body")
     assert review_path.read_text() == "real review body"
+
+
+def test_init_on_detached_head_falls_back_to_commit_sha(tmp_path, monkeypatch):
+    # CI checkouts often point HEAD at a bare commit; repo.head.ref then raises
+    # TypeError. The branch name is only used as the PR-mimic title, so fall
+    # back to the short SHA and keep the diff working. See issue #2669.
+    repo = _make_repo(tmp_path, ["a.py"])
+    target_branch_name = repo.active_branch.name
+    repo.git.checkout("-b", "feature")
+    (tmp_path / "a.py").write_text("y\n")
+    repo.index.add(["a.py"])
+    commit = repo.index.commit("change a.py")
+    repo.git.checkout(commit.hexsha)
+    assert repo.head.is_detached
+
+    monkeypatch.chdir(tmp_path)
+    provider = LocalGitProvider(target_branch_name)
+
+    assert provider.get_pr_title() == commit.hexsha[:7]
+    assert [f.filename for f in provider.get_diff_files()] == ["a.py"]
