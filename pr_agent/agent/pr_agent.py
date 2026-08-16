@@ -1,8 +1,9 @@
 import shlex
 from functools import partial
+from typing import Optional
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
-from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
+from pr_agent.algo.ai_handlers.handler_factory import get_ai_handler_class
 from pr_agent.algo.cli_args import CliArgs
 from pr_agent.algo.utils import update_settings_from_args
 from pr_agent.config_loader import get_settings
@@ -49,7 +50,10 @@ commands = list(command2class.keys())
 
 
 class PRAgent:
-    def __init__(self, ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
+    def __init__(self, ai_handler: Optional[partial[BaseAiHandler,]] = None):
+        # None means "resolve from settings per request" (see _handle_request). Resolving
+        # here would be too early: the repo's .pr_agent.toml, which may select the handler
+        # or a "cli/..." model, is only merged in once the PR URL is known.
         self.ai_handler = ai_handler  # will be initialized in run_action
 
     async def _handle_request(self, pr_url, request, notify=None) -> bool:
@@ -75,6 +79,11 @@ class PRAgent:
 
         # Update settings from args
         args = update_settings_from_args(args)
+
+        # Resolve the handler only now: config.model may have just been set by a
+        # --config.model=... arg, and before that by the repo's .pr_agent.toml. Resolving
+        # any earlier reads a stale model and silently picks the wrong handler.
+        ai_handler = self.ai_handler if self.ai_handler is not None else get_ai_handler_class()
 
         # Append the response language in the extra instructions
         response_language = get_settings().config.get('response_language', 'en-us')
@@ -107,14 +116,14 @@ class PRAgent:
             if action == "answer":
                 if notify:
                     notify()
-                await PRReviewer(pr_url, is_answer=True, args=args, ai_handler=self.ai_handler).run()
+                await PRReviewer(pr_url, is_answer=True, args=args, ai_handler=ai_handler).run()
             elif action == "auto_review":
-                await PRReviewer(pr_url, is_auto=True, args=args, ai_handler=self.ai_handler).run()
+                await PRReviewer(pr_url, is_auto=True, args=args, ai_handler=ai_handler).run()
             elif action in command2class:
                 if notify:
                     notify()
 
-                await command2class[action](pr_url, ai_handler=self.ai_handler, args=args).run()
+                await command2class[action](pr_url, ai_handler=ai_handler, args=args).run()
             else:
                 return False
             return True

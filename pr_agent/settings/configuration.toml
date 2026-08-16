@@ -8,6 +8,7 @@ model="gpt-5.6"
 fallback_models=["gpt-5.6-terra"]
 #model_reasoning="gpt-5.6-terra" # dedicated reasoning model for self-reflection
 #model_weak="gpt-5.6-luna" # optional, a weaker model to use for some easier tasks
+ai_handler="" # "" (auto-detect from model), "litellm", "openai", "cli_agent", "langchain". A "cli/..." model auto-selects "cli_agent".
 # CLI
 git_provider="github"
 publish_output=true
