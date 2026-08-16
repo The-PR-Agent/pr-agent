@@ -363,6 +363,19 @@ callback_timeout_seconds = 30 # max seconds to wait for pending litellm callback
 # model_id = "" # Optional: Custom inference profile ID for Amazon Bedrock
 cache_control_injection_points = [] # Optional: enable Anthropic prompt caching via LiteLLM, e.g. [{location = "message", role = "system"}] (https://docs.litellm.ai/docs/tutorials/prompt_caching)
 
+[cli_agent]
+# Settings for the "cli_agent" AI handler, which runs completions through a locally
+# installed coding-agent CLI instead of an HTTP API. Selected by a "cli/<backend>[/<model>]"
+# model, e.g. config.model = "cli/claude/opus" or "cli/codex/gpt-5.1-codex-max".
+# Because those names are not in MAX_TOKENS (pr_agent/algo/__init__.py), a positive
+# config.custom_model_max_tokens is required. No API key is used: the CLI's own login applies.
+claude_binary = "claude" # name on PATH, or an absolute path to the Claude Code executable
+codex_binary = "codex" # name on PATH, or an absolute path to the Codex executable
+timeout_seconds = 600 # per-call wall-clock cap; agent CLIs are slower than a raw API call
+codex_ignore_user_config = true # run codex without ~/.codex/config.toml (auth still applies); set false to keep a custom provider defined there
+extra_args = [] # extra flags appended to the CLI invocation, e.g. ["--effort", "high"]
+unwrap_structured_output = true # recover the body of a lone yaml/json/toml fence when the model wraps it in prose
+
 [openrouter]
 # OpenRouter provider routing, reasoning control and output cap. These apply only
 # to models addressed as "openrouter/...". The API key and api_base live in
