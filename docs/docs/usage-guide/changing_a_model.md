@@ -87,6 +87,43 @@ extra_headers='{"projectId": "<authorized projectId >", ...}') #The value of thi
 
 This enables users to pass authorization tokens or API keys, when routing requests through an API management gateway.
 
+### Local coding-agent CLIs (Claude Code / Codex)
+
+If you already have [Claude Code](https://claude.com/claude-code) or [Codex](https://developers.openai.com/codex/cli) installed and logged in, PR-Agent can run its completions through those CLIs instead of calling a model API. Requests then bill against that CLI's existing login (e.g. a Claude or ChatGPT subscription) and no API key is configured in PR-Agent at all.
+
+Set the model to `cli/<backend>[/<model>]`:
+
+```toml
+[config]
+model = "cli/claude/sonnet"
+fallback_models = ["cli/codex"]
+custom_model_max_tokens = 200000 # required: these names are not in the built-in MAX_TOKENS table
+```
+
+Supported backends are `claude` and `codex`. The part after the backend is passed to the CLI's `--model` flag verbatim; omit it (`"cli/claude"`) to use whatever the CLI defaults to. Setting a `cli/...` model selects the `cli_agent` handler automatically — `config.ai_handler` only needs setting to override that inference.
+
+Optional knobs:
+
+```toml
+[cli_agent]
+claude_binary = "claude" # or an absolute path
+codex_binary = "codex"
+timeout_seconds = 600 # per-call wall-clock cap
+codex_ignore_user_config = true # ignore ~/.codex/config.toml; set false to keep a custom provider defined there
+extra_args = [] # extra flags passed to the CLI, e.g. ["--effort", "high"]
+unwrap_structured_output = true # recover a fenced YAML/JSON answer if the model wraps it in prose
+```
+
+Notes and limitations:
+
+- Each call runs the CLI as a one-shot subprocess in an empty temp directory, with its agentic features switched off (`claude --safe-mode` with tools disallowed; `codex exec --sandbox read-only`). The agent does not read your repository — PR-Agent supplies the whole diff in the prompt, exactly as it does for an API model.
+- Latency is higher than a direct API call, and `temperature` is ignored because neither CLI exposes it.
+- Token usage is reported for `claude` only; `codex` does not expose per-call usage on this path, so `/review` run-details lines that depend on it are omitted.
+- Images (`img_path`) are not supported and are ignored with a warning.
+
+!!! note "Which commands work well"
+    The `ask`, `review` and `describe` commands work well here. Because these CLIs are tuned for conversational replies rather than strict structured output, occasional format drift is more likely than with a direct API call; `unwrap_structured_output` recovers the common case where the answer arrives inside a code fence.
+
 ### Ollama
 
 You can run models locally through either [VLLM](https://docs.litellm.ai/docs/providers/vllm) or [Ollama](https://docs.litellm.ai/docs/providers/ollama)
