@@ -206,9 +206,16 @@ async def test_pr_code_suggestions_appends_run_details_only_when_enabled(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_pr_code_suggestions_appends_run_details_when_no_suggestions(monkeypatch):
+@pytest.mark.parametrize("gfm_supported", [True, False])
+async def test_pr_code_suggestions_appends_run_details_when_no_suggestions(monkeypatch, gfm_supported):
     # When /improve finds nothing it still called the model, so the "No code
     # suggestions found" comment must carry the run details when enabled.
+    #
+    # Unlike the has-suggestions summary path (only reachable when gfm_markdown is
+    # supported), publish_no_suggestions() runs for every provider, GFM or not, and
+    # show_run_details() renders different markup in each case (collapsible <details>
+    # vs. a plain fallback). Parametrizing over both locks in the non-GFM path too,
+    # e.g. for LocalGitProvider, which does not support gfm_markdown.
     snapshot = snapshot_settings(_TRACKED_KEYS_NO_SUGGESTIONS)
     try:
         suggestions = PRCodeSuggestions.__new__(PRCodeSuggestions)
@@ -217,7 +224,7 @@ async def test_pr_code_suggestions_appends_run_details_when_no_suggestions(monke
         suggestions.progress_response = None
         suggestions.git_provider = MagicMock()
         suggestions.git_provider.get_files.return_value = ["changed.py"]
-        suggestions.git_provider.is_supported.side_effect = lambda cap: cap == "gfm_markdown"
+        suggestions.git_provider.is_supported.side_effect = lambda cap: cap == "gfm_markdown" and gfm_supported
 
         async def _fake_retry_empty(*_args, **_kwargs):
             return {"code_suggestions": []}
@@ -243,5 +250,13 @@ async def test_pr_code_suggestions_appends_run_details_when_no_suggestions(monke
         assert "No code suggestions found for the PR." in without_details
         assert "⚙️ Agent run details" not in without_details
         assert "⚙️ Agent run details" in with_details
+        # Confirm the markup actually matches the branch under test, not just that
+        # some text landed: GFM gets the collapsible <details> block, non-GFM the
+        # plain fallback section.
+        if gfm_supported:
+            assert "<details>" in with_details
+        else:
+            assert "<details>" not in with_details
+            assert "___" in with_details
     finally:
         restore_settings(snapshot)
