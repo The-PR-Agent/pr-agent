@@ -14,14 +14,17 @@ from pr_agent.algo import MAX_TOKENS
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.git_patch_processing import decouple_and_convert_to_hunks_with_lines_numbers
-from pr_agent.algo.pr_processing import (add_ai_metadata_to_diff_files,
+from pr_agent.algo.pr_processing import (_get_all_models,
+                                         add_ai_metadata_to_diff_files,
                                          get_pr_diff, get_pr_multi_diffs,
                                          retry_with_fallback_models)
+from pr_agent.algo.run_details import init_run_details
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (ModelType, load_yaml, replace_code_tags,
-                                 show_relevant_configurations, get_max_tokens, clip_tokens, get_model)
+                                 show_relevant_configurations, show_run_details,
+                                 get_max_tokens, clip_tokens, get_model)
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import (AzureDevopsProvider, GithubProvider,
                                     GitLabProvider, get_git_provider,
@@ -135,6 +138,7 @@ class PRCodeSuggestions:
             self.incremental = IncrementalPR(False)
 
     async def run(self):
+        init_run_details()
         try:
             if getattr(self, "_incremental_empty_scope", False):
                 # Set by `__init__` when incremental anchored cleanly but no files changed
@@ -207,6 +211,12 @@ class PRCodeSuggestions:
                     if get_settings().get('config', {}).get('output_relevant_configurations', False):
                         pr_body += show_relevant_configurations(relevant_section='pr_code_suggestions')
 
+                    # Output the agent run details (model, tokens, time cost) if enabled
+                    if get_settings().get('config', {}).get('output_run_details', False):
+                        # This summary-comment branch already requires GFM support, so the argument is always True;
+                        # keep the call shaped like the reviewer/describe paths for consistency.
+                        pr_body += show_run_details(self.git_provider.is_supported("gfm_markdown"))
+
                     # publish the PR comment
                     if get_settings().pr_code_suggestions.persistent_comment: # true by default
                         self.publish_persistent_comment_with_history(self.git_provider,
@@ -267,6 +277,10 @@ class PRCodeSuggestions:
         pr_body = "## PR Code Suggestions ✨\n\nNo code suggestions found for the PR."
         if (get_settings().config.publish_output and
                 get_settings().pr_code_suggestions.get('publish_output_no_suggestions', True)):
+            # Output the agent run details (model, tokens, time cost) if enabled, so the
+            # "no suggestions" result still shows which model produced it.
+            if get_settings().get('config', {}).get('output_run_details', False):
+                pr_body += show_run_details(self.git_provider.is_supported("gfm_markdown"))
             get_logger().warning('No code suggestions found for the PR.')
             get_logger().debug(f"PR output", artifact=pr_body)
             if self.progress_response:
@@ -392,12 +406,16 @@ class PRCodeSuggestions:
                             pr_comment_updated += f"{prev_suggestion_table}\n"
 
                         get_logger().info(f"Persistent mode - updating comment {comment_url} to latest {name} message")
-                        if progress_response:  # publish to 'progress_response' comment, because it refreshes immediately
-                            git_provider.edit_comment(progress_response, pr_comment_updated)
-                            git_provider.remove_comment(comment)
-                            comment = progress_response
-                        else:
-                            git_provider.edit_comment(comment, pr_comment_updated)
+                        git_provider.edit_comment(comment, pr_comment_updated)
+                        if progress_response:
+                            # best-effort: propagating would re-trigger the duplicate-thread fallback below
+                            try:
+                                git_provider.edit_comment(progress_response, "Code suggestions published in the persistent thread above.")
+                                git_provider.remove_comment(progress_response)
+                            except Exception as cleanup_error:
+                                get_logger().warning(
+                                    f"Failed to clean up progress note after persistent update, leaving it in place: {cleanup_error}"
+                                )
                         return comment
             except Exception as e:
                 get_logger().exception(f"Failed to update persistent review, error: {e}")
@@ -459,15 +477,7 @@ class PRCodeSuggestions:
         data = self._prepare_pr_code_suggestions(response)
 
         # self-reflect on suggestions (mandatory, since line numbers are generated now here)
-        model_reflect_with_reasoning = get_model('model_reasoning')
-        fallbacks = get_settings().config.fallback_models
-        if model_reflect_with_reasoning == get_settings().config.model and model != get_settings().config.model and fallbacks and model == \
-                fallbacks[0]:
-            # we are using a fallback model (should not happen on regular conditions)
-            get_logger().warning(f"Using the same model for self-reflection as the one used for suggestions")
-            model_reflect_with_reasoning = model
-        response_reflect = await self.self_reflect_on_suggestions(data["code_suggestions"],
-                                                                  patches_diff, model=model_reflect_with_reasoning)
+        response_reflect = await self._self_reflect_with_fallback(data["code_suggestions"], patches_diff, model)
         if response_reflect:
             await self.analyze_self_reflection_response(data, response_reflect)
         else:
@@ -477,6 +487,37 @@ class PRCodeSuggestions:
                 suggestion["score_why"] = ""
 
         return data
+
+    async def _self_reflect_with_fallback(self, suggestion_list: List, patches_diff: str, model: str) -> str:
+        """Reflect over the reasoning models, returning the first non-empty response.
+
+        self_reflect_on_suggestions swallows its errors and returns "", so an empty response is
+        treated as a failure. This walks the chain itself rather than nesting
+        retry_with_fallback_models, which sets the global openai.deployment_id without restoring
+        it - nested, that would leak the reflection's deployment into the rest of the run and race
+        the other chunk calls, since parallel_calls is on by default.
+        """
+        if not suggestion_list:
+            return ""
+
+        models = _get_all_models(ModelType.REASONING)
+        if get_model('model_reasoning') == get_settings().config.model and model in models:
+            # No dedicated reasoning model, so this is the regular chain and the outer fallback
+            # loop has already burned everything before the model it settled on.
+            models = models[models.index(model):]
+        if get_settings().get("openai.fallback_deployments", []):
+            # Each model is pinned to its own deployment, and openai.deployment_id is global to a
+            # run whose chunk calls are already in flight concurrently. Retrying another model here
+            # would route it to the deployment this one is pinned to, so stop at the first.
+            models = models[:1]
+
+        for reflection_model in models:
+            response = await self.self_reflect_on_suggestions(suggestion_list, patches_diff,
+                                                              model=reflection_model)
+            if response:
+                return response
+            get_logger().warning(f"Empty self-reflection response from {reflection_model}")
+        return ""
 
     async def analyze_self_reflection_response(self, data, response_reflect):
         response_reflect_yaml = load_yaml(response_reflect)

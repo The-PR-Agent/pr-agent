@@ -223,3 +223,30 @@ def test_supports_incremental_kind_defaults_to_false_on_base_provider():
     # The base-class default must be "no support" so tools fall back to a full run
     # on providers that never implemented kind-aware incremental anchoring.
     assert GitProvider.supports_incremental_kind(MagicMock(), "suggestions") is False
+
+
+def test_persistent_update_survives_progress_cleanup_failure():
+    """A failing progress-note cleanup must not abort the persistent update:
+    if the cleanup error propagated, the caller would fall back to publishing
+    a new suggestions thread, re-creating the duplicate-thread bug."""
+    initial_header = "## PR Code Suggestions"
+    existing = MagicMock()
+    existing.body = f"{initial_header}\n<!-- aaa1111 -->\n<table>old suggestions</table>"
+    provider = MagicMock()
+    provider.get_issue_comments.return_value = [existing]
+    provider.get_comment_url.return_value = "https://example.test/comment/1"
+    provider.get_latest_commit_url.return_value = "https://example.test/commit/deadbee"
+    # First edit updates the persistent comment and succeeds; the second edit
+    # (re-labelling the progress note before deletion) fails.
+    provider.edit_comment.side_effect = [None, RuntimeError("cleanup failed")]
+    progress_note = MagicMock()
+
+    result = PRCodeSuggestions.publish_persistent_comment_with_history(
+        provider, f"{initial_header}\n<table>new suggestions</table>", initial_header,
+        update_header=False, name="suggestions", final_update_message=False,
+        progress_response=progress_note)
+
+    assert result is existing
+    assert provider.edit_comment.call_count == 2
+    provider.remove_comment.assert_not_called()
+    provider.publish_comment.assert_not_called()

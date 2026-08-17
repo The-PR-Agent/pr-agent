@@ -22,6 +22,31 @@ Will output an additional field showing the actual configurations used for the `
 
 ![possible_config2](https://codium.ai/images/pr_agent/possible_config2.png){width=512}
 
+### Showing the agent run details
+
+To see which model actually answered, how many tokens the run consumed, and how long the AI processing phase took, enable `config.output_run_details`:
+
+```
+/review --config.output_run_details=true
+```
+
+On providers that support GitHub-Flavored Markdown this appends a collapsible section to the generated comment; elsewhere `/review` and `/describe` append the same information as plain text:
+
+```
+⚙️ Agent run details
+- Model: gpt-5.6-terra (fallback)
+- Tokens: 12,340 in / 1,205 out / 13,545 total
+- Time cost: 8.2s
+- AI calls: 1
+```
+
+`Model` shows the model that produced the answer, marked `(fallback)` when the primary model failed and a fallback took over. The `Tokens` line appears only when the model provider reports usage. `AI calls` counts the successful LLM invocations made during the run. The flag is disabled by default.
+
+Notes:
+
+- `/improve` appends the section only when it publishes a summary comment. If the provider lacks GFM support or `pr_code_suggestions.commitable_code_suggestions` is enabled, `/improve` posts inline comments instead, so no run details section appears.
+- With `pr_description.use_description_markers=true`, repeated `/describe` runs accumulate one run details block per run because the existing PR description is preserved and only the markers are replaced.
+
 ## Ignoring files from analysis
 
 In some cases, you may want to exclude specific files or directories from the analysis performed by PR-Agent. This can be useful, for example, when you have files that are generated automatically or files that shouldn't be reviewed, like vendor code.
@@ -108,6 +133,18 @@ expand_submodule_diffs = true
 ```
 
 When enabled, PR-Agent will fetch and attach diffs from the submodule repositories. The default is `false` to avoid extra GitLab API calls.
+
+## Post the review as a GitLab thread
+
+By default, PR-Agent posts the `/review` summary as a plain note. To post it as a resolvable thread (GitLab discussion) instead, enable (default: `false`):
+
+```toml
+[gitlab]
+publish_review_as_thread = true
+```
+- With `pr_reviewer.persistent_comment=true` (the default), each run updates the existing review thread and reopens it if it was resolved, so the refreshed review gets another look.
+- Enabling the flag does not convert a review that was already posted as a plain note: it keeps being updated in place, and GitLab cannot promote a note to a thread. Only MRs whose first review runs after the flag is set get a thread.
+- Set `pr_reviewer.persistent_comment=false` to open a new review thread on each run instead.
 
 ## Log Level
 

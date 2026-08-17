@@ -20,6 +20,7 @@ from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_helpers import (
     MockResponse, _get_azure_ad_token, _handle_streaming_response,
     _process_litellm_extra_body)
+from pr_agent.algo.run_details import record_ai_call
 from pr_agent.algo.utils import ReasoningEffort, get_version
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
@@ -201,6 +202,25 @@ class LiteLLMAIHandler(BaseAiHandler):
         if get_settings().get("DEEPSEEK.KEY", None):
             os.environ['DEEPSEEK_API_KEY'] = get_settings().get("DEEPSEEK.KEY")
 
+        # Support GLM (Z.AI / Zhipu) models
+        if get_settings().get("ZAI.KEY", None):
+            os.environ['ZAI_API_KEY'] = get_settings().get("ZAI.KEY")
+
+        # Support Moonshot (Kimi) models
+        if get_settings().get("MOONSHOT.KEY", None):
+            os.environ['MOONSHOT_API_KEY'] = get_settings().get("MOONSHOT.KEY")
+        # Optional Moonshot endpoint override (e.g. China: https://api.moonshot.cn/v1)
+        if get_settings().get("MOONSHOT.API_BASE", None):
+            os.environ['MOONSHOT_API_BASE'] = get_settings().get("MOONSHOT.API_BASE")
+
+        # Support Qwen (Alibaba DashScope) models
+        if get_settings().get("DASHSCOPE.KEY", None):
+            os.environ['DASHSCOPE_API_KEY'] = get_settings().get("DASHSCOPE.KEY")
+
+        # Support Xiaomi MiMo models
+        if get_settings().get("XIAOMI_MIMO.KEY", None):
+            os.environ['XIAOMI_MIMO_API_KEY'] = get_settings().get("XIAOMI_MIMO.KEY")
+
         # Support deepinfra models
         if get_settings().get("DEEPINFRA.KEY", None):
             os.environ['DEEPINFRA_API_KEY'] = get_settings().get("DEEPINFRA.KEY")
@@ -332,6 +352,14 @@ class LiteLLMAIHandler(BaseAiHandler):
         else:
             response_log['main_pr_language'] = 'unknown'
         return response_log
+
+    @staticmethod
+    def _record_completion_metadata(response) -> None:
+        """Count the call and accumulate token usage when the provider reports it.
+
+        Streaming models return a MockResponse without `usage`, so tokens stay unset.
+        """
+        record_ai_call(getattr(response, "usage", None))
 
     def _configure_claude_extended_thinking(self, model: str, kwargs: dict) -> dict:
         """
@@ -475,6 +503,31 @@ class LiteLLMAIHandler(BaseAiHandler):
         """
         return get_settings().get("OPENAI.DEPLOYMENT_ID", None)
 
+    @staticmethod
+    def _resolve_cache_control_injection_points():
+        """Read and validate LITELLM.CACHE_CONTROL_INJECTION_POINTS for Anthropic prompt caching
+        via LiteLLM (https://docs.litellm.ai/docs/tutorials/prompt_caching).
+
+        Accepts a native TOML array in the [litellm] section of configuration.toml / .pr_agent.toml,
+        e.g. ``cache_control_injection_points = [{location = "message", role = "system"}]``; a
+        JSON-string form is also accepted so the value can be supplied via an environment-variable
+        override. Returns the parsed list, or None when unset/disabled. Raises ValueError on a
+        malformed value so the caller can surface it as a configuration error rather than retrying it.
+        """
+        cache_control_injection_points = get_settings().get("LITELLM.CACHE_CONTROL_INJECTION_POINTS", None)
+        # Only genuinely unset/disabled values short-circuit. Other falsy-but-malformed values
+        # (e.g. 0, False, {}) fall through to type validation below and raise ValueError.
+        if cache_control_injection_points in (None, "", []):
+            return None
+        if isinstance(cache_control_injection_points, str):
+            try:
+                cache_control_injection_points = json.loads(cache_control_injection_points)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"LITELLM.CACHE_CONTROL_INJECTION_POINTS contains invalid JSON: {str(e)}") from e
+        if not isinstance(cache_control_injection_points, list):
+            raise ValueError("LITELLM.CACHE_CONTROL_INJECTION_POINTS must be a JSON/TOML array")
+        return cache_control_injection_points
+
     @retry(
         retry=retry_if_exception_type(openai.APIError) & retry_if_not_exception_type(openai.RateLimitError),
         stop=stop_after_attempt(MODEL_RETRIES),
@@ -483,6 +536,9 @@ class LiteLLMAIHandler(BaseAiHandler):
     async def chat_completion(self, model: str, system: str, user: str, temperature: float = 0.2, img_path: str = None):
         # Serialize env-var mutation + Bedrock call for IMDS mode to prevent concurrent
         # requests from interleaving os.environ credentials during asyncio.gather usage.
+        # Validate config-derived kwargs before the try/except below, so a malformed value raises a
+        # ValueError config error instead of being wrapped as openai.APIError and retried.
+        cache_control_injection_points = self._resolve_cache_control_injection_points()
         _bedrock_imds = self._aws_imds_mode and 'bedrock/' in model
         async with (self._aws_bedrock_lock if _bedrock_imds else contextlib.nullcontext()):
             if _bedrock_imds and not self._aws_imds_fell_back:
@@ -681,6 +737,20 @@ class LiteLLMAIHandler(BaseAiHandler):
                             get_logger().debug(
                                 f"add_user_to_requests: user field unsupported for {model}, skipped")
 
+                # Anthropic prompt caching via LiteLLM's cache_control_injection_points. The value
+                # is validated before the try/except (see above) so a malformed config surfaces as
+                # a ValueError instead of being retried. The kwarg is Anthropic-specific (Claude via
+                # the Anthropic API, Bedrock or Vertex), so gate on the model to avoid passing an
+                # unsupported param to other providers when litellm.drop_params is off. setdefault
+                # guards against overwriting a value already merged into kwargs.
+                if cache_control_injection_points:
+                    if isinstance(model, str) and "claude" in model.lower():
+                        kwargs.setdefault("cache_control_injection_points", cache_control_injection_points)
+                    else:
+                        get_logger().debug(
+                            f"cache_control_injection_points configured but not applied: {model} is not an "
+                            "Anthropic (Claude) model")
+
                 # Support for Bedrock custom inference profile via model_id
                 model_id = get_settings().get("litellm.model_id")
                 if model_id and 'bedrock/' in model:
@@ -800,6 +870,8 @@ class LiteLLMAIHandler(BaseAiHandler):
             # for CLI debugging
             if get_settings().config.verbosity_level >= 2:
                 get_logger().info(f"\nAI response:\n{resp}")
+
+            self._record_completion_metadata(response_obj)
 
             return resp, finish_reason
 
