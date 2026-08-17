@@ -3,10 +3,13 @@ import tomllib #tomllib should be used instead of Py toml for Python 3.11+
 
 from jinja2.exceptions import SecurityError
 
-from pr_agent.log import get_logger
-
 # Prevent out-of-memory exceptions by limiting settings files to 100 MB (sufficient for up to ~1M lines).
 MAX_TOML_SIZE_IN_BYTES = 100 * 1024 * 1024
+
+
+def get_logger():
+    from pr_agent.log import get_logger as _get_logger
+    return _get_logger()
 
 
 def load(obj, env=None, silent=True, key=None, filename=None):
