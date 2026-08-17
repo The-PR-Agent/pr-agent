@@ -520,7 +520,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         """Return whether a Claude model requires the adaptive thinking API."""
         normalized_model = model.lower().replace("_", "-").replace(".", "-")
         return re.search(
-            r"claude-(?:opus-4-(?:7|8)|(?:sonnet|fable)-5)(?:[^0-9]|$)",
+            r"claude-(?:opus-4-(?:7|8)|(?:opus|sonnet|fable)-5)(?:[^0-9]|$)",
             normalized_model,
         ) is not None
 
@@ -534,8 +534,11 @@ class LiteLLMAIHandler(BaseAiHandler):
             f"Using adaptive thinking for model {model}"
             + (f" with output_config effort '{effort}'" if "output_config" in kwargs else "")
         )
-        # temperature may only be set to 1 when thinking is enabled
-        kwargs["temperature"] = 1
+        # Adaptive-thinking Claude models have sampling parameters removed
+        # (NO_SUPPORT_TEMPERATURE_MODELS covers them after #2400/#2449), so
+        # never send temperature here — strip one if an earlier code path
+        # added it.
+        kwargs.pop("temperature", None)
         return kwargs
 
     def add_litellm_callbacks(self, kwargs) -> dict:
