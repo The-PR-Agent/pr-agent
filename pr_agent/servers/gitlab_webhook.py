@@ -1,4 +1,5 @@
 import copy
+import hmac
 import json
 import os
 import re
@@ -224,7 +225,7 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
         if request_token and secret_provider:
             secret = secret_provider.get_secret(request_token)
             if not secret:
-                get_logger().warning(f"Empty secret retrieved, request_token: {request_token}")
+                get_logger().warning("Empty secret retrieved for the provided webhook token")
                 return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED,
                                     content=jsonable_encoder({"message": "unauthorized"}))
             try:
@@ -233,11 +234,11 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                 log_context["token_id"] = secret_dict.get("token_name", secret_dict.get("id", "unknown"))
                 context["settings"].gitlab.personal_access_token = gitlab_token
             except Exception as e:
-                get_logger().error(f"Failed to validate secret {request_token}: {e}")
+                get_logger().error(f"Failed to validate the secret for the provided webhook token: {e}")
                 return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content=jsonable_encoder({"message": "unauthorized"}))
         elif get_settings().get("GITLAB.SHARED_SECRET"):
             secret = get_settings().get("GITLAB.SHARED_SECRET")
-            if not request_token == secret:
+            if not hmac.compare_digest(str(request_token or ""), str(secret)):
                 get_logger().error("Failed to validate secret")
                 return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content=jsonable_encoder({"message": "unauthorized"}))
         else:
