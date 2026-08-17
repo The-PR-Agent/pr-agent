@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 # enum EDIT_TYPE (ADDED, DELETED, MODIFIED, RENAMED)
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -12,6 +13,16 @@ from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
 MAX_FILES_ALLOWED_FULL = 50
+
+_URL_USERINFO_RE = re.compile(r'(?P<scheme>[a-zA-Z][a-zA-Z0-9+.\-]*://)[^/@\s]+@')
+_AUTH_HEADER_RE = re.compile(r'(?i)(authorization\s*:\s*(?:bearer|basic|token)\s+)\S+')
+
+
+def redact_credentials(text) -> str:
+    if not text:
+        return ""
+    redacted = _URL_USERINFO_RE.sub(lambda m: m.group('scheme'), str(text))
+    return _AUTH_HEADER_RE.sub(lambda m: m.group(1) + '<redacted>', redacted)
 
 _GLOBAL_SETTINGS_CACHE: dict = {}
 _GLOBAL_SETTINGS_CACHE_TTL_SECONDS = 15 * 60
@@ -199,8 +210,9 @@ class GitProvider(ABC):
             self._clone_inner(clone_url, dest_folder, operation_timeout_in_seconds)
             returned_obj = GitProvider.ScopedClonedRepo(dest_folder)
         except Exception as e:
-            get_logger().exception(f"Clone failed: Could not clone url.",
-                artifact={"error": str(e), "url": clone_url, "dest_folder": dest_folder})
+            get_logger().error(f"Clone failed: Could not clone url.",
+                artifact={"error": redact_credentials(e), "url": redact_credentials(clone_url),
+                          "dest_folder": dest_folder})
         finally:
             return returned_obj
 
