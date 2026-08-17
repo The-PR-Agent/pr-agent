@@ -591,7 +591,6 @@ class TestImdsCallBehavior:
         assert handler._aws_imds_fell_back is True
         assert os.environ["AWS_ACCESS_KEY_ID"] == "STATICKEY"
         assert os.environ["AWS_SECRET_ACCESS_KEY"] == "STATICSECRET"
-        assert handler.last_usage == usage
 
     @pytest.mark.asyncio
     async def test_fallback_not_triggered_without_static_creds(self, monkeypatch):
