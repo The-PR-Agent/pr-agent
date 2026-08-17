@@ -395,7 +395,7 @@ __old hunk__
             old_content_lines.append(line)
 
     # finishing last hunk
-    if match and new_content_lines:
+    if match and (new_content_lines or old_content_lines):
         patch_with_lines_str += f'\n{header_line}\n'
         is_plus_lines = is_minus_lines = False
         if new_content_lines:
