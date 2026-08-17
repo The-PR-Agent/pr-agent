@@ -399,26 +399,33 @@ class LiteLLMAIHandler(BaseAiHandler):
         return kwargs
 
     def add_litellm_callbacks(self, kwargs) -> dict:
+        probe = object()
         captured_extra = []
 
         def capture_logs(message):
             # Parsing the log message and context
             record = message.record
+            extra = record.get('extra') or {}
+            if extra.get('litellm_callbacks_probe') is not probe:
+                return
             log_entry = {}
-            if record.get('extra', None).get('command', None) is not None:
-                log_entry.update({"command": record['extra']["command"]})
-            if record.get('extra', {}).get('pr_url', None) is not None:
-                log_entry.update({"pr_url": record['extra']["pr_url"]})
+            if extra.get('command') is not None:
+                log_entry.update({"command": extra["command"]})
+            if extra.get('pr_url') is not None:
+                log_entry.update({"pr_url": extra["pr_url"]})
 
             # Append the log entry to the captured_logs list
             captured_extra.append(log_entry)
 
         # Adding the custom sink to Loguru
         handler_id = get_logger().add(capture_logs)
-        get_logger().debug("Capturing logs for litellm callbacks")
-        get_logger().remove(handler_id)
+        try:
+            get_logger().debug("Capturing logs for litellm callbacks",
+                               litellm_callbacks_probe=probe)
+        finally:
+            get_logger().remove(handler_id)
 
-        context = captured_extra[0] if len(captured_extra) > 0 else None
+        context = captured_extra[0] if len(captured_extra) > 0 else {}
 
         command = context.get("command", "unknown")
         pr_url = context.get("pr_url", "unknown")
