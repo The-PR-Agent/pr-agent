@@ -96,13 +96,14 @@ class TokenHandler:
             get_logger().error(f"Error in _get_system_user_tokens: {e}")
             return 0
 
-    def _calc_claude_tokens(self, patch: str) -> int:
+    def _calc_claude_tokens(self, patch: str, default_estimate: int = 0) -> int:
+        from pr_agent.algo import MAX_TOKENS
+
+        max_tokens = MAX_TOKENS.get(get_settings().config.model, default_estimate)
         try:
             import anthropic
-            from pr_agent.algo import MAX_TOKENS
-            
+
             client = anthropic.Anthropic(api_key=get_settings(use_context=False).get('anthropic.key'))
-            max_tokens = MAX_TOKENS[get_settings().config.model]
 
             if len(patch.encode('utf-8')) > self.CLAUDE_MAX_CONTENT_SIZE:
                 get_logger().warning(
@@ -147,7 +148,7 @@ class TokenHandler:
             return default_estimate
 
         if ModelTypeValidator.is_anthropic_model(model_name) and get_settings(use_context=False).get('anthropic.key'):
-            return self._calc_claude_tokens(patch)
+            return self._calc_claude_tokens(patch, default_estimate)
         
         return self._apply_estimation_factor(model_name, default_estimate)
     
