@@ -34,7 +34,9 @@ unidiff==0.7.5
 uvicorn==0.22.0
 tenacity==8.2.3
 a2a-sdk[http-server]==1.0.3
-langfuse==3.14.5
+# litellm 1.96.2 requires langfuse v2 (<3.0) for the native 'langfuse' callback to avoid TypeError with sdk_integration.
+# Version matches litellm's own constraint in pyproject.toml (>=2.59.7,<3.0).
+langfuse==2.59.7
 gunicorn==23.0.0
 pytest-cov==7.0.0
 pydantic==2.13.3
