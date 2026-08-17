@@ -183,10 +183,7 @@ class TestExtractHunkLinesFromPatch:
             MULTI_HUNK_PATCH, "src/sample.py", line_start=2, line_end=2, side="left"
         )
         assert "@@ -1,3 +1,4 @@" in full
-        # Current production behavior includes adjacent context/paired new
-        # lines around the deleted line; assert exactly so this test documents
-        # the full selected payload rather than only a partial match.
-        assert selected == " line1\n-line2\n+line2_new"
+        assert selected == "-line2"
 
     def test_targets_second_hunk_when_line_in_its_range(self):
         # Second hunk new-file range: start2=11, size2=3 -> lines 11..14.
