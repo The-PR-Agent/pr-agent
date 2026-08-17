@@ -24,7 +24,8 @@ from pydantic import BaseModel
 from starlette_context import context
 
 from pr_agent.algo import MAX_TOKENS
-from pr_agent.algo.git_patch_processing import extract_hunk_lines_from_patch
+from pr_agent.algo.git_patch_processing import (extract_hunk_headers,
+                                                extract_hunk_lines_from_patch)
 from pr_agent.algo.run_details import get_run_details
 from pr_agent.algo.token_handler import TokenEncoder
 from pr_agent.algo.types import FilePatchInfo
@@ -1148,7 +1149,7 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
                     if line.startswith('@@'):
                         delta = 0
                         match = re_hunk_header.match(line)
-                        start1, size1, start2, size2 = map(int, match.groups()[:4])
+                        section_header, size1, size2, start1, start2 = extract_hunk_headers(match)
                     elif not line.startswith('-'):
                         delta += 1
 
@@ -1170,7 +1171,7 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
                     if line.startswith('@@'):
                         delta = 0
                         match = re_hunk_header.match(line)
-                        start1, size1, start2, size2 = map(int, match.groups()[:4])
+                        section_header, size1, size2, start1, start2 = extract_hunk_headers(match)
                     elif not line.startswith('-'):
                         delta += 1
 
@@ -1185,7 +1186,7 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
                         if line.startswith('@@'):
                             delta = 0
                             match = re_hunk_header.match(line)
-                            start1, size1, start2, size2 = map(int, match.groups()[:4])
+                            section_header, size1, size2, start1, start2 = extract_hunk_headers(match)
                         elif not line.startswith('-'):
                             delta += 1
 
