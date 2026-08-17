@@ -1298,19 +1298,20 @@ def show_relevant_configurations(relevant_section: str) -> str:
     extra_skip_keys = get_settings().config.get("skip_keys", [])
     if extra_skip_keys:
         skip_keys.extend(extra_skip_keys)
+    skip_keys_lower = [key.lower() for key in skip_keys]
 
     markdown_text = ""
     markdown_text += "\n<hr>\n<details> <summary><strong>🛠️ Relevant configurations:</strong></summary> \n\n"
     markdown_text +="<br>These are the relevant [configurations](https://github.com/Codium-ai/pr-agent/blob/main/pr_agent/settings/configuration.toml) for this tool:\n\n"
     markdown_text += f"**[config**]\n```yaml\n\n"
     for key, value in get_settings().config.items():
-        if key in skip_keys:
+        if key.lower() in skip_keys_lower:
             continue
         markdown_text += f"{key}: {value}\n"
     markdown_text += "\n```\n"
     markdown_text += f"\n**[{relevant_section}]**\n```yaml\n\n"
     for key, value in get_settings().get(relevant_section, {}).items():
-        if key in skip_keys:
+        if key.lower() in skip_keys_lower:
             continue
         markdown_text += f"{key}: {value}\n"
     markdown_text += "\n```"
