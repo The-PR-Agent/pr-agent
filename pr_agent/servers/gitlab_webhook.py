@@ -208,46 +208,53 @@ def should_process_pr_logic(data) -> bool:
     return True
 
 
+def authenticate_gitlab_webhook(request: Request, log_context: dict):
+    request_token = request.headers.get("X-Gitlab-Token")
+    # Built only for a request that will actually consult it, so a cloud client that
+    # fails to initialize cannot drop webhooks authenticated by shared secret instead.
+    secret_provider = get_fork_safe_secret_provider() if request_token else None
+    if request_token and secret_provider:
+        secret = secret_provider.get_secret(request_token)
+        if not secret:
+            get_logger().warning(f"Empty secret retrieved, request_token: {request_token}")
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED,
+                                content=jsonable_encoder({"message": "unauthorized"}))
+        try:
+            secret_dict = json.loads(secret)
+            gitlab_token = secret_dict["gitlab_token"]
+            log_context["token_id"] = secret_dict.get("token_name", secret_dict.get("id", "unknown"))
+            context["settings"].gitlab.personal_access_token = gitlab_token
+        except Exception as e:
+            get_logger().error(f"Failed to validate secret {request_token}: {e}")
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content=jsonable_encoder({"message": "unauthorized"}))
+    elif get_settings().get("GITLAB.SHARED_SECRET"):
+        secret = get_settings().get("GITLAB.SHARED_SECRET")
+        if not request_token == secret:
+            get_logger().error("Failed to validate secret")
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content=jsonable_encoder({"message": "unauthorized"}))
+    else:
+        get_logger().error("Failed to validate secret")
+        return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content=jsonable_encoder({"message": "unauthorized"}))
+    gitlab_token = get_settings().get("GITLAB.PERSONAL_ACCESS_TOKEN", None)
+    if not gitlab_token:
+        get_logger().error("No gitlab token found")
+        return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content=jsonable_encoder({"message": "unauthorized"}))
+    return None
+
+
 @router.post("/webhook")
 async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
     start_time = datetime.now()
     request_json = await request.json()
     context["settings"] = copy.deepcopy(global_settings)
 
-    async def inner(data: dict):
-        log_context = {"server_type": "gitlab_app"}
-        get_logger().debug("Received a GitLab webhook")
-        request_token = request.headers.get("X-Gitlab-Token")
-        # Built only for a request that will actually consult it, so a cloud client that
-        # fails to initialize cannot drop webhooks authenticated by shared secret instead.
-        secret_provider = get_fork_safe_secret_provider() if request_token else None
-        if request_token and secret_provider:
-            secret = secret_provider.get_secret(request_token)
-            if not secret:
-                get_logger().warning(f"Empty secret retrieved, request_token: {request_token}")
-                return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED,
-                                    content=jsonable_encoder({"message": "unauthorized"}))
-            try:
-                secret_dict = json.loads(secret)
-                gitlab_token = secret_dict["gitlab_token"]
-                log_context["token_id"] = secret_dict.get("token_name", secret_dict.get("id", "unknown"))
-                context["settings"].gitlab.personal_access_token = gitlab_token
-            except Exception as e:
-                get_logger().error(f"Failed to validate secret {request_token}: {e}")
-                return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content=jsonable_encoder({"message": "unauthorized"}))
-        elif get_settings().get("GITLAB.SHARED_SECRET"):
-            secret = get_settings().get("GITLAB.SHARED_SECRET")
-            if not request_token == secret:
-                get_logger().error("Failed to validate secret")
-                return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content=jsonable_encoder({"message": "unauthorized"}))
-        else:
-            get_logger().error("Failed to validate secret")
-            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content=jsonable_encoder({"message": "unauthorized"}))
-        gitlab_token = get_settings().get("GITLAB.PERSONAL_ACCESS_TOKEN", None)
-        if not gitlab_token:
-            get_logger().error("No gitlab token found")
-            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content=jsonable_encoder({"message": "unauthorized"}))
+    log_context = {"server_type": "gitlab_app"}
+    get_logger().debug("Received a GitLab webhook")
+    unauthorized_response = authenticate_gitlab_webhook(request, log_context)
+    if unauthorized_response is not None:
+        return unauthorized_response
 
+    async def inner(data: dict):
         get_logger().info("GitLab data", artifact=data)
         sender = data.get("user", {}).get("username", "unknown")
         sender_id = data.get("user", {}).get("id", "unknown")
