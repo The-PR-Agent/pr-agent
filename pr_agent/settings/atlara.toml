@@ -1,0 +1,21 @@
+# Atlara-specific defaults for the atlara-review deployment.
+#
+# This file wires PR-Agent's OpenAI-compatible backend at Atlara's router
+# instead of a direct OpenAI/Anthropic key, so reviews run through Atlara's
+# model catalogue and credit-metered billing (see docs/ATLARA_DEPLOYMENT.md).
+#
+# Secrets (OPENAI__KEY) are never set here - they're injected at deploy time
+# via env vars, which dynaconf's env loader overlays on top of this file.
+
+[config]
+# TODO(atlara): confirm the exact catalogue id to default to before launch -
+# pick a coding-capable model from the live model_catalogue, not a guess.
+# The "openai/" prefix is litellm's convention for routing through an
+# OpenAI-compatible custom endpoint (this repo already uses it for
+# vLLM/LM Studio-style self-hosting - see litellm_ai_handler.py).
+model = "openai/REPLACE_WITH_CATALOGUE_MODEL_ID"
+fallback_models = []
+
+[openai]
+api_base = "https://cloud.atlara.ai/v1"
+# key is supplied via the OPENAI__KEY env var at deploy time.
