@@ -39,6 +39,10 @@ def _mock_response(usage=None):
     response = {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
     if usage is not None:
         response["usage"] = usage
+        # run_details reads the litellm attribute, not the dict form
+        mock.usage = usage
+    else:
+        mock.usage = None
     mock.__getitem__.side_effect = response.__getitem__
     mock.dict.return_value = response
     return mock
@@ -58,7 +62,9 @@ async def test_chat_completion_passes_seed_when_temperature_is_zero(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_chat_completion_records_token_usage(monkeypatch):
+async def test_chat_completion_accumulates_usage_into_run_details(monkeypatch):
+    from pr_agent.algo.run_details import init_run_details
+
     monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
     usage = {"prompt_tokens": 101, "completion_tokens": 23, "total_tokens": 124}
 
@@ -66,9 +72,12 @@ async def test_chat_completion_records_token_usage(monkeypatch):
         mock_call.return_value = _mock_response(usage)
         handler = litellm_handler.LiteLLMAIHandler()
 
+        details = init_run_details()
         await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
 
-    assert handler.last_usage == usage
+    assert details.prompt_tokens == 101
+    assert details.completion_tokens == 23
+    assert details.total_tokens == 124
 
 
 @pytest.mark.asyncio
