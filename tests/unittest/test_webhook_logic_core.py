@@ -183,6 +183,7 @@ class RecordingAgent:
 
 
 async def _run_github_pr_commands(monkeypatch, repo_setting, action="opened", draft=True):
+    # draft=None omits the field from the payload.
     settings = get_settings()
     original_github_app = copy.deepcopy(settings.get("GITHUB_APP"))
     original_is_auto_command = settings.get("CONFIG.IS_AUTO_COMMAND")
@@ -214,7 +215,7 @@ async def _run_github_pr_commands(monkeypatch, repo_setting, action="opened", dr
                 "pull_request": {
                     "url": "https://api.github.com/repos/org/repo/pulls/1",
                     "state": "open",
-                    "draft": draft,
+                    **({} if draft is None else {"draft": draft}),
                 },
                 "sender": {"login": "alice", "id": 1, "type": "User"},
                 "repository": {"full_name": "org/repo"},
@@ -232,6 +233,8 @@ async def _run_github_pr_commands(monkeypatch, repo_setting, action="opened", dr
     ("action", "draft", "feedback_on_draft_pr", "expected_commands"),
     [
         ("opened", True, False, []),
+        # A missing draft field defaults to draft and is rejected.
+        ("opened", None, False, []),
         ("opened", True, True, ["/review"]),
         ("ready_for_review", False, False, ["/review"]),
         ("ready_for_review", False, True, []),

@@ -115,6 +115,7 @@ This means that when a new PR is opened/reopened or marked as ready for review, 
 
 By default, draft PRs are not considered for automatic tools, but you can change this by setting the `feedback_on_draft_pr` parameter to `true` in the configuration file.
 When enabled, marking the PR as ready does not run `pr_commands` a second time.
+Because this setting can be overridden per repository, draft PR events still fetch the repository configuration before being skipped.
 
 ```toml
 [github_app]
@@ -267,6 +268,7 @@ pr_commands = [
 
 Draft MRs are skipped by default. Set `feedback_on_draft_pr = true` under `[gitlab]` to enable automatic feedback.
 When enabled, marking the MR as ready does not run `pr_commands` a second time.
+Because this setting can be overridden per repository, draft MR events still fetch the repository configuration before being skipped.
 For environment-based deployments, set `GITLAB__FEEDBACK_ON_DRAFT_PR=true`.
 
 the GitLab webhook can also respond to new code that is pushed to an open MR.

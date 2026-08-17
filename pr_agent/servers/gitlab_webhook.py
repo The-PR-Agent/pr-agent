@@ -16,11 +16,11 @@ from starlette_context.middleware import RawContextMiddleware
 from pr_agent.agent.pr_agent import PRAgent
 from pr_agent.algo.utils import update_settings_from_args
 from pr_agent.config_loader import get_settings, global_settings
+from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.secret_providers import (get_secret_provider,
                                        validate_secret_provider_setting)
-from pr_agent.git_providers import get_git_provider_with_context
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
 router = APIRouter()
