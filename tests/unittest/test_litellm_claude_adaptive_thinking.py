@@ -50,9 +50,12 @@ async def _run_completion(monkeypatch, model, reasoning_effort="medium", enabled
         ("anthropic/claude-opus-4-8", True),
         ("bedrock/us.anthropic.claude-opus-4-7-v1:0", True),
         ("vertex_ai/claude-sonnet-5", True),
+        ("anthropic/claude-opus-5", True),
+        ("bedrock/us.anthropic.claude-opus-5", True),
         ("anthropic/claude-fable-5", True),
         ("anthropic/claude-opus-4-6", False),
         ("anthropic/claude-sonnet-50", False),
+        ("anthropic/claude-opus-50", False),
         ("anthropic/my-opus-4-8", False),
     ],
 )
@@ -71,7 +74,7 @@ async def test_enabled_adaptive_thinking_sends_anthropic_payload(monkeypatch):
 
     assert kwargs["thinking"] == {"type": "adaptive"}
     assert kwargs["output_config"] == {"effort": "high"}
-    assert kwargs["temperature"] == 1
+    assert "temperature" not in kwargs
     assert "reasoning_effort" not in kwargs
 
 
