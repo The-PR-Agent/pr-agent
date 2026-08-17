@@ -74,7 +74,7 @@ async def get_body(request):
     return body
 
 
-_duplicate_push_triggers = DefaultDictWithTimeout(ttl=get_settings().github_app.push_trigger_pending_tasks_ttl)
+_duplicate_push_triggers = DefaultDictWithTimeout(int, ttl=get_settings().github_app.push_trigger_pending_tasks_ttl)
 _pending_task_duplicate_push_conditions = DefaultDictWithTimeout(asyncio.locks.Condition, ttl=get_settings().github_app.push_trigger_pending_tasks_ttl)
 
 async def handle_comments_on_pr(body: Dict[str, Any],
@@ -203,7 +203,7 @@ async def handle_push_trigger_for_new_commits(body: Dict[str, Any],
         # release the waiting task block
         async with _pending_task_duplicate_push_conditions[api_url]:
             _pending_task_duplicate_push_conditions[api_url].notify(1)
-            _duplicate_push_triggers[api_url] -= 1
+            _duplicate_push_triggers[api_url] = max(0, _duplicate_push_triggers[api_url] - 1)
 
 
 def handle_closed_pr(body, event, action, log_context):
