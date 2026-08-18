@@ -405,13 +405,13 @@ class LiteLLMAIHandler(BaseAiHandler):
         def capture_logs(message):
             # Parsing the log message and context
             record = message.record
-            extra = record.get('extra') or {}
-            if extra.get('litellm_callbacks_probe') is not probe:
+            extra = record.get("extra") or {}
+            if extra.get("litellm_callbacks_probe") is not probe:
                 return
             log_entry = {}
-            if extra.get('command') is not None:
+            if extra.get("command") is not None:
                 log_entry.update({"command": extra["command"]})
-            if extra.get('pr_url') is not None:
+            if extra.get("pr_url") is not None:
                 log_entry.update({"pr_url": extra["pr_url"]})
 
             # Append the log entry to the captured_logs list
