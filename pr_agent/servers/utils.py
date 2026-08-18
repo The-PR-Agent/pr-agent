@@ -91,7 +91,10 @@ class DefaultDictWithTimeout(defaultdict):
             super().__delitem__(__key)
 
     def setdefault(self, __key, __default=None):
-        if not super().__contains__(__key):
-            self[__key] = __default
-            return __default
-        return self[__key]
+        self.__refresh()
+        if super().__contains__(__key):
+            if self.__update_key_time_on_get:
+                self.__key_times[__key] = self.__time()
+            return super().__getitem__(__key)
+        self[__key] = __default
+        return __default
