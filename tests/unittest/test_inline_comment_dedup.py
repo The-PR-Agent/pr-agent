@@ -192,6 +192,7 @@ def _gl_provider(existing_bodies):
         discs.append(disc)
     p.mr.discussions.list.return_value = discs
     p.mr.notes.list.return_value = []
+    p.mr.draft_notes.list.return_value = []
     p.get_relevant_diff = MagicMock(return_value=_FakeDiff())
     return p
 
@@ -405,6 +406,28 @@ def test_gitlab_skips_when_fallback_note_has_marker():
     try:
         _send(p, body)
         p.mr.discussions.create.assert_not_called()
+    finally:
+        gs.stop()
+
+
+def test_gitlab_skips_when_pending_draft_note_has_marker():
+    # gitlab.publish_code_suggestions_as_review queues suggestions as draft notes,
+    # which are invisible via discussions/notes listings until published. A pending
+    # draft's marker must still be found, so a suggestion isn't re-queued as a
+    # duplicate while an earlier draft of it is still waiting to be published.
+    body = "**Suggestion:** still pending [possible issue, importance: 7]"
+    seen_fp = d.body_fingerprint("a.py", 10, body)
+    p = _gl_provider([])
+    draft = MagicMock()
+    draft.note = f"still pending\n\n<!-- pr-agent-dedup: {seen_fp} -->"
+    p.mr.draft_notes.list.return_value = [draft]
+    gs = patch("pr_agent.git_providers.gitlab_provider.get_settings")
+    m = gs.start()
+    m.return_value.get.side_effect = _flag_side_effect(True)
+    try:
+        _send(p, body)
+        p.mr.discussions.create.assert_not_called()
+        p.mr.draft_notes.create.assert_not_called()
     finally:
         gs.stop()
 

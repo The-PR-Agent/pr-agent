@@ -127,6 +127,13 @@ def iter_existing_inline_comment_bodies(git_provider) -> Iterator[str]:
         # are seen on later runs.
         for note in git_provider.mr.notes.list(get_all=True):
             yield getattr(note, "body", "") or ""
+        # gitlab.publish_code_suggestions_as_review queues suggestions as draft notes
+        # (invisible in the discussions/notes listings above until published). Scan
+        # them too, so a marker from a draft that's still pending - e.g. because a
+        # prior run's bulk-publish failed - is still seen, instead of being re-posted
+        # as a duplicate once it (or a fresh copy) is eventually published.
+        for draft in git_provider.mr.draft_notes.list(get_all=True):
+            yield getattr(draft, "note", "") or ""
     else:
         raise NotImplementedError(
             f"inline-comment dedup not implemented for {provider_name}"

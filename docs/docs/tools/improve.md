@@ -224,6 +224,19 @@ To enable it, use the following setting:
 persistent_inline_comments = true
 ```
 
+### Batch-publishing committable suggestions on GitLab
+
+`Platforms supported: GitLab`
+
+By default, when `commitable_code_suggestions` is enabled, GitLab posts each suggestion as its own live discussion as soon as it's created - which means a separate notification (and email, if configured) per suggestion. To instead queue all suggestions and publish them together in a single batch, similar to using "start a review" in the GitLab UI, enable:
+
+```toml
+[gitlab]
+publish_code_suggestions_as_review = true
+```
+
+Suggestions are posted as GitLab draft notes (visible only to PR-Agent's user until published) and published together with a single API call once all suggestions have been queued. The suggestions remain fully committable either way - this setting only changes how they're delivered. The publish call is only made if at least one suggestion was actually queued, so a run with nothing to post won't accidentally publish unrelated drafts already pending on the MR.
+
 ### Self-review
 
 `Platforms supported: GitHub, GitLab`
