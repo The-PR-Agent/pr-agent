@@ -458,7 +458,7 @@ class GitLabProvider(GitProvider):
         self.diff_files = None
         if not self.incremental.is_incremental:
             return
-        self.unreviewed_files_set = {}
+        self.unreviewed_files_map = {}
         self._incremental_kind = kind
         self._get_incremental_commits()
 
@@ -567,7 +567,7 @@ class GitLabProvider(GitProvider):
                     f"(likely brought in via a merge from the target branch)"
                 )
                 continue
-            self.unreviewed_files_set[new_path] = diff
+            self.unreviewed_files_map[new_path] = diff
 
     def get_commit_range(self):
         last_review_time = getattr(self.previous_review, 'anchor_time', None)
@@ -729,11 +729,11 @@ class GitLabProvider(GitProvider):
         incremental_active = bool(
             getattr(self, 'incremental', None)
             and getattr(self.incremental, 'is_incremental', False)
-            and getattr(self, 'unreviewed_files_set', None)
+            and getattr(self, 'unreviewed_files_map', None)
         )
 
         if incremental_active:
-            raw_changes = list(self.unreviewed_files_set.values())
+            raw_changes = list(self.unreviewed_files_map.values())
             # Apply submodule expansion symmetrically with the full-review path so that
             # `GITLAB.EXPAND_SUBMODULE_DIFFS` keeps working under `/review -i`.
             raw_changes = self._expand_submodule_changes(raw_changes)
@@ -819,8 +819,8 @@ class GitLabProvider(GitProvider):
     def get_files(self) -> list:
         if (getattr(self, 'incremental', None)
                 and getattr(self.incremental, 'is_incremental', False)
-                and getattr(self, 'unreviewed_files_set', None)):
-            return list(self.unreviewed_files_set.keys())
+                and getattr(self, 'unreviewed_files_map', None)):
+            return list(self.unreviewed_files_map.keys())
         if not self.git_files:
             raw_changes = self.mr.changes().get('changes', [])
             raw_changes = self._expand_submodule_changes(raw_changes)

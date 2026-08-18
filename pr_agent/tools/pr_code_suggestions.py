@@ -52,11 +52,11 @@ class PRCodeSuggestions:
         # If incremental is active but the scope came back empty (no files changed since the
         # previous suggestions pass), short-circuit init now. `run()` checks the same flag and
         # exits without touching the model. This avoids a wasted `mr.changes()` round-trip via
-        # `get_files()` — when `unreviewed_files_set` is `{}` it's falsy and `get_files()` falls
+        # `get_files()` — when `unreviewed_files_map` is `{}` it's falsy and `get_files()` falls
         # back to the full MR file list, which is pure waste on the "nothing new" path.
         if (self.incremental.is_incremental
-                and hasattr(self.git_provider, "unreviewed_files_set")
-                and not self.git_provider.unreviewed_files_set):
+                and hasattr(self.git_provider, "unreviewed_files_map")
+                and not self.git_provider.unreviewed_files_map):
             self._incremental_empty_scope = True
             return
         self.main_language = get_main_pr_language(

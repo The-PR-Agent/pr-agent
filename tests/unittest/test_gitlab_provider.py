@@ -922,7 +922,7 @@ class TestGitLabIncrementalReview:
         assert gitlab_provider.incremental.is_incremental is True
         assert gitlab_provider.incremental.first_new_commit_sha == "c1"
         assert gitlab_provider.incremental.last_seen_commit_sha == "c0"
-        assert set(gitlab_provider.unreviewed_files_set.keys()) == {"a.py", "b.py"}
+        assert set(gitlab_provider.unreviewed_files_map.keys()) == {"a.py", "b.py"}
         mock_project.repository_compare.assert_called_once_with("c0", "head")
 
     def test_get_incremental_commits_no_new_commits_yields_empty_set(self, gitlab_provider, mock_project):
@@ -936,9 +936,9 @@ class TestGitLabIncrementalReview:
         gitlab_provider.get_incremental_commits(IncrementalPR(True))
 
         # is_incremental stays True so the reviewer publishes the "no new files" message;
-        # unreviewed_files_set is empty.
+        # unreviewed_files_map is empty.
         assert gitlab_provider.incremental.is_incremental is True
-        assert gitlab_provider.unreviewed_files_set == {}
+        assert gitlab_provider.unreviewed_files_map == {}
         mock_project.repository_compare.assert_not_called()
 
     def test_get_incremental_commits_no_anchor_commit_falls_back(self, gitlab_provider, mock_project):
@@ -957,7 +957,7 @@ class TestGitLabIncrementalReview:
 
     def test_get_files_uses_incremental_set_when_active(self, gitlab_provider):
         gitlab_provider.incremental = IncrementalPR(True)
-        gitlab_provider.unreviewed_files_set = {"a.py": {"new_path": "a.py"}}
+        gitlab_provider.unreviewed_files_map = {"a.py": {"new_path": "a.py"}}
 
         assert gitlab_provider.get_files() == ["a.py"]
         gitlab_provider.mr.changes.assert_not_called()
@@ -1019,8 +1019,8 @@ class TestGitLabIncrementalReview:
         gitlab_provider.get_incremental_commits(IncrementalPR(True))
 
         assert gitlab_provider.incremental.is_incremental is True
-        assert set(gitlab_provider.unreviewed_files_set.keys()) == {"src/feature.js"}
-        assert ".gitlab-ci.yml" not in gitlab_provider.unreviewed_files_set
+        assert set(gitlab_provider.unreviewed_files_map.keys()) == {"src/feature.js"}
+        assert ".gitlab-ci.yml" not in gitlab_provider.unreviewed_files_map
 
     def test_commit_with_unparseable_date_is_skipped_not_anchored(self, gitlab_provider, mock_project):
         # Anchor commit (c0) has a valid date older than the review; a stray dateless
@@ -1142,7 +1142,7 @@ class TestGitLabIncrementalReview:
 
         gitlab_provider.get_incremental_commits(IncrementalPR(True))
 
-        stored = gitlab_provider.unreviewed_files_set["a.py"]
+        stored = gitlab_provider.unreviewed_files_map["a.py"]
         assert isinstance(stored, dict)
         assert stored["new_path"] == "a.py"
         assert stored["diff"] == "@@ ... @@"
@@ -1199,6 +1199,25 @@ class TestGitLabIncrementalReview:
 
         assert gitlab_provider.incremental.is_incremental is True
         assert gitlab_provider.incremental.first_new_commit_sha == "c2"
+
+    def test_empty_incremental_scope_exposes_unreviewed_files_map(self, gitlab_provider, mock_project):
+        # PRReviewer's skip path checks `hasattr(provider, "unreviewed_files_map")` and its
+        # falsiness (pr_reviewer.py), matching GithubProvider/AzureDevopsProvider. The name
+        # must match exactly, or the "no new commits" path silently degrades to a full
+        # review instead of publishing "Incremental Review Skipped".
+        gitlab_provider.mr.notes.list.return_value = [
+            self._make_note(7, "## PR Reviewer Guide 🔍\nbody", "2024-05-01T10:00:00Z"),
+        ]
+        # The only commit predates the review -> legitimately empty incremental scope.
+        gitlab_provider.mr.commits.return_value = [
+            self._make_commit("c0", "2024-05-01T09:00:00Z"),
+        ]
+
+        gitlab_provider.get_incremental_commits(IncrementalPR(True))
+
+        assert gitlab_provider.incremental.is_incremental is True
+        assert gitlab_provider.unreviewed_files_map == {}
+        mock_project.repository_compare.assert_not_called()
 
     def test_supports_incremental_kind(self, gitlab_provider):
         assert gitlab_provider.supports_incremental_kind("review") is True
@@ -1278,7 +1297,7 @@ class TestGitLabIncrementalReview:
     def test_incremental_get_diff_files_expands_submodule_changes(self, gitlab_provider):
         # Set up incremental state directly to isolate get_diff_files behaviour.
         gitlab_provider.incremental = IncrementalPR(True)
-        gitlab_provider.unreviewed_files_set = {
+        gitlab_provider.unreviewed_files_map = {
             "libs/sub": {"new_path": "libs/sub", "old_path": "libs/sub",
                           "diff": "-Subproject commit aaa\n+Subproject commit bbb\n",
                           "new_file": False, "deleted_file": False, "renamed_file": False}
