@@ -14,15 +14,15 @@ from pr_agent.log import get_logger
 
 MAX_FILES_ALLOWED_FULL = 50
 
-_URL_USERINFO_RE = re.compile(r'(?P<scheme>[a-zA-Z][a-zA-Z0-9+.\-]*://)[^/@\s]+@')
-_AUTH_HEADER_RE = re.compile(r'(?i)(authorization\s*:\s*(?:bearer|basic|token)\s+)\S+')
+_URL_USERINFO_RE = re.compile(r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.\-]*://)[^/@\s]+@")
+_AUTH_HEADER_RE = re.compile(r"(?i)(authorization\s*:\s*(?:bearer|basic|token)\s+)\S+")
 
 
 def redact_credentials(text) -> str:
     if not text:
         return ""
-    redacted = _URL_USERINFO_RE.sub(lambda m: m.group('scheme'), str(text))
-    return _AUTH_HEADER_RE.sub(lambda m: m.group(1) + '<redacted>', redacted)
+    redacted = _URL_USERINFO_RE.sub(lambda m: m.group("scheme"), str(text))
+    return _AUTH_HEADER_RE.sub(lambda m: m.group(1) + "<redacted>", redacted)
 
 _GLOBAL_SETTINGS_CACHE: dict = {}
 _GLOBAL_SETTINGS_CACHE_TTL_SECONDS = 15 * 60
