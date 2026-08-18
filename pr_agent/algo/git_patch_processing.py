@@ -446,12 +446,12 @@ def extract_hunk_lines_from_patch(patch: str, file_name, line_start, line_end, s
                 patch_with_lines_str += f'\n{header_line}\n'
 
             elif not skip_hunk:
-                is_left = side.lower() == 'left'
+                is_left = side.lower() == "left"
                 hunk_start = start1 if is_left else start2
                 if line_start <= hunk_start + selected_lines_num <= line_end:
                     selected_lines += line + '\n'
                 patch_with_lines_str += line + '\n'
-                skipped_prefix = '+' if is_left else '-'
+                skipped_prefix = "+" if is_left else "-"
                 if not line.startswith(skipped_prefix):
                     selected_lines_num += 1
     except Exception as e:
