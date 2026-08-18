@@ -35,6 +35,9 @@ uvicorn==0.22.0
 tenacity==8.2.3
 a2a-sdk[http-server]==1.0.3
 langfuse==3.14.5
+opentelemetry-api==1.28.0
+opentelemetry-sdk==1.28.0
+opentelemetry-exporter-otlp==1.28.0
 gunicorn==23.0.0
 pytest-cov==7.0.0
 pydantic==2.13.3

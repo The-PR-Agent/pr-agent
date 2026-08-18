@@ -148,11 +148,20 @@ class LiteLLMAIHandler(BaseAiHandler):
         if get_settings().get("LITELLM.DROP_PARAMS", None):
             litellm.drop_params = get_settings().litellm.drop_params
         if get_settings().get("LITELLM.SUCCESS_CALLBACK", None):
-            litellm.success_callback = get_settings().litellm.success_callback
+            success_cb = get_settings().litellm.success_callback
+            if isinstance(success_cb, list):
+                success_cb = ["langfuse_otel" if c == "langfuse" else c for c in success_cb]
+            litellm.success_callback = success_cb
         if get_settings().get("LITELLM.FAILURE_CALLBACK", None):
-            litellm.failure_callback = get_settings().litellm.failure_callback
+            failure_cb = get_settings().litellm.failure_callback
+            if isinstance(failure_cb, list):
+                failure_cb = ["langfuse_otel" if c == "langfuse" else c for c in failure_cb]
+            litellm.failure_callback = failure_cb
         if get_settings().get("LITELLM.SERVICE_CALLBACK", None):
-            litellm.service_callback = get_settings().litellm.service_callback
+            service_cb = get_settings().litellm.service_callback
+            if isinstance(service_cb, list):
+                service_cb = ["langfuse_otel" if c == "langfuse" else c for c in service_cb]
+            litellm.service_callback = service_cb
         if get_settings().get("OPENAI.ORG", None):
             litellm.organization = get_settings().openai.org
         if get_settings().get("OPENAI.API_TYPE", None):
@@ -426,7 +435,7 @@ class LiteLLMAIHandler(BaseAiHandler):
 
         metadata = dict()
         callbacks = litellm.success_callback + litellm.failure_callback + litellm.service_callback
-        if "langfuse" in callbacks:
+        if "langfuse" in callbacks or "langfuse_otel" in callbacks:
             metadata.update({
                 "trace_name": command,
                 "tags": [git_provider, command, f'version:{get_version()}'],
