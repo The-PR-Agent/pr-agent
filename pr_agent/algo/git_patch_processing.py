@@ -220,7 +220,7 @@ def extract_hunk_headers(match):
     size1 = int(res[1]) if res[1] is not None else 1
     start2 = int(res[2]) if res[2] is not None else 0
     size2 = int(res[3]) if res[3] is not None else 1
-    section_header = res[4] if res[4] is not None else ''
+    section_header = res[4] if res[4] is not None else ""
     return section_header, size1, size2, start1, start2
 
 
@@ -432,11 +432,11 @@ def extract_hunk_lines_from_patch(patch: str, file_name, line_start, line_end, s
                 # check if line range is in this hunk
                 if side.lower() == 'left':
                     # check if line range is in this hunk
-                    if not (start1 <= line_start <= start1 + size1):
+                    if not (start1 <= line_start <= start1 + size1 - 1):
                         skip_hunk = True
                         continue
                 elif side.lower() == 'right':
-                    if not (start2 <= line_start <= start2 + size2):
+                    if not (start2 <= line_start <= start2 + size2 - 1):
                         skip_hunk = True
                         continue
                 patch_with_lines_str += f'\n{header_line}\n'
