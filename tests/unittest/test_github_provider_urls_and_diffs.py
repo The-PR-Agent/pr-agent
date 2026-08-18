@@ -217,7 +217,7 @@ def _make_provider_for_diff(files):
     p.diff_files = None
     p.git_files = None
     p.incremental = SimpleNamespace(is_incremental=False)
-    p.unreviewed_files_set = {}
+    p.unreviewed_files_map = {}
     # pr.base/head shas drive repo.compare which we stub out below.
     p.pr = SimpleNamespace(
         base=SimpleNamespace(sha="base-sha"),
