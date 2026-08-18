@@ -1,9 +1,9 @@
 from pr_agent.algo.utils import get_version
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
-from pr_agent.telemetry.types import TelemetryConfig
+from pr_agent.telemetry.types import ExporterType, TelemetryConfig
 
-VALID_EXPORTER_TYPES = {"console", "otlp", "none"}
+VALID_EXPORTER_TYPES = {ExporterType.CONSOLE, ExporterType.OTLP, ExporterType.NONE}
 
 def get_otel_config() -> TelemetryConfig:
     """Read and validate telemetry configuration from settings"""
@@ -56,12 +56,12 @@ def get_otel_config() -> TelemetryConfig:
         )
 
     # Validate OTLP configuration if using OTLP exporter
-    if exporter_type == "otlp" and not otlp_endpoint:
+    if exporter_type == ExporterType.OTLP and not otlp_endpoint:
         get_logger().warning(
             "OTEL.EXPORTER_TYPE is 'otlp' but OTEL.OTLP_ENDPOINT is not configured. "
             "Falling back to 'console' exporter."
         )
-        exporter_type = "console"
+        exporter_type = ExporterType.CONSOLE
 
     return TelemetryConfig(
         is_enabled=True,

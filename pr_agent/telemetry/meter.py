@@ -8,6 +8,7 @@ from opentelemetry.sdk.resources import DEPLOYMENT_ENVIRONMENT, SERVICE_NAME, SE
 
 from pr_agent.log import get_logger
 from pr_agent.telemetry.config import get_otel_config
+from pr_agent.telemetry.types import ExporterType
 
 
 @functools.lru_cache(maxsize=1)
@@ -22,7 +23,7 @@ def _init_metrics():
             return metrics.get_meter(__name__)  # no-op
 
         exporter = _create_metric_exporter(get_otel_config())
-        if exporter is None:  # exporter_type == "none"
+        if exporter is None:  # ExporterType.NONE or unknown
             return metrics.get_meter(__name__)  # no-op
 
         resource = Resource.create({
@@ -46,16 +47,16 @@ def _init_metrics():
 
 
 def _create_metric_exporter(config):
-    if config.exporter_type == "otlp":
+    if config.exporter_type == ExporterType.CONSOLE:
+        return ConsoleMetricExporter()
+    elif config.exporter_type == ExporterType.OTLP:
         kwargs = {}
         if config.otlp_endpoint:
             kwargs["endpoint"] = config.otlp_endpoint
         if config.otlp_headers:
             kwargs["headers"] = config.otlp_headers
         return OTLPMetricExporter(**kwargs)
-    elif config.exporter_type == "none":
-        return None
-    return ConsoleMetricExporter()
+    return None  # ExporterType.NONE or unknown type — no exporter, metrics dropped
 
 
 @functools.lru_cache(maxsize=1)

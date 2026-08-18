@@ -2,6 +2,13 @@ from dataclasses import dataclass
 from typing import Dict, Optional
 
 
+class ExporterType:
+    """Canonical exporter type values for OTEL.EXPORTER_TYPE."""
+    OTLP = "otlp"
+    CONSOLE = "console"
+    NONE = "none"
+
+
 @dataclass
 class TelemetryConfig:
     is_enabled: bool

@@ -9,6 +9,7 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExport
 from pr_agent.log import get_logger
 from pr_agent.telemetry.config import get_otel_config
 from pr_agent.telemetry.shutdown import register_shutdown_handler
+from pr_agent.telemetry.types import ExporterType
 
 
 @functools.lru_cache(maxsize=1)
@@ -43,13 +44,13 @@ def _init_telemetry():
 
 
 def _create_exporter(config):
-    if config.exporter_type == "console":
+    if config.exporter_type == ExporterType.CONSOLE:
         return ConsoleSpanExporter()
-    elif config.exporter_type == "otlp":
+    elif config.exporter_type == ExporterType.OTLP:
         kwargs = {}
         if config.otlp_endpoint:
             kwargs['endpoint'] = config.otlp_endpoint
         if config.otlp_headers:
             kwargs['headers'] = config.otlp_headers
         return OTLPSpanExporter(**kwargs)
-    return None  # "none" or unknown type — no exporter, spans dropped
+    return None  # ExporterType.NONE or unknown type — no exporter, spans dropped
