@@ -7,8 +7,6 @@ from enum import Enum
 
 from loguru import logger
 
-from pr_agent.config_loader import get_settings
-
 
 class LoggingFormat(str, Enum):
     CONSOLE = "CONSOLE"
@@ -28,6 +26,10 @@ def inv_analytics_filter(record: dict) -> bool:
 
 
 def setup_logger(level: str = "INFO", fmt: LoggingFormat = LoggingFormat.CONSOLE):
+    # Dynamic import to avoid a circular import: config_loader's module-level
+    # Dynaconf setup runs custom_merge_loader, which imports this module.
+    from pr_agent.config_loader import get_settings
+
     level: int = logging.getLevelName(level.upper())
     if type(level) is not int:
         level = logging.INFO
