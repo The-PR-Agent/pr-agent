@@ -276,7 +276,15 @@ async def run_action():
                     url = event_payload.get("issue", {}).get("url")
 
                 if url:
-                    body = comment_body.strip().lower()
+                    # handle_line_comments returns an argv list for /ask line
+                    # comments to bypass shell-style tokenisation; otherwise it
+                    # returns the raw comment string. Only normalise when the
+                    # payload is a string, otherwise the argv list would be
+                    # passed through .strip().lower() and raise AttributeError.
+                    if isinstance(comment_body, str):
+                        body = comment_body.strip().lower()
+                    else:
+                        body = comment_body
                     comment_id = event_payload.get("comment", {}).get("id")
                     provider = get_git_provider()(pr_url=url)
                     if is_pr:
