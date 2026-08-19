@@ -20,10 +20,15 @@ async def _handle_streaming_response(response):
         response: The streaming response object from acompletion
 
     Returns:
-        tuple: (full_response_content, finish_reason)
+        tuple: (full_response_content, finish_reason, usage)
+
+    ``usage`` is the token-usage object from the final streamed chunk (sent by
+    providers that support ``stream_options={"include_usage": True}`` or attach
+    usage natively), or None when the stream carried no usage data.
     """
     full_response = ""
     finish_reason = None
+    usage = None
 
     try:
         async for chunk in response:
@@ -35,6 +40,10 @@ async def _handle_streaming_response(response):
                     full_response += content
                 if choice.finish_reason:
                     finish_reason = choice.finish_reason
+            # The usage-bearing chunk (typically the last one) may have empty choices
+            chunk_usage = getattr(chunk, 'usage', None)
+            if chunk_usage:
+                usage = chunk_usage
     except Exception as e:
         get_logger().error(f"Error handling streaming response: {e}")
         raise
@@ -45,13 +54,17 @@ async def _handle_streaming_response(response):
     elif not full_response and finish_reason:
         get_logger().debug(f"Streaming response resulted in empty content but completed with finish_reason: {finish_reason}")
         raise openai.APIError(f"Streaming response completed with finish_reason '{finish_reason}' but no content received")
-    return full_response, finish_reason
+    return full_response, finish_reason, usage
 
 
 class MockResponse:
     """Mock response object for streaming models to enable consistent logging."""
 
-    def __init__(self, resp, finish_reason):
+    def __init__(self, resp, finish_reason, usage=None):
+        if usage is not None:
+            # Expose usage like a real ModelResponse so token accounting
+            # (run details, telemetry) treats streaming completions uniformly.
+            self.usage = usage
         self._data = {
             "choices": [
                 {

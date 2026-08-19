@@ -120,10 +120,8 @@ def test_streaming_response_attrs_allowlist(handler):
         handler._set_streaming_response_span_attributes(span, response, "stop")
 
     span = _finished_span(exporter)
-    # NOTE: "litellm.response_id" (no dot before id) pins the current naming,
-    # which is inconsistent with the non-streaming "litellm.response.id".
     _assert_span_clean(span, {
-        "litellm.response_id",
+        "litellm.response.id",
         "litellm.response.finish_reason",
         "litellm.response.streaming",
     })

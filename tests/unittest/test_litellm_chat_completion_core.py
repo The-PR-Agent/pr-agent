@@ -254,7 +254,7 @@ async def test_get_completion_uses_streaming_for_required_models():
             patch("pr_agent.algo.ai_handlers.litellm_ai_handler._handle_streaming_response",
                   new_callable=AsyncMock) as mock_stream:
         mock_call.return_value = "stream"
-        mock_stream.return_value = ("streamed text", "stop")
+        mock_stream.return_value = ("streamed text", "stop", None)
 
         resp, finish_reason, response_obj = await handler._get_completion(
             None,
