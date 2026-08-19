@@ -205,6 +205,7 @@ def test_shipped_configuration_toml_otel_section_values():
     assert configuration["service_name"] == "pr-agent"
     assert configuration["environment"] == "development"
     assert configuration["include_pr_url"] is False, "PR URLs must be opt-in (privacy)"
+    assert configuration["include_error_details"] is False, "error details must be opt-in (privacy)"
 
 
 def test_shipped_secrets_template_otel_section_values():

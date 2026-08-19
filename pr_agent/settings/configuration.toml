@@ -383,6 +383,7 @@ exporter_type = "console" # "console", "otlp", or "none"
 service_name = "pr-agent"
 environment = "development" # "development", "staging", "production", etc.
 include_pr_url = false # set to true to attach PR URLs to spans (may expose private repo names)
+include_error_details = false # set to true to attach exception messages and rejected-command text to spans (may expose PR URLs, repo names, or other request content)
 
 [pr_similar_issue]
 skip_comments = false

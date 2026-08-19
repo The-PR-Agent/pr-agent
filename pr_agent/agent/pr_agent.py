@@ -55,8 +55,14 @@ class PRAgent:
         self.ai_handler = ai_handler  # will be initialized in run_action
 
     async def _handle_request(self, pr_url, request, notify=None) -> bool:
-        with get_tracer().start_as_current_span("pr_agent.handle_request") as span:
-            # Set base attributes
+        # The SDK auto-records propagating exceptions on every span they escape
+        # (message, stacktrace, status description) — request content, so opt-in.
+        record_details = bool(get_settings().get("OTEL.INCLUDE_ERROR_DETAILS", False))
+        with get_tracer().start_as_current_span(
+            "pr_agent.handle_request",
+            record_exception=record_details,
+            set_status_on_exception=record_details,
+        ) as span:
             if get_settings().get("OTEL.INCLUDE_PR_URL", False):
                 span.set_attribute("pr_agent.pr_url", pr_url)
 
@@ -110,25 +116,31 @@ class PRAgent:
 
             action = action.lstrip("/").lower()
 
-            # Set command attributes
-            span.set_attribute("pr_agent.command", action)
             span.set_attribute("pr_agent.args_count", len(args))
             _git_provider = get_settings().config.git_provider
             span.set_attribute("git.provider", _git_provider)
-            get_commands_counter().add(1, {"pr_agent.command": action, "git.provider": _git_provider})
 
             if action not in command2class:
                 get_logger().warning(f"Unknown command: {action}")
                 span.set_attribute("error", True)
                 span.set_attribute("error.type", "unknown_command")
-                span.set_attribute("error.message", f"Unknown command: {action}")
+                if get_settings().get("OTEL.INCLUDE_ERROR_DETAILS", False):
+                    span.set_attribute("error.message", f"Unknown command: {action}")
                 return False
+
+            # Only after validation: an unknown action is arbitrary user input and
+            # must not become a span attribute or metric label.
+            span.set_attribute("pr_agent.command", action)
+            get_commands_counter().add(1, {"pr_agent.command": action, "git.provider": _git_provider})
 
             with get_logger().contextualize(command=action, pr_url=pr_url):
                 get_logger().info("PR-Agent request handler started", analytics=True)
 
-                # Create nested span for command execution
-                with get_tracer().start_as_current_span(f"pr_agent.execute.{action}") as cmd_span:
+                with get_tracer().start_as_current_span(
+                    f"pr_agent.execute.{action}",
+                    record_exception=record_details,
+                    set_status_on_exception=record_details,
+                ) as cmd_span:
                     cmd_span.set_attribute("pr_agent.command", action)
                     if get_settings().get("OTEL.INCLUDE_PR_URL", False):
                         cmd_span.set_attribute("pr_agent.pr_url", pr_url)
@@ -164,9 +176,9 @@ class PRAgent:
                 return result
             except Exception as e:
                 get_logger().exception("Failed to process the command.")
-                # Record exception in span
                 span.set_attribute("error", True)
                 span.set_attribute("error.type", type(e).__name__)
-                span.set_attribute("error.message", str(e))
-                span.record_exception(e)
+                if get_settings().get("OTEL.INCLUDE_ERROR_DETAILS", False):
+                    span.set_attribute("error.message", str(e))
+                    span.record_exception(e)
                 return False
