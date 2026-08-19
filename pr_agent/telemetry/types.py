@@ -18,3 +18,4 @@ class TelemetryConfig:
     environment: Optional[str]
     otlp_endpoint: Optional[str]
     otlp_headers: Optional[Dict[str, str]]
+    otlp_timeout: int = 3  # seconds; hard deadline per export call, retries included

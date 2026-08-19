@@ -1,7 +1,6 @@
 import functools
 
 from opentelemetry import metrics
-from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import ConsoleMetricExporter, PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import DEPLOYMENT_ENVIRONMENT, SERVICE_NAME, SERVICE_VERSION, Resource
@@ -54,7 +53,17 @@ def _create_metric_exporter(config):
     if config.exporter_type == ExporterType.CONSOLE:
         return ConsoleMetricExporter()
     elif config.exporter_type == ExporterType.OTLP:
-        kwargs = {}
+        # Imported lazily so a missing exporter package degrades telemetry
+        # instead of breaking every `import pr_agent`.
+        try:
+            from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
+        except ImportError:
+            get_logger().warning(
+                "OTEL.EXPORTER_TYPE is 'otlp' but opentelemetry-exporter-otlp-proto-grpc "
+                "is not installed; metrics will not be exported."
+            )
+            return None
+        kwargs = {"timeout": config.otlp_timeout}
         if config.otlp_endpoint:
             kwargs["endpoint"] = config.otlp_endpoint
         if config.otlp_headers:

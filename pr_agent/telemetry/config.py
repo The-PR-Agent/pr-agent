@@ -30,6 +30,7 @@ def get_otel_config() -> TelemetryConfig:
     otlp_endpoint = get_settings().get("OTEL.OTLP_ENDPOINT")
     otlp_headers_raw = get_settings().get("OTEL.OTLP_HEADERS")
     otlp_headers = _parse_otlp_headers(otlp_headers_raw) if otlp_headers_raw else None
+    otlp_timeout = int(get_settings().get("OTEL.OTLP_TIMEOUT", 3))
 
     # Validate exporter type early — before missing-fields check so it is always surfaced
     if exporter_type and exporter_type not in VALID_EXPORTER_TYPES:
@@ -70,7 +71,8 @@ def get_otel_config() -> TelemetryConfig:
         service_version=service_version,
         environment=environment,
         otlp_endpoint=otlp_endpoint,
-        otlp_headers=otlp_headers
+        otlp_headers=otlp_headers,
+        otlp_timeout=otlp_timeout
     )
 
 

@@ -135,6 +135,15 @@ def test_otlp_with_endpoint_and_headers_parses_headers(monkeypatch):
     assert config.otlp_headers == {"x-team": "abc", "Authorization": "Bearer tok"}
 
 
+def test_otlp_timeout_defaults_and_reads_setting(monkeypatch):
+    _use_settings(monkeypatch, dict(VALID_ENABLED_SETTINGS))
+    assert get_otel_config().otlp_timeout == 3
+
+    # String value covers env-var style settings; config.py coerces with int().
+    _use_settings(monkeypatch, {**VALID_ENABLED_SETTINGS, "OTEL.OTLP_TIMEOUT": "10"})
+    assert get_otel_config().otlp_timeout == 10
+
+
 @pytest.mark.parametrize("raw,expected", [
     ("", {}),
     ("   ", {}),
@@ -204,6 +213,7 @@ def test_shipped_configuration_toml_otel_section_values():
     assert configuration["exporter_type"] == ExporterType.CONSOLE
     assert configuration["service_name"] == "pr-agent"
     assert configuration["environment"] == "development"
+    assert configuration["otlp_timeout"] == 3
     assert configuration["include_pr_url"] is False, "PR URLs must be opt-in (privacy)"
     assert configuration["include_error_details"] is False, "error details must be opt-in (privacy)"
 
