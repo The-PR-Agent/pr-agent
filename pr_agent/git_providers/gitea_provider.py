@@ -221,45 +221,55 @@ class GiteaProvider(GitProvider):
         except Exception as e:
             self.logger.error(f"Error getting diff content: {str(e)}")
 
+    # Locate the resource by shape rather than by a fixed offset. The same
+    # resource is addressed by several paths and only the tail is invariant:
+    #
+    #   /{owner}/{repo}/{marker}/{number}                  web
+    #   /api/v1/repos/{owner}/{repo}/{marker}/{number}     api
+    #   /{sub}/{owner}/{repo}/{marker}/{number}            instance under a subpath
+    #   /{owner}/{repo}/{marker}/{number}/files            a tab on the web view
+    #
+    # Fixed offsets cannot span those, which is why stripping a known prefix
+    # breaks whenever the prefix changes.
+    @staticmethod
+    def _parse_resource_url(url: str, marker: str, kind: str) -> Tuple[str, str, int]:
+        path_parts = [part for part in urlparse(url).path.split("/") if part]
+
+        # Accept a segment as the marker only when a number follows it and an
+        # owner and repository precede it. Skip an occurrence whose successor is
+        # not a number, so a repository named "pulls" or "issues" resolves to
+        # the marker beside the number rather than to its own name.
+        candidates = []
+        for i in range(2, len(path_parts) - 1):
+            if path_parts[i] != marker:
+                continue
+            try:
+                candidates.append((i, int(path_parts[i + 1])))
+            except ValueError:
+                continue
+
+        # Refuse to guess when a path holds more than one candidate. Picking one
+        # would silently resolve to a different owner and repository, and those
+        # values go straight into API requests.
+        if len(candidates) > 1:
+            raise ValueError(f"The provided URL contains more than one Gitea {kind} path")
+
+        if candidates:
+            i, number = candidates[0]
+            return path_parts[i - 2], path_parts[i - 1], number
+
+        # Separate "number is unusable" from "not a resource URL": the two have
+        # different causes and different fixes.
+        if any(part == marker and i >= 2 and i + 1 < len(path_parts)
+               for i, part in enumerate(path_parts)):
+            raise ValueError(f"Unable to convert {kind} number to integer")
+        raise ValueError(f"The provided URL does not appear to be a Gitea {kind} URL")
+
     def _parse_pr_url(self, pr_url: str) -> Tuple[str, str, int]:
-        parsed_url = urlparse(pr_url)
-
-        if parsed_url.path.startswith('/api/v1'):
-            parsed_url = urlparse(pr_url.replace("/api/v1", ""))
-
-        path_parts = parsed_url.path.strip('/').split('/')
-        if len(path_parts) < 4 or path_parts[2] != 'pulls':
-            raise ValueError("The provided URL does not appear to be a Gitea PR URL")
-
-        try:
-            pr_number = int(path_parts[3])
-        except ValueError as e:
-            raise ValueError("Unable to convert PR number to integer") from e
-
-        owner = path_parts[0]
-        repo = path_parts[1]
-
-        return owner, repo, pr_number
+        return self._parse_resource_url(pr_url, "pulls", "PR")
 
     def _parse_issue_url(self, issue_url: str) -> Tuple[str, str, int]:
-        parsed_url = urlparse(issue_url)
-
-        if parsed_url.path.startswith('/api/v1'):
-            parsed_url = urlparse(issue_url.replace("/api/v1", ""))
-
-        path_parts = parsed_url.path.strip('/').split('/')
-        if len(path_parts) < 4 or path_parts[2] != 'issues':
-            raise ValueError("The provided URL does not appear to be a Gitea issue URL")
-
-        try:
-            issue_number = int(path_parts[3])
-        except ValueError as e:
-            raise ValueError("Unable to convert issue number to integer") from e
-
-        owner = path_parts[0]
-        repo = path_parts[1]
-
-        return owner, repo, issue_number
+        return self._parse_resource_url(issue_url, "issues", "issue")
 
     def __set_repo_and_owner_from_pr(self):
         """Extract owner and repo from the PR URL"""

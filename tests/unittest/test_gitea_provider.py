@@ -634,9 +634,9 @@ class TestGiteaProviderUserFacingLinks:
     ``__init__`` performs network calls, so instances are built with ``__new__``
     and only the attributes under test are wired up. ``base_url`` below stands
     in for an internal address (e.g. a Docker service name) that users cannot
-    browse. ``pr_url`` uses the user-facing form throughout: ``_parse_pr_url``
-    rejects the API form, so a constructed provider could never carry it, and
-    Gitea sets ``url``/``html_url`` on the PR payload to the user-facing page.
+    browse. ``pr_url`` uses the user-facing form throughout, matching the
+    payload's ``html_url``. The payload's ``url`` carries the API form, which
+    the parser also accepts.
     """
 
     @staticmethod
@@ -760,3 +760,77 @@ class TestGiteaProviderUserFacingLinks:
         provider.base_url_html = provider._resolve_base_url_html()
 
         assert provider.get_pr_url() == "http://forgejo:3000/owner/repo/pulls/4"
+
+
+class TestGiteaProviderUrlParsing:
+    """Exercise URL parsing without a client by building the provider via __new__."""
+
+    @staticmethod
+    def _provider():
+        return GiteaProvider.__new__(GiteaProvider)
+
+    def test_parse_pr_url_accepts_web_and_api_forms(self):
+        # Webhook payloads carry the api form; --pr_url arguments carry the web form.
+        provider = self._provider()
+        assert provider._parse_pr_url("https://gitea.example.com/owner/repo/pulls/1") == ("owner", "repo", 1)
+        assert provider._parse_pr_url(
+            "https://gitea.example.com/api/v1/repos/owner/repo/pulls/1") == ("owner", "repo", 1)
+
+    def test_parse_pr_url_accepts_subpath_installs(self):
+        # Prefix the path the way an instance hosted under a subpath does.
+        provider = self._provider()
+        assert provider._parse_pr_url("https://example.com/git/owner/repo/pulls/42") == ("owner", "repo", 42)
+        assert provider._parse_pr_url(
+            "https://example.com/git/api/v1/repos/owner/repo/pulls/42") == ("owner", "repo", 42)
+
+    def test_parse_pr_url_ignores_trailing_segments(self):
+        provider = self._provider()
+        assert provider._parse_pr_url("https://gitea.example.com/owner/repo/pulls/7/files") == ("owner", "repo", 7)
+        assert provider._parse_pr_url("https://gitea.example.com/owner/repo/pulls/7?x=1") == ("owner", "repo", 7)
+
+    def test_parse_pr_url_keeps_api_sub_resources_on_their_parent_pr(self):
+        # Address a review or a comment without retargeting the PR itself.
+        provider = self._provider()
+        url = "https://gitea.example.com/api/v1/repos/owner/repo/pulls/7/reviews/12"
+        assert provider._parse_pr_url(url) == ("owner", "repo", 7)
+
+    def test_parse_pr_url_handles_repo_named_pulls(self):
+        # Resolve to the marker beside the number, not to the repository name.
+        provider = self._provider()
+        assert provider._parse_pr_url("https://gitea.example.com/owner/pulls/pulls/3") == ("owner", "pulls", 3)
+
+    def test_parse_pr_url_skips_a_marker_that_is_not_followed_by_a_number(self):
+        # Treat a non-numeric successor as proof this occurrence is not the marker.
+        provider = self._provider()
+        url = "https://gitea.example.com/owner/repo/pulls/5/files/pulls/x"
+        assert provider._parse_pr_url(url) == ("owner", "repo", 5)
+
+    def test_parse_pr_url_rejects_an_ambiguous_path(self):
+        # Fail loudly rather than resolve to an owner and repo the URL never named.
+        provider = self._provider()
+        with pytest.raises(ValueError, match="more than one Gitea PR path"):
+            provider._parse_pr_url("https://gitea.example.com/owner/repo/pulls/7/files/pulls/8")
+
+    def test_parse_pr_url_rejects_non_pr_urls(self):
+        provider = self._provider()
+        with pytest.raises(ValueError, match="does not appear to be a Gitea PR URL"):
+            provider._parse_pr_url("https://gitea.example.com/owner/repo/issues/1")
+        with pytest.raises(ValueError, match="does not appear to be a Gitea PR URL"):
+            provider._parse_pr_url("https://gitea.example.com/owner/repo")
+        with pytest.raises(ValueError, match="Unable to convert PR number to integer"):
+            provider._parse_pr_url("https://gitea.example.com/owner/repo/pulls/abc")
+
+    def test_parse_issue_url_accepts_web_and_api_forms(self):
+        provider = self._provider()
+        assert provider._parse_issue_url("https://gitea.example.com/owner/repo/issues/5") == ("owner", "repo", 5)
+        assert provider._parse_issue_url(
+            "https://gitea.example.com/api/v1/repos/owner/repo/issues/5") == ("owner", "repo", 5)
+
+    def test_parse_issue_url_rejects_ambiguous_and_non_issue_urls(self):
+        provider = self._provider()
+        with pytest.raises(ValueError, match="does not appear to be a Gitea issue URL"):
+            provider._parse_issue_url("https://gitea.example.com/owner/repo/pulls/1")
+        with pytest.raises(ValueError, match="Unable to convert issue number to integer"):
+            provider._parse_issue_url("https://gitea.example.com/owner/repo/issues/abc")
+        with pytest.raises(ValueError, match="more than one Gitea issue path"):
+            provider._parse_issue_url("https://gitea.example.com/owner/repo/issues/4/x/issues/9")
