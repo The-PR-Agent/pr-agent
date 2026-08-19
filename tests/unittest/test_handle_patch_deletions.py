@@ -2,6 +2,7 @@
 import logging
 
 from pr_agent.algo.git_patch_processing import handle_patch_deletions
+from pr_agent.algo.types import EDIT_TYPE
 from pr_agent.config_loader import get_settings
 
 """
@@ -70,3 +71,27 @@ class TestHandlePatchDeletions:
         expected_patch = '--- a/file.py\n+++ b/file.py\n@@ -1,2 +1,2 @@\n-foo\n-bar'
         assert handle_patch_deletions(patch, original_file_content_str, new_file_content_str,
                                       file_name) == expected_patch
+
+
+class TestOmitDeletionHunksResetsState:
+    """A deletion-only hunk must be omitted regardless of what follows it. Deleting lines
+    in one place and adding lines further down is the most common diff shape there is."""
+
+    def test_deletion_only_hunk_followed_by_an_addition_hunk_is_omitted(self):
+        patch = ("@@ -1,8 +1,6 @@\n a1\n a2\n a3\n-OLD_X\n-OLD_Y\n a6\n a7\n a8\n"
+                 "@@ -14,6 +12,7 @@ a13\n a14\n a15\n a16\n+NEW_LINE\n a17\n a18\n a19")
+
+        out = handle_patch_deletions(patch, "old", "new", "mix.py", EDIT_TYPE.MODIFIED)
+
+        assert "-OLD_X" not in out
+        assert "-OLD_Y" not in out
+        assert "+NEW_LINE" in out
+
+    def test_deletion_only_hunk_is_still_omitted_when_it_is_last(self):
+        patch = ("@@ -14,6 +12,7 @@\n a14\n+NEW_LINE\n a17\n"
+                 "@@ -1,8 +1,6 @@\n a1\n-OLD_X\n a6")
+
+        out = handle_patch_deletions(patch, "old", "new", "mix.py", EDIT_TYPE.MODIFIED)
+
+        assert "-OLD_X" not in out
+        assert "+NEW_LINE" in out
