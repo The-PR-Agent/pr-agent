@@ -69,3 +69,73 @@ def test_caches_none_when_no_provider_is_configured(monkeypatch):
     assert gitlab_webhook.get_fork_safe_secret_provider() is None
     assert gitlab_webhook.get_fork_safe_secret_provider() is None
     assert len(calls) == 1
+
+
+def _client():
+    from fastapi import FastAPI
+    from starlette.middleware import Middleware
+    from starlette.testclient import TestClient
+    from starlette_context.middleware import RawContextMiddleware
+
+    from pr_agent.config_loader import get_settings
+
+    settings = get_settings(use_context=False)
+    settings.set("GITLAB.SHARED_SECRET", "topsecret")
+    settings.set("GITLAB.PERSONAL_ACCESS_TOKEN", "glpat-dummy")
+
+    app = FastAPI(middleware=[Middleware(RawContextMiddleware)])
+    app.include_router(gitlab_webhook.router)
+    return TestClient(app, raise_server_exceptions=False)
+
+
+_PAYLOAD = {"object_kind": "note", "event_type": "note"}
+
+
+def test_wrong_shared_secret_is_answered_with_401():
+    """Authentication runs in the request path, so a rejected delivery must be reported
+    as 401 instead of the unconditional 200 that made a misconfigured token look healthy."""
+    response = _client().post("/webhook", json=_PAYLOAD,
+                              headers={"X-Gitlab-Token": "wrong-secret"})
+
+    assert response.status_code == 401
+
+
+def test_missing_token_is_answered_with_401():
+    response = _client().post("/webhook", json=_PAYLOAD)
+
+    assert response.status_code == 401
+
+
+def test_correct_shared_secret_is_accepted():
+    response = _client().post("/webhook", json=_PAYLOAD,
+                              headers={"X-Gitlab-Token": "topsecret"})
+
+    assert response.status_code == 200
+
+
+def test_shared_secret_is_compared_in_constant_time(monkeypatch):
+    calls = []
+    real_compare = gitlab_webhook.hmac.compare_digest
+
+    def recording_compare(a, b):
+        calls.append((a, b))
+        return real_compare(a, b)
+
+    monkeypatch.setattr(gitlab_webhook.hmac, "compare_digest", recording_compare)
+
+    _client().post("/webhook", json=_PAYLOAD, headers={"X-Gitlab-Token": "wrong-secret"})
+
+    assert calls, "hmac.compare_digest was not used to compare the shared secret"
+
+
+def test_webhook_token_is_not_written_to_the_logs():
+    records = []
+    handler_id = gitlab_webhook.get_logger().add(lambda m: records.append(str(m)))
+    secret_token = "super-secret-webhook-token"
+    try:
+        _client().post("/webhook", json=_PAYLOAD, headers={"X-Gitlab-Token": secret_token})
+    finally:
+        gitlab_webhook.get_logger().remove(handler_id)
+
+    assert records, "nothing was logged, so the assertion below would be vacuous"
+    assert not any(secret_token in record for record in records)
