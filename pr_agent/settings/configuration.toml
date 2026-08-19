@@ -76,6 +76,9 @@ propagate_tool_errors = false # when true, a tool re-raises instead of swallowin
 enable_ai_metadata = false # will enable adding ai metadata
 add_user_to_requests = false # send the current command and PR URL in the OpenAI-compatible "user" request field, for provider-side attribution of requests (e.g. OpenRouter "external_user")
 reasoning_effort = "medium" # "none", "minimal", "low", "medium", "high", "xhigh"
+# Forward model-supported config.reasoning_effort values to Grok-family models when explicitly enabled
+# (low/medium/high for Grok 4.5; xhigh is also supported by grok-4.20-multi-agent).
+enable_grok_reasoning_effort = false
 # extended thinking for Claude reasoning models
 enable_claude_extended_thinking = false # Set to true to enable extended thinking feature
 extended_thinking_budget_tokens = 2048
