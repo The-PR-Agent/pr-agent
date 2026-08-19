@@ -286,6 +286,7 @@ Notes:
 - Telemetry configuration is **process-level**: it is read once at startup from the global configuration or environment, and cannot be enabled or reconfigured per-repo via `.pr_agent.toml`. In a multi-tenant server, telemetry is a shared process resource — configure it where the process is deployed.
 - PR-Agent keeps its own OpenTelemetry providers and never registers the process-global one, so embedding PR-Agent in an application that already uses OpenTelemetry will not interfere with the host's telemetry. Pending spans and metrics are flushed automatically on process exit.
 - Each OTLP export call is bounded by `otlp_timeout` (default 3 seconds, retries included), so an unreachable collector cannot hang CLI exit or request completion. Raise it for slow collectors at the cost of longer worst-case stalls.
+- If `exporter_type = "otlp"` is set but no endpoint is configured, telemetry is disabled entirely (fail closed) — it never falls back to another exporter, so a missing secret cannot redirect telemetry into process logs.
 - **Serverless deployments** (e.g. the AWS Lambda webhooks) are supported: buffered spans and metrics are force-flushed at the end of every handled request, because frozen execution environments stop background export threads and are reaped without running exit handlers. No extra configuration is needed.
 
 ## Bringing per-repo context files to PR-Agent

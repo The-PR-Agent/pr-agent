@@ -108,15 +108,17 @@ def test_missing_required_fields_falls_back_disabled_with_warning(monkeypatch):
     assert "missing required configuration" in "\n".join(captured)
 
 
-def test_otlp_without_endpoint_falls_back_to_console_with_warning(monkeypatch):
+def test_otlp_without_endpoint_fails_closed_with_warning(monkeypatch):
+    """A missing OTLP endpoint must disable export entirely — falling back to the
+    console exporter would redirect telemetry (including opted-in PR URLs or
+    error details) into process logs, a destination the operator never chose."""
     _use_settings(monkeypatch, {**VALID_ENABLED_SETTINGS, "OTEL.EXPORTER_TYPE": "otlp"})
 
     with capture_loguru(level="WARNING") as captured:
         config = get_otel_config()
 
-    assert config.is_enabled is True
-    assert config.exporter_type == ExporterType.CONSOLE
-    assert "Falling back to 'console'" in "\n".join(captured)
+    assert config.is_enabled is False, "missing OTLP endpoint must fail closed, not fall back"
+    assert "OTEL.OTLP_ENDPOINT is not configured" in "\n".join(captured)
 
 
 def test_otlp_with_endpoint_and_headers_parses_headers(monkeypatch):
@@ -177,7 +179,7 @@ def test_secrets_never_appear_in_log_output(monkeypatch):
     with capture_loguru(level="DEBUG") as captured_missing:
         get_otel_config()
 
-    # Branch 2: otlp without endpoint (fallback warning) with secret headers set.
+    # Branch 2: otlp without endpoint (fail-closed warning) with secret headers set.
     _use_settings(monkeypatch, {
         **VALID_ENABLED_SETTINGS,
         "OTEL.EXPORTER_TYPE": "otlp",

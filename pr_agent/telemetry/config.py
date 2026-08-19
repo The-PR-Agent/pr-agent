@@ -56,13 +56,22 @@ def get_otel_config() -> TelemetryConfig:
             otlp_headers=otlp_headers
         )
 
-    # Validate OTLP configuration if using OTLP exporter
+    # Fail closed: opted-in telemetry content was consented for the OTLP destination
+    # only — never redirect it to another exporter (console = process logs).
     if exporter_type == ExporterType.OTLP and not otlp_endpoint:
         get_logger().warning(
             "OTEL.EXPORTER_TYPE is 'otlp' but OTEL.OTLP_ENDPOINT is not configured. "
-            "Falling back to 'console' exporter."
+            "Telemetry disabled — not falling back to another exporter."
         )
-        exporter_type = ExporterType.CONSOLE
+        return TelemetryConfig(
+            is_enabled=False,
+            exporter_type=exporter_type,
+            service_name=service_name,
+            service_version=service_version,
+            environment=environment,
+            otlp_endpoint=otlp_endpoint,
+            otlp_headers=otlp_headers
+        )
 
     return TelemetryConfig(
         is_enabled=True,
