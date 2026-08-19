@@ -22,8 +22,8 @@ def client(monkeypatch):
 
 
 def test_missing_authorization_header_is_rejected_with_401(client):
-    """HTTPBasic(auto_error=False) yields None when the header is absent, so the
-    dependency must reject it rather than dereference None and return a 500."""
+    """Reject a request that carries no Authorization header with 401, since
+    HTTPBasic(auto_error=False) yields None rather than raising."""
     response = client.post("/")
 
     assert response.status_code == 401
