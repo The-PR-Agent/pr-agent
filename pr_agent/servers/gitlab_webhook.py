@@ -227,19 +227,23 @@ def authenticate_gitlab_webhook(request: Request, log_context: dict):
             context["settings"].gitlab.personal_access_token = gitlab_token
         except Exception as e:
             get_logger().error(f"Failed to validate the secret for the provided webhook token: {e}")
-            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content=jsonable_encoder({"message": "unauthorized"}))
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED,
+                                content=jsonable_encoder({"message": "unauthorized"}))
     elif get_settings().get("GITLAB.SHARED_SECRET"):
         secret = get_settings().get("GITLAB.SHARED_SECRET")
         if not hmac.compare_digest(str(request_token or ""), str(secret)):
             get_logger().error("Failed to validate secret")
-            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content=jsonable_encoder({"message": "unauthorized"}))
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED,
+                                content=jsonable_encoder({"message": "unauthorized"}))
     else:
         get_logger().error("Failed to validate secret")
-        return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content=jsonable_encoder({"message": "unauthorized"}))
+        return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED,
+                            content=jsonable_encoder({"message": "unauthorized"}))
     gitlab_token = get_settings().get("GITLAB.PERSONAL_ACCESS_TOKEN", None)
     if not gitlab_token:
         get_logger().error("No gitlab token found")
-        return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content=jsonable_encoder({"message": "unauthorized"}))
+        return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED,
+                            content=jsonable_encoder({"message": "unauthorized"}))
     return None
 
 
