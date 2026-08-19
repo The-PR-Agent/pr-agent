@@ -86,8 +86,8 @@ def authorize(credentials: HTTPBasicCredentials = Depends(security)):
     if credentials is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail='Missing credentials.',
-            headers={'WWW-Authenticate': 'Basic'},
+            detail="Missing credentials.",
+            headers={"WWW-Authenticate": "Basic"},
         )
 
     is_user_ok = secrets.compare_digest(credentials.username, WEBHOOK_USERNAME)
