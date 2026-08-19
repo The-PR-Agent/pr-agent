@@ -17,6 +17,7 @@ from pr_agent.telemetry import meter as meter_module
 from pr_agent.telemetry import tracer as tracer_module
 from pr_agent.telemetry.config import VALID_EXPORTER_TYPES
 from pr_agent.telemetry.meter import _create_metric_exporter
+from pr_agent.telemetry.registry import provider_registry
 from pr_agent.telemetry.tracer import _create_exporter
 from pr_agent.telemetry.types import ExporterType
 from tests.unittest._telemetry_helpers import clear_telemetry_caches, make_config
@@ -31,6 +32,30 @@ def _reset_telemetry():
 
 def test_valid_exporter_types_equals_constant_set():
     assert VALID_EXPORTER_TYPES == {ExporterType.CONSOLE, ExporterType.OTLP, ExporterType.NONE}
+
+
+def test_disabled_tracer_is_noop_never_global(monkeypatch):
+    """When telemetry is disabled the tracer must be an explicit no-op — not a
+    tracer from the process-global provider, which a host application embedding
+    pr-agent may have configured with a real exporter."""
+    from opentelemetry.trace import NoOpTracer
+
+    monkeypatch.setattr(tracer_module, "get_otel_config", lambda: make_config(is_enabled=False))
+    tracer_module.get_tracer.cache_clear()
+
+    assert isinstance(tracer_module.get_tracer(), NoOpTracer)
+    assert len(provider_registry) == 0, "disabled telemetry must not create a provider"
+
+
+def test_disabled_meter_is_noop_never_global(monkeypatch):
+    """Same as the tracer: disabled telemetry must never borrow the global meter."""
+    from opentelemetry.metrics import NoOpMeter
+
+    monkeypatch.setattr(meter_module, "get_otel_config", lambda: make_config(is_enabled=False))
+    meter_module.get_meter.cache_clear()
+
+    assert isinstance(meter_module.get_meter(), NoOpMeter)
+    assert len(provider_registry) == 0, "disabled telemetry must not create a provider"
 
 
 def test_exporter_type_constant_values():

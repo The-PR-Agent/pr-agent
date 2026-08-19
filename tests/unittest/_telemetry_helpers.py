@@ -21,14 +21,15 @@ from pr_agent.telemetry.types import TelemetryConfig
 
 
 def clear_telemetry_caches():
-    """Reset every lru_cache'd telemetry entry point."""
-    from pr_agent.telemetry import meter, shutdown, tracer
+    """Reset every lru_cache'd telemetry entry point and the provider registry."""
+    from pr_agent.telemetry import meter, registry, shutdown, tracer
 
     tracer.get_tracer.cache_clear()
     meter.get_meter.cache_clear()
     meter.get_commands_counter.cache_clear()
     meter.get_tokens_histogram.cache_clear()
     shutdown.register_shutdown_handler.cache_clear()
+    registry.provider_registry.reset()
 
 
 def make_config(**overrides) -> TelemetryConfig:

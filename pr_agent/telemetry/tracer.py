@@ -8,8 +8,16 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExport
 
 from pr_agent.log import get_logger
 from pr_agent.telemetry.config import get_otel_config
+from pr_agent.telemetry.registry import provider_registry
 from pr_agent.telemetry.shutdown import register_shutdown_handler
 from pr_agent.telemetry.types import ExporterType
+
+# pr-agent never registers itself as OpenTelemetry's process-global provider:
+# the provider is created locally and handed to the lifecycle registry, so a
+# host application embedding pr-agent keeps full control of its own telemetry,
+# and pr-agent's flush/shutdown touch only what pr-agent created. Fleet
+# deployments still aggregate normally — each process exports to the
+# configured OTLP endpoint and the collector does the fan-in.
 
 
 @functools.lru_cache(maxsize=1)
@@ -20,27 +28,28 @@ def get_tracer():
 
 def _init_telemetry():
     try:
-        if not get_otel_config().is_enabled:
-            return trace.get_tracer(__name__)  # no-op
+        config = get_otel_config()
+        if not config.is_enabled:
+            return trace.NoOpTracer()
 
         resource = Resource.create({
-            SERVICE_NAME: get_otel_config().service_name,
-            SERVICE_VERSION: get_otel_config().service_version,
-            DEPLOYMENT_ENVIRONMENT: get_otel_config().environment,
+            SERVICE_NAME: config.service_name,
+            SERVICE_VERSION: config.service_version,
+            DEPLOYMENT_ENVIRONMENT: config.environment,
         })
 
         provider = TracerProvider(resource=resource)
-        exporter = _create_exporter(get_otel_config())
+        exporter = _create_exporter(config)
         if exporter:
             provider.add_span_processor(BatchSpanProcessor(exporter))
 
-        trace.set_tracer_provider(provider)
+        provider_registry.register(provider)
         register_shutdown_handler()
-        return trace.get_tracer("pr_agent")
+        return provider.get_tracer("pr_agent")
 
     except Exception as e:
         get_logger().warning(f"Failed to initialize telemetry: {e}")
-        return trace.get_tracer(__name__)  # no-op fallback
+        return trace.NoOpTracer()
 
 
 def _create_exporter(config):

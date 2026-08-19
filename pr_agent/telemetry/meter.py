@@ -8,7 +8,12 @@ from opentelemetry.sdk.resources import DEPLOYMENT_ENVIRONMENT, SERVICE_NAME, SE
 
 from pr_agent.log import get_logger
 from pr_agent.telemetry.config import get_otel_config
+from pr_agent.telemetry.registry import provider_registry
+from pr_agent.telemetry.shutdown import register_shutdown_handler
 from pr_agent.telemetry.types import ExporterType
+
+# See the note in tracer.py: pr-agent never touches OpenTelemetry's
+# process-global providers; created providers go to the lifecycle registry.
 
 
 @functools.lru_cache(maxsize=1)
@@ -19,31 +24,30 @@ def get_meter():
 
 def _init_metrics():
     try:
-        if not get_otel_config().is_enabled:
-            return metrics.get_meter(__name__)  # no-op
+        config = get_otel_config()
+        if not config.is_enabled:
+            return metrics.NoOpMeter("pr_agent")
 
-        exporter = _create_metric_exporter(get_otel_config())
+        exporter = _create_metric_exporter(config)
         if exporter is None:  # ExporterType.NONE or unknown
-            return metrics.get_meter(__name__)  # no-op
+            return metrics.NoOpMeter("pr_agent")
 
         resource = Resource.create({
-            SERVICE_NAME: get_otel_config().service_name,
-            SERVICE_VERSION: get_otel_config().service_version,
-            DEPLOYMENT_ENVIRONMENT: get_otel_config().environment,
+            SERVICE_NAME: config.service_name,
+            SERVICE_VERSION: config.service_version,
+            DEPLOYMENT_ENVIRONMENT: config.environment,
         })
 
         reader = PeriodicExportingMetricReader(exporter)  # default: 60 000 ms
         provider = MeterProvider(resource=resource, metric_readers=[reader])
-        metrics.set_meter_provider(provider)
 
-        import atexit
-        atexit.register(lambda: metrics.get_meter_provider().shutdown())
-
-        return metrics.get_meter("pr_agent")
+        provider_registry.register(provider)
+        register_shutdown_handler()
+        return provider.get_meter("pr_agent")
 
     except Exception as e:
         get_logger().warning(f"Failed to initialize metrics: {e}")
-        return metrics.get_meter(__name__)  # no-op fallback
+        return metrics.NoOpMeter("pr_agent")  # no-op fallback
 
 
 def _create_metric_exporter(config):
