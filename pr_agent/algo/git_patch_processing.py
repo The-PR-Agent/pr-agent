@@ -446,14 +446,17 @@ def extract_hunk_lines_from_patch(patch: str, file_name, line_start, line_end, s
                 patch_with_lines_str += f'\n{header_line}\n'
 
             elif not skip_hunk:
-                is_left = side.lower() == "left"
-                hunk_start = start1 if is_left else start2
-                if line_start <= hunk_start + selected_lines_num <= line_end:
-                    selected_lines += line + '\n'
+                side_lower = side.lower()
+                if side_lower in ("left", "right"):
+                    is_left = side_lower == "left"
+                    hunk_start = start1 if is_left else start2
+                    line_exists_on_side = not line.startswith("+" if is_left else "-")
+                    in_range = line_start <= hunk_start + selected_lines_num <= line_end
+                    if in_range and (line_exists_on_side or not is_left):
+                        selected_lines += line + '\n'
+                    if line_exists_on_side:
+                        selected_lines_num += 1
                 patch_with_lines_str += line + '\n'
-                skipped_prefix = "+" if is_left else "-"
-                if not line.startswith(skipped_prefix):
-                    selected_lines_num += 1
     except Exception as e:
         get_logger().error(f"Failed to extract hunk lines from patch: {e}", artifact={"traceback": traceback.format_exc()})
         return "", ""
