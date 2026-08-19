@@ -1,3 +1,5 @@
+import copy
+
 import pytest
 
 from pr_agent.algo.utils import show_relevant_configurations
@@ -11,19 +13,18 @@ def _rendered_keys(section):
 
 @pytest.fixture
 def restore_config():
+    """Snapshot and restore the whole CONFIG section, so a test cannot leak settings."""
     settings = get_settings(use_context=False)
-    saved = {}
-    yield settings, saved
-    for key, value in saved.items():
-        settings.set(f"config.{key}", value)
+    original = copy.deepcopy(settings.get("CONFIG", None))
+    yield settings
+    if original is not None:
+        settings.set("CONFIG", original)
 
 
-def test_config_skip_keys_hides_the_listed_keys(restore_config):
-    """`config.skip_keys` is a documented setting; keys listed in it must not be rendered
-    into the published configuration block."""
-    settings, saved = restore_config
-    saved["skip_keys"] = settings.config.get("skip_keys", [])
-    settings.set("config.skip_keys", ["model", "temperature"])
+def test_hide_the_keys_listed_in_config_skip_keys(restore_config):
+    """Hide the keys listed in the documented `config.skip_keys` setting from the
+    published configuration block."""
+    restore_config.set("config.skip_keys", ["model", "temperature"])
 
     keys = _rendered_keys("pr_reviewer")
 
