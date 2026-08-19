@@ -206,9 +206,11 @@ To use [Langfuse](https://langfuse.com) for utilization and adoption tracking (L
 ```toml
 [litellm]
 enable_callbacks = true
-success_callback = ["langfuse"]
-failure_callback = ["langfuse"]
+success_callback = ["langfuse_otel"]
+failure_callback = ["langfuse_otel"]
 ```
+
+> Note: use `langfuse_otel` (the OpenTelemetry-based integration), not the legacy `langfuse` callback — the legacy callback is incompatible with the Langfuse 3.x SDK this project pins.
 
 Then set the following environment variables:
 
@@ -246,6 +248,44 @@ that flush may take:
 [litellm]
 callback_timeout_seconds = 30 # default
 ```
+
+## Built-in OpenTelemetry usage telemetry
+
+PR-Agent can emit its own [OpenTelemetry](https://opentelemetry.io/) signals for utilization and adoption tracking, independent of any LiteLLM callback:
+
+- **Traces**: a span per request (`pr_agent.request`, `pr_agent.handle_request`) and per command execution (`pr_agent.execute.<command>`), plus a span per LLM completion with the model, request parameters, response metadata, and token usage. Prompt and response content is never attached to spans.
+- **Metrics**: `pr_agent.commands.total` (a counter of executed commands, labeled by command and git provider) and `pr_agent.llm.tokens` (a histogram of token usage per completion, labeled by model).
+
+Telemetry is disabled by default. To enable it, set in `configuration.toml`:
+
+```toml
+[otel]
+is_enabled = true
+exporter_type = "console" # "console", "otlp", or "none"
+service_name = "pr-agent"
+environment = "development" # e.g. "development", "staging", "production"
+```
+
+To export to an OpenTelemetry collector instead of the console, set `exporter_type = "otlp"` and configure the endpoint and any authentication headers in `.secrets.toml` (they are secrets — keep them out of `configuration.toml`):
+
+```toml
+[otel]
+otlp_endpoint = "http://my-collector:4317"
+otlp_headers = "x-honeycomb-team=YOUR_API_KEY" # optional, "key1=value1,key2=value2"
+```
+
+This is the recommended topology for fleets: point every PR-Agent instance at the same collector and aggregate there. Each process creates its own exporter connection; use the `service_name` and `environment` resource attributes to slice instances apart on the backend.
+
+Privacy controls (both off by default):
+
+- `include_pr_url = true` attaches PR URLs to spans. Off by default because URLs expose private repo names.
+- `include_error_details = true` attaches exception messages and rejected-command text to error spans. Off by default because that content can embed PR URLs, repo names, or other request-specific text. Bounded values (the exception class name and error category) are always attached.
+
+Notes:
+
+- Telemetry configuration is **process-level**: it is read once at startup from the global configuration or environment, and cannot be enabled or reconfigured per-repo via `.pr_agent.toml`. In a multi-tenant server, telemetry is a shared process resource — configure it where the process is deployed.
+- PR-Agent keeps its own OpenTelemetry providers and never registers the process-global one, so embedding PR-Agent in an application that already uses OpenTelemetry will not interfere with the host's telemetry. Pending spans and metrics are flushed automatically on process exit.
+- **Serverless deployments** (e.g. the AWS Lambda webhooks) are supported: buffered spans and metrics are force-flushed at the end of every handled request, because frozen execution environments stop background export threads and are reaped without running exit handlers. No extra configuration is needed.
 
 ## Bringing per-repo context files to PR-Agent
 
