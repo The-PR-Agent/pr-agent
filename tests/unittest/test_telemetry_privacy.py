@@ -119,6 +119,28 @@ async def test_known_command_increments_counter_with_bounded_labels(telemetry, m
 
 
 @pytest.mark.asyncio
+async def test_handle_request_flushes_telemetry_even_on_failure(telemetry, monkeypatch):
+    """Serverless environments freeze right after the response, so every
+    request — including failing ones — must end with a telemetry flush."""
+    flushes = []
+    monkeypatch.setattr(pr_agent_module, "flush_telemetry", lambda: flushes.append(True))
+
+    async def exploding(self, pr_url, request, notify=None):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(PRAgent, "_handle_request", exploding)
+    await PRAgent().handle_request("https://example/pr/1", "/review")
+    assert flushes == [True], "failed requests must still flush telemetry"
+
+    async def ok(self, pr_url, request, notify=None):
+        return True
+
+    monkeypatch.setattr(PRAgent, "_handle_request", ok)
+    await PRAgent().handle_request("https://example/pr/1", "/review")
+    assert len(flushes) == 2, "successful requests must flush telemetry too"
+
+
+@pytest.mark.asyncio
 async def test_exception_message_not_exported_by_default(telemetry, monkeypatch):
     exporter, _ = telemetry
 

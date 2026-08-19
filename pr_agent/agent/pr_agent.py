@@ -1,3 +1,4 @@
+import asyncio
 import shlex
 from functools import partial
 
@@ -9,6 +10,7 @@ from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import get_logger
 from pr_agent.telemetry.meter import get_commands_counter
+from pr_agent.telemetry.shutdown import flush_telemetry
 from pr_agent.telemetry.tracer import get_tracer
 from pr_agent.tools.pr_add_docs import PRAddDocs
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
@@ -167,6 +169,15 @@ class PRAgent:
                 return True
 
     async def handle_request(self, pr_url, request, notify=None) -> bool:
+        try:
+            return await self._traced_request(pr_url, request, notify)
+        finally:
+            # Serverless environments freeze after the response and are reaped
+            # without running atexit, so export at the request boundary; the
+            # worker thread keeps a slow collector from stalling the event loop.
+            await asyncio.to_thread(flush_telemetry)
+
+    async def _traced_request(self, pr_url, request, notify=None) -> bool:
         with get_tracer().start_as_current_span("pr_agent.request") as span:
             if get_settings().get("OTEL.INCLUDE_PR_URL", False):
                 span.set_attribute("pr_agent.pr_url", pr_url)
