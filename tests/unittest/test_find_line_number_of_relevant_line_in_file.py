@@ -66,27 +66,27 @@ class TestFindLineNumberOfRelevantLineInFile:
         assert find_line_number_of_relevant_line_in_file(diff_files, relevant_file, relevant_line_in_file) == expected
 
     def test_hunk_header_with_omitted_counts(self):
-        """git writes '@@ -1 +1 @@' whenever a side spans exactly one line; the header must
-        be parsed instead of raising TypeError on int(None)."""
+        """Parse a hunk header whose count is omitted, which git writes whenever a side
+        spans exactly one line, instead of raising TypeError on int(None)."""
         diff_files = [
-            FilePatchInfo(base_file='file1', head_file='file1',
-                          patch='@@ -1 +1 @@\n-alpha\n+ALPHA', filename='file1')
+            FilePatchInfo(base_file="file1", head_file="file1",
+                          patch="@@ -1 +1 @@\n-alpha\n+ALPHA", filename="file1")
         ]
 
         position, absolute_position = find_line_number_of_relevant_line_in_file(
-            diff_files, 'file1', '+ALPHA')
+            diff_files, "file1", "+ALPHA")
 
         assert position == 2
         assert absolute_position == 1
 
     def test_hunk_header_with_omitted_count_on_the_new_side_only(self):
         diff_files = [
-            FilePatchInfo(base_file='file1', head_file='file1',
-                          patch='@@ -0,0 +1 @@\n+only_line', filename='file1')
+            FilePatchInfo(base_file="file1", head_file="file1",
+                          patch="@@ -0,0 +1 @@\n+only_line", filename="file1")
         ]
 
         position, absolute_position = find_line_number_of_relevant_line_in_file(
-            diff_files, 'file1', '+only_line')
+            diff_files, "file1", "+only_line")
 
         assert position == 1
         assert absolute_position == 1
