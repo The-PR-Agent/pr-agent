@@ -33,10 +33,9 @@ def test_hide_the_keys_listed_in_config_skip_keys(restore_config):
 
 
 @pytest.mark.parametrize("key", ["analytics_folder", "app_name"])
-def test_default_skip_keys_are_matched_case_insensitively(restore_config, key):
-    """The default skip list spells some entries in upper case (ANALYTICS_FOLDER,
-    APP_NAME, ALLOWED_REPOS) while Dynaconf yields section keys lower-cased, so the
-    comparison must be case-insensitive or those keys leak into the PR comment."""
+def test_match_the_default_skip_keys_case_insensitively(restore_config, key):
+    """Match the default skip list case-insensitively: it spells some entries in upper case
+    while Dynaconf yields section keys lower-cased."""
     restore_config.set(f"config.{key}", "should-not-be-rendered")
 
     assert key not in _rendered_keys("pr_reviewer")
