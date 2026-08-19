@@ -566,3 +566,25 @@ class TestLeftSideSelection:
             self.PATCH, "f.py", line_start=2, line_end=2, side="sideways")
 
         assert selected == ""
+
+class TestTrailingDeletionOnlyHunk:
+    """A hunk containing only deleted lines must reach the model whether or not another
+    hunk follows it. A PR that empties a file produces exactly this shape."""
+
+    def _file(self):
+        return FilePatchInfo(base_file="a\nb\nc\n", head_file="", patch="",
+                             filename="emptied.py", edit_type=EDIT_TYPE.MODIFIED)
+
+    def test_deletion_only_hunk_is_rendered_when_it_is_the_last_hunk(self):
+        out = decouple_and_convert_to_hunks_with_lines_numbers(
+            "@@ -1,3 +0,0 @@\n-a\n-b\n-c", self._file())
+        assert "__old hunk__" in out
+        for line in ("-a", "-b", "-c"):
+            assert line in out
+
+    def test_deletion_only_hunk_is_rendered_when_another_hunk_follows(self):
+        out = decouple_and_convert_to_hunks_with_lines_numbers(
+            "@@ -1,3 +0,0 @@\n-a\n-b\n-c\n@@ -10,2 +7,3 @@\n ctx\n+added", self._file())
+        assert "__old hunk__" in out
+        for line in ("-a", "-b", "-c", "+added"):
+            assert line in out
