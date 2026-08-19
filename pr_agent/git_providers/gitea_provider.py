@@ -387,7 +387,7 @@ class GiteaProvider(GitProvider):
         self.publish_inline_comments([payload])
 
 
-    def publish_inline_comments(self, comments: List[Dict[str, Any]],body : str = "Inline comment") -> None:
+    def publish_inline_comments(self, comments: List[Dict[str, Any]],body : str = "Inline comment") -> bool:
         response = self.repo_api.create_inline_comment(
             owner=self.owner,
             repo=self.repo,
@@ -399,12 +399,14 @@ class GiteaProvider(GitProvider):
 
         if not response:
             self.logger.error("Failed to publish inline comment")
-            return
+            return False
 
         self.logger.info("Inline comment published")
+        return True
 
-    def publish_code_suggestions(self, suggestions: List[Dict[str, Any]]):
+    def publish_code_suggestions(self, suggestions: List[Dict[str, Any]]) -> bool:
         """Publish code suggestions"""
+        published_all = True
         for suggestion in suggestions:
             body = suggestion.get("body","")
             if not body:
@@ -418,9 +420,12 @@ class GiteaProvider(GitProvider):
             payload = dict(body=body, path=path, old_position=old_position,new_position = new_position)
             if title_body:
                 title_body = f"**Suggestion:** {title_body}"
-                self.publish_inline_comments([payload],title_body)
+                published = self.publish_inline_comments([payload],title_body)
             else:
-                self.publish_inline_comments([payload])
+                published = self.publish_inline_comments([payload])
+            published_all = published_all and published
+
+        return published_all
 
     def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
         """Add eyes reaction to a comment"""
