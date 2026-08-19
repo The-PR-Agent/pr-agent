@@ -74,8 +74,8 @@ class TestHandlePatchDeletions:
 
 
 class TestOmitDeletionHunksResetsState:
-    """A deletion-only hunk must be omitted regardless of what follows it. Deleting lines
-    in one place and adding lines further down is the most common diff shape there is."""
+    """Omit a deletion-only hunk regardless of what follows it. Deleting lines in one
+    place and adding lines further down is the most common diff shape there is."""
 
     def test_deletion_only_hunk_followed_by_an_addition_hunk_is_omitted(self):
         patch = ("@@ -1,8 +1,6 @@\n a1\n a2\n a3\n-OLD_X\n-OLD_Y\n a6\n a7\n a8\n"
