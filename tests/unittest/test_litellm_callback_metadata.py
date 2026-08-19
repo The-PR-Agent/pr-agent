@@ -16,8 +16,8 @@ def langfuse_callback():
 
 
 def test_metadata_is_not_taken_from_a_concurrent_request(langfuse_callback):
-    """add_litellm_callbacks attaches a global loguru sink. Another request logging inside
-    that window must not have its command/pr_url attributed to this call."""
+    """Ignore a concurrent request's log record when building this call's trace metadata:
+    add_litellm_callbacks attaches a global loguru sink that sees every request."""
     fired = {"n": 0}
 
     def foreign_request(message):
