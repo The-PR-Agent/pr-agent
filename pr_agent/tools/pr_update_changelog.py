@@ -143,7 +143,7 @@ class PRUpdateChangelog:
             existing_content = self.changelog_file
         else:
             existing_content = ""
-        
+
         if existing_content:
             new_file_content = answer + "\n\n" + self.changelog_file
         else:
@@ -202,10 +202,10 @@ Example:
             self.changelog_file = self.git_provider.get_pr_file_content(
                 "CHANGELOG.md", self.git_provider.get_pr_branch()
             )
-            
+
             if isinstance(self.changelog_file, bytes):
                 self.changelog_file = self.changelog_file.decode('utf-8')
-            
+
             changelog_file_lines = self.changelog_file.splitlines()
             changelog_file_lines = changelog_file_lines[:CHANGELOG_LINES]
             self.changelog_file_str = "\n".join(changelog_file_lines)
