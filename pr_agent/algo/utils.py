@@ -1275,7 +1275,7 @@ def github_action_output(output_data: dict, key_name: str):
 def show_relevant_configurations(relevant_section: str) -> str:
     skip_keys = ['ai_disclaimer', 'ai_disclaimer_title', 'ANALYTICS_FOLDER', 'secret_provider', "skip_keys", "app_id", "redirect",
                       'trial_prefix_message', 'no_eligible_message', 'identity_provider', 'ALLOWED_REPOS','APP_NAME']
-    extra_skip_keys = get_settings().config.get('skip_keys', [])
+    extra_skip_keys = get_settings().config.get("skip_keys", [])
     if extra_skip_keys:
         skip_keys.extend(extra_skip_keys)
 
