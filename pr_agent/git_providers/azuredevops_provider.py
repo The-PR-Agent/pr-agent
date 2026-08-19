@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import datetime as _dt
+import difflib
 import os
+import re
 from typing import Optional, Tuple
 from urllib.parse import quote, unquote, urlparse
 
@@ -104,6 +106,26 @@ class AzureDevopsProvider(GitProvider):
         return path_map.get(relevant_file) or path_map.get(relevant_file.lstrip("/"))
 
     @staticmethod
+    def _render_suggestion_as_diff(body: str, original_suggestion: Optional[dict]) -> str:
+        """Azure DevOps has no committable suggestion blocks, so a ```suggestion fence is
+        published verbatim and renders as an uneditable raw block. Replace it with a diff
+        block, the same way the Bitbucket providers do."""
+        if not original_suggestion:
+            return body
+        try:
+            existing_code = original_suggestion['existing_code'].rstrip() + "\n"
+            improved_code = original_suggestion['improved_code'].rstrip() + "\n"
+            diff = difflib.unified_diff(existing_code.split('\n'),
+                                        improved_code.split('\n'), n=999)
+            patch_orig = "\n".join(diff)
+            patch = "\n".join(patch_orig.splitlines()[5:]).strip('\n')
+            diff_code = f"\n\n```diff\n{patch.rstrip()}\n```"
+            return re.sub(r'```suggestion.*?```', diff_code, body, flags=re.DOTALL)
+        except Exception as e:
+            get_logger().exception(f"Azure failed to render a code suggestion as a diff, error: {e}")
+            return body
+
+    @staticmethod
     def _fallback_suggestion_section(suggestion: dict, reason: str) -> str:
         relevant_file = str(suggestion["relevant_file"]).strip().strip("`").strip().replace("`", "")
         location = (f"`{relevant_file}` "
@@ -173,6 +195,9 @@ class AzureDevopsProvider(GitProvider):
                                        f"relevant_lines_end is {relevant_lines_end} and "
                                        f"relevant_lines_start is {relevant_lines_start}")
                 continue
+
+            body = self._render_suggestion_as_diff(body, suggestion.get("original_suggestion"))
+            suggestion = {**suggestion, "body": body}
 
             publishable_count += 1
             fallback_to_pr_comment = suggestion.get("fallback_to_pr_comment", True)
