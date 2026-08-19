@@ -476,8 +476,8 @@ def _write_issue_comment_event_with_body(tmp_path, body):
 @pytest.mark.asyncio
 async def test_issue_comment_body_reaches_the_agent_with_its_case_preserved(
         monkeypatch, tmp_path, restore_github_settings):
-    """The webhook server passes the comment body through unchanged; the action runner
-    must too, or identifiers in an /ask question are destroyed before the model sees them."""
+    """Pass the comment body to the agent unchanged, as the webhook server does, so
+    identifiers in an /ask question survive to the model."""
     body = "/ask Why does the JWTValidator reject RS256 tokens from Auth0?"
     handled = []
     _patch_issue_comment_deps(monkeypatch, handled)
