@@ -71,29 +71,38 @@ def test_caches_none_when_no_provider_is_configured(monkeypatch):
     assert len(calls) == 1
 
 
-def _post_webhook(monkeypatch, token):
-    """Drive the real endpoint; the auth block runs inside the background task."""
+@pytest.fixture
+def gitlab_webhook_settings():
+    """Snapshot and restore the whole GITLAB section, so a test cannot leak settings."""
+    import copy as _copy
+
+    from pr_agent.config_loader import get_settings
+
+    settings = get_settings(use_context=False)
+    original = _copy.deepcopy(settings.get("GITLAB", None))
+    settings.set("GITLAB.SHARED_SECRET", "topsecret")
+    settings.set("GITLAB.PERSONAL_ACCESS_TOKEN", "glpat-dummy")
+    yield settings
+    if original is not None:
+        settings.set("GITLAB", original)
+
+
+def _post_webhook(token=None):
     from fastapi import FastAPI
     from starlette.middleware import Middleware
     from starlette.testclient import TestClient
     from starlette_context.middleware import RawContextMiddleware
 
-    from pr_agent.config_loader import get_settings
-
-    settings = get_settings(use_context=False)
-    settings.set("GITLAB.SHARED_SECRET", "topsecret")
-    settings.set("GITLAB.PERSONAL_ACCESS_TOKEN", "glpat-dummy")
-
     app = FastAPI(middleware=[Middleware(RawContextMiddleware)])
     app.include_router(gitlab_webhook.router)
+    headers = {"X-Gitlab-Token": token} if token is not None else {}
     return TestClient(app, raise_server_exceptions=False).post(
-        "/webhook", json={"object_kind": "note", "event_type": "note"},
-        headers={"X-Gitlab-Token": token})
+        "/webhook", json={"object_kind": "note", "event_type": "note"}, headers=headers)
 
 
-def test_shared_secret_is_compared_in_constant_time(monkeypatch):
-    """Every other webhook auth path uses a constant-time primitive; GitLab must too, so
-    the comparison time cannot leak how many leading bytes of the secret matched."""
+def test_compare_the_shared_secret_in_constant_time(monkeypatch, gitlab_webhook_settings):
+    """Compare the shared secret with a constant-time primitive, as every other webhook
+    auth path in the project already does."""
     calls = []
     real_compare = gitlab_webhook.hmac.compare_digest
 
@@ -103,19 +112,19 @@ def test_shared_secret_is_compared_in_constant_time(monkeypatch):
 
     monkeypatch.setattr(gitlab_webhook.hmac, "compare_digest", recording_compare)
 
-    _post_webhook(monkeypatch, "wrong-secret")
+    _post_webhook("wrong-secret")
 
     assert calls, "hmac.compare_digest was not used to compare the shared secret"
 
 
-def test_webhook_token_is_not_written_to_the_logs(monkeypatch):
-    """A rejected token must not be echoed into the logs, where it would be shipped to a
-    log aggregator in cleartext."""
+def test_keep_the_webhook_token_out_of_the_logs(gitlab_webhook_settings):
+    """Keep a rejected token out of the logs, where it would otherwise be shipped to a log
+    aggregator in cleartext."""
     records = []
     handler_id = gitlab_webhook.get_logger().add(lambda m: records.append(str(m)))
     secret_token = "super-secret-webhook-token"
     try:
-        _post_webhook(monkeypatch, secret_token)
+        _post_webhook(secret_token)
     finally:
         gitlab_webhook.get_logger().remove(handler_id)
 
