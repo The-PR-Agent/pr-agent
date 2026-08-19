@@ -538,3 +538,31 @@ class TestPrGenerateCompressedDiff:
             assert len(files_in_patches_list) == 1
         finally:
             settings.pr_description.max_ai_calls = original_max_ai_calls
+
+
+class TestLeftSideSelection:
+    PATCH = "@@ -1,3 +1,3 @@\n ctx1\n-old2\n+new2\n ctx3"
+
+    def test_select_only_lines_that_exist_on_the_old_side(self):
+        """Exclude an inserted line from a left-side payload: it has no old-file number, so
+        it would otherwise borrow the number of the old line that follows it."""
+        _, selected = extract_hunk_lines_from_patch(
+            self.PATCH, "f.py", line_start=3, line_end=3, side="left")
+
+        assert selected == " ctx3"
+
+    def test_keep_the_paired_removed_line_on_the_right_side(self):
+        """Preserve the existing right-side payload, which includes the removed line that
+        precedes the targeted inserted line."""
+        _, selected = extract_hunk_lines_from_patch(
+            self.PATCH, "f.py", line_start=2, line_end=2, side="right")
+
+        assert selected == "-old2\n+new2"
+
+    def test_select_nothing_for_an_unrecognised_side(self):
+        """Select nothing when side is neither left nor right, rather than silently
+        falling through to right-side numbering."""
+        _, selected = extract_hunk_lines_from_patch(
+            self.PATCH, "f.py", line_start=2, line_end=2, side="sideways")
+
+        assert selected == ""
