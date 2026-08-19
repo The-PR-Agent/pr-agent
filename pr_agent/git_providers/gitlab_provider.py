@@ -1323,12 +1323,28 @@ class GitLabProvider(GitProvider):
         except ValueError as e:
             raise ValueError("Unable to convert merge request ID to integer") from e
 
-        # Handle special delimiter (-)
-        project_path = "/".join(path_parts[:mr_index])
-        if project_path.endswith('/-'):
-            project_path = project_path[:-2]
+        # GitLab also exposes projects through the numeric-ID alias
+        # /projects/<project-id>. When such an alias is used in an MR URL,
+        # the API project identifier is the numeric ID itself, not
+        # "projects/<project-id>". Restrict this handling to exactly that
+        # top-level numeric form so namespace paths containing "projects"
+        # keep their existing behaviour.
+        project_parts = path_parts[:mr_index]
+        if (
+            len(project_parts) >= 2
+            and project_parts[-1] == "-"
+            and project_parts[0] == "projects"
+            and project_parts[1].isdigit()
+            and len(project_parts) == 3
+        ):
+            project_path = project_parts[1]
+        else:
+            # Handle the standard GitLab /-/ delimiter.
+            project_path = "/".join(project_parts)
+            if project_path.endswith('/-'):
+                project_path = project_path[:-2]
 
-        # Return the path before 'merge_requests' and the ID
+        # Return the project identifier and the MR IID.
         return project_path, mr_id
 
     def _get_merge_request(self):
