@@ -7,6 +7,43 @@ from giteapy.rest import ApiException
 from pr_agent.git_providers.gitea_provider import GiteaProvider
 
 
+def test_gitea_comment_url_accepts_dict_fields():
+    provider = GiteaProvider.__new__(GiteaProvider)
+
+    html_url_comment = {"html_url": "https://gitea.example/comment/1"}
+    assert provider.get_comment_url(html_url_comment) == (
+        "https://gitea.example/comment/1"
+    )
+    url_comment = {"url": "https://gitea.example/comment/2"}
+    assert provider.get_comment_url(url_comment) == (
+        "https://gitea.example/comment/2"
+    )
+
+
+@pytest.mark.parametrize(
+    ("comment", "expected_id"),
+    [
+        ({"comment_id": 7, "id": 42}, 7),
+        ({"id": 42}, 42),
+    ],
+)
+def test_gitea_edit_comment_accepts_dict_ids(comment, expected_id):
+    provider = GiteaProvider.__new__(GiteaProvider)
+    provider.repo_api = MagicMock()
+    provider.owner = "owner"
+    provider.repo = "repo"
+    provider.max_comment_chars = 1000
+
+    provider.edit_comment(comment, "updated body")
+
+    provider.repo_api.edit_comment.assert_called_once_with(
+        owner="owner",
+        repo="repo",
+        comment_id=expected_id,
+        comment="updated body",
+    )
+
+
 class TestGiteaProvider:
     @patch('pr_agent.git_providers.gitea_provider.get_settings')
     @patch('pr_agent.git_providers.gitea_provider.giteapy.ApiClient')

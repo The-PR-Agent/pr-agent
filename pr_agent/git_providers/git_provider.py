@@ -361,6 +361,12 @@ class GitProvider(ABC):
                                    as_thread: bool = False):
         return self.publish_comment(pr_comment, **({'as_thread': True} if as_thread else {}))
 
+    @staticmethod
+    def _get_comment_body(comment) -> str:
+        if isinstance(comment, dict):
+            return comment.get("body", "")
+        return getattr(comment, "body", "")
+
     def publish_persistent_comment_full(self, pr_comment: str,
                                    initial_header: str,
                                    update_header: bool = True,
@@ -371,7 +377,8 @@ class GitProvider(ABC):
         try:
             prev_comments = list(self.get_issue_comments())
             for comment in reversed(prev_comments):
-                if comment.body.startswith(initial_header):
+                body = GitProvider._get_comment_body(comment)
+                if isinstance(body, str) and body.startswith(initial_header):
                     latest_commit_url = self.get_latest_commit_url()
                     comment_url = self.get_comment_url(comment)
                     if update_header:

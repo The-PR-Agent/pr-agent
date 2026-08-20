@@ -130,3 +130,47 @@ def test_persistent_update_uses_latest_matching_comment():
 
     assert result is latest
     provider.edit_comment.assert_called_once_with(latest, "new review")
+
+
+def test_persistent_update_accepts_dict_comments_and_uses_latest():
+    header = "## PR Reviewer Guide 🔍"
+    old = {"body": f"{header}\n\nold review", "id": 1}
+    latest = {"body": f"{header}\n\nlatest review", "id": 2}
+    provider = MagicMock()
+    provider.get_issue_comments.return_value = [old, latest]
+    provider.get_latest_commit_url.return_value = "commit-url"
+    provider.get_comment_url.return_value = "comment-url"
+
+    result = GitProvider.publish_persistent_comment_full(
+        provider,
+        "new review",
+        initial_header=header,
+        update_header=False,
+        final_update_message=False,
+        fallback_on_error=False,
+    )
+
+    assert result is latest
+    provider.edit_comment.assert_called_once_with(latest, "new review")
+    provider.publish_comment.assert_not_called()
+
+
+def test_dict_comment_edit_failure_does_not_fallback():
+    header = "## PR Reviewer Guide 🔍"
+    comment = {"body": header, "id": 42}
+    provider = MagicMock()
+    provider.get_issue_comments.return_value = [comment]
+    provider.edit_comment.side_effect = RuntimeError("edit failed")
+
+    result = GitProvider.publish_persistent_comment_full(
+        provider,
+        "new review",
+        initial_header=header,
+        update_header=False,
+        final_update_message=False,
+        fallback_on_error=False,
+    )
+
+    assert result is None
+    provider.edit_comment.assert_called_once_with(comment, "new review")
+    provider.publish_comment.assert_not_called()
