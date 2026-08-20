@@ -123,6 +123,8 @@ publish_output_no_suggestions=true # Set to "false" if you only need the reviewe
 persistent_comment=true
 # Visible base heading for full and incremental review comments. Identity is tracked separately.
 review_heading = "PR Reviewer Guide"
+persistent_finding_state=true # Persist review finding state across complete review runs.
+
 inline_key_issues=false
 extra_instructions = ""
 num_max_findings = 3
