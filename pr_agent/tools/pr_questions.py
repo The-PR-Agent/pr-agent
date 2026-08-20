@@ -9,7 +9,8 @@ from pr_agent.algo.pr_processing import get_pr_diff, retry_with_fallback_models
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import ModelType
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers import get_git_provider, GitLabProvider
+from pr_agent.git_providers import (AzureDevopsProvider, GitLabProvider,
+                                    get_git_provider)
 from pr_agent.git_providers.git_provider import get_main_pr_language
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
@@ -34,6 +35,7 @@ class PRQuestions:
             "language": self.main_pr_language,
             "diff": "",  # empty diff for initial calculation
             "questions": self.question_str,
+            "conversation_history": self._load_conversation_history(),
             "commit_messages_str": self.git_provider.get_commit_messages(),
             "extra_instructions": get_settings().pr_questions.extra_instructions,
         }
@@ -75,9 +77,39 @@ class PRQuestions:
             pr_comment += "\n</details>\n"
 
         if get_settings().config.publish_output:
-            self.git_provider.publish_comment(pr_comment)
+            self._publish_answer(pr_comment)
             self.git_provider.remove_initial_comment()
         return ""
+
+    def _publish_answer(self, answer: str):
+        comment_id = get_settings().get("comment_id", "")
+        if comment_id and isinstance(self.git_provider, AzureDevopsProvider):
+            return self.git_provider.reply_to_comment_from_comment_id(comment_id, answer)
+        return self.git_provider.publish_comment(answer)
+
+    def _load_conversation_history(self) -> str:
+        if (not isinstance(self.git_provider, AzureDevopsProvider)
+                or not get_settings().pr_questions.use_conversation_history):
+            return ""
+        comment_id = get_settings().get("comment_id", "")
+        if not comment_id:
+            return ""
+        origin_comment_id = get_settings().get("origin_comment_id", comment_id)
+        try:
+            comments = self.git_provider.get_review_thread_comments(comment_id)
+        except Exception as e:
+            get_logger().warning(f"Failed to load question thread: {e}")
+            return ""
+        history = []
+        for comment in comments:
+            body = getattr(comment, "body", "")
+            if (not isinstance(body, str) or not body.strip()
+                    or getattr(comment, "id", None) == origin_comment_id):
+                continue
+            user = getattr(comment, "user", None)
+            author = getattr(user, "login", "Unknown")
+            history.append(f"{len(history) + 1}. {author}: {body}")
+        return "\n".join(history)
 
     def identify_image_in_comment(self):
         img_path = ''

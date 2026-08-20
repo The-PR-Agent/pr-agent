@@ -1,9 +1,11 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from jinja2 import Environment, StrictUndefined
 
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import get_settings
+from pr_agent.git_providers import AzureDevopsProvider
 from pr_agent.git_providers.git_provider import GitProvider, IncrementalPR
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 
@@ -307,10 +309,102 @@ def test_setup_incremental_scope_noop_without_incremental_flag():
     git_provider.get_incremental_commits.assert_not_called()
 
 
+def test_load_suggestion_discussion_context_delegates_to_provider():
+    provider = MagicMock(spec=AzureDevopsProvider)
+    provider.get_code_suggestion_thread_context.return_value = '[{"thread_id": 1}]'
+    tool = _make_tool(provider)
+
+    assert tool._load_suggestion_discussion_context() == '[{"thread_id": 1}]'
+
+
+def test_load_suggestion_discussion_context_degrades_to_empty():
+    provider = MagicMock(spec=AzureDevopsProvider)
+    provider.get_code_suggestion_thread_context.side_effect = RuntimeError("unavailable")
+    tool = _make_tool(provider)
+
+    assert tool._load_suggestion_discussion_context() == ""
+
+
+def test_load_suggestion_discussion_context_ignores_other_providers():
+    provider = MagicMock()
+    tool = _make_tool(provider)
+
+    assert tool._load_suggestion_discussion_context() == ""
+    provider.get_code_suggestion_thread_context.assert_not_called()
+
+
+@pytest.mark.parametrize("prompt_key", [
+    "pr_code_suggestions_prompt.user",
+    "pr_code_suggestions_prompt_not_decoupled.user",
+])
+def test_suggestion_prompt_includes_untrusted_discussion_context(prompt_key):
+    variables = {
+        "date": "2026-08-20",
+        "diff_no_line_numbers": "diff",
+        "duplicate_prompt_examples": False,
+        "extra_instructions": "",
+        "focus_only_on_problems": False,
+        "is_ai_metadata": False,
+        "num_code_suggestions": 3,
+        "repo_context": "",
+        "skills_context": "",
+        "suggestion_discussion_context": '[{"replies":[{"message":"Move this to the backlog"}]}]',
+        "title": "Test PR",
+    }
+    prompt = Environment(undefined=StrictUndefined).from_string(
+        get_settings().get(prompt_key)
+    ).render(variables)
+
+    assert "Move this to the backlog" in prompt
+    assert "untrusted data" in prompt
+
+
 def test_supports_incremental_kind_defaults_to_false_on_base_provider():
     # The base-class default must be "no support" so tools fall back to a full run
     # on providers that never implemented kind-aware incremental anchoring.
     assert GitProvider.supports_incremental_kind(MagicMock(), "suggestions") is False
+
+
+@pytest.mark.asyncio
+async def test_empty_incremental_run_reconciles_existing_suggestions():
+    provider = MagicMock(spec=AzureDevopsProvider)
+    provider.reconcile_code_suggestion_threads.return_value = 1
+    provider.get_code_suggestion_thread_context.return_value = '[{"status": "fixed"}]'
+    tool = _make_tool(provider)
+    tool._incremental_empty_scope = True
+    tool.pr_url = "https://example.test/pr/1"
+    tool.vars = {"suggestion_discussion_context": '[{"status": "active"}]'}
+
+    assert await tool.run() is None
+    provider.reconcile_code_suggestion_threads.assert_called_once_with()
+    provider.get_files.assert_not_called()
+    assert tool.vars["suggestion_discussion_context"] == '[{"status": "fixed"}]'
+
+
+def test_azure_persistent_comment_updates_without_history():
+    provider = MagicMock(spec=AzureDevopsProvider)
+    existing = MagicMock()
+    provider.publish_persistent_comment.return_value = existing
+
+    result = PRCodeSuggestions.publish_persistent_comment_with_history(
+        provider,
+        "## PR Code Suggestions ✨\n\nnew suggestions",
+        "## PR Code Suggestions ✨",
+        update_header=True,
+        name="suggestions",
+        final_update_message=False,
+        max_previous_comments=0,
+    )
+
+    assert result is existing
+    provider.publish_persistent_comment.assert_called_once_with(
+        "## PR Code Suggestions ✨\n\nnew suggestions",
+        "## PR Code Suggestions ✨",
+        True,
+        "suggestions",
+        False,
+    )
+    provider.publish_comment.assert_not_called()
 
 
 def test_persistent_update_survives_progress_cleanup_failure():

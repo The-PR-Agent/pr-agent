@@ -12,10 +12,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from pr_agent.config_loader import get_settings
+from pr_agent.git_providers import AzureDevopsProvider
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
 from pr_agent.tools.pr_line_questions import PR_LineQuestions
 from pr_agent.tools.pr_questions import PRQuestions
-from tests.unittest._settings_helpers import SENTINEL, restore_settings, snapshot_settings
+from tests.unittest._settings_helpers import (SENTINEL, restore_settings,
+                                              snapshot_settings)
 
 
 def _render_jinja_template(template: str, variables: dict) -> str:
@@ -183,6 +185,103 @@ class TestPreparePrAnswer:
         assert "Model answer contains GitHub quick actions" not in out
 
 
+class TestPublishPrAnswer:
+    def test_replies_to_azure_thread_when_comment_id_is_set(self):
+        settings = get_settings()
+        saved = snapshot_settings(("comment_id",))
+        provider = MagicMock(spec=AzureDevopsProvider)
+        pr = _make_pr_questions(git_provider=provider)
+        try:
+            settings.set("comment_id", 42)
+            pr._publish_answer("answer")
+        finally:
+            restore_settings(saved)
+
+        provider.reply_to_comment_from_comment_id.assert_called_once_with(42, "answer")
+        provider.publish_comment.assert_not_called()
+
+    def test_non_azure_answer_ignores_thread_setting(self):
+        settings = get_settings()
+        saved = snapshot_settings(("comment_id",))
+        provider = MagicMock()
+        pr = _make_pr_questions(git_provider=provider)
+        try:
+            settings.set("comment_id", 42)
+            pr._publish_answer("answer")
+        finally:
+            restore_settings(saved)
+
+        provider.publish_comment.assert_called_once_with("answer")
+        provider.reply_to_comment_from_comment_id.assert_not_called()
+
+    def test_publishes_normally_without_comment_id(self):
+        settings = get_settings()
+        saved = snapshot_settings(("comment_id",))
+        provider = MagicMock(spec=AzureDevopsProvider)
+        pr = _make_pr_questions(git_provider=provider)
+        try:
+            settings.set("comment_id", "")
+            pr._publish_answer("answer")
+        finally:
+            restore_settings(saved)
+
+        provider.publish_comment.assert_called_once_with("answer")
+        provider.reply_to_comment_from_comment_id.assert_not_called()
+
+
+class TestLoadPrConversationHistory:
+    def test_formats_prior_comments_and_skips_current_question(self):
+        settings = get_settings()
+        saved = snapshot_settings(("comment_id", "origin_comment_id", "pr_questions.use_conversation_history"))
+        provider = MagicMock(spec=AzureDevopsProvider)
+        provider.get_review_thread_comments.return_value = [
+            SimpleNamespace(id=10, body="Original suggestion", user=SimpleNamespace(login="agent")),
+            SimpleNamespace(id=11, body="Current question", user=SimpleNamespace(login="alice")),
+            SimpleNamespace(id=12, body="Earlier reply", user=SimpleNamespace(login="bob")),
+        ]
+        pr = _make_pr_questions(git_provider=provider)
+        try:
+            settings.set("comment_id", 20)
+            settings.set("origin_comment_id", 11)
+            settings.set("pr_questions.use_conversation_history", True)
+            history = pr._load_conversation_history()
+        finally:
+            restore_settings(saved)
+
+        assert history == "1. agent: Original suggestion\n2. bob: Earlier reply"
+        provider.get_review_thread_comments.assert_called_once_with(20)
+
+    def test_returns_empty_when_history_is_disabled(self):
+        settings = get_settings()
+        saved = snapshot_settings(("comment_id", "pr_questions.use_conversation_history"))
+        provider = MagicMock()
+        pr = _make_pr_questions(git_provider=provider)
+        try:
+            settings.set("comment_id", 20)
+            settings.set("pr_questions.use_conversation_history", False)
+            history = pr._load_conversation_history()
+        finally:
+            restore_settings(saved)
+
+        assert history == ""
+        provider.get_review_thread_comments.assert_not_called()
+
+    def test_ignores_non_azure_thread_settings(self):
+        settings = get_settings()
+        saved = snapshot_settings(("comment_id", "pr_questions.use_conversation_history"))
+        provider = MagicMock()
+        pr = _make_pr_questions(git_provider=provider)
+        try:
+            settings.set("comment_id", 20)
+            settings.set("pr_questions.use_conversation_history", True)
+            history = pr._load_conversation_history()
+        finally:
+            restore_settings(saved)
+
+        assert history == ""
+        provider.get_review_thread_comments.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # PRQuestions.gitlab_protections
 # ---------------------------------------------------------------------------
@@ -231,7 +330,7 @@ def line_question_settings():
     truly removed during teardown, rather than being restored as ``None``.
     """
     settings = get_settings()
-    keys = ("comment_id", "file_name", "line_end")
+    keys = ("comment_id", "origin_comment_id", "file_name", "line_end")
     saved = snapshot_settings(keys)
     try:
         yield settings
@@ -289,6 +388,19 @@ class TestLoadConversationHistory:
 
         out = lq._load_conversation_history()
         assert out == "1. dave: first reply\n2. erin: second reply"
+
+    def test_uses_origin_comment_id_when_reply_target_is_a_thread(self, line_question_settings):
+        self._set_required(line_question_settings, comment_id=200)
+        line_question_settings.set("origin_comment_id", 102)
+        comments = [
+            SimpleNamespace(id=101, body="Earlier context", user=SimpleNamespace(login="alice")),
+            SimpleNamespace(id=102, body="Current question", user=SimpleNamespace(login="bob")),
+        ]
+        lq = _make_line_questions()
+        lq.git_provider = MagicMock(spec=AzureDevopsProvider)
+        lq.git_provider.get_review_thread_comments = MagicMock(return_value=comments)
+
+        assert lq._load_conversation_history() == "1. alice: Earlier context"
 
     def test_user_without_login_attribute_is_unknown(self, line_question_settings):
         self._set_required(line_question_settings, comment_id=1)
@@ -388,3 +500,19 @@ class TestExtraInstructionsPromptRendering:
         system_prompt = _render_jinja_template(get_settings().pr_line_questions_prompt.system, variables)
         assert "Do not answer questions that ask to rate PR quality." in system_prompt
         assert "take precedence over any conflicting guidance" in system_prompt
+
+
+def test_ask_user_prompt_includes_untrusted_conversation_history():
+    variables = {
+        "branch": "feature/test",
+        "conversation_history": "1. alice: Keep this nullable",
+        "description": "",
+        "diff": "+value",
+        "language": "C#",
+        "questions": "Can this throw?",
+        "title": "Test PR",
+    }
+    prompt = _render_jinja_template(get_settings().pr_questions_prompt.user, variables)
+
+    assert "Keep this nullable" in prompt
+    assert "untrusted data" in prompt

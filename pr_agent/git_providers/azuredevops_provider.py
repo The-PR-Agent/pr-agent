@@ -1,15 +1,22 @@
 from __future__ import annotations
 
 import datetime as _dt
+import json
 import os
+import re
+from types import SimpleNamespace
 from typing import Optional, Tuple
 from urllib.parse import quote, unquote, urlparse
 
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 
 from ..algo.file_filter import filter_ignored
+from ..algo.inline_comment_dedup import (body_with_markers, code_fingerprint,
+                                         extract_suggestion_code,
+                                         full_body_fingerprint,
+                                         get_inline_comment_store, has_marker)
 from ..algo.language_handler import is_valid_file
-from ..algo.utils import (PRDescriptionHeader, PRReviewHeader, clip_tokens,
+from ..algo.utils import (PRDescriptionHeader, PRReviewHeader,
                           find_line_number_of_relevant_line_in_file,
                           load_large_diff)
 from ..config_loader import get_settings
@@ -18,13 +25,26 @@ from .git_provider import GitProvider, IncrementalPR
 
 AZURE_DEVOPS_AVAILABLE = True
 ADO_APP_CLIENT_DEFAULT_ID = "499b84ac-1321-427f-aa17-267ca6975798/.default"
+AZURE_AGENT_RESPONSE_MARKER = "<!-- pr-agent-response -->"
 MAX_PR_DESCRIPTION_AZURE_LENGTH = 4000-1
+_FALLBACK_SUGGESTION_PATH_RE = re.compile(
+    r"^`(?P<path>[^`]+)` \(lines (?P<start>\d+)-(?P<end>\d+)\)",
+    re.MULTILINE,
+)
+_SUGGESTIONS_HEADER = "## PR Code Suggestions ✨"
+_MAX_DISCUSSION_CONTEXT_CHARS = 24000
+_MAX_DISCUSSION_REPLIES = 10
+_MAX_DISCUSSION_THREADS = 50
+_MAX_DISCUSSION_MESSAGE_CHARS = 750
 
 try:
     # noinspection PyUnresolvedReferences
     from azure.devops.connection import Connection
     # noinspection PyUnresolvedReferences
-    from azure.devops.released.git import (Comment, CommentThread, GitPullRequest, GitVersionDescriptor, GitClient, CommentThreadContext, CommentPosition)
+    from azure.devops.released.git import (Comment, CommentPosition,
+                                           CommentThread, CommentThreadContext,
+                                           GitClient, GitPullRequest,
+                                           GitVersionDescriptor)
     from azure.devops.released.work_item_tracking import WorkItemTrackingClient
     # noinspection PyUnresolvedReferences
     from azure.identity import DefaultAzureCredential
@@ -61,6 +81,11 @@ class _AzureCommitAdapter:
 
 class AzureDevopsProvider(GitProvider):
 
+    _INCREMENTAL_ANCHOR_PREFIXES = {
+        "review": (PRReviewHeader.REGULAR.value, PRReviewHeader.INCREMENTAL.value),
+        "suggestions": ("## PR Code Suggestions", "**Suggestion:**"),
+    }
+
     def __init__(
             self, pr_url: Optional[str] = None, incremental: Optional[bool] = False
     ):
@@ -84,6 +109,7 @@ class AzureDevopsProvider(GitProvider):
         self.previous_review = None
         self._published_inline_comment_bodies = []
         self._inline_comment_store = None
+        self._threads_cache = None
         if pr_url:
             self.set_pr(pr_url)
 
@@ -121,30 +147,32 @@ class AzureDevopsProvider(GitProvider):
                     f"(lines {suggestion['relevant_lines_start']}-{suggestion['relevant_lines_end']})")
         return f"{location} - {reason}\n\n{suggestion['body']}"
 
-    def _publish_fallback_suggestions(self, suggestions: list[tuple[dict, str]]) -> int:
-        sections = []
+    def _publish_fallback_suggestions(self, suggestions: list[tuple[dict, str]]) -> list[dict]:
+        prepared = []
         for suggestion, reason in suggestions:
             try:
-                sections.append(self._fallback_suggestion_section(suggestion, reason))
+                prepared.append((suggestion, self._fallback_suggestion_section(suggestion, reason)))
             except (KeyError, TypeError) as e:
                 get_logger().warning(f"Could not format Azure code suggestion fallback, error: {e}")
-        if not sections:
-            return 0
+        if not prepared:
+            return []
         try:
-            self.publish_comment("\n\n---\n\n".join(sections))
+            self.publish_comment(
+                f"{_SUGGESTIONS_HEADER}\n\n" + "\n\n---\n\n".join(section for _, section in prepared)
+            )
         except Exception as e:
             get_logger().exception(f"Azure failed to publish code suggestion fallback, error: {e}")
-            published = 0
-            for suggestion, reason in suggestions:
+            published = []
+            for suggestion, section in prepared:
                 try:
-                    self.publish_comment(self._fallback_suggestion_section(suggestion, reason))
+                    self.publish_comment(f"{_SUGGESTIONS_HEADER}\n\n{section}")
                 except Exception as fallback_error:
                     get_logger().exception(
                         f"Azure failed to publish code suggestion fallback, error: {fallback_error}")
                 else:
-                    published += 1
+                    published.append(suggestion)
             return published
-        return len(sections)
+        return [suggestion for suggestion, _ in prepared]
 
     def publish_code_suggestions(self, code_suggestions: list) -> bool:
         """
@@ -152,7 +180,11 @@ class AzureDevopsProvider(GitProvider):
         """
         publishable_count = 0
         published_count = 0
+        skipped_duplicate_count = 0
         fallback_suggestions = []
+        dedup_enabled = get_settings().get("config.persistent_inline_comments", False)
+        store = get_inline_comment_store(self) if dedup_enabled else None
+        local_fingerprints = set()
         status = get_settings().azure_devops.get("default_comment_status", "closed")
         for suggestion in code_suggestions:
             try:
@@ -187,12 +219,36 @@ class AzureDevopsProvider(GitProvider):
 
             publishable_count += 1
             fallback_to_pr_comment = suggestion.get("fallback_to_pr_comment", True)
+            fingerprint_file = relevant_file.strip().strip("`").strip().lstrip("/")
+            fingerprint_anchor = f"{relevant_lines_start}-{relevant_lines_end}"
+            body_fp = None
+            code_fp = None
+            published_body = body
+            if store is not None and not has_marker(body):
+                body_fp = full_body_fingerprint(fingerprint_file, fingerprint_anchor, body)
+                code_fp = code_fingerprint(fingerprint_file, fingerprint_anchor, body)
+                if (store.seen(body_fp) or store.seen(code_fp)
+                        or body_fp in local_fingerprints
+                        or (code_fp is not None and code_fp in local_fingerprints)):
+                    skipped_duplicate_count += 1
+                    continue
+
             resolved_file = self._resolve_diff_file_path(relevant_file)
             if not resolved_file:
+                if store is not None and not has_marker(body):
+                    published_body = body_with_markers(body, body_fp, code_fp)
                 if fallback_to_pr_comment:
+                    if store is not None and not has_marker(body):
+                        local_fingerprints.add(body_fp)
+                        if code_fp is not None:
+                            local_fingerprints.add(code_fp)
                     get_logger().warning(f"Could not match '{relevant_file}' to a file in the PR diff, "
                                          f"publishing the suggestion as a PR-level comment")
-                    fallback_suggestions.append((suggestion, "could not be anchored to a file in the PR diff"))
+                    fallback_suggestion = dict(suggestion)
+                    fallback_suggestion["body"] = published_body
+                    fallback_suggestions.append(
+                        (fallback_suggestion, "could not be anchored to a file in the PR diff")
+                    )
                 else:
                     get_logger().warning(f"Could not match '{relevant_file}' to a file in the PR diff")
                 continue
@@ -212,11 +268,17 @@ class AzureDevopsProvider(GitProvider):
                             f"Could not resolve the full suggestion range in '{resolved_file}'")
                     continue
 
+            if store is not None and not has_marker(body):
+                published_body = body_with_markers(body, body_fp, code_fp)
+                local_fingerprints.add(body_fp)
+                if code_fp is not None:
+                    local_fingerprints.add(code_fp)
+
             thread_context = CommentThreadContext(
                 file_path=resolved_file,
                 right_file_start=CommentPosition(offset=1, line=relevant_lines_start),
                 right_file_end=CommentPosition(offset=end_offset, line=relevant_lines_end))
-            comment = Comment(content=body, comment_type=1)
+            comment = Comment(content=published_body, comment_type=1)
             thread = CommentThread(comments=[comment], thread_context=thread_context, status=status)
             try:
                 self.azure_devops_client.create_thread(
@@ -228,22 +290,34 @@ class AzureDevopsProvider(GitProvider):
             except Exception as e:
                 get_logger().exception(f"Azure failed to publish code suggestion, error: {e}", suggestion=suggestion)
                 if fallback_to_pr_comment:
-                    fallback_suggestions.append((suggestion, "could not be published as an inline comment"))
+                    fallback_suggestion = dict(suggestion)
+                    fallback_suggestion["body"] = published_body
+                    fallback_suggestions.append(
+                        (fallback_suggestion, "could not be published as an inline comment")
+                    )
             else:
                 published_count += 1
+                self._threads_cache = None
+                if store is not None:
+                    store.add(body_fp)
+                    store.add(code_fp)
+                    store.add_body(published_body)
                 recent_bodies = getattr(self, "_published_inline_comment_bodies", None)
                 if recent_bodies is None:
                     recent_bodies = []
                     self._published_inline_comment_bodies = recent_bodies
-                if body not in recent_bodies:
-                    recent_bodies.append(body)
+                if published_body not in recent_bodies:
+                    recent_bodies.append(published_body)
         if fallback_suggestions:
-            published_count += self._publish_fallback_suggestions(fallback_suggestions)
-        return published_count > 0 or publishable_count == 0
+            published_fallbacks = self._publish_fallback_suggestions(fallback_suggestions)
+            published_count += len(published_fallbacks)
+            if store is not None:
+                for suggestion in published_fallbacks:
+                    store.add_body(suggestion["body"])
+        return published_count > 0 or publishable_count == skipped_duplicate_count
 
-    def reply_to_comment_from_comment_id(self, comment_id: int, body: str, is_temporary: bool = False) -> Comment:
-        # comment_id is actually thread_id
-        return self.reply_to_thread(comment_id, body, is_temporary)
+    def reply_to_comment_from_comment_id(self, thread_id: int, body: str, is_temporary: bool = False) -> Comment:
+        return self.reply_to_thread(thread_id, body, is_temporary)
 
     def get_pr_description_full(self) -> str:
         return self.pr.description
@@ -258,6 +332,7 @@ class AzureDevopsProvider(GitProvider):
                 comment=Comment(content=body),
                 project=self.workspace_slug,
             )
+            self._threads_cache = None
         except Exception as e:
             get_logger().exception(f"Failed to edit comment, error: {e}")
 
@@ -270,6 +345,7 @@ class AzureDevopsProvider(GitProvider):
                 comment_id=comment.id,
                 project=self.workspace_slug,
             )
+            self._threads_cache = None
         except Exception as e:
             get_logger().exception(f"Failed to remove comment, error: {e}")
 
@@ -300,26 +376,32 @@ class AzureDevopsProvider(GitProvider):
     def is_supported(self, capability: str) -> bool:
         return True
 
+    def supports_incremental_kind(self, kind: str) -> bool:
+        return kind in self._INCREMENTAL_ANCHOR_PREFIXES
+
     def set_pr(self, pr_url: str):
         self.diff_files = None
         self._diff_path_map = None
+        self.pr_commits = None
+        self.previous_review = None
+        self.unreviewed_files_map = {}
+        self.temp_comments = []
         self._published_inline_comment_bodies = []
         self._inline_comment_store = None
+        self._threads_cache = None
         self.pr_url = pr_url
         self.workspace_slug, self.repo_slug, self.pr_num = self._parse_pr_url(pr_url)
         self.pr = self._get_pr()
 
-    def get_incremental_commits(self, incremental=None):
+    def get_incremental_commits(self, incremental=None, kind: str = "review"):
         if incremental is None:
             incremental = IncrementalPR(False)
         self.incremental = incremental
+        self.diff_files = None
+        self._diff_path_map = None
         if self.incremental.is_incremental:
-            # Invalidate any diff cache from a prior (full) get_diff_files() on a reused
-            # provider instance, so incremental filtering/rebuild is recomputed rather than
-            # returning the full-PR diff.
-            self.diff_files = None
-            self._diff_path_map = None
             self.unreviewed_files_map = {}
+            self._incremental_kind = kind
             self._get_incremental_commits()
 
     def _get_incremental_commits(self):
@@ -333,9 +415,11 @@ class AzureDevopsProvider(GitProvider):
             raw.reverse()
             self.pr_commits = [_AzureCommitAdapter(c) for c in raw]
 
-        self.previous_review = self.get_previous_review(full=True, incremental=True)
+        kind = getattr(self, "_incremental_kind", "review")
+        prefixes = self._INCREMENTAL_ANCHOR_PREFIXES.get(kind, ())
+        self.previous_review = self._find_incremental_anchor(prefixes)
         if not self.previous_review:
-            get_logger().info("No previous review found, will review the entire PR")
+            get_logger().info(f"No previous {kind} comment found, will review the entire PR")
             self.incremental.is_incremental = False
             return
 
@@ -445,6 +529,11 @@ class AzureDevopsProvider(GitProvider):
             prefixes.append(PRReviewHeader.REGULAR.value)
         if incremental:
             prefixes.append(PRReviewHeader.INCREMENTAL.value)
+        return self._find_incremental_anchor(prefixes)
+
+    def _find_incremental_anchor(self, prefixes):
+        if not prefixes:
+            return None
         matches = []
         for comment in self.get_issue_comments():
             body = getattr(comment, "body", None)
@@ -452,12 +541,19 @@ class AzureDevopsProvider(GitProvider):
                 matches.append(comment)
         if not matches:
             return None
+
+        def anchor_time(comment):
+            published = _to_naive_utc(getattr(comment, "published_date", None))
+            updated = _to_naive_utc(getattr(comment, "last_updated_date", None))
+            return max((value for value in (published, updated) if value is not None),
+                       default=_dt.datetime.min)
+
         latest = max(
             matches,
-            key=lambda c: _to_naive_utc(getattr(c, "published_date", None)) or _dt.datetime.min,
+            key=anchor_time,
         )
         latest.html_url = self.get_comment_url(latest)
-        latest.created_at = _to_naive_utc(getattr(latest, "published_date", None))
+        latest.created_at = anchor_time(latest)
         return latest
 
     def get_repo_settings(self):
@@ -738,6 +834,7 @@ class AzureDevopsProvider(GitProvider):
             repository_id=self.repo_slug,
             pull_request_id=self.pr_num,
         )
+        self._threads_cache = None
         created_comment = thread_response.comments[0]
         created_comment.thread_id = thread_response.id
         if is_temporary:
@@ -901,14 +998,9 @@ class AzureDevopsProvider(GitProvider):
         return 0
 
     def get_inline_comment_bodies(self) -> list[str]:
-        threads = self.azure_devops_client.get_threads(
-            repository_id=self.repo_slug,
-            pull_request_id=self.pr_num,
-            project=self.workspace_slug,
-        )
         bodies = list(getattr(self, "_published_inline_comment_bodies", []))
-        for thread in threads or []:
-            context = getattr(thread, "thread_context", None)
+        for thread in self._get_threads():
+            context = self._value(thread, "thread_context", "threadContext")
             if isinstance(context, dict):
                 is_line_comment = context.get("filePath") and context.get("rightFileStart")
             else:
@@ -916,20 +1008,261 @@ class AzureDevopsProvider(GitProvider):
                                    getattr(context, "right_file_start", None))
             if not is_line_comment:
                 continue
-            for comment in getattr(thread, "comments", None) or []:
-                content = comment.get("content") if isinstance(comment, dict) else getattr(comment, "content", None)
-                if content and content not in bodies:
-                    bodies.append(content)
+            comments = self._value(thread, "comments") or []
+            content = self._value(comments[0], "content") if comments else None
+            if isinstance(content, str) and content and content not in bodies:
+                bodies.append(content)
         return bodies
+
+    def get_persistent_comment_bodies(self) -> list[str]:
+        bodies = list(getattr(self, "_published_inline_comment_bodies", []))
+        for thread in self._get_threads():
+            comments = self._value(thread, "comments") or []
+            content = self._value(comments[0], "content") if comments else None
+            if isinstance(content, str) and content and content not in bodies:
+                bodies.append(content)
+        return bodies
+
+    def get_agent_mention_aliases(self) -> set[str]:
+        aliases = set()
+        configured = get_settings().get("azure_devops_server.agent_identity", "")
+        if isinstance(configured, str):
+            configured = [configured]
+        if isinstance(configured, (list, tuple, set)):
+            aliases.update(value.strip() for value in configured if isinstance(value, str) and value.strip())
+        if aliases:
+            return aliases
+
+        for thread in self._get_threads():
+            for comment in self._value(thread, "comments") or []:
+                content = self._value(comment, "content") or ""
+                if not self._is_agent_comment(content):
+                    continue
+                author = self._value(comment, "author")
+                for attribute, serialized_attribute in (
+                    ("id", None),
+                    ("display_name", "displayName"),
+                    ("unique_name", "uniqueName"),
+                ):
+                    value = self._value(author, attribute, serialized_attribute)
+                    if isinstance(value, str) and value.strip():
+                        aliases.add(value.strip())
+        return aliases
+
+    @classmethod
+    def _is_agent_comment(cls, content: str) -> bool:
+        if not isinstance(content, str):
+            return False
+        if AZURE_AGENT_RESPONSE_MARKER in content or "<!-- pr-agent-dedup:" in content:
+            return True
+        prefixes = tuple(prefix for group in cls._INCREMENTAL_ANCHOR_PREFIXES.values() for prefix in group)
+        return content.lstrip().startswith(prefixes)
+
+    def get_code_suggestion_thread_context(self) -> str:
+        discussions = []
+        for thread in reversed(self._get_threads()):
+            comments = self._value(thread, "comments") or []
+            if not comments:
+                continue
+            root_body = self._value(comments[0], "content")
+            if not isinstance(root_body, str):
+                continue
+            if "```suggestion" not in root_body:
+                continue
+            replies = []
+            for comment in comments[1:][-_MAX_DISCUSSION_REPLIES:]:
+                message = self._value(comment, "content")
+                if not isinstance(message, str):
+                    continue
+                message = message.replace(AZURE_AGENT_RESPONSE_MARKER, "").strip()
+                if not message:
+                    continue
+                author = self._value(comment, "author")
+                author_name = (self._value(author, "display_name", "displayName")
+                               or self._value(author, "unique_name", "uniqueName")
+                               or "Unknown")
+                replies.append({
+                    "author": author_name,
+                    "message": message[:_MAX_DISCUSSION_MESSAGE_CHARS],
+                })
+            context = self._value(thread, "thread_context", "threadContext")
+            path = self._value(context, "file_path", "filePath")
+            start_position = self._value(context, "right_file_start", "rightFileStart")
+            end_position = self._value(context, "right_file_end", "rightFileEnd") or start_position
+            discussion = {
+                "thread_id": self._value(thread, "id"),
+                "status": self._value(thread, "status"),
+                "file": path,
+                "start_line": self._value(start_position, "line"),
+                "end_line": self._value(end_position, "line"),
+                "suggestion": root_body.split("<!-- pr-agent-", 1)[0].strip()[:_MAX_DISCUSSION_MESSAGE_CHARS],
+                "replies": replies,
+            }
+            candidate = discussions + [discussion]
+            if len(json.dumps(candidate, ensure_ascii=False)) > _MAX_DISCUSSION_CONTEXT_CHARS:
+                break
+            discussions = candidate
+            if len(discussions) >= _MAX_DISCUSSION_THREADS:
+                break
+        return json.dumps(discussions, ensure_ascii=False, indent=2) if discussions else ""
+
+    def get_existing_inline_comment_fingerprints(self) -> set[str]:
+        fingerprints = set()
+        for thread in self._get_threads():
+            context = self._value(thread, "thread_context", "threadContext")
+            path = self._value(context, "file_path", "filePath")
+            start_position = self._value(context, "right_file_start", "rightFileStart")
+            end_position = self._value(context, "right_file_end", "rightFileEnd") or start_position
+            start_line = self._value(start_position, "line")
+            end_line = self._value(end_position, "line")
+            anchor = self._suggestion_range_anchor(start_line, end_line)
+            comments = self._value(thread, "comments") or []
+            content = self._value(comments[0], "content") if comments else None
+            if not isinstance(content, str) or "```suggestion" not in content:
+                continue
+            if isinstance(path, str) and path and anchor:
+                self._add_suggestion_fingerprints(fingerprints, path, anchor, content)
+                continue
+            for section in content.split("\n\n---\n\n"):
+                match = _FALLBACK_SUGGESTION_PATH_RE.search(section)
+                if match:
+                    fallback_anchor = self._suggestion_range_anchor(
+                        int(match["start"]), int(match["end"])
+                    )
+                    self._add_suggestion_fingerprints(
+                        fingerprints, match["path"], fallback_anchor, section
+                    )
+        return fingerprints
+
+    @staticmethod
+    def _suggestion_range_anchor(start_line, end_line) -> Optional[str]:
+        if (not isinstance(start_line, int) or isinstance(start_line, bool)
+                or not isinstance(end_line, int) or isinstance(end_line, bool)
+                or start_line < 1 or end_line < start_line):
+            return None
+        return f"{start_line}-{end_line}"
+
+    @staticmethod
+    def _add_suggestion_fingerprints(fingerprints: set[str], path: str, anchor: str, body: str):
+        path = path.lstrip("/")
+        fingerprints.add(full_body_fingerprint(path, anchor, body))
+        code_fp = code_fingerprint(path, anchor, body)
+        if code_fp is not None:
+            fingerprints.add(code_fp)
+
+    @staticmethod
+    def _value(value, attribute: str, serialized_attribute: Optional[str] = None):
+        if isinstance(value, dict):
+            return value.get(serialized_attribute or attribute)
+        return getattr(value, attribute, None)
+
+    def _get_threads(self):
+        threads = getattr(self, "_threads_cache", None)
+        if threads is None:
+            threads = list(self.azure_devops_client.get_threads(
+                repository_id=self.repo_slug,
+                pull_request_id=self.pr_num,
+                project=self.workspace_slug,
+            ) or [])
+            self._threads_cache = threads
+        return threads
 
     def get_recent_inline_comment_bodies(self) -> list[str]:
         return list(getattr(self, "_published_inline_comment_bodies", []))
 
+    def get_review_thread_comments(self, comment_id: int) -> list[dict]:
+        try:
+            thread = self.azure_devops_client.get_pull_request_thread(
+                repository_id=self.repo_slug,
+                pull_request_id=self.pr_num,
+                thread_id=comment_id,
+                project=self.workspace_slug,
+            )
+        except Exception as e:
+            get_logger().warning(f"Failed to read Azure DevOps thread {comment_id}: {e}")
+            return []
+
+        thread_comments = list(self._value(thread, "comments") or [])
+        if len(thread_comments) > _MAX_DISCUSSION_REPLIES + 1:
+            thread_comments = thread_comments[:1] + thread_comments[-_MAX_DISCUSSION_REPLIES:]
+
+        comments = []
+        for comment in thread_comments:
+            content = self._value(comment, "content")
+            if not isinstance(content, str):
+                continue
+            content = content.replace(AZURE_AGENT_RESPONSE_MARKER, "").strip()
+            content = content[:_MAX_DISCUSSION_MESSAGE_CHARS]
+            author = self._value(comment, "author")
+            author_name = (self._value(author, "display_name", "displayName")
+                           or self._value(author, "unique_name", "uniqueName")
+                           or "Unknown")
+            comments.append(SimpleNamespace(
+                id=self._value(comment, "id"),
+                body=content,
+                user=SimpleNamespace(login=author_name),
+            ))
+        return comments
+
+    def reconcile_code_suggestion_threads(self) -> int:
+        head = getattr(getattr(self.pr, "last_merge_commit", None), "commit_id", None)
+        if not head:
+            return 0
+
+        file_lines = {}
+        fixed = 0
+        for thread in self._get_threads():
+            if str(self._value(thread, "status") or "").lower() != "active":
+                continue
+            context = self._value(thread, "thread_context", "threadContext")
+            path = self._value(context, "file_path", "filePath")
+            position = self._value(context, "right_file_start", "rightFileStart")
+            start = self._value(position, "line")
+            if (not isinstance(path, str) or not path or not isinstance(start, int)
+                    or isinstance(start, bool) or start < 1):
+                continue
+            comments = self._value(thread, "comments") or []
+            body = next((self._value(comment, "content") for comment in comments
+                         if isinstance(self._value(comment, "content"), str)
+                         and self._value(comment, "content")), None)
+            if not isinstance(body, str) or "<!-- pr-agent-dedup-code:" not in body:
+                continue
+            suggestion_code = extract_suggestion_code(body)
+            if not suggestion_code or not suggestion_code.strip():
+                continue
+
+            if path not in file_lines:
+                try:
+                    version = GitVersionDescriptor(version=head, version_type="commit")
+                    item = self.azure_devops_client.get_item(
+                        repository_id=self.repo_slug,
+                        path=path,
+                        project=self.workspace_slug,
+                        version_descriptor=version,
+                        download=False,
+                        include_content=True,
+                    )
+                    content = getattr(item, "content", None)
+                    if not isinstance(content, str):
+                        raise TypeError("Azure DevOps returned non-string file content")
+                    file_lines[path] = content.splitlines()
+                except Exception as e:
+                    get_logger().warning(f"Failed to read {path} while reconciling code suggestions: {e}")
+                    file_lines[path] = None
+            lines = file_lines[path]
+            if lines is None:
+                continue
+            suggested_lines = suggestion_code.splitlines()
+            if lines[start - 1:start - 1 + len(suggested_lines)] != suggested_lines:
+                continue
+            thread_id = self._value(thread, "id")
+            if thread_id is not None and self.set_thread_status(thread_id, "fixed"):
+                fixed += 1
+        return fixed
+
     def get_issue_comments(self) -> list[Comment]:
-        threads = self.azure_devops_client.get_threads(repository_id=self.repo_slug, pull_request_id=self.pr_num, project=self.workspace_slug)
-        threads.reverse()
         comment_list = []
-        for thread in threads:
+        for thread in reversed(self._get_threads()):
             for comment in thread.comments:
                 if comment.content and comment not in comment_list:
                     comment.body = comment.content
@@ -948,31 +1281,40 @@ class AzureDevopsProvider(GitProvider):
             self.azure_devops_client.create_like(self.repo_slug, self.pr_num, thread_id, comment_id, project=self.workspace_slug)
         else:
             self.azure_devops_client.delete_like(self.repo_slug, self.pr_num, thread_id, comment_id, project=self.workspace_slug)
-            
-    def set_thread_status(self, thread_id: int, status: str):
+
+    def set_thread_status(self, thread_id: int, status: str) -> bool:
         try:
-            self.azure_devops_client.update_thread(CommentThread(status=status), self.repo_slug, self.pr_num, thread_id, self.workspace_slug)
+            self.azure_devops_client.update_thread(
+                CommentThread(status=status), self.repo_slug, self.pr_num, thread_id, self.workspace_slug
+            )
+            self._threads_cache = None
+            return True
         except Exception as e:
             get_logger().exception(f"Failed to set thread status, error: {e}")
-            
+            return False
+
     def reply_to_thread(self, thread_id: int, body: str, is_temporary: bool = False) -> Comment:
         try:
-            comment = Comment(content=body)
-            response = self.azure_devops_client.create_comment(comment, self.repo_slug, self.pr_num, thread_id, self.workspace_slug)
+            content = body if AZURE_AGENT_RESPONSE_MARKER in body else f"{body}\n\n{AZURE_AGENT_RESPONSE_MARKER}"
+            comment = Comment(content=content)
+            response = self.azure_devops_client.create_comment(
+                comment, self.repo_slug, self.pr_num, thread_id, self.workspace_slug
+            )
+            self._threads_cache = None
             response.thread_id = thread_id
             if is_temporary:
                 self.temp_comments.append(response)
             return response
         except Exception as e:
             get_logger().exception(f"Failed to reply to thread, error: {e}")
-    
+
     def get_thread_context(self, thread_id: int) -> CommentThreadContext:
         try:
             thread = self.azure_devops_client.get_pull_request_thread(self.repo_slug, self.pr_num, thread_id, self.workspace_slug)
             return thread.thread_context
         except Exception as e:
             get_logger().exception(f"Failed to set thread status, error: {e}")
-    
+
     @staticmethod
     def _parse_pr_url(pr_url: str) -> Tuple[str, str, int]:
         parsed_url = urlparse(pr_url)
@@ -980,7 +1322,7 @@ class AzureDevopsProvider(GitProvider):
         num_parts = len(path_parts)
         if num_parts < 5:
             raise ValueError("The provided URL has insufficient path components for an Azure DevOps PR URL")
-        
+
         # Verify that the second-to-last path component is "pullrequest"
         if path_parts[num_parts - 2] != "pullrequest":
             raise ValueError("The provided URL does not follow the expected Azure DevOps PR URL format")
