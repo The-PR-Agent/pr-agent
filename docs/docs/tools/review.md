@@ -74,6 +74,11 @@ for the authoritative default values.
         </td>
       </tr>
       <tr>
+        <td><b>persistent_finding_state</b></td>
+        <td>If set to true, PR-Agent persists structured review finding state across complete review runs, so findings can be resolved and reopened. Incremental and partial reviews do not resolve absent findings. Default is true.</td>
+
+      </tr>
+      <tr>
       <td><b>final_update_message</b></td>
       <td>When set to true, updating a persistent review comment during online commenting will automatically add a short comment with a link to the updated review in the pull request.</td>
       </tr>

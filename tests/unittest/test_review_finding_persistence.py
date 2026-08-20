@@ -85,3 +85,48 @@ def test_stateful_mode_is_disabled_for_generic_persistent_publisher(monkeypatch)
     provider.is_supported.return_value = True
     reviewer = _reviewer(provider)
     assert reviewer._review_finding_state_enabled() is False
+
+
+def test_malformed_state_marker_is_replaced_without_duplicate_comment():
+    header = "## PR Reviewer Guide 🔍"
+    body = f"{header}\n\nold review\n\n<!-- pr-agent-review-state:v1\nnot-json\n-->"
+    comment = SimpleNamespace(body=body)
+    provider = MagicMock()
+    provider.get_issue_comments.return_value = [comment]
+    provider.get_latest_commit_url.return_value = "commit-url"
+    provider.get_comment_url.return_value = "comment-url"
+
+    result = GitProvider.publish_persistent_comment_full(
+        provider,
+        "new review",
+        initial_header=header,
+        update_header=False,
+        final_update_message=False,
+        fallback_on_error=False,
+    )
+
+    assert result is comment
+    provider.edit_comment.assert_called_once_with(comment, "new review")
+    provider.publish_comment.assert_not_called()
+
+
+def test_persistent_update_uses_latest_matching_comment():
+    header = "## PR Reviewer Guide 🔍"
+    old = SimpleNamespace(body=f"{header}\n\nold review")
+    latest = SimpleNamespace(body=f"{header}\n\nlatest review")
+    provider = MagicMock()
+    provider.get_issue_comments.return_value = [old, latest]
+    provider.get_latest_commit_url.return_value = "commit-url"
+    provider.get_comment_url.return_value = "comment-url"
+
+    result = GitProvider.publish_persistent_comment_full(
+        provider,
+        "new review",
+        initial_header=header,
+        update_header=False,
+        final_update_message=False,
+        fallback_on_error=False,
+    )
+
+    assert result is latest
+    provider.edit_comment.assert_called_once_with(latest, "new review")
