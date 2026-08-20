@@ -308,7 +308,9 @@ class GiteaProvider(GitProvider):
         return self.last_commit.html_url if self.last_commit else ""
 
     def get_comment_url(self, comment) -> str:
-        return comment.html_url
+        if isinstance(comment, dict):
+            return comment.get("html_url") or comment.get("url") or ""
+        return getattr(comment, "html_url", "") or getattr(comment, "url", "")
 
     def publish_persistent_comment(self, pr_comment: str,
                                    initial_header: str,
@@ -366,11 +368,15 @@ class GiteaProvider(GitProvider):
 
     def edit_comment(self, comment, body : str):
         body = self.limit_output_characters(body, self.max_comment_chars)
+        if isinstance(comment, dict):
+            comment_id = comment.get("comment_id") or comment.get("id")
+        else:
+            comment_id = getattr(comment, "id", None)
         try:
             self.repo_api.edit_comment(
                 owner=self.owner,
                 repo=self.repo,
-                comment_id=comment.get("comment_id") if isinstance(comment, dict) else comment.id,
+                comment_id=comment_id,
                 comment=body
             )
         except ApiException as e:
