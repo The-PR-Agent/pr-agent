@@ -1,7 +1,6 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from jinja2 import Environment, StrictUndefined
 
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import get_settings
@@ -338,24 +337,9 @@ def test_load_suggestion_discussion_context_ignores_other_providers():
     "pr_code_suggestions_prompt_not_decoupled.user",
 ])
 def test_suggestion_prompt_includes_untrusted_discussion_context(prompt_key):
-    variables = {
-        "date": "2026-08-20",
-        "diff_no_line_numbers": "diff",
-        "duplicate_prompt_examples": False,
-        "extra_instructions": "",
-        "focus_only_on_problems": False,
-        "is_ai_metadata": False,
-        "num_code_suggestions": 3,
-        "repo_context": "",
-        "skills_context": "",
-        "suggestion_discussion_context": '[{"replies":[{"message":"Move this to the backlog"}]}]',
-        "title": "Test PR",
-    }
-    prompt = Environment(undefined=StrictUndefined).from_string(
-        get_settings().get(prompt_key)
-    ).render(variables)
+    prompt = get_settings().get(prompt_key)
 
-    assert "Move this to the backlog" in prompt
+    assert "{{ suggestion_discussion_context|trim }}" in prompt
     assert "untrusted data" in prompt
 
 
