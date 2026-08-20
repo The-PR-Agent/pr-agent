@@ -366,7 +366,8 @@ class GitProvider(ABC):
                                    update_header: bool = True,
                                    name='review',
                                    final_update_message=True,
-                                   as_thread: bool = False):
+                                   as_thread: bool = False,
+                                   fallback_on_error: bool = True):
         try:
             prev_comments = list(self.get_issue_comments())
             for comment in prev_comments:
@@ -395,7 +396,8 @@ class GitProvider(ABC):
                     return comment
         except Exception as e:
             get_logger().exception(f"Failed to update persistent review, error: {e}")
-            pass
+            if not fallback_on_error:
+                return None
         return self.publish_comment(pr_comment, **({'as_thread': True} if as_thread else {}))
 
     @abstractmethod
