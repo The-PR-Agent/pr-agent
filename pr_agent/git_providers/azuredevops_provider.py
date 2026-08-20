@@ -31,7 +31,7 @@ _FALLBACK_SUGGESTION_PATH_RE = re.compile(
     r"^`(?P<path>[^`]+)` \(lines (?P<start>\d+)-(?P<end>\d+)\)",
     re.MULTILINE,
 )
-_SUGGESTIONS_HEADER = "## PR Code Suggestions ✨"
+_SUGGESTIONS_HEADER_PREFIX = "## PR Code Suggestions"
 _FALLBACK_SUGGESTIONS_HEADER = "## Unanchored Code Suggestions"
 _MAX_DISCUSSION_CONTEXT_CHARS = 24000
 _MAX_DISCUSSION_REPLIES = 10
@@ -84,7 +84,7 @@ class AzureDevopsProvider(GitProvider):
 
     _INCREMENTAL_ANCHOR_PREFIXES = {
         "review": (PRReviewHeader.REGULAR.value, PRReviewHeader.INCREMENTAL.value),
-        "suggestions": ("## PR Code Suggestions", _FALLBACK_SUGGESTIONS_HEADER, "**Suggestion:**"),
+        "suggestions": (_SUGGESTIONS_HEADER_PREFIX, _FALLBACK_SUGGESTIONS_HEADER, "**Suggestion:**"),
     }
 
     def __init__(
