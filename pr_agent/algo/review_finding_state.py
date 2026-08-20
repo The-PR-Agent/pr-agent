@@ -1,4 +1,4 @@
-"""Persistent state helpers for cross-run review findings."""
+"""Persist review finding state across runs."""
 
 from __future__ import annotations
 
@@ -173,7 +173,10 @@ def _retained_findings(
         ),
         reverse=True,
     )
-    return sorted(active + resolved[:max(0, max_resolved_findings)], key=lambda finding: finding["finding_id"])
+    return sorted(
+        active + resolved[:max(0, max_resolved_findings)],
+        key=lambda finding: finding["finding_id"],
+    )
 
 
 def reconcile_review_findings(

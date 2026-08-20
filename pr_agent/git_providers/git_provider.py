@@ -370,7 +370,7 @@ class GitProvider(ABC):
                                    fallback_on_error: bool = True):
         try:
             prev_comments = list(self.get_issue_comments())
-            for comment in prev_comments:
+            for comment in reversed(prev_comments):
                 if comment.body.startswith(initial_header):
                     latest_commit_url = self.get_latest_commit_url()
                     comment_url = self.get_comment_url(comment)
