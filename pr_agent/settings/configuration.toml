@@ -295,6 +295,8 @@ expand_submodule_diffs = false
 feedback_on_draft_pr = false
 # Post the /review summary as a resolvable thread (discussion) instead of a plain note.
 publish_review_as_thread = false
+# Post the /improve suggestions comment as a resolvable thread (discussion) instead of a plain note.
+publish_improve_as_thread = false
 pr_commands = [
     "/describe --pr_description.final_update_message=false",
     "/review",

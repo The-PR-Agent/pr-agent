@@ -851,6 +851,9 @@ class GitLabProvider(GitProvider):
     def should_publish_review_as_thread(self) -> bool:
         return bool(get_settings().get("GITLAB.PUBLISH_REVIEW_AS_THREAD", False))
 
+    def should_publish_improve_as_thread(self) -> bool:
+        return bool(get_settings().get("GITLAB.PUBLISH_IMPROVE_AS_THREAD", False))
+
     def publish_persistent_comment(self, pr_comment: str,
                                    initial_header: str,
                                    update_header: bool = True,
