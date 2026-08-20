@@ -1,5 +1,7 @@
+import shlex
 from types import SimpleNamespace
 from unittest.mock import MagicMock
+from urllib.parse import unquote
 
 import pytest
 
@@ -62,7 +64,7 @@ def test_addressed_line_comment_becomes_ask_line_with_history_ids():
     )
 
     assert command == ("/ask_line --line_start=8 --line_end=10 --side=right "
-                       "--file_name=\"/src/app.cs\" --comment_id=22 "
+                       "--file_name=%2Fsrc%2Fapp.cs --file_name_encoded=true --comment_id=22 "
                        "--origin_comment_id=31 can this throw?")
 
 
@@ -110,7 +112,7 @@ def test_addressed_comment_uses_available_line_position():
     command = webhook.handle_line_comment("@<agent-guid> check this", 22, 31, provider)
 
     assert command == ("/ask_line --line_start=10 --line_end=10 --side=right "
-                       "--file_name=\"/src/app.cs\" --comment_id=22 "
+                       "--file_name=%2Fsrc%2Fapp.cs --file_name_encoded=true --comment_id=22 "
                        "--origin_comment_id=31 check this")
 
 
@@ -165,7 +167,7 @@ def test_invalid_line_range_becomes_threaded_ask():
     assert command == "/ask --comment_id=22 --origin_comment_id=31 check this"
 
 
-def test_line_comment_quotes_file_path():
+def test_line_comment_encodes_file_path():
     provider = MagicMock()
     provider.get_agent_mention_aliases.return_value = AGENT_ALIASES
     provider.get_thread_context.return_value = SimpleNamespace(
@@ -178,7 +180,28 @@ def test_line_comment_quotes_file_path():
 
     command = webhook.handle_line_comment("@<agent-guid> check this", 22, 31, provider)
 
-    assert '--file_name="/src/folder name/app.cs"' in command
+    assert "--file_name=%2Fsrc%2Ffolder%20name%2Fapp.cs" in command
+    assert "--file_name_encoded=true" in command
+
+
+def test_line_comment_file_path_survives_request_parsing():
+    provider = MagicMock()
+    provider.get_agent_mention_aliases.return_value = AGENT_ALIASES
+    provider.get_thread_context.return_value = SimpleNamespace(
+        file_path="/src/folder name/don't.py",
+        left_file_start=None,
+        left_file_end=None,
+        right_file_start=SimpleNamespace(line=8),
+        right_file_end=SimpleNamespace(line=8),
+    )
+
+    command = webhook.handle_line_comment("@<agent-guid> check this", 22, 31, provider)
+    lexer = shlex.shlex(command.replace("'", "\\'"), posix=True)
+    lexer.whitespace_split = True
+    _, *args = list(lexer)
+    values = dict(arg[2:].split("=", 1) for arg in args if arg.startswith("--") and "=" in arg)
+
+    assert unquote(values["file_name"]) == "/src/folder name/don't.py"
 
 
 def test_empty_slash_ask_is_preserved():

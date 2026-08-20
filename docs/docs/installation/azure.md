@@ -104,12 +104,18 @@ org = "https://dev.azure.com/YOUR_ORGANIZATION/"
 
 ## Azure DevOps Webhook
 
-To trigger from an Azure webhook, you need to manually [add a webhook](https://learn.microsoft.com/en-us/azure/devops/service-hooks/services/webhooks?view=azure-devops).
-Use the "Pull request created" type to trigger a review, or "Pull request commented on" to trigger a supported `/<command> <args>` comment. API v2.0 is required for comment events.
+To trigger from an Azure webhook, you need to manually
+[add a webhook](https://learn.microsoft.com/en-us/azure/devops/service-hooks/services/webhooks?view=azure-devops).
+Use the "Pull request created" type to trigger a review, or "Pull request commented on" to trigger a supported
+`/<command> <args>` comment. API v2.0 is required for comment events.
 
-Questions can also address the agent without a slash command. Mention the Azure DevOps identity used by PR-Agent at the start of a PR or line comment. PR-Agent discovers that identity from its earlier comments, answers in the same thread, and uses the existing thread discussion as context. Generic phrases such as `hi agent` do not trigger a response.
+Questions can also address the agent without a slash command. Mention the Azure DevOps identity used by PR-Agent at
+the start of a PR or line comment. PR-Agent discovers that identity from its earlier comments, answers in the same
+thread, and uses the existing thread discussion as context. Generic phrases such as `hi agent` do not trigger a
+response.
 
-For the first mention before PR-Agent has posted on the pull request, or when its Azure DevOps identity changes, configure the identity ID, display name, or unique name. A list can be used during an identity transition:
+For the first mention before PR-Agent has posted on the pull request, or when its Azure DevOps identity changes,
+configure the identity ID, display name, or unique name. A list can be used during an identity transition:
 
 ```toml
 [azure_devops_server]

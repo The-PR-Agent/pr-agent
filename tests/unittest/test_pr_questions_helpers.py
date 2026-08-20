@@ -13,6 +13,8 @@ import pytest
 
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import AzureDevopsProvider
+from pr_agent.git_providers.git_provider import GitProvider
+from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
 from pr_agent.tools.pr_line_questions import PR_LineQuestions
 from pr_agent.tools.pr_questions import PRQuestions
@@ -32,7 +34,10 @@ def _make_pr_questions(question_str: str = "", prediction: str = "", git_provide
     obj.question_str = question_str
     obj.prediction = prediction
     obj.vars = {}
-    obj.git_provider = git_provider if git_provider is not None else MagicMock()
+    if git_provider is None:
+        git_provider = MagicMock()
+        git_provider.supports_threaded_pr_questions.return_value = False
+    obj.git_provider = git_provider
     return obj
 
 
@@ -40,7 +45,19 @@ def _make_line_questions() -> PR_LineQuestions:
     obj = PR_LineQuestions.__new__(PR_LineQuestions)
     obj.vars = {}
     obj.git_provider = MagicMock()
+    obj.git_provider.supports_threaded_pr_questions.return_value = False
+    obj.git_provider.supports_line_question_history.return_value = False
     return obj
+
+
+def test_question_capabilities_are_provider_driven():
+    provider = MagicMock()
+
+    assert GitProvider.supports_threaded_pr_questions(provider) is False
+    assert GitProvider.supports_line_question_history(provider) is False
+    assert AzureDevopsProvider.supports_threaded_pr_questions(provider) is True
+    assert AzureDevopsProvider.supports_line_question_history(provider) is True
+    assert GithubProvider.supports_line_question_history(provider) is True
 
 
 # ---------------------------------------------------------------------------
@@ -190,6 +207,7 @@ class TestPublishPrAnswer:
         settings = get_settings()
         saved = snapshot_settings(("comment_id",))
         provider = MagicMock(spec=AzureDevopsProvider)
+        provider.supports_threaded_pr_questions.return_value = True
         pr = _make_pr_questions(git_provider=provider)
         try:
             settings.set("comment_id", 42)
@@ -204,6 +222,7 @@ class TestPublishPrAnswer:
         settings = get_settings()
         saved = snapshot_settings(("comment_id",))
         provider = MagicMock()
+        provider.supports_threaded_pr_questions.return_value = False
         pr = _make_pr_questions(git_provider=provider)
         try:
             settings.set("comment_id", 42)
@@ -218,6 +237,7 @@ class TestPublishPrAnswer:
         settings = get_settings()
         saved = snapshot_settings(("comment_id",))
         provider = MagicMock(spec=AzureDevopsProvider)
+        provider.supports_threaded_pr_questions.return_value = True
         pr = _make_pr_questions(git_provider=provider)
         try:
             settings.set("comment_id", "")
@@ -234,6 +254,7 @@ class TestLoadPrConversationHistory:
         settings = get_settings()
         saved = snapshot_settings(("comment_id", "origin_comment_id", "pr_questions.use_conversation_history"))
         provider = MagicMock(spec=AzureDevopsProvider)
+        provider.supports_threaded_pr_questions.return_value = True
         provider.get_review_thread_comments.return_value = [
             SimpleNamespace(id=10, body="Original suggestion", user=SimpleNamespace(login="agent")),
             SimpleNamespace(id=11, body="Current question", user=SimpleNamespace(login="alice")),
@@ -255,6 +276,7 @@ class TestLoadPrConversationHistory:
         settings = get_settings()
         saved = snapshot_settings(("comment_id", "pr_questions.use_conversation_history"))
         provider = MagicMock()
+        provider.supports_threaded_pr_questions.return_value = False
         pr = _make_pr_questions(git_provider=provider)
         try:
             settings.set("comment_id", 20)
@@ -270,6 +292,7 @@ class TestLoadPrConversationHistory:
         settings = get_settings()
         saved = snapshot_settings(("comment_id", "pr_questions.use_conversation_history"))
         provider = MagicMock()
+        provider.supports_threaded_pr_questions.return_value = False
         pr = _make_pr_questions(git_provider=provider)
         try:
             settings.set("comment_id", 20)
@@ -330,12 +353,38 @@ def line_question_settings():
     truly removed during teardown, rather than being restored as ``None``.
     """
     settings = get_settings()
-    keys = ("comment_id", "origin_comment_id", "file_name", "line_end")
+    keys = ("comment_id", "origin_comment_id", "file_name", "file_name_encoded", "line_start", "line_end", "side")
     saved = snapshot_settings(keys)
     try:
         yield settings
     finally:
         restore_settings(saved)
+
+
+@pytest.mark.asyncio
+async def test_line_question_decodes_webhook_file_path(monkeypatch, line_question_settings):
+    file_name = "/src/folder name/don't.py"
+    line_question_settings.set("file_name", "%2Fsrc%2Ffolder%20name%2Fdon%27t.py")
+    line_question_settings.set("file_name_encoded", True)
+    line_question_settings.set("line_start", 8)
+    line_question_settings.set("line_end", 8)
+    line_question_settings.set("side", "right")
+    line_question_settings.set("comment_id", 22)
+
+    lq = _make_line_questions()
+    lq.git_provider.get_diff_files.return_value = [SimpleNamespace(filename=file_name, patch="diff")]
+    extract_hunk = MagicMock(return_value=("patch", "selected"))
+
+    async def get_answer(*args, **kwargs):
+        return "answer"
+
+    monkeypatch.setattr("pr_agent.tools.pr_line_questions.extract_hunk_lines_from_patch", extract_hunk)
+    monkeypatch.setattr("pr_agent.tools.pr_line_questions.retry_with_fallback_models", get_answer)
+
+    await lq.run()
+
+    extract_hunk.assert_called_once_with("diff", file_name, line_start=8, line_end=8, side="right")
+    lq.git_provider.reply_to_comment_from_comment_id.assert_called_once_with(22, "answer")
 
 
 class TestLoadConversationHistory:
@@ -398,6 +447,7 @@ class TestLoadConversationHistory:
         ]
         lq = _make_line_questions()
         lq.git_provider = MagicMock(spec=AzureDevopsProvider)
+        lq.git_provider.supports_threaded_pr_questions.return_value = True
         lq.git_provider.get_review_thread_comments = MagicMock(return_value=comments)
 
         assert lq._load_conversation_history() == "1. alice: Earlier context"

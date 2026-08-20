@@ -58,7 +58,9 @@ num_code_suggestions_per_chunk = ...
 
 ### Incremental suggestions
 
-On Azure DevOps, run `/improve -i` to analyze only changes made after the latest code-suggestions pass. The first incremental run analyzes the full pull request when no earlier suggestions comment exists. A later run with no new changes exits without calling the model.
+On Azure DevOps, run `/improve -i` to analyze only changes made after the latest code-suggestions pass. The first
+incremental run analyzes the full pull request when no earlier suggestions comment exists. A later run with no new
+changes exits without calling the model.
 
 ### Table vs Committable code comments
 
@@ -219,11 +221,18 @@ Where x represents the minimum score threshold (>=) for suggestions to be presen
 
 By default, PR-Agent re-posts identical inline code comments on every run, which clutters the discussion, particularly on GitLab. The persistent inline comments feature prevents this by skipping the re-posting of comments that are already present from an earlier run. This is achieved by embedding a hidden HTML-comment marker with a short fingerprint in each posted comment, allowing PR-Agent to scan existing comment bodies on later runs to identify and skip duplicates.
 
-Two fingerprints are used and matched with OR logic: one over the comment text (file, line, normalised text) and one over the proposed code block when present. This approach catches a re-emitted finding even when the model rephrases the prose or slightly changes the code. The feature is opt-in and off by default, and is implemented for the GitHub, GitLab, and Azure DevOps providers.
+Two fingerprints are used and matched with OR logic: one over the comment text (file, line, normalised text) and one
+over the proposed code block when present. This approach catches a re-emitted finding even when the model rephrases
+the prose or slightly changes the code. The feature is opt-in and off by default, and is implemented for the GitHub,
+GitLab, and Azure DevOps providers.
 
-Azure DevOps fingerprints include the complete line range and normalized finding text, so the same issue at another location remains eligible. Active suggestion threads are marked as fixed when their proposed code exactly matches the current file. Existing terminal statuses are preserved.
+Azure DevOps fingerprints include the complete line range and normalized finding text, so the same issue at another
+location remains eligible. Active suggestion threads are marked as fixed when their proposed code exactly matches the
+current file. Existing terminal statuses are preserved.
 
-Azure DevOps also includes earlier suggestion threads and their replies as context on the next suggestions pass. A regular `/improve` reviews the full current pull request while avoiding issues that were already raised, addressed, rejected, or deferred. Use `/improve -i` to review only changes since the previous suggestions pass.
+Azure DevOps also includes earlier suggestion threads and their replies as context on the next suggestions pass. A
+regular `/improve` reviews the full current pull request while avoiding issues that were already raised, addressed,
+rejected, or deferred. Use `/improve -i` to review only changes since the previous suggestions pass.
 
 To enable it, use the following setting:
 
@@ -296,7 +305,8 @@ Note: Chunking is primarily relevant for large PRs. For most PRs (up to 600 line
       </tr>
       <tr>
         <td><b>focus_only_on_problems</b></td>
-        <td>If set to true, suggestions will focus primarily on identifying and fixing code problems, and less on style considerations like best practices, maintainability, or readability. Default is true.</td>
+        <td>If set to true, suggestions will focus primarily on identifying and fixing code problems, and less on
+        style considerations like best practices, maintainability, or readability. Default is true.</td>
       </tr>
       <tr>
         <td><b>persistent_comment</b></td>

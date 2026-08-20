@@ -1,6 +1,8 @@
 import datetime as _dt
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from pr_agent.git_providers import AzureDevopsProvider
 from pr_agent.git_providers.azuredevops_provider import (_AzureCommitAdapter,
                                                          _to_naive_utc)
@@ -95,14 +97,18 @@ class TestGetIncrementalCommits:
         assert provider.supports_incremental_kind("suggestions") is True
         assert provider.supports_incremental_kind("unknown") is False
 
-    def test_suggestions_kind_anchors_on_latest_improve_comment(self):
+    @pytest.mark.parametrize("suggestions_header", [
+        "## PR Code Suggestions ✨",
+        "## Unanchored Code Suggestions",
+    ])
+    def test_suggestions_kind_anchors_on_latest_improve_comment(self, suggestions_header):
         provider = self._make_provider()
         old = _raw_commit("old", "seen", _dt.datetime(2024, 5, 1), parents=["base"])
         new = _raw_commit("new", "added", _dt.datetime(2024, 6, 2), parents=["old"])
         provider.azure_devops_client.get_pull_request_commits.return_value = [new, old]
         provider.get_issue_comments = MagicMock(return_value=[
             _comment("## PR Reviewer Guide", _dt.datetime(2024, 6, 2)),
-            _comment("## PR Code Suggestions ✨", _dt.datetime(2024, 6, 1)),
+            _comment(suggestions_header, _dt.datetime(2024, 6, 1)),
         ])
         changes = MagicMock()
         changes.changes = [{"item": {"path": "/new.py", "gitObjectType": "blob"}}]
@@ -111,7 +117,7 @@ class TestGetIncrementalCommits:
         provider.get_incremental_commits(IncrementalPR(True), kind="suggestions")
 
         assert provider.incremental.is_incremental is True
-        assert provider.previous_review.body.startswith("## PR Code Suggestions")
+        assert provider.previous_review.body == suggestions_header
         assert provider.incremental.last_seen_commit_sha == "old"
         assert provider.unreviewed_files_map == {"/new.py": "/new.py"}
 

@@ -9,8 +9,7 @@ from pr_agent.algo.pr_processing import get_pr_diff, retry_with_fallback_models
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import ModelType
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers import (AzureDevopsProvider, GitLabProvider,
-                                    get_git_provider)
+from pr_agent.git_providers import GitLabProvider, get_git_provider
 from pr_agent.git_providers.git_provider import get_main_pr_language
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
@@ -83,12 +82,12 @@ class PRQuestions:
 
     def _publish_answer(self, answer: str):
         comment_id = get_settings().get("comment_id", "")
-        if comment_id and isinstance(self.git_provider, AzureDevopsProvider):
+        if comment_id and self.git_provider.supports_threaded_pr_questions():
             return self.git_provider.reply_to_comment_from_comment_id(comment_id, answer)
         return self.git_provider.publish_comment(answer)
 
     def _load_conversation_history(self) -> str:
-        if (not isinstance(self.git_provider, AzureDevopsProvider)
+        if (not self.git_provider.supports_threaded_pr_questions()
                 or not get_settings().pr_questions.use_conversation_history):
             return ""
         comment_id = get_settings().get("comment_id", "")

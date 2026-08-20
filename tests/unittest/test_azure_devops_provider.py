@@ -361,7 +361,7 @@ class TestAzureDevopsProviderSuggestionAnchoring:
 
         assert result is True
         body = _created_threads(provider)[0].comments[0].content
-        assert body.startswith("## PR Code Suggestions")
+        assert not body.startswith("## PR Code Suggestions")
         assert "<!-- pr-agent-dedup:" in body
         assert "<!-- pr-agent-dedup-code:" in body
 
@@ -517,7 +517,7 @@ class TestAzureDevopsProviderSuggestionAnchoring:
         provider.publish_code_suggestions([_suggestion("` /src/Api/Controllers/Removed.cs `")])
 
         body = _created_threads(provider)[-1].comments[0].content
-        assert body.startswith("## PR Code Suggestions")
+        assert body.startswith("## Unanchored Code Suggestions")
         assert "`/src/Api/Controllers/Removed.cs` (lines 10-12)" in body
 
     def test_aggregate_fallback_retries_suggestions_individually(self):

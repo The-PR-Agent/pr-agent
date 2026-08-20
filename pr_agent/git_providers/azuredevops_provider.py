@@ -32,6 +32,7 @@ _FALLBACK_SUGGESTION_PATH_RE = re.compile(
     re.MULTILINE,
 )
 _SUGGESTIONS_HEADER = "## PR Code Suggestions ✨"
+_FALLBACK_SUGGESTIONS_HEADER = "## Unanchored Code Suggestions"
 _MAX_DISCUSSION_CONTEXT_CHARS = 24000
 _MAX_DISCUSSION_REPLIES = 10
 _MAX_DISCUSSION_THREADS = 50
@@ -83,7 +84,7 @@ class AzureDevopsProvider(GitProvider):
 
     _INCREMENTAL_ANCHOR_PREFIXES = {
         "review": (PRReviewHeader.REGULAR.value, PRReviewHeader.INCREMENTAL.value),
-        "suggestions": ("## PR Code Suggestions", "**Suggestion:**"),
+        "suggestions": ("## PR Code Suggestions", _FALLBACK_SUGGESTIONS_HEADER, "**Suggestion:**"),
     }
 
     def __init__(
@@ -158,14 +159,16 @@ class AzureDevopsProvider(GitProvider):
             return []
         try:
             self.publish_comment(
-                f"{_SUGGESTIONS_HEADER}\n\n" + "\n\n---\n\n".join(section for _, section in prepared)
+                f"{_FALLBACK_SUGGESTIONS_HEADER}\n\n" + "\n\n---\n\n".join(
+                    section for _, section in prepared
+                )
             )
         except Exception as e:
             get_logger().exception(f"Azure failed to publish code suggestion fallback, error: {e}")
             published = []
             for suggestion, section in prepared:
                 try:
-                    self.publish_comment(f"{_SUGGESTIONS_HEADER}\n\n{section}")
+                    self.publish_comment(f"{_FALLBACK_SUGGESTIONS_HEADER}\n\n{section}")
                 except Exception as fallback_error:
                     get_logger().exception(
                         f"Azure failed to publish code suggestion fallback, error: {fallback_error}")
@@ -378,6 +381,15 @@ class AzureDevopsProvider(GitProvider):
 
     def supports_incremental_kind(self, kind: str) -> bool:
         return kind in self._INCREMENTAL_ANCHOR_PREFIXES
+
+    def supports_code_suggestion_state(self) -> bool:
+        return True
+
+    def supports_threaded_pr_questions(self) -> bool:
+        return True
+
+    def supports_line_question_history(self) -> bool:
+        return True
 
     def set_pr(self, pr_url: str):
         self.diff_files = None

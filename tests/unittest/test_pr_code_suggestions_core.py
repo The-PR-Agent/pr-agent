@@ -326,6 +326,7 @@ def test_load_suggestion_discussion_context_degrades_to_empty():
 
 def test_load_suggestion_discussion_context_ignores_other_providers():
     provider = MagicMock()
+    provider.supports_code_suggestion_state.return_value = False
     tool = _make_tool(provider)
 
     assert tool._load_suggestion_discussion_context() == ""
@@ -347,6 +348,13 @@ def test_supports_incremental_kind_defaults_to_false_on_base_provider():
     # The base-class default must be "no support" so tools fall back to a full run
     # on providers that never implemented kind-aware incremental anchoring.
     assert GitProvider.supports_incremental_kind(MagicMock(), "suggestions") is False
+
+
+def test_code_suggestion_state_is_provider_driven():
+    provider = MagicMock()
+
+    assert GitProvider.supports_code_suggestion_state(provider) is False
+    assert AzureDevopsProvider.supports_code_suggestion_state(provider) is True
 
 
 @pytest.mark.asyncio
@@ -389,6 +397,39 @@ def test_azure_persistent_comment_updates_without_history():
         False,
     )
     provider.publish_comment.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_azure_no_suggestions_updates_persistent_comment_without_history():
+    provider = MagicMock(spec=AzureDevopsProvider)
+    provider.supports_code_suggestion_state.return_value = True
+    tool = _make_tool(provider)
+    settings = get_settings()
+    original_persistent = settings.pr_code_suggestions.persistent_comment
+    original_publish_empty = settings.pr_code_suggestions.publish_output_no_suggestions
+    original_history = settings.pr_code_suggestions.max_history_len
+    original_publish_output = settings.config.publish_output
+    try:
+        settings.pr_code_suggestions.persistent_comment = True
+        settings.pr_code_suggestions.publish_output_no_suggestions = True
+        settings.pr_code_suggestions.max_history_len = 0
+        settings.config.publish_output = True
+
+        await tool.publish_no_suggestions()
+
+        provider.publish_persistent_comment.assert_called_once_with(
+            "## PR Code Suggestions ✨\n\nNo code suggestions found for the PR.",
+            "## PR Code Suggestions ✨",
+            True,
+            "suggestions",
+            False,
+        )
+        provider.publish_comment.assert_not_called()
+    finally:
+        settings.pr_code_suggestions.persistent_comment = original_persistent
+        settings.pr_code_suggestions.publish_output_no_suggestions = original_publish_empty
+        settings.pr_code_suggestions.max_history_len = original_history
+        settings.config.publish_output = original_publish_output
 
 
 def test_persistent_update_survives_progress_cleanup_failure():

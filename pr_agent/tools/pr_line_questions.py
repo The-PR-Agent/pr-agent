@@ -1,5 +1,6 @@
 import copy
 from functools import partial
+from urllib.parse import unquote
 
 from jinja2 import Environment, StrictUndefined
 
@@ -10,9 +11,8 @@ from pr_agent.algo.pr_processing import retry_with_fallback_models
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import ModelType
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers import AzureDevopsProvider, get_git_provider
+from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.git_provider import get_main_pr_language
-from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.log import get_logger
 
 
@@ -34,7 +34,7 @@ class PR_LineQuestions:
             "full_hunk": "",
             "selected_lines": "",
             "conversation_history": "",
-            "is_azure_devops": isinstance(self.git_provider, AzureDevopsProvider),
+            "is_azure_devops": self.git_provider.supports_threaded_pr_questions(),
             "extra_instructions": get_settings().pr_questions.extra_instructions,
         }
         self.token_handler = TokenHandler(self.git_provider.pr,
@@ -58,7 +58,7 @@ class PR_LineQuestions:
         #     self.git_provider.publish_comment("Preparing answer...", is_temporary=True)
 
         if (get_settings().pr_questions.use_conversation_history
-                and isinstance(self.git_provider, (AzureDevopsProvider, GithubProvider))):
+                and self.git_provider.supports_line_question_history()):
             conversation_history = self._load_conversation_history()
             self.vars["conversation_history"] = conversation_history
 
@@ -68,6 +68,8 @@ class PR_LineQuestions:
         line_end = get_settings().get('line_end', '')
         side = get_settings().get('side', 'RIGHT')
         file_name = get_settings().get('file_name', '')
+        if get_settings().get("file_name_encoded", False):
+            file_name = unquote(file_name)
         comment_id = get_settings().get('comment_id', '')
         if ask_diff:
             self.patch_with_lines, self.selected_lines = extract_hunk_lines_from_patch(ask_diff,
@@ -108,7 +110,7 @@ class PR_LineQuestions:
         """
         comment_id = get_settings().get('comment_id', '')
         origin_comment_id = (get_settings().get("origin_comment_id", comment_id)
-                             if isinstance(self.git_provider, AzureDevopsProvider) else comment_id)
+                             if self.git_provider.supports_threaded_pr_questions() else comment_id)
         file_path = get_settings().get('file_name', '')
         line_number = get_settings().get('line_end', '')
 

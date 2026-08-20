@@ -103,6 +103,9 @@ class GithubProvider(GitProvider):
             return False
         return True
 
+    def supports_line_question_history(self) -> bool:
+        return True
+
     def _get_owner_and_repo_path(self, given_url: str) -> str:
         try:
             repo_path = None

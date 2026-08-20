@@ -7,7 +7,7 @@ import json
 import os
 import re
 import secrets
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
 import uvicorn
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
@@ -148,8 +148,9 @@ def handle_line_comment(body: str, thread_id: int, comment_id: int, provider: Az
         get_logger().info("Invalid line range in thread context", artifact={"thread_context": thread_context})
         return threaded_question
 
+    encoded_path = quote(path, safe="")
     return (f"/ask_line --line_start={start_line} --line_end={end_line} --side={side} "
-            f"--file_name={json.dumps(path)} --comment_id={thread_id} "
+            f"--file_name={encoded_path} --file_name_encoded=true --comment_id={thread_id} "
             f"--origin_comment_id={comment_id} {question}").rstrip()
 
 # currently only basic auth is supported with azure webhooks

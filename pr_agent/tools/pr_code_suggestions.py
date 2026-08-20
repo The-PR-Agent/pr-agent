@@ -28,8 +28,8 @@ from pr_agent.algo.utils import (ModelType, clip_tokens, get_max_tokens,
                                  show_relevant_configurations,
                                  show_run_details)
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers import (AzureDevopsProvider, GithubProvider,
-                                    GitLabProvider, get_git_provider,
+from pr_agent.git_providers import (GithubProvider, GitLabProvider,
+                                    get_git_provider,
                                     get_git_provider_with_context)
 from pr_agent.git_providers.git_provider import (GitProvider, IncrementalPR,
                                                  get_main_pr_language)
@@ -119,7 +119,7 @@ class PRCodeSuggestions:
         self.progress_response = None
 
     def _load_suggestion_discussion_context(self) -> str:
-        if not isinstance(self.git_provider, AzureDevopsProvider):
+        if not self.git_provider.supports_code_suggestion_state():
             return ""
         try:
             return self.git_provider.get_code_suggestion_thread_context()
@@ -153,7 +153,7 @@ class PRCodeSuggestions:
     async def run(self):
         init_run_details()
         try:
-            if isinstance(self.git_provider, AzureDevopsProvider):
+            if self.git_provider.supports_code_suggestion_state():
                 try:
                     fixed = self.git_provider.reconcile_code_suggestion_threads()
                     if fixed:
@@ -307,7 +307,19 @@ class PRCodeSuggestions:
                 pr_body += show_run_details(self.git_provider.is_supported("gfm_markdown"))
             get_logger().warning('No code suggestions found for the PR.')
             get_logger().debug(f"PR output", artifact=pr_body)
-            if self.progress_response:
+            if (get_settings().pr_code_suggestions.persistent_comment
+                    and self.git_provider.supports_code_suggestion_state()):
+                self.publish_persistent_comment_with_history(
+                    self.git_provider,
+                    pr_body,
+                    initial_header="## PR Code Suggestions ✨",
+                    update_header=True,
+                    name="suggestions",
+                    final_update_message=False,
+                    max_previous_comments=get_settings().pr_code_suggestions.max_history_len,
+                    progress_response=self.progress_response,
+                )
+            elif self.progress_response:
                 self.git_provider.edit_comment(self.progress_response, body=pr_body)
             else:
                 self.git_provider.publish_comment(pr_body)
@@ -349,14 +361,16 @@ class PRCodeSuggestions:
             if git_provider._publish_check_run(pr_comment, name):
                 return
 
-        if isinstance(git_provider, AzureDevopsProvider) and max_previous_comments <= 0:
-            return git_provider.publish_persistent_comment(
+        if git_provider.supports_code_suggestion_state() and max_previous_comments <= 0:
+            result = git_provider.publish_persistent_comment(
                 pr_comment,
                 initial_header,
                 update_header,
                 name,
                 final_update_message,
             )
+            PRCodeSuggestions._cleanup_progress_comment(git_provider, progress_response)
+            return result
 
         def _extract_link(comment_text: str):
             r = re.compile(r"<!--.*?-->")
@@ -465,6 +479,16 @@ class PRCodeSuggestions:
         else:
             new_comment = git_provider.publish_comment(pr_comment)
         return new_comment
+
+    @staticmethod
+    def _cleanup_progress_comment(git_provider: GitProvider, progress_response):
+        if not progress_response:
+            return
+        try:
+            git_provider.edit_comment(progress_response, "Code suggestions updated in the persistent thread above.")
+            git_provider.remove_comment(progress_response)
+        except Exception as e:
+            get_logger().warning(f"Failed to clean up code suggestions progress comment: {e}")
 
 
     def extract_link(self, s):
