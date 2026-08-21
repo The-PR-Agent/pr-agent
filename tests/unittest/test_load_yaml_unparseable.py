@@ -1,4 +1,6 @@
-"""An unparseable AI prediction must degrade, not crash the tool that asked for it."""
+"""Degrade gracefully when an AI prediction cannot be parsed as YAML."""
+import pytest
+
 from pr_agent.algo.utils import load_yaml
 
 UNPARSEABLE = "::: not : valid : yaml :::\n\t- ["
@@ -15,18 +17,18 @@ def test_a_parseable_prediction_is_unchanged():
 
 
 def test_membership_test_does_not_raise():
-    """`'review' not in data` is what pr_reviewer does first; it must not raise."""
+    """Support `'review' not in data`, which is the first thing pr_reviewer does."""
     data = load_yaml(UNPARSEABLE)
     assert "review" not in data
 
 
 def test_get_does_not_raise():
-    """`.get(...)` is what pr_description and pr_help_message do first."""
+    """Support `.get(...)`, which is the first thing pr_description and pr_help_message do."""
     assert load_yaml(UNPARSEABLE).get("pr_files", []) == []
 
 
 def test_reviewer_reports_the_parse_failure_instead_of_crashing():
-    """pr_reviewer's own 'Failed to parse review data' path becomes reachable."""
+    """Reach pr_reviewer's own 'Failed to parse review data' path."""
     from pr_agent.tools.pr_reviewer import PRReviewer
 
     reviewer = PRReviewer.__new__(PRReviewer)
@@ -36,7 +38,7 @@ def test_reviewer_reports_the_parse_failure_instead_of_crashing():
 
 
 def test_code_suggestions_returns_an_empty_list_instead_of_crashing():
-    """pr_code_suggestions subscripts the result, so it needs its own guard."""
+    """Guard pr_code_suggestions, which subscripts the parsed result."""
     from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 
     tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
@@ -45,8 +47,7 @@ def test_code_suggestions_returns_an_empty_list_instead_of_crashing():
 
 
 def test_generate_labels_membership_check_does_not_raise():
-    """pr_generate_labels opens _prepare_labels with `'labels' in self.data`, which used to
-    raise TypeError on a None result."""
+    """Support `'labels' in self.data`, which pr_generate_labels does before anything else."""
     from pr_agent.tools.pr_generate_labels import PRGenerateLabels
 
     tool = PRGenerateLabels.__new__(PRGenerateLabels)
@@ -55,3 +56,14 @@ def test_generate_labels_membership_check_does_not_raise():
 
     assert tool.data == {}
     assert "labels" not in tool.data
+
+
+@pytest.mark.parametrize("payload", ["code_suggestions:\n", "code_suggestions: 5\n",
+                                     "code_suggestions:\n  a: 1\n"])
+def test_a_non_list_code_suggestions_value_is_rejected(payload):
+    """Return an empty result when code_suggestions is present but not a list."""
+    from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
+
+    tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
+
+    assert tool._prepare_pr_code_suggestions(payload) == {"code_suggestions": []}
