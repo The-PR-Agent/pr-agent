@@ -63,7 +63,14 @@ class PRCodeSuggestions:
             self.git_provider.get_languages(), self.git_provider.get_files()
         )
 
-        num_code_suggestions = int(get_settings().pr_code_suggestions.num_code_suggestions_per_chunk)
+        raw_num_code_suggestions = get_settings().pr_code_suggestions.num_code_suggestions_per_chunk
+        try:
+            num_code_suggestions = int(raw_num_code_suggestions)
+        except (TypeError, ValueError):
+            num_code_suggestions = 3
+            get_logger().warning(
+                f"num_code_suggestions_per_chunk is not a number ({raw_num_code_suggestions!r}), "
+                f"using {num_code_suggestions}")
 
         self.ai_handler = ai_handler()
         self.ai_handler.main_pr_language = self.main_language
