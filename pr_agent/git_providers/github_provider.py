@@ -963,7 +963,8 @@ class GithubProvider(GitProvider):
         # Cache per org: global settings change rarely, so avoid a lookup (and repeated 403/404
         # fallbacks) on every webhook event.
         return get_cached_global_settings(
-            f"github:{repo_owner}", lambda: self._fetch_global_repo_settings(repo_owner))
+            f"github:{getattr(self, 'base_url', '')}:{repo_owner}",
+            lambda: self._fetch_global_repo_settings(repo_owner))
 
     def _fetch_global_repo_settings(self, repo_owner):
         try:
