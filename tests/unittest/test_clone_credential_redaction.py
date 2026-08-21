@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 
 from pr_agent.git_providers.git_provider import redact_credentials
@@ -47,6 +49,10 @@ class TestCloneUrlValidationLogs:
 
     Each provider derives a value from a configured base URL and prints it next to the
     redacted repository URL, so those derived values must be redacted too.
+
+    The providers are built with __new__ and given only the attributes the method under
+    test reads: their __init__ performs network setup, and subclassing to override it
+    would leave a subclass whose __init__ never calls super().
     """
 
     @staticmethod
@@ -68,15 +74,10 @@ class TestCloneUrlValidationLogs:
         any userinfo the configured URL embeds."""
         from pr_agent.git_providers.gitlab_provider import GitLabProvider
 
-        class Provider(GitLabProvider):
-            def __init__(self):
-                class _Client:
-                    oauth_token = None
-                    private_token = None
+        provider = GitLabProvider.__new__(GitLabProvider)
+        provider.gl = SimpleNamespace(oauth_token=None, private_token=None)
 
-                self.gl = _Client()
-
-        logged = self._capture(lambda: Provider()._prepare_clone_url_with_token(
+        logged = self._capture(lambda: provider._prepare_clone_url_with_token(
             "https://oauth2:glpat-SECRET@gitlab.example.com/team/docs.git"))
 
         assert logged, "nothing was logged, so the assertion below would be vacuous"
@@ -87,15 +88,11 @@ class TestCloneUrlValidationLogs:
         userinfo but loses the scheme the redaction regex anchors on."""
         from pr_agent.git_providers.github_provider import GithubProvider
 
-        class Provider(GithubProvider):
-            def __init__(self):
-                class _Auth:
-                    token = "ghp_TOKEN"
+        provider = GithubProvider.__new__(GithubProvider)
+        provider.auth = SimpleNamespace(token="ghp_TOKEN")
+        provider.base_url_html = "https://user:GHSECRET@ghe.example"
 
-                self.auth = _Auth()
-                self.base_url_html = "https://user:GHSECRET@ghe.example"
-
-        logged = self._capture(lambda: Provider()._prepare_clone_url_with_token(
+        logged = self._capture(lambda: provider._prepare_clone_url_with_token(
             "https://ghe.example/org/repo.git"))
 
         assert logged, "nothing was logged, so the assertion below would be vacuous"
@@ -105,12 +102,11 @@ class TestCloneUrlValidationLogs:
         """Redact the Gitea base URL for the same reason as the GitHub copy."""
         from pr_agent.git_providers.gitea_provider import GiteaProvider
 
-        class Provider(GiteaProvider):
-            def __init__(self):
-                self.gitea_access_token = "gt_TOKEN"
-                self.base_url = "https://user:GTSECRET@gitea.example"
+        provider = GiteaProvider.__new__(GiteaProvider)
+        provider.gitea_access_token = "gt_TOKEN"
+        provider.base_url = "https://user:GTSECRET@gitea.example"
 
-        logged = self._capture(lambda: Provider()._prepare_clone_url_with_token(
+        logged = self._capture(lambda: provider._prepare_clone_url_with_token(
             "https://gitea.example/org/repo.git"))
 
         assert logged, "nothing was logged, so the assertion below would be vacuous"
