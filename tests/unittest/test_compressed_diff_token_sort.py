@@ -1,4 +1,4 @@
-"""pr_generate_compressed_diff packs files largest-first, so it must know their sizes."""
+"""Size every file before pr_generate_compressed_diff packs them largest-first."""
 from pr_agent.algo.pr_processing import pr_generate_compressed_diff
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 
@@ -17,8 +17,8 @@ def _file(name, body_lines):
 
 
 def test_token_counts_are_filled_in_before_sorting():
-    """FilePatchInfo.tokens defaults to -1; the entry point that skips
-    pr_generate_extended_diff must still populate it."""
+    """Populate FilePatchInfo.tokens, which defaults to -1, on the entry point that skips
+    pr_generate_extended_diff."""
     small, large = _file("small.py", 1), _file("large.py", 40)
     assert small.tokens == -1 and large.tokens == -1
 
@@ -30,7 +30,7 @@ def test_token_counts_are_filled_in_before_sorting():
 
 
 def test_files_are_ordered_largest_first():
-    """The packing order must reflect patch size, not provider order."""
+    """Order the packing by patch size rather than by provider order."""
     small, large = _file("small.py", 1), _file("large.py", 40)
 
     _, _, _, _, file_dict, _ = pr_generate_compressed_diff(
@@ -40,7 +40,7 @@ def test_files_are_ordered_largest_first():
 
 
 def test_precomputed_token_counts_are_left_alone():
-    """A file already sized by pr_generate_extended_diff must not be recounted."""
+    """Leave a file already sized by pr_generate_extended_diff untouched."""
     f = _file("a.py", 5)
     f.tokens = 12345
 
