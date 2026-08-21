@@ -215,7 +215,7 @@ def pr_generate_compressed_diff(top_langs: list, token_handler: TokenHandler, mo
     deleted_files_list = []
 
     for lang in top_langs:
-        for file in lang['files']:
+        for file in lang["files"]:
             if file.tokens is None or file.tokens < 0:
                 file.tokens = token_handler.count_tokens(file.patch) if file.patch else 0
 
