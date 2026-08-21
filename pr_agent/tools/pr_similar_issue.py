@@ -15,6 +15,13 @@ from pr_agent.log import get_logger
 MODEL = "text-embedding-ada-002"
 
 
+def _embed(texts: List[str]) -> List[List[float]]:
+    """Embed texts with the openai>=1.0 client that requirements.txt pins."""
+    client = openai.OpenAI(api_key=get_settings().openai.key)
+    response = client.embeddings.create(input=texts, model=MODEL)
+    return [record.embedding for record in response.data]
+
+
 class PRSimilarIssue:
     def __init__(self, issue_url: str, ai_handler, args: list = None):
         self.issue_url = issue_url
@@ -276,12 +283,10 @@ class PRSimilarIssue:
         repo_name, original_issue_number = self.git_provider._parse_issue_url(self.issue_url.split('=')[-1])
         issue_main = self.git_provider.repo_obj.get_issue(original_issue_number)
         issue_str, comments, number = self._process_issue(issue_main)
-        openai.api_key = get_settings().openai.key
         get_logger().info('Done')
 
         get_logger().info('Querying...')
-        res = openai.Embedding.create(input=[issue_str], engine=MODEL)
-        embeds = [record['embedding'] for record in res['data']]
+        embeds = _embed([issue_str])
 
         relevant_issues_number_list = []
         relevant_comment_number_list = []
@@ -457,20 +462,23 @@ class PRSimilarIssue:
         get_logger().info('Done')
 
         get_logger().info('Embedding...')
-        openai.api_key = get_settings().openai.key
         list_to_encode = list(df["text"].values)
         try:
-            res = openai.Embedding.create(input=list_to_encode, engine=MODEL)
-            embeds = [record['embedding'] for record in res['data']]
-        except:
+            embeds = _embed(list_to_encode)
+        except Exception as e:
+            get_logger().error('Failed to embed entire list, embedding one by one...',
+                               artifact={'error': str(e)})
             embeds = []
-            get_logger().error('Failed to embed entire list, embedding one by one...')
-            for i, text in enumerate(list_to_encode):
+            failures = 0
+            for text in list_to_encode:
                 try:
-                    res = openai.Embedding.create(input=[text], engine=MODEL)
-                    embeds.append(res['data'][0]['embedding'])
-                except:
+                    embeds.append(_embed([text])[0])
+                except Exception:
+                    failures += 1
                     embeds.append([0] * 1536)
+            if failures == len(list_to_encode):
+                raise RuntimeError(
+                    "Failed to embed any issue text; refusing to index all-zero vectors") from e
         df["values"] = embeds
         meta = DatasetMetadata.empty()
         meta.dense_model.dimension = len(embeds[0])
@@ -553,20 +561,23 @@ class PRSimilarIssue:
         get_logger().info('Done')
 
         get_logger().info('Embedding...')
-        openai.api_key = get_settings().openai.key
         list_to_encode = list(df["text"].values)
         try:
-            res = openai.Embedding.create(input=list_to_encode, engine=MODEL)
-            embeds = [record['embedding'] for record in res['data']]
-        except:
+            embeds = _embed(list_to_encode)
+        except Exception as e:
+            get_logger().error('Failed to embed entire list, embedding one by one...',
+                               artifact={'error': str(e)})
             embeds = []
-            get_logger().error('Failed to embed entire list, embedding one by one...')
-            for i, text in enumerate(list_to_encode):
+            failures = 0
+            for text in list_to_encode:
                 try:
-                    res = openai.Embedding.create(input=[text], engine=MODEL)
-                    embeds.append(res['data'][0]['embedding'])
-                except:
+                    embeds.append(_embed([text])[0])
+                except Exception:
+                    failures += 1
                     embeds.append([0] * 1536)
+            if failures == len(list_to_encode):
+                raise RuntimeError(
+                    "Failed to embed any issue text; refusing to index all-zero vectors") from e
         df["vector"] = embeds
         get_logger().info('Done')
 
@@ -652,20 +663,23 @@ class PRSimilarIssue:
         get_logger().info('Done')
 
         get_logger().info('Embedding...')
-        openai.api_key = get_settings().openai.key
         list_to_encode = list(df["text"].values)
         try:
-            res = openai.Embedding.create(input=list_to_encode, engine=MODEL)
-            embeds = [record['embedding'] for record in res['data']]
-        except Exception:
+            embeds = _embed(list_to_encode)
+        except Exception as e:
+            get_logger().error('Failed to embed entire list, embedding one by one...',
+                               artifact={'error': str(e)})
             embeds = []
-            get_logger().error('Failed to embed entire list, embedding one by one...')
-            for i, text in enumerate(list_to_encode):
+            failures = 0
+            for text in list_to_encode:
                 try:
-                    res = openai.Embedding.create(input=[text], engine=MODEL)
-                    embeds.append(res['data'][0]['embedding'])
+                    embeds.append(_embed([text])[0])
                 except Exception:
+                    failures += 1
                     embeds.append([0] * 1536)
+            if failures == len(list_to_encode):
+                raise RuntimeError(
+                    "Failed to embed any issue text; refusing to index all-zero vectors") from e
         df["vector"] = embeds
         get_logger().info('Done')
 
