@@ -948,6 +948,7 @@ class GithubProvider(GitProvider):
                     artifact={"error": e})
             else:
                 get_logger().exception("Failed to edit github comment", artifact={"error": e})
+            raise
 
     def edit_comment_from_comment_id(self, comment_id: int, body: str):
         try:

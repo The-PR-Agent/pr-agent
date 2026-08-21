@@ -458,6 +458,7 @@ class BitbucketProvider(GitProvider):
             comment.update(body)
         except Exception as e:
             get_logger().exception(f"Failed to update comment, error: {e}")
+            raise
 
     def remove_initial_comment(self):
         try:

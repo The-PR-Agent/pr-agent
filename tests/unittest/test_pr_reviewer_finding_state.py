@@ -3,9 +3,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from pr_agent.algo.review_finding_state import reconcile_review_findings, serialize_review_state
+from pr_agent.algo.review_finding_state import (
+    parse_review_state,
+    reconcile_review_findings,
+    serialize_review_state,
+)
 from pr_agent.algo.utils import PRReviewHeader
 from pr_agent.config_loader import get_settings
+from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.tools.pr_reviewer import PRReviewer
 
 
@@ -96,6 +101,229 @@ def test_load_review_finding_state_uses_latest_matching_comment():
     assert parsed.state == latest
 
 
+def test_load_review_finding_state_accepts_dict_comment():
+    previous = reconcile_review_findings(
+        None,
+        [_finding()],
+        allow_resolution=True,
+        timestamp="2026-01-01T00:00:00Z",
+    ).state
+    header = f"{PRReviewHeader.REGULAR.value} 🔍"
+    provider = MagicMock()
+    provider.get_issue_comments.return_value = [
+        {"body": f"{header}\n\nreview\n\n{serialize_review_state(previous)}"}
+    ]
+    reviewer = _reviewer(provider)
+
+    parsed = reviewer._load_review_finding_state()
+
+    assert parsed.valid is True
+    assert parsed.state == previous
+
+
+def test_load_review_finding_state_falls_back_to_older_valid_marker():
+    previous = reconcile_review_findings(
+        None,
+        [_finding()],
+        allow_resolution=True,
+        timestamp="2026-01-01T00:00:00Z",
+    ).state
+    header = f"{PRReviewHeader.REGULAR.value} " + chr(0x1F50D)
+    old_body = f"{header}\n\nold review\n\n{serialize_review_state(previous)}"
+    malformed_body = (
+        f"{header}\n\nlatest review\n\n"
+        "<!-- pr-agent-review-state:v1\nnot-json\n-->"
+    )
+    provider = MagicMock()
+    provider.get_issue_comments.return_value = [
+        SimpleNamespace(body=old_body),
+        SimpleNamespace(body=malformed_body),
+    ]
+    reviewer = _reviewer(provider)
+
+    parsed = reviewer._load_review_finding_state()
+
+    assert parsed.valid is True
+    assert parsed.state == previous
+    assert getattr(reviewer, "_review_state_blocked", False) is False
+
+
+def test_load_review_finding_state_returns_none_when_all_markers_are_invalid():
+    header = f"{PRReviewHeader.REGULAR.value} " + chr(0x1F50D)
+    provider = MagicMock()
+    provider.get_issue_comments.return_value = [
+        SimpleNamespace(
+            body=f"{header}\n\nold\n\n"
+            "<!-- pr-agent-review-state:v1\nnot-json\n-->"
+        ),
+        SimpleNamespace(
+            body=f"{header}\n\nlatest\n\n"
+            "<!-- pr-agent-review-state:v2\n{}\n-->"
+        ),
+    ]
+    reviewer = _reviewer(provider)
+
+    parsed = reviewer._load_review_finding_state()
+
+    assert parsed is None
+    assert reviewer._review_state_blocked is True
+    assert reviewer._review_state_block_reason == "invalid_marker"
+
+
+def test_load_review_finding_state_skips_newer_comment_without_marker():
+    previous = reconcile_review_findings(
+        None,
+        [_finding()],
+        allow_resolution=True,
+        timestamp="2026-01-01T00:00:00Z",
+    ).state
+    header = f"{PRReviewHeader.REGULAR.value} " + chr(0x1F50D)
+    provider = MagicMock()
+    provider.get_issue_comments.return_value = [
+        SimpleNamespace(
+            body=f"{header}\n\nreview\n\n{serialize_review_state(previous)}"
+        ),
+        SimpleNamespace(body="A regular review comment without state"),
+    ]
+    reviewer = _reviewer(provider)
+
+    parsed = reviewer._load_review_finding_state()
+
+    assert parsed.valid is True
+    assert parsed.state == previous
+
+
+def test_malformed_marker_self_heals_with_valid_marker(monkeypatch):
+    settings = _settings(monkeypatch)
+    monkeypatch.setattr(settings.pr_reviewer, "num_max_findings", 3)
+    header = f"{PRReviewHeader.REGULAR.value} 🔍"
+    comment = SimpleNamespace(
+        body=f"{header}\n\nold review\n\n<!-- pr-agent-review-state:v1\nbad\n-->"
+    )
+    provider = MagicMock()
+    provider.get_issue_comments.return_value = [comment]
+    provider.get_diff_files.return_value = []
+    provider.is_supported.side_effect = lambda capability: capability == "get_issue_comments"
+    provider.max_comment_chars = 2000
+    provider.get_latest_commit_url.return_value = "commit-url"
+    provider.get_comment_url.return_value = "comment-url"
+
+    def edit_comment(comment_obj, body):
+        comment_obj.body = body
+
+    provider.edit_comment.side_effect = edit_comment
+    reviewer = _reviewer(provider)
+    reviewer._review_finding_state_enabled = MagicMock(return_value=True)
+    issue = {
+        "relevant_file": "app.py",
+        "issue_content": "current issue",
+        "start_line": 2,
+        "end_line": 2,
+    }
+
+    with (
+        patch(
+            "pr_agent.tools.pr_reviewer.load_yaml",
+            return_value={"review": {"key_issues_to_review": [issue]}},
+        ),
+        patch("pr_agent.tools.pr_reviewer.github_action_output"),
+        patch(
+            "pr_agent.tools.pr_reviewer.convert_to_markdown_v2",
+            return_value=f"{header}\n\nclean review",
+        ),
+    ):
+        review = reviewer._prepare_pr_review()
+
+    result = GitProvider.publish_persistent_comment_full(
+        provider,
+        review,
+        initial_header=header,
+        update_header=True,
+        final_update_message=False,
+        fallback_on_error=False,
+    )
+
+    assert result is comment
+    assert "clean review" in comment.body
+    assert comment.body.count("<!-- pr-agent-review-state:") == 1
+    parsed = parse_review_state(comment.body)
+    assert parsed.valid is True
+    assert parsed.state == reviewer._review_state_result.state
+    provider.publish_comment.assert_not_called()
+
+
+def test_prepare_and_persisted_state_round_trip_preserves_marker_and_history(monkeypatch):
+    settings = _settings(monkeypatch)
+    monkeypatch.setattr(settings.pr_reviewer, "num_max_findings", 3)
+    header = f"{PRReviewHeader.REGULAR.value} 🔍"
+    previous = reconcile_review_findings(
+        None,
+        [
+            {"body": "a-body", "path": "a.py", "line_start": 2, "line_end": 2},
+            {"body": "b-body", "path": "b.py", "line_start": 3, "line_end": 3},
+        ],
+        allow_resolution=True,
+        timestamp="2026-01-01T00:00:00Z",
+    ).state
+    comment = SimpleNamespace(
+        body=f"{header}\n\nold review\n\n{serialize_review_state(previous)}"
+    )
+    provider = MagicMock()
+    provider.get_issue_comments.return_value = [comment]
+    provider.get_diff_files.return_value = []
+    provider.is_supported.side_effect = lambda capability: capability == "get_issue_comments"
+    provider.max_comment_chars = 1600
+    provider.get_latest_commit_url.return_value = "commit-url"
+    provider.get_comment_url.return_value = "comment-url"
+
+    def edit_comment(comment_obj, body):
+        comment_obj.body = GitProvider.limit_output_characters(
+            provider, body, provider.max_comment_chars
+        )
+
+    provider.edit_comment.side_effect = edit_comment
+    reviewer = _reviewer(provider)
+    reviewer._review_finding_state_enabled = MagicMock(return_value=True)
+    issue = {
+        "relevant_file": "a.py",
+        "issue_content": "a-body",
+        "start_line": 2,
+        "end_line": 2,
+    }
+
+    with (
+        patch(
+            "pr_agent.tools.pr_reviewer.load_yaml",
+            return_value={"review": {"key_issues_to_review": [issue]}},
+        ),
+        patch("pr_agent.tools.pr_reviewer.github_action_output"),
+        patch(
+            "pr_agent.tools.pr_reviewer.convert_to_markdown_v2",
+            return_value=f"{header}\n\n" + ("long human review " * 1000),
+        ),
+    ):
+        review = reviewer._prepare_pr_review()
+
+    result = GitProvider.publish_persistent_comment_full(
+        provider,
+        review,
+        initial_header=header,
+        update_header=True,
+        final_update_message=False,
+        fallback_on_error=False,
+    )
+
+    assert result is comment
+    assert len(comment.body) <= provider.max_comment_chars
+    assert comment.body.count("<!-- pr-agent-review-state:") == 1
+    parsed = parse_review_state(comment.body)
+    assert parsed.valid is True
+    states = {finding["body"]: finding["state"] for finding in parsed.state["findings"]}
+    assert states == {"a-body": "ACTIVE", "b-body": "RESOLVED"}
+    assert "long human review" in comment.body
+    provider.publish_comment.assert_not_called()
+
+
 @pytest.mark.parametrize(
     ("incremental", "remaining_files", "prediction"),
     [
@@ -134,6 +362,58 @@ def test_missing_findings_resolve_only_after_complete_successful_review(
     finding = reviewer._review_state_result.state["findings"][0]
     assert finding["state"] == "ACTIVE"
     assert reviewer._review_state_result.state["last_run"]["complete"] is False
+
+
+def test_finding_limit_prevents_resolution_of_missing_active_findings(monkeypatch):
+    settings = _settings(monkeypatch)
+    monkeypatch.setattr(settings.pr_reviewer, "num_max_findings", 3)
+    previous_findings = [
+        {"body": f"previous {label}", "path": f"{label}.py", "line_start": 2, "line_end": 2}
+        for label in ("a", "b", "c")
+    ]
+    current_findings = [
+        {"relevant_file": f"{label}.py", "issue_content": f"current {label}"}
+        for label in ("d", "e", "f")
+    ]
+    previous = reconcile_review_findings(
+        None,
+        previous_findings,
+        allow_resolution=True,
+        timestamp="2026-01-01T00:00:00Z",
+    ).state
+    header = f"{PRReviewHeader.REGULAR.value} 🔍"
+    provider = MagicMock()
+    provider.get_issue_comments.return_value = [
+        SimpleNamespace(body=f"{header}\n\nold review\n\n{serialize_review_state(previous)}")
+    ]
+    provider.is_supported.side_effect = lambda capability: capability == "get_issue_comments"
+    reviewer = _reviewer(provider)
+    reviewer._review_finding_state_enabled = MagicMock(return_value=True)
+
+    reviewer._prepare_review_finding_state({"review": {"key_issues_to_review": current_findings}})
+
+    states = {finding["path"]: finding["state"] for finding in reviewer._review_state_result.state["findings"]}
+    assert states == {
+        "a.py": "ACTIVE",
+        "b.py": "ACTIVE",
+        "c.py": "ACTIVE",
+        "d.py": "ACTIVE",
+        "e.py": "ACTIVE",
+        "f.py": "ACTIVE",
+    }
+    assert reviewer._review_state_result.resolved_ids == ()
+    assert reviewer._review_state_result.state["last_run"]["complete"] is False
+
+
+def test_review_comment_budget_reserves_persistent_update_header():
+    provider = MagicMock()
+    provider.max_comment_chars = 1000
+    provider.get_latest_commit_url.return_value = "commit-url"
+    reviewer = _reviewer(provider)
+
+    update_suffix = "\n\n#### (Review updated until commit commit-url)\n"
+
+    assert reviewer._review_comment_max_chars() == 1000 - len(update_suffix)
 
 
 def test_invalid_review_data_blocks_lifecycle_without_using_old_state(monkeypatch):

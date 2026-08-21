@@ -60,6 +60,15 @@ class TestBitbucketProvider:
         ):
             return provider.get_diff_files()[0]
 
+    def test_edit_comment_reraises_provider_failure(self):
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.max_comment_length = 1000
+        comment = MagicMock()
+        comment.update.side_effect = RuntimeError("edit failed")
+
+        with pytest.raises(RuntimeError, match="edit failed"):
+            provider.edit_comment(comment, "updated body")
+
     def test_parse_pr_url(self):
         url = "https://bitbucket.org/WORKSPACE_XYZ/MY_TEST_REPO/pull-requests/321"
         workspace_slug, repo_slug, pr_number = BitbucketProvider._parse_pr_url(url)
