@@ -1199,7 +1199,7 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
                         absolute_position = start2 + delta - 1
                         break
 
-                if position == -1 and relevant_line_in_file[0] == '+':
+                if position == -1 and relevant_line_in_file and relevant_line_in_file[0] == '+':
                     no_plus_line = relevant_line_in_file[1:].lstrip()
                     for i, line in enumerate(patch_lines):
                         if line.startswith('@@'):
