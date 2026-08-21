@@ -15,9 +15,19 @@ from pr_agent.log import get_logger
 MODEL = "text-embedding-ada-002"
 
 
+_EMBEDDING_CLIENTS = {}
+
+
+def _get_embedding_client(api_key: str):
+    """Return the openai client for this key, reusing its connection pool."""
+    if api_key not in _EMBEDDING_CLIENTS:
+        _EMBEDDING_CLIENTS[api_key] = openai.OpenAI(api_key=api_key)
+    return _EMBEDDING_CLIENTS[api_key]
+
+
 def _embed(texts: List[str]) -> List[List[float]]:
     """Embed texts with the openai>=1.0 client that requirements.txt pins."""
-    client = openai.OpenAI(api_key=get_settings().openai.key)
+    client = _get_embedding_client(get_settings().openai.key)
     response = client.embeddings.create(input=texts, model=MODEL)
     return [record.embedding for record in response.data]
 
@@ -466,8 +476,8 @@ class PRSimilarIssue:
         try:
             embeds = _embed(list_to_encode)
         except Exception as e:
-            get_logger().error('Failed to embed entire list, embedding one by one...',
-                               artifact={'error': str(e)})
+            get_logger().error("Failed to embed entire list, embedding one by one...",
+                               artifact={"error": str(e)})
             embeds = []
             failures = 0
             for text in list_to_encode:
@@ -565,8 +575,8 @@ class PRSimilarIssue:
         try:
             embeds = _embed(list_to_encode)
         except Exception as e:
-            get_logger().error('Failed to embed entire list, embedding one by one...',
-                               artifact={'error': str(e)})
+            get_logger().error("Failed to embed entire list, embedding one by one...",
+                               artifact={"error": str(e)})
             embeds = []
             failures = 0
             for text in list_to_encode:
@@ -667,8 +677,8 @@ class PRSimilarIssue:
         try:
             embeds = _embed(list_to_encode)
         except Exception as e:
-            get_logger().error('Failed to embed entire list, embedding one by one...',
-                               artifact={'error': str(e)})
+            get_logger().error("Failed to embed entire list, embedding one by one...",
+                               artifact={"error": str(e)})
             embeds = []
             failures = 0
             for text in list_to_encode:
