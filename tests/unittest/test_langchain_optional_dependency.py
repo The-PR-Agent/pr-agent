@@ -1,4 +1,4 @@
-"""LangChain is an optional dependency; importing the handler must not require it."""
+"""Import the LangChain handler without requiring the optional LangChain packages."""
 import builtins
 import importlib
 import sys
@@ -26,14 +26,14 @@ def without_langchain(monkeypatch):
 
 
 def test_import_the_handler_module_without_langchain(without_langchain):
-    """Import must succeed so the rest of pr-agent is unaffected by the missing extra."""
+    """Import the module so the rest of pr-agent is unaffected by the missing extra."""
     module = importlib.import_module(MODULE)
 
     assert module._LANGCHAIN_INSTALLED is False
 
 
 def test_constructing_the_handler_raises_a_helpful_import_error(without_langchain):
-    """The documented guard must be reachable: construction, not import, is what fails."""
+    """Reach the documented guard, so construction fails rather than the import."""
     module = importlib.import_module(MODULE)
 
     with pytest.raises(ImportError, match="LangChain is not installed"):
