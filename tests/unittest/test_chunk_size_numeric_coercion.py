@@ -1,47 +1,76 @@
+"""Coerce num_code_suggestions_per_chunk so /improve does not die in its constructor."""
+import copy
+
 import pytest
 
+import pr_agent.tools.pr_code_suggestions as pcs
 from pr_agent.config_loader import get_settings
+from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
+
+
+class FakeAiHandler:
+    main_pr_language = None
+
+
+class FakePR:
+    title = "a title"
+
+
+class FakeGitProvider:
+    pr = FakePR()
+
+    def get_languages(self):
+        return {"Python": 1}
+
+    def get_files(self):
+        return ["a.py"]
+
+    def get_pr_branch(self):
+        return "feature"
+
+    def get_commit_messages(self):
+        return ""
+
+    def get_pr_description(self, split_changes_walkthrough=False):
+        return "description", []
 
 
 @pytest.fixture
-def restore_suggestions_settings():
-    import copy
+def build_tool(monkeypatch):
     settings = get_settings(use_context=False)
     original = copy.deepcopy(settings.get("PR_CODE_SUGGESTIONS", None))
-    yield settings
+    monkeypatch.setattr(pcs, "get_git_provider_with_context", lambda url: FakeGitProvider())
+    monkeypatch.setattr(pcs, "get_main_pr_language", lambda languages, files: "Python")
+    monkeypatch.setattr(pcs, "get_skills_context", lambda: "")
+    monkeypatch.setattr(pcs, "build_repo_context", lambda provider: "")
+    monkeypatch.setattr(pcs, "TokenHandler", lambda *args, **kwargs: None)
+
+    def build(value):
+        settings.set("pr_code_suggestions.num_code_suggestions_per_chunk", value)
+        return PRCodeSuggestions("https://github.com/o/r/pull/1", ai_handler=FakeAiHandler)
+
+    yield build
     if original is not None:
         settings.set("PR_CODE_SUGGESTIONS", original)
 
 
-def _num_suggestions():
-    """Mirror the coercion PRCodeSuggestions.__init__ performs."""
-    from pr_agent.log import get_logger
-    raw = get_settings().pr_code_suggestions.num_code_suggestions_per_chunk
-    try:
-        return int(raw)
-    except (TypeError, ValueError):
-        get_logger().warning("not a number")
-        return 3
-
-
-def test_accept_a_quoted_chunk_size(restore_suggestions_settings):
+def test_accept_a_quoted_chunk_size(build_tool):
     """Accept a quoted number, which is what TOML yields for a quoted value."""
-    restore_suggestions_settings.set("pr_code_suggestions.num_code_suggestions_per_chunk", "5")
+    tool = build_tool("5")
 
-    assert _num_suggestions() == 5
-
-
-def test_fall_back_for_a_non_numeric_chunk_size(restore_suggestions_settings):
-    """Fall back to the default rather than raising ValueError during construction."""
-    restore_suggestions_settings.set("pr_code_suggestions.num_code_suggestions_per_chunk", "abc")
-
-    assert _num_suggestions() == 3
+    assert tool.vars["num_code_suggestions"] == 5
 
 
-def test_constructor_does_not_raise_on_a_bad_value(restore_suggestions_settings):
-    """The coercion must live in PRCodeSuggestions.__init__, not in the test helper."""
-    import inspect
+@pytest.mark.parametrize("value", ["abc", "", None, [1]])
+def test_fall_back_for_an_unusable_chunk_size(build_tool, value):
+    """Fall back to the default instead of raising out of PRCodeSuggestions.__init__."""
+    tool = build_tool(value)
 
-    from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
-    src = inspect.getsource(PRCodeSuggestions.__init__)
-    assert "except (TypeError, ValueError)" in src
+    assert tool.vars["num_code_suggestions"] == 3
+
+
+def test_keep_a_numeric_chunk_size(build_tool):
+    """Keep the existing behaviour for a genuinely numeric setting."""
+    tool = build_tool(4)
+
+    assert tool.vars["num_code_suggestions"] == 4
