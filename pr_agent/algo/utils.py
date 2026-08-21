@@ -182,8 +182,8 @@ def convert_to_markdown_v2(output_data: dict,
     if gfm_supported:
         markdown_text += "<table>\n"
 
-    todo_summary = output_data['review'].pop('todo_summary', '')
-    for key, value in output_data['review'].items():
+    review_data = {k: v for k, v in output_data['review'].items() if k != 'todo_summary'}
+    for key, value in review_data.items():
         if value is None or value == '' or value == {} or value == []:
             if key.lower() not in ['can_be_split', 'key_issues_to_review']:
                 continue
