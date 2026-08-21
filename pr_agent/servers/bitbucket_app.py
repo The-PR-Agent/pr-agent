@@ -23,17 +23,20 @@ from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.identity_providers import get_identity_provider
 from pr_agent.identity_providers.identity_provider import Eligibility
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
-from pr_agent.secret_providers import get_secret_provider
+from pr_agent.secret_providers import (get_secret_provider,
+                                       validate_secret_provider_setting)
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
 router = APIRouter()
+
+
+validate_secret_provider_setting()
+
 _secret_provider_state = {}
 
 
 def get_fork_safe_secret_provider():
     """Return this process's secret provider, building it on first use after a fork."""
-    if not get_settings().get("CONFIG.SECRET_PROVIDER"):
-        return None
     pid = os.getpid()
     if _secret_provider_state.get("pid") != pid:
         _secret_provider_state["provider"] = get_secret_provider()
