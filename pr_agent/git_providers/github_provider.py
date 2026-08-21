@@ -302,7 +302,8 @@ class GithubProvider(GitProvider):
                     continue
 
                 patch = file.patch
-                old_filename = file.previous_filename if file.status == 'renamed' and getattr(file, 'previous_filename', None) else None
+                is_renamed = file.status == "renamed" and getattr(file, "previous_filename", None)
+                old_filename = file.previous_filename if is_renamed else None
                 if is_close_to_rate_limit:
                     new_file_content_str = ""
                     original_file_content_str = ""
@@ -321,7 +322,8 @@ class GithubProvider(GitProvider):
                         new_file_content_str = self._get_pr_file_content(file, self.pr.head.sha)  # communication with GitHub
 
                     if self.incremental.is_incremental and self.unreviewed_files_map:
-                        original_file_content_str = self._get_pr_file_content(file, self.incremental.last_seen_commit_sha)
+                        original_file_content_str = self._get_pr_file_content(
+                            file, self.incremental.last_seen_commit_sha, path=old_filename)
                         patch = load_large_diff(file.filename, new_file_content_str, original_file_content_str)
                         self.unreviewed_files_map[file.filename] = patch
                     else:

@@ -348,3 +348,26 @@ class TestGetDiffFilesRename:
         diffs = p.get_diff_files()
 
         assert diffs[0].old_filename is None
+
+    def test_incremental_content_looked_up_at_old_path(self, patched_helpers):
+        """Same as test_original_content_looked_up_at_old_path, but for the
+        incremental-review branch, which has its own call to
+        `_get_pr_file_content` and used to skip `path=` entirely."""
+        f = _make_file(
+            "new_dir/module.py", "renamed", patch=None, additions=0, deletions=0,
+            previous_filename="old_dir/module.py",
+        )
+        p = _make_provider_for_diff([f])
+        p.incremental = SimpleNamespace(is_incremental=True, last_seen_commit_sha="prev-sha")
+        # get_files() short-circuits to unreviewed_files_map.values() once incremental
+        # is on and the map is non-empty, exactly as get_incremental_commits() leaves it
+        # (github_provider.py:183: populated with the real file objects, not patches).
+        p.unreviewed_files_map = {"new_dir/module.py": f}
+        spy = Mock(return_value="same content\n")
+        p._get_pr_file_content = spy
+
+        p.get_diff_files()
+
+        original_content_call = spy.call_args_list[-1]
+        assert original_content_call.args[1] == "prev-sha"
+        assert original_content_call.kwargs.get("path") == "old_dir/module.py"
