@@ -1,4 +1,4 @@
-"""The dedent helper indexes the head file, so it must range-check the model's line number."""
+"""Range-check the model's line number before the dedent helper indexes the head file."""
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.tools.pr_add_docs import PRAddDocs
 
@@ -21,20 +21,19 @@ def _tool(head=HEAD):
 
 
 def test_the_last_line_with_placement_after_is_still_dedented():
-    """`splitlines()[start]` is out of range for the final line, so the indentation fix
-    used to be skipped entirely for it."""
+    """Dedent the final line, where `splitlines()[start]` is out of range."""
     result = _tool().dedent_code("a.py", 3, SNIPPET, doc_placement="after")
 
     assert result.startswith("    "), "snippet was not indented to match the last line"
 
 
 def test_a_line_number_past_the_end_returns_the_snippet_unchanged():
-    """An out-of-range line from the model must not index the file at all."""
+    """Ignore an out-of-range line from the model instead of indexing the file."""
     assert _tool().dedent_code("a.py", 99, SNIPPET) == SNIPPET
 
 
 def test_a_zero_line_number_returns_the_snippet_unchanged():
-    """Line numbers are 1-based; 0 must not silently read the last line."""
+    """Reject line 0, since line numbers are 1-based and 0 reads the last line."""
     assert _tool().dedent_code("a.py", 0, SNIPPET) == SNIPPET
 
 
@@ -46,7 +45,7 @@ def test_a_middle_line_with_placement_after_still_dedents():
 
 
 def test_placement_before_uses_the_target_line_indentation():
-    """placement='before' reads the target line itself, which is in range."""
+    """Read the target line itself for placement='before', which is in range."""
     result = _tool().dedent_code("a.py", 2, SNIPPET, doc_placement="before")
 
     assert result.startswith("    ")
