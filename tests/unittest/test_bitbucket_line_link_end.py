@@ -1,4 +1,4 @@
-"""Bitbucket links must honour the end line for a multi-line suggestion."""
+"""Honour the end line in a Bitbucket link for a multi-line suggestion."""
 from pr_agent.git_providers.bitbucket_provider import BitbucketProvider
 
 
@@ -9,7 +9,7 @@ def _provider():
 
 
 def test_a_multi_line_range_reaches_the_link():
-    """relevant_line_end was accepted and then ignored entirely."""
+    """Use relevant_line_end, which was accepted and then ignored entirely."""
     link = _provider().get_line_link("a.py", 5, 10)
 
     assert "T5" in link
@@ -22,10 +22,10 @@ def test_a_single_line_link_is_unchanged():
 
 
 def test_an_end_equal_to_the_start_is_unchanged():
-    """A one-line range renders as a single-line anchor."""
+    """Render a one-line range as a single-line anchor."""
     assert _provider().get_line_link("a.py", 5, 5).endswith("T5")
 
 
 def test_the_file_level_link_is_unchanged():
-    """start == -1 still produces the whole-file anchor."""
+    """Produce the whole-file anchor when start is -1."""
     assert _provider().get_line_link("a.py", -1).endswith("#La.py")
