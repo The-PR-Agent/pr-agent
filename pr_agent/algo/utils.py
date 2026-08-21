@@ -390,6 +390,8 @@ def ticket_markdown_logic(emoji, markdown_text, value, gfm_supported) -> str:
     # Track compliance levels across all tickets
     all_compliance_levels = []
 
+    if isinstance(value, dict):
+        value = [value]
     if isinstance(value, list):
         for ticket_analysis in value:
             try:
