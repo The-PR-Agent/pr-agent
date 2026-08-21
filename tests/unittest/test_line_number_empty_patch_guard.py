@@ -1,4 +1,4 @@
-"""The line-number lookup is shared by six providers and must tolerate empty input."""
+"""Tolerate empty input in the line-number lookup, which six providers share."""
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.algo.utils import find_line_number_of_relevant_line_in_file
 
@@ -9,12 +9,12 @@ def _file(patch):
 
 
 def test_an_empty_relevant_line_with_an_empty_patch_does_not_raise():
-    """Indexing relevant_line_in_file[0] used to raise IndexError here."""
+    """Report not-found instead of raising IndexError on an empty relevant line."""
     assert find_line_number_of_relevant_line_in_file([_file("")], "m.py", "") == (-1, -1)
 
 
 def test_an_empty_relevant_line_with_a_real_patch_does_not_raise():
-    """The same guard must hold when the patch has content."""
+    """Report not-found for an empty relevant line even when the patch has content."""
     position, absolute = find_line_number_of_relevant_line_in_file(
         [_file("@@ -1,2 +1,2 @@\n ctx\n+added")], "m.py", "")
 
@@ -32,5 +32,12 @@ def test_a_real_relevant_line_is_still_found():
 
 
 def test_no_diff_files_returns_not_found():
-    """An empty file list still reports 'not found'."""
+    """Report not-found for an empty file list."""
     assert find_line_number_of_relevant_line_in_file([], "m.py", "+added") == (-1, -1)
+
+
+def test_an_empty_relevant_line_does_not_match_a_real_patch_line():
+    """Report not-found rather than matching the first line, since "" is in every line."""
+    patch = "@@ -1,2 +1,2 @@\n ctx\n+added\n"
+
+    assert find_line_number_of_relevant_line_in_file([_file(patch)], "m.py", "") == (-1, -1)
