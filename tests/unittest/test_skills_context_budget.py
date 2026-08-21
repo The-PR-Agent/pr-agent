@@ -20,9 +20,13 @@ def test_the_truncated_context_stays_within_budget(budget):
     assert _tokens(out) <= budget
 
 
-def test_the_truncation_marker_is_still_present():
-    """Keep the truncation visible to the model."""
-    assert "[truncated]" in format_skills_context([BIG], 50)
+@pytest.mark.parametrize("budget", [20, 50, 200, 1000])
+def test_the_truncated_context_still_carries_the_skill(budget):
+    """Keep the skill and its truncation marker, so shrinking cannot degenerate to nothing."""
+    out = format_skills_context([BIG], budget)
+
+    assert "[truncated]" in out
+    assert "word" in out
 
 
 def test_a_skill_within_budget_is_not_truncated():
