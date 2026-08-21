@@ -1103,6 +1103,14 @@ def clip_tokens(text: str, max_tokens: int, add_three_dots=True, num_input_token
         return text
 
     try:
+        max_tokens = int(max_tokens)
+    except (TypeError, ValueError):
+        get_logger().warning(
+            f"clip_tokens got a non-numeric max_tokens ({max_tokens!r}); returning the text "
+            f"unclipped, which may exceed the model's context window")
+        return text
+
+    try:
         if num_input_tokens is None:
             encoder = TokenEncoder.get_token_encoder()
             num_input_tokens = len(encoder.encode(text))
