@@ -288,9 +288,15 @@ class PRCodeSuggestions:
             get_logger().warning('No code suggestions found for the PR.')
             get_logger().debug(f"PR output", artifact=pr_body)
             if self.progress_response:
-                self.git_provider.edit_comment(self.progress_response, body=pr_body)
+                if self._improve_thread_kwargs():
+                    # A mere status message should not leave a resolvable thread behind; replace
+                    # the threaded progress comment with a plain note.
+                    self.git_provider.remove_comment(self.progress_response)
+                    self.git_provider.publish_comment(pr_body)
+                else:
+                    self.git_provider.edit_comment(self.progress_response, body=pr_body)
             else:
-                self.git_provider.publish_comment(pr_body, **self._improve_thread_kwargs())
+                self.git_provider.publish_comment(pr_body)
         else:
             get_settings().data = {"artifact": ""}
 
