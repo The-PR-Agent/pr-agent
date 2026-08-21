@@ -1,4 +1,4 @@
-"""/similar_issue must use the openai>=1.0 client that requirements.txt pins."""
+"""Embed with the openai>=1.0 client that requirements.txt pins."""
 import inspect
 
 import pytest
@@ -8,30 +8,33 @@ import pr_agent.tools.pr_similar_issue as psi
 
 class SettingsStub:
     class openai:
-        key = "sk-test"
+        key = "unit-test-key"
 
 
 @pytest.fixture(autouse=True)
 def stub_settings(monkeypatch):
-    monkeypatch.setattr(psi, "get_settings", lambda: SettingsStub())
+    monkeypatch.setattr(psi, "get_settings", SettingsStub)
+    psi._EMBEDDING_CLIENTS.clear()
+    yield
+    psi._EMBEDDING_CLIENTS.clear()
 
 
 def test_no_removed_v0_embedding_api_remains():
-    """openai.Embedding.create was removed in openai 1.0 and raises APIRemovedInV1."""
+    """Assert the removed openai.Embedding.create call is gone; it raises APIRemovedInV1."""
     source = inspect.getsource(psi)
 
     assert "openai.Embedding.create" not in source
 
 
 def test_no_module_level_api_key_assignment_remains():
-    """openai.api_key is the v0 configuration style."""
+    """Assert the v0 module-level openai.api_key assignment is gone."""
     source = inspect.getsource(psi)
 
     assert "openai.api_key" not in source
 
 
 def test_embed_uses_the_v1_client(monkeypatch):
-    """The helper must call client.embeddings.create and unwrap response.data."""
+    """Call client.embeddings.create and unwrap response.data."""
     calls = {}
 
     class FakeEmbeddings:
@@ -53,7 +56,7 @@ def test_embed_uses_the_v1_client(monkeypatch):
 
 
 def test_a_total_embedding_failure_raises_instead_of_indexing_zero_vectors(monkeypatch):
-    """Silently storing [0]*1536 for every issue made similarity results meaningless."""
+    """Raise on a total embedding failure instead of indexing an all-zero vector set."""
     class FakeClient:
         def __init__(self, api_key=None):
             raise RuntimeError("embedding backend down")
@@ -62,3 +65,24 @@ def test_a_total_embedding_failure_raises_instead_of_indexing_zero_vectors(monke
 
     with pytest.raises(RuntimeError):
         psi._embed(["a"])
+
+
+def test_the_client_is_reused_across_calls(monkeypatch):
+    """Reuse one client per key, so the one-by-one fallback does not rebuild it per item."""
+    built = []
+
+    class FakeClient:
+        def __init__(self, api_key=None):
+            built.append(api_key)
+            self.embeddings = type("E", (), {
+                "create": lambda _self, input, model: type(
+                    "R", (), {"data": [type("D", (), {"embedding": [0.5]})() for _ in input]})()
+            })()
+
+    monkeypatch.setattr(psi.openai, "OpenAI", FakeClient)
+
+    psi._embed(["a"])
+    psi._embed(["b"])
+    psi._embed(["c"])
+
+    assert built == ["unit-test-key"]
