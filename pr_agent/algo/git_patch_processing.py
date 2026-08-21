@@ -347,17 +347,21 @@ __old hunk__
     start1, size1, start2, size2 = -1, -1, -1, -1
     prev_header_line = []
     header_line = []
+    skip_hunk = False
     for line_i, line in enumerate(patch_lines):
         if 'no newline at end of file' in line.lower():
             continue
 
         if line.startswith('@@'):
-            if not RE_HUNK_HEADER.match(line):
+            hunk_header_match = RE_HUNK_HEADER.match(line)
+            if not hunk_header_match:
                 get_logger().warning("Skipping a line that starts with '@@' but is not a unified "
                                      "hunk header", artifact={"line": line})
+                skip_hunk = True
                 continue
+            skip_hunk = False
             header_line = line
-            match = RE_HUNK_HEADER.match(line)
+            match = hunk_header_match
             if match and (new_content_lines or old_content_lines):  # found a new hunk, split the previous lines
                 if prev_header_line:
                     patch_with_lines_str += f'\n{prev_header_line}\n'
@@ -381,6 +385,8 @@ __old hunk__
 
             section_header, size1, size2, start1, start2 = extract_hunk_headers(match)
 
+        elif skip_hunk:
+            continue
         elif line.startswith('+'):
             new_content_lines.append(line)
         elif line.startswith('-'):
