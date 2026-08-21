@@ -1,5 +1,5 @@
 from threading import Lock
-from math import ceil
+from math import ceil, isfinite
 import re
 
 from jinja2 import Environment, StrictUndefined
@@ -128,9 +128,11 @@ class TokenHandler:
         raw_factor = get_settings().get("config.model_token_count_estimate_factor", 0)
         try:
             factor = 1 + float(raw_factor)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            factor = None
+        if factor is None or isinstance(raw_factor, bool) or not isfinite(factor):
             get_logger().warning(
-                f"model_token_count_estimate_factor is not a number ({raw_factor!r}), using 1")
+                f"model_token_count_estimate_factor is not a usable number ({raw_factor!r}), using 1")
             factor = 1
         get_logger().warning(f"{model_name}'s token count cannot be accurately estimated. Using factor of {factor}")
         
