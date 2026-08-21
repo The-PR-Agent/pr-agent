@@ -673,7 +673,7 @@ class GiteaProvider(GitProvider):
             repo=self.repo,
             index=index
         )
-        if comments is None:
+        if not isinstance(comments, list):
             self.logger.error("Failed to get comments")
             raise RuntimeError("Failed to get comments")
 
