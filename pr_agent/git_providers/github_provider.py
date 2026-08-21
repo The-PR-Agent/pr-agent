@@ -1236,6 +1236,12 @@ class GithubProvider(GitProvider):
 
     def get_line_link(self, relevant_file: str, relevant_line_start: int, relevant_line_end: int = None) -> str:
         sha_file = hashlib.sha256(relevant_file.encode('utf-8')).hexdigest()
+        if relevant_line_end is not None and relevant_line_start is not None:
+            try:
+                if int(relevant_line_end) < int(relevant_line_start):
+                    relevant_line_end = relevant_line_start
+            except (TypeError, ValueError):
+                relevant_line_end = None
         if relevant_line_start == -1:
             link = f"{self.base_url_html}/{self.repo}/pull/{self.pr_num}/files#diff-{sha_file}"
         elif relevant_line_end:
