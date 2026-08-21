@@ -5,7 +5,6 @@ import pytest
 
 import pr_agent.tools.pr_code_suggestions as pcs
 from pr_agent.config_loader import get_settings
-from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 
 
 class FakeAiHandler:
@@ -47,7 +46,7 @@ def build_tool(monkeypatch):
 
     def build(value):
         settings.set("pr_code_suggestions.num_code_suggestions_per_chunk", value)
-        return PRCodeSuggestions("https://github.com/o/r/pull/1", ai_handler=FakeAiHandler)
+        return pcs.PRCodeSuggestions("https://github.com/o/r/pull/1", ai_handler=FakeAiHandler)
 
     yield build
     if original is not None:
