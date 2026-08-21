@@ -72,6 +72,36 @@ def test_gitea_get_issue_comments_raises_when_api_returns_empty_value():
         provider.get_issue_comments()
 
 
+def test_gitea_get_issue_comments_raises_when_api_returns_error_payload():
+    provider = GiteaProvider.__new__(GiteaProvider)
+    provider.enabled_issue = False
+    provider.pr_number = 1
+    provider.owner = "owner"
+    provider.repo = "repo"
+    provider.repo_api = MagicMock()
+    provider.repo_api.list_all_comments.return_value = {
+        "error": "unauthorized"
+    }
+    provider.logger = MagicMock()
+
+    with pytest.raises(RuntimeError, match="Failed to get comments"):
+        provider.get_issue_comments()
+
+
+def test_gitea_get_issue_comments_returns_comment_list():
+    provider = GiteaProvider.__new__(GiteaProvider)
+    provider.enabled_issue = False
+    provider.pr_number = 1
+    provider.owner = "owner"
+    provider.repo = "repo"
+    provider.repo_api = MagicMock()
+    comments = [{"body": "comment", "id": 1}]
+    provider.repo_api.list_all_comments.return_value = comments
+    provider.logger = MagicMock()
+
+    assert provider.get_issue_comments() == comments
+
+
 @pytest.mark.parametrize(
     ("fallback_on_error", "expected", "publishes_fallback"),
     [(True, "fallback", True), (False, None, False)],
