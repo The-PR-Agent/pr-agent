@@ -85,4 +85,16 @@ def test_reject_a_half_configured_deployment(monkeypatch, username, password):
     response = client.post("/api/v1/gerrit/review", json=PAYLOAD)
 
     assert response.status_code == 500
+    assert response.json() == {"detail": "Webhook authentication is misconfigured."}
     assert calls == []
+
+
+@pytest.mark.parametrize("username, password", [("admin", ""), ("", "s3cret")])
+def test_the_misconfiguration_response_names_no_settings(monkeypatch, username, password):
+    """Keep configuration key names out of a response an unauthenticated caller can read."""
+    client, _ = build_client(monkeypatch, username, password)
+
+    body = client.post("/api/v1/gerrit/review", json=PAYLOAD).text
+
+    assert "webhook_username" not in body
+    assert "webhook_password" not in body
