@@ -1474,7 +1474,7 @@ class GitLabProvider(GitProvider):
         access_token = getattr(self.gl, 'oauth_token', None) or getattr(self.gl, 'private_token', None)
         if not all([scheme, access_token, base_url]):
             get_logger().error(f"Either no access token found, or repo URL: {redact_credentials(repo_url_to_clone)} "
-                               f"is missing prefix: {scheme} and/or base URL: {base_url}.")
+                               f"is missing prefix: {redact_credentials(scheme)} and/or base URL: {base_url}.")
             return None
 
         #Note that the ""official"" method found here:

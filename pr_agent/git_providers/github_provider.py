@@ -1470,14 +1470,15 @@ class GithubProvider(GitProvider):
             get_logger().error("Either missing auth token or missing base url")
             return None
         if scheme not in github_base_url:
-            get_logger().error(f"Base url: {github_base_url} is missing prefix: {scheme}")
+            get_logger().error(f"Base url: {redact_credentials(github_base_url)} is missing prefix: {scheme}")
             return None
         github_com = github_base_url.split(scheme)[1]  # e.g. 'github.com' or github.<org>.com
         if not github_com:
-            get_logger().error(f"Base url: {github_base_url} has an empty base url")
+            get_logger().error(f"Base url: {redact_credentials(github_base_url)} has an empty base url")
             return None
         if github_com not in repo_url_to_clone:
-            get_logger().error(f"url to clone: {redact_credentials(repo_url_to_clone)} does not contain {github_com}")
+            get_logger().error(f"url to clone: {redact_credentials(repo_url_to_clone)} "
+                               f"does not contain {redact_credentials(github_base_url)}")
             return None
         repo_full_name = repo_url_to_clone.split(github_com)[-1]
         if not repo_full_name:

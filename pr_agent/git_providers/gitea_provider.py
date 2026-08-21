@@ -810,10 +810,11 @@ class GiteaProvider(GitProvider):
             return None
         base_url = gitea_base_url.split(scheme)[1]
         if not base_url:
-            get_logger().error(f"Base url: {gitea_base_url} has an empty base url")
+            get_logger().error(f"Base url: {redact_credentials(gitea_base_url)} has an empty base url")
             return None
         if base_url not in repo_url_to_clone:
-            get_logger().error(f"url to clone: {redact_credentials(repo_url_to_clone)} does not contain {base_url}")
+            get_logger().error(f"url to clone: {redact_credentials(repo_url_to_clone)} "
+                               f"does not contain {redact_credentials(gitea_base_url)}")
             return None
         repo_full_name = repo_url_to_clone.split(base_url)[-1]
         if not repo_full_name:
