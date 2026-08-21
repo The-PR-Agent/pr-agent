@@ -1,4 +1,4 @@
-"""The configuration block is published inside a ```yaml fence, so it must be valid YAML."""
+"""Emit valid YAML in the configuration block, which is published inside a ```yaml fence."""
 import copy
 
 import pytest
@@ -23,7 +23,7 @@ def _config_block(section="pr_reviewer"):
 
 
 def test_a_dict_valued_setting_renders_as_yaml(restore_config):
-    """A nested value must not be emitted as a Python repr."""
+    """Render a nested value as YAML rather than as a Python repr."""
     restore_config.set("config.nested_setting", {"inner": "value"})
 
     block = _config_block()
@@ -32,7 +32,7 @@ def test_a_dict_valued_setting_renders_as_yaml(restore_config):
 
 
 def test_the_rendered_block_parses_as_yaml(restore_config):
-    """The whole block must round-trip through a YAML parser."""
+    """Round-trip the whole block through a YAML parser."""
     restore_config.set("config.nested_setting", {"inner": "value"})
     restore_config.set("config.list_setting", ["a", "b"])
 
@@ -43,7 +43,7 @@ def test_the_rendered_block_parses_as_yaml(restore_config):
 
 
 def test_scalar_settings_are_unchanged(restore_config):
-    """Plain values keep their existing simple rendering."""
+    """Keep the existing simple rendering for plain values."""
     restore_config.set("config.scalar_setting", "plain")
 
     assert "scalar_setting: plain" in _config_block()
