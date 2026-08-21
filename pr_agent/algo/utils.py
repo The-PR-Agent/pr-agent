@@ -225,6 +225,10 @@ def convert_to_markdown_v2(output_data: dict,
         elif 'ticket compliance check' in key_nice.lower():
             markdown_text = ticket_markdown_logic(emoji, markdown_text, value, gfm_supported)
         elif 'contribution time cost estimate' in key_nice.lower():
+            if not isinstance(value, dict) or not {'best_case', 'average_case', 'worst_case'} <= set(value):
+                get_logger().warning("Skipping malformed contribution time estimate",
+                                     artifact={'value': value})
+                continue
             if gfm_supported:
                 markdown_text += f"<tr><td>{emoji}&nbsp;<strong>Contribution time estimate</strong> (best, average, worst case): "
                 best = _expand_minute_suffix(value['best_case'])
