@@ -1,4 +1,6 @@
 """Report a token budget that cannot be read, instead of silently ignoring it."""
+import io
+
 import pytest
 
 from pr_agent.algo.utils import clip_tokens
@@ -8,7 +10,6 @@ LONG_TEXT = "word " * 500
 
 
 def _capture(call):
-    import io
     buffer = io.StringIO()
     handler_id = get_logger().add(buffer, level="DEBUG", format="{message}", colorize=False)
     try:
@@ -47,3 +48,10 @@ def test_text_within_budget_is_returned_whole():
 def test_a_non_finite_budget_returns_the_text(budget):
     """Return the text for a non-finite budget, which int() raises on, instead of crashing."""
     assert clip_tokens(LONG_TEXT, budget) == LONG_TEXT
+
+
+def test_an_unreadable_budget_is_reported_for_empty_text():
+    """Report the budget whatever the text is, so the warning does not depend on content."""
+    _, logged = _capture(lambda: clip_tokens("", "not-a-number"))
+
+    assert "not-a-number" in logged
