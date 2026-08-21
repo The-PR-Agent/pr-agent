@@ -1010,6 +1010,15 @@ def get_user_labels(current_labels: List[str] = None):
     return user_labels
 
 
+def _as_int(value, default: int = 0) -> int:
+    """Coerce a settings value to int, tolerating the quoted numbers TOML allows."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        get_logger().warning(f"Expected a number in configuration, got {value!r}; using {default}")
+        return default
+
+
 def get_max_tokens(model):
     """
     Get the maximum number of tokens allowed for a model.
@@ -1021,16 +1030,18 @@ def get_max_tokens(model):
     This aims to improve the algorithmic quality, as the AI model degrades in performance when the input is too long.
     """
     settings = get_settings()
+    custom_max_tokens = _as_int(settings.config.custom_model_max_tokens)
     if model in MAX_TOKENS:
         max_tokens_model = MAX_TOKENS[model]
-    elif settings.config.custom_model_max_tokens > 0:
-        max_tokens_model = settings.config.custom_model_max_tokens
+    elif custom_max_tokens > 0:
+        max_tokens_model = custom_max_tokens
     else:
         get_logger().error(f"Model {model} is not defined in MAX_TOKENS in ./pr_agent/algo/__init__.py and no custom_model_max_tokens is set")
         raise Exception(f"Ensure {model} is defined in MAX_TOKENS in ./pr_agent/algo/__init__.py or set a positive value for it in config.custom_model_max_tokens")
 
-    if settings.config.max_model_tokens and settings.config.max_model_tokens > 0:
-        max_tokens_model = min(settings.config.max_model_tokens, max_tokens_model)
+    max_model_tokens = _as_int(settings.config.max_model_tokens) if settings.config.max_model_tokens else 0
+    if max_model_tokens > 0:
+        max_tokens_model = min(max_model_tokens, max_tokens_model)
     return max_tokens_model
 
 
