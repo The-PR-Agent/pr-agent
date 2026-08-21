@@ -1,4 +1,4 @@
-"""The skills context is injected into a prompt, so it must respect its token budget."""
+"""Respect the token budget of the skills context, which is injected into a prompt."""
 import pytest
 
 from pr_agent.algo.skills_loader import Skill, format_skills_context
@@ -14,19 +14,19 @@ BIG = Skill(name="s", description="d", body="word " * 5000)
 
 @pytest.mark.parametrize("budget", [20, 50, 200, 1000])
 def test_the_truncated_context_stays_within_budget(budget):
-    """The truncation marker is appended after clipping, so it must be accounted for."""
+    """Account for the truncation marker, which is appended after clipping."""
     out = format_skills_context([BIG], budget)
 
     assert _tokens(out) <= budget
 
 
 def test_the_truncation_marker_is_still_present():
-    """Truncation must remain visible to the model."""
+    """Keep the truncation visible to the model."""
     assert "[truncated]" in format_skills_context([BIG], 50)
 
 
 def test_a_skill_within_budget_is_not_truncated():
-    """A small skill is emitted whole."""
+    """Emit a small skill whole."""
     small = Skill(name="s", description="d", body="short body")
 
     out = format_skills_context([small], 1000)
@@ -36,5 +36,5 @@ def test_a_skill_within_budget_is_not_truncated():
 
 
 def test_no_skills_produces_no_context():
-    """An empty skill list still returns an empty string."""
+    """Return an empty string for an empty skill list."""
     assert format_skills_context([], 100) == ""
