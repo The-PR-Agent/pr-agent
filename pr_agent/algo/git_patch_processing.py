@@ -352,6 +352,10 @@ __old hunk__
             continue
 
         if line.startswith('@@'):
+            if not RE_HUNK_HEADER.match(line):
+                get_logger().warning("Skipping a line that starts with '@@' but is not a unified "
+                                     "hunk header", artifact={"line": line})
+                continue
             header_line = line
             match = RE_HUNK_HEADER.match(line)
             if match and (new_content_lines or old_content_lines):  # found a new hunk, split the previous lines
@@ -424,11 +428,15 @@ def extract_hunk_lines_from_patch(patch: str, file_name, line_start, line_end, s
                 continue
 
             if line.startswith('@@'):
+                match = RE_HUNK_HEADER.match(line)
+                if not match:
+                    get_logger().warning("Skipping a line that starts with '@@' but is not a "
+                                         "unified hunk header", artifact={"line": line})
+                    skip_hunk = True
+                    continue
                 skip_hunk = False
                 selected_lines_num = 0
                 header_line = line
-
-                match = RE_HUNK_HEADER.match(line)
 
                 section_header, size1, size2, start1, start2 = extract_hunk_headers(match)
 
