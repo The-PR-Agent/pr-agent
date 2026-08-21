@@ -1099,15 +1099,15 @@ def clip_tokens(text: str, max_tokens: int, add_three_dots=True, num_input_token
         result stays within the token limit, as character-to-token ratios can vary.
         If token encoding fails, the original text is returned with a warning logged.
     """
-    if not text:
-        return text
-
     try:
         max_tokens = int(max_tokens)
     except (TypeError, ValueError, OverflowError):
         get_logger().warning(
             f"clip_tokens got a non-numeric max_tokens ({max_tokens!r}); returning the text "
             f"unclipped, which may exceed the model's context window")
+        return text
+
+    if not text:
         return text
 
     try:
