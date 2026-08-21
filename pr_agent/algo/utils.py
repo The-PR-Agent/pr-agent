@@ -940,6 +940,8 @@ def load_yaml(response_text: str, keys_fix_yaml: List[str] = [], first_key="", l
         else:
             get_logger().info("Successfully parsed AI prediction after fallbacks",
                               artifact={'response_text': response_text})
+    if data is None:
+        return {}
     return data
 
 

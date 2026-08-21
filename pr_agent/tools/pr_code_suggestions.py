@@ -766,6 +766,10 @@ class PRCodeSuggestions:
                          first_key="code_suggestions", last_key="label")
         if isinstance(data, list):
             data = {'code_suggestions': data}
+        if not isinstance(data, dict) or 'code_suggestions' not in data:
+            get_logger().error("Failed to parse code suggestions from the AI prediction",
+                               artifact={'predictions': predictions})
+            return {'code_suggestions': []}
 
         # remove or edit invalid suggestions
         suggestion_list = []
