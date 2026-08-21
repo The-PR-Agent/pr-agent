@@ -1,4 +1,4 @@
-"""The global-settings cache is process-wide, so its key must identify the instance."""
+"""Key the process-wide global-settings cache on the instance, not just the org name."""
 import inspect
 
 import pytest
@@ -30,7 +30,7 @@ def _record_keys(monkeypatch, module):
         return ""
 
     monkeypatch.setattr(module, "get_cached_global_settings", fake_cache)
-    monkeypatch.setattr(module, "get_settings", lambda: SettingsStub())
+    monkeypatch.setattr(module, "get_settings", SettingsStub)
     return keys
 
 
@@ -43,7 +43,7 @@ def _github(base_url):
 
 
 def test_the_same_org_on_two_hosts_does_not_share_an_entry():
-    """Two instances hosting the same org name must not read each other's settings."""
+    """Keep two instances hosting the same org name from reading each other's settings."""
     a = gp.get_cached_global_settings("github:https://github.com:acme", lambda: "from-dot-com")
     b = gp.get_cached_global_settings("github:https://ghe.internal:acme", lambda: "from-ghe")
 
@@ -52,7 +52,7 @@ def test_the_same_org_on_two_hosts_does_not_share_an_entry():
 
 
 def test_the_same_key_is_still_cached():
-    """Caching must still work for repeated lookups of the same instance and org."""
+    """Keep caching repeated lookups of the same instance and org."""
     calls = []
 
     def fetch():
@@ -66,7 +66,7 @@ def test_the_same_key_is_still_cached():
 
 
 def test_github_keys_the_cache_on_the_host(monkeypatch):
-    """The same org on github.com and on an enterprise host must key differently."""
+    """Key the same org differently on github.com and on an enterprise host."""
     keys = _record_keys(monkeypatch, ghp)
 
     _github("https://api.github.com")._get_global_repo_settings()
@@ -77,5 +77,5 @@ def test_github_keys_the_cache_on_the_host(monkeypatch):
 
 
 def test_the_bare_org_only_key_is_gone():
-    """The org-only key must not survive anywhere in the provider."""
-    assert 'f"github:{repo_owner}"' not in inspect.getsource(ghp)
+    """Assert the org-only key does not survive anywhere in the provider."""
+    assert "f\"github:{repo_owner}\"" not in inspect.getsource(ghp)
