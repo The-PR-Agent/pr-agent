@@ -52,6 +52,11 @@ def has_marker(body: str) -> bool:
     return bool(BODY_MARKER_RE.search(body or "") or CODE_MARKER_RE.search(body or ""))
 
 
+def is_agent_inline_comment(body: str) -> bool:
+    body = (body or "").lstrip()
+    return has_marker(body) or bool(_LEAD_RE.match(body))
+
+
 def _strip_markers(body: str) -> str:
     """Remove embedded dedup markers so a pre-marked body fingerprints the
     same as its original (markers are appended after marking)."""

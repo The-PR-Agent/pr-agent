@@ -15,13 +15,46 @@ from pr_agent.git_providers.gitlab_provider import (
 )
 
 
-def _mock_settings(publish_review_as_thread=False):
-    """Settings stub whose .get() returns the GitLab review-thread flag and passes other keys through to the default."""
+def _mock_settings(publish_review_as_thread=False, resolve_outdated_inline_threads=False):
+    """Settings stub whose .get() returns the GitLab thread flags and passes other keys through to the default."""
     settings = MagicMock()
     settings.get.side_effect = lambda key, default=None: {
         "GITLAB.PUBLISH_REVIEW_AS_THREAD": publish_review_as_thread,
+        "GITLAB.RESOLVE_OUTDATED_INLINE_THREADS": resolve_outdated_inline_threads,
     }.get(key, default)
     return settings
+
+
+_BOT_USER_ID = 7
+_CURRENT_HEAD_SHA = "head-current"
+_OUTDATED_HEAD_SHA = "head-old"
+
+
+_AGENT_BODY = "**Suggestion:** Rename this [best practice, importance: 5]\n```suggestion\nx = 1\n```"
+_HUMAN_BODY = "Please rename this variable before we merge."
+
+
+def _thread_note(author_id=_BOT_USER_ID, system=False, resolved=False, resolvable=True,
+                 with_position=True, head_sha=_OUTDATED_HEAD_SHA, position_type='text',
+                 line_key='new_line', body=_AGENT_BODY):
+    note = {'author': {'id': author_id}, 'system': system, 'resolved': resolved,
+            'resolvable': resolvable, 'body': body}
+    if with_position:
+        position = {'position_type': position_type, 'new_path': 'src/app.py',
+                    'old_path': 'src/app.py'}
+        if head_sha is not None:
+            position['head_sha'] = head_sha
+        if line_key:
+            position[line_key] = 12
+        note['position'] = position
+    return note
+
+
+def _thread(notes, discussion_id='d1'):
+    discussion = MagicMock()
+    discussion.id = discussion_id
+    discussion.attributes = {'id': discussion_id, 'notes': notes}
+    return discussion
 
 
 class TestGitLabProvider:
@@ -551,6 +584,128 @@ class TestGitLabProvider:
         gitlab_provider.mr.discussions.list.side_effect = Exception("gitlab api error")
 
         gitlab_provider.unresolve_comment_thread(MagicMock(id=1))  # must not raise
+
+    def _prepare_outdated_cleanup(self, gitlab_provider, threads, own_user_id=_BOT_USER_ID,
+                                  current_head_sha=_CURRENT_HEAD_SHA):
+        gitlab_provider._own_user_id = own_user_id
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.diff_refs = {'head_sha': current_head_sha}
+        gitlab_provider.mr.discussions.list.return_value = threads
+
+    def _run_outdated_cleanup(self, gitlab_provider, enabled=True):
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings",
+                   return_value=_mock_settings(resolve_outdated_inline_threads=enabled)):
+            gitlab_provider.resolve_outdated_inline_threads()
+
+    def test_resolve_outdated_inline_threads_is_opt_in(self, gitlab_provider):
+        outdated = _thread([_thread_note()])
+        self._prepare_outdated_cleanup(gitlab_provider, [outdated])
+
+        self._run_outdated_cleanup(gitlab_provider, enabled=False)
+
+        gitlab_provider.mr.discussions.list.assert_not_called()
+        outdated.save.assert_not_called()
+
+    def test_resolve_outdated_inline_threads_resolves_only_the_bots_outdated_threads(self, gitlab_provider):
+        outdated = _thread([_thread_note()], discussion_id='outdated')
+        current = _thread([_thread_note(head_sha=_CURRENT_HEAD_SHA)], discussion_id='current')
+        with_human_reply = _thread([_thread_note(),
+                                    _thread_note(author_id=99, with_position=False)],
+                                   discussion_id='human')
+        self._prepare_outdated_cleanup(gitlab_provider, [outdated, current, with_human_reply])
+
+        self._run_outdated_cleanup(gitlab_provider)
+
+        assert outdated.resolved is True
+        outdated.save.assert_called_once()
+        current.save.assert_not_called()
+        with_human_reply.save.assert_not_called()
+
+    def test_resolve_outdated_inline_threads_ignores_gitlab_system_notes(self, gitlab_provider):
+        outdated = _thread([_thread_note(),
+                            _thread_note(author_id=99, system=True, with_position=False)])
+        self._prepare_outdated_cleanup(gitlab_provider, [outdated])
+
+        self._run_outdated_cleanup(gitlab_provider)
+
+        assert outdated.resolved is True
+        outdated.save.assert_called_once()
+
+    def test_resolve_outdated_inline_threads_accepts_a_marked_body_without_the_suggestion_lead(self, gitlab_provider):
+        marked = _thread([_thread_note(body="**Possible Issue**\n\nx\n\n<!-- pr-agent-dedup: a1b2c3d4e5f6 -->")])
+        self._prepare_outdated_cleanup(gitlab_provider, [marked])
+
+        self._run_outdated_cleanup(gitlab_provider)
+
+        assert marked.resolved is True
+        marked.save.assert_called_once()
+
+    @pytest.mark.parametrize("notes", [
+        pytest.param([], id="no_notes"),
+        pytest.param(["not-a-dict"], id="opener_not_a_dict"),
+        pytest.param([_thread_note(resolved=True)], id="already_resolved"),
+        pytest.param([_thread_note(resolvable=False)], id="not_resolvable"),
+        pytest.param([_thread_note(with_position=False)], id="no_position"),
+        pytest.param([_thread_note(position_type='image')], id="not_a_text_position"),
+        pytest.param([_thread_note(line_key=None)], id="not_line_anchored"),
+        pytest.param([_thread_note(head_sha=None)], id="no_recorded_head_sha"),
+        pytest.param([_thread_note(head_sha=_CURRENT_HEAD_SHA)], id="on_the_current_diff"),
+        pytest.param([_thread_note(body=_HUMAN_BODY)], id="hand_written_by_the_token_owner"),
+        pytest.param([_thread_note(body=None)], id="no_body"),
+        pytest.param([_thread_note(body="<!-- pr-agent-dedup: in prose")], id="malformed_marker"),
+        pytest.param([{'author': 'not-a-dict', 'body': _AGENT_BODY,
+                       'position': {'position_type': 'text', 'new_line': 1,
+                                    'head_sha': _OUTDATED_HEAD_SHA}}],
+                     id="author_not_a_dict"),
+        pytest.param([_thread_note(), 'not-a-dict'], id="reply_not_a_dict"),
+    ])
+    def test_resolve_outdated_inline_threads_leaves_unconfirmed_threads_alone(self, gitlab_provider, notes):
+        thread = _thread(notes)
+        self._prepare_outdated_cleanup(gitlab_provider, [thread])
+
+        self._run_outdated_cleanup(gitlab_provider)
+
+        thread.save.assert_not_called()
+
+    @pytest.mark.parametrize("own_user_id,current_head_sha", [
+        (None, _CURRENT_HEAD_SHA),
+        (_BOT_USER_ID, None),
+    ])
+    def test_resolve_outdated_inline_threads_skips_when_identity_or_head_is_unknown(
+            self, gitlab_provider, own_user_id, current_head_sha):
+        outdated = _thread([_thread_note()])
+        self._prepare_outdated_cleanup(gitlab_provider, [outdated], own_user_id=own_user_id,
+                                       current_head_sha=current_head_sha)
+
+        self._run_outdated_cleanup(gitlab_provider)
+
+        gitlab_provider.mr.discussions.list.assert_not_called()
+        outdated.save.assert_not_called()
+
+    def test_resolve_outdated_inline_threads_continues_past_a_failing_thread(self, gitlab_provider):
+        failing = _thread([_thread_note()], discussion_id='failing')
+        failing.save.side_effect = Exception("gitlab api error")
+        outdated = _thread([_thread_note()], discussion_id='outdated')
+        self._prepare_outdated_cleanup(gitlab_provider, [failing, outdated])
+
+        self._run_outdated_cleanup(gitlab_provider)
+
+        outdated.save.assert_called_once()
+
+    def test_resolve_outdated_inline_threads_soft_fails(self, gitlab_provider):
+        self._prepare_outdated_cleanup(gitlab_provider, [])
+        gitlab_provider.mr.discussions.list.side_effect = Exception("gitlab api error")
+
+        self._run_outdated_cleanup(gitlab_provider)
+
+    def test_publish_code_suggestions_resolves_outdated_inline_threads_first(self, gitlab_provider):
+        gitlab_provider.resolve_outdated_inline_threads = MagicMock()
+        gitlab_provider.send_inline_comment = MagicMock()
+
+        assert gitlab_provider.publish_code_suggestions([]) is True
+
+        gitlab_provider.resolve_outdated_inline_threads.assert_called_once_with()
+        gitlab_provider.send_inline_comment.assert_not_called()
 
     # ---- publish_labels / get_pr_labels tests ----
 

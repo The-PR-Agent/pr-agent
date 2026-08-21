@@ -532,3 +532,17 @@ def test_has_marker_requires_wellformed_marker():
     assert d.has_marker("body\n\n<!-- pr-agent-dedup: a1b2c3d4e5f6 -->")
     assert not d.has_marker("a comment that merely mentions <!-- pr-agent-dedup: in prose")
     assert not d.has_marker("no marker at all")
+
+
+def test_is_agent_inline_comment_accepts_the_agents_own_bodies():
+    assert d.is_agent_inline_comment(
+        "**Suggestion:** Rename this [best practice, importance: 5]\n```suggestion\nx = 1\n```")
+    assert d.is_agent_inline_comment("\n  **suggestion:** case and leading whitespace are ignored")
+    assert d.is_agent_inline_comment("**Possible Issue**\n\nx\n\n<!-- pr-agent-dedup: a1b2c3d4e5f6 -->")
+
+
+def test_is_agent_inline_comment_rejects_hand_written_bodies():
+    assert not d.is_agent_inline_comment("Please rename this variable before we merge.")
+    assert not d.is_agent_inline_comment("Here is my **Suggestion:** rename it")
+    assert not d.is_agent_inline_comment("")
+    assert not d.is_agent_inline_comment(None)
