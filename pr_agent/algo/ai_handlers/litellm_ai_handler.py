@@ -986,7 +986,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         span.set_attribute("litellm.response.finish_reason", finish_reason)
         span.set_status(Status(StatusCode.OK))
 
-    async def _get_completion(self, span, **kwargs):
+    async def _get_completion(self, span=None, **kwargs):
         """
         Wrapper that automatically handles streaming for required models.
         Tracks comprehensive usage statistics via OpenTelemetry spans.

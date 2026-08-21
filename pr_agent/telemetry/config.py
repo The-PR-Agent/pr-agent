@@ -5,6 +5,7 @@ from pr_agent.telemetry.types import ExporterType, TelemetryConfig
 
 VALID_EXPORTER_TYPES = {ExporterType.CONSOLE, ExporterType.OTLP, ExporterType.NONE}
 
+
 def get_otel_config() -> TelemetryConfig:
     """Read and validate telemetry configuration from settings"""
     # Check if telemetry is is_enabled

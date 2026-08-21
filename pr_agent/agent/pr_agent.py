@@ -105,13 +105,15 @@ class PRAgent:
                             current_extra_instructions = setting.extra_instructions
 
                             # Define the language-specific instruction and the separator
-                            lang_instruction_text = f"Your response MUST be written in the language corresponding to locale code: '{response_language}'. This is crucial."
+                            lang_instruction_text = (f"Your response MUST be written in the language corresponding "
+                                                     f"to locale code: '{response_language}'. This is crucial.")
                             separator_text = "\n======\n\nIn addition, "
 
                             # Check if the specific language instruction is already present to avoid duplication
                             if lang_instruction_text not in str(current_extra_instructions):
                                 if current_extra_instructions: # If there's existing text
-                                    setting.extra_instructions = str(current_extra_instructions) + separator_text + lang_instruction_text
+                                    setting.extra_instructions = (str(current_extra_instructions)
+                                                                  + separator_text + lang_instruction_text)
                                 else: # If extra_instructions was None or empty
                                     setting.extra_instructions = lang_instruction_text
                             # If lang_instruction_text is already present, do nothing.
