@@ -302,6 +302,7 @@ class GithubProvider(GitProvider):
                     continue
 
                 patch = file.patch
+                old_filename = file.previous_filename if file.status == 'renamed' and getattr(file, 'previous_filename', None) else None
                 if is_close_to_rate_limit:
                     new_file_content_str = ""
                     original_file_content_str = ""
@@ -327,7 +328,7 @@ class GithubProvider(GitProvider):
                         if avoid_load:
                             original_file_content_str = ""
                         else:
-                            original_file_content_str = self._get_pr_file_content(file, merge_base_commit.sha)
+                            original_file_content_str = self._get_pr_file_content(file, merge_base_commit.sha, path=old_filename)
                             # original_file_content_str = self._get_pr_file_content(file, self.pr.base.sha)
                         if not patch:
                             patch = load_large_diff(file.filename, new_file_content_str, original_file_content_str)
@@ -356,6 +357,7 @@ class GithubProvider(GitProvider):
 
                 file_patch_canonical_structure = FilePatchInfo(original_file_content_str, new_file_content_str, patch,
                                                                file.filename, edit_type=edit_type,
+                                                               old_filename=old_filename,
                                                                num_plus_lines=num_plus_lines,
                                                                num_minus_lines=num_minus_lines,)
                 diff_files.append(file_patch_canonical_structure)
@@ -1156,8 +1158,8 @@ class GithubProvider(GitProvider):
             branch=branch,
         )
 
-    def _get_pr_file_content(self, file: FilePatchInfo, sha: str) -> str:
-        return self.get_pr_file_content(file.filename, sha)
+    def _get_pr_file_content(self, file: FilePatchInfo, sha: str, path: str = None) -> str:
+        return self.get_pr_file_content(path or file.filename, sha)
 
     def publish_labels(self, pr_types):
         try:
