@@ -24,3 +24,9 @@ def test_numeric_values_are_unchanged():
     """Keep the existing behaviour for genuinely numeric settings."""
     assert cap_and_log_extra_lines(3, "before") == 3
     assert cap_and_log_extra_lines(MAX_EXTRA_LINES + 1, "before") == MAX_EXTRA_LINES
+
+
+@pytest.mark.parametrize("value", [float("inf"), float("-inf"), float("nan")])
+def test_fall_back_for_a_non_finite_value(value):
+    """Fall back to no extra lines for a non-finite float, which int() cannot convert."""
+    assert cap_and_log_extra_lines(value, "before") == 0
