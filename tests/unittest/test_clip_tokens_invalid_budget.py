@@ -1,4 +1,6 @@
-"""A non-numeric token budget must be reported, not silently ignored."""
+"""Report a token budget that cannot be read, instead of silently ignoring it."""
+import pytest
+
 from pr_agent.algo.utils import clip_tokens
 from pr_agent.log import get_logger
 
@@ -17,7 +19,7 @@ def _capture(call):
 
 
 def test_accept_a_quoted_budget():
-    """A quoted number is a valid budget and must actually clip."""
+    """Clip against a quoted number, which is a valid budget."""
     out = clip_tokens(LONG_TEXT, "50")
 
     assert len(out) < len(LONG_TEXT)
@@ -37,5 +39,11 @@ def test_numeric_budget_is_unchanged():
 
 
 def test_text_within_budget_is_returned_whole():
-    """Short text is still returned untouched."""
+    """Return short text untouched."""
     assert clip_tokens("short", 1000) == "short"
+
+
+@pytest.mark.parametrize("budget", [float("inf"), float("-inf"), float("nan")])
+def test_a_non_finite_budget_returns_the_text(budget):
+    """Return the text for a non-finite budget, which int() raises on, instead of crashing."""
+    assert clip_tokens(LONG_TEXT, budget) == LONG_TEXT
