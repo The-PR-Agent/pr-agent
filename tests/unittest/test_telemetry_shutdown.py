@@ -29,7 +29,7 @@ from pr_agent.telemetry.shutdown import (
     register_shutdown_handler,
     shutdown_telemetry,
 )
-from tests.unittest._telemetry_helpers import capture_loguru, clear_telemetry_caches
+from tests.unittest._telemetry_helpers import capture_loguru, clear_telemetry_caches, make_config
 
 
 @pytest.fixture(autouse=True)
@@ -238,6 +238,47 @@ def test_flush_swallows_errors_and_flushes_remaining_provider():
 
     assert "Error flushing telemetry" in "\n".join(captured)
     assert meter_provider.flushed is True, "meter must still flush when the tracer flush fails"
+
+
+class _DeadlineRecordingProvider:
+    """Records the force_flush deadline it was handed."""
+
+    def __init__(self):
+        self.timeout_millis = None
+
+    def force_flush(self, timeout_millis=3000):
+        self.timeout_millis = timeout_millis
+        return True
+
+
+def test_flush_deadline_follows_configured_otlp_timeout(monkeypatch):
+    """The request-boundary flush must honor OTEL.OTLP_TIMEOUT — raising the
+    export deadline must extend the flush wait too, not stop it at 3 s."""
+    monkeypatch.setattr(shutdown_module, "get_otel_config", lambda: make_config(otlp_timeout=10))
+    provider = _DeadlineRecordingProvider()
+    provider_registry.register(provider)
+
+    flush_telemetry()
+    assert provider.timeout_millis == 10_000, "flush deadline must be OTEL.OTLP_TIMEOUT in ms"
+
+    flush_telemetry(timeout_millis=500)
+    assert provider.timeout_millis == 500, "an explicit deadline must override the configuration"
+
+
+def test_flush_falls_back_to_default_deadline_when_config_raises(monkeypatch):
+    """get_otel_config raises on an invalid OTEL.EXPORTER_TYPE; the flush runs
+    in handle_request's finally, so it must still export with the default
+    deadline instead of propagating."""
+    def _invalid_config():
+        raise ValueError("Invalid OTEL.EXPORTER_TYPE 'bogus'")
+
+    monkeypatch.setattr(shutdown_module, "get_otel_config", _invalid_config)
+    provider = _DeadlineRecordingProvider()
+    provider_registry.register(provider)
+
+    flush_telemetry()  # must not raise
+
+    assert provider.timeout_millis == 3000, "config errors must fall back to the 3 s default"
 
 
 def test_register_shutdown_handler_registers_atexit_exactly_once(monkeypatch):
