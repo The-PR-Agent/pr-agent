@@ -1178,6 +1178,10 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
                     if absolute_position_curr == absolute_position:
                         position = i
                         break
+            elif not relevant_line_in_file:
+                get_logger().warning("Cannot locate an empty relevant line in a patch",
+                                     artifact={"relevant_file": relevant_file})
+                continue
             else:
                 # try to find the line in the patch using difflib, with some margin of error
                 matches_difflib: list[str | Any] = difflib.get_close_matches(relevant_line_in_file,
@@ -1199,7 +1203,7 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
                         absolute_position = start2 + delta - 1
                         break
 
-                if position == -1 and relevant_line_in_file and relevant_line_in_file[0] == '+':
+                if position == -1 and relevant_line_in_file[0] == '+':
                     no_plus_line = relevant_line_in_file[1:].lstrip()
                     for i, line in enumerate(patch_lines):
                         if line.startswith('@@'):
