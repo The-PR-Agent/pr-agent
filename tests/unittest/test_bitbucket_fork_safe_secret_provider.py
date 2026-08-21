@@ -1,13 +1,15 @@
-"""gunicorn runs bitbucket_app with preload_app, so no client may be built at import time."""
+"""Build the secret provider per process, never at import, since gunicorn preloads the app."""
+import inspect
 import os
 
 import pytest
 
+import pr_agent.secret_providers as secret_providers
 import pr_agent.servers.bitbucket_app as bitbucket_app
 
 
 class FakeSecretProvider:
-    """Stands in for a cloud secret client, which must not be shared across a fork."""
+    """Stand in for a cloud secret client, which must not be shared across a fork."""
 
 
 class SettingsStub:
@@ -68,3 +70,19 @@ def test_no_provider_configured_returns_none(monkeypatch):
     monkeypatch.setattr(bitbucket_app, "get_settings", lambda: SettingsStub(None))
 
     assert bitbucket_app.get_fork_safe_secret_provider() is None
+
+
+def test_the_setting_is_still_validated_at_import():
+    """Keep failing at startup on a typo, which the removed import-time client used to catch."""
+    source = inspect.getsource(bitbucket_app)
+
+    assert "validate_secret_provider_setting()" in source
+
+
+def test_an_unknown_provider_name_is_rejected(monkeypatch):
+    """Reject an unknown CONFIG.SECRET_PROVIDER before any worker handles a webhook."""
+    monkeypatch.setattr(secret_providers, "get_settings",
+                        lambda: SettingsStub("not_a_real_provider"))
+
+    with pytest.raises(ValueError):
+        secret_providers.validate_secret_provider_setting()
