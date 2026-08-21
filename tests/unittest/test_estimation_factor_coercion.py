@@ -38,3 +38,21 @@ def test_numeric_factor_is_unchanged(restore_config):
     restore_config.set("config.model_token_count_estimate_factor", 0.5)
 
     assert _handler()._apply_estimation_factor("m", 100) == 150
+
+
+@pytest.mark.parametrize("value", ["inf", "-infinity", "nan", float("inf"), float("nan")])
+def test_fall_back_for_a_non_finite_factor(restore_config, value):
+    """Fall back to a factor of 1 for a non-finite value, which float() happily accepts."""
+    restore_config.set("config.model_token_count_estimate_factor", value)
+    handler = _handler()
+
+    assert handler._apply_estimation_factor("some-model", 100) == 100
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_fall_back_for_a_boolean_factor(restore_config, value):
+    """Treat a boolean as unusable rather than letting float(True) become a factor of 2."""
+    restore_config.set("config.model_token_count_estimate_factor", value)
+    handler = _handler()
+
+    assert handler._apply_estimation_factor("some-model", 100) == 100
