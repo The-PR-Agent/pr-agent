@@ -33,7 +33,7 @@ MAX_EXTRA_LINES = 10
 def cap_and_log_extra_lines(value, direction) -> int:
     try:
         value = int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         get_logger().warning(
             f"patch_extra_lines_{direction} is not a number ({value!r}), using 0")
         return 0
