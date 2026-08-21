@@ -1298,7 +1298,7 @@ def show_relevant_configurations(relevant_section: str) -> str:
     extra_skip_keys = get_settings().config.get("skip_keys", [])
     if extra_skip_keys:
         skip_keys.extend(extra_skip_keys)
-    skip_keys_lower = [key.lower() for key in skip_keys]
+    skip_keys_lower = [str(key).lower() for key in skip_keys]
 
     markdown_text = ""
     markdown_text += "\n<hr>\n<details> <summary><strong>🛠️ Relevant configurations:</strong></summary> \n\n"
