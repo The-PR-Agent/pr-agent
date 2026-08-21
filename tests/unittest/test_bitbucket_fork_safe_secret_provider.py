@@ -1,6 +1,7 @@
 """Build the secret provider per process, never at import, since gunicorn preloads the app."""
-import inspect
+import importlib
 import os
+import sys
 
 import pytest
 
@@ -72,17 +73,26 @@ def test_no_provider_configured_returns_none(monkeypatch):
     assert bitbucket_app.get_fork_safe_secret_provider() is None
 
 
-def test_the_setting_is_still_validated_at_import():
-    """Keep failing at startup on a typo, which the removed import-time client used to catch."""
-    source = inspect.getsource(bitbucket_app)
-
-    assert "validate_secret_provider_setting()" in source
-
-
-def test_an_unknown_provider_name_is_rejected(monkeypatch):
-    """Reject an unknown CONFIG.SECRET_PROVIDER before any worker handles a webhook."""
+def test_importing_the_module_validates_the_setting(monkeypatch):
+    """Fail at startup on a typo, which the removed import-time client used to catch."""
     monkeypatch.setattr(secret_providers, "get_settings",
                         lambda: SettingsStub("not_a_real_provider"))
+    monkeypatch.delitem(sys.modules, bitbucket_app.__name__, raising=False)
 
     with pytest.raises(ValueError):
-        secret_providers.validate_secret_provider_setting()
+        importlib.import_module(bitbucket_app.__name__)
+
+
+def test_importing_the_module_accepts_a_known_provider(monkeypatch):
+    """Import cleanly for a supported provider, without building its client."""
+    built = []
+    monkeypatch.setattr(secret_providers, "get_settings",
+                        lambda: SettingsStub("google_cloud_storage"))
+    monkeypatch.setattr(secret_providers, "get_secret_provider",
+                        lambda: built.append(1) or FakeSecretProvider())
+    monkeypatch.delitem(sys.modules, bitbucket_app.__name__, raising=False)
+
+    reloaded = importlib.import_module(bitbucket_app.__name__)
+
+    assert reloaded._secret_provider_state == {}
+    assert built == []
