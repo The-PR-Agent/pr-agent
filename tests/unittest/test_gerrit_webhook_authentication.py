@@ -1,4 +1,4 @@
-"""The Gerrit webhook endpoint runs commands, so it must be able to require credentials."""
+"""Require credentials on the Gerrit webhook endpoint, which runs arbitrary commands."""
 import pytest
 from fastapi import FastAPI
 from starlette.middleware import Middleware
@@ -75,3 +75,14 @@ def test_an_unconfigured_deployment_keeps_the_previous_behaviour(monkeypatch):
 
     assert response.status_code == 200
     assert calls
+
+
+@pytest.mark.parametrize("username, password", [("admin", ""), ("", "s3cret")])
+def test_reject_a_half_configured_deployment(monkeypatch, username, password):
+    """Fail closed when only one credential is set, rather than reverting to open access."""
+    client, calls = build_client(monkeypatch, username, password)
+
+    response = client.post("/api/v1/gerrit/review", json=PAYLOAD)
+
+    assert response.status_code == 500
+    assert calls == []
