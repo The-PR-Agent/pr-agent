@@ -285,23 +285,33 @@ class PRReviewer:
         header = f"{PRReviewHeader.REGULAR.value} 🔍"
         try:
             comments = list(self.git_provider.get_issue_comments())
+            invalid_marker_found = False
             for comment in reversed(comments):
-                body = getattr(comment, "body", "")
+                body = GitProvider._get_comment_body(comment)
                 if not isinstance(body, str) or not body.startswith(header):
                     continue
                 parsed = parse_review_state(body)
-                if not parsed.valid:
-                    self._review_state_blocked = True
-                    self._review_state_block_reason = _STATE_BLOCK_INVALID_MARKER
+                if parsed.valid and parsed.present:
+                    self._review_state_blocked = False
+                    self._review_state_block_reason = None
+                    return parsed
+                if not parsed.valid and parsed.present:
+                    invalid_marker_found = True
                     get_logger().warning(
-                        "Review finding state marker is malformed or unsupported; skipping persistent update"
+                        "Review finding state marker is malformed or unsupported; "
+                        "trying an older persistent review"
                     )
-                return parsed
+            if invalid_marker_found:
+                self._review_state_blocked = True
+                self._review_state_block_reason = _STATE_BLOCK_INVALID_MARKER
+                return None
         except Exception as e:
             self._review_state_blocked = True
             self._review_state_block_reason = _STATE_BLOCK_READ_ERROR
             get_logger().warning(f"Could not read persistent review state; skipping persistent update, error: {e}")
             return None
+        self._review_state_blocked = False
+        self._review_state_block_reason = None
         return parse_review_state("")
 
     @staticmethod
@@ -366,6 +376,14 @@ class PRReviewer:
             return ""
         return value if isinstance(value, str) else ""
 
+    def _review_comment_max_chars(self) -> int | None:
+        for attribute in ("max_comment_chars", "max_comment_length"):
+            value = getattr(self.git_provider, attribute, None)
+            if isinstance(value, int) and value > 0:
+                update_suffix = f"\n\n#### (Review updated until commit {self._review_run_id()})\n"
+                return value - len(update_suffix)
+        return None
+
     def _prepare_review_finding_state(self, data: dict) -> None:
         self._review_state_result = None
         self._review_state_blocked = False
@@ -379,7 +397,7 @@ class PRReviewer:
             return
 
         parsed = self._load_review_finding_state()
-        if parsed is None:
+        if parsed is None and self._review_state_block_reason != _STATE_BLOCK_INVALID_MARKER:
             return
         current_findings = self._review_findings_from_data(data)
         if current_findings is None:
@@ -388,13 +406,27 @@ class PRReviewer:
             get_logger().warning("Review finding data is invalid; skipping persistent state update")
             return
         if self._review_state_blocked:
+            if self._review_state_block_reason == _STATE_BLOCK_INVALID_MARKER:
+                self._review_state_result = reconcile_review_findings(
+                    None,
+                    current_findings,
+                    allow_resolution=False,
+                    excluded_files=self.remaining_files_list,
+                    head_sha=self._review_head_sha(),
+                    run_id=self._review_run_id(),
+                )
             return
+        try:
+            max_findings = int(get_settings().pr_reviewer.num_max_findings)
+        except (TypeError, ValueError):
+            max_findings = 0
         allow_resolution = (
             bool(self.prediction)
             and not bool(getattr(self.incremental, "is_incremental", False))
             and not bool(self.remaining_files_list)
             and parsed.valid
             and current_findings is not None
+            and len(current_findings) < max_findings
         )
         result = reconcile_review_findings(
             parsed.state,
@@ -525,7 +557,11 @@ class PRReviewer:
             markdown_text += show_run_details(self.git_provider.is_supported("gfm_markdown"))
 
         if self._review_state_result is not None:
-            markdown_text = append_review_state(markdown_text or "", self._review_state_result.state)
+            markdown_text = append_review_state(
+                markdown_text or "",
+                self._review_state_result.state,
+                max_chars=self._review_comment_max_chars(),
+            )
 
         # Add custom labels from the review prediction (effort, security)
         self.set_review_labels(data)

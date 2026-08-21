@@ -246,6 +246,27 @@ def test_resolved_render_is_collapsed_and_state_marker_is_hidden():
     assert "<!-- pr-agent-review-state:v1" in body
 
 
+def test_append_review_state_reserves_space_for_complete_marker():
+    state = reconcile_review_findings(
+        None,
+        [_finding()],
+        allow_resolution=True,
+        timestamp="2026-01-01T00:00:00Z",
+    ).state
+    marker = serialize_review_state(state)
+
+    body = append_review_state(
+        "human-readable review " + "x" * 500,
+        state,
+        max_chars=len(marker) + 32,
+    )
+
+    parsed = parse_review_state(body)
+    assert len(body) <= len(marker) + 32
+    assert parsed.valid is True
+    assert parsed.state == state
+
+
 def test_resolved_retention_never_drops_active_findings():
     active = _finding("active", "active.py")
     old = [

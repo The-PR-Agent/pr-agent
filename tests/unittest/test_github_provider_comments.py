@@ -7,6 +7,7 @@ These tests use ``GithubProvider.__new__(GithubProvider)`` to bypass network-bou
 """
 
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -51,6 +52,15 @@ def _make_provider(pr=None, max_chars=65000):
     p.diff_files = []
     p.base_url = "https://api.github.com"
     return p
+
+
+def test_edit_comment_reraises_github_failure():
+    provider = _make_provider()
+    comment = MagicMock()
+    comment.edit.side_effect = gh_module.GithubException(500, "edit failed", {})
+
+    with pytest.raises(gh_module.GithubException):
+        provider.edit_comment(comment, "updated body")
 
 
 # ---------------------------------------------------------------------------

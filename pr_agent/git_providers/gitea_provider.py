@@ -369,10 +369,10 @@ class GiteaProvider(GitProvider):
             )
         except ApiException as e:
             self.logger.error(f"Error editing comment: {e}")
-            return None
+            raise
         except Exception as e:
             self.logger.error(f"Unexpected error: {e}")
-            return None
+            raise
 
 
     def publish_inline_comment(self,body: str, relevant_file: str, relevant_line_in_file: str, original_suggestion=None):
@@ -636,9 +636,9 @@ class GiteaProvider(GitProvider):
             repo=self.repo,
             index=index
         )
-        if not comments:
+        if comments is None:
             self.logger.error("Failed to get comments")
-            return []
+            raise RuntimeError("Failed to get comments")
 
         return comments
 

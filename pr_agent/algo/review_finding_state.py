@@ -291,9 +291,35 @@ def _render_resolved_section(state: Mapping[str, Any]) -> str:
     return "\n".join(lines).rstrip()
 
 
-def append_review_state(review_body: str, state: Mapping[str, Any]) -> str:
-    """Append the human-readable resolved section and hidden state marker."""
+def append_review_state(
+    review_body: str,
+    state: Mapping[str, Any],
+    max_chars: int | None = None,
+) -> str:
+    """Append the resolved section and hidden marker within an optional limit.
+
+    The optional limit is reserved for the complete hidden marker.
+    """
     body = _STATE_MARKER_RE.sub("", review_body or "").rstrip()
-    sections = [section for section in (body, _render_resolved_section(state)) if section]
-    sections.append(serialize_review_state(state))
+    human_body = "\n\n".join(
+        section
+        for section in (body, _render_resolved_section(state))
+        if section
+    )
+    marker = serialize_review_state(state)
+    if max_chars is not None:
+        if not isinstance(max_chars, int) or max_chars < len(marker) + 1:
+            raise ValueError(
+                "Comment limit is too small for the persistent "
+                "review state marker"
+            )
+        human_budget = max_chars - len(marker) - 3
+        if len(human_body) > human_budget:
+            if human_budget <= 0:
+                human_body = ""
+            elif human_budget < 3:
+                human_body = human_body[:human_budget]
+            else:
+                human_body = human_body[: human_budget - 3] + "..."
+    sections = [section for section in (human_body, marker) if section]
     return "\n\n".join(sections).rstrip() + "\n"
