@@ -1,4 +1,7 @@
-"""An unusable ignore pattern must be reported, not silently dropped."""
+"""Report an ignore pattern that cannot compile, instead of dropping it silently."""
+import copy
+import io
+
 import pytest
 
 from pr_agent.algo.file_filter import filter_ignored
@@ -13,16 +16,16 @@ class _File:
 
 @pytest.fixture
 def restore_ignore():
-    import copy
     settings = get_settings(use_context=False)
     original = copy.deepcopy(settings.get("IGNORE", None))
     yield settings
-    if original is not None:
+    if original is None:
+        settings.set("IGNORE", {})
+    else:
         settings.set("IGNORE", original)
 
 
 def _capture(call):
-    import io
     buffer = io.StringIO()
     handler_id = get_logger().add(buffer, level="DEBUG", format="{message}", colorize=False)
     try:
