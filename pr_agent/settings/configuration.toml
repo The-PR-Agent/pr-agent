@@ -345,7 +345,7 @@ avoid_full_files = false
 # improve_path= "path/to/improve.md"
 
 [gerrit]
-# basic-auth credentials for the gerrit webhook server; when unset the endpoint stays open
+# set both to require basic auth on the gerrit webhook endpoint; leave both empty to keep it open
 webhook_username = ""
 webhook_password = ""
 # endpoint to the gerrit service

@@ -25,8 +25,14 @@ def authorize(credentials: HTTPBasicCredentials = Depends(security)):
     gerrit_settings = get_settings().get("gerrit", {})
     username = gerrit_settings.get("webhook_username", None) if gerrit_settings else None
     password = gerrit_settings.get("webhook_password", None) if gerrit_settings else None
-    if not username or not password:
+    if not username and not password:
         return
+    if not username or not password:
+        raise HTTPException(
+            status_code=500,
+            detail="Incomplete webhook credentials: set both gerrit.webhook_username and "
+                   "gerrit.webhook_password, or neither.",
+        )
     if credentials is None:
         raise HTTPException(
             status_code=401,
