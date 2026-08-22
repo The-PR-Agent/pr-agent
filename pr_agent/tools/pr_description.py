@@ -196,6 +196,10 @@ class PRDescription:
                     # Pass None when the title is not AI-generated so the provider
                     # leaves it untouched, avoiding reverting a manual edit (#2474).
                     title_to_publish = pr_title.strip() if get_settings().pr_description.generate_ai_title else None
+                    # Prepend a hidden HTML comment so recognition can match it
+                    # anywhere in the body without depending on visible section
+                    # headers that a human might quote.
+                    pr_body = '<!-- pr-agent-generated -->\n' + pr_body
                     self.git_provider.publish_description(title_to_publish, pr_body)
 
                     # publish final update message
@@ -463,6 +467,13 @@ class PRDescription:
     def _prepare_data(self):
         # Load the AI prediction data into a dictionary
         self.data = load_yaml(self.prediction.strip(), keys_fix_yaml=self.keys_fix)
+
+        # load_yaml returns None when the prediction is not valid YAML;
+        # return an empty dict so callers can handle the empty case without
+        # crashing on ``in None``.
+        if self.data is None:
+            get_logger().warning(f"Failed to parse prediction YAML, treating as empty")
+            self.data = {}
 
         if get_settings().pr_description.add_original_user_description and self.user_description:
             self.data["User Description"] = self.user_description
