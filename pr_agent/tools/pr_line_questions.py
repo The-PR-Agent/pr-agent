@@ -9,7 +9,7 @@ from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.git_patch_processing import extract_hunk_lines_from_patch
 from pr_agent.algo.pr_processing import retry_with_fallback_models
 from pr_agent.algo.token_handler import TokenHandler
-from pr_agent.algo.utils import ModelType
+from pr_agent.algo.utils import ModelType, decode_user_text_args
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.git_provider import get_main_pr_language
@@ -45,11 +45,7 @@ class PR_LineQuestions:
         self.prediction = None
 
     def parse_args(self, args):
-        if args and len(args) > 0:
-            question_str = " ".join(args)
-        else:
-            question_str = ""
-        return question_str
+        return decode_user_text_args(args)
 
 
     async def run(self):

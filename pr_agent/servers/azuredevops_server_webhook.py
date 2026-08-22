@@ -22,7 +22,7 @@ from starlette_context import context
 from starlette_context.middleware import RawContextMiddleware
 
 from pr_agent.agent.pr_agent import PRAgent, command2class
-from pr_agent.algo.utils import update_settings_from_args
+from pr_agent.algo.utils import encode_user_text_arg, update_settings_from_args
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.azuredevops_provider import (
@@ -118,7 +118,9 @@ def handle_line_comment(body: str, thread_id: int, comment_id: int, provider: Az
         question = extract_agent_question(body, provider.get_agent_mention_aliases())
         if not question:
             return None
-    threaded_question = f"/ask --comment_id={thread_id} --origin_comment_id={comment_id} {question}".rstrip()
+    encoded_question = encode_user_text_arg(question) if question else ""
+    threaded_question = (f"/ask --comment_id={thread_id} --origin_comment_id={comment_id} "
+                         f"{encoded_question}").rstrip()
     thread_context = provider.get_thread_context(thread_id)
     if not thread_context:
         return threaded_question
@@ -151,7 +153,7 @@ def handle_line_comment(body: str, thread_id: int, comment_id: int, provider: Az
     encoded_path = quote(path, safe="")
     return (f"/ask_line --line_start={start_line} --line_end={end_line} --side={side} "
             f"--file_name={encoded_path} --file_name_encoded=true --comment_id={thread_id} "
-            f"--origin_comment_id={comment_id} {question}").rstrip()
+            f"--origin_comment_id={comment_id} {encoded_question}").rstrip()
 
 # currently only basic auth is supported with azure webhooks
 # for this reason, https must be enabled to ensure the credentials are not sent in clear text

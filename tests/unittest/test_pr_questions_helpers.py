@@ -78,6 +78,11 @@ class TestPRQuestionsParseArgs:
         pr = _make_pr_questions()
         assert pr.parse_args(["hello"]) == "hello"
 
+    def test_decodes_internal_question_argument(self):
+        pr = _make_pr_questions()
+        encoded = "__pr_agent_encoded_text__:does%20--some_key%3D1%20change%20the%20request%3F"
+        assert pr.parse_args([encoded]) == "does --some_key=1 change the request?"
+
 
 # ---------------------------------------------------------------------------
 # PRQuestions.identify_image_in_comment
@@ -339,6 +344,11 @@ class TestLineQuestionsParseArgs:
         lq = _make_line_questions()
         assert lq.parse_args([]) == ""
         assert lq.parse_args(None) == ""
+
+    def test_decodes_internal_question_argument(self):
+        lq = _make_line_questions()
+        encoded = "__pr_agent_encoded_text__:does%20--some_key%3D1%20change%20the%20request%3F"
+        assert lq.parse_args([encoded]) == "does --some_key=1 change the request?"
 
 
 # ---------------------------------------------------------------------------

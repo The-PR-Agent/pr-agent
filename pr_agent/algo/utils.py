@@ -16,6 +16,7 @@ from datetime import datetime
 from enum import Enum
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any, List, Tuple, TypedDict
+from urllib.parse import quote, unquote
 
 import html2text
 import requests
@@ -31,6 +32,20 @@ from pr_agent.algo.token_handler import TokenEncoder
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.log import get_logger
+
+_ENCODED_USER_TEXT_PREFIX = "__pr_agent_encoded_text__:"
+
+
+def encode_user_text_arg(value: str) -> str:
+    return f"{_ENCODED_USER_TEXT_PREFIX}{quote(value, safe='')}"
+
+
+def decode_user_text_args(args: List[str] | None) -> str:
+    if not args:
+        return ""
+    if len(args) == 1 and args[0].startswith(_ENCODED_USER_TEXT_PREFIX):
+        return unquote(args[0][len(_ENCODED_USER_TEXT_PREFIX):])
+    return " ".join(args)
 
 
 def get_model(model_type: str = "model_weak") -> str:

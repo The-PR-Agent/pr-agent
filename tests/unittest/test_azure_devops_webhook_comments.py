@@ -1,10 +1,12 @@
 import shlex
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from urllib.parse import unquote
 
 import pytest
 
+from pr_agent.algo.utils import (decode_user_text_args,
+                                 update_settings_from_args)
 from pr_agent.servers import azuredevops_server_webhook as webhook
 
 AGENT_ALIASES = {
@@ -65,7 +67,7 @@ def test_addressed_line_comment_becomes_ask_line_with_history_ids():
 
     assert command == ("/ask_line --line_start=8 --line_end=10 --side=right "
                        "--file_name=%2Fsrc%2Fapp.cs --file_name_encoded=true --comment_id=22 "
-                       "--origin_comment_id=31 can this throw?")
+                       "--origin_comment_id=31 __pr_agent_encoded_text__:can%20this%20throw%3F")
 
 
 def test_addressed_pr_comment_becomes_threaded_ask():
@@ -77,7 +79,8 @@ def test_addressed_pr_comment_becomes_threaded_ask():
         "@<Build Service (organization)> check this PR", thread_id=22, comment_id=31, provider=provider
     )
 
-    assert command == "/ask --comment_id=22 --origin_comment_id=31 check this PR"
+    assert command == ("/ask --comment_id=22 --origin_comment_id=31 "
+                       "__pr_agent_encoded_text__:check%20this%20PR")
 
 
 def test_addressed_comment_without_line_range_becomes_threaded_ask():
@@ -95,7 +98,8 @@ def test_addressed_comment_without_line_range_becomes_threaded_ask():
         "@<agent@example.com> check this thread", thread_id=22, comment_id=31, provider=provider
     )
 
-    assert command == "/ask --comment_id=22 --origin_comment_id=31 check this thread"
+    assert command == ("/ask --comment_id=22 --origin_comment_id=31 "
+                       "__pr_agent_encoded_text__:check%20this%20thread")
 
 
 def test_addressed_comment_uses_available_line_position():
@@ -113,7 +117,7 @@ def test_addressed_comment_uses_available_line_position():
 
     assert command == ("/ask_line --line_start=10 --line_end=10 --side=right "
                        "--file_name=%2Fsrc%2Fapp.cs --file_name_encoded=true --comment_id=22 "
-                       "--origin_comment_id=31 check this")
+                       "--origin_comment_id=31 __pr_agent_encoded_text__:check%20this")
 
 
 def test_slash_ask_does_not_require_agent_identity_discovery():
@@ -122,7 +126,8 @@ def test_slash_ask_does_not_require_agent_identity_discovery():
 
     command = webhook.handle_line_comment("/ask check this PR", 22, 31, provider)
 
-    assert command == "/ask --comment_id=22 --origin_comment_id=31 check this PR"
+    assert command == ("/ask --comment_id=22 --origin_comment_id=31 "
+                       "__pr_agent_encoded_text__:check%20this%20PR")
     provider.get_agent_mention_aliases.assert_not_called()
 
 
@@ -164,7 +169,32 @@ def test_invalid_line_range_becomes_threaded_ask():
 
     command = webhook.handle_line_comment("@<agent-guid> check this", 22, 31, provider)
 
-    assert command == "/ask --comment_id=22 --origin_comment_id=31 check this"
+    assert command == ("/ask --comment_id=22 --origin_comment_id=31 "
+                       "__pr_agent_encoded_text__:check%20this")
+
+
+def test_line_question_cannot_be_parsed_as_settings():
+    provider = MagicMock()
+    provider.get_agent_mention_aliases.return_value = AGENT_ALIASES
+    provider.get_thread_context.return_value = SimpleNamespace(
+        file_path="/src/app.cs",
+        left_file_start=None,
+        left_file_end=None,
+        right_file_start=SimpleNamespace(line=8),
+        right_file_end=SimpleNamespace(line=8),
+    )
+    question = "does --some_key=1 change the request?"
+
+    command = webhook.handle_line_comment(f"@<agent-guid> {question}", 22, 31, provider)
+    lexer = shlex.shlex(command.replace("'", "\\'"), posix=True)
+    lexer.whitespace_split = True
+    _, *args = list(lexer)
+
+    with patch("pr_agent.algo.utils.get_settings") as settings:
+        question_args = update_settings_from_args(args)
+
+    assert decode_user_text_args(question_args) == question
+    assert all(call.args[0] != "SOME_KEY" for call in settings.return_value.set.call_args_list)
 
 
 def test_line_comment_encodes_file_path():

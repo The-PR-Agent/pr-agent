@@ -262,6 +262,7 @@ async def test_publish_no_suggestions_still_overwrites_the_progress_comment_when
         publish_output_no_suggestions):
     publish_output_no_suggestions(True)
     git_provider = MagicMock()
+    git_provider.supports_code_suggestion_state.return_value = False
     tool = _make_tool(git_provider)
     tool.progress_response = MagicMock()
 
