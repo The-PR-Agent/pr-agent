@@ -520,6 +520,42 @@ def test_should_publish_review_no_suggestions_respects_config():
         settings.pr_reviewer.publish_output_no_suggestions = original_publish_no_suggestions
 
 
+def test_prepare_review_publishes_provider_neutral_structured_data(monkeypatch):
+    git_provider = MagicMock()
+    git_provider.is_supported.return_value = False
+    git_provider.get_diff_files.return_value = []
+    reviewer = _make_prediction_reviewer(git_provider)
+    reviewer.prediction = """review:
+  key_issues_to_review: []
+  security_concerns: no
+"""
+    reviewer.incremental = SimpleNamespace(is_incremental=False)
+    reviewer.set_review_labels = MagicMock()
+    monkeypatch.setattr(
+        "pr_agent.tools.pr_reviewer.convert_to_markdown_v2",
+        lambda *args, **kwargs: "## Review",
+    )
+
+    from pr_agent.algo.run_details import add_token_usage, init_run_details
+
+    init_run_details()
+    add_token_usage({"prompt_tokens": 30, "completion_tokens": 12, "total_tokens": 42})
+
+    reviewer._prepare_pr_review()
+
+    git_provider.publish_structured_review.assert_called_once_with({
+        "review": {
+            "key_issues_to_review": [],
+            "security_concerns": False,
+        },
+        "usage": {"prompt_tokens": 30, "completion_tokens": 12, "total_tokens": 42},
+    })
+    # The published snapshot must be isolated from the reviewer's own dict —
+    # _prepare_pr_review mutates data["review"] right after the hook fires.
+    published = git_provider.publish_structured_review.call_args[0][0]
+    assert "key_issues_to_review" in published["review"]
+
+
 def test_can_run_incremental_review_skips_auto_mode_without_new_commit():
     reviewer = _make_reviewer()
     reviewer.is_auto = True
