@@ -267,6 +267,7 @@ MAX_TOKENS = {
     'claude-3-5-sonnet': 100000,
     'bedrock/us.meta.llama4-scout-17b-instruct-v1:0': 128000,
     'bedrock/us.meta.llama4-maverick-17b-instruct-v1:0': 128000,
+    "bedrock_mantle/xai.grok-4.3": 1000000,  # 1M context, but may be limited by config.max_model_tokens
     'groq/openai/gpt-oss-120b': 131072,
     'groq/openai/gpt-oss-20b': 131072,
     'groq/qwen/qwen3-32b': 131000,
