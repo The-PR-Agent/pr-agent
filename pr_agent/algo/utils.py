@@ -1292,6 +1292,25 @@ def github_action_output(output_data: dict, key_name: str):
     return
 
 
+def _render_setting_value(value) -> str:
+    """Render a settings value as YAML, so nested values do not become Python reprs."""
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return str(value)
+    try:
+        return yaml.safe_dump(_to_plain(value), default_flow_style=True).strip()
+    except Exception:
+        return str(value)
+
+
+def _to_plain(value):
+    """Convert Dynaconf boxes to plain dict/list so yaml can represent them."""
+    if isinstance(value, dict):
+        return {str(k): _to_plain(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_plain(v) for v in value]
+    return value
+
+
 def show_relevant_configurations(relevant_section: str) -> str:
     skip_keys = ['ai_disclaimer', 'ai_disclaimer_title', 'ANALYTICS_FOLDER', 'secret_provider', "skip_keys", "app_id", "redirect",
                       'trial_prefix_message', 'no_eligible_message', 'identity_provider', 'ALLOWED_REPOS','APP_NAME']
@@ -1307,13 +1326,13 @@ def show_relevant_configurations(relevant_section: str) -> str:
     for key, value in get_settings().config.items():
         if key.lower() in skip_keys_lower:
             continue
-        markdown_text += f"{key}: {value}\n"
+        markdown_text += f"{key}: {_render_setting_value(value)}\n"
     markdown_text += "\n```\n"
     markdown_text += f"\n**[{relevant_section}]**\n```yaml\n\n"
     for key, value in get_settings().get(relevant_section, {}).items():
         if key.lower() in skip_keys_lower:
             continue
-        markdown_text += f"{key}: {value}\n"
+        markdown_text += f"{key}: {_render_setting_value(value)}\n"
     markdown_text += "\n```"
     markdown_text += "\n</details>\n"
     return markdown_text
