@@ -214,6 +214,11 @@ def pr_generate_compressed_diff(top_langs: list, token_handler: TokenHandler, mo
                                 large_pr_handling: bool) -> Tuple[list, list, list, list, dict, list]:
     deleted_files_list = []
 
+    for lang in top_langs:
+        for file in lang["files"]:
+            if file.tokens is None or file.tokens < 0:
+                file.tokens = token_handler.count_tokens(file.patch) if file.patch else 0
+
     # sort each one of the languages in top_langs by the number of tokens in the diff
     sorted_files = []
     for lang in top_langs:
