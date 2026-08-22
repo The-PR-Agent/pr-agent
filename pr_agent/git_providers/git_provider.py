@@ -350,6 +350,9 @@ class GitProvider(ABC):
     def should_publish_review_as_thread(self) -> bool:
         return False
 
+    def should_publish_improve_as_thread(self) -> bool:
+        return False
+
     def unresolve_comment_thread(self, comment):  # noqa: B027 - intentional no-op
         pass
 
