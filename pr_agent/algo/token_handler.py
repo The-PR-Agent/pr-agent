@@ -125,10 +125,23 @@ class TokenHandler:
             return max_tokens
 
     def _apply_estimation_factor(self, model_name: str, default_estimate: int) -> int:
-        factor = 1 + get_settings().get('config.model_token_count_estimate_factor', 0)
+        raw_factor = get_settings().get("config.model_token_count_estimate_factor", 0)
+        try:
+            factor = 1 + float(raw_factor)
+        except (TypeError, ValueError, OverflowError):
+            factor = None
+        if factor is None or isinstance(raw_factor, bool) or not factor > 0:
+            get_logger().warning(
+                f"model_token_count_estimate_factor is not a usable number ({raw_factor!r}), using 1")
+            factor = 1
         get_logger().warning(f"{model_name}'s token count cannot be accurately estimated. Using factor of {factor}")
-        
-        return ceil(factor * default_estimate)
+
+        try:
+            return ceil(factor * default_estimate)
+        except (OverflowError, ValueError):
+            get_logger().warning(
+                f"model_token_count_estimate_factor is too large ({raw_factor!r}), using the estimate as is")
+            return default_estimate
 
     def _get_token_count_by_model_type(self, patch: str, default_estimate: int) -> int:
         """
