@@ -48,7 +48,7 @@ output_relevant_configurations=false
 output_run_details=false # if true, append an agent run details section (model, tokens, time cost, AI calls) to generated PR comments
 large_patch_policy = "clip" # "clip", "skip"
 duplicate_prompt_examples = false
-# Persistent inline comments (issue #2037): when true, the GitHub and GitLab providers
+# Persistent inline comments (issue #2037): when true, the GitHub, GitLab, and Azure DevOps providers
 # fingerprint each inline comment, embed the fingerprint as an HTML marker, and skip
 # re-posting suggestions already present on the PR/MR across runs.
 persistent_inline_comments = false
@@ -462,6 +462,7 @@ request_timeout = 10 # seconds allowed for each Asana task API request
 default_comment_status = "closed"
 
 [azure_devops_server]
+agent_identity = ""
 pr_commands = [
     "/describe",
     "/review",

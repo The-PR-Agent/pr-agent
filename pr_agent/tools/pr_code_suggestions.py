@@ -13,23 +13,26 @@ from jinja2 import Environment, StrictUndefined
 from pr_agent.algo import MAX_TOKENS
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
-from pr_agent.algo.git_patch_processing import decouple_and_convert_to_hunks_with_lines_numbers
+from pr_agent.algo.git_patch_processing import \
+    decouple_and_convert_to_hunks_with_lines_numbers
 from pr_agent.algo.pr_processing import (_get_all_models,
                                          add_ai_metadata_to_diff_files,
                                          get_pr_diff, get_pr_multi_diffs,
                                          retry_with_fallback_models)
+from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.run_details import init_run_details
 from pr_agent.algo.skills_loader import get_skills_context
-from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.token_handler import TokenHandler
-from pr_agent.algo.utils import (ModelType, load_yaml, replace_code_tags,
-                                 show_relevant_configurations, show_run_details,
-                                 get_max_tokens, clip_tokens, get_model)
+from pr_agent.algo.utils import (ModelType, clip_tokens, get_max_tokens,
+                                 get_model, load_yaml, replace_code_tags,
+                                 show_relevant_configurations,
+                                 show_run_details)
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers import (AzureDevopsProvider, GithubProvider,
-                                    GitLabProvider, get_git_provider,
+from pr_agent.git_providers import (GithubProvider, GitLabProvider,
+                                    get_git_provider,
                                     get_git_provider_with_context)
-from pr_agent.git_providers.git_provider import GitProvider, IncrementalPR, get_main_pr_language
+from pr_agent.git_providers.git_provider import (GitProvider, IncrementalPR,
+                                                 get_main_pr_language)
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
 from pr_agent.tools.pr_description import insert_br_after_x_chars
@@ -91,6 +94,7 @@ class PRCodeSuggestions:
             "extra_instructions": get_settings().pr_code_suggestions.extra_instructions,
             "skills_context": get_skills_context(),
             "repo_context": build_repo_context(self.git_provider),
+            "suggestion_discussion_context": self._load_suggestion_discussion_context(),
             "commit_messages_str": self.git_provider.get_commit_messages(),
             "relevant_best_practices": "",
             "is_ai_metadata": get_settings().get("config.enable_ai_metadata", False),
@@ -113,6 +117,15 @@ class PRCodeSuggestions:
 
         self.progress = build_progress_comment()
         self.progress_response = None
+
+    def _load_suggestion_discussion_context(self) -> str:
+        if not self.git_provider.supports_code_suggestion_state():
+            return ""
+        try:
+            return self.git_provider.get_code_suggestion_thread_context()
+        except Exception as e:
+            get_logger().warning(f"Failed to load prior code suggestion discussions: {e}")
+            return ""
 
     @staticmethod
     def _parse_incremental(args):
@@ -140,6 +153,16 @@ class PRCodeSuggestions:
     async def run(self):
         init_run_details()
         try:
+            if self.git_provider.supports_code_suggestion_state():
+                try:
+                    fixed = self.git_provider.reconcile_code_suggestion_threads()
+                    if fixed:
+                        get_logger().info(f"Marked {fixed} applied code suggestion(s) as fixed")
+                        if hasattr(self, "vars"):
+                            self.vars["suggestion_discussion_context"] = self._load_suggestion_discussion_context()
+                except Exception as e:
+                    get_logger().warning(f"Failed to reconcile code suggestion threads: {e}")
+
             if getattr(self, "_incremental_empty_scope", False):
                 # Set by `__init__` when incremental anchored cleanly but no files changed
                 # since the previous suggestions pass. Skip silently — re-running on the
@@ -284,7 +307,19 @@ class PRCodeSuggestions:
                 pr_body += show_run_details(self.git_provider.is_supported("gfm_markdown"))
             get_logger().warning('No code suggestions found for the PR.')
             get_logger().debug(f"PR output", artifact=pr_body)
-            if self.progress_response:
+            if (get_settings().pr_code_suggestions.persistent_comment
+                    and self.git_provider.supports_code_suggestion_state()):
+                self.publish_persistent_comment_with_history(
+                    self.git_provider,
+                    pr_body,
+                    initial_header="## PR Code Suggestions ✨",
+                    update_header=True,
+                    name="suggestions",
+                    final_update_message=False,
+                    max_previous_comments=get_settings().pr_code_suggestions.max_history_len,
+                    progress_response=self.progress_response,
+                )
+            elif self.progress_response:
                 self.git_provider.edit_comment(self.progress_response, body=pr_body)
             else:
                 self.git_provider.publish_comment(pr_body)
@@ -325,6 +360,17 @@ class PRCodeSuggestions:
         if hasattr(git_provider, '_publish_check_run') and get_settings().github.publish_as_check_run:
             if git_provider._publish_check_run(pr_comment, name):
                 return
+
+        if git_provider.supports_code_suggestion_state() and max_previous_comments <= 0:
+            result = git_provider.publish_persistent_comment(
+                pr_comment,
+                initial_header,
+                update_header,
+                name,
+                final_update_message,
+            )
+            PRCodeSuggestions._cleanup_progress_comment(git_provider, progress_response)
+            return result
 
         def _extract_link(comment_text: str):
             r = re.compile(r"<!--.*?-->")
@@ -433,6 +479,16 @@ class PRCodeSuggestions:
         else:
             new_comment = git_provider.publish_comment(pr_comment)
         return new_comment
+
+    @staticmethod
+    def _cleanup_progress_comment(git_provider: GitProvider, progress_response):
+        if not progress_response:
+            return
+        try:
+            git_provider.edit_comment(progress_response, "Code suggestions updated in the persistent thread above.")
+            git_provider.remove_comment(progress_response)
+        except Exception as e:
+            get_logger().warning(f"Failed to clean up code suggestions progress comment: {e}")
 
 
     def extract_link(self, s):

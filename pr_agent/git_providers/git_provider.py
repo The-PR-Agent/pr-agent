@@ -126,6 +126,15 @@ class GitProvider(ABC):
         fall back to a full run."""
         return False
 
+    def supports_code_suggestion_state(self) -> bool:
+        return False
+
+    def supports_threaded_pr_questions(self) -> bool:
+        return False
+
+    def supports_line_question_history(self) -> bool:
+        return False
+
     #Given a url (issues or PR/MR) - get the .git repo url to which they belong. Needs to be implemented by the provider.
     def get_git_repo_url(self, issues_or_pr_url: str) -> str:
         get_logger().warning("Not implemented! Returning empty url")

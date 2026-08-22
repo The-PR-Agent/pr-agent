@@ -4,6 +4,7 @@ import pytest
 
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import get_settings
+from pr_agent.git_providers import AzureDevopsProvider
 from pr_agent.git_providers.git_provider import GitProvider, IncrementalPR
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 
@@ -261,6 +262,7 @@ async def test_publish_no_suggestions_still_overwrites_the_progress_comment_when
         publish_output_no_suggestions):
     publish_output_no_suggestions(True)
     git_provider = MagicMock()
+    git_provider.supports_code_suggestion_state.return_value = False
     tool = _make_tool(git_provider)
     tool.progress_response = MagicMock()
 
@@ -307,10 +309,128 @@ def test_setup_incremental_scope_noop_without_incremental_flag():
     git_provider.get_incremental_commits.assert_not_called()
 
 
+def test_load_suggestion_discussion_context_delegates_to_provider():
+    provider = MagicMock(spec=AzureDevopsProvider)
+    provider.get_code_suggestion_thread_context.return_value = '[{"thread_id": 1}]'
+    tool = _make_tool(provider)
+
+    assert tool._load_suggestion_discussion_context() == '[{"thread_id": 1}]'
+
+
+def test_load_suggestion_discussion_context_degrades_to_empty():
+    provider = MagicMock(spec=AzureDevopsProvider)
+    provider.get_code_suggestion_thread_context.side_effect = RuntimeError("unavailable")
+    tool = _make_tool(provider)
+
+    assert tool._load_suggestion_discussion_context() == ""
+
+
+def test_load_suggestion_discussion_context_ignores_other_providers():
+    provider = MagicMock()
+    provider.supports_code_suggestion_state.return_value = False
+    tool = _make_tool(provider)
+
+    assert tool._load_suggestion_discussion_context() == ""
+    provider.get_code_suggestion_thread_context.assert_not_called()
+
+
+@pytest.mark.parametrize("prompt_key", [
+    "pr_code_suggestions_prompt.user",
+    "pr_code_suggestions_prompt_not_decoupled.user",
+])
+def test_suggestion_prompt_includes_untrusted_discussion_context(prompt_key):
+    prompt = get_settings().get(prompt_key)
+
+    assert "{{ suggestion_discussion_context|trim }}" in prompt
+    assert "untrusted data" in prompt
+
+
 def test_supports_incremental_kind_defaults_to_false_on_base_provider():
     # The base-class default must be "no support" so tools fall back to a full run
     # on providers that never implemented kind-aware incremental anchoring.
     assert GitProvider.supports_incremental_kind(MagicMock(), "suggestions") is False
+
+
+def test_code_suggestion_state_is_provider_driven():
+    provider = MagicMock()
+
+    assert GitProvider.supports_code_suggestion_state(provider) is False
+    assert AzureDevopsProvider.supports_code_suggestion_state(provider) is True
+
+
+@pytest.mark.asyncio
+async def test_empty_incremental_run_reconciles_existing_suggestions():
+    provider = MagicMock(spec=AzureDevopsProvider)
+    provider.reconcile_code_suggestion_threads.return_value = 1
+    provider.get_code_suggestion_thread_context.return_value = '[{"status": "fixed"}]'
+    tool = _make_tool(provider)
+    tool._incremental_empty_scope = True
+    tool.pr_url = "https://example.test/pr/1"
+    tool.vars = {"suggestion_discussion_context": '[{"status": "active"}]'}
+
+    assert await tool.run() is None
+    provider.reconcile_code_suggestion_threads.assert_called_once_with()
+    provider.get_files.assert_not_called()
+    assert tool.vars["suggestion_discussion_context"] == '[{"status": "fixed"}]'
+
+
+def test_azure_persistent_comment_updates_without_history():
+    provider = MagicMock(spec=AzureDevopsProvider)
+    existing = MagicMock()
+    provider.publish_persistent_comment.return_value = existing
+
+    result = PRCodeSuggestions.publish_persistent_comment_with_history(
+        provider,
+        "## PR Code Suggestions ✨\n\nnew suggestions",
+        "## PR Code Suggestions ✨",
+        update_header=True,
+        name="suggestions",
+        final_update_message=False,
+        max_previous_comments=0,
+    )
+
+    assert result is existing
+    provider.publish_persistent_comment.assert_called_once_with(
+        "## PR Code Suggestions ✨\n\nnew suggestions",
+        "## PR Code Suggestions ✨",
+        True,
+        "suggestions",
+        False,
+    )
+    provider.publish_comment.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_azure_no_suggestions_updates_persistent_comment_without_history():
+    provider = MagicMock(spec=AzureDevopsProvider)
+    provider.supports_code_suggestion_state.return_value = True
+    tool = _make_tool(provider)
+    settings = get_settings()
+    original_persistent = settings.pr_code_suggestions.persistent_comment
+    original_publish_empty = settings.pr_code_suggestions.publish_output_no_suggestions
+    original_history = settings.pr_code_suggestions.max_history_len
+    original_publish_output = settings.config.publish_output
+    try:
+        settings.pr_code_suggestions.persistent_comment = True
+        settings.pr_code_suggestions.publish_output_no_suggestions = True
+        settings.pr_code_suggestions.max_history_len = 0
+        settings.config.publish_output = True
+
+        await tool.publish_no_suggestions()
+
+        provider.publish_persistent_comment.assert_called_once_with(
+            "## PR Code Suggestions ✨\n\nNo code suggestions found for the PR.",
+            "## PR Code Suggestions ✨",
+            True,
+            "suggestions",
+            False,
+        )
+        provider.publish_comment.assert_not_called()
+    finally:
+        settings.pr_code_suggestions.persistent_comment = original_persistent
+        settings.pr_code_suggestions.publish_output_no_suggestions = original_publish_empty
+        settings.pr_code_suggestions.max_history_len = original_history
+        settings.config.publish_output = original_publish_output
 
 
 def test_persistent_update_survives_progress_cleanup_failure():
