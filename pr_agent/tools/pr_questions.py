@@ -15,6 +15,14 @@ from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
 
 
+def _sanitize_slash_commands(text: str) -> str:
+    # make sure no line starts with "/", so the published comment cannot trigger quick actions
+    sanitized = text.replace("\n/", "\n /").replace("\r/", "\r /")
+    if sanitized.startswith("/"):
+        sanitized = " " + sanitized
+    return sanitized
+
+
 class PRQuestions:
     def __init__(self, pr_url: str, args=None, ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
         question_str = self.parse_args(args)
@@ -128,18 +136,14 @@ class PRQuestions:
 
     def _prepare_pr_answer(self) -> str:
         model_answer = self.prediction.strip()
-        # sanitize the answer so that no line will start with "/"
-        model_answer_sanitized = model_answer.replace("\n/", "\n /")
-        model_answer_sanitized = model_answer_sanitized.replace("\r/", "\r /")
+        model_answer_sanitized = _sanitize_slash_commands(model_answer)
         if isinstance(self.git_provider, GitLabProvider):
             model_answer_sanitized = self.gitlab_protections(model_answer_sanitized)
-        if model_answer_sanitized.startswith("/"):
-            model_answer_sanitized = " " + model_answer_sanitized
         if model_answer_sanitized != model_answer:
             get_logger().debug(f"Sanitized model answer",
                                artifact={"model_answer": model_answer, "sanitized_answer": model_answer_sanitized})
 
 
-        answer_str = f"### **Ask**❓\n{self.question_str}\n\n"
+        answer_str = f"### **Ask**❓\n{_sanitize_slash_commands(self.question_str)}\n\n"
         answer_str += f"### **Answer:**\n{model_answer_sanitized}\n\n"
         return answer_str
