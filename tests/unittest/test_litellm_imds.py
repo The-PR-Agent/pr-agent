@@ -103,7 +103,8 @@ def _frozen_creds(
 def clean_aws_env(monkeypatch):
     """Ensure AWS env vars don't bleed between tests."""
     for var in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
-                "AWS_SESSION_TOKEN", "AWS_REGION_NAME", "AWS_USE_IMDS"):
+                "AWS_SESSION_TOKEN", "AWS_REGION_NAME", "AWS_USE_IMDS",
+                "AWS_BEDROCK_RUNTIME_ENDPOINT"):
         monkeypatch.delenv(var, raising=False)
 
 
