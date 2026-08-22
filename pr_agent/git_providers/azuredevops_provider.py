@@ -260,6 +260,7 @@ class AzureDevopsProvider(GitProvider):
             )
         except Exception as e:
             get_logger().exception(f"Failed to edit comment, error: {e}")
+            raise
 
     def remove_comment(self, comment: Comment):
         try:

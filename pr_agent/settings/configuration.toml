@@ -107,6 +107,7 @@ require_ticket_analysis_review=true
 # general options
 publish_output_no_suggestions=true # Set to "false" if you only need the reviewer's remarks (not labels, not "security audit", etc.) and want to avoid noisy "No major issues detected" comments.
 persistent_comment=true
+persistent_finding_state=true # Persist review finding state across complete review runs.
 inline_key_issues=false
 extra_instructions = ""
 num_max_findings = 3

@@ -78,6 +78,19 @@ def _created_threads(provider):
     return [kwargs["comment_thread"] for _, kwargs in provider.azure_devops_client.create_thread.call_args_list]
 
 
+def test_edit_comment_reraises_provider_failure():
+    provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+    provider.repo_slug = "my-repo"
+    provider.workspace_slug = "my-project"
+    provider.pr_num = 1
+    provider.azure_devops_client = MagicMock()
+    provider.azure_devops_client.update_comment.side_effect = RuntimeError("edit failed")
+    comment = SimpleNamespace(thread_id=10, id=20)
+
+    with pytest.raises(RuntimeError, match="edit failed"):
+        provider.edit_comment(comment, "updated body")
+
+
 def _suggestion(relevant_file):
     return {
         "body": "```suggestion\nfixed\n```",

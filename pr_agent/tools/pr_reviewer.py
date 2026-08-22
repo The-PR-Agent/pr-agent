@@ -18,6 +18,11 @@ from pr_agent.algo.inline_comment_dedup import (
 )
 from pr_agent.algo.pr_processing import add_ai_metadata_to_diff_files, get_pr_diff, retry_with_fallback_models
 from pr_agent.algo.repo_context import build_repo_context
+from pr_agent.algo.review_finding_state import (
+    append_review_state,
+    parse_review_state,
+    reconcile_review_findings,
+)
 from pr_agent.algo.run_details import init_run_details
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_handler import TokenHandler
@@ -32,13 +37,18 @@ from pr_agent.algo.utils import (
 )
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider_with_context
-from pr_agent.git_providers.git_provider import IncrementalPR, get_main_pr_language
+from pr_agent.git_providers.git_provider import GitProvider, IncrementalPR, get_main_pr_language
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
 from pr_agent.tools.ticket_pr_compliance_check import extract_and_cache_pr_tickets
 
 MAX_REVIEW_COVERAGE_FILES = 50
 _SUGGESTION_FENCE_RE = re.compile(r"```[ \t]*suggestion\b", re.IGNORECASE)
+
+
+_STATE_BLOCK_INVALID_MARKER = "invalid_marker"
+_STATE_BLOCK_READ_ERROR = "read_error"
+_STATE_BLOCK_REVIEW_DATA = "review_data"
 
 
 class PRReviewer:
@@ -78,6 +88,9 @@ class PRReviewer:
         self.patches_diff = None
         self.remaining_files_list = []
         self.prediction = None
+        self._review_state_result = None
+        self._review_state_blocked = False
+        self._review_state_block_reason = None
         question_str, answer_str = self._get_user_answers()
         self.pr_description, self.pr_description_files = (
             self.git_provider.get_pr_description(split_changes_walkthrough=True))
@@ -185,7 +198,14 @@ class PRReviewer:
             pr_review = self._prepare_pr_review()
             get_logger().debug(f"PR output", artifact=pr_review)
 
-            should_publish = get_settings().config.publish_output and self._should_publish_review_no_suggestions(pr_review)
+            state_result = getattr(self, "_review_state_result", None)
+            state_changed = bool(state_result and state_result.changed)
+            state_blocked = getattr(self, "_review_state_blocked", False)
+            should_publish = get_settings().config.publish_output and (
+                self._should_publish_review_no_suggestions(pr_review)
+                or state_changed
+                or state_blocked
+            )
             if not should_publish:
                 reason = "Review output is not published"
                 if get_settings().config.publish_output:
@@ -198,13 +218,38 @@ class PRReviewer:
             # Providers that support it (GitLab) can post the review's final comment as a resolvable thread.
             # This intent applies to the review only - never to status comments or the output of other tools.
             review_thread_kwargs = {"as_thread": True} if self.git_provider.should_publish_review_as_thread() else {}
-            if get_settings().pr_reviewer.persistent_comment and not self.incremental.is_incremental:
+            state_block_reason = getattr(self, "_review_state_block_reason", None)
+            if state_blocked and state_block_reason == _STATE_BLOCK_INVALID_MARKER:
+                get_logger().warning(
+                    "Review finding state marker is invalid; replacing it with a clean persistent review"
+                )
+                persistent_args = dict(
+                    initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
+                    update_header=True,
+                    final_update_message=False,
+                    fallback_on_error=False,
+                    **review_thread_kwargs,
+                )
+                self.git_provider.publish_persistent_comment_full(pr_review, **persistent_args)
+            elif state_blocked:
+                get_logger().warning(
+                    "Review finding state is blocked by review data or provider read failure; "
+                    "publishing without changing persistent state"
+                )
+                self.git_provider.publish_comment(pr_review, **review_thread_kwargs)
+            elif get_settings().pr_reviewer.persistent_comment and not self.incremental.is_incremental:
                 final_update_message = get_settings().pr_reviewer.final_update_message
-                self.git_provider.publish_persistent_comment(pr_review,
-                                                            initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
-                                                            update_header=True,
-                                                            final_update_message=final_update_message,
-                                                            **review_thread_kwargs)
+                persistent_args = dict(
+                    initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
+                    update_header=True,
+                    final_update_message=final_update_message,
+                    **review_thread_kwargs,
+                )
+                if state_result is not None:
+                    persistent_args["fallback_on_error"] = False
+                    self.git_provider.publish_persistent_comment_full(pr_review, **persistent_args)
+                else:
+                    self.git_provider.publish_persistent_comment(pr_review, **persistent_args)
             else:
                 self.git_provider.publish_comment(pr_review, **review_thread_kwargs)
 
@@ -213,6 +258,186 @@ class PRReviewer:
             get_logger().error(f"Failed to review PR: {e}")
             if get_settings().config.get("propagate_tool_errors", False):
                 raise
+
+    def _review_finding_state_enabled(self) -> bool:
+        settings = get_settings()
+        if not settings.config.publish_output:
+            return False
+        if not settings.pr_reviewer.get("persistent_comment", True):
+            return False
+        if not settings.pr_reviewer.get("persistent_finding_state", True):
+            return False
+        publisher = getattr(self.git_provider, "publish_persistent_comment", None)
+        if getattr(publisher, "__func__", None) is GitProvider.publish_persistent_comment:
+            # Skip generic publishers; they only create comments and cannot safely carry lifecycle state.
+            return False
+        if getattr(getattr(settings, "github", None), "publish_as_check_run", False):
+            return False
+        if getattr(getattr(self, "incremental", None), "is_incremental", False):
+            return False
+        try:
+            return bool(self.git_provider.is_supported("get_issue_comments"))
+        except Exception as e:
+            get_logger().warning(f"Review finding state is not supported by this provider, error: {e}")
+            return False
+
+    def _load_review_finding_state(self):
+        header = f"{PRReviewHeader.REGULAR.value} 🔍"
+        try:
+            comments = list(self.git_provider.get_issue_comments())
+            invalid_marker_found = False
+            for comment in reversed(comments):
+                body = GitProvider._get_comment_body(comment)
+                if not isinstance(body, str) or not body.startswith(header):
+                    continue
+                parsed = parse_review_state(body)
+                if parsed.valid and parsed.present:
+                    self._review_state_blocked = False
+                    self._review_state_block_reason = None
+                    return parsed
+                if not parsed.valid and parsed.present:
+                    invalid_marker_found = True
+                    get_logger().warning(
+                        "Review finding state marker is malformed or unsupported; "
+                        "trying an older persistent review"
+                    )
+            if invalid_marker_found:
+                self._review_state_blocked = True
+                self._review_state_block_reason = _STATE_BLOCK_INVALID_MARKER
+                return None
+        except Exception as e:
+            self._review_state_blocked = True
+            self._review_state_block_reason = _STATE_BLOCK_READ_ERROR
+            get_logger().warning(f"Could not read persistent review state; skipping persistent update, error: {e}")
+            return None
+        self._review_state_blocked = False
+        self._review_state_block_reason = None
+        return parse_review_state("")
+
+    @staticmethod
+    def _review_finding_from_issue(issue: dict) -> Optional[dict]:
+        if not isinstance(issue, dict):
+            return None
+        path = str(issue.get("relevant_file") or issue.get("path") or "").strip()
+        raw_content = issue.get("issue_content") or issue.get("body") or ""
+        content = _SUGGESTION_FENCE_RE.sub("```text", str(raw_content).strip())
+        header = str(issue.get("issue_header") or "").strip()
+        if header.lower() == "possible bug":
+            header = "Possible Issue"
+        if not path or not content:
+            return None
+
+        finding = {
+            "path": path,
+            "body": f"**{header}**\n\n{content}" if header else content,
+        }
+        try:
+            start = int(str(issue.get("start_line", 0)).strip())
+            end = int(str(issue.get("end_line", start)).strip())
+        except (TypeError, ValueError):
+            start, end = 0, 0
+        if start > 0:
+            finding["line_start"] = start
+            finding["line_end"] = max(start, end)
+        return finding
+
+    @classmethod
+    def _review_findings_from_data(cls, data: dict) -> Optional[list[dict]]:
+        review = data.get("review")
+        if not isinstance(review, dict):
+            return None
+        if "key_issues_to_review" not in review:
+            return None
+        issues = review["key_issues_to_review"]
+        if not isinstance(issues, list):
+            return None
+        findings = []
+        for issue in issues:
+            finding = cls._review_finding_from_issue(issue)
+            if finding is None:
+                return None
+            findings.append(finding)
+        return findings
+
+    def _review_head_sha(self) -> str:
+        last_commit = getattr(self.git_provider, "last_commit_id", None)
+        if isinstance(last_commit, str):
+            return last_commit
+        for attribute in ("sha", "id"):
+            value = getattr(last_commit, attribute, None)
+            if isinstance(value, str):
+                return value
+        return ""
+
+    def _review_run_id(self) -> str:
+        try:
+            value = self.git_provider.get_latest_commit_url()
+        except Exception:
+            return ""
+        return value if isinstance(value, str) else ""
+
+    def _review_comment_max_chars(self) -> int | None:
+        for attribute in ("max_comment_chars", "max_comment_length"):
+            value = getattr(self.git_provider, attribute, None)
+            if isinstance(value, int) and value > 0:
+                update_suffix = f"\n\n#### (Review updated until commit {self._review_run_id()})\n"
+                return value - len(update_suffix)
+        return None
+
+    def _prepare_review_finding_state(self, data: dict) -> None:
+        self._review_state_result = None
+        self._review_state_blocked = False
+        self._review_state_block_reason = None
+        if not self._review_finding_state_enabled():
+            return
+        if not isinstance(data.get("review"), dict):
+            self._review_state_blocked = True
+            self._review_state_block_reason = _STATE_BLOCK_REVIEW_DATA
+            get_logger().warning("Review data is invalid; preserving persistent finding state")
+            return
+
+        parsed = self._load_review_finding_state()
+        if parsed is None and self._review_state_block_reason != _STATE_BLOCK_INVALID_MARKER:
+            return
+        current_findings = self._review_findings_from_data(data)
+        if current_findings is None:
+            self._review_state_blocked = True
+            self._review_state_block_reason = _STATE_BLOCK_REVIEW_DATA
+            get_logger().warning("Review finding data is invalid; skipping persistent state update")
+            return
+        if self._review_state_blocked:
+            if self._review_state_block_reason == _STATE_BLOCK_INVALID_MARKER:
+                self._review_state_result = reconcile_review_findings(
+                    None,
+                    current_findings,
+                    allow_resolution=False,
+                    excluded_files=self.remaining_files_list,
+                    head_sha=self._review_head_sha(),
+                    run_id=self._review_run_id(),
+                )
+            return
+        try:
+            max_findings = int(get_settings().pr_reviewer.num_max_findings)
+        except (TypeError, ValueError):
+            max_findings = 0
+        allow_resolution = (
+            bool(self.prediction)
+            and not bool(getattr(self.incremental, "is_incremental", False))
+            and not bool(self.remaining_files_list)
+            and parsed.valid
+            and current_findings is not None
+            and len(current_findings) < max_findings
+        )
+        result = reconcile_review_findings(
+            parsed.state,
+            current_findings,
+            allow_resolution=allow_resolution,
+            excluded_files=self.remaining_files_list,
+            head_sha=self._review_head_sha(),
+            run_id=self._review_run_id(),
+        )
+        if parsed.state is not None or result.changed:
+            self._review_state_result = result
 
     def _should_publish_review_no_suggestions(self, pr_review: str) -> bool:
         return get_settings().pr_reviewer.get('publish_output_no_suggestions', True) or "No major issues detected" not in pr_review
@@ -276,7 +501,11 @@ class PRReviewer:
                          first_key=first_key, last_key=last_key)
         github_action_output(data, 'review')
 
-        if 'review' not in data:
+        if not isinstance(data.get('review'), dict):
+            if self._review_finding_state_enabled():
+                self._review_state_blocked = True
+                self._review_state_block_reason = _STATE_BLOCK_REVIEW_DATA
+                get_logger().warning("Review data is invalid; preserving persistent finding state")
             get_logger().exception("Failed to parse review data", artifact={"data": data})
             return ""
 
@@ -285,6 +514,7 @@ class PRReviewer:
             key_issues_to_review = data['review'].pop('key_issues_to_review')
             data['review']['key_issues_to_review'] = key_issues_to_review
 
+        self._prepare_review_finding_state(data)
         if get_settings().config.publish_output and get_settings().pr_reviewer.get('inline_key_issues', False):
             data = self._publish_key_issues_as_inline_comments(data)
 
@@ -325,6 +555,13 @@ class PRReviewer:
         # Output the agent run details (model, tokens, time cost) if enabled
         if get_settings().get('config', {}).get('output_run_details', False):
             markdown_text += show_run_details(self.git_provider.is_supported("gfm_markdown"))
+
+        if self._review_state_result is not None:
+            markdown_text = append_review_state(
+                markdown_text or "",
+                self._review_state_result.state,
+                max_chars=self._review_comment_max_chars(),
+            )
 
         # Add custom labels from the review prediction (effort, security)
         self.set_review_labels(data)
