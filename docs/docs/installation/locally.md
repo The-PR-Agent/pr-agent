@@ -96,11 +96,8 @@ Same goes for other providers, make sure to check the [documentation](../usage-g
 
 Install the package:
 
-PyPI publishing is temporarily behind: `pip install pr-agent` currently installs `0.39.0`.
-Until publishing resumes, install the current release (`v0.42.0`) reproducibly from its GitHub tag:
-
 ```bash
-pip install "pr-agent @ git+https://github.com/The-PR-Agent/pr-agent.git@v0.42.0"
+pip install pr-agent
 ```
 
 Then run the relevant tool with the script below.
