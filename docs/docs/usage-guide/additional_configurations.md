@@ -146,6 +146,24 @@ publish_review_as_thread = true
 - Enabling the flag does not convert a review that was already posted as a plain note: it keeps being updated in place, and GitLab cannot promote a note to a thread. Only MRs whose first review runs after the flag is set get a thread.
 - Set `pr_reviewer.persistent_comment=false` to open a new review thread on each run instead.
 
+## Resolve outdated GitLab inline threads
+
+Each inline suggestion is anchored to the MR head commit it was posted against. When a later push moves the head, GitLab marks that thread as belonging to an outdated diff version: it renders empty, loses its `Resolve` control, and can then only be closed through the API, so superseded suggestions pile up on a long-lived MR. To have PR-Agent resolve those threads before it publishes a fresh batch of inline suggestions, enable (default: `false`):
+
+```toml
+[gitlab]
+resolve_outdated_inline_threads = true
+```
+
+A thread is only resolved when all of the following hold, so a live discussion is never closed:
+
+- the thread was opened by PR-Agent itself, judged from the body: it carries a dedup marker (proof, and present on every inline review finding), or it opens with the `**Suggestion:**` lead that inline suggestions are published with (a strong hint rather than proof, since a person could type it). This is what keeps the cleanup off hand-written comments made from the same account, which matters because the GitLab token often belongs to a person rather than a dedicated bot user;
+- every non-system note in it was written by that same user, so a single human reply leaves the thread alone. GitLab system notes are ignored, because the "changed this line in version N of the diff" note that marks a thread outdated is authored by whoever pushed;
+- the thread is unresolved and anchored to a line of the diff;
+- the head SHA recorded in that anchor differs from the MR's current diff head SHA.
+
+Anything that cannot be confirmed (an unreadable position, an unknown current head SHA, an unresolvable bot identity) is skipped rather than resolved.
+
 ## Log Level
 
 PR-Agent allows you to control the verbosity of logging by using the `log_level` configuration parameter. This is particularly useful for troubleshooting and debugging issues with your PR workflows.
