@@ -15,7 +15,8 @@ from ..algo.language_handler import is_valid_file
 from ..algo.utils import find_line_number_of_relevant_line_in_file
 from ..config_loader import get_settings
 from ..log import get_logger
-from .git_provider import MAX_FILES_ALLOWED_FULL, GitProvider, get_cached_global_settings
+from .git_provider import (MAX_FILES_ALLOWED_FULL, GitProvider,
+                           get_cached_global_settings, redact_credentials)
 
 
 def _gef_filename(diff):
@@ -671,7 +672,8 @@ class BitbucketProvider(GitProvider):
 
         (scheme, base_url) = repo_url_to_clone.split("bitbucket.org")
         if not all([scheme, base_url]):
-            get_logger().error(f"repo_url_to_clone: {repo_url_to_clone} is not a valid bitbucket URL.")
+            get_logger().error(
+                f"repo_url_to_clone: {redact_credentials(repo_url_to_clone)} is not a valid bitbucket URL.")
             return None
 
         if self.auth_type == "basic":

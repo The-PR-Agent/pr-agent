@@ -14,7 +14,8 @@ from pr_agent.algo.utils import (clip_tokens,
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import (MAX_FILES_ALLOWED_FULL,
                                                  FilePatchInfo, GitProvider,
-                                                 IncrementalPR)
+                                                 IncrementalPR,
+                                                 redact_credentials)
 from pr_agent.log import get_logger
 
 # Shipped default for the [gitea] url setting in configuration.toml. A value
@@ -809,14 +810,15 @@ class GiteaProvider(GitProvider):
             return None
         base_url = gitea_base_url.split(scheme)[1]
         if not base_url:
-            get_logger().error(f"Base url: {gitea_base_url} has an empty base url")
+            get_logger().error(f"Base url: {redact_credentials(gitea_base_url)} has an empty base url")
             return None
         if base_url not in repo_url_to_clone:
-            get_logger().error(f"url to clone: {repo_url_to_clone} does not contain {base_url}")
+            get_logger().error(f"url to clone: {redact_credentials(repo_url_to_clone)} "
+                               f"does not contain {redact_credentials(gitea_base_url)}")
             return None
         repo_full_name = repo_url_to_clone.split(base_url)[-1]
         if not repo_full_name:
-            get_logger().error(f"url to clone: {repo_url_to_clone} is malformed")
+            get_logger().error(f"url to clone: {redact_credentials(repo_url_to_clone)} is malformed")
             return None
 
         clone_url = scheme

@@ -26,7 +26,7 @@ from ..algo.utils import (PRReviewHeader, clip_tokens,
 from ..config_loader import get_settings
 from ..log import get_logger
 from .git_provider import (MAX_FILES_ALLOWED_FULL, GitProvider, IncrementalPR,
-                           get_cached_global_settings)
+                           get_cached_global_settings, redact_credentials)
 
 
 class DiffNotFoundError(Exception):
@@ -1468,13 +1468,13 @@ class GitLabProvider(GitProvider):
     #Clone related
     def _prepare_clone_url_with_token(self, repo_url_to_clone: str) -> str | None:
         if "gitlab." not in repo_url_to_clone:
-            get_logger().error(f"Repo URL: {repo_url_to_clone} is not a valid gitlab URL.")
+            get_logger().error(f"Repo URL: {redact_credentials(repo_url_to_clone)} is not a valid gitlab URL.")
             return None
         (scheme, base_url) = repo_url_to_clone.split("gitlab.")
         access_token = getattr(self.gl, 'oauth_token', None) or getattr(self.gl, 'private_token', None)
         if not all([scheme, access_token, base_url]):
-            get_logger().error(f"Either no access token found, or repo URL: {repo_url_to_clone} "
-                               f"is missing prefix: {scheme} and/or base URL: {base_url}.")
+            get_logger().error(f"Either no access token found, or repo URL: {redact_credentials(repo_url_to_clone)} "
+                               f"is missing prefix: {redact_credentials(scheme)} and/or base URL: {base_url}.")
             return None
 
         #Note that the ""official"" method found here:
