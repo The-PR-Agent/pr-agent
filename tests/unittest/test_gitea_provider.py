@@ -760,3 +760,53 @@ class TestGiteaProviderUserFacingLinks:
         provider.base_url_html = provider._resolve_base_url_html()
 
         assert provider.get_pr_url() == "http://forgejo:3000/owner/repo/pulls/4"
+
+
+class TestGiteaProviderPublishCodeSuggestions:
+    """Regression tests for #2259: ``publish_code_suggestions`` returned ``None`` against a base
+    class declaring ``-> bool``, so ``PRCodeSuggestions`` read every successful run as a failure
+    and republished each suggestion one by one, posting all of them twice.
+    """
+
+    @staticmethod
+    def _provider(create_inline_comment_return=object()):
+        provider = GiteaProvider.__new__(GiteaProvider)
+        provider.logger = MagicMock()
+        provider.owner = "owner"
+        provider.repo = "repo"
+        provider.pr_number = 123
+        provider.enabled_pr = True
+        provider.last_commit = MagicMock(sha="head-sha")
+        provider.repo_api = MagicMock()
+        provider.repo_api.create_inline_comment.return_value = create_inline_comment_return
+        return provider
+
+    @staticmethod
+    def _suggestion(path="file.py", line=10):
+        return {
+            "body": "**Suggestion:** do it better",
+            "relevant_file": path,
+            "relevant_lines_start": line,
+            "relevant_lines_end": line,
+        }
+
+    def test_returns_true_and_posts_once_per_suggestion(self):
+        provider = self._provider()
+
+        assert provider.publish_code_suggestions([self._suggestion("a.py"), self._suggestion("b.py")]) is True
+        assert provider.repo_api.create_inline_comment.call_count == 2
+
+    def test_returns_false_when_the_api_rejects_the_comment(self):
+        provider = self._provider(create_inline_comment_return=None)
+
+        assert provider.publish_code_suggestions([self._suggestion()]) is False
+
+    def test_suggestion_without_a_body_is_skipped_without_failing_the_run(self):
+        provider = self._provider()
+
+        assert provider.publish_code_suggestions([{"relevant_file": "a.py"}, self._suggestion("b.py")]) is True
+        assert provider.repo_api.create_inline_comment.call_count == 1
+
+    def test_publish_inline_comments_reports_the_api_outcome(self):
+        assert self._provider().publish_inline_comments([{"body": "x"}]) is True
+        assert self._provider(create_inline_comment_return=None).publish_inline_comments([{"body": "x"}]) is False
