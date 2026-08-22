@@ -241,7 +241,10 @@ def get_log_context(body, event, action, build_number):
 def is_bot_user(sender, sender_type):
     try:
         # logic to ignore PRs opened by bot
-        if get_settings().get("GITHUB_APP.IGNORE_BOT_PR", False) and sender_type == "Bot":
+        ignore_bot_pr = get_settings().get("GITHUB_APP.IGNORE_BOT_PR", None)
+        if ignore_bot_pr is None:
+            ignore_bot_pr = get_settings().get("GITHUB.IGNORE_BOT_PR", False)
+        if ignore_bot_pr and sender_type == "Bot":
             if 'pr-agent' not in sender:
                 get_logger().info(f"Ignoring PR from '{sender=}' because it is a bot")
             return True
