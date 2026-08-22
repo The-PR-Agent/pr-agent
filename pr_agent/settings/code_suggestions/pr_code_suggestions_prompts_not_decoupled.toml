@@ -97,7 +97,7 @@ class CodeSuggestion(BaseModel):
     language: str = Field(description="Programming language used by the relevant file")
     existing_code: str = Field(description="A short code snippet, from the final state of the PR diff, that the suggestion will address. Select only the specific span of code that will be modified - without surrounding unchanged code. Preserve all indentation, newlines, and original formatting. Show the code snippet without the '+'/'-'/' ' prefixes. When providing suggestions for long code sections, shorten the presented code with ellipsis (...) for brevity where possible.")
     suggestion_content: str = Field(description="An actionable suggestion to enhance, improve or fix the new code introduced in the PR. Use 2-3 short sentences.")
-    improved_code: str = Field(description="A refined code snippet that replaces the 'existing_code' snippet after implementing the suggestion.")
+    improved_code: str = Field(description="A refined code snippet that replaces the 'existing_code' snippet after implementing the suggestion. Must be a complete, ready-to-apply replacement for 'existing_code': never shorten it with ellipsis (...) or use placeholders for omitted code.")
     one_sentence_summary: str = Field(description="A single-sentence overview (up to 6 words) of the suggestion. Focus on the 'what'. Be general, and avoid mentioning method or variable names.")
 {%- if not focus_only_on_problems %}
     label: str = Field(description="A single, descriptive label that best characterizes the suggestion type. Possible labels include 'security', 'possible bug', 'possible issue', 'performance', 'enhancement', 'best practice', 'maintainability', 'typo'. Other relevant labels are also acceptable.")
@@ -113,6 +113,7 @@ class PRCodeSuggestions(BaseModel):
 
 Example output:
 ```yaml
+# '...' is placeholder text - replace it with actual content
 code_suggestions:
 - relevant_file: |
     src/file1.py
@@ -152,6 +153,7 @@ The PR Diff:
 
 Example output:
 ```yaml
+# '...' is placeholder text - replace it with actual content
 code_suggestions:
 - relevant_file: |
     src/file1.py
@@ -168,7 +170,6 @@ code_suggestions:
   label: |
     ...
 ```
-(replace '...' with actual content)
 {%- endif %}
 
 
