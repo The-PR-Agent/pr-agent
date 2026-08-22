@@ -6,30 +6,33 @@ import textwrap
 import traceback
 from datetime import datetime
 from functools import partial
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from jinja2 import Environment, StrictUndefined
 
 from pr_agent.algo import MAX_TOKENS
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
-from pr_agent.algo.git_patch_processing import decouple_and_convert_to_hunks_with_lines_numbers
+from pr_agent.algo.git_patch_processing import \
+    decouple_and_convert_to_hunks_with_lines_numbers
 from pr_agent.algo.pr_processing import (_get_all_models,
                                          add_ai_metadata_to_diff_files,
                                          get_pr_diff, get_pr_multi_diffs,
                                          retry_with_fallback_models)
+from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.run_details import init_run_details
 from pr_agent.algo.skills_loader import get_skills_context
-from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.token_handler import TokenHandler
-from pr_agent.algo.utils import (ModelType, load_yaml, replace_code_tags,
-                                 show_relevant_configurations, show_run_details,
-                                 get_max_tokens, clip_tokens, get_model)
+from pr_agent.algo.utils import (ModelType, clip_tokens, get_max_tokens,
+                                 get_model, load_yaml, replace_code_tags,
+                                 show_relevant_configurations,
+                                 show_run_details)
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import (AzureDevopsProvider, GithubProvider,
                                     GitLabProvider, get_git_provider,
                                     get_git_provider_with_context)
-from pr_agent.git_providers.git_provider import GitProvider, IncrementalPR, get_main_pr_language
+from pr_agent.git_providers.git_provider import (GitProvider, IncrementalPR,
+                                                 get_main_pr_language)
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
 from pr_agent.tools.pr_description import insert_br_after_x_chars
@@ -298,10 +301,10 @@ class PRCodeSuggestions:
         try:
             for suggestion in data['code_suggestions']:
                 if int(suggestion.get('score', 0)) >= int(
-                        get_settings().pr_code_suggestions.dual_publishing_score_threshold) \
-                        and suggestion.get('improved_code'):
-                    data_above_threshold['code_suggestions'].append(suggestion)
-                    if not data_above_threshold['code_suggestions'][-1]['existing_code']:
+                        get_settings().pr_code_suggestions.dual_publishing_score_threshold):
+                    data_above_threshold["code_suggestions"].append(suggestion)
+                    if suggestion.get("improved_code") and not data_above_threshold["code_suggestions"][-1][
+                            "existing_code"]:
                         get_logger().info(f'Identical existing and improved code for dual publishing found')
                         data_above_threshold['code_suggestions'][-1]['existing_code'] = suggestion[
                             'improved_code']
@@ -641,6 +644,7 @@ class PRCodeSuggestions:
 
     async def push_inline_code_suggestions(self, data):
         code_suggestions = []
+        fallback_comments = []
 
         if not data['code_suggestions']:
             get_logger().info('No suggestions found to improve this PR.')
@@ -658,33 +662,127 @@ class PRCodeSuggestions:
                 relevant_lines_start = int(d['relevant_lines_start'])  # absolute position
                 relevant_lines_end = int(d['relevant_lines_end'])
                 content = d['suggestion_content'].rstrip()
-                new_code_snippet = d['improved_code'].rstrip()
+                new_code_snippet = (d.get("improved_code") or "").rstrip()
+                existing_code = d.get("existing_code")
+                if not isinstance(existing_code, str):
+                    raise TypeError("existing_code must be a string")
                 label = d['label'].strip()
+            except (AttributeError, KeyError, TypeError, ValueError) as e:
+                get_logger().warning(f"Could not parse suggestion: {d}, error: {e}")
+                continue
 
+            is_applicable, fallback_reason, has_valid_anchor = self._validate_suggestion(
+                relevant_file, relevant_lines_start, relevant_lines_end,
+                existing_code if new_code_snippet else None)
+            if new_code_snippet and has_valid_anchor:
+                new_code_snippet = self.dedent_code(relevant_file, relevant_lines_start, new_code_snippet)
+
+            score = d.get("score")
+            header = f"**Suggestion:** {content} [{label}, importance: {score}]" if score \
+                else f"**Suggestion:** {content} [{label}]"
+            if new_code_snippet and is_applicable:
+                body = f"{header}\n```suggestion\n" + new_code_snippet + "\n```"
+            else:
+                body = header
                 if new_code_snippet:
-                    new_code_snippet = self.dedent_code(relevant_file, relevant_lines_start, new_code_snippet)
+                    body += (f"\n\nProposed code (not offered as a committable change because {fallback_reason}):\n"
+                             f"```\n{new_code_snippet}\n```")
 
-                if d.get('score'):
-                    body = f"**Suggestion:** {content} [{label}, importance: {d.get('score')}]\n```suggestion\n" + new_code_snippet + "\n```"
-                else:
-                    body = f"**Suggestion:** {content} [{label}]\n```suggestion\n" + new_code_snippet + "\n```"
+            if not has_valid_anchor:
+                fallback_comments.append(f"{body}\n\nLocation: `{relevant_file}:"
+                                         f"{relevant_lines_start}-{relevant_lines_end}`")
+            else:
                 code_suggestions.append({'body': body, 'relevant_file': relevant_file,
                                          'relevant_lines_start': relevant_lines_start,
                                          'relevant_lines_end': relevant_lines_end,
                                          'original_suggestion': d})
-            except Exception:
-                get_logger().info(f"Could not parse suggestion: {d}")
 
-        is_successful = self.git_provider.publish_code_suggestions(code_suggestions)
-        if not is_successful:
-            get_logger().info("Failed to publish code suggestions, trying to publish each suggestion separately")
-            for code_suggestion in code_suggestions:
-                self.git_provider.publish_code_suggestions([code_suggestion])
+        if code_suggestions:
+            is_successful = self.git_provider.publish_code_suggestions(code_suggestions)
+            if not is_successful:
+                get_logger().info("Failed to publish code suggestions, trying to publish each suggestion separately")
+                for code_suggestion in code_suggestions:
+                    self.git_provider.publish_code_suggestions([code_suggestion])
+        if fallback_comments:
+            self.git_provider.publish_comment("\n\n---\n\n".join(fallback_comments))
+
+    def _get_diff_file(self, relevant_file):
+        diff_files = getattr(self.git_provider, "diff_files", None)
+        if diff_files is None:
+            diff_files = self.git_provider.get_diff_files()
+        for file in diff_files or []:
+            if file.filename and file.filename.strip() == relevant_file:
+                return file
+        return None
+
+    @staticmethod
+    def _get_patch_range_lines(patch, relevant_lines_start, relevant_lines_end) -> Optional[List[str]]:
+        target_lines = {}
+        target_line = None
+        target_remaining = 0
+        for line in (patch or "").splitlines():
+            hunk_match = re.match(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", line)
+            if hunk_match:
+                target_line = int(hunk_match.group(1))
+                target_remaining = int(hunk_match.group(2) or 1)
+                continue
+            if target_line is None or target_remaining == 0 or line.startswith(("-", "\\")):
+                continue
+            if line.startswith((" ", "+")):
+                if relevant_lines_start <= target_line <= relevant_lines_end:
+                    target_lines[target_line] = line[1:]
+                target_line += 1
+                target_remaining -= 1
+
+        if all(line_number in target_lines
+               for line_number in range(relevant_lines_start, relevant_lines_end + 1)):
+            return [target_lines[line_number]
+                    for line_number in range(relevant_lines_start, relevant_lines_end + 1)]
+        return None
+
+    def _validate_suggestion(self, relevant_file, relevant_lines_start, relevant_lines_end,
+                             existing_code) -> tuple[bool, str, bool]:
+        if relevant_lines_start < 1 or relevant_lines_end < relevant_lines_start:
+            return False, "the anchored range is outside the file", False
+
+        diff_file = self._get_diff_file(relevant_file)
+        if diff_file is None:
+            return False, "the file content is unavailable", False
+        if diff_file.head_file:
+            file_lines = diff_file.head_file.splitlines()
+            if relevant_lines_end > len(file_lines):
+                return False, "the anchored range is outside the file", False
+            anchored_lines = file_lines[relevant_lines_start - 1:relevant_lines_end]
+        else:
+            anchored_lines = self._get_patch_range_lines(
+                diff_file.patch, relevant_lines_start, relevant_lines_end)
+            if anchored_lines is None:
+                return False, "the file content is unavailable", False
+
+        if not existing_code:
+            return False, "the existing code is unavailable", True
+        anchored_lines = [line.strip() for line in anchored_lines]
+        existing_lines = [line.strip() for line in existing_code.splitlines()]
+        if existing_lines != anchored_lines:
+            return False, "the existing code does not match the anchored range", True
+        return True, "", True
+
+    def _suggestion_applyability(self, relevant_file, relevant_lines_start, relevant_lines_end,
+                                 existing_code) -> tuple[bool, str]:
+        is_applicable, fallback_reason, _ = self._validate_suggestion(
+            relevant_file, relevant_lines_start, relevant_lines_end, existing_code)
+        return is_applicable, fallback_reason
+
+    def is_applicable_suggestion(self, relevant_file, relevant_lines_start, relevant_lines_end,
+                                 existing_code) -> bool:
+        return self._suggestion_applyability(relevant_file, relevant_lines_start,
+                                             relevant_lines_end, existing_code)[0]
 
     def dedent_code(self, relevant_file, relevant_lines_start, new_code_snippet):
         try:  # dedent code snippet
-            self.diff_files = self.git_provider.diff_files if self.git_provider.diff_files \
-                else self.git_provider.get_diff_files()
+            self.diff_files = getattr(self.git_provider, "diff_files", None)
+            if self.diff_files is None:
+                self.diff_files = self.git_provider.get_diff_files()
             original_initial_line = None
             for file in self.diff_files:
                 if file.filename.strip() == relevant_file:
@@ -701,11 +799,16 @@ class PRCodeSuggestions:
                         else:
                             original_initial_line = file_lines[relevant_lines_start - 1]
                     else:
-                        get_logger().warning("Could not dedent code snippet, because head_file is missing",
-                                             artifact={'filename': file.filename,
-                                                       'relevant_lines_start': relevant_lines_start,
-                                                       'new_code_snippet': new_code_snippet})
-                        return new_code_snippet
+                        patch_lines = self._get_patch_range_lines(
+                            file.patch, relevant_lines_start, relevant_lines_start)
+                        if patch_lines is None:
+                            get_logger().warning(
+                                "Could not dedent code snippet, because file content is unavailable",
+                                artifact={'filename': file.filename,
+                                          'relevant_lines_start': relevant_lines_start,
+                                          'new_code_snippet': new_code_snippet})
+                            return new_code_snippet
+                        original_initial_line = patch_lines[0]
                     break
             if original_initial_line:
                 suggested_initial_line = new_code_snippet.splitlines()[0]

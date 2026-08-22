@@ -129,6 +129,19 @@ def test_dedent_code_matches_target_file_indentation():
     assert tool.dedent_code("app.py", 2, "return new()") == "    return new()"
 
 
+def test_dedent_code_uses_patch_when_file_content_is_unavailable():
+    git_provider = MagicMock()
+    git_provider.diff_files = [FilePatchInfo(
+        base_file="",
+        head_file="",
+        patch="@@ -1,2 +1,2 @@\n def f():\n-    return older()\n+    return old()\n",
+        filename="app.py",
+    )]
+    tool = _make_tool(git_provider)
+
+    assert tool.dedent_code("app.py", 2, "return new()") == "    return new()"
+
+
 @pytest.mark.asyncio
 async def test_push_inline_code_suggestions_falls_back_to_individual_publish_calls():
     git_provider = MagicMock()
@@ -152,6 +165,8 @@ async def test_push_inline_code_suggestions_falls_back_to_individual_publish_cal
         _valid_suggestion(
             relevant_lines_start=2,
             relevant_lines_end=2,
+            existing_code="return old()",
+            improved_code="return new()",
             score=8,
         ),
         _valid_suggestion(
@@ -176,7 +191,7 @@ async def test_push_inline_code_suggestions_falls_back_to_individual_publish_cal
     assert first_retry[0]["relevant_file"] == "app.py"
     assert first_retry[0]["relevant_lines_start"] == 2
     assert first_retry[0]["relevant_lines_end"] == 2
-    assert "```suggestion\n    new()" in first_retry[0]["body"]
+    assert "```suggestion\n    return new()" in first_retry[0]["body"]
     assert second_retry[0]["relevant_file"] == "worker.py"
     assert second_retry[0]["relevant_lines_start"] == 2
     assert second_retry[0]["relevant_lines_end"] == 2
@@ -206,6 +221,104 @@ async def test_publish_no_suggestions_removes_the_progress_comment_when_quiet(pu
 
     git_provider.remove_comment.assert_called_once_with(tool.progress_response)
     git_provider.edit_comment.assert_not_called()
+    git_provider.publish_comment.assert_not_called()
+
+
+def _provider_with_file(head_file, filename="app.py"):
+    git_provider = MagicMock()
+    git_provider.diff_files = [
+        FilePatchInfo(base_file="", head_file=head_file, patch="", filename=filename)
+    ]
+    git_provider.publish_code_suggestions.return_value = True
+    return git_provider
+
+
+def _published_suggestion(git_provider):
+    published = git_provider.publish_code_suggestions.call_args_list[0].args[0]
+    assert len(published) == 1
+    return published[0]
+
+
+@pytest.mark.asyncio
+async def test_suggestion_covering_the_anchored_range_is_published_as_committable():
+    git_provider = _provider_with_file("def f():\n    return old()\n")
+    tool = _make_tool(git_provider)
+
+    await tool.push_inline_code_suggestions({"code_suggestions": [
+        _valid_suggestion(
+            relevant_lines_start=2,
+            relevant_lines_end=2,
+            existing_code="return old()",
+            improved_code="return new()",
+            score=8,
+        )
+    ]})
+
+    assert "```suggestion\n    return new()\n```" in _published_suggestion(git_provider)["body"]
+
+
+@pytest.mark.asyncio
+async def test_suggestion_rewriting_more_lines_than_it_replaces_is_published_as_a_plain_comment():
+    git_provider = _provider_with_file("def f():\n    return old(\n        arg)\n")
+    tool = _make_tool(git_provider)
+
+    await tool.push_inline_code_suggestions({"code_suggestions": [
+        _valid_suggestion(
+            relevant_lines_start=2,
+            relevant_lines_end=2,
+            existing_code="return old(\n    arg)",
+            improved_code="return new(arg)",
+            score=8,
+        )
+    ]})
+
+    body = _published_suggestion(git_provider)["body"]
+    assert "```suggestion" not in body
+    assert "return new(arg)" in body
+
+
+@pytest.mark.asyncio
+async def test_suggestion_anchored_outside_the_file_is_published_as_a_plain_comment():
+    git_provider = _provider_with_file("def f():\n    return old()\n")
+    tool = _make_tool(git_provider)
+
+    await tool.push_inline_code_suggestions({"code_suggestions": [
+        _valid_suggestion(relevant_lines_start=40, relevant_lines_end=41, score=8)
+    ]})
+
+    git_provider.publish_code_suggestions.assert_not_called()
+    body = git_provider.publish_comment.call_args.args[0]
+    assert "```suggestion" not in body
+    assert "`app.py:40-41`" in body
+    assert "because the anchored range is outside the file" in body
+
+
+@pytest.mark.asyncio
+async def test_suggestion_with_reversed_range_is_published_as_a_pr_comment():
+    git_provider = _provider_with_file("def f():\n    return old()\n")
+    tool = _make_tool(git_provider)
+
+    await tool.push_inline_code_suggestions({"code_suggestions": [
+        _valid_suggestion(relevant_lines_start=2, relevant_lines_end=1, score=8)
+    ]})
+
+    git_provider.publish_code_suggestions.assert_not_called()
+    body = git_provider.publish_comment.call_args.args[0]
+    assert "`app.py:2-1`" in body
+    assert "because the anchored range is outside the file" in body
+
+
+@pytest.mark.asyncio
+async def test_provider_diff_failure_is_not_treated_as_a_malformed_suggestion():
+    git_provider = MagicMock()
+    git_provider.diff_files = None
+    git_provider.get_diff_files.side_effect = RuntimeError("provider failed")
+    tool = _make_tool(git_provider)
+
+    with pytest.raises(RuntimeError, match="provider failed"):
+        await tool.push_inline_code_suggestions({"code_suggestions": [_valid_suggestion(score=8)]})
+
+    git_provider.publish_code_suggestions.assert_not_called()
     git_provider.publish_comment.assert_not_called()
 
 
@@ -311,6 +424,153 @@ def test_supports_incremental_kind_defaults_to_false_on_base_provider():
     # The base-class default must be "no support" so tools fall back to a full run
     # on providers that never implemented kind-aware incremental anchoring.
     assert GitProvider.supports_incremental_kind(MagicMock(), "suggestions") is False
+
+
+@pytest.mark.asyncio
+async def test_malformed_suggestion_does_not_stop_later_suggestions():
+    git_provider = _provider_with_file("old()\n")
+    tool = _make_tool(git_provider)
+
+    await tool.push_inline_code_suggestions({"code_suggestions": [
+        _valid_suggestion(relevant_file=123, score=8),
+        _valid_suggestion(score=8),
+    ]})
+
+    published = git_provider.publish_code_suggestions.call_args.args[0]
+    assert len(published) == 1
+    assert published[0]["relevant_file"] == "app.py"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("existing_code", [123, ["old()"], {"code": "old()"}])
+@pytest.mark.parametrize("improved_code", ["new()", ""])
+async def test_non_string_existing_code_does_not_stop_later_suggestions(existing_code, improved_code):
+    git_provider = _provider_with_file("old()\n")
+    tool = _make_tool(git_provider)
+
+    await tool.push_inline_code_suggestions({"code_suggestions": [
+        _valid_suggestion(existing_code=existing_code, improved_code=improved_code, score=8),
+        _valid_suggestion(score=8),
+    ]})
+
+    published = git_provider.publish_code_suggestions.call_args.args[0]
+    assert len(published) == 1
+    assert published[0]["original_suggestion"]["existing_code"] == "old()"
+
+
+@pytest.mark.asyncio
+async def test_advice_only_suggestion_is_published_instead_of_being_dropped():
+    git_provider = _provider_with_file("def f():\n    return old()\n")
+    tool = _make_tool(git_provider)
+
+    await tool.push_inline_code_suggestions({"code_suggestions": [
+        _valid_suggestion(relevant_lines_start=2, relevant_lines_end=2, improved_code="", score=8)
+    ]})
+
+    body = _published_suggestion(git_provider)["body"]
+    assert "```suggestion" not in body
+    assert "Use the shared helper." in body
+
+
+@pytest.mark.asyncio
+async def test_advice_only_suggestion_with_unverified_anchor_is_published_as_a_pr_comment():
+    git_provider = MagicMock()
+    git_provider.diff_files = None
+    git_provider.get_diff_files.return_value = []
+    tool = _make_tool(git_provider)
+
+    await tool.push_inline_code_suggestions({"code_suggestions": [
+        _valid_suggestion(improved_code="", score=8)
+    ]})
+
+    git_provider.get_diff_files.assert_called_once_with()
+    git_provider.publish_code_suggestions.assert_not_called()
+    assert "Use the shared helper." in git_provider.publish_comment.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_dual_publishing_keeps_suggestions_without_replacement_code():
+    settings = get_settings()
+    original_threshold = settings.get("pr_code_suggestions.dual_publishing_score_threshold")
+    settings.set("pr_code_suggestions.dual_publishing_score_threshold", 5)
+    git_provider = _provider_with_file("def f():\n    return old()\n")
+    tool = _make_tool(git_provider)
+
+    try:
+        await tool.dual_publishing({"code_suggestions": [
+            _valid_suggestion(relevant_lines_start=2, relevant_lines_end=2, improved_code="", score=8)
+        ]})
+
+        assert "Use the shared helper." in _published_suggestion(git_provider)["body"]
+    finally:
+        settings.set("pr_code_suggestions.dual_publishing_score_threshold", original_threshold)
+
+
+def test_is_applicable_suggestion_rejects_a_range_in_an_empty_file():
+    git_provider = MagicMock()
+    git_provider.diff_files = [FilePatchInfo(base_file="", head_file="", patch="", filename="app.py")]
+    tool = _make_tool(git_provider)
+
+    assert tool.is_applicable_suggestion("app.py", 1, 1, "old()") is False
+
+
+def test_is_applicable_suggestion_rejects_when_existing_code_does_not_cover_the_anchor():
+    git_provider = _provider_with_file("def f():\n    first()\n    second()\n")
+    tool = _make_tool(git_provider)
+
+    assert tool.is_applicable_suggestion("app.py", 2, 3, "first()") is False
+
+
+def test_is_applicable_suggestion_rejects_when_file_content_is_unavailable():
+    git_provider = MagicMock()
+    git_provider.diff_files = [FilePatchInfo(base_file="", head_file=None, patch="", filename="app.py")]
+    tool = _make_tool(git_provider)
+
+    assert tool.is_applicable_suggestion("app.py", 1, 1, "old()") is False
+    assert tool._suggestion_applyability("app.py", 1, 1, "old()")[1] == "the file content is unavailable"
+
+
+def test_is_applicable_suggestion_uses_patch_when_file_content_is_unavailable():
+    git_provider = MagicMock()
+    git_provider.diff_files = [FilePatchInfo(
+        base_file="",
+        head_file="",
+        patch="@@ -1,2 +1,2 @@\n def f():\n-    return older()\n+    return old()\n",
+        filename="app.py",
+    )]
+    tool = _make_tool(git_provider)
+
+    assert tool.is_applicable_suggestion("app.py", 2, 2, "return old()") is True
+
+
+def test_is_applicable_suggestion_rejects_a_range_missing_from_the_patch():
+    git_provider = MagicMock()
+    git_provider.diff_files = [FilePatchInfo(
+        base_file="",
+        head_file="",
+        patch="@@ -1 +1 @@\n-old()\n+new()\n",
+        filename="app.py",
+    )]
+    tool = _make_tool(git_provider)
+
+    assert tool.is_applicable_suggestion("app.py", 2, 2, "other()") is False
+
+
+def test_get_diff_file_does_not_refetch_an_empty_cache():
+    git_provider = MagicMock()
+    git_provider.diff_files = []
+    tool = _make_tool(git_provider)
+
+    assert tool._get_diff_file("app.py") is None
+    git_provider.get_diff_files.assert_not_called()
+
+
+def test_is_applicable_suggestion_preserves_blank_line_positions():
+    git_provider = _provider_with_file("first()\n\nsecond()\n")
+    tool = _make_tool(git_provider)
+
+    assert tool.is_applicable_suggestion("app.py", 1, 3, "first()\nsecond()") is False
+    assert tool.is_applicable_suggestion("app.py", 1, 3, "first()\n\nsecond()") is True
 
 
 def test_persistent_update_survives_progress_cleanup_failure():
