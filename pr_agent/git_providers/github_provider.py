@@ -1321,7 +1321,9 @@ class GithubProvider(GitProvider):
                 return sub_issues
 
 
-            issue_id = response_json.get("data", {}).get("repository", {}).get("issue", {}).get("id")
+            issue_id = (((response_json.get("data") or {})
+                        .get("repository") or {})
+                        .get("issue") or {}).get("id")
 
             if not issue_id:
                 get_logger().warning(f"Issue ID not found for {issue_url}")
@@ -1351,11 +1353,14 @@ class GithubProvider(GitProvider):
                 get_logger().error("Unexpected sub-issues response format", artifact={"response": sub_issues_response_tuple})
                 return sub_issues
 
-            if not sub_issues_response_json.get("data", {}).get("node", {}).get("subIssues"):
+            sub_issues_data = (((sub_issues_response_json.get("data") or {})
+                                .get("node") or {})
+                                .get("subIssues") or {})
+            if not sub_issues_data:
                 get_logger().error("Invalid sub-issues response structure")
                 return sub_issues
-    
-            nodes = sub_issues_response_json.get("data", {}).get("node", {}).get("subIssues", {}).get("nodes", [])
+
+            nodes = sub_issues_data.get("nodes") or []
             get_logger().info(f"Github Sub-issues fetched: {len(nodes)}", artifact={"nodes": nodes})
 
             for sub_issue in nodes:
