@@ -412,6 +412,14 @@ __old hunk__
 
 def extract_hunk_lines_from_patch(patch: str, file_name, line_start, line_end, side, remove_trailing_chars: bool = True) -> tuple[str, str]:
     try:
+        try:
+            line_start = int(line_start)
+        except (ValueError, TypeError):
+            line_start = -1
+        try:
+            line_end = int(line_end)
+        except (ValueError, TypeError):
+            line_end = -1
         patch_with_lines_str = f"\n\n## File: '{file_name.strip()}'\n\n"
         selected_lines = ""
         patch_lines = patch.splitlines()
