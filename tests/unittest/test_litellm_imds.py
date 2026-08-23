@@ -119,6 +119,29 @@ def default_settings(monkeypatch):
 
 class TestImdsInit:
 
+    def test_bedrock_runtime_endpoint_from_settings(self, monkeypatch):
+        """aws.AWS_BEDROCK_RUNTIME_ENDPOINT in settings is exported to the environment for litellm."""
+        endpoint = "https://vpce-0c618f5a6c9f4912f-jsh4i6at.bedrock-runtime.eu-central-1.vpce.amazonaws.com"
+        settings = _base_settings(extra_get=lambda key: {"aws.AWS_BEDROCK_RUNTIME_ENDPOINT": endpoint}.get(key))
+        settings.aws = type("AWS", (), {"AWS_BEDROCK_RUNTIME_ENDPOINT": endpoint})()
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: settings)
+
+        LiteLLMAIHandler()
+
+        assert os.environ["AWS_BEDROCK_RUNTIME_ENDPOINT"] == endpoint
+
+    def test_bedrock_runtime_endpoint_env_var_not_overridden(self, monkeypatch):
+        """An already-exported AWS_BEDROCK_RUNTIME_ENDPOINT wins over the settings value."""
+        monkeypatch.setenv("AWS_BEDROCK_RUNTIME_ENDPOINT", "https://env-configured.example.com")
+        settings_endpoint = "https://settings-configured.example.com"
+        settings = _base_settings(extra_get=lambda key: {"aws.AWS_BEDROCK_RUNTIME_ENDPOINT": settings_endpoint}.get(key))
+        settings.aws = type("AWS", (), {"AWS_BEDROCK_RUNTIME_ENDPOINT": settings_endpoint})()
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: settings)
+
+        LiteLLMAIHandler()
+
+        assert os.environ["AWS_BEDROCK_RUNTIME_ENDPOINT"] == "https://env-configured.example.com"
+      
     def test_imds_creds_written_to_env(self, monkeypatch):
         """When AWS_USE_IMDS=true, boto3 creds are placed in os.environ."""
         monkeypatch.setenv("AWS_USE_IMDS", "true")
