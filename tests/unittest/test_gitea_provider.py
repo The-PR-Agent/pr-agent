@@ -760,3 +760,28 @@ class TestGiteaProviderUserFacingLinks:
         provider.base_url_html = provider._resolve_base_url_html()
 
         assert provider.get_pr_url() == "http://forgejo:3000/owner/repo/pulls/4"
+
+
+class TestGiteaProviderUrlParsing:
+    """Cover both URL forms: Gitea sets ``pull_request.url`` to the web page,
+    Forgejo sets it to ``/api/v1/repos/{owner}/{repo}/pulls/{n}``.
+
+    ``__init__`` performs network calls, so build the provider with ``__new__``
+    and exercise the pure helper only.
+    """
+
+    @staticmethod
+    def _provider():
+        return GiteaProvider.__new__(GiteaProvider)
+
+    def test_parse_pr_url_accepts_web_and_api_forms(self):
+        provider = self._provider()
+        assert provider._parse_pr_url("https://gitea.example.com/owner/repo/pulls/1") == ("owner", "repo", 1)
+        assert provider._parse_pr_url(
+            "https://gitea.example.com/api/v1/repos/owner/repo/pulls/1") == ("owner", "repo", 1)
+
+    def test_parse_issue_url_accepts_web_and_api_forms(self):
+        provider = self._provider()
+        assert provider._parse_issue_url("https://gitea.example.com/owner/repo/issues/5") == ("owner", "repo", 5)
+        assert provider._parse_issue_url(
+            "https://gitea.example.com/api/v1/repos/owner/repo/issues/5") == ("owner", "repo", 5)
