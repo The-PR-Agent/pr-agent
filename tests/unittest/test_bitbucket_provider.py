@@ -27,7 +27,7 @@ class TestBitbucketProvider:
         content = provider.get_repo_file_content("AGENTS.md")
 
         assert content == "repo context"
-        provider.get_pr_file_content.assert_called_once_with("AGENTS.md", "release-1.0")
+        provider.get_pr_file_content.assert_called_once_with("AGENTS.md", "release-1.0", propagate_errors=True)
 
     def test_get_repo_file_content_from_default_branch(self):
         provider = BitbucketProvider.__new__(BitbucketProvider)
@@ -38,7 +38,22 @@ class TestBitbucketProvider:
         content = provider.get_repo_file_content("AGENTS.md", from_default_branch=True)
 
         assert content == "repo context"
-        provider.get_pr_file_content.assert_called_once_with("AGENTS.md", "main")
+        provider.get_pr_file_content.assert_called_once_with("AGENTS.md", "main", propagate_errors=True)
+
+    def test_get_repo_file_content_propagates_non_404_http_errors(self):
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.workspace_slug = "workspace"
+        provider.repo_slug = "repository"
+        provider.headers = {"Authorization": "Bearer token"}
+        provider.pr = MagicMock(destination_branch="main")
+        response = MagicMock(status_code=500, text="upstream failure")
+        response.raise_for_status.side_effect = HTTPError("500 Internal Server Error")
+
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request", return_value=response):
+            with pytest.raises(HTTPError, match="500 Internal Server Error"):
+                provider.get_repo_file_content("AGENTS.md")
+
+        response.raise_for_status.assert_called_once_with()
 
 
 class TestBitbucketServerProvider:
