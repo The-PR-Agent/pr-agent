@@ -393,10 +393,11 @@ class GitProvider(ABC):
                         try:
                             return self.publish_comment(
                                 f"**[Persistent {name}]({comment_url})** updated to latest commit {latest_commit_url}")
-                        except Exception as e:
+                        except Exception:
                             # The review was already updated in place; a notification failure must not reach
                             # the outer except, whose fallback publish would duplicate the review.
-                            get_logger().warning(f"Failed to publish persistent review update message: {e}")
+                            get_logger().opt(exception=True).warning(
+                                "Failed to publish persistent review update message; review was already updated")
                             return comment
                     return comment
         except Exception as e:

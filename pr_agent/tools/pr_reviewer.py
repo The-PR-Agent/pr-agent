@@ -220,7 +220,7 @@ class PRReviewer:
                 except Exception as e:
                     get_logger().exception(f"Failed to remove review progress comment, error: {e}")
             if (review_failed and get_settings().config.publish_output and
-                    not get_settings().config.get('is_auto_command', False)):
+                    not get_settings().config.get("is_auto_command", False)):
                 try:
                     self.git_provider.publish_comment("Failed to review PR")
                 except Exception as e:

@@ -101,15 +101,19 @@ class TestBitbucketProvider:
 
         provider.publish_comment = MagicMock(side_effect=publish_comment)
 
-        provider.publish_persistent_comment(f"{header}\n\nnew review",
-                                            initial_header=header,
-                                            update_header=True,
-                                            final_update_message=True)
+        with patch("pr_agent.git_providers.bitbucket_provider.get_logger") as mock_get_logger:
+            provider.publish_persistent_comment(f"{header}\n\nnew review",
+                                                initial_header=header,
+                                                update_header=True,
+                                                final_update_message=True)
 
         existing.put.assert_called_once()
         existing._update_data.assert_called_once()
         provider.publish_comment.assert_called_once()
         assert "updated to latest commit" in provider.publish_comment.call_args.args[0]
+        mock_get_logger.return_value.opt.assert_called_once_with(exception=True)
+        mock_get_logger.return_value.opt.return_value.warning.assert_called_once_with(
+            "Failed to publish persistent review update message; review was already updated")
 
     def test_persistent_review_update_falls_back_when_edit_fails(self):
         provider = BitbucketProvider.__new__(BitbucketProvider)
