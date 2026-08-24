@@ -55,6 +55,25 @@ class TestBitbucketProvider:
 
         response.raise_for_status.assert_called_once_with()
 
+    def test_get_pr_file_content_propagates_non_404_http_errors_by_default(self):
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.workspace_slug = "workspace"
+        provider.repo_slug = "repository"
+        provider.headers = {"Authorization": "Bearer token"}
+        provider.pr = MagicMock(
+            source_branch="feature",
+            destination_branch="main",
+            data={"destination": {"commit": {"hash": "base-sha"}}},
+        )
+        response = MagicMock(status_code=500, text="upstream failure")
+        response.raise_for_status.side_effect = HTTPError("500 Internal Server Error")
+
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request", return_value=response):
+            with pytest.raises(HTTPError, match="500 Internal Server Error"):
+                provider.get_pr_file_content("CHANGELOG.md", "main")
+
+        response.raise_for_status.assert_called_once_with()
+
 
 class TestBitbucketServerProvider:
     def test_parse_pr_url(self):

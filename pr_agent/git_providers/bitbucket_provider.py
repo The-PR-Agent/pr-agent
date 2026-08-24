@@ -594,7 +594,7 @@ class BitbucketProvider(GitProvider):
     def _get_pr(self):
         return self._get_repo().pullrequests.get(self.pr_num)
 
-    def get_pr_file_content(self, file_path: str, branch: str, propagate_errors: bool = False) -> str:
+    def get_pr_file_content(self, file_path: str, branch: str, propagate_errors: bool = True) -> str:
         try:
             if branch == self.pr.source_branch:
                 branch = self.pr.data["source"]["commit"]["hash"]
@@ -605,8 +605,8 @@ class BitbucketProvider(GitProvider):
             response = requests.request("GET", url, headers=self.headers)
             if response.status_code == 404:  # not found
                 return ""
-            # Repo-context loading must distinguish an unavailable file from a failed request;
-            # otherwise an error response body can be treated as repository instructions.
+            # Callers must distinguish an unavailable file from a failed request; otherwise an
+            # error response body can be treated as repository instructions or changelog content.
             if propagate_errors:
                 response.raise_for_status()
             contents = response.text
