@@ -521,8 +521,14 @@ class AzureDevopsProvider(GitProvider):
             )
 
             for c in (changes_obj.changes or []):
-                item = c.get("item") or {}
-                path = item.get("path")
+                try:
+                    item = c["item"]
+                except (KeyError, TypeError):
+                    item = getattr(c, "item", None)
+                    if item is None:
+                        additional = getattr(c, "additional_properties", None) or {}
+                        item = additional.get("item") or {}
+                path = item.get("path") if isinstance(item, dict) else getattr(item, "path", None)
                 if path:
                     files.append(path)
         return list(set(files))
