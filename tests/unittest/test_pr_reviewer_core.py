@@ -520,6 +520,134 @@ def test_should_publish_review_no_suggestions_respects_config():
         settings.pr_reviewer.publish_output_no_suggestions = original_publish_no_suggestions
 
 
+@pytest.mark.asyncio
+async def test_run_removes_its_progress_comment_when_quiet_output_suppresses_review(monkeypatch):
+    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+
+    progress_comment = MagicMock()
+    git_provider = MagicMock()
+    git_provider.get_files.return_value = ["app.py"]
+    git_provider.publish_comment.return_value = progress_comment
+    reviewer = _make_reviewer(git_provider)
+    reviewer.incremental = SimpleNamespace(is_incremental=False)
+    reviewer.vars = {}
+    reviewer.prediction = None
+    reviewer._prepare_pr_review = lambda: "No major issues detected"
+
+    async def fake_retry(prepare_fn, model_type=None):
+        reviewer.prediction = "prediction"
+
+    monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", AsyncMock())
+    monkeypatch.setattr(pr_reviewer_module, "retry_with_fallback_models", fake_retry)
+
+    settings = get_settings()
+    original = {
+        "publish_output": settings.config.publish_output,
+        "publish_output_no_suggestions": settings.pr_reviewer.publish_output_no_suggestions,
+        "is_auto_command": settings.config.get("is_auto_command", False),
+    }
+    try:
+        settings.config.publish_output = True
+        settings.config.is_auto_command = False
+        settings.pr_reviewer.publish_output_no_suggestions = False
+
+        await reviewer.run()
+    finally:
+        settings.config.publish_output = original["publish_output"]
+        settings.config.is_auto_command = original["is_auto_command"]
+        settings.pr_reviewer.publish_output_no_suggestions = original["publish_output_no_suggestions"]
+
+    git_provider.publish_comment.assert_called_once_with("Preparing review...", is_temporary=True)
+    git_provider.remove_comment.assert_called_once_with(progress_comment)
+    git_provider.remove_initial_comment.assert_not_called()
+    git_provider.publish_persistent_comment.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("propagate_tool_errors", [False, True])
+async def test_run_removes_its_progress_comment_when_review_generation_fails(
+        monkeypatch, propagate_tool_errors):
+    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+
+    progress_comment = MagicMock()
+    git_provider = MagicMock()
+    git_provider.get_files.return_value = ["app.py"]
+    git_provider.publish_comment.return_value = progress_comment
+    reviewer = _make_reviewer(git_provider)
+    reviewer.incremental = SimpleNamespace(is_incremental=False)
+    reviewer.vars = {}
+    reviewer.prediction = None
+
+    monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", AsyncMock())
+    monkeypatch.setattr(
+        pr_reviewer_module,
+        "retry_with_fallback_models",
+        AsyncMock(side_effect=RuntimeError("model unavailable")),
+    )
+
+    settings = get_settings()
+    original = {
+        "publish_output": settings.config.publish_output,
+        "is_auto_command": settings.config.get("is_auto_command", False),
+        "propagate_tool_errors": settings.config.get("propagate_tool_errors", False),
+    }
+    try:
+        settings.config.publish_output = True
+        settings.config.is_auto_command = False
+        settings.config.propagate_tool_errors = propagate_tool_errors
+
+        if propagate_tool_errors:
+            with pytest.raises(RuntimeError, match="model unavailable"):
+                await reviewer.run()
+        else:
+            await reviewer.run()
+    finally:
+        settings.config.publish_output = original["publish_output"]
+        settings.config.is_auto_command = original["is_auto_command"]
+        settings.config.propagate_tool_errors = original["propagate_tool_errors"]
+
+    git_provider.publish_comment.assert_called_once_with("Preparing review...", is_temporary=True)
+    git_provider.remove_comment.assert_called_once_with(progress_comment)
+    git_provider.remove_initial_comment.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_does_not_remove_comments_when_progress_was_not_published(monkeypatch):
+    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+
+    git_provider = MagicMock()
+    git_provider.get_files.return_value = ["app.py"]
+    reviewer = _make_reviewer(git_provider)
+    reviewer.incremental = SimpleNamespace(is_incremental=False)
+    reviewer.vars = {}
+    reviewer.prediction = None
+
+    monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", AsyncMock())
+    monkeypatch.setattr(
+        pr_reviewer_module,
+        "retry_with_fallback_models",
+        AsyncMock(side_effect=RuntimeError("model unavailable")),
+    )
+
+    settings = get_settings()
+    original = {
+        "publish_output": settings.config.publish_output,
+        "is_auto_command": settings.config.get("is_auto_command", False),
+    }
+    try:
+        settings.config.publish_output = True
+        settings.config.is_auto_command = True
+
+        await reviewer.run()
+    finally:
+        settings.config.publish_output = original["publish_output"]
+        settings.config.is_auto_command = original["is_auto_command"]
+
+    git_provider.publish_comment.assert_not_called()
+    git_provider.remove_comment.assert_not_called()
+    git_provider.remove_initial_comment.assert_not_called()
+
+
 def test_can_run_incremental_review_skips_auto_mode_without_new_commit():
     reviewer = _make_reviewer()
     reviewer.is_auto = True
@@ -594,8 +722,10 @@ async def test_run_threads_only_the_final_review_comment(monkeypatch, persistent
     """
     from pr_agent.tools import pr_reviewer as pr_reviewer_module
 
+    progress_comment = MagicMock()
     git_provider = MagicMock()
     git_provider.should_publish_review_as_thread.return_value = thread_enabled
+    git_provider.publish_comment.return_value = progress_comment
     reviewer = _make_reviewer(git_provider)
     reviewer.incremental = SimpleNamespace(is_incremental=False)
     reviewer.vars = {}
@@ -641,6 +771,8 @@ async def test_run_threads_only_the_final_review_comment(monkeypatch, persistent
         assert "as_thread" not in publish.call_args.kwargs
     # The temporary progress comment is published without as_thread regardless of the flag.
     git_provider.publish_comment.assert_any_call("Preparing review...", is_temporary=True)
+    git_provider.remove_comment.assert_called_once_with(progress_comment)
+    git_provider.remove_initial_comment.assert_not_called()
 
 
 def test_init_maps_user_question_and_answer_to_correct_prompt_vars(monkeypatch):

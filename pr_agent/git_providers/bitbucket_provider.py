@@ -445,7 +445,8 @@ class BitbucketProvider(GitProvider):
 
     def remove_comment(self, comment):
         try:
-            self.pr.delete(f"comments/{comment}")
+            comment_id = comment["id"] if isinstance(comment, dict) else comment
+            self.pr.delete(f"comments/{comment_id}")
         except Exception as e:
             get_logger().exception(f"Failed to remove comment, error: {e}")
 
