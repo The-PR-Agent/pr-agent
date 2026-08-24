@@ -80,6 +80,49 @@ def test_stateful_persistent_update_falls_back_when_enabled():
     provider.publish_comment.assert_called_once_with("new review")
 
 
+def test_stateful_persistent_update_does_not_fallback_after_false_edit_failure():
+    header = "## PR Reviewer Guide 🔍"
+    provider = MagicMock()
+    provider.get_issue_comments.return_value = [SimpleNamespace(body=header)]
+    provider.get_latest_commit_url.return_value = "commit-url"
+    provider.get_comment_url.return_value = "comment-url"
+    provider.edit_comment.return_value = False
+
+    result = GitProvider.publish_persistent_comment_full(
+        provider,
+        "new review",
+        initial_header=header,
+        update_header=False,
+        final_update_message=False,
+        fallback_on_error=False,
+    )
+
+    assert result is None
+    provider.publish_comment.assert_not_called()
+
+
+def test_stateful_persistent_update_falls_back_after_false_edit_failure():
+    header = "## PR Reviewer Guide 🔍"
+    provider = MagicMock()
+    provider.get_issue_comments.return_value = [SimpleNamespace(body=header)]
+    provider.get_latest_commit_url.return_value = "commit-url"
+    provider.get_comment_url.return_value = "comment-url"
+    provider.edit_comment.return_value = False
+    provider.publish_comment.return_value = "fallback"
+
+    result = GitProvider.publish_persistent_comment_full(
+        provider,
+        "new review",
+        initial_header=header,
+        update_header=False,
+        final_update_message=False,
+        fallback_on_error=True,
+    )
+
+    assert result == "fallback"
+    provider.publish_comment.assert_called_once_with("new review")
+
+
 def test_stateful_persistent_update_still_creates_first_comment():
     provider = MagicMock()
     provider.get_issue_comments.return_value = []
