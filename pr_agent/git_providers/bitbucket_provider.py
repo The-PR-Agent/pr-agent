@@ -605,8 +605,8 @@ class BitbucketProvider(GitProvider):
             response = requests.request("GET", url, headers=self.headers)
             if response.status_code == 404:  # not found
                 return ""
-            # Callers must distinguish an unavailable file from a failed request; otherwise an
-            # error response body can be treated as repository instructions or changelog content.
+            # Distinguish an unavailable file from a failed request to prevent an error response
+            # body from being treated as repository instructions or changelog content.
             if propagate_errors:
                 response.raise_for_status()
             contents = response.text
