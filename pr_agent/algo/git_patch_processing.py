@@ -415,10 +415,12 @@ def extract_hunk_lines_from_patch(patch: str, file_name, line_start, line_end, s
         try:
             line_start = int(line_start)
         except (ValueError, TypeError):
+            get_logger().warning(f"Ignoring invalid line_start {line_start!r} for '{file_name}'")
             line_start = -1
         try:
             line_end = int(line_end)
         except (ValueError, TypeError):
+            get_logger().warning(f"Ignoring invalid line_end {line_end!r} for '{file_name}'")
             line_end = -1
         patch_with_lines_str = f"\n\n## File: '{file_name.strip()}'\n\n"
         selected_lines = ""
