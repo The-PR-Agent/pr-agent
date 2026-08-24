@@ -520,8 +520,11 @@ class AzureDevopsProvider(GitProvider):
                 commit_id=i.commit_id,
             )
 
-            for c in changes_obj.changes:
-                files.append(c["item"]["path"])
+            for c in (changes_obj.changes or []):
+                item = c.get("item") or {}
+                path = item.get("path")
+                if path:
+                    files.append(path)
         return list(set(files))
 
     def get_diff_files(self) -> list[FilePatchInfo]:
