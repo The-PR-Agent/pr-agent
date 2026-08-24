@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import os
+import re
 from typing import Optional, Tuple
 from urllib.parse import quote, unquote, urlparse
 
@@ -19,6 +20,17 @@ from .git_provider import GitProvider, IncrementalPR
 AZURE_DEVOPS_AVAILABLE = True
 ADO_APP_CLIENT_DEFAULT_ID = "499b84ac-1321-427f-aa17-267ca6975798/.default"
 MAX_PR_DESCRIPTION_AZURE_LENGTH = 4000-1
+
+
+def _is_not_found_error(error: Exception) -> bool:
+    status_code = getattr(error, "status_code", None)
+    if status_code is None:
+        response = getattr(error, "response", None)
+        status_code = getattr(response, "status_code", None)
+    if status_code is not None:
+        return status_code == 404
+    return re.search(r"\b404\b", str(error)) is not None
+
 
 try:
     # noinspection PyUnresolvedReferences
@@ -498,7 +510,9 @@ class AzureDevopsProvider(GitProvider):
         except Exception as e:
             if get_settings().config.verbosity_level >= 2:
                 get_logger().warning(f"Failed to load repo file: {file_path}, error: {e}")
-            return ""
+            if _is_not_found_error(e):
+                return ""
+            raise
 
     def get_files(self):
         if (isinstance(getattr(self, "incremental", None), IncrementalPR)

@@ -219,7 +219,10 @@ class BitbucketServerProvider(GitProvider):
                                                                      path,
                                                                      commit_id)
         except HTTPError as e:
-            get_logger().debug(f"File {path} not found at commit id: {commit_id}")
+            if getattr(getattr(e, "response", None), "status_code", None) == 404:
+                get_logger().debug(f"File {path} not found at commit id: {commit_id}")
+                return file_content
+            raise
         return file_content
 
     def get_files(self):

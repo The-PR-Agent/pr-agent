@@ -43,16 +43,28 @@ class TestAzureDevopsProviderRepoContext:
         _, kwargs = provider.azure_devops_client.get_item.call_args
         assert kwargs["version_descriptor"] is None  # no version -> default branch
 
-    def test_get_repo_file_content_treats_failure_as_empty(self):
+    def test_get_repo_file_content_treats_missing_file_as_empty(self):
         provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
         provider.repo_slug = "my-repo"
         provider.workspace_slug = "my-project"
         provider.pr = MagicMock()
         provider.pr.last_merge_target_commit.commit_id = "base-sha"
         provider.azure_devops_client = MagicMock()
-        provider.azure_devops_client.get_item.side_effect = Exception("not found")
+        provider.azure_devops_client.get_item.side_effect = Exception("Operation returned a 404 status code.")
 
         assert provider.get_repo_file_content("MISSING.md") == ""
+
+    def test_get_repo_file_content_propagates_non_404_errors(self):
+        provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+        provider.repo_slug = "my-repo"
+        provider.workspace_slug = "my-project"
+        provider.pr = MagicMock()
+        provider.pr.last_merge_target_commit.commit_id = "base-sha"
+        provider.azure_devops_client = MagicMock()
+        provider.azure_devops_client.get_item.side_effect = Exception("Operation returned a 500 status code.")
+
+        with pytest.raises(Exception, match="500 status code"):
+            provider.get_repo_file_content("AGENTS.md")
 
 
 def _provider_with_diff(*filenames):

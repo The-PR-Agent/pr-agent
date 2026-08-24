@@ -82,6 +82,33 @@ class TestBitbucketServerProvider:
         assert content == "repo context"
         provider.get_file.assert_called_once_with("AGENTS.md", "main")
 
+    def test_get_repo_file_content_treats_404_as_missing(self):
+        provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
+        provider.workspace_slug = "AAA"
+        provider.repo_slug = "my-repo"
+        provider.pr = MagicMock(toRef={"latestCommit": "base-sha"})
+        provider.bitbucket_client = MagicMock()
+        response = MagicMock(status_code=404)
+        error = HTTPError("404 Not Found")
+        error.response = response
+        provider.bitbucket_client.get_content_of_file.side_effect = error
+
+        assert provider.get_repo_file_content("AGENTS.md") == ""
+
+    def test_get_repo_file_content_propagates_non_404_errors(self):
+        provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
+        provider.workspace_slug = "AAA"
+        provider.repo_slug = "my-repo"
+        provider.pr = MagicMock(toRef={"latestCommit": "base-sha"})
+        provider.bitbucket_client = MagicMock()
+        response = MagicMock(status_code=500)
+        error = HTTPError("500 Internal Server Error")
+        error.response = response
+        provider.bitbucket_client.get_content_of_file.side_effect = error
+
+        with pytest.raises(HTTPError, match="500 Internal Server Error"):
+            provider.get_repo_file_content("AGENTS.md")
+
     def _make_provider_for_repo_settings(self, get_content_side_effect):
         # Bypass __init__ (which performs live API calls) and only wire up the
         # attributes get_repo_settings() relies on.
