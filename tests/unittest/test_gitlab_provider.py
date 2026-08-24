@@ -552,6 +552,59 @@ class TestGitLabProvider:
 
         gitlab_provider.unresolve_comment_thread(MagicMock(id=1))  # must not raise
 
+    @pytest.mark.parametrize("resolvable,resolved,should_resolve", [
+        (True, False, True),    # open thread -> resolve it
+        (True, True, False),    # already resolved -> leave
+        (False, False, False),  # not resolvable -> nothing to do
+    ])
+    def test_resolve_comment_thread(self, gitlab_provider, resolvable, resolved, should_resolve):
+        comment = MagicMock(id=42)
+        discussion = MagicMock()
+        discussion.attributes = {'notes': [{'id': 42, 'resolvable': resolvable, 'resolved': resolved}]}
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.discussions.list.return_value = [discussion]
+
+        gitlab_provider.resolve_comment_thread(comment)
+
+        if should_resolve:
+            assert discussion.resolved is True
+            discussion.save.assert_called_once()
+        else:
+            discussion.save.assert_not_called()
+
+    @pytest.mark.parametrize("note_attrs", [
+        {'resolved': True},       # note already resolved -> nothing to resolve
+        {'resolvable': False},    # note not resolvable -> nothing to resolve
+    ])
+    def test_resolve_comment_thread_skips_discussion_scan_when_note_already_resolved(self, gitlab_provider, note_attrs):
+        # The note's own resolution state rules out an open thread, so the (paginated)
+        # discussions listing must be skipped entirely.
+        comment = MagicMock(id=42, **note_attrs)
+        gitlab_provider.mr = MagicMock()
+
+        gitlab_provider.resolve_comment_thread(comment)
+
+        gitlab_provider.mr.discussions.list.assert_not_called()
+
+    def test_resolve_comment_thread_ignores_unrelated_discussions(self, gitlab_provider):
+        # An open discussion that does not own our note must be left untouched.
+        comment = MagicMock(id=99)
+        other = MagicMock()
+        other.attributes = {'notes': [{'id': 1, 'resolvable': True, 'resolved': False}]}
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.discussions.list.return_value = [other]
+
+        gitlab_provider.resolve_comment_thread(comment)
+
+        other.save.assert_not_called()
+
+    def test_resolve_comment_thread_soft_fails(self, gitlab_provider):
+        # A GitLab API error while resolving must not raise.
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.discussions.list.side_effect = Exception("gitlab api error")
+
+        gitlab_provider.resolve_comment_thread(MagicMock(id=1))  # must not raise
+
     # ---- publish_labels / get_pr_labels tests ----
 
     def _real_mr(self, snapshot_labels, update_result=None, update_error=None):

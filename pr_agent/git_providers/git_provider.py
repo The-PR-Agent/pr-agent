@@ -356,6 +356,9 @@ class GitProvider(ABC):
     def unresolve_comment_thread(self, comment):  # noqa: B027 - intentional no-op
         pass
 
+    def resolve_comment_thread(self, comment):  # noqa: B027 - intentional no-op
+        pass
+
     def publish_persistent_comment(self, pr_comment: str,
                                    initial_header: str,
                                    update_header: bool = True,

@@ -910,6 +910,23 @@ class GitLabProvider(GitProvider):
         except Exception as e:
             get_logger().warning(f"Failed to reopen resolved review thread: {e}")
 
+    def resolve_comment_thread(self, comment):
+        try:
+            # Notes carry their own resolution state; skip the full discussions scan (the API offers no
+            # note -> discussion lookup) unless the note reports it is actually resolvable and open.
+            if getattr(comment, 'resolvable', None) is False or getattr(comment, 'resolved', None) is True:
+                return
+            for discussion in self.mr.discussions.list(get_all=True):
+                notes = discussion.attributes.get('notes', [])
+                if not any(note.get('id') == comment.id for note in notes):
+                    continue
+                if any(note.get('resolvable') and not note.get('resolved') for note in notes):
+                    discussion.resolved = True
+                    discussion.save()
+                return
+        except Exception as e:
+            get_logger().warning(f"Failed to resolve comment thread: {e}")
+
     def edit_comment_from_comment_id(self, comment_id: int, body: str):
         body = self.limit_output_characters(body, self.max_comment_chars)
         comment = self.mr.notes.get(comment_id)
