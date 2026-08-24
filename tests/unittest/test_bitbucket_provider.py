@@ -83,6 +83,57 @@ class TestBitbucketProvider:
 
         provider.pr.delete.assert_called_once_with("comments/123")
 
+    def test_persistent_review_update_does_not_duplicate_when_status_message_fails(self):
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.pr = MagicMock()
+        provider.get_latest_commit_url = MagicMock(return_value="https://bitbucket.org/c/abc")
+        provider.get_comment_url = MagicMock(return_value="https://bitbucket.org/n/1")
+
+        header = "## PR Review"
+        existing = MagicMock()
+        existing.raw = f"{header}\n\nprevious review"
+        provider.pr.comments.return_value = [existing]
+
+        def publish_comment(body):
+            if "updated to latest commit" in body:
+                raise Exception("status publish failed")
+            return MagicMock()
+
+        provider.publish_comment = MagicMock(side_effect=publish_comment)
+
+        provider.publish_persistent_comment(f"{header}\n\nnew review",
+                                            initial_header=header,
+                                            update_header=True,
+                                            final_update_message=True)
+
+        existing.put.assert_called_once()
+        existing._update_data.assert_called_once()
+        provider.publish_comment.assert_called_once()
+        assert "updated to latest commit" in provider.publish_comment.call_args.args[0]
+
+    def test_persistent_review_update_falls_back_when_edit_fails(self):
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.pr = MagicMock()
+        provider.get_latest_commit_url = MagicMock(return_value="https://bitbucket.org/c/abc")
+        provider.get_comment_url = MagicMock(return_value="https://bitbucket.org/n/1")
+
+        header = "## PR Review"
+        new_review = f"{header}\n\nnew review"
+        existing = MagicMock()
+        existing.raw = f"{header}\n\nprevious review"
+        existing.put.side_effect = Exception("edit failed")
+        provider.pr.comments.return_value = [existing]
+        provider.publish_comment = MagicMock()
+
+        provider.publish_persistent_comment(new_review,
+                                            initial_header=header,
+                                            update_header=True,
+                                            final_update_message=True)
+
+        existing.put.assert_called_once()
+        existing._update_data.assert_not_called()
+        provider.publish_comment.assert_called_once_with(new_review)
+
 
 class TestBitbucketServerProvider:
     def test_parse_pr_url(self):

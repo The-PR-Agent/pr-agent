@@ -390,8 +390,14 @@ class GitProvider(ABC):
                             # outer except, whose fallback publish would duplicate the review.
                             get_logger().warning(f"Failed to reopen review thread: {e}")
                     if final_update_message:
-                        return self.publish_comment(
-                            f"**[Persistent {name}]({comment_url})** updated to latest commit {latest_commit_url}")
+                        try:
+                            return self.publish_comment(
+                                f"**[Persistent {name}]({comment_url})** updated to latest commit {latest_commit_url}")
+                        except Exception as e:
+                            # The review was already updated in place; a notification failure must not reach
+                            # the outer except, whose fallback publish would duplicate the review.
+                            get_logger().warning(f"Failed to publish persistent review update message: {e}")
+                            return comment
                     return comment
         except Exception as e:
             get_logger().exception(f"Failed to update persistent review, error: {e}")
