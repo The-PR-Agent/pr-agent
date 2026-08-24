@@ -579,10 +579,11 @@ async def test_run_removes_its_progress_comment_when_review_generation_fails(
     reviewer.prediction = None
 
     monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", AsyncMock())
+    review_error = RuntimeError("model unavailable")
     monkeypatch.setattr(
         pr_reviewer_module,
         "retry_with_fallback_models",
-        AsyncMock(side_effect=RuntimeError("model unavailable")),
+        AsyncMock(side_effect=review_error),
     )
 
     settings = get_settings()
@@ -597,8 +598,9 @@ async def test_run_removes_its_progress_comment_when_review_generation_fails(
         settings.config.propagate_tool_errors = propagate_tool_errors
 
         if propagate_tool_errors:
-            with pytest.raises(RuntimeError, match="model unavailable"):
+            with pytest.raises(RuntimeError, match="model unavailable") as exc_info:
                 await reviewer.run()
+            assert exc_info.value is review_error
         else:
             await reviewer.run()
     finally:
@@ -606,17 +608,21 @@ async def test_run_removes_its_progress_comment_when_review_generation_fails(
         settings.config.is_auto_command = original["is_auto_command"]
         settings.config.propagate_tool_errors = original["propagate_tool_errors"]
 
-    git_provider.publish_comment.assert_called_once_with("Preparing review...", is_temporary=True)
+    assert git_provider.publish_comment.call_args_list == [
+        (("Preparing review...",), {"is_temporary": True}),
+        (("Failed to review PR",), {}),
+    ]
     git_provider.remove_comment.assert_called_once_with(progress_comment)
     git_provider.remove_initial_comment.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_run_does_not_remove_comments_when_progress_was_not_published(monkeypatch):
+async def test_run_publishes_failure_result_when_progress_comment_has_no_handle(monkeypatch):
     from pr_agent.tools import pr_reviewer as pr_reviewer_module
 
     git_provider = MagicMock()
     git_provider.get_files.return_value = ["app.py"]
+    git_provider.publish_comment.side_effect = [None, MagicMock()]
     reviewer = _make_reviewer(git_provider)
     reviewer.incremental = SimpleNamespace(is_incremental=False)
     reviewer.vars = {}
@@ -633,19 +639,210 @@ async def test_run_does_not_remove_comments_when_progress_was_not_published(monk
     original = {
         "publish_output": settings.config.publish_output,
         "is_auto_command": settings.config.get("is_auto_command", False),
+        "propagate_tool_errors": settings.config.get("propagate_tool_errors", False),
     }
     try:
         settings.config.publish_output = True
-        settings.config.is_auto_command = True
+        settings.config.is_auto_command = False
+        settings.config.propagate_tool_errors = False
 
         await reviewer.run()
     finally:
         settings.config.publish_output = original["publish_output"]
         settings.config.is_auto_command = original["is_auto_command"]
+        settings.config.propagate_tool_errors = original["propagate_tool_errors"]
+
+    assert git_provider.publish_comment.call_args_list == [
+        (("Preparing review...",), {"is_temporary": True}),
+        (("Failed to review PR",), {}),
+    ]
+    git_provider.remove_comment.assert_not_called()
+    git_provider.remove_initial_comment.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_publishes_failure_result_when_review_fails_before_progress_comment():
+    review_error = RuntimeError("files unavailable")
+    git_provider = MagicMock()
+    git_provider.get_files.side_effect = review_error
+    reviewer = _make_reviewer(git_provider)
+
+    settings = get_settings()
+    original = {
+        "publish_output": settings.config.publish_output,
+        "is_auto_command": settings.config.get("is_auto_command", False),
+        "propagate_tool_errors": settings.config.get("propagate_tool_errors", False),
+    }
+    try:
+        settings.config.publish_output = True
+        settings.config.is_auto_command = False
+        settings.config.propagate_tool_errors = False
+
+        await reviewer.run()
+    finally:
+        settings.config.publish_output = original["publish_output"]
+        settings.config.is_auto_command = original["is_auto_command"]
+        settings.config.propagate_tool_errors = original["propagate_tool_errors"]
+
+    git_provider.publish_comment.assert_called_once_with("Failed to review PR")
+    git_provider.remove_comment.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("publish_output", "is_auto_command", "propagate_tool_errors"),
+    [
+        (False, False, False),
+        (False, False, True),
+        (True, True, False),
+        (True, True, True),
+    ],
+)
+async def test_run_does_not_publish_failure_result_when_output_disabled_or_auto(
+        monkeypatch, publish_output, is_auto_command, propagate_tool_errors):
+    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+
+    git_provider = MagicMock()
+    git_provider.get_files.return_value = ["app.py"]
+    reviewer = _make_reviewer(git_provider)
+    reviewer.incremental = SimpleNamespace(is_incremental=False)
+    reviewer.vars = {}
+    reviewer.prediction = None
+
+    review_error = RuntimeError("model unavailable")
+    monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", AsyncMock())
+    monkeypatch.setattr(
+        pr_reviewer_module,
+        "retry_with_fallback_models",
+        AsyncMock(side_effect=review_error),
+    )
+
+    settings = get_settings()
+    original = {
+        "publish_output": settings.config.publish_output,
+        "is_auto_command": settings.config.get("is_auto_command", False),
+        "propagate_tool_errors": settings.config.get("propagate_tool_errors", False),
+    }
+    try:
+        settings.config.publish_output = publish_output
+        settings.config.is_auto_command = is_auto_command
+        settings.config.propagate_tool_errors = propagate_tool_errors
+
+        if propagate_tool_errors:
+            with pytest.raises(RuntimeError, match="model unavailable") as exc_info:
+                await reviewer.run()
+            assert exc_info.value is review_error
+        else:
+            await reviewer.run()
+    finally:
+        settings.config.publish_output = original["publish_output"]
+        settings.config.is_auto_command = original["is_auto_command"]
+        settings.config.propagate_tool_errors = original["propagate_tool_errors"]
 
     git_provider.publish_comment.assert_not_called()
     git_provider.remove_comment.assert_not_called()
     git_provider.remove_initial_comment.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_publishes_failure_result_when_progress_cleanup_fails(monkeypatch):
+    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+
+    progress_comment = MagicMock()
+    git_provider = MagicMock()
+    git_provider.get_files.return_value = ["app.py"]
+    git_provider.publish_comment.return_value = progress_comment
+    git_provider.remove_comment.side_effect = RuntimeError("cleanup failed")
+    reviewer = _make_reviewer(git_provider)
+    reviewer.incremental = SimpleNamespace(is_incremental=False)
+    reviewer.vars = {}
+    reviewer.prediction = None
+
+    review_error = RuntimeError("model unavailable")
+    monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", AsyncMock())
+    monkeypatch.setattr(
+        pr_reviewer_module,
+        "retry_with_fallback_models",
+        AsyncMock(side_effect=review_error),
+    )
+
+    settings = get_settings()
+    original = {
+        "publish_output": settings.config.publish_output,
+        "is_auto_command": settings.config.get("is_auto_command", False),
+        "propagate_tool_errors": settings.config.get("propagate_tool_errors", False),
+    }
+    try:
+        settings.config.publish_output = True
+        settings.config.is_auto_command = False
+        settings.config.propagate_tool_errors = True
+
+        with pytest.raises(RuntimeError, match="model unavailable") as exc_info:
+            await reviewer.run()
+        assert exc_info.value is review_error
+    finally:
+        settings.config.publish_output = original["publish_output"]
+        settings.config.is_auto_command = original["is_auto_command"]
+        settings.config.propagate_tool_errors = original["propagate_tool_errors"]
+
+    assert git_provider.publish_comment.call_args_list == [
+        (("Preparing review...",), {"is_temporary": True}),
+        (("Failed to review PR",), {}),
+    ]
+    git_provider.remove_comment.assert_called_once_with(progress_comment)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("propagate_tool_errors", [False, True])
+async def test_run_failure_result_publication_does_not_mask_review_error(
+        monkeypatch, propagate_tool_errors):
+    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+
+    progress_comment = MagicMock()
+    publication_error = RuntimeError("comment unavailable")
+    git_provider = MagicMock()
+    git_provider.get_files.return_value = ["app.py"]
+    git_provider.publish_comment.side_effect = [progress_comment, publication_error]
+    reviewer = _make_reviewer(git_provider)
+    reviewer.incremental = SimpleNamespace(is_incremental=False)
+    reviewer.vars = {}
+    reviewer.prediction = None
+
+    review_error = RuntimeError("model unavailable")
+    monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", AsyncMock())
+    monkeypatch.setattr(
+        pr_reviewer_module,
+        "retry_with_fallback_models",
+        AsyncMock(side_effect=review_error),
+    )
+
+    settings = get_settings()
+    original = {
+        "publish_output": settings.config.publish_output,
+        "is_auto_command": settings.config.get("is_auto_command", False),
+        "propagate_tool_errors": settings.config.get("propagate_tool_errors", False),
+    }
+    try:
+        settings.config.publish_output = True
+        settings.config.is_auto_command = False
+        settings.config.propagate_tool_errors = propagate_tool_errors
+
+        if propagate_tool_errors:
+            with pytest.raises(RuntimeError, match="model unavailable") as exc_info:
+                await reviewer.run()
+            assert exc_info.value is review_error
+        else:
+            await reviewer.run()
+    finally:
+        settings.config.publish_output = original["publish_output"]
+        settings.config.is_auto_command = original["is_auto_command"]
+        settings.config.propagate_tool_errors = original["propagate_tool_errors"]
+
+    assert git_provider.publish_comment.call_args_list == [
+        (("Preparing review...",), {"is_temporary": True}),
+        (("Failed to review PR",), {}),
+    ]
+    git_provider.remove_comment.assert_called_once_with(progress_comment)
 
 
 def test_can_run_incremental_review_skips_auto_mode_without_new_commit():

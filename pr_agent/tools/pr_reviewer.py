@@ -137,6 +137,7 @@ class PRReviewer:
     async def run(self) -> None:
         init_run_details()
         progress_response = None
+        review_failed = False
         try:
             if not self.git_provider.get_files():
                 get_logger().info(f"PR has no files: {self.pr_url}, skipping review")
@@ -208,6 +209,7 @@ class PRReviewer:
             else:
                 self.git_provider.publish_comment(pr_review, **review_thread_kwargs)
         except Exception as e:
+            review_failed = True
             get_logger().error(f"Failed to review PR: {e}")
             if get_settings().config.get("propagate_tool_errors", False):
                 raise
@@ -217,6 +219,12 @@ class PRReviewer:
                     self.git_provider.remove_comment(progress_response)
                 except Exception as e:
                     get_logger().exception(f"Failed to remove review progress comment, error: {e}")
+            if (review_failed and get_settings().config.publish_output and
+                    not get_settings().config.get('is_auto_command', False)):
+                try:
+                    self.git_provider.publish_comment("Failed to review PR")
+                except Exception as e:
+                    get_logger().exception(f"Failed to publish review failure result, error: {e}")
 
     def _should_publish_review_no_suggestions(self, pr_review: str) -> bool:
         return get_settings().pr_reviewer.get('publish_output_no_suggestions', True) or "No major issues detected" not in pr_review
