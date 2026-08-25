@@ -448,10 +448,10 @@ class TestResolveThreadsDisabledWithoutCommentId:
         resolve_settings.set("comment_id", "")
 
         lq = _make_line_questions()
-        lq.resolve_threads = get_settings().pr_questions.get('resolve_threads', False)
+        lq.resolve_threads = get_settings().pr_questions.get("resolve_threads", False)
         lq.vars = {"resolve_threads": lq.resolve_threads}
 
-        comment_id = get_settings().get('comment_id', '')
+        comment_id = get_settings().get("comment_id", "")
         if not comment_id:
             lq.resolve_threads = False
             lq.vars["resolve_threads"] = False
@@ -464,10 +464,10 @@ class TestResolveThreadsDisabledWithoutCommentId:
         resolve_settings.set("comment_id", 12345)
 
         lq = _make_line_questions()
-        lq.resolve_threads = get_settings().pr_questions.get('resolve_threads', False)
+        lq.resolve_threads = get_settings().pr_questions.get("resolve_threads", False)
         lq.vars = {"resolve_threads": lq.resolve_threads}
 
-        comment_id = get_settings().get('comment_id', '')
+        comment_id = get_settings().get("comment_id", "")
         if not comment_id:
             lq.resolve_threads = False
             lq.vars["resolve_threads"] = False

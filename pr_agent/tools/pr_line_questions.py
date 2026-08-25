@@ -28,7 +28,7 @@ class PR_LineQuestions:
         self.ai_handler = ai_handler()
         self.ai_handler.main_pr_language = self.main_pr_language
 
-        self.resolve_threads = get_settings().pr_questions.get('resolve_threads', False)
+        self.resolve_threads = get_settings().pr_questions.get("resolve_threads", False)
         self.vars = {
             "title": self.git_provider.pr.title,
             "branch": self.git_provider.get_pr_branch(),

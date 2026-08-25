@@ -630,7 +630,7 @@ class GithubProvider(GitProvider):
     def resolve_comment_thread(self, comment_id: int) -> bool:
         """Resolve the review thread containing the given comment via GitHub GraphQL API."""
         try:
-            owner, repo_name = self.repo.split('/')
+            owner, repo_name = self.repo.split("/")
 
             # Get the comment's node_id via REST
             headers, data = self.pr._requester.requestJsonAndCheck(
