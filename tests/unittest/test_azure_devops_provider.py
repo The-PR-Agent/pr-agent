@@ -98,6 +98,15 @@ class TestAzureDevopsProviderFiles:
 
         assert provider._get_files_full() == ["/src/sdk.py"]
 
+    def test_get_files_full_skips_tree_entries(self):
+        provider = self._provider()
+        provider.azure_devops_client.get_changes.return_value = SimpleNamespace(changes=[
+            {"item": {"path": "/src", "gitObjectType": "tree"}},
+            {"item": {"path": "/src/app.py", "gitObjectType": "blob"}},
+        ])
+
+        assert provider._get_files_full() == ["/src/app.py"]
+
 
 def _provider_with_diff(*filenames):
     provider = AzureDevopsProvider.__new__(AzureDevopsProvider)

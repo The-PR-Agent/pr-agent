@@ -59,6 +59,25 @@ class _AzureCommitAdapter:
         self.parents = list(getattr(raw, "parents", None) or [])
 
 
+def _get_azure_change_path(change):
+    try:
+        item = change["item"]
+    except (KeyError, TypeError):
+        item = getattr(change, "item", None)
+        if item is None:
+            additional = getattr(change, "additional_properties", None) or {}
+            item = additional.get("item") or {}
+
+    if isinstance(item, dict):
+        if item.get("gitObjectType", item.get("git_object_type")) == "tree":
+            return None
+        return item.get("path")
+
+    if getattr(item, "git_object_type", getattr(item, "gitObjectType", None)) == "tree":
+        return None
+    return getattr(item, "path", None)
+
+
 class AzureDevopsProvider(GitProvider):
 
     def __init__(
@@ -361,14 +380,7 @@ class AzureDevopsProvider(GitProvider):
                 get_logger().warning(f"Failed to fetch changes for {commit.commit_id}: {e}")
                 continue
             for change in (getattr(changes_obj, "changes", None) or []):
-                try:
-                    item = change["item"]
-                except (KeyError, TypeError):
-                    additional = getattr(change, "additional_properties", None) or {}
-                    item = additional.get("item") or {}
-                if not isinstance(item, dict) or item.get("gitObjectType") == "tree":
-                    continue
-                path = item.get("path")
+                path = _get_azure_change_path(change)
                 if path:
                     candidate_paths.append(path)
 
@@ -521,14 +533,7 @@ class AzureDevopsProvider(GitProvider):
             )
 
             for c in (changes_obj.changes or []):
-                try:
-                    item = c["item"]
-                except (KeyError, TypeError):
-                    item = getattr(c, "item", None)
-                    if item is None:
-                        additional = getattr(c, "additional_properties", None) or {}
-                        item = additional.get("item") or {}
-                path = item.get("path") if isinstance(item, dict) else getattr(item, "path", None)
+                path = _get_azure_change_path(c)
                 if path:
                     files.append(path)
         return list(set(files))
