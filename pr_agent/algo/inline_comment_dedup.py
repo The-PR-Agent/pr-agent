@@ -37,6 +37,8 @@ from typing import Iterator, Optional
 
 BODY_MARKER_RE = re.compile(r"<!-- pr-agent-dedup: ([a-f0-9]{12}) -->")
 CODE_MARKER_RE = re.compile(r"<!-- pr-agent-dedup-code: ([a-f0-9]{12}) -->")
+KEY_ISSUE_LOCATION_MARKER_RE = re.compile(r"<!-- pr-agent-key-issue-location: ([a-f0-9]{12}) -->")
+_MARKER_RES = (BODY_MARKER_RE, CODE_MARKER_RE, KEY_ISSUE_LOCATION_MARKER_RE)
 
 _LEAD_RE = re.compile(r"^\*\*Suggestion:\*\*\s*", re.IGNORECASE)
 _TAG_RE = re.compile(r"\[[^\]]+?,\s*importance:\s*\d+\]", re.IGNORECASE)
@@ -66,6 +68,16 @@ def body_fingerprint(relevant_file: str, target_line_no, body: str) -> str:
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
 
 
+def key_issue_fingerprint(relevant_file: str, body: str) -> str:
+    key = f"{relevant_file}|{body}"
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
+
+
+def key_issue_location_fingerprint(fingerprint: str, start_line: int, end_line: int) -> str:
+    key = f"{fingerprint}|{start_line}|{end_line}"
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
+
+
 def code_fingerprint(relevant_file: str, target_line_no, body: str) -> Optional[str]:
     m = _CODE_BLOCK_RE.search(_strip_markers(body))
     if not m:
@@ -86,15 +98,26 @@ def build_markers(body_fp: str, code_fp: Optional[str]) -> str:
     return "\n".join(markers)
 
 
+def _append_markers(body: str, markers: str, max_chars: Optional[int]) -> str:
+    suffix = f"\n\n{markers}"
+    if max_chars and len(body) + len(suffix) > max_chars:
+        body = body[: max(0, max_chars - len(suffix))]
+    return f"{body}{suffix}"
+
+
 def body_with_markers(body: str, body_fp: str, code_fp: "Optional[str]",
                       max_chars: "Optional[int]" = None) -> str:
     """Append the dedup marker(s) to a comment body. If max_chars is given and
     body + markers would exceed it, the body is clipped (never the markers) so
     the fingerprint marker always survives for the next run's scan."""
-    suffix = f"\n\n{build_markers(body_fp, code_fp)}"
-    if max_chars and len(body) + len(suffix) > max_chars:
-        body = body[: max(0, max_chars - len(suffix))]
-    return f"{body}{suffix}"
+    return _append_markers(body, build_markers(body_fp, code_fp), max_chars)
+
+
+def key_issue_body_with_markers(body: str, body_fp: str, location_fp: str,
+                                max_chars: Optional[int] = None) -> str:
+    markers = (f"{build_markers(body_fp, None)}\n"
+               f"<!-- pr-agent-key-issue-location: {location_fp} -->")
+    return _append_markers(body, markers, max_chars)
 
 
 def inline_comment_line(comment: dict):
@@ -127,10 +150,17 @@ def iter_existing_inline_comment_bodies(git_provider) -> Iterator[str]:
         # are seen on later runs.
         for note in git_provider.mr.notes.list(get_all=True):
             yield getattr(note, "body", "") or ""
+    elif provider_name == "AzureDevopsProvider":
+        yield from git_provider.get_inline_comment_bodies()
     else:
         raise NotImplementedError(
             f"inline-comment dedup not implemented for {provider_name}"
         )
+
+
+def can_verify_inline_comment_publication(git_provider) -> bool:
+    return (callable(getattr(git_provider, "get_inline_comment_bodies", None)) and
+            callable(getattr(git_provider, "get_recent_inline_comment_bodies", None)))
 
 
 class InlineCommentStore:
@@ -146,16 +176,16 @@ class InlineCommentStore:
         self._git_provider = git_provider
         self._keys: set = set()
         self._loaded = False
+        self._load_failed = False
 
     def load(self) -> set:
         if self._loaded:
             return self._keys
         try:
             for body in iter_existing_inline_comment_bodies(self._git_provider):
-                for marker_re in (BODY_MARKER_RE, CODE_MARKER_RE):
-                    for match in marker_re.finditer(body or ""):
-                        self._keys.add(match.group(1))
+                self.add_body(body)
         except Exception as e:
+            self._load_failed = True
             from pr_agent.log import get_logger
             get_logger().info(
                 f"Persistent inline comments: could not load existing comments, "
@@ -163,6 +193,10 @@ class InlineCommentStore:
             )
         self._loaded = True
         return self._keys
+
+    @property
+    def load_failed(self) -> bool:
+        return self._load_failed
 
     def seen(self, fingerprint: Optional[str]) -> bool:
         if fingerprint is None:
@@ -172,6 +206,11 @@ class InlineCommentStore:
     def add(self, fingerprint: Optional[str]) -> None:
         if fingerprint is not None:
             self._keys.add(fingerprint)
+
+    def add_body(self, body: str) -> None:
+        for marker_re in _MARKER_RES:
+            for match in marker_re.finditer(body or ""):
+                self._keys.add(match.group(1))
 
 
 def get_inline_comment_store(git_provider) -> InlineCommentStore:

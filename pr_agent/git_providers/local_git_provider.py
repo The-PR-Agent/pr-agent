@@ -35,7 +35,10 @@ class LocalGitProvider(GitProvider):
         if self.repo_path is None:
             raise ValueError('Could not find repository root')
         self.repo = Repo(self.repo_path)
-        self.head_branch_name = self.repo.head.ref.name
+        if self.repo.head.is_detached:
+            self.head_branch_name = self.repo.head.commit.hexsha[:7]
+        else:
+            self.head_branch_name = self.repo.head.ref.name
         self.target_branch_name = target_branch_name
         self._prepare_repo()
         self.diff_files = None

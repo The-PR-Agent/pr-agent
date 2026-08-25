@@ -27,7 +27,7 @@ class TestBitbucketProvider:
         content = provider.get_repo_file_content("AGENTS.md")
 
         assert content == "repo context"
-        provider.get_pr_file_content.assert_called_once_with("AGENTS.md", "release-1.0")
+        provider.get_pr_file_content.assert_called_once_with("AGENTS.md", "release-1.0", propagate_errors=True)
 
     def test_get_repo_file_content_from_default_branch(self):
         provider = BitbucketProvider.__new__(BitbucketProvider)
@@ -38,7 +38,105 @@ class TestBitbucketProvider:
         content = provider.get_repo_file_content("AGENTS.md", from_default_branch=True)
 
         assert content == "repo context"
-        provider.get_pr_file_content.assert_called_once_with("AGENTS.md", "main")
+        provider.get_pr_file_content.assert_called_once_with("AGENTS.md", "main", propagate_errors=True)
+
+    def test_get_repo_file_content_propagates_non_404_http_errors(self):
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.workspace_slug = "workspace"
+        provider.repo_slug = "repository"
+        provider.headers = {"Authorization": "Bearer token"}
+        provider.pr = MagicMock(destination_branch="main")
+        response = MagicMock(status_code=500, text="upstream failure")
+        response.raise_for_status.side_effect = HTTPError("500 Internal Server Error")
+
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request", return_value=response):
+            with pytest.raises(HTTPError, match="500 Internal Server Error"):
+                provider.get_repo_file_content("AGENTS.md")
+
+        response.raise_for_status.assert_called_once_with()
+
+    def test_get_pr_file_content_propagates_non_404_http_errors_by_default(self):
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.workspace_slug = "workspace"
+        provider.repo_slug = "repository"
+        provider.headers = {"Authorization": "Bearer token"}
+        provider.pr = MagicMock(
+            source_branch="feature",
+            destination_branch="main",
+            data={"destination": {"commit": {"hash": "base-sha"}}},
+        )
+        response = MagicMock(status_code=500, text="upstream failure")
+        response.raise_for_status.side_effect = HTTPError("500 Internal Server Error")
+
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request", return_value=response):
+            with pytest.raises(HTTPError, match="500 Internal Server Error"):
+                provider.get_pr_file_content("CHANGELOG.md", "main")
+
+        response.raise_for_status.assert_called_once_with()
+
+    @pytest.mark.parametrize("comment", [{"id": 123}, 123])
+    def test_remove_comment_accepts_returned_comment_or_stored_id(self, comment):
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.pr = MagicMock()
+
+        provider.remove_comment(comment)
+
+        provider.pr.delete.assert_called_once_with("comments/123")
+
+    def test_persistent_review_update_does_not_duplicate_when_status_message_fails(self):
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.pr = MagicMock()
+        provider.get_latest_commit_url = MagicMock(return_value="https://bitbucket.org/c/abc")
+        provider.get_comment_url = MagicMock(return_value="https://bitbucket.org/n/1")
+
+        header = "## PR Review"
+        existing = MagicMock()
+        existing.raw = f"{header}\n\nprevious review"
+        provider.pr.comments.return_value = [existing]
+
+        def publish_comment(body):
+            if "updated to latest commit" in body:
+                raise Exception("status publish failed")
+            return MagicMock()
+
+        provider.publish_comment = MagicMock(side_effect=publish_comment)
+
+        with patch("pr_agent.git_providers.bitbucket_provider.get_logger") as mock_get_logger:
+            provider.publish_persistent_comment(f"{header}\n\nnew review",
+                                                initial_header=header,
+                                                update_header=True,
+                                                final_update_message=True)
+
+        existing.put.assert_called_once()
+        existing._update_data.assert_called_once()
+        provider.publish_comment.assert_called_once()
+        assert "updated to latest commit" in provider.publish_comment.call_args.args[0]
+        mock_get_logger.return_value.opt.assert_called_once_with(exception=True)
+        mock_get_logger.return_value.opt.return_value.warning.assert_called_once_with(
+            "Failed to publish persistent review update message; review was already updated")
+
+    def test_persistent_review_update_falls_back_when_edit_fails(self):
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.pr = MagicMock()
+        provider.get_latest_commit_url = MagicMock(return_value="https://bitbucket.org/c/abc")
+        provider.get_comment_url = MagicMock(return_value="https://bitbucket.org/n/1")
+
+        header = "## PR Review"
+        new_review = f"{header}\n\nnew review"
+        existing = MagicMock()
+        existing.raw = f"{header}\n\nprevious review"
+        existing.put.side_effect = Exception("edit failed")
+        provider.pr.comments.return_value = [existing]
+        provider.publish_comment = MagicMock()
+
+        provider.publish_persistent_comment(new_review,
+                                            initial_header=header,
+                                            update_header=True,
+                                            final_update_message=True)
+
+        existing.put.assert_called_once()
+        existing._update_data.assert_not_called()
+        provider.publish_comment.assert_called_once_with(new_review)
 
 
 class TestBitbucketServerProvider:
@@ -81,6 +179,33 @@ class TestBitbucketServerProvider:
 
         assert content == "repo context"
         provider.get_file.assert_called_once_with("AGENTS.md", "main")
+
+    def test_get_repo_file_content_treats_404_as_missing(self):
+        provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
+        provider.workspace_slug = "AAA"
+        provider.repo_slug = "my-repo"
+        provider.pr = MagicMock(toRef={"latestCommit": "base-sha"})
+        provider.bitbucket_client = MagicMock()
+        response = MagicMock(status_code=404)
+        error = HTTPError("404 Not Found")
+        error.response = response
+        provider.bitbucket_client.get_content_of_file.side_effect = error
+
+        assert provider.get_repo_file_content("AGENTS.md") == ""
+
+    def test_get_repo_file_content_propagates_non_404_errors(self):
+        provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
+        provider.workspace_slug = "AAA"
+        provider.repo_slug = "my-repo"
+        provider.pr = MagicMock(toRef={"latestCommit": "base-sha"})
+        provider.bitbucket_client = MagicMock()
+        response = MagicMock(status_code=500)
+        error = HTTPError("500 Internal Server Error")
+        error.response = response
+        provider.bitbucket_client.get_content_of_file.side_effect = error
+
+        with pytest.raises(HTTPError, match="500 Internal Server Error"):
+            provider.get_repo_file_content("AGENTS.md")
 
     def _make_provider_for_repo_settings(self, get_content_side_effect):
         # Bypass __init__ (which performs live API calls) and only wire up the
@@ -126,6 +251,48 @@ class TestBitbucketServerProvider:
         assert result == ""
         logger.error.assert_not_called()
         logger.info.assert_not_called()
+
+    def test_get_diff_files_preserves_bitbucket_server_move_semantics(self):
+        bitbucket_client = MagicMock(Bitbucket)
+        bitbucket_client.get_pull_request.return_value = {
+            'toRef': {'latestCommit': 'base-sha'},
+            'fromRef': {'latestCommit': 'head-sha'},
+        }
+        bitbucket_client.get_pull_requests_commits.return_value = [
+            {'id': 'head-sha', 'parents': [{'id': 'base-sha'}]},
+        ]
+        bitbucket_client.get_pull_requests_changes.return_value = [
+            {
+                'path': {'toString': 'new.py'},
+                'srcPath': {'toString': 'old.py'},
+                'type': 'MOVE',
+            },
+        ]
+
+        def get_content_of_file(project_key, repository_slug, path, at=None, markup=None):
+            contents = {
+                ('old.py', 'base-sha'): 'old content\n',
+                ('new.py', 'head-sha'): 'new content\n',
+            }
+            return contents.get((path, at), '')
+
+        bitbucket_client.get_content_of_file.side_effect = get_content_of_file
+
+        provider = BitbucketServerProvider(
+            "https://git.onpreminstance.com/projects/AAA/repos/my-repo/pull-requests/1",
+            bitbucket_client=bitbucket_client,
+        )
+
+        actual = provider.get_diff_files()
+
+        assert len(actual) == 1
+        assert actual[0].base_file == 'old content\n'
+        assert actual[0].head_file == 'new content\n'
+        assert actual[0].filename == 'new.py'
+        assert actual[0].old_filename == 'old.py'
+        assert actual[0].edit_type == EDIT_TYPE.RENAMED
+        assert '-old content' in actual[0].patch
+        assert '+new content' in actual[0].patch
 
     def mock_get_content_of_file(self, project_key, repository_slug, filename, at=None, markup=None):
         content_map = {

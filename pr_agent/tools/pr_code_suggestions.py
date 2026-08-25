@@ -14,7 +14,8 @@ from pr_agent.algo import MAX_TOKENS
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.git_patch_processing import decouple_and_convert_to_hunks_with_lines_numbers
-from pr_agent.algo.pr_processing import (add_ai_metadata_to_diff_files,
+from pr_agent.algo.pr_processing import (_get_all_models,
+                                         add_ai_metadata_to_diff_files,
                                          get_pr_diff, get_pr_multi_diffs,
                                          retry_with_fallback_models)
 from pr_agent.algo.run_details import init_run_details
@@ -28,7 +29,7 @@ from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import (AzureDevopsProvider, GithubProvider,
                                     GitLabProvider, get_git_provider,
                                     get_git_provider_with_context)
-from pr_agent.git_providers.git_provider import get_main_pr_language, GitProvider
+from pr_agent.git_providers.git_provider import GitProvider, IncrementalPR, get_main_pr_language
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
 from pr_agent.tools.pr_description import insert_br_after_x_chars
@@ -40,17 +41,41 @@ class PRCodeSuggestions:
                  ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
 
         self.git_provider = get_git_provider_with_context(pr_url)
+        self.pr_url = pr_url  # set early so the no-op log line in `run()` can reference it
+        self.args = args
+        self.incremental = self._parse_incremental(args)
+        self._incremental_empty_scope = False
+        # When invoked as `/improve -i`, narrow `git_provider.get_diff_files()` to the files
+        # changed since the previous suggestions pass. Falls back to full when the provider
+        # doesn't support incremental scope or no prior suggestion comment exists.
+        self._setup_incremental_scope()
+        # If incremental is active but the scope came back empty (no files changed since the
+        # previous suggestions pass), short-circuit init now. `run()` checks the same flag and
+        # exits without touching the model. This avoids a wasted `mr.changes()` round-trip via
+        # `get_files()` — when `unreviewed_files_map` is `{}` it's falsy and `get_files()` falls
+        # back to the full MR file list, which is pure waste on the "nothing new" path.
+        if (self.incremental.is_incremental
+                and hasattr(self.git_provider, "unreviewed_files_map")
+                and not self.git_provider.unreviewed_files_map):
+            self._incremental_empty_scope = True
+            return
         self.main_language = get_main_pr_language(
             self.git_provider.get_languages(), self.git_provider.get_files()
         )
 
-        num_code_suggestions = int(get_settings().pr_code_suggestions.num_code_suggestions_per_chunk)
+        raw_num_code_suggestions = get_settings().pr_code_suggestions.num_code_suggestions_per_chunk
+        try:
+            num_code_suggestions = int(raw_num_code_suggestions)
+        except (TypeError, ValueError):
+            num_code_suggestions = 3
+            get_logger().warning(
+                f"num_code_suggestions_per_chunk is not a number ({raw_num_code_suggestions!r}), "
+                f"using {num_code_suggestions}")
 
         self.ai_handler = ai_handler()
         self.ai_handler.main_pr_language = self.main_language
         self.patches_diff = None
         self.prediction = None
-        self.pr_url = pr_url
         self.cli_mode = cli_mode
         self.pr_description, self.pr_description_files = (
             self.git_provider.get_pr_description(split_changes_walkthrough=True))
@@ -96,9 +121,42 @@ class PRCodeSuggestions:
         self.progress = build_progress_comment()
         self.progress_response = None
 
+    @staticmethod
+    def _parse_incremental(args):
+        """Parse the `-i` flag for `/improve` exactly like `PRReviewer.parse_incremental`."""
+        is_incremental = bool(args and len(args) >= 1 and args[0] == "-i")
+        return IncrementalPR(is_incremental)
+
+    def _setup_incremental_scope(self):
+        """Configure the provider's suggestions-scoped incremental state for `/improve -i`.
+
+        Falls back to a full run (incremental disabled) when the provider doesn't
+        support kind-scoped incremental anchoring.
+        """
+        if not self.incremental.is_incremental:
+            return
+        if self.git_provider.supports_incremental_kind("suggestions"):
+            self.git_provider.get_incremental_commits(self.incremental, kind="suggestions")
+        else:
+            get_logger().info(
+                "Provider does not support incremental suggestions scope; "
+                "running /improve on the full diff"
+            )
+            self.incremental = IncrementalPR(False)
+
     async def run(self):
         init_run_details()
         try:
+            if getattr(self, "_incremental_empty_scope", False):
+                # Set by `__init__` when incremental anchored cleanly but no files changed
+                # since the previous suggestions pass. Skip silently — re-running on the
+                # full MR diff here would just re-post the same inline suggestions.
+                get_logger().info(
+                    f"Incremental /improve for {self.pr_url}: no files changed since the previous "
+                    f"suggestions pass; skipping"
+                )
+                return None
+
             if not self.git_provider.get_files():
                 get_logger().info(f"PR has no files: {self.pr_url}, skipping code suggestions")
                 return None
@@ -114,7 +172,8 @@ class PRCodeSuggestions:
                 if self.git_provider.is_supported("gfm_markdown"):
                     self.progress_response = self.git_provider.publish_comment(self.progress)
                 else:
-                    self.git_provider.publish_comment("Preparing suggestions...", is_temporary=True)
+                    self.progress_response = self.git_provider.publish_comment(
+                        "Preparing suggestions...", is_temporary=True)
 
             # # call the model to get the suggestions, and self-reflect on them
             # if not self.is_extended:
@@ -226,6 +285,10 @@ class PRCodeSuggestions:
         pr_body = "## PR Code Suggestions ✨\n\nNo code suggestions found for the PR."
         if (get_settings().config.publish_output and
                 get_settings().pr_code_suggestions.get('publish_output_no_suggestions', True)):
+            # Output the agent run details (model, tokens, time cost) if enabled, so the
+            # "no suggestions" result still shows which model produced it.
+            if get_settings().get('config', {}).get('output_run_details', False):
+                pr_body += show_run_details(self.git_provider.is_supported("gfm_markdown"))
             get_logger().warning('No code suggestions found for the PR.')
             get_logger().debug(f"PR output", artifact=pr_body)
             if self.progress_response:
@@ -234,6 +297,8 @@ class PRCodeSuggestions:
                 self.git_provider.publish_comment(pr_body)
         else:
             get_settings().data = {"artifact": ""}
+            if self.progress_response:
+                self.git_provider.remove_comment(self.progress_response)
 
     async def dual_publishing(self, data):
         data_above_threshold = {'code_suggestions': []}
@@ -422,15 +487,7 @@ class PRCodeSuggestions:
         data = self._prepare_pr_code_suggestions(response)
 
         # self-reflect on suggestions (mandatory, since line numbers are generated now here)
-        model_reflect_with_reasoning = get_model('model_reasoning')
-        fallbacks = get_settings().config.fallback_models
-        if model_reflect_with_reasoning == get_settings().config.model and model != get_settings().config.model and fallbacks and model == \
-                fallbacks[0]:
-            # we are using a fallback model (should not happen on regular conditions)
-            get_logger().warning(f"Using the same model for self-reflection as the one used for suggestions")
-            model_reflect_with_reasoning = model
-        response_reflect = await self.self_reflect_on_suggestions(data["code_suggestions"],
-                                                                  patches_diff, model=model_reflect_with_reasoning)
+        response_reflect = await self._self_reflect_with_fallback(data["code_suggestions"], patches_diff, model)
         if response_reflect:
             await self.analyze_self_reflection_response(data, response_reflect)
         else:
@@ -440,6 +497,37 @@ class PRCodeSuggestions:
                 suggestion["score_why"] = ""
 
         return data
+
+    async def _self_reflect_with_fallback(self, suggestion_list: List, patches_diff: str, model: str) -> str:
+        """Reflect over the reasoning models, returning the first non-empty response.
+
+        self_reflect_on_suggestions swallows its errors and returns "", so an empty response is
+        treated as a failure. This walks the chain itself rather than nesting
+        retry_with_fallback_models, which sets the global openai.deployment_id without restoring
+        it - nested, that would leak the reflection's deployment into the rest of the run and race
+        the other chunk calls, since parallel_calls is on by default.
+        """
+        if not suggestion_list:
+            return ""
+
+        models = _get_all_models(ModelType.REASONING)
+        if get_model('model_reasoning') == get_settings().config.model and model in models:
+            # No dedicated reasoning model, so this is the regular chain and the outer fallback
+            # loop has already burned everything before the model it settled on.
+            models = models[models.index(model):]
+        if get_settings().get("openai.fallback_deployments", []):
+            # Each model is pinned to its own deployment, and openai.deployment_id is global to a
+            # run whose chunk calls are already in flight concurrently. Retrying another model here
+            # would route it to the deployment this one is pinned to, so stop at the first.
+            models = models[:1]
+
+        for reflection_model in models:
+            response = await self.self_reflect_on_suggestions(suggestion_list, patches_diff,
+                                                              model=reflection_model)
+            if response:
+                return response
+            get_logger().warning(f"Empty self-reflection response from {reflection_model}")
+        return ""
 
     async def analyze_self_reflection_response(self, data, response_reflect):
         response_reflect_yaml = load_yaml(response_reflect)

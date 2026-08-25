@@ -2,6 +2,8 @@
 
 You can use a pre-built Action Docker image to run PR-Agent as a GitLab pipeline. This is a simple way to get started with PR-Agent without setting up your own server.
 
+Pipeline mode runs configured commands automatically when GitLab creates a merge request pipeline. It does not receive GitLab comment events. If you want users to invoke commands such as `/review` or `/improve` in merge request comments, deploy the [GitLab webhook server](#run-a-gitlab-webhook-server) instead and enable the **Comments** webhook trigger.
+
 (1) Add the following file to your repository under `.gitlab-ci.yml`:
 
 ```yaml
@@ -29,8 +31,30 @@ pr_agent_job:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
 ```
 
-This script will run PR-Agent on every new merge request. You can modify the `rules` section to run PR-Agent on different events.
+This script runs PR-Agent when a merge request pipeline is created, including when a merge request is opened and when new commits are pushed to its source branch. You can modify the `rules` section to run PR-Agent on different events.
 You can also modify the `script` section to run different PR-Agent commands, or with different parameters by exporting different environment variables.
+
+### Ignore bot-created merge requests
+
+Dependency update bots usually use predictable source branch prefixes. Add a higher-priority `when: never` rule before the general merge request rule to skip those branches:
+
+```yaml
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME =~ /^(dependabot|renovate)\//'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+```
+
+Adjust the regular expression to match the branch naming conventions used by your bots. Filtering on `CI_MERGE_REQUEST_SOURCE_BRANCH_NAME` is more reliable than `GITLAB_USER_LOGIN`, because `GITLAB_USER_LOGIN` identifies the user who started the pipeline and can change when a pipeline is run manually.
+
+The webhook server can apply the equivalent filter to automatic merge request events through a repository-level `.pr_agent.toml` file:
+
+```toml
+[config]
+ignore_pr_source_branches = ["^(dependabot|renovate)/"]
+```
+
+For all supported filters, see [Ignoring automatic commands in PRs](../usage-guide/additional_configurations.md#ignoring-automatic-commands-in-prs).
 
 (2) Add the following masked variables to your GitLab repository (CI/CD -> Variables):
 

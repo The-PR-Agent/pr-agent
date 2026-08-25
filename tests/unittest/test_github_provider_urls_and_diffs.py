@@ -7,7 +7,7 @@ the provider via ``__new__`` and exercising only pure helpers, or by
 wiring fake PR/file/repo objects for get_diff_files.
 """
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -202,6 +202,7 @@ def _make_file(
     patch: str = "@@ -0,0 +1 @@\n+new",
     additions: int = 1,
     deletions: int = 0,
+    previous_filename: str = None,
 ):
     return SimpleNamespace(
         filename=filename,
@@ -209,6 +210,7 @@ def _make_file(
         patch=patch,
         additions=additions,
         deletions=deletions,
+        previous_filename=previous_filename,
     )
 
 
@@ -217,7 +219,7 @@ def _make_provider_for_diff(files):
     p.diff_files = None
     p.git_files = None
     p.incremental = SimpleNamespace(is_incremental=False)
-    p.unreviewed_files_set = {}
+    p.unreviewed_files_map = {}
     # pr.base/head shas drive repo.compare which we stub out below.
     p.pr = SimpleNamespace(
         base=SimpleNamespace(sha="base-sha"),
@@ -258,7 +260,7 @@ class TestGetDiffFilesEditTypes:
         f = _make_file(f"{status}.py", status)
         p = _make_provider_for_diff([f])
         # Avoid reaching real GitHub for file content.
-        p._get_pr_file_content = lambda file, sha: "content"
+        p._get_pr_file_content = lambda file, sha, path=None: "content"
 
         diffs = p.get_diff_files()
 
@@ -271,7 +273,7 @@ class TestGetDiffFilesEditTypes:
         """When file.patch is falsy, load_large_diff fills it in."""
         f = _make_file("big.py", "modified", patch="")
         p = _make_provider_for_diff([f])
-        p._get_pr_file_content = lambda file, sha: "content"
+        p._get_pr_file_content = lambda file, sha, path=None: "content"
 
         diffs = p.get_diff_files()
 
@@ -282,7 +284,7 @@ class TestGetDiffFilesEditTypes:
     def test_existing_patch_preserved(self, patched_helpers):
         f = _make_file("ok.py", "modified", patch="@@ -1 +1 @@\n-a\n+b")
         p = _make_provider_for_diff([f])
-        p._get_pr_file_content = lambda file, sha: "content"
+        p._get_pr_file_content = lambda file, sha, path=None: "content"
 
         diffs = p.get_diff_files()
 
@@ -298,9 +300,74 @@ class TestGetDiffFilesEditTypes:
     def test_additions_deletions_propagated(self, patched_helpers):
         f = _make_file("x.py", "modified", additions=5, deletions=2)
         p = _make_provider_for_diff([f])
-        p._get_pr_file_content = lambda file, sha: "content"
+        p._get_pr_file_content = lambda file, sha, path=None: "content"
 
         diffs = p.get_diff_files()
 
         assert diffs[0].num_plus_lines == 5
         assert diffs[0].num_minus_lines == 2
+
+
+class TestGetDiffFilesRename:
+    """A pure GitHub rename carries no `.patch` and reports 0 additions/0
+    deletions, so `previous_filename` is the only place the old path lives."""
+
+    def test_old_filename_set_from_previous_filename(self, patched_helpers):
+        f = _make_file(
+            "new_dir/module.py", "renamed", patch=None, additions=0, deletions=0,
+            previous_filename="old_dir/module.py",
+        )
+        p = _make_provider_for_diff([f])
+        p._get_pr_file_content = lambda file, sha, path=None: "same content\n"
+
+        diffs = p.get_diff_files()
+
+        assert diffs[0].old_filename == "old_dir/module.py"
+
+    def test_original_content_looked_up_at_old_path(self, patched_helpers):
+        """The base-commit content fetch must use the pre-rename path: the
+        new path does not exist there, only the old one does."""
+        f = _make_file(
+            "new_dir/module.py", "renamed", patch=None, additions=0, deletions=0,
+            previous_filename="old_dir/module.py",
+        )
+        p = _make_provider_for_diff([f])
+        spy = Mock(return_value="same content\n")
+        p._get_pr_file_content = spy
+
+        p.get_diff_files()
+
+        original_content_call = spy.call_args_list[-1]
+        assert original_content_call.kwargs.get("path") == "old_dir/module.py"
+
+    def test_non_renamed_file_has_no_old_filename(self, patched_helpers):
+        f = _make_file("x.py", "modified")
+        p = _make_provider_for_diff([f])
+        p._get_pr_file_content = lambda file, sha, path=None: "content"
+
+        diffs = p.get_diff_files()
+
+        assert diffs[0].old_filename is None
+
+    def test_incremental_content_looked_up_at_old_path(self, patched_helpers):
+        """Same as test_original_content_looked_up_at_old_path, but for the
+        incremental-review branch, which has its own call to
+        `_get_pr_file_content` and used to skip `path=` entirely."""
+        f = _make_file(
+            "new_dir/module.py", "renamed", patch=None, additions=0, deletions=0,
+            previous_filename="old_dir/module.py",
+        )
+        p = _make_provider_for_diff([f])
+        p.incremental = SimpleNamespace(is_incremental=True, last_seen_commit_sha="prev-sha")
+        # get_files() short-circuits to unreviewed_files_map.values() once incremental
+        # is on and the map is non-empty, exactly as get_incremental_commits() leaves it
+        # (github_provider.py:183: populated with the real file objects, not patches).
+        p.unreviewed_files_map = {"new_dir/module.py": f}
+        spy = Mock(return_value="same content\n")
+        p._get_pr_file_content = spy
+
+        p.get_diff_files()
+
+        original_content_call = spy.call_args_list[-1]
+        assert original_content_call.args[1] == "prev-sha"
+        assert original_content_call.kwargs.get("path") == "old_dir/module.py"

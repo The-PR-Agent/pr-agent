@@ -150,26 +150,35 @@ class TestPreparePrAnswer:
         assert "\r /close" in out
         assert "\r/close" not in out
 
-    def test_non_gitlab_provider_does_not_apply_gitlab_protections(self):
-        # Use a non-GitLab provider; a model answer that *does* contain a
-        # quick-action substring like "/merge" must still come through as a
-        # (sanitized) answer, NOT be replaced with the GitLab error string.
+    @pytest.mark.parametrize(
+        "quick_action",
+        ["/approve", "/close", "/merge", "/reopen", "/unapprove",
+         "/title", "/assign", "/copy_metadata", "/target_branch"],
+    )
+    def test_mid_line_quick_action_mention_survives_on_gitlab(self, quick_action):
+        # Regression pin for #2302: prose that merely *mentions* a quick action
+        # (e.g. an MR template documenting pr-agent usage) must be published
+        # verbatim, not replaced with an error. Quick actions only execute at
+        # the start of a line, and line starts are already space-prefixed.
+        gitlab_provider = GitLabProvider.__new__(GitLabProvider)
+        prediction = f"Comment {quick_action} on the MR to trigger the flow."
         pr = _make_pr_questions(
-            question_str="q", prediction="/merge would be premature", git_provider=MagicMock()
+            question_str="q", prediction=prediction, git_provider=gitlab_provider
         )
         out = pr._prepare_pr_answer()
+        assert prediction in out
         assert "Model answer contains GitHub quick actions" not in out
-        assert "would be premature" in out
 
-    def test_gitlab_provider_blocks_quick_actions(self):
+    def test_line_leading_quick_action_is_neutralized_on_gitlab(self):
         gitlab_provider = GitLabProvider.__new__(GitLabProvider)
         pr = _make_pr_questions(
             question_str="q",
-            prediction="/merge this please",
+            prediction="To finish:\n/merge this please",
             git_provider=gitlab_provider,
         )
         out = pr._prepare_pr_answer()
-        assert "Model answer contains GitHub quick actions" in out
+        assert "\n /merge this please" in out
+        assert "\n/merge" not in out
 
     def test_gitlab_provider_passes_through_safe_text(self):
         gitlab_provider = GitLabProvider.__new__(GitLabProvider)
@@ -181,27 +190,6 @@ class TestPreparePrAnswer:
         out = pr._prepare_pr_answer()
         assert "this change looks correct" in out
         assert "Model answer contains GitHub quick actions" not in out
-
-
-# ---------------------------------------------------------------------------
-# PRQuestions.gitlab_protections
-# ---------------------------------------------------------------------------
-
-class TestGitlabProtections:
-    @pytest.mark.parametrize(
-        "quick_action",
-        ["/approve", "/close", "/merge", "/reopen", "/unapprove",
-         "/title", "/assign", "/copy_metadata", "/target_branch"],
-    )
-    def test_detects_each_quick_action(self, quick_action):
-        pr = _make_pr_questions()
-        result = pr.gitlab_protections(f"prefix {quick_action} suffix")
-        assert "GitHub quick actions" in result
-
-    def test_passthrough_for_safe_text(self):
-        pr = _make_pr_questions()
-        safe = "everything is fine here"
-        assert pr.gitlab_protections(safe) == safe
 
 
 # ---------------------------------------------------------------------------

@@ -173,8 +173,10 @@ class TestGetMaxTokens:
         "vertex_ai/gemini-3.5-pro",
         "gemini/gemini-3.6-flash",
         "vertex_ai/gemini-3.6-flash",
+        "gemini/gemini-3.7-flash",
+        "vertex_ai/gemini-3.7-flash",
     ])
-    def test_gemini_3_3_1_3_5_and_3_6_models_max_tokens(self, monkeypatch, model):
+    def test_gemini_3_x_models_max_tokens(self, monkeypatch, model):
         fake_settings = type("", (), {
             "config": type("", (), {
                 "custom_model_max_tokens": 0,
@@ -183,6 +185,18 @@ class TestGetMaxTokens:
         })()
         monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
         assert get_max_tokens(model) == 1048576
+
+    def test_bedrock_mantle_grok_4_3_model_max_tokens(self, monkeypatch):
+        fake_settings = type("", (), {
+            "config": type("", (), {
+                "custom_model_max_tokens": 0,
+                "max_model_tokens": 0,
+            })()
+        })()
+
+        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+
+        assert get_max_tokens("bedrock_mantle/xai.grok-4.3") == 1000000
 
     @pytest.mark.parametrize(
         "model",

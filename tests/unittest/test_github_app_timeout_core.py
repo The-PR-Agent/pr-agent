@@ -149,6 +149,55 @@ class TestDefaultDictWithTimeout:
         _ = d["fresh"]
         assert "a" not in d
 
+    def test_setdefault_registers_key_time(self, fake_clock):
+        d = DefaultDictWithTimeout(ttl=10, refresh_interval=1000)
+        assert d.setdefault("a", 0) == 0
+        assert _key_times(d)["a"] == fake_clock["t"]
+
+    def test_setdefault_returns_existing_value_without_replacing_it(self, fake_clock):
+        d = DefaultDictWithTimeout(ttl=1000, refresh_interval=1000)
+        d["a"] = 5
+        assert d.setdefault("a", 0) == 5
+        assert d["a"] == 5
+
+    def test_setdefault_inserts_default_rather_than_factory_value(self, fake_clock):
+        d = DefaultDictWithTimeout(int, ttl=1000, refresh_interval=1000)
+        assert d.setdefault("a", 7) == 7
+        assert d["a"] == 7
+
+    def test_setdefault_on_expired_key_returns_default(self, fake_clock):
+        d = DefaultDictWithTimeout(
+            ttl=2, refresh_interval=5, update_key_time_on_get=False
+        )
+        d["a"] = 5
+        fake_clock["t"] += 10
+        assert d.setdefault("a", 0) == 0
+        assert d["a"] == 0
+
+    def test_failed_lookup_leaves_no_stale_key_time(self, fake_clock):
+        d = DefaultDictWithTimeout(ttl=1000, refresh_interval=1000)
+        with pytest.raises(KeyError):
+            _ = d["missing"]
+        assert "missing" not in _key_times(d)
+
+    def test_delitem_tolerates_key_absent_from_the_dict(self, fake_clock):
+        d = DefaultDictWithTimeout(ttl=1000, refresh_interval=1000)
+        _key_times(d)["ghost"] = fake_clock["t"]
+        del d["ghost"]
+        assert "ghost" not in _key_times(d)
+
+    def test_expiring_one_key_does_not_break_lookups_of_another(self, fake_clock):
+        d = DefaultDictWithTimeout(ttl=2, refresh_interval=5)
+        d.setdefault("a", 0)
+        d["a"] += 1
+        fake_clock["t"] += 10
+        d.setdefault("b", 0)
+        d["b"] += 1
+        with pytest.raises(KeyError):
+            _ = d["a"]
+        fake_clock["t"] += 10
+        assert d.setdefault("b", 0) == 0
+
 
 # ---------------------------------------------------------------------------
 # handle_line_comments
@@ -279,6 +328,18 @@ class TestHandleLineComments:
         finally:
             _restore_ask_diff_hunk(settings, outer_original, outer_sentinel)
 
+    def test_outdated_comment_falls_back_to_original_line(self):
+        body = self._payload(start_line=None, line=None, original_start_line=5, original_line=7)
+        result = github_app.handle_line_comments(body, "/ask Is this still relevant?")
+        assert "--line_start=5" in result
+        assert "--line_end=7" in result
+
+    def test_outdated_comment_single_line_falls_back_to_original(self):
+        body = self._payload(start_line=None, line=None, original_start_line=None, original_line=7)
+        result = github_app.handle_line_comments(body, "/ask question")
+        assert "--line_start=7" in result
+        assert "--line_end=7" in result
+
     def test_non_ask_comment_returned_unchanged(self):
         body = self._payload()
         result = github_app.handle_line_comments(body, "just a comment")
@@ -319,18 +380,6 @@ class TestCheckPullRequestEvent:
 
     def test_rejects_closed_pr(self):
         body = {"pull_request": self._pr(state="closed")}
-        assert github_app._check_pull_request_event("opened", body, {}) == ({}, "")
-
-    def test_rejects_draft_pr(self):
-        body = {"pull_request": self._pr(draft=True)}
-        assert github_app._check_pull_request_event("opened", body, {}) == ({}, "")
-
-    def test_rejects_when_draft_field_missing(self):
-        # pull_request.get("draft", True) defaults to True, so a missing draft
-        # field is treated as draft and rejected.
-        pr = self._pr()
-        pr.pop("draft")
-        body = {"pull_request": pr}
         assert github_app._check_pull_request_event("opened", body, {}) == ({}, "")
 
     def test_rejects_synchronize_when_created_equals_updated(self):

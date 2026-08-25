@@ -121,6 +121,7 @@ MAX_TOKENS = {
     'vertex_ai/gemini-3.5-flash-lite': 1048576,
     'vertex_ai/gemini-3.5-pro': 1048576,
     'vertex_ai/gemini-3.6-flash': 1048576,
+    'vertex_ai/gemini-3.7-flash': 1048576,
     'vertex_ai/gemma2': 8200,
     'gemini/gemini-1.5-pro': 1048576,
     'gemini/gemini-1.5-flash': 1048576,
@@ -142,6 +143,7 @@ MAX_TOKENS = {
     'gemini/gemini-3.5-flash-lite': 1048576,
     'gemini/gemini-3.5-pro': 1048576,
     'gemini/gemini-3.6-flash': 1048576,
+    'gemini/gemini-3.7-flash': 1048576,
     'codechat-bison': 6144,
     'codechat-bison-32k': 32000,
     'anthropic.claude-instant-v1': 100000,
@@ -265,6 +267,7 @@ MAX_TOKENS = {
     'claude-3-5-sonnet': 100000,
     'bedrock/us.meta.llama4-scout-17b-instruct-v1:0': 128000,
     'bedrock/us.meta.llama4-maverick-17b-instruct-v1:0': 128000,
+    "bedrock_mantle/xai.grok-4.3": 1000000,  # 1M context, but may be limited by config.max_model_tokens
     'groq/openai/gpt-oss-120b': 131072,
     'groq/openai/gpt-oss-20b': 131072,
     'groq/qwen/qwen3-32b': 131000,

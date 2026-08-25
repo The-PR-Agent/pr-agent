@@ -3,10 +3,10 @@
 pr_agent/mosaico/env_bridge.py registers 'langfuse_otel' as the Langfuse callback
 (the legacy 'langfuse' callback raises a ``sdk_integration`` TypeError against
 langfuse 3.x). litellm imports pydantic-settings unconditionally from
-``litellm/integrations/otel/model/config.py`` but declares it only under its optional
-'proxy' extra, so an environment built from requirements.txt without that pin makes
-litellm's callback factory return None -- silently, because the factory swallows the
-ImportError -- and not a single LLM call is traced.
+``litellm/integrations/otel/model/config.py`` and declares it as a base dependency.
+If it is missing from the environment, litellm's callback factory returns None --
+silently, because the factory swallows the ImportError -- and not a single LLM call
+is traced.
 
 These tests assert the environment, not pr-agent logic, hence a file of their own
 rather than an addition to test_mosaico_env_bridge.py. They are meaningful in CI:
@@ -19,14 +19,13 @@ import importlib
 import pytest
 
 CALLBACK_NAME = "langfuse_otel"
-# Imported at module scope by litellm/integrations/otel/model/config.py, declared only under
-# litellm's 'proxy' extra, so it must be pinned explicitly in pr-agent's requirements.txt.
-UNDECLARED_LITELLM_DEP = "pydantic_settings"
+# Imported at module scope by litellm/integrations/otel/model/config.py and declared in
+# litellm's base dependencies, so it must remain available in pr-agent's environment.
+LITELLM_OTEL_DEP = "pydantic_settings"
 
 _REMEDY = (
-    f"'{UNDECLARED_LITELLM_DEP}' must be pinned in requirements.txt: litellm imports it "
-    f"unconditionally from litellm/integrations/otel/model/config.py but declares it only under "
-    f"its optional 'proxy' extra."
+    f"'{LITELLM_OTEL_DEP}' must be installed: litellm imports it unconditionally from "
+    f"litellm/integrations/otel/model/config.py and declares it in its base dependencies."
 )
 
 
@@ -58,7 +57,7 @@ def restore_in_memory_loggers():
 
 class TestLangfuseOtelCallbackDeps:
     def test_pydantic_settings_is_installed(self):
-        err = _import_error(UNDECLARED_LITELLM_DEP)
+        err = _import_error(LITELLM_OTEL_DEP)
         assert err is None, f"{_REMEDY} Import failed with: {err!r}"
 
     def test_litellm_otel_config_imports(self):

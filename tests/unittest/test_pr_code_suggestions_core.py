@@ -1,9 +1,10 @@
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import get_settings
+from pr_agent.git_providers.git_provider import GitProvider, IncrementalPR
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 
 
@@ -180,6 +181,136 @@ async def test_push_inline_code_suggestions_falls_back_to_individual_publish_cal
     assert second_retry[0]["relevant_lines_start"] == 2
     assert second_retry[0]["relevant_lines_end"] == 2
     assert "```suggestion\n    return new_worker()" in second_retry[0]["body"]
+
+
+@pytest.fixture
+def publish_output_no_suggestions():
+    settings = get_settings()
+    original = settings.get("pr_code_suggestions.publish_output_no_suggestions", True)
+
+    def _set(value):
+        settings.set("pr_code_suggestions.publish_output_no_suggestions", value)
+
+    yield _set
+    _set(original)
+
+
+@pytest.mark.asyncio
+async def test_publish_no_suggestions_removes_the_progress_comment_when_quiet(publish_output_no_suggestions):
+    publish_output_no_suggestions(False)
+    git_provider = MagicMock()
+    tool = _make_tool(git_provider)
+    tool.progress_response = MagicMock()
+
+    await tool.publish_no_suggestions()
+
+    git_provider.remove_comment.assert_called_once_with(tool.progress_response)
+    git_provider.edit_comment.assert_not_called()
+    git_provider.publish_comment.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_tracks_non_gfm_progress_comment_when_quiet(publish_output_no_suggestions):
+    publish_output_no_suggestions(False)
+    settings = get_settings()
+    original_publish_output = settings.config.publish_output
+    original_publish_output_progress = settings.config.publish_output_progress
+    original_is_auto_command = settings.config.get("is_auto_command", False)
+    settings.config.publish_output = True
+    settings.config.publish_output_progress = True
+    settings.config.is_auto_command = False
+    git_provider = MagicMock()
+    git_provider.get_files.return_value = ["app.py"]
+    git_provider.is_supported.return_value = False
+    progress_comment = MagicMock()
+    git_provider.publish_comment.return_value = progress_comment
+    tool = _make_tool(git_provider)
+    tool.pr_url = "https://example.test/pull/1"
+    tool.progress = "Preparing suggestions..."
+    tool.prepare_prediction_main = AsyncMock()
+
+    try:
+        with (patch("pr_agent.tools.pr_code_suggestions.init_run_details"),
+              patch("pr_agent.tools.pr_code_suggestions.retry_with_fallback_models",
+                    AsyncMock(return_value={"code_suggestions": []}))):
+            await tool.run()
+    finally:
+        settings.config.publish_output = original_publish_output
+        settings.config.publish_output_progress = original_publish_output_progress
+        settings.config.is_auto_command = original_is_auto_command
+
+    git_provider.publish_comment.assert_called_once_with("Preparing suggestions...", is_temporary=True)
+    git_provider.remove_comment.assert_called_once_with(progress_comment)
+
+
+@pytest.mark.asyncio
+async def test_publish_no_suggestions_does_not_remove_unrelated_temporary_comments(publish_output_no_suggestions):
+    publish_output_no_suggestions(False)
+    git_provider = MagicMock()
+    tool = _make_tool(git_provider)
+
+    await tool.publish_no_suggestions()
+
+    git_provider.remove_initial_comment.assert_not_called()
+    git_provider.remove_comment.assert_not_called()
+    git_provider.publish_comment.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_publish_no_suggestions_still_overwrites_the_progress_comment_when_publishing(
+        publish_output_no_suggestions):
+    publish_output_no_suggestions(True)
+    git_provider = MagicMock()
+    tool = _make_tool(git_provider)
+    tool.progress_response = MagicMock()
+
+    await tool.publish_no_suggestions()
+
+    _, kwargs = git_provider.edit_comment.call_args
+    assert "No code suggestions found for the PR." in kwargs["body"]
+    git_provider.remove_comment.assert_not_called()
+
+
+def test_setup_incremental_scope_calls_provider_when_supported():
+    git_provider = MagicMock()
+    git_provider.supports_incremental_kind.return_value = True
+    tool = _make_tool(git_provider)
+    tool.incremental = IncrementalPR(True)
+
+    tool._setup_incremental_scope()
+
+    git_provider.supports_incremental_kind.assert_called_once_with("suggestions")
+    git_provider.get_incremental_commits.assert_called_once_with(tool.incremental, kind="suggestions")
+    assert tool.incremental.is_incremental is True
+
+
+def test_setup_incremental_scope_falls_back_when_unsupported():
+    git_provider = MagicMock()
+    git_provider.supports_incremental_kind.return_value = False
+    tool = _make_tool(git_provider)
+    tool.incremental = IncrementalPR(True)
+
+    tool._setup_incremental_scope()
+
+    git_provider.get_incremental_commits.assert_not_called()
+    assert tool.incremental.is_incremental is False
+
+
+def test_setup_incremental_scope_noop_without_incremental_flag():
+    git_provider = MagicMock()
+    tool = _make_tool(git_provider)
+    tool.incremental = IncrementalPR(False)
+
+    tool._setup_incremental_scope()
+
+    git_provider.supports_incremental_kind.assert_not_called()
+    git_provider.get_incremental_commits.assert_not_called()
+
+
+def test_supports_incremental_kind_defaults_to_false_on_base_provider():
+    # The base-class default must be "no support" so tools fall back to a full run
+    # on providers that never implemented kind-aware incremental anchoring.
+    assert GitProvider.supports_incremental_kind(MagicMock(), "suggestions") is False
 
 
 def test_persistent_update_survives_progress_cleanup_failure():

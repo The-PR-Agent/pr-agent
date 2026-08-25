@@ -302,6 +302,8 @@ class GithubProvider(GitProvider):
                     continue
 
                 patch = file.patch
+                is_renamed = file.status == "renamed" and getattr(file, "previous_filename", None)
+                old_filename = file.previous_filename if is_renamed else None
                 if is_close_to_rate_limit:
                     new_file_content_str = ""
                     original_file_content_str = ""
@@ -320,14 +322,15 @@ class GithubProvider(GitProvider):
                         new_file_content_str = self._get_pr_file_content(file, self.pr.head.sha)  # communication with GitHub
 
                     if self.incremental.is_incremental and self.unreviewed_files_map:
-                        original_file_content_str = self._get_pr_file_content(file, self.incremental.last_seen_commit_sha)
+                        original_file_content_str = self._get_pr_file_content(
+                            file, self.incremental.last_seen_commit_sha, path=old_filename)
                         patch = load_large_diff(file.filename, new_file_content_str, original_file_content_str)
                         self.unreviewed_files_map[file.filename] = patch
                     else:
                         if avoid_load:
                             original_file_content_str = ""
                         else:
-                            original_file_content_str = self._get_pr_file_content(file, merge_base_commit.sha)
+                            original_file_content_str = self._get_pr_file_content(file, merge_base_commit.sha, path=old_filename)
                             # original_file_content_str = self._get_pr_file_content(file, self.pr.base.sha)
                         if not patch:
                             patch = load_large_diff(file.filename, new_file_content_str, original_file_content_str)
@@ -356,6 +359,7 @@ class GithubProvider(GitProvider):
 
                 file_patch_canonical_structure = FilePatchInfo(original_file_content_str, new_file_content_str, patch,
                                                                file.filename, edit_type=edit_type,
+                                                               old_filename=old_filename,
                                                                num_plus_lines=num_plus_lines,
                                                                num_minus_lines=num_minus_lines,)
                 diff_files.append(file_patch_canonical_structure)
@@ -963,7 +967,8 @@ class GithubProvider(GitProvider):
         # Cache per org: global settings change rarely, so avoid a lookup (and repeated 403/404
         # fallbacks) on every webhook event.
         return get_cached_global_settings(
-            f"github:{repo_owner}", lambda: self._fetch_global_repo_settings(repo_owner))
+            f"github:{getattr(self, 'base_url', '')}:{repo_owner}",
+            lambda: self._fetch_global_repo_settings(repo_owner))
 
     def _fetch_global_repo_settings(self, repo_owner):
         try:
@@ -1156,8 +1161,8 @@ class GithubProvider(GitProvider):
             branch=branch,
         )
 
-    def _get_pr_file_content(self, file: FilePatchInfo, sha: str) -> str:
-        return self.get_pr_file_content(file.filename, sha)
+    def _get_pr_file_content(self, file: FilePatchInfo, sha: str, path: str = None) -> str:
+        return self.get_pr_file_content(path or file.filename, sha)
 
     def publish_labels(self, pr_types):
         try:
@@ -1236,6 +1241,12 @@ class GithubProvider(GitProvider):
 
     def get_line_link(self, relevant_file: str, relevant_line_start: int, relevant_line_end: int = None) -> str:
         sha_file = hashlib.sha256(relevant_file.encode('utf-8')).hexdigest()
+        if relevant_line_end is not None and relevant_line_start is not None:
+            try:
+                if int(relevant_line_end) < int(relevant_line_start):
+                    relevant_line_end = relevant_line_start
+            except (TypeError, ValueError):
+                relevant_line_end = None
         if relevant_line_start == -1:
             link = f"{self.base_url_html}/{self.repo}/pull/{self.pr_num}/files#diff-{sha_file}"
         elif relevant_line_end:

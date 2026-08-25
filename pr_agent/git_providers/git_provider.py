@@ -119,6 +119,13 @@ class GitProvider(ABC):
     def is_supported(self, capability: str) -> bool:
         pass
 
+    def supports_incremental_kind(self, kind: str) -> bool:
+        """Whether `get_incremental_commits()` can scope an incremental run to `kind`
+        (e.g. "suggestions" for `/improve -i`). Providers implementing kind-aware
+        incremental anchoring override this; the default is no support, so tools
+        fall back to a full run."""
+        return False
+
     #Given a url (issues or PR/MR) - get the .git repo url to which they belong. Needs to be implemented by the provider.
     def get_git_repo_url(self, issues_or_pr_url: str) -> str:
         get_logger().warning("Not implemented! Returning empty url")
@@ -383,8 +390,15 @@ class GitProvider(ABC):
                             # outer except, whose fallback publish would duplicate the review.
                             get_logger().warning(f"Failed to reopen review thread: {e}")
                     if final_update_message:
-                        return self.publish_comment(
-                            f"**[Persistent {name}]({comment_url})** updated to latest commit {latest_commit_url}")
+                        try:
+                            return self.publish_comment(
+                                f"**[Persistent {name}]({comment_url})** updated to latest commit {latest_commit_url}")
+                        except Exception:
+                            # The review was already updated in place; a notification failure must not reach
+                            # the outer except, whose fallback publish would duplicate the review.
+                            get_logger().opt(exception=True).warning(
+                                "Failed to publish persistent review update message; review was already updated")
+                            return comment
                     return comment
         except Exception as e:
             get_logger().exception(f"Failed to update persistent review, error: {e}")

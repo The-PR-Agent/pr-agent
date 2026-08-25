@@ -7,8 +7,6 @@ from enum import Enum
 
 from loguru import logger
 
-from pr_agent.config_loader import get_settings
-
 
 class LoggingFormat(str, Enum):
     CONSOLE = "CONSOLE"
@@ -45,6 +43,11 @@ def setup_logger(level: str = "INFO", fmt: LoggingFormat = LoggingFormat.CONSOLE
     elif fmt == LoggingFormat.CONSOLE: # does not print the 'extra' fields
         logger.remove(None)
         logger.add(sys.stdout, level=level, colorize=True, filter=inv_analytics_filter)
+
+    # Imported lazily so `from pr_agent.log import get_logger` does not pull
+    # in config_loader while this package is still initializing. config_loader
+    # loads settings via custom_merge_loader, which itself imports get_logger.
+    from pr_agent.config_loader import get_settings
 
     log_folder = get_settings().get("CONFIG.ANALYTICS_FOLDER", "")
     if log_folder:
