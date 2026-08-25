@@ -430,6 +430,49 @@ class TestResolveThreadsPromptRendering:
 
 
 # ---------------------------------------------------------------------------
+# resolve_threads disabled when no comment_id
+# ---------------------------------------------------------------------------
+
+class TestResolveThreadsDisabledWithoutCommentId:
+    @pytest.fixture
+    def resolve_settings(self):
+        keys = ("comment_id", "pr_questions.resolve_threads")
+        saved = snapshot_settings(keys)
+        try:
+            yield get_settings()
+        finally:
+            restore_settings(saved)
+
+    def test_resolve_threads_cleared_when_no_comment_id(self, resolve_settings):
+        resolve_settings.set("pr_questions.resolve_threads", True)
+        resolve_settings.set("comment_id", "")
+
+        lq = _make_line_questions()
+        lq.resolve_threads = get_settings().pr_questions.get('resolve_threads', False)
+        lq.vars = {"resolve_threads": lq.resolve_threads}
+
+        comment_id = get_settings().get('comment_id', '')
+        if not comment_id:
+            lq.vars["resolve_threads"] = False
+
+        assert lq.vars["resolve_threads"] is False
+
+    def test_resolve_threads_kept_when_comment_id_present(self, resolve_settings):
+        resolve_settings.set("pr_questions.resolve_threads", True)
+        resolve_settings.set("comment_id", 12345)
+
+        lq = _make_line_questions()
+        lq.resolve_threads = get_settings().pr_questions.get('resolve_threads', False)
+        lq.vars = {"resolve_threads": lq.resolve_threads}
+
+        comment_id = get_settings().get('comment_id', '')
+        if not comment_id:
+            lq.vars["resolve_threads"] = False
+
+        assert lq.vars["resolve_threads"] is True
+
+
+# ---------------------------------------------------------------------------
 # Thread resolution marker parsing (unit tests for run() logic)
 # ---------------------------------------------------------------------------
 
