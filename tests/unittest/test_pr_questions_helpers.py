@@ -7,7 +7,7 @@ by the method under test are populated. No live providers and no AI calls.
 """
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -609,3 +609,108 @@ class TestRunResolvesThread:
 
         lq.git_provider.reply_to_comment_from_comment_id.assert_called_once()
         lq.git_provider.resolve_comment_thread.assert_not_called()
+# PR_LineQuestions.run - model call gating (no hunk lines selected)
+# ---------------------------------------------------------------------------
+
+class TestPRLineQuestionsRunSkipsEmptySelection:
+    """run() must not call the model when no hunk lines are selected.
+
+    ``extract_hunk_lines_from_patch`` returns a truthy header-only string as
+    ``patch_with_lines`` whenever the requested range misses every hunk or the
+    patch is unparseable, so the model call has to be gated on
+    ``selected_lines`` rather than on ``patch_with_lines``.
+    """
+
+    _PATCH = (
+        "@@ -5,7 +5,8 @@ def main():\n"
+        "     a = 1\n"
+        "     b = 2\n"
+        "+    c = 3\n"
+        "     return a\n"
+    )
+
+    def _provider(self):
+        obj = plq.PR_LineQuestions.__new__(plq.PR_LineQuestions)
+        obj.vars = {}
+        obj.git_provider = MagicMock()
+        obj.token_handler = MagicMock()
+        obj.git_provider.get_diff_files.return_value = [SimpleNamespace(
+            filename="x.py", patch=self._PATCH)]
+        return obj
+
+    def _set_ask_settings(self, line_start, line_end):
+        keys = ("ask_diff_hunk", "line_start", "line_end", "side", "file_name", "comment_id")
+        saved = snapshot_settings(keys)
+        settings = get_settings()
+        settings.unset("ask_diff_hunk", force=True)
+        settings.set("line_start", line_start)
+        settings.set("line_end", line_end)
+        settings.set("side", "RIGHT")
+        settings.set("file_name", "x.py")
+        settings.unset("comment_id", force=True)
+        return saved
+
+    async def test_skips_model_call_when_range_misses_hunks(self):
+        obj = self._provider()
+        saved = self._set_ask_settings("100", "200")
+        try:
+            with patch("pr_agent.tools.pr_line_questions.retry_with_fallback_models",
+                       new=AsyncMock()) as mock_retry, \
+                 patch.object(plq.PR_LineQuestions, "_get_prediction", new=AsyncMock()) as mock_pred:
+                await obj.run()
+            mock_retry.assert_not_awaited()
+            mock_pred.assert_not_awaited()
+        finally:
+            restore_settings(saved)
+
+    async def test_skips_model_call_when_patch_is_unparseable(self):
+        obj = self._provider()
+        obj.git_provider.get_diff_files.return_value = [SimpleNamespace(
+            filename="x.py", patch="this is not a diff")]
+        saved = self._set_ask_settings("1", "2")
+        try:
+            with patch("pr_agent.tools.pr_line_questions.retry_with_fallback_models",
+                       new=AsyncMock()) as mock_retry, \
+                 patch.object(plq.PR_LineQuestions, "_get_prediction", new=AsyncMock()) as mock_pred:
+                await obj.run()
+            mock_retry.assert_not_awaited()
+            mock_pred.assert_not_awaited()
+        finally:
+            restore_settings(saved)
+
+    async def test_calls_model_when_lines_are_selected(self):
+        obj = self._provider()
+        saved = self._set_ask_settings("6", "8")
+        try:
+            with patch("pr_agent.tools.pr_line_questions.retry_with_fallback_models",
+                       new=AsyncMock(return_value="an answer")) as mock_retry:
+                await obj.run()
+            mock_retry.assert_awaited_once()
+            obj.git_provider.publish_comment.assert_called_once_with("an answer")
+        finally:
+            restore_settings(saved)
+
+    async def test_skips_model_call_when_ask_diff_misses_hunks(self):
+        obj = self._provider()
+        saved = self._set_ask_settings("100", "200")
+        try:
+            get_settings().set("ask_diff_hunk", self._PATCH)
+            with patch("pr_agent.tools.pr_line_questions.retry_with_fallback_models",
+                       new=AsyncMock()) as mock_retry:
+                await obj.run()
+            mock_retry.assert_not_awaited()
+        finally:
+            restore_settings(saved)
+
+    async def test_calls_model_when_ask_diff_selects_lines(self):
+        obj = self._provider()
+        saved = self._set_ask_settings("6", "8")
+        try:
+            get_settings().set("ask_diff_hunk", self._PATCH)
+            with patch("pr_agent.tools.pr_line_questions.retry_with_fallback_models",
+                       new=AsyncMock(return_value="an answer")) as mock_retry:
+                await obj.run()
+            mock_retry.assert_awaited_once()
+            obj.git_provider.publish_comment.assert_called_once_with("an answer")
+        finally:
+            restore_settings(saved)

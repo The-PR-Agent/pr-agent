@@ -94,7 +94,7 @@ class PR_LineQuestions:
                                                                                                line_start=line_start,
                                                                                                line_end=line_end,
                                                                                                side=side)
-        if self.patch_with_lines:
+        if self.selected_lines:
             model_answer = await retry_with_fallback_models(self._get_prediction, model_type=ModelType.WEAK)
 
             should_resolve = False
@@ -118,6 +118,9 @@ class PR_LineQuestions:
                         get_logger().warning(f"Failed to resolve review thread for comment {comment_id}")
             else:
                 self.git_provider.publish_comment(model_answer_sanitized)
+        else:
+            get_logger().info("No lines selected in the patch range for "
+                              f"'{file_name}'; skipping the /ask_line model call")
 
         return ""
         
