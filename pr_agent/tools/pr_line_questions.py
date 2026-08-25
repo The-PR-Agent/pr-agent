@@ -94,9 +94,10 @@ class PR_LineQuestions:
             model_answer = await retry_with_fallback_models(self._get_prediction, model_type=ModelType.WEAK)
 
             should_resolve = False
-            if self.resolve_threads and "[THREAD_RESOLVED]" in model_answer:
+            answer_stripped = model_answer.rstrip()
+            if self.resolve_threads and answer_stripped.endswith("[THREAD_RESOLVED]"):
                 should_resolve = True
-                model_answer = model_answer.replace("[THREAD_RESOLVED]", "").rstrip()
+                model_answer = answer_stripped[:-len("[THREAD_RESOLVED]")].rstrip()
 
             # sanitize the answer so that no line will start with "/"
             model_answer_sanitized = model_answer.strip().replace("\n/", "\n /")

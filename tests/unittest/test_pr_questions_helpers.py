@@ -477,17 +477,37 @@ class TestResolveThreadsDisabledWithoutCommentId:
 # ---------------------------------------------------------------------------
 
 class TestThreadResolvedMarkerParsing:
-    """Test the marker-stripping logic that would be in PR_LineQuestions.run()."""
+    """Test the marker-stripping logic that would be in PR_LineQuestions.run().
 
-    @pytest.mark.parametrize("marker_position,answer,expected_clean", [
-        ("end", "The issue is fixed.\n\n[THREAD_RESOLVED]", "The issue is fixed."),
-        ("middle", "Fixed [THREAD_RESOLVED] thanks", "Fixed  thanks"),
-        ("only", "[THREAD_RESOLVED]", ""),
+    The marker is only recognized when it appears at the end of the response
+    (after rstrip). Mid-message occurrences are treated as normal text.
+    """
+
+    def _parse_marker(self, answer):
+        """Replicate the endswith-based parsing from PR_LineQuestions.run()."""
+        answer_stripped = answer.rstrip()
+        if answer_stripped.endswith("[THREAD_RESOLVED]"):
+            return True, answer_stripped[:-len("[THREAD_RESOLVED]")].rstrip()
+        return False, answer
+
+    @pytest.mark.parametrize("marker_position,answer,expected_resolve,expected_clean", [
+        ("end", "The issue is fixed.\n\n[THREAD_RESOLVED]", True, "The issue is fixed."),
+        ("end_with_trailing_whitespace", "Done.\n[THREAD_RESOLVED]  \n", True, "Done."),
+        ("only", "[THREAD_RESOLVED]", True, ""),
     ])
-    def test_marker_is_stripped(self, marker_position, answer, expected_clean):
-        cleaned = answer.replace("[THREAD_RESOLVED]", "").rstrip()
+    def test_trailing_marker_is_stripped(self, marker_position, answer, expected_resolve, expected_clean):
+        should_resolve, cleaned = self._parse_marker(answer)
+        assert should_resolve == expected_resolve
         assert cleaned == expected_clean
+
+    def test_mid_message_marker_is_not_resolved(self):
+        answer = "Fixed [THREAD_RESOLVED] thanks"
+        should_resolve, cleaned = self._parse_marker(answer)
+        assert should_resolve is False
+        assert cleaned == answer
 
     def test_no_marker_means_no_resolve(self):
         answer = "I think this still needs work."
-        assert "[THREAD_RESOLVED]" not in answer
+        should_resolve, cleaned = self._parse_marker(answer)
+        assert should_resolve is False
+        assert cleaned == answer

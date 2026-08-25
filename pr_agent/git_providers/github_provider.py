@@ -698,17 +698,19 @@ class GithubProvider(GitProvider):
             resolve_tuple = self.github_client._Github__requester.requestJson(
                 "POST", "/graphql", input={"query": mutation}
             )
-            if isinstance(resolve_tuple, tuple) and len(resolve_tuple) == 3:
-                resolve_json = json.loads(resolve_tuple[2])
-                errors = resolve_json.get("errors")
-                if errors:
-                    get_logger().error(f"GraphQL errors resolving thread {thread_id}: {errors}")
-                    return False
-                is_resolved = (resolve_json.get("data", {}).get("resolveReviewThread", {})
-                               .get("thread", {}).get("isResolved", False))
-                if not is_resolved:
-                    get_logger().warning(f"Resolve mutation returned isResolved=false for thread {thread_id} — possible permission issue")
-                    return False
+            if not isinstance(resolve_tuple, tuple) or len(resolve_tuple) != 3:
+                get_logger().error(f"Unexpected mutation response format for thread {thread_id}: {type(resolve_tuple)}")
+                return False
+            resolve_json = json.loads(resolve_tuple[2])
+            errors = resolve_json.get("errors")
+            if errors:
+                get_logger().error(f"GraphQL errors resolving thread {thread_id}: {errors}")
+                return False
+            is_resolved = (resolve_json.get("data", {}).get("resolveReviewThread", {})
+                           .get("thread", {}).get("isResolved", False))
+            if not is_resolved:
+                get_logger().warning(f"Resolve mutation returned isResolved=false for thread {thread_id} — possible permission issue")
+                return False
             get_logger().info(f"Resolved review thread {thread_id}")
             return True
         except Exception as e:

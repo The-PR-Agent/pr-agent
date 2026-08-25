@@ -552,6 +552,26 @@ class TestResolveCommentThread:
         assert result is False
         assert len(requester.calls) == 3
 
+    def test_handles_unexpected_mutation_response_format(self):
+        """Mutation returns non-tuple — should return False, not fall through to True."""
+        rest_data = {"node_id": "PRR_comment1"}
+        threads_response = _make_graphql_response({
+            "repository": {"pullRequest": {"reviewThreads": {"nodes": [
+                {
+                    "id": "PRRT_thread1",
+                    "isResolved": False,
+                    "comments": {"nodes": [{"id": "PRR_comment1"}]},
+                },
+            ]}}},
+        })
+
+        provider, requester = _make_provider_with_graphql(
+            rest_data, [threads_response, "not-a-tuple"]
+        )
+        result = provider.resolve_comment_thread(123)
+
+        assert result is False
+
     def test_handles_rest_api_exception(self):
         """REST call to fetch comment throws — should not propagate."""
         p = GithubProvider.__new__(GithubProvider)
