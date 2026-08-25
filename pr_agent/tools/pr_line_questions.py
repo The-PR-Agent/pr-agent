@@ -28,6 +28,7 @@ class PR_LineQuestions:
         self.ai_handler = ai_handler()
         self.ai_handler.main_pr_language = self.main_pr_language
 
+        self.resolve_threads = get_settings().pr_questions.get('resolve_threads', False)
         self.vars = {
             "title": self.git_provider.pr.title,
             "branch": self.git_provider.get_pr_branch(),
@@ -36,6 +37,7 @@ class PR_LineQuestions:
             "full_hunk": "",
             "selected_lines": "",
             "conversation_history": "",
+            "resolve_threads": self.resolve_threads,
             "extra_instructions": get_settings().pr_questions.extra_instructions,
         }
         self.token_handler = TokenHandler(self.git_provider.pr,
@@ -71,6 +73,8 @@ class PR_LineQuestions:
         side = get_settings().get('side', 'RIGHT')
         file_name = get_settings().get('file_name', '')
         comment_id = get_settings().get('comment_id', '')
+        if not comment_id:
+            self.vars["resolve_threads"] = False
         if ask_diff:
             self.patch_with_lines, self.selected_lines = extract_hunk_lines_from_patch(ask_diff,
                                                                                        file_name,
@@ -88,6 +92,12 @@ class PR_LineQuestions:
                                                                                                side=side)
         if self.patch_with_lines:
             model_answer = await retry_with_fallback_models(self._get_prediction, model_type=ModelType.WEAK)
+
+            should_resolve = False
+            if self.resolve_threads and "[THREAD_RESOLVED]" in model_answer:
+                should_resolve = True
+                model_answer = model_answer.replace("[THREAD_RESOLVED]", "").rstrip()
+
             # sanitize the answer so that no line will start with "/"
             model_answer_sanitized = model_answer.strip().replace("\n/", "\n /")
             if model_answer_sanitized.startswith("/"):
@@ -96,6 +106,11 @@ class PR_LineQuestions:
             get_logger().info('Preparing answer...')
             if comment_id:
                 self.git_provider.reply_to_comment_from_comment_id(comment_id, model_answer_sanitized)
+                if should_resolve:
+                    if self.git_provider.resolve_comment_thread(comment_id):
+                        get_logger().info(f"Resolved review thread for comment {comment_id}")
+                    else:
+                        get_logger().warning(f"Failed to resolve review thread for comment {comment_id}")
             else:
                 self.git_provider.publish_comment(model_answer_sanitized)
 

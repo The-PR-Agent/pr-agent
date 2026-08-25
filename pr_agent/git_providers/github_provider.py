@@ -627,6 +627,94 @@ class GithubProvider(GitProvider):
             get_logger().exception(f"Failed to get review comments for an inline ask command", artifact={"comment_id": comment_id, "error": e})
             return []
 
+    def resolve_comment_thread(self, comment_id: int) -> bool:
+        """Resolve the review thread containing the given comment via GitHub GraphQL API."""
+        try:
+            owner, repo_name = self.repo.split('/')
+
+            # Get the comment's node_id via REST
+            headers, data = self.pr._requester.requestJsonAndCheck(
+                "GET", f"{self.base_url}/repos/{self.repo}/pulls/comments/{comment_id}"
+            )
+            comment_node_id = data.get("node_id", "")
+            if not comment_node_id:
+                get_logger().warning(f"No node_id found for comment {comment_id}")
+                return False
+
+            # Find the review thread containing this comment
+            query = f"""
+            query {{
+                repository(owner: "{owner}", name: "{repo_name}") {{
+                    pullRequest(number: {self.pr_num}) {{
+                        reviewThreads(first: 100) {{
+                            nodes {{
+                                id
+                                isResolved
+                                comments(first: 100) {{
+                                    nodes {{
+                                        id
+                                    }}
+                                }}
+                            }}
+                        }}
+                    }}
+                }}
+            }}
+            """
+            response_tuple = self.github_client._Github__requester.requestJson(
+                "POST", "/graphql", input={"query": query}
+            )
+            if not (isinstance(response_tuple, tuple) and len(response_tuple) == 3):
+                get_logger().error(f"Unexpected GraphQL response format")
+                return False
+
+            response_json = json.loads(response_tuple[2])
+            threads = (response_json.get("data", {}).get("repository", {})
+                       .get("pullRequest", {}).get("reviewThreads", {}).get("nodes", []))
+
+            thread_id = None
+            for thread in threads:
+                if thread.get("isResolved"):
+                    continue
+                comment_ids = [c["id"] for c in thread.get("comments", {}).get("nodes", [])]
+                if comment_node_id in comment_ids:
+                    thread_id = thread["id"]
+                    break
+
+            if not thread_id:
+                get_logger().info(f"No unresolved thread found for comment {comment_id}")
+                return False
+
+            # Resolve the thread
+            mutation = f"""
+            mutation {{
+                resolveReviewThread(input: {{threadId: "{thread_id}"}}) {{
+                    thread {{
+                        isResolved
+                    }}
+                }}
+            }}
+            """
+            resolve_tuple = self.github_client._Github__requester.requestJson(
+                "POST", "/graphql", input={"query": mutation}
+            )
+            if isinstance(resolve_tuple, tuple) and len(resolve_tuple) == 3:
+                resolve_json = json.loads(resolve_tuple[2])
+                errors = resolve_json.get("errors")
+                if errors:
+                    get_logger().error(f"GraphQL errors resolving thread {thread_id}: {errors}")
+                    return False
+                is_resolved = (resolve_json.get("data", {}).get("resolveReviewThread", {})
+                               .get("thread", {}).get("isResolved", False))
+                if not is_resolved:
+                    get_logger().warning(f"Resolve mutation returned isResolved=false for thread {thread_id} — possible permission issue")
+                    return False
+            get_logger().info(f"Resolved review thread {thread_id}")
+            return True
+        except Exception as e:
+            get_logger().error(f"Failed to resolve comment thread: {e}")
+            return False
+
     def _publish_inline_comments_fallback_with_verification(self, comments: list[dict]):
         """
         Check each inline comment separately against the GitHub API and discard of invalid comments,

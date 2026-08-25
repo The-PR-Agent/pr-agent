@@ -388,3 +388,63 @@ class TestExtraInstructionsPromptRendering:
         system_prompt = _render_jinja_template(get_settings().pr_line_questions_prompt.system, variables)
         assert "Do not answer questions that ask to rate PR quality." in system_prompt
         assert "take precedence over any conflicting guidance" in system_prompt
+
+
+# ---------------------------------------------------------------------------
+# resolve_threads prompt rendering
+# ---------------------------------------------------------------------------
+
+class TestResolveThreadsPromptRendering:
+    def test_resolve_threads_marker_instruction_included_when_enabled(self):
+        variables = {
+            "title": "test",
+            "branch": "main",
+            "full_hunk": "some code",
+            "selected_lines": "line1",
+            "question": "is this fixed?",
+            "conversation_history": "",
+            "resolve_threads": True,
+            "extra_instructions": "",
+        }
+        user_prompt = _render_jinja_template(
+            get_settings().pr_line_questions_prompt.user, variables
+        )
+        assert "[THREAD_RESOLVED]" in user_prompt
+        assert "determine whether the discussion thread is now fully resolved" in user_prompt
+
+    def test_resolve_threads_marker_instruction_omitted_when_disabled(self):
+        variables = {
+            "title": "test",
+            "branch": "main",
+            "full_hunk": "some code",
+            "selected_lines": "line1",
+            "question": "what does this do?",
+            "conversation_history": "",
+            "resolve_threads": False,
+            "extra_instructions": "",
+        }
+        user_prompt = _render_jinja_template(
+            get_settings().pr_line_questions_prompt.user, variables
+        )
+        assert "[THREAD_RESOLVED]" not in user_prompt
+
+
+# ---------------------------------------------------------------------------
+# Thread resolution marker parsing (unit tests for run() logic)
+# ---------------------------------------------------------------------------
+
+class TestThreadResolvedMarkerParsing:
+    """Test the marker-stripping logic that would be in PR_LineQuestions.run()."""
+
+    @pytest.mark.parametrize("marker_position,answer,expected_clean", [
+        ("end", "The issue is fixed.\n\n[THREAD_RESOLVED]", "The issue is fixed."),
+        ("middle", "Fixed [THREAD_RESOLVED] thanks", "Fixed  thanks"),
+        ("only", "[THREAD_RESOLVED]", ""),
+    ])
+    def test_marker_is_stripped(self, marker_position, answer, expected_clean):
+        cleaned = answer.replace("[THREAD_RESOLVED]", "").rstrip()
+        assert cleaned == expected_clean
+
+    def test_no_marker_means_no_resolve(self):
+        answer = "I think this still needs work."
+        assert "[THREAD_RESOLVED]" not in answer

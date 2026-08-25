@@ -648,11 +648,14 @@ Allowing you to automate the review process on your private or public repositori
      - Pull requests: Read & write
      - Issue comment: Read & write
      - Metadata: Read-only
-     - Contents: Read-only
+     - Contents: Read-only (or Read & write if using `resolve_threads` — see note below)
    - Set the following events:
      - Issue comment
      - Pull request
      - Push (if you need to enable triggering on PR update)
+     - Pull request review comment (required for `/ask` on review threads)
+
+   > **Note:** If you enable `pr_questions.resolve_threads`, the GitHub App requires **Contents: Read & write** permission. GitHub's `resolveReviewThread` GraphQL mutation is gated behind the Contents permission, even though it only modifies PR thread metadata. See [GitHub community discussion](https://github.com/orgs/community/discussions/204269) for details.
 
 2) Generate a random secret for your app, and save it for later. For example, you can use:
 
