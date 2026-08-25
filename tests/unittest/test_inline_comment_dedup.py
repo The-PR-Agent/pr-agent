@@ -1,6 +1,7 @@
 from unittest.mock import MagicMock, patch
 
 from pr_agent.algo import inline_comment_dedup as d
+from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
 
@@ -28,6 +29,33 @@ def test_body_fingerprint_strips_lead_and_tag():
 def test_body_fingerprint_varies_by_file_and_line():
     assert d.body_fingerprint("f.py", 10, "x") != d.body_fingerprint("g.py", 10, "x")
     assert d.body_fingerprint("f.py", 10, "x") != d.body_fingerprint("f.py", 11, "x")
+
+
+def test_key_issue_fingerprint_uses_path_and_full_body():
+    prefix = "x" * 100
+
+    assert d.key_issue_fingerprint("f.py", f"{prefix}a") != d.key_issue_fingerprint("f.py", f"{prefix}b")
+    assert d.key_issue_fingerprint("f.py", prefix) != d.key_issue_fingerprint("g.py", prefix)
+
+
+def test_key_issue_location_fingerprint_uses_the_full_range():
+    fingerprint = d.key_issue_fingerprint("f.py", "finding")
+
+    assert d.key_issue_location_fingerprint(fingerprint, 1, 2) != d.key_issue_location_fingerprint(
+        fingerprint, 1, 3)
+
+
+def test_key_issue_markers_survive_clipping_and_load_into_the_store():
+    body_fingerprint = d.key_issue_fingerprint("f.py", "x" * 300)
+    location_fingerprint = d.key_issue_location_fingerprint(body_fingerprint, 1, 2)
+    body = d.key_issue_body_with_markers("x" * 300, body_fingerprint, location_fingerprint, 200)
+    store = d.InlineCommentStore(_gh_provider([]))
+
+    store.add_body(body)
+
+    assert len(body) == 200
+    assert store.seen(body_fingerprint)
+    assert store.seen(location_fingerprint)
 
 
 def test_code_fingerprint_none_without_block():
@@ -89,7 +117,8 @@ def test_store_load_failure_degrades_to_empty():
     prov = _gh_provider([])
     prov.pr.get_comments.side_effect = RuntimeError("api down")
     store = d.InlineCommentStore(prov)
-    assert store.load() == set()  # must not raise
+    assert store.load() == set()
+    assert store.load_failed is True
 
 
 def test_iter_unsupported_provider_raises():
@@ -97,9 +126,30 @@ def test_iter_unsupported_provider_raises():
         pass
     try:
         list(d.iter_existing_inline_comment_bodies(FooProvider()))
-        assert False, "expected NotImplementedError"
+        raise AssertionError("expected NotImplementedError")
     except NotImplementedError:
         pass
+
+
+def _azure_provider(existing_threads=None):
+    provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+    provider.azure_devops_client = MagicMock()
+    provider.azure_devops_client.get_threads.return_value = existing_threads or []
+    provider.repo_slug = "repo"
+    provider.workspace_slug = "project"
+    provider.pr_num = 1
+    return provider
+
+
+def test_inline_publication_verification_is_limited_to_azure_devops():
+    assert d.can_verify_inline_comment_publication(_azure_provider()) is True
+    assert d.can_verify_inline_comment_publication(_gh_provider([])) is False
+    assert d.can_verify_inline_comment_publication(_gl_provider([])) is False
+
+    class FooProvider:
+        pass
+
+    assert d.can_verify_inline_comment_publication(FooProvider()) is False
 
 
 # --------------------------------------------------------------------------- #

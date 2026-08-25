@@ -170,6 +170,30 @@ class TestLiteLLMReasoningEffort:
             mock_logger.info.assert_any_call("Using reasoning_effort='xhigh' for GPT-5 model")
 
     @pytest.mark.asyncio
+    async def test_gpt5_valid_reasoning_effort_max(self, monkeypatch, mock_logger):
+        """Test GPT-5 with valid reasoning_effort='max' from config."""
+        fake_settings = create_mock_settings("max")
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
+
+        with patch(
+            'pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion',
+            new_callable=AsyncMock,
+        ) as mock_completion:
+            mock_completion.return_value = create_mock_acompletion_response()
+
+            handler = LiteLLMAIHandler()
+            await handler.chat_completion(
+                model="gpt-5.6",
+                system="test system",
+                user="test user"
+            )
+
+            call_kwargs = mock_completion.call_args[1]
+            assert call_kwargs["reasoning_effort"] == "max"
+            assert "reasoning_effort" in call_kwargs["allowed_openai_params"]
+            mock_logger.info.assert_any_call("Using reasoning_effort='max' for GPT-5 model")
+
+    @pytest.mark.asyncio
     async def test_gpt5_valid_reasoning_effort_minimal(self, monkeypatch, mock_logger):
         """Test GPT-5 with valid reasoning_effort='minimal' from config."""
         fake_settings = create_mock_settings("minimal")

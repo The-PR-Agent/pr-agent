@@ -6,6 +6,7 @@ import yaml
 from yaml.scanner import ScannerError
 
 from pr_agent.algo.utils import load_yaml
+from pr_agent.log import get_logger
 
 
 class TestLoadYaml:
@@ -47,3 +48,56 @@ PR Feedback:
 
         expected_output = [{'relevant file': 'src/app.py:\n', 'suggestion content': 'The print statement is outside inside the if __name__ ==:'}]
         assert load_yaml(yaml_str) == expected_output
+
+    def test_load_yaml_with_illegal_control_character(self):
+        # A stray C0 control character (e.g. BACKSPACE, 0x08) can end up in an LLM response - commonly when an
+        # upstream diff-pruning step truncates the prompt mid multi-byte character. PyYAML's reader rejects such
+        # characters outright with a ReaderError, even though the rest of the document is well-formed YAML.
+        yaml_str = 'name: John\x08 Smith\nage: 35'
+        expected_output = {'name': 'John Smith', 'age': 35}
+        with pytest.raises(yaml.reader.ReaderError):
+            yaml.safe_load(yaml_str)
+        assert load_yaml(yaml_str) == expected_output
+
+    def test_load_yaml_with_illegal_control_character_and_broken_structure(self):
+        # Same as above, but combined with a structural issue that requires the try_fix_yaml fallbacks to run,
+        # to make sure the sanitized text is what actually reaches those fallbacks.
+        yaml_str = 'relevant line: value\x08: 3\n'
+        expected_output = {'relevant line': 'value: 3'}
+        assert load_yaml(yaml_str) == expected_output
+
+    def test_load_yaml_does_not_strip_mojibake_repair_range(self):
+        # Text that was correctly produced as UTF-8 but got wrongly decoded as latin-1 somewhere upstream turns
+        # into "mojibake": multi-byte characters (e.g. Chinese) get split into several bytes that mostly land in
+        # the \x7f-\x9f C1 control range. The ninth fallback in try_fix_yaml repairs this by re-encoding as
+        # latin-1 and decoding as utf-8. If load_yaml's control-character sanitizer strips \x7f-\x9f, it deletes
+        # the very bytes that fallback needs, so this must keep working after the illegal-character fix.
+        original = {'suggestion content': '修复空指针异常'}
+        mojibake = yaml.safe_dump(original, allow_unicode=True).encode('utf-8').decode('latin-1')
+        assert load_yaml(mojibake) == original
+
+    def test_load_yaml_sanitized_to_empty_does_not_return_none_silently(self):
+        # When the input consists entirely of illegal control characters, sanitize_yaml_control_chars()
+        # strips them all and yaml.safe_load('') returns None without raising — which would skip all
+        # fallback/logging and return None to callers that assume a dict. The fix raises ValueError to
+        # route through the existing failure path, so at minimum a parse-failure log is emitted.
+        captured = []
+        sink_id = get_logger().add(lambda msg: captured.append(msg), level="WARNING")
+        try:
+            result = load_yaml('\x08\x08\x08')
+            assert result is None
+            assert any("Initial failure to parse AI prediction" in m for m in captured)
+        finally:
+            get_logger().remove(sink_id)
+
+    def test_load_yaml_genuinely_empty_input_unaffected(self):
+        # Genuinely empty/whitespace input should not trigger the new pre-sanitization emptiness
+        # check — it must behave exactly as before, producing no extra warnings.
+        captured = []
+        sink_id = get_logger().add(lambda msg: captured.append(msg), level="WARNING")
+        try:
+            result = load_yaml('')
+            assert result is None
+            assert not any("Preprocessing/sanitization removed all content" in m for m in captured)
+        finally:
+            get_logger().remove(sink_id)

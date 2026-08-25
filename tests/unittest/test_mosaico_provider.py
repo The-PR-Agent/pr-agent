@@ -159,7 +159,7 @@ def mosaico_input():
 # ---------------------------------------------------------------------------
 
 _INCREMENTAL_ONLY_METHODS = (
-    "get_incremental_commits", "unreviewed_files_set", "previous_review", "auto_approve",
+    "get_incremental_commits", "unreviewed_files_map", "previous_review", "auto_approve",
 )
 
 

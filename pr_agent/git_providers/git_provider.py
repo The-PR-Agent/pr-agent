@@ -119,6 +119,13 @@ class GitProvider(ABC):
     def is_supported(self, capability: str) -> bool:
         pass
 
+    def supports_incremental_kind(self, kind: str) -> bool:
+        """Whether `get_incremental_commits()` can scope an incremental run to `kind`
+        (e.g. "suggestions" for `/improve -i`). Providers implementing kind-aware
+        incremental anchoring override this; the default is no support, so tools
+        fall back to a full run."""
+        return False
+
     #Given a url (issues or PR/MR) - get the .git repo url to which they belong. Needs to be implemented by the provider.
     def get_git_repo_url(self, issues_or_pr_url: str) -> str:
         get_logger().warning("Not implemented! Returning empty url")

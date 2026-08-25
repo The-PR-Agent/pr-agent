@@ -88,6 +88,7 @@ jobs:
 #### 2. CLI Usage (Local Development)
 
 Run PR-Agent locally on your repository:
+
 ```bash
 pip install pr-agent
 export OPENAI_KEY=your_key_here

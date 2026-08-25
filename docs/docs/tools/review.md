@@ -32,7 +32,7 @@ If you want to edit [configurations](#configuration-options), add the relevant o
 
 ### Automatic triggering
 
-To run the `review` automatically when a PR is opened, define in a [configuration file](../usage-guide/configuration_options.md#wiki-configuration-file):
+To run the `review` automatically when a PR is opened, define in a [configuration file](../usage-guide/configuration_options.md#local-configuration-file):
 
 ```
 [github_app]
@@ -77,6 +77,10 @@ extra_instructions = "..."
       <tr>
         <td><b>num_max_findings</b></td>
         <td>Number of maximum returned findings. Default is 3.</td>
+      </tr>
+      <tr>
+        <td><b>inline_key_issues</b></td>
+        <td>Azure DevOps only. If set to true, each key issue is published as an inline thread. A finding leaves the review summary when a matching thread exists or Azure accepts the new thread. Findings that cannot be anchored or published stay in the summary. Default is false.</td>
       </tr>
     </table>
 

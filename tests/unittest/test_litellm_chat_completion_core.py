@@ -34,9 +34,15 @@ class FakeSettings:
         return self._settings_values.get(key, default)
 
 
-def _mock_response():
+def _mock_response(usage=None):
     mock = MagicMock()
     response = {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+    if usage is not None:
+        response["usage"] = usage
+        # run_details reads the litellm attribute, not the dict form
+        mock.usage = usage
+    else:
+        mock.usage = None
     mock.__getitem__.side_effect = response.__getitem__
     mock.dict.return_value = response
     return mock
@@ -80,6 +86,25 @@ async def test_chat_completion_scopes_model_id_to_classic_bedrock(monkeypatch, m
         assert "model_id" not in mock_call.call_args.kwargs
     else:
         assert mock_call.call_args.kwargs["model_id"] == expected_model_id
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_accumulates_usage_into_run_details(monkeypatch):
+    from pr_agent.algo.run_details import init_run_details
+
+    monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+    usage = {"prompt_tokens": 101, "completion_tokens": 23, "total_tokens": 124}
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response(usage)
+        handler = litellm_handler.LiteLLMAIHandler()
+
+        details = init_run_details()
+        await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
+
+    assert details.prompt_tokens == 101
+    assert details.completion_tokens == 23
+    assert details.total_tokens == 124
 
 
 @pytest.mark.asyncio

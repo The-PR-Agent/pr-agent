@@ -69,6 +69,10 @@ class LiteLLMAIHandler(BaseAiHandler):
             # provider env vars (OPENROUTER_API_KEY, AZURE_API_KEY, ...) in LiteLLM's
             # resolution chain, so a placeholder there silently shadows them.
             litellm.openai_key = DUMMY_LITELLM_API_KEY
+        # Custom Bedrock endpoint (e.g. a VPC endpoint interface endpoint); litellm reads this
+        # directly from the environment regardless of the credentials model below
+        if not os.environ.get("AWS_BEDROCK_RUNTIME_ENDPOINT") and get_settings().get("aws.AWS_BEDROCK_RUNTIME_ENDPOINT"):
+            os.environ["AWS_BEDROCK_RUNTIME_ENDPOINT"] = get_settings().aws.AWS_BEDROCK_RUNTIME_ENDPOINT
         if os.environ.get("AWS_USE_IMDS", "").strip().lower() in ("1", "true", "yes"):
             import boto3
             import botocore.exceptions
@@ -399,26 +403,33 @@ class LiteLLMAIHandler(BaseAiHandler):
         return kwargs
 
     def add_litellm_callbacks(self, kwargs) -> dict:
+        probe = object()
         captured_extra = []
 
         def capture_logs(message):
             # Parsing the log message and context
             record = message.record
+            extra = record.get("extra") or {}
+            if extra.get("litellm_callbacks_probe") is not probe:
+                return
             log_entry = {}
-            if record.get('extra', None).get('command', None) is not None:
-                log_entry.update({"command": record['extra']["command"]})
-            if record.get('extra', {}).get('pr_url', None) is not None:
-                log_entry.update({"pr_url": record['extra']["pr_url"]})
+            if extra.get("command") is not None:
+                log_entry.update({"command": extra["command"]})
+            if extra.get("pr_url") is not None:
+                log_entry.update({"pr_url": extra["pr_url"]})
 
             # Append the log entry to the captured_logs list
             captured_extra.append(log_entry)
 
         # Adding the custom sink to Loguru
         handler_id = get_logger().add(capture_logs)
-        get_logger().debug("Capturing logs for litellm callbacks")
-        get_logger().remove(handler_id)
+        try:
+            get_logger().debug("Capturing logs for litellm callbacks",
+                               litellm_callbacks_probe=probe)
+        finally:
+            get_logger().remove(handler_id)
 
-        context = captured_extra[0] if len(captured_extra) > 0 else None
+        context = captured_extra[0] if len(captured_extra) > 0 else {}
 
         command = context.get("command", "unknown")
         pr_url = context.get("pr_url", "unknown")
@@ -682,6 +693,17 @@ class LiteLLMAIHandler(BaseAiHandler):
                 # https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking
                 if (model in self.claude_extended_thinking_models) and get_settings().config.get("enable_claude_extended_thinking", False):
                     kwargs = self._configure_claude_extended_thinking(model, kwargs)
+
+                # Optional output token limit; 0 = unset. Without max_tokens some
+                # providers apply a low service-side default (Bedrock Converse: 4096,
+                # which reasoning can fully consume, returning empty content).
+                # setdefault keeps the extended-thinking limit authoritative.
+                try:
+                    max_output_tokens = int(get_settings().config.get("max_output_tokens", 0))
+                except (TypeError, ValueError):
+                    max_output_tokens = 0
+                if max_output_tokens > 0:
+                    kwargs.setdefault("max_tokens", max_output_tokens)
 
                 if get_settings().litellm.get("enable_callbacks", False):
                     kwargs = self.add_litellm_callbacks(kwargs)

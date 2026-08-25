@@ -1,12 +1,11 @@
 The different tools and sub-tools used by PR-Agent are adjustable via a Git configuration file.
-There are four main ways to set persistent configurations:
+There are three main ways to set persistent configurations:
 
-1. [Wiki](./configuration_options.md#wiki-configuration-file) configuration page
-2. [Local](./configuration_options.md#local-configuration-file) configuration file
-3. [Global](./configuration_options.md#global-configuration-file) configuration file
-4. [External configuration URL](./configuration_options.md#external-configuration-url) (CLI flag)
+1. [Local](./configuration_options.md#local-configuration-file) configuration file
+2. [Global](./configuration_options.md#global-configuration-file) configuration file
+3. [External configuration URL](./configuration_options.md#external-configuration-url) (CLI flag)
 
-In terms of precedence, wiki configurations will override local configurations, local configurations will override global configurations, and global configurations will override an external configuration URL.
+In terms of precedence, local configurations will override global configurations, and global configurations will override an external configuration URL.
 
 
 For a list of all possible configurations, see the [configuration options](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) page.
@@ -18,25 +17,6 @@ In addition to general configuration options, each tool has its own configuratio
     If you set `config.output_relevant_configurations` to True, each tool will also output in a collapsible section its relevant configurations. This can be useful for debugging, or getting to know the configurations better.
 
 
-
-## Wiki configuration file
-
-`Platforms supported: GitHub, GitLab, Bitbucket`
-
-With PR-Agent, you can set configurations by creating a page called `.pr_agent.toml` in the [wiki](https://github.com/the-pr-agent/pr-agent/wiki/pr_agent.toml) of the repo.
-The advantage of this method is that it allows to set configurations without needing to commit new content to the repo - just edit the wiki page and **save**.
-
-![wiki_configuration](https://codium.ai/images/pr_agent/wiki_configuration.png){width=512}
-
-Click [here](https://codium.ai/images/pr_agent/wiki_configuration_pr_agent.mp4) to see a short instructional video. We recommend surrounding the configuration content with triple-quotes (or \`\`\`toml), to allow better presentation when displayed in the wiki as markdown.
-An example content:
-
-```toml
-[pr_description]
-generate_ai_title=true
-```
-
-PR-Agent will know to remove the surrounding quotes when reading the configuration content.
 
 ## Local configuration file
 
@@ -192,8 +172,7 @@ built-in defaults
   < --extra_config_url
     < global pr-agent-settings
       < local .pr_agent.toml (repo default branch)
-        < wiki .pr_agent.toml
-          < environment variables (PR_AGENT__SECTION__KEY)
+        < environment variables (PR_AGENT__SECTION__KEY)
 ```
 
 This means an external URL acts as an organization-wide *default* that any team can still override with their own `pr-agent-settings` or repo-local `.pr_agent.toml`.
