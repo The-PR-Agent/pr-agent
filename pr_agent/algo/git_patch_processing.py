@@ -374,8 +374,7 @@ __old hunk__
                 old_content_lines = []
             if match:
                 prev_header_line = header_line
-
-            section_header, size1, size2, start1, start2 = extract_hunk_headers(match)
+                section_header, size1, size2, start1, start2 = extract_hunk_headers(match)
 
         elif line.startswith('+'):
             new_content_lines.append(line)

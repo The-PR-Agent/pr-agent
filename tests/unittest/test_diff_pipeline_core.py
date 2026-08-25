@@ -141,6 +141,26 @@ class TestDecoupleAndConvertToHunks:
         assert "1 +brand new line 1" in out
         assert "2 +brand new line 2" in out
 
+    def test_unrecognised_at_line_is_skipped_without_crashing(self):
+        # A line starting with "@@" that is not a valid unified hunk header
+        # (e.g. a combined "@@@ ... @@@" diff line) must not crash parsing, and
+        # the following valid hunk must still be emitted.
+        patch = (
+            "@@@ -1,2 -1,2 +1,2 @@@\n"
+            "- a\n"
+            " +b\n"
+            "@@ -1,2 +1,2 @@\n"
+            " context\n"
+            "-old\n"
+            "+new\n"
+        )
+        file = _make_file(patch=patch)
+        out = decouple_and_convert_to_hunks_with_lines_numbers(patch, file)
+
+        assert "@@ -1,2 +1,2 @@" in out
+        assert "__new hunk__" in out
+        assert "+new" in out
+
     def test_no_file_arg_omits_file_header(self):
         out = decouple_and_convert_to_hunks_with_lines_numbers(MULTI_HUNK_PATCH, file=None)
         assert "## File:" not in out
