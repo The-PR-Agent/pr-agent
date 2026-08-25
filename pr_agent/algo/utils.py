@@ -887,7 +887,7 @@ def try_fix_yaml(response_text: str,
         pass
 
     # second fallback - try to extract only range from first ```yaml to the last ```
-    snippet_pattern = r'```[ \t]*(?:yaml|yml)?[ \t]*(?:\r?\n|$)([\s\S]*?)```(?=\s*$|")'
+    snippet_pattern = r'```[ \t]*(?:(?:yaml|yml)[ \t]*)?\r?\n([\s\S]*?)```(?=\s*$|")'
     snippet = re.search(snippet_pattern, '\n'.join(response_text_lines_copy))
     if not snippet:
         snippet = re.search(snippet_pattern, response_text_original) # before we removed the "```"
