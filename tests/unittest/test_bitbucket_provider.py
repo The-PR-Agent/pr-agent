@@ -180,6 +180,33 @@ class TestBitbucketServerProvider:
         assert content == "repo context"
         provider.get_file.assert_called_once_with("AGENTS.md", "main")
 
+    def test_get_repo_file_content_treats_404_as_missing(self):
+        provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
+        provider.workspace_slug = "AAA"
+        provider.repo_slug = "my-repo"
+        provider.pr = MagicMock(toRef={"latestCommit": "base-sha"})
+        provider.bitbucket_client = MagicMock()
+        response = MagicMock(status_code=404)
+        error = HTTPError("404 Not Found")
+        error.response = response
+        provider.bitbucket_client.get_content_of_file.side_effect = error
+
+        assert provider.get_repo_file_content("AGENTS.md") == ""
+
+    def test_get_repo_file_content_propagates_non_404_errors(self):
+        provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
+        provider.workspace_slug = "AAA"
+        provider.repo_slug = "my-repo"
+        provider.pr = MagicMock(toRef={"latestCommit": "base-sha"})
+        provider.bitbucket_client = MagicMock()
+        response = MagicMock(status_code=500)
+        error = HTTPError("500 Internal Server Error")
+        error.response = response
+        provider.bitbucket_client.get_content_of_file.side_effect = error
+
+        with pytest.raises(HTTPError, match="500 Internal Server Error"):
+            provider.get_repo_file_content("AGENTS.md")
+
     def _make_provider_for_repo_settings(self, get_content_side_effect):
         # Bypass __init__ (which performs live API calls) and only wire up the
         # attributes get_repo_settings() relies on.
@@ -224,6 +251,48 @@ class TestBitbucketServerProvider:
         assert result == ""
         logger.error.assert_not_called()
         logger.info.assert_not_called()
+
+    def test_get_diff_files_preserves_bitbucket_server_move_semantics(self):
+        bitbucket_client = MagicMock(Bitbucket)
+        bitbucket_client.get_pull_request.return_value = {
+            'toRef': {'latestCommit': 'base-sha'},
+            'fromRef': {'latestCommit': 'head-sha'},
+        }
+        bitbucket_client.get_pull_requests_commits.return_value = [
+            {'id': 'head-sha', 'parents': [{'id': 'base-sha'}]},
+        ]
+        bitbucket_client.get_pull_requests_changes.return_value = [
+            {
+                'path': {'toString': 'new.py'},
+                'srcPath': {'toString': 'old.py'},
+                'type': 'MOVE',
+            },
+        ]
+
+        def get_content_of_file(project_key, repository_slug, path, at=None, markup=None):
+            contents = {
+                ('old.py', 'base-sha'): 'old content\n',
+                ('new.py', 'head-sha'): 'new content\n',
+            }
+            return contents.get((path, at), '')
+
+        bitbucket_client.get_content_of_file.side_effect = get_content_of_file
+
+        provider = BitbucketServerProvider(
+            "https://git.onpreminstance.com/projects/AAA/repos/my-repo/pull-requests/1",
+            bitbucket_client=bitbucket_client,
+        )
+
+        actual = provider.get_diff_files()
+
+        assert len(actual) == 1
+        assert actual[0].base_file == 'old content\n'
+        assert actual[0].head_file == 'new content\n'
+        assert actual[0].filename == 'new.py'
+        assert actual[0].old_filename == 'old.py'
+        assert actual[0].edit_type == EDIT_TYPE.RENAMED
+        assert '-old content' in actual[0].patch
+        assert '+new content' in actual[0].patch
 
     def mock_get_content_of_file(self, project_key, repository_slug, filename, at=None, markup=None):
         content_map = {

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import os
+import re
 from typing import Optional, Tuple
 from urllib.parse import quote, unquote, urlparse
 
@@ -19,6 +20,17 @@ from .git_provider import GitProvider, IncrementalPR
 AZURE_DEVOPS_AVAILABLE = True
 ADO_APP_CLIENT_DEFAULT_ID = "499b84ac-1321-427f-aa17-267ca6975798/.default"
 MAX_PR_DESCRIPTION_AZURE_LENGTH = 4000-1
+
+
+def _is_not_found_error(error: Exception) -> bool:
+    status_code = getattr(error, "status_code", None)
+    if status_code is None:
+        response = getattr(error, "response", None)
+        status_code = getattr(response, "status_code", None)
+    if status_code is not None:
+        return status_code == 404
+    return re.search(r"\b404\b", str(error)) is not None
+
 
 try:
     # noinspection PyUnresolvedReferences
@@ -57,6 +69,25 @@ class _AzureCommitAdapter:
         self.commit_id = raw.commit_id
         self.commit = _AzureCommitInner(raw)
         self.parents = list(getattr(raw, "parents", None) or [])
+
+
+def _get_azure_change_path(change):
+    try:
+        item = change["item"]
+    except (KeyError, TypeError):
+        item = getattr(change, "item", None)
+        if item is None:
+            additional = getattr(change, "additional_properties", None) or {}
+            item = additional.get("item") or {}
+
+    if isinstance(item, dict):
+        if item.get("gitObjectType", item.get("git_object_type")) == "tree":
+            return None
+        return item.get("path")
+
+    if getattr(item, "git_object_type", getattr(item, "gitObjectType", None)) == "tree":
+        return None
+    return getattr(item, "path", None)
 
 
 class AzureDevopsProvider(GitProvider):
@@ -361,14 +392,7 @@ class AzureDevopsProvider(GitProvider):
                 get_logger().warning(f"Failed to fetch changes for {commit.commit_id}: {e}")
                 continue
             for change in (getattr(changes_obj, "changes", None) or []):
-                try:
-                    item = change["item"]
-                except (KeyError, TypeError):
-                    additional = getattr(change, "additional_properties", None) or {}
-                    item = additional.get("item") or {}
-                if not isinstance(item, dict) or item.get("gitObjectType") == "tree":
-                    continue
-                path = item.get("path")
+                path = _get_azure_change_path(change)
                 if path:
                     candidate_paths.append(path)
 
@@ -498,7 +522,9 @@ class AzureDevopsProvider(GitProvider):
         except Exception as e:
             if get_settings().config.verbosity_level >= 2:
                 get_logger().warning(f"Failed to load repo file: {file_path}, error: {e}")
-            return ""
+            if _is_not_found_error(e):
+                return ""
+            raise
 
     def get_files(self):
         if (isinstance(getattr(self, "incremental", None), IncrementalPR)
@@ -520,8 +546,10 @@ class AzureDevopsProvider(GitProvider):
                 commit_id=i.commit_id,
             )
 
-            for c in changes_obj.changes:
-                files.append(c["item"]["path"])
+            for c in (changes_obj.changes or []):
+                path = _get_azure_change_path(c)
+                if path:
+                    files.append(path)
         return list(set(files))
 
     def get_diff_files(self) -> list[FilePatchInfo]:

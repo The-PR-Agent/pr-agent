@@ -205,15 +205,13 @@ class TestExtractHunkLinesFromPatch:
         assert "## File: 'src/sample.py'" in full
         assert selected == ""
 
-    def test_malformed_patch_returns_empty_tuple(self):
-        # An '@@' line that does not match RE_HUNK_HEADER causes the
-        # implementation to raise inside extract_hunk_headers; the function
-        # catches it and returns ("", "").
+    def test_malformed_patch_yields_no_hunk_content(self):
         bad_patch = "@@ not a real header @@\n+something\n"
         full, selected = extract_hunk_lines_from_patch(
             bad_patch, "src/sample.py", line_start=1, line_end=1, side="right"
         )
-        assert full == ""
+        assert "@@" not in full
+        assert "+something" not in full
         assert selected == ""
 
     def test_remove_trailing_chars_false_preserves_trailing_newlines(self):

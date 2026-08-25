@@ -1,4 +1,5 @@
 import datetime as _dt
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from pr_agent.git_providers import AzureDevopsProvider
@@ -130,6 +131,31 @@ class TestGetIncrementalCommits:
         assert "/bar.py" in provider.unreviewed_files_map
         assert "/somedir" not in provider.unreviewed_files_map
         assert prev.html_url == provider.get_comment_url(prev)
+
+    def test_populates_files_from_sdk_change_objects(self):
+        provider = self._make_provider()
+
+        review_time = _dt.datetime(2024, 6, 1, 10, 0, tzinfo=_dt.timezone.utc)
+        old = _raw_commit(
+            "old1", "first", _dt.datetime(2024, 5, 1, tzinfo=_dt.timezone.utc), parents=["p0"],
+        )
+        new = _raw_commit(
+            "new1", "second", _dt.datetime(2024, 6, 2, tzinfo=_dt.timezone.utc), parents=["old1"],
+        )
+        provider.azure_devops_client.get_pull_request_commits = MagicMock(return_value=[new, old])
+        provider.get_issue_comments = MagicMock(
+            return_value=[_comment("## PR Reviewer Guide\nbody", review_time)]
+        )
+
+        changes_obj = MagicMock()
+        changes_obj.changes = [
+            SimpleNamespace(item=SimpleNamespace(path="/src/sdk.py")),
+        ]
+        provider.azure_devops_client.get_changes = MagicMock(return_value=changes_obj)
+
+        provider.get_incremental_commits(IncrementalPR(True))
+
+        assert "/src/sdk.py" in provider.unreviewed_files_map
 
     def test_skips_merge_commits(self):
         provider = self._make_provider()

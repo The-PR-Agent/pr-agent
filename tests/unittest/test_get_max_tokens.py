@@ -186,6 +186,18 @@ class TestGetMaxTokens:
         monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
         assert get_max_tokens(model) == 1048576
 
+    def test_bedrock_mantle_grok_4_3_model_max_tokens(self, monkeypatch):
+        fake_settings = type("", (), {
+            "config": type("", (), {
+                "custom_model_max_tokens": 0,
+                "max_model_tokens": 0,
+            })()
+        })()
+
+        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+
+        assert get_max_tokens("bedrock_mantle/xai.grok-4.3") == 1000000
+
     @pytest.mark.parametrize(
         "model",
         [

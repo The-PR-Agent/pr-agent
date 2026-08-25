@@ -199,6 +199,7 @@ def convert_to_markdown_v2(output_data: dict,
                     value_int = int(value.split(',')[0])
                 except ValueError:
                     continue
+            value_int = max(1, min(5, value_int))
             blue_bars = '🔵' * value_int
             white_bars = '⚪' * (5 - value_int)
             value = f"{value_int} {blue_bars}{white_bars}"

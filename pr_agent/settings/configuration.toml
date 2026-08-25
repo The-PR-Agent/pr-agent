@@ -373,7 +373,9 @@ success_callback = []
 failure_callback = []
 service_callback = []
 callback_timeout_seconds = 30 # max seconds to wait for pending litellm callbacks to flush before exiting
-# model_id = "" # Optional: Custom inference profile ID for Amazon Bedrock
+# Application inference profile ARN for classic `bedrock/` calls through the `bedrock-runtime` APIs.
+# Not used by `bedrock_mantle/`, which uses Projects for cost allocation.
+# model_id = ""
 cache_control_injection_points = [] # Optional: enable Anthropic prompt caching via LiteLLM, e.g. [{location = "message", role = "system"}] (https://docs.litellm.ai/docs/tutorials/prompt_caching)
 
 [openrouter]

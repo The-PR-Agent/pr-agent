@@ -130,11 +130,21 @@ class TestGitLabProvider:
     def test_get_repo_file_content_treats_missing_file_as_empty(self, gitlab_provider, mock_project):
         mock_project.default_branch = "main"
         gitlab_provider.mr = MagicMock(target_branch="main")
-        mock_project.files.get.side_effect = GitlabGetError("404 Not Found")
+        mock_project.files.get.side_effect = GitlabGetError("404 Not Found", response_code=404)
 
         content = gitlab_provider.get_repo_file_content("AGENTS.md")
 
         assert content == ""
+
+    def test_get_repo_file_content_propagates_non_404_errors(self, gitlab_provider, mock_project):
+        mock_project.default_branch = "main"
+        gitlab_provider.mr = MagicMock(target_branch="main")
+        mock_project.files.get.side_effect = GitlabGetError(
+            "500 Server Error", response_code=500, response_body=b"upstream failure"
+        )
+
+        with pytest.raises(GitlabGetError, match="500 Server Error"):
+            gitlab_provider.get_repo_file_content("AGENTS.md")
 
     def test_create_or_update_pr_file_create_new(self, gitlab_provider, mock_project):
         mock_project.files.get.side_effect = GitlabGetError("404 Not Found")

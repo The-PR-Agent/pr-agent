@@ -18,7 +18,7 @@ from pr_agent.algo.inline_comment_dedup import (
 )
 from pr_agent.algo.pr_processing import add_ai_metadata_to_diff_files, get_pr_diff, retry_with_fallback_models
 from pr_agent.algo.repo_context import build_repo_context
-from pr_agent.algo.run_details import init_run_details
+from pr_agent.algo.run_details import get_run_details, init_run_details
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (
@@ -291,6 +291,24 @@ class PRReviewer:
         if 'review' not in data:
             get_logger().exception("Failed to parse review data", artifact={"data": data})
             return ""
+
+        structured_publisher = getattr(self.git_provider, "publish_structured_review", None)
+        if callable(structured_publisher):
+            # Deep-copy the data: dict(data) is shallow, so structured_data["review"]
+            # would alias data["review"], which is mutated right below (key reordering).
+            # Hand implementers an isolated snapshot, since the hook is provider-neutral
+            # and a provider that defers serialization would observe the mutation.
+            structured_data = copy.deepcopy(data)
+            details = get_run_details()
+            usage = {}
+            if details is not None and details.has_token_usage:
+                usage = {
+                    "prompt_tokens": details.prompt_tokens,
+                    "completion_tokens": details.completion_tokens,
+                    "total_tokens": details.total_tokens,
+                }
+            structured_data["usage"] = usage
+            structured_publisher(structured_data)
 
         # move data['review'] 'key_issues_to_review' key to the end of the dictionary
         if 'key_issues_to_review' in data['review']:
@@ -602,7 +620,7 @@ class PRReviewer:
                 review_labels = []
                 if get_settings().pr_reviewer.enable_review_labels_effort:
                     estimated_effort = data['review']['estimated_effort_to_review_[1-5]']
-                    estimated_effort_number = 0
+                    estimated_effort_number = None
                     if isinstance(estimated_effort, str):
                         try:
                             estimated_effort_number = int(estimated_effort.split(',')[0])
@@ -612,7 +630,8 @@ class PRReviewer:
                         estimated_effort_number = estimated_effort
                     else:
                         get_logger().warning(f"Unexpected type for estimated_effort: {type(estimated_effort)}")
-                    if 1 <= estimated_effort_number <= 5:  # 1, because ...
+                    if estimated_effort_number is not None:
+                        estimated_effort_number = max(1, min(5, int(estimated_effort_number)))
                         review_labels.append(f'Review effort {estimated_effort_number}/5')
                 if get_settings().pr_reviewer.enable_review_labels_security and get_settings().pr_reviewer.require_security_review:
                     security_concerns = data['review']['security_concerns']  # yes, because ...

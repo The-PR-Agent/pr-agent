@@ -268,6 +268,17 @@ model="bedrock/us.meta.llama4-scout-17b-instruct-v1:0"
 fallback_models=["bedrock/us.meta.llama4-maverick-17b-instruct-v1:0"]
 ```
 
+Grok 4.3 is available through Amazon Bedrock Mantle rather than the classic Bedrock runtime:
+
+```toml
+[config] # in configuration.toml
+model="bedrock_mantle/xai.grok-4.3"
+fallback_models=["bedrock_mantle/xai.grok-4.3"]
+```
+
+Bedrock Mantle uses the same AWS credential sources, but its IAM permissions differ from the classic runtime. See
+the [AWS Mantle inference permissions](https://docs.aws.amazon.com/bedrock/latest/userguide/inference.html).
+
 #### Using IAM Role Credentials (Recommended on AWS Compute)
 
 When running PR-Agent on AWS infrastructure (EC2, ECS/Fargate, EKS with IRSA, Lambda, or any self-hosted GitHub Actions runner on AWS), the instance or task already has an IAM role attached. You can use those ambient credentials directly instead of storing long-lived static keys.
@@ -307,7 +318,7 @@ If you also configure static keys in `[aws]`, they serve as an automatic fallbac
 
 #### Custom Inference Profiles
 
-To use a custom inference profile with Amazon Bedrock (for cost allocation tags and other configuration settings), add the `model_id` parameter to your configuration:
+To invoke an [application inference profile](https://docs.aws.amazon.com/bedrock/latest/userguide/cost-mgmt-application-inference-profiles.html) with a classic `bedrock/` model (for cost allocation tags and other configuration settings), set `model_id` to the profile ARN in your configuration:
 
 ```toml
 [config] # in configuration.toml
@@ -320,10 +331,10 @@ AWS_SECRET_ACCESS_KEY="..."
 AWS_REGION_NAME="..."
 
 [litellm]
-model_id = "your-custom-inference-profile-id"
+model_id = "your-application-inference-profile-arn"
 ```
 
-The `model_id` parameter will be passed to all Bedrock completion calls, allowing you to use custom inference profiles for better cost allocation and reporting.
+The `litellm.model_id` parameter applies only to classic `bedrock/` calls made through the `bedrock-runtime` APIs. It does not apply to `bedrock_mantle/`; for cost allocation with the Mantle Chat Completions and Responses APIs, use [Amazon Bedrock Projects](https://docs.aws.amazon.com/bedrock/latest/userguide/cost-mgmt-projects.html).
 
 #### Using a Custom VPC Endpoint (PrivateLink)
 

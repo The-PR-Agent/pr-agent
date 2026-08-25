@@ -53,12 +53,13 @@ def _base_settings(extra_get=None):
     })()
 
 
-def _mock_acompletion_response():
+def _mock_acompletion_response(usage=None):
     mock = MagicMock()
-    mock.__getitem__ = lambda self, key: {
-        "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]
-    }[key]
-    mock.dict.return_value = {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+    response = {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+    if usage is not None:
+        response["usage"] = usage
+    mock.__getitem__ = lambda self, key: response[key]
+    mock.dict.return_value = response
     return mock
 
 
@@ -400,9 +401,16 @@ class TestImdsInit:
 
 class TestImdsCallBehavior:
 
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0",
+            "bedrock_mantle/xai.grok-4.3",
+        ],
+    )
     @pytest.mark.asyncio
-    async def test_refresh_called_before_bedrock_call(self, monkeypatch):
-        """_refresh_aws_imds_credentials is called before each Bedrock chat_completion."""
+    async def test_refresh_called_before_bedrock_call(self, monkeypatch, model):
+        """_refresh_aws_imds_credentials is called before each Bedrock provider call."""
         monkeypatch.setenv("AWS_USE_IMDS", "true")
         frozen = _frozen_creds()
         mock_session = MagicMock()
@@ -417,11 +425,12 @@ class TestImdsCallBehavior:
                    new_callable=AsyncMock) as mock_call:
             mock_call.return_value = _mock_acompletion_response()
             await handler.chat_completion(
-                model="bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0",
+                model=model,
                 system="sys", user="usr"
             )
 
         mock_refresh.assert_called_once()
+        assert mock_call.await_args.kwargs["model"] == model
 
     def test_refresh_uses_stored_creds_not_new_session(self, monkeypatch):
         """_refresh_aws_imds_credentials must call get_frozen_credentials on the stored object,
@@ -570,13 +579,14 @@ class TestImdsCallBehavior:
         }
 
         call_count = 0
+        usage = {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18}
 
         async def flaky_completion(**kwargs):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
                 raise openai.APIError("Bedrock auth failed", request=MagicMock(), body=None)
-            return _mock_acompletion_response()
+            return _mock_acompletion_response(usage)
 
         with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion",
                    side_effect=flaky_completion):
