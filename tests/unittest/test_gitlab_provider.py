@@ -726,6 +726,23 @@ class TestGitLabGlobalSettings:
         provider.gl.projects.get.assert_called_with("mygroup/pr-agent-settings")
         proj.files.get.assert_called_once_with(file_path=".pr_agent.toml", ref="main")
 
+    def test_numeric_project_id_uses_canonical_group_for_global_settings(self):
+        provider = self._provider()
+        provider.id_project = "127014"
+        project = MagicMock(path_with_namespace="mygroup/myrepo")
+        settings_project = MagicMock()
+        settings_project.default_branch = "main"
+        settings_project.files.get.return_value.decode.return_value = b"[pr_reviewer]\nnum_max_findings = 5\n"
+        provider.gl.projects.get.side_effect = [project, settings_project]
+
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = True
+            result = provider._get_global_repo_settings()
+
+        assert result == b"[pr_reviewer]\nnum_max_findings = 5\n"
+        assert provider.gl.projects.get.call_args_list[0].args == ("127014",)
+        assert provider.gl.projects.get.call_args_list[1].args == ("mygroup/pr-agent-settings",)
+
     def test_skips_on_self_hosted(self):
         # "mygitlab.com" contains the substring "gitlab.com" but is NOT GitLab.com — must be skipped.
         provider = self._provider(gitlab_url="https://mygitlab.com")

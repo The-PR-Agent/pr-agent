@@ -1188,7 +1188,17 @@ class GitLabProvider(GitProvider):
         if not self.gitlab_url or 'gitlab.com' in self.gitlab_url:
             if not self.id_project:
                 return None
-            return self.id_project.split('/')[0]
+            project_id = str(self.id_project)
+            if project_id.isascii() and project_id.isdigit():
+                try:
+                    project_path = self.gl.projects.get(project_id).path_with_namespace
+                except Exception as e:
+                    get_logger().warning(f"Failed to resolve canonical GitLab project path, error: {e}")
+                    return None
+                if not project_path:
+                    return None
+                return project_path.split('/')[0]
+            return project_id.split('/')[0]
         # extract host name
         host = urlparse(self.gitlab_url).hostname
         return host
@@ -1323,12 +1333,26 @@ class GitLabProvider(GitProvider):
         except ValueError as e:
             raise ValueError("Unable to convert merge request ID to integer") from e
 
-        # Handle special delimiter (-)
-        project_path = "/".join(path_parts[:mr_index])
-        if project_path.endswith('/-'):
-            project_path = project_path[:-2]
+        # Handle GitLab's numeric-ID alias /projects/<project-id> by using
+        # the numeric ID as the API project identifier. Restrict handling to
+        # the exact top-level form so namespace paths containing "projects"
+        # keep their existing behaviour.
+        project_parts = path_parts[:mr_index]
+        if (
+            len(project_parts) == 3
+            and project_parts[0] == "projects"
+            and project_parts[1].isascii()
+            and project_parts[1].isdigit()
+            and project_parts[-1] == "-"
+        ):
+            project_path = project_parts[1]
+        else:
+            # Handle the standard GitLab /-/ delimiter.
+            project_path = "/".join(project_parts)
+            if project_path.endswith('/-'):
+                project_path = project_path[:-2]
 
-        # Return the path before 'merge_requests' and the ID
+        # Return the project identifier and the MR IID.
         return project_path, mr_id
 
     def _get_merge_request(self):
@@ -1432,13 +1456,29 @@ class GitLabProvider(GitProvider):
         except:
             return ""
 
+    def _get_project_web_url(self) -> str:
+        mr_web_url = getattr(self.mr, 'web_url', '')
+        if '/-/merge_requests/' in mr_web_url:
+            return mr_web_url.split('/-/merge_requests/', 1)[0]
+        project_path = str(self.id_project)
+        if project_path.isascii() and project_path.isdigit():
+            project_path = f"projects/{project_path}"
+        return f"{self.gl.url}/{project_path}"
+
     def get_line_link(self, relevant_file: str, relevant_line_start: int, relevant_line_end: int = None) -> str:
+        project_web_url = self._get_project_web_url()
         if relevant_line_start == -1:
-            link = f"{self.gl.url}/{self.id_project}/-/blob/{self.mr.source_branch}/{relevant_file}?ref_type=heads"
+            link = f"{project_web_url}/-/blob/{self.mr.source_branch}/{relevant_file}?ref_type=heads"
         elif relevant_line_end:
-            link = f"{self.gl.url}/{self.id_project}/-/blob/{self.mr.source_branch}/{relevant_file}?ref_type=heads#L{relevant_line_start}-{relevant_line_end}"
+            link = (
+                f"{project_web_url}/-/blob/{self.mr.source_branch}/{relevant_file}?ref_type=heads"
+                f"#L{relevant_line_start}-{relevant_line_end}"
+            )
         else:
-            link = f"{self.gl.url}/{self.id_project}/-/blob/{self.mr.source_branch}/{relevant_file}?ref_type=heads#L{relevant_line_start}"
+            link = (
+                f"{project_web_url}/-/blob/{self.mr.source_branch}/{relevant_file}?ref_type=heads"
+                f"#L{relevant_line_start}"
+            )
         return link
 
 
@@ -1454,7 +1494,7 @@ class GitLabProvider(GitProvider):
 
             if absolute_position != -1:
                 # link to right file only
-                link = f"{self.gl.url}/{self.id_project}/-/blob/{self.mr.source_branch}/{relevant_file}?ref_type=heads#L{absolute_position}"
+                link = self.get_line_link(relevant_file, absolute_position)
 
                 # # link to diff
                 # sha_file = hashlib.sha1(relevant_file.encode('utf-8')).hexdigest()
