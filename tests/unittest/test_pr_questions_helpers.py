@@ -13,6 +13,7 @@ import pytest
 
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
+import pr_agent.tools.pr_line_questions as plq
 from pr_agent.tools.pr_line_questions import PR_LineQuestions
 from pr_agent.tools.pr_questions import PRQuestions
 from tests.unittest._settings_helpers import SENTINEL, restore_settings, snapshot_settings
@@ -540,6 +541,7 @@ class TestRunResolvesThread:
         finally:
             restore_settings(saved)
 
+    @pytest.mark.asyncio
     async def test_run_calls_resolve_when_marker_present(self, run_settings):
         run_settings.set("pr_questions.resolve_threads", True)
         run_settings.set("pr_questions.use_conversation_history", False)
@@ -558,7 +560,6 @@ class TestRunResolvesThread:
         async def fake_retry(func, **kwargs):
             return "Looks good.\n\n[THREAD_RESOLVED]"
 
-        import pr_agent.tools.pr_line_questions as plq
         original = plq.retry_with_fallback_models
         plq.retry_with_fallback_models = fake_retry
         try:
@@ -572,6 +573,7 @@ class TestRunResolvesThread:
 
         lq.git_provider.resolve_comment_thread.assert_called_once_with(42)
 
+    @pytest.mark.asyncio
     async def test_run_does_not_resolve_without_marker(self, run_settings):
         run_settings.set("pr_questions.resolve_threads", True)
         run_settings.set("pr_questions.use_conversation_history", False)
@@ -590,7 +592,6 @@ class TestRunResolvesThread:
         async def fake_retry(func, **kwargs):
             return "This still needs work."
 
-        import pr_agent.tools.pr_line_questions as plq
         original = plq.retry_with_fallback_models
         plq.retry_with_fallback_models = fake_retry
         try:
