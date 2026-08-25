@@ -74,6 +74,7 @@ class PR_LineQuestions:
         file_name = get_settings().get('file_name', '')
         comment_id = get_settings().get('comment_id', '')
         if not comment_id:
+            self.resolve_threads = False
             self.vars["resolve_threads"] = False
         if ask_diff:
             self.patch_with_lines, self.selected_lines = extract_hunk_lines_from_patch(ask_diff,

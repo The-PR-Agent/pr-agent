@@ -453,9 +453,11 @@ class TestResolveThreadsDisabledWithoutCommentId:
 
         comment_id = get_settings().get('comment_id', '')
         if not comment_id:
+            lq.resolve_threads = False
             lq.vars["resolve_threads"] = False
 
         assert lq.vars["resolve_threads"] is False
+        assert lq.resolve_threads is False
 
     def test_resolve_threads_kept_when_comment_id_present(self, resolve_settings):
         resolve_settings.set("pr_questions.resolve_threads", True)
@@ -467,9 +469,11 @@ class TestResolveThreadsDisabledWithoutCommentId:
 
         comment_id = get_settings().get('comment_id', '')
         if not comment_id:
+            lq.resolve_threads = False
             lq.vars["resolve_threads"] = False
 
         assert lq.vars["resolve_threads"] is True
+        assert lq.resolve_threads is True
 
 
 # ---------------------------------------------------------------------------
@@ -511,3 +515,88 @@ class TestThreadResolvedMarkerParsing:
         should_resolve, cleaned = self._parse_marker(answer)
         assert should_resolve is False
         assert cleaned == answer
+
+
+# ---------------------------------------------------------------------------
+# Regression test: run() actually calls resolve_comment_thread when marker present
+# ---------------------------------------------------------------------------
+
+class TestRunResolvesThread:
+    """Exercise the resolve wiring inside PR_LineQuestions.run().
+
+    This ensures that removing the resolve code from run() would break a test.
+    """
+
+    @pytest.fixture
+    def run_settings(self):
+        keys = (
+            "comment_id", "pr_questions.resolve_threads",
+            "pr_questions.use_conversation_history",
+            "ask_diff_hunk", "line_start", "line_end", "side", "file_name",
+        )
+        saved = snapshot_settings(keys)
+        try:
+            yield get_settings()
+        finally:
+            restore_settings(saved)
+
+    async def test_run_calls_resolve_when_marker_present(self, run_settings):
+        run_settings.set("pr_questions.resolve_threads", True)
+        run_settings.set("pr_questions.use_conversation_history", False)
+        run_settings.set("comment_id", 42)
+        run_settings.set("ask_diff_hunk", "@@ -1,3 +1,3 @@\n-old\n+new\n ctx")
+        run_settings.set("line_start", 1)
+        run_settings.set("line_end", 1)
+        run_settings.set("side", "RIGHT")
+        run_settings.set("file_name", "test.py")
+
+        lq = _make_line_questions()
+        lq.resolve_threads = True
+        lq.vars["resolve_threads"] = True
+        lq.token_handler = MagicMock()
+
+        async def fake_retry(func, **kwargs):
+            return "Looks good.\n\n[THREAD_RESOLVED]"
+
+        import pr_agent.tools.pr_line_questions as plq
+        original = plq.retry_with_fallback_models
+        plq.retry_with_fallback_models = fake_retry
+        try:
+            await lq.run()
+        finally:
+            plq.retry_with_fallback_models = original
+
+        lq.git_provider.reply_to_comment_from_comment_id.assert_called_once()
+        reply_body = lq.git_provider.reply_to_comment_from_comment_id.call_args[0][1]
+        assert "[THREAD_RESOLVED]" not in reply_body
+
+        lq.git_provider.resolve_comment_thread.assert_called_once_with(42)
+
+    async def test_run_does_not_resolve_without_marker(self, run_settings):
+        run_settings.set("pr_questions.resolve_threads", True)
+        run_settings.set("pr_questions.use_conversation_history", False)
+        run_settings.set("comment_id", 42)
+        run_settings.set("ask_diff_hunk", "@@ -1,3 +1,3 @@\n-old\n+new\n ctx")
+        run_settings.set("line_start", 1)
+        run_settings.set("line_end", 1)
+        run_settings.set("side", "RIGHT")
+        run_settings.set("file_name", "test.py")
+
+        lq = _make_line_questions()
+        lq.resolve_threads = True
+        lq.vars["resolve_threads"] = True
+        lq.token_handler = MagicMock()
+
+        async def fake_retry(func, **kwargs):
+            return "This still needs work."
+
+        import pr_agent.tools.pr_line_questions as plq
+        original = plq.retry_with_fallback_models
+        plq.retry_with_fallback_models = fake_retry
+        try:
+            await lq.run()
+        finally:
+            plq.retry_with_fallback_models = original
+
+        lq.git_provider.reply_to_comment_from_comment_id.assert_called_once()
+        lq.git_provider.resolve_comment_thread.assert_not_called()

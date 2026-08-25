@@ -641,48 +641,66 @@ class GithubProvider(GitProvider):
                 get_logger().warning(f"No node_id found for comment {comment_id}")
                 return False
 
-            # Find the review thread containing this comment
-            query = f"""
-            query {{
-                repository(owner: "{owner}", name: "{repo_name}") {{
-                    pullRequest(number: {self.pr_num}) {{
-                        reviewThreads(first: 100) {{
-                            nodes {{
-                                id
-                                isResolved
-                                comments(first: 100) {{
-                                    nodes {{
-                                        id
+            # Find the review thread containing this comment (paginated)
+            thread_id = None
+            is_already_resolved = False
+            cursor = None
+            while True:
+                after_clause = f', after: "{cursor}"' if cursor else ""
+                query = f"""
+                query {{
+                    repository(owner: "{owner}", name: "{repo_name}") {{
+                        pullRequest(number: {self.pr_num}) {{
+                            reviewThreads(first: 100{after_clause}) {{
+                                pageInfo {{ hasNextPage endCursor }}
+                                nodes {{
+                                    id
+                                    isResolved
+                                    comments(first: 100) {{
+                                        nodes {{
+                                            id
+                                        }}
                                     }}
                                 }}
                             }}
                         }}
                     }}
                 }}
-            }}
-            """
-            response_tuple = self.github_client._Github__requester.requestJson(
-                "POST", "/graphql", input={"query": query}
-            )
-            if not (isinstance(response_tuple, tuple) and len(response_tuple) == 3):
-                get_logger().error(f"Unexpected GraphQL response format")
-                return False
+                """
+                response_tuple = self.github_client._Github__requester.requestJson(
+                    "POST", "/graphql", input={"query": query}
+                )
+                if not (isinstance(response_tuple, tuple) and len(response_tuple) == 3):
+                    get_logger().error(f"Unexpected GraphQL response format")
+                    return False
 
-            response_json = json.loads(response_tuple[2])
-            threads = (response_json.get("data", {}).get("repository", {})
-                       .get("pullRequest", {}).get("reviewThreads", {}).get("nodes", []))
+                response_json = json.loads(response_tuple[2])
+                review_threads = (response_json.get("data", {}).get("repository", {})
+                                  .get("pullRequest", {}).get("reviewThreads", {}))
+                threads = review_threads.get("nodes", [])
 
-            thread_id = None
-            for thread in threads:
-                if thread.get("isResolved"):
-                    continue
-                comment_ids = [c["id"] for c in thread.get("comments", {}).get("nodes", [])]
-                if comment_node_id in comment_ids:
-                    thread_id = thread["id"]
+                for thread in threads:
+                    comment_ids = [c["id"] for c in thread.get("comments", {}).get("nodes", [])]
+                    if comment_node_id in comment_ids:
+                        if thread.get("isResolved"):
+                            is_already_resolved = True
+                        else:
+                            thread_id = thread["id"]
+                        break
+
+                if thread_id or is_already_resolved:
                     break
+                page_info = review_threads.get("pageInfo", {})
+                if not page_info.get("hasNextPage"):
+                    break
+                cursor = page_info.get("endCursor")
+
+            if is_already_resolved:
+                get_logger().info(f"Thread for comment {comment_id} is already resolved")
+                return True
 
             if not thread_id:
-                get_logger().info(f"No unresolved thread found for comment {comment_id}")
+                get_logger().warning(f"No thread found for comment {comment_id}")
                 return False
 
             # Resolve the thread

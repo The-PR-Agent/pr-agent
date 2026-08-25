@@ -431,18 +431,23 @@ def _make_provider_with_graphql(rest_comment_data, graphql_responses):
     return p, requester
 
 
+def _make_threads_response(threads, has_next_page=False, end_cursor=None):
+    """Build a GraphQL response for reviewThreads with pageInfo."""
+    return _make_graphql_response({
+        "repository": {"pullRequest": {"reviewThreads": {
+            "pageInfo": {"hasNextPage": has_next_page, "endCursor": end_cursor},
+            "nodes": threads,
+        }}},
+    })
+
+
 class TestResolveCommentThread:
     def test_resolves_thread_successfully(self):
         rest_data = {"node_id": "PRR_comment1"}
-        threads_response = _make_graphql_response({
-            "repository": {"pullRequest": {"reviewThreads": {"nodes": [
-                {
-                    "id": "PRRT_thread1",
-                    "isResolved": False,
-                    "comments": {"nodes": [{"id": "PRR_comment1"}]},
-                },
-            ]}}},
-        })
+        threads_response = _make_threads_response([
+            {"id": "PRRT_thread1", "isResolved": False,
+             "comments": {"nodes": [{"id": "PRR_comment1"}]}},
+        ])
         resolve_response = _make_graphql_response({
             "resolveReviewThread": {"thread": {"isResolved": True}},
         })
@@ -456,37 +461,27 @@ class TestResolveCommentThread:
         assert len(requester.calls) == 3
         assert "resolveReviewThread" in requester.calls[2][3]["query"]
 
-    def test_skips_already_resolved_thread(self):
+    def test_already_resolved_thread_returns_true(self):
         rest_data = {"node_id": "PRR_comment1"}
-        threads_response = _make_graphql_response({
-            "repository": {"pullRequest": {"reviewThreads": {"nodes": [
-                {
-                    "id": "PRRT_thread1",
-                    "isResolved": True,
-                    "comments": {"nodes": [{"id": "PRR_comment1"}]},
-                },
-            ]}}},
-        })
+        threads_response = _make_threads_response([
+            {"id": "PRRT_thread1", "isResolved": True,
+             "comments": {"nodes": [{"id": "PRR_comment1"}]}},
+        ])
 
         provider, requester = _make_provider_with_graphql(
             rest_data, [threads_response]
         )
         result = provider.resolve_comment_thread(123)
 
-        assert result is False
+        assert result is True
         assert len(requester.calls) == 2
 
     def test_handles_no_matching_thread(self):
         rest_data = {"node_id": "PRR_commentX"}
-        threads_response = _make_graphql_response({
-            "repository": {"pullRequest": {"reviewThreads": {"nodes": [
-                {
-                    "id": "PRRT_thread1",
-                    "isResolved": False,
-                    "comments": {"nodes": [{"id": "PRR_other"}]},
-                },
-            ]}}},
-        })
+        threads_response = _make_threads_response([
+            {"id": "PRRT_thread1", "isResolved": False,
+             "comments": {"nodes": [{"id": "PRR_other"}]}},
+        ])
 
         provider, requester = _make_provider_with_graphql(
             rest_data, [threads_response]
@@ -507,15 +502,10 @@ class TestResolveCommentThread:
 
     def test_handles_graphql_errors_in_resolve_mutation(self):
         rest_data = {"node_id": "PRR_comment1"}
-        threads_response = _make_graphql_response({
-            "repository": {"pullRequest": {"reviewThreads": {"nodes": [
-                {
-                    "id": "PRRT_thread1",
-                    "isResolved": False,
-                    "comments": {"nodes": [{"id": "PRR_comment1"}]},
-                },
-            ]}}},
-        })
+        threads_response = _make_threads_response([
+            {"id": "PRRT_thread1", "isResolved": False,
+             "comments": {"nodes": [{"id": "PRR_comment1"}]}},
+        ])
         error_response = _make_graphql_response(
             {"resolveReviewThread": None},
             errors=[{"message": "Insufficient permissions"}],
@@ -531,15 +521,10 @@ class TestResolveCommentThread:
 
     def test_handles_resolve_returning_false(self):
         rest_data = {"node_id": "PRR_comment1"}
-        threads_response = _make_graphql_response({
-            "repository": {"pullRequest": {"reviewThreads": {"nodes": [
-                {
-                    "id": "PRRT_thread1",
-                    "isResolved": False,
-                    "comments": {"nodes": [{"id": "PRR_comment1"}]},
-                },
-            ]}}},
-        })
+        threads_response = _make_threads_response([
+            {"id": "PRRT_thread1", "isResolved": False,
+             "comments": {"nodes": [{"id": "PRR_comment1"}]}},
+        ])
         resolve_response = _make_graphql_response({
             "resolveReviewThread": {"thread": {"isResolved": False}},
         })
@@ -555,15 +540,10 @@ class TestResolveCommentThread:
     def test_handles_unexpected_mutation_response_format(self):
         """Mutation returns non-tuple — should return False, not fall through to True."""
         rest_data = {"node_id": "PRR_comment1"}
-        threads_response = _make_graphql_response({
-            "repository": {"pullRequest": {"reviewThreads": {"nodes": [
-                {
-                    "id": "PRRT_thread1",
-                    "isResolved": False,
-                    "comments": {"nodes": [{"id": "PRR_comment1"}]},
-                },
-            ]}}},
-        })
+        threads_response = _make_threads_response([
+            {"id": "PRRT_thread1", "isResolved": False,
+             "comments": {"nodes": [{"id": "PRR_comment1"}]}},
+        ])
 
         provider, requester = _make_provider_with_graphql(
             rest_data, [threads_response, "not-a-tuple"]
@@ -571,6 +551,31 @@ class TestResolveCommentThread:
         result = provider.resolve_comment_thread(123)
 
         assert result is False
+
+    def test_paginates_to_find_thread(self):
+        """Thread is on the second page — pagination must follow."""
+        rest_data = {"node_id": "PRR_comment1"}
+        page1 = _make_threads_response(
+            [{"id": "PRRT_other", "isResolved": False,
+              "comments": {"nodes": [{"id": "PRR_other"}]}}],
+            has_next_page=True, end_cursor="cursor1",
+        )
+        page2 = _make_threads_response([
+            {"id": "PRRT_target", "isResolved": False,
+             "comments": {"nodes": [{"id": "PRR_comment1"}]}},
+        ])
+        resolve_response = _make_graphql_response({
+            "resolveReviewThread": {"thread": {"isResolved": True}},
+        })
+
+        provider, requester = _make_provider_with_graphql(
+            rest_data, [page1, page2, resolve_response]
+        )
+        result = provider.resolve_comment_thread(123)
+
+        assert result is True
+        assert 'after: "cursor1"' in requester.calls[2][3]["query"]
+        assert "resolveReviewThread" in requester.calls[3][3]["query"]
 
     def test_handles_rest_api_exception(self):
         """REST call to fetch comment throws — should not propagate."""
