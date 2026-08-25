@@ -345,6 +345,13 @@ When the GitHub Actions runner is on AWS infrastructure (EC2, ECS, EKS), use the
 
 The IAM role must have `bedrock:InvokeModel` on the target model ARN. See [Bedrock model configuration](../usage-guide/changing_a_model.md#amazon-bedrock) for the full IAM policy example and supported models.
 
+To route calls through a VPC interface endpoint, add `AWS_BEDROCK_RUNTIME_ENDPOINT` alongside the credentials above:
+
+```yaml
+      env:
+        AWS_BEDROCK_RUNTIME_ENDPOINT: "https://bedrock-runtime.us-east-1.amazonaws.com"
+```
+
 #### Advanced Configuration Options
 
 ##### Custom Review Instructions

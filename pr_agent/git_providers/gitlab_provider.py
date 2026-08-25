@@ -1252,8 +1252,12 @@ class GitLabProvider(GitProvider):
                 ref = getattr(self.mr, "target_branch", None) or project.default_branch
             contents = project.files.get(file_path=file_path, ref=ref).decode()
             return decode_if_bytes(contents)
-        except GitlabGetError:
-            return ""
+        except GitlabGetError as e:
+            # A missing optional file is expected, but transient/provider failures must reach
+            # repo_context so the failed result is not cached as a successful empty context.
+            if getattr(e, "response_code", None) == 404:
+                return ""
+            raise
 
     def get_workspace_name(self):
         return self.id_project.split('/')[0]

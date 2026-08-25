@@ -361,8 +361,8 @@ async def handle_request(body: Dict[str, Any], event: str):
 def handle_line_comments(body: Dict, comment_body: [str, Any]) -> str:
     if not comment_body:
         return ""
-    start_line = body["comment"]["start_line"]
-    end_line = body["comment"]["line"]
+    start_line = body["comment"]["start_line"] or body["comment"].get("original_start_line")
+    end_line = body["comment"]["line"] or body["comment"].get("original_line")
     start_line = end_line if not start_line else start_line
     question = comment_body.replace('/ask', '').strip()
     diff_hunk = body["comment"]["diff_hunk"]

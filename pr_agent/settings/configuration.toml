@@ -35,6 +35,7 @@ max_description_tokens = 500
 max_commits_tokens = 500
 max_model_tokens = 32000 # Limits the maximum number of tokens that can be used by any model, regardless of the model's default capabilities.
 custom_model_max_tokens=-1 # for models not in the default list
+max_output_tokens = 0 # Output token limit sent as max_tokens on model calls; 0 = unset (the provider's own default applies)
 model_token_count_estimate_factor=0.3 # factor to increase the token count estimate, in order to reduce likelihood of model failure due to too many tokens - applicable only when requesting an accurate estimate.
 # patch extension logic
 patch_extension_skip_types =[".md",".txt"]
@@ -75,7 +76,7 @@ is_auto_command = false # will be auto-set to true if the command is triggered b
 propagate_tool_errors = false # when true, a tool re-raises instead of swallowing an internal error, so a caller can tell a failed run from an empty one
 enable_ai_metadata = false # will enable adding ai metadata
 add_user_to_requests = false # send the current command and PR URL in the OpenAI-compatible "user" request field, for provider-side attribution of requests (e.g. OpenRouter "external_user")
-reasoning_effort = "medium" # "none", "minimal", "low", "medium", "high", "xhigh"
+reasoning_effort = "medium" # "none", "minimal", "low", "medium", "high", "xhigh", "max"
 # extended thinking for Claude reasoning models
 enable_claude_extended_thinking = false # Set to true to enable extended thinking feature
 extended_thinking_budget_tokens = 2048
@@ -372,7 +373,9 @@ success_callback = []
 failure_callback = []
 service_callback = []
 callback_timeout_seconds = 30 # max seconds to wait for pending litellm callbacks to flush before exiting
-# model_id = "" # Optional: Custom inference profile ID for Amazon Bedrock
+# Application inference profile ARN for classic `bedrock/` calls through the `bedrock-runtime` APIs.
+# Not used by `bedrock_mantle/`, which uses Projects for cost allocation.
+# model_id = ""
 cache_control_injection_points = [] # Optional: enable Anthropic prompt caching via LiteLLM, e.g. [{location = "message", role = "system"}] (https://docs.litellm.ai/docs/tutorials/prompt_caching)
 
 [openrouter]

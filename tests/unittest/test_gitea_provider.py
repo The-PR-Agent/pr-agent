@@ -810,3 +810,28 @@ class TestGiteaProviderPublishCodeSuggestions:
     def test_publish_inline_comments_reports_the_api_outcome(self):
         assert self._provider().publish_inline_comments([{"body": "x"}]) is True
         assert self._provider(create_inline_comment_return=None).publish_inline_comments([{"body": "x"}]) is False
+
+
+class TestGiteaProviderUrlParsing:
+    """Cover both URL forms: Gitea sets ``pull_request.url`` to the web page,
+    Forgejo sets it to ``/api/v1/repos/{owner}/{repo}/pulls/{n}``.
+
+    ``__init__`` performs network calls, so build the provider with ``__new__``
+    and exercise the pure helper only.
+    """
+
+    @staticmethod
+    def _provider():
+        return GiteaProvider.__new__(GiteaProvider)
+
+    def test_parse_pr_url_accepts_web_and_api_forms(self):
+        provider = self._provider()
+        assert provider._parse_pr_url("https://gitea.example.com/owner/repo/pulls/1") == ("owner", "repo", 1)
+        assert provider._parse_pr_url(
+            "https://gitea.example.com/api/v1/repos/owner/repo/pulls/1") == ("owner", "repo", 1)
+
+    def test_parse_issue_url_accepts_web_and_api_forms(self):
+        provider = self._provider()
+        assert provider._parse_issue_url("https://gitea.example.com/owner/repo/issues/5") == ("owner", "repo", 5)
+        assert provider._parse_issue_url(
+            "https://gitea.example.com/api/v1/repos/owner/repo/issues/5") == ("owner", "repo", 5)

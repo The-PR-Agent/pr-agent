@@ -127,7 +127,7 @@ class BitbucketProvider(GitProvider):
         # Read from the PR destination (target) branch, matching the other providers,
         # or from the repository default branch when from_default_branch is requested.
         branch = self.get_repo_default_branch() if from_default_branch else self.pr.destination_branch
-        return self.get_pr_file_content(file_path, branch)
+        return self.get_pr_file_content(file_path, branch, propagate_errors=True)
 
     def get_git_repo_url(self, pr_url: str=None) -> str: #bitbucket does not support issue url, so ignore param
         try:
@@ -445,7 +445,8 @@ class BitbucketProvider(GitProvider):
 
     def remove_comment(self, comment):
         try:
-            self.pr.delete(f"comments/{comment}")
+            comment_id = comment["id"] if isinstance(comment, dict) else comment
+            self.pr.delete(f"comments/{comment_id}")
         except Exception as e:
             get_logger().exception(f"Failed to remove comment, error: {e}")
 
@@ -594,7 +595,7 @@ class BitbucketProvider(GitProvider):
     def _get_pr(self):
         return self._get_repo().pullrequests.get(self.pr_num)
 
-    def get_pr_file_content(self, file_path: str, branch: str) -> str:
+    def get_pr_file_content(self, file_path: str, branch: str, propagate_errors: bool = True) -> str:
         try:
             if branch == self.pr.source_branch:
                 branch = self.pr.data["source"]["commit"]["hash"]
@@ -605,9 +606,15 @@ class BitbucketProvider(GitProvider):
             response = requests.request("GET", url, headers=self.headers)
             if response.status_code == 404:  # not found
                 return ""
+            # Distinguish an unavailable file from a failed request to prevent an error response
+            # body from being treated as repository instructions or changelog content.
+            if propagate_errors:
+                response.raise_for_status()
             contents = response.text
             return contents
         except Exception:
+            if propagate_errors:
+                raise
             return ""
 
     def create_or_update_pr_file(self, file_path: str, branch: str, contents="", message="") -> None:

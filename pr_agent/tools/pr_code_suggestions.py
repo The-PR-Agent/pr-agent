@@ -165,7 +165,8 @@ class PRCodeSuggestions:
                 if self.git_provider.is_supported("gfm_markdown"):
                     self.progress_response = self.git_provider.publish_comment(self.progress)
                 else:
-                    self.git_provider.publish_comment("Preparing suggestions...", is_temporary=True)
+                    self.progress_response = self.git_provider.publish_comment(
+                        "Preparing suggestions...", is_temporary=True)
 
             # # call the model to get the suggestions, and self-reflect on them
             # if not self.is_extended:
@@ -289,6 +290,8 @@ class PRCodeSuggestions:
                 self.git_provider.publish_comment(pr_body)
         else:
             get_settings().data = {"artifact": ""}
+            if self.progress_response:
+                self.git_provider.remove_comment(self.progress_response)
 
     async def dual_publishing(self, data):
         data_above_threshold = {'code_suggestions': []}

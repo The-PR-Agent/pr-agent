@@ -259,6 +259,8 @@ def format_skills_context(skills: List[Skill], max_tokens: int) -> str:
             if not pieces:
                 budget = max(1, max_tokens - marker_tokens)
                 truncated = clip_tokens(formatted, budget, add_three_dots=False)
+                while truncated and _count_tokens(truncated + truncate_marker) > max_tokens:
+                    truncated = truncated[: int(len(truncated) * 0.9)]
                 pieces.append(truncated + truncate_marker)
                 if len(skills) > 1:
                     get_logger().info(

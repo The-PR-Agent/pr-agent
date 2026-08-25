@@ -143,3 +143,12 @@ async def test_handle_request_uses_real_validator_to_block_forbidden(monkeypatch
 
     assert handled is False
     notify.assert_not_called()
+
+
+@pytest.mark.parametrize("prefix", ["  ", "\t", "\n", " \t "])
+def test_validate_user_args_rejects_forbidden_arg_with_leading_whitespace(prefix):
+    """Reject a forbidden argument that arrives with leading whitespace, since
+    update_settings_from_args strips the token before applying it."""
+    ok, offending = CliArgs.validate_user_args([f"{prefix}--github.webhook_secret=secret"])
+    assert ok is False
+    assert "webhook_secret" in offending

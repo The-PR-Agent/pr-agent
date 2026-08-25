@@ -224,8 +224,8 @@ class GiteaProvider(GitProvider):
     def _parse_pr_url(self, pr_url: str) -> Tuple[str, str, int]:
         parsed_url = urlparse(pr_url)
 
-        if parsed_url.path.startswith('/api/v1'):
-            parsed_url = urlparse(pr_url.replace("/api/v1", ""))
+        if parsed_url.path.startswith("/api/v1/repos"):
+            parsed_url = urlparse(pr_url.replace("/api/v1/repos", ""))
 
         path_parts = parsed_url.path.strip('/').split('/')
         if len(path_parts) < 4 or path_parts[2] != 'pulls':
@@ -244,8 +244,8 @@ class GiteaProvider(GitProvider):
     def _parse_issue_url(self, issue_url: str) -> Tuple[str, str, int]:
         parsed_url = urlparse(issue_url)
 
-        if parsed_url.path.startswith('/api/v1'):
-            parsed_url = urlparse(issue_url.replace("/api/v1", ""))
+        if parsed_url.path.startswith("/api/v1/repos"):
+            parsed_url = urlparse(issue_url.replace("/api/v1/repos", ""))
 
         path_parts = parsed_url.path.strip('/').split('/')
         if len(path_parts) < 4 or path_parts[2] != 'issues':
