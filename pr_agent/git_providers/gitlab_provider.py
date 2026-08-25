@@ -361,6 +361,17 @@ class GitLabProvider(GitProvider):
                 })
         return out
 
+    def _get_merge_request_changes(self) -> dict:
+        """Retrieve the complete merge request change set when GitLab reports overflow."""
+        changes = self.mr.changes()
+        if isinstance(changes, dict) and changes.get("overflow"):
+            get_logger().warning(
+                f"GitLab returned an overflowed diff for merge request {self.id_mr}; "
+                "retrying with access_raw_diffs=True"
+            )
+            return self.mr.changes(access_raw_diffs=True)
+        return changes
+
     def is_supported(self, capability: str) -> bool:
         if capability in ['create_inline_comment', 'publish_inline_comments',
             'publish_file_comments']: # gfm_markdown is supported in gitlab !
@@ -539,7 +550,7 @@ class GitLabProvider(GitProvider):
         try:
             mr_change_paths = {
                 c.get('new_path')
-                for c in self.mr.changes().get('changes', [])
+                for c in self._get_merge_request_changes().get('changes', [])
                 if c.get('new_path')
             }
         except Exception as e:
@@ -744,7 +755,7 @@ class GitLabProvider(GitProvider):
             if not head_sha_for_content:
                 head_sha_for_content = (self.mr.diff_refs or {}).get('head_sha')
         else:
-            raw_changes = self.mr.changes().get('changes', [])
+            raw_changes = self._get_merge_request_changes().get('changes', [])
             raw_changes = self._expand_submodule_changes(raw_changes)
             base_sha_for_content = self.mr.diff_refs['base_sha']
             head_sha_for_content = self.mr.diff_refs['head_sha']
@@ -822,7 +833,7 @@ class GitLabProvider(GitProvider):
                 and getattr(self, 'unreviewed_files_map', None)):
             return list(self.unreviewed_files_map.keys())
         if not self.git_files:
-            raw_changes = self.mr.changes().get('changes', [])
+            raw_changes = self._get_merge_request_changes().get('changes', [])
             raw_changes = self._expand_submodule_changes(raw_changes)
             self.git_files = [c.get('new_path') for c in raw_changes if c.get('new_path')]
         return self.git_files
@@ -1045,7 +1056,7 @@ class GitLabProvider(GitProvider):
                     get_logger().exception(f"Failed to create comment in MR {self.id_mr}")
 
     def get_relevant_diff(self, relevant_file: str, relevant_line_in_file: str) -> Optional[dict]:
-        _changes = self.mr.changes()  # dict
+        _changes = self._get_merge_request_changes()
         _changes['changes'] = self._expand_submodule_changes(_changes.get('changes', []))
         changes = _changes
         if not changes:

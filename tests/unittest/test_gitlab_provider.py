@@ -1,5 +1,5 @@
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 from gitlab import Gitlab
@@ -1029,6 +1029,84 @@ class TestGitLabIncrementalReview:
         gitlab_provider.mr.changes.return_value = {"changes": [{"new_path": "x.py"}]}
 
         assert gitlab_provider.get_files() == ["x.py"]
+
+    def test_get_files_retries_raw_diffs_when_changes_overflow(self, gitlab_provider):
+        gitlab_provider.git_files = None
+        gitlab_provider.mr.changes.side_effect = [
+            {"changes": [{"new_path": "visible.py"}], "overflow": True},
+            {
+                "changes": [
+                    {"new_path": "visible.py"},
+                    {"new_path": "hidden.py"},
+                ],
+                "overflow": False,
+            },
+        ]
+
+        assert gitlab_provider.get_files() == ["visible.py", "hidden.py"]
+        assert gitlab_provider.mr.changes.call_args_list == [
+            call(),
+            call(access_raw_diffs=True),
+        ]
+
+    def test_get_diff_files_retries_raw_diffs_when_changes_overflow(self, gitlab_provider):
+        change = {
+            "old_path": "visible.py",
+            "new_path": "visible.py",
+            "diff": "@@ -1 +1 @@\n-old\n+new\n",
+            "new_file": False,
+            "deleted_file": False,
+            "renamed_file": False,
+        }
+        hidden_change = {**change, "old_path": "hidden.py", "new_path": "hidden.py"}
+        gitlab_provider.mr.changes.side_effect = [
+            {"changes": [change], "overflow": True},
+            {"changes": [change, hidden_change], "overflow": False},
+        ]
+        gitlab_provider.get_pr_file_content = MagicMock(return_value="")
+
+        diff_files = gitlab_provider.get_diff_files()
+
+        assert [file.filename for file in diff_files] == ["visible.py", "hidden.py"]
+        assert gitlab_provider.mr.changes.call_args_list == [
+            call(),
+            call(access_raw_diffs=True),
+        ]
+
+    def test_incremental_scope_retries_raw_diffs_when_changes_overflow(
+        self, gitlab_provider, mock_project
+    ):
+        gitlab_provider.mr.notes.list.return_value = [
+            self._make_note(7, "## PR Reviewer Guide 🔍\nbody", "2024-05-01T10:00:00Z"),
+        ]
+        gitlab_provider.mr.commits.return_value = [
+            self._make_commit("c1", "2024-05-01T11:00:00Z"),
+            self._make_commit("c0", "2024-05-01T09:00:00Z"),
+        ]
+        mock_project.repository_compare.return_value = {
+            "diffs": [
+                {"new_path": "visible.py"},
+                {"new_path": "hidden.py"},
+            ]
+        }
+        gitlab_provider.mr.changes.side_effect = [
+            {"changes": [{"new_path": "visible.py"}], "overflow": True},
+            {
+                "changes": [
+                    {"new_path": "visible.py"},
+                    {"new_path": "hidden.py"},
+                ],
+                "overflow": False,
+            },
+        ]
+
+        gitlab_provider.get_incremental_commits(IncrementalPR(True))
+
+        assert set(gitlab_provider.unreviewed_files_map) == {"visible.py", "hidden.py"}
+        assert gitlab_provider.mr.changes.call_args_list == [
+            call(),
+            call(access_raw_diffs=True),
+        ]
 
     def test_get_previous_review_returns_most_recent_match(self, gitlab_provider):
         from pr_agent.algo.utils import PRReviewHeader
