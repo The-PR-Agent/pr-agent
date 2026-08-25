@@ -70,6 +70,7 @@ class PR_LineQuestions:
             self.vars["conversation_history"] = conversation_history
 
         self.patch_with_lines = ""
+        self.selected_lines = ""
         ask_diff = get_settings().get('ask_diff_hunk', "")
         line_start = get_settings().get('line_start', '')
         line_end = get_settings().get('line_end', '')

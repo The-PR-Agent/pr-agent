@@ -613,7 +613,7 @@ class TestRunResolvesThread:
 # ---------------------------------------------------------------------------
 
 class TestPRLineQuestionsRunSkipsEmptySelection:
-    """run() must not call the model when no hunk lines are selected.
+    """Skip the model call when no hunk lines are selected.
 
     ``extract_hunk_lines_from_patch`` returns a truthy header-only string as
     ``patch_with_lines`` whenever the requested range misses every hunk or the
@@ -699,6 +699,20 @@ class TestPRLineQuestionsRunSkipsEmptySelection:
         saved = self._set_ask_settings("100", "200")
         try:
             get_settings().set("ask_diff_hunk", self._PATCH)
+            with patch("pr_agent.tools.pr_line_questions.retry_with_fallback_models",
+                       new=AsyncMock()) as mock_retry:
+                await obj.run()
+            mock_retry.assert_not_awaited()
+        finally:
+            restore_settings(saved)
+
+    @pytest.mark.asyncio
+    async def test_skips_model_call_when_no_file_matches(self):
+        obj = self._provider()
+        obj.git_provider.get_diff_files.return_value = [SimpleNamespace(
+            filename="other.py", patch=self._PATCH)]
+        saved = self._set_ask_settings("6", "8")
+        try:
             with patch("pr_agent.tools.pr_line_questions.retry_with_fallback_models",
                        new=AsyncMock()) as mock_retry:
                 await obj.run()
