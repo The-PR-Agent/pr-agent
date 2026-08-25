@@ -286,10 +286,10 @@ class PRReviewer:
 
         structured_publisher = getattr(self.git_provider, "publish_structured_review", None)
         if callable(structured_publisher):
-            # Deep copy: dict(data) is shallow, so structured_data["review"] would
-            # alias data["review"], which is mutated right below (key reordering).
-            # Harmless for providers that serialize immediately, but the hook is
-            # provider-neutral, so hand implementers an isolated snapshot.
+            # Deep-copy the data: dict(data) is shallow, so structured_data["review"]
+            # would alias data["review"], which is mutated right below (key reordering).
+            # Hand implementers an isolated snapshot, since the hook is provider-neutral
+            # and a provider that defers serialization would observe the mutation.
             structured_data = copy.deepcopy(data)
             details = get_run_details()
             usage = {}

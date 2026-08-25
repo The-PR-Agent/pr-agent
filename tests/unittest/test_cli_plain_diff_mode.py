@@ -53,6 +53,15 @@ def test_missing_diff_file_fails_fast(tmp_path, capsys):
     assert "Could not read --diff-file" in err
 
 
+def test_json_output_outside_diff_mode_fails_fast(capsys):
+    """Reject --json-output in hosted-provider mode via parser.error instead of
+    silently dropping the explicitly requested artifact."""
+    with pytest.raises(SystemExit):
+        run(inargs=["--pr_url", "https://example/pr/1", "--json-output", "out.json", "review"])
+    err = capsys.readouterr().err
+    assert "--json-output is only supported in plain-diff mode" in err
+
+
 _DIFF = (
     "diff --git a/foo.py b/foo.py\n"
     "index 1111111..2222222 100644\n"

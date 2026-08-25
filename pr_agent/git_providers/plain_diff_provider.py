@@ -21,9 +21,9 @@ class PullRequestMimic:
 class PlainDiffGitProvider(GitProvider):
     """Provider that reviews a raw unified diff (stdin/file), no hosting platform.
 
-    The diff text and optional output paths are read from global settings
+    Read the diff text and optional output paths from global settings
     (plain_diff.content, plain_diff.output_path, plain_diff.json_output_path).
-    The pr_url arg is an ignored sentinel.
+    Treat the pr_url arg as an ignored sentinel.
     """
 
     def __init__(self, pr_url=None, incremental=False):

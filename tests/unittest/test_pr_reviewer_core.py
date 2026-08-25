@@ -678,10 +678,12 @@ def test_prepare_review_publishes_provider_neutral_structured_data(monkeypatch):
         },
         "usage": {"prompt_tokens": 30, "completion_tokens": 12, "total_tokens": 42},
     })
-    # The published snapshot must be isolated from the reviewer's own dict —
-    # _prepare_pr_review mutates data["review"] right after the hook fires.
+    # Assert key order to prove the snapshot is isolated: _prepare_pr_review moves
+    # key_issues_to_review to the end of its own dict after the hook fires, so an
+    # aliased snapshot ends with it while a deep copy keeps the original order.
+    # (assert_called_once_with cannot catch this: dict equality ignores key order.)
     published = git_provider.publish_structured_review.call_args[0][0]
-    assert "key_issues_to_review" in published["review"]
+    assert list(published["review"].keys()) == ["key_issues_to_review", "security_concerns"]
 
 
 def test_can_run_incremental_review_skips_auto_mode_without_new_commit():

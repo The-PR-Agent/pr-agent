@@ -96,6 +96,8 @@ def run(inargs=None, args=None):
     if not args:
         args = parser.parse_args(inargs)
     diff_mode = getattr(args, "stdin", False) or getattr(args, "diff_file", None)
+    if getattr(args, "json_output", None) and not diff_mode:
+        parser.error("--json-output is only supported in plain-diff mode (--stdin or --diff-file)")
     if diff_mode:
         if args.stdin and args.diff_file:
             parser.error("--stdin and --diff-file are mutually exclusive")
