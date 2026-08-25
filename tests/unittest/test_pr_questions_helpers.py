@@ -11,9 +11,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import pr_agent.tools.pr_line_questions as plq
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
-import pr_agent.tools.pr_line_questions as plq
 from pr_agent.tools.pr_questions import PRQuestions
 from tests.unittest._settings_helpers import SENTINEL, restore_settings, snapshot_settings
 
