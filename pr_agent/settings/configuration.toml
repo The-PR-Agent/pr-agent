@@ -154,7 +154,10 @@ async_ai_calls=true
 [pr_questions] # /ask #
 enable_help_text=false
 use_conversation_history=true
-resolve_threads=false # when true, /ask_line will resolve the review thread if the LLM judges the issue is addressed. Note: this allows the model to resolve threads started by human reviewers.
+# when true, /ask_line will resolve the review thread if the LLM judges the
+# issue is addressed. Note: this allows the model to resolve threads started
+# by human reviewers.
+resolve_threads=false
 extra_instructions = ""
 
 

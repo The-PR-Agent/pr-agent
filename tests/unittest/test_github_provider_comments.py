@@ -6,6 +6,7 @@ These tests use ``GithubProvider.__new__(GithubProvider)`` to bypass network-bou
 ``__init__`` and inject minimal fake collaborators. No real GitHub API access.
 """
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -389,8 +390,6 @@ def test_publish_code_suggestions_returns_false_on_publish_error():
 # ---------------------------------------------------------------------------
 # resolve_comment_thread
 # ---------------------------------------------------------------------------
-
-import json
 
 
 def _make_graphql_response(data, errors=None):

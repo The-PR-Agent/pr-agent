@@ -671,10 +671,16 @@ class GithubProvider(GitProvider):
                     "POST", "/graphql", input={"query": query}
                 )
                 if not (isinstance(response_tuple, tuple) and len(response_tuple) == 3):
-                    get_logger().error(f"Unexpected GraphQL response format")
+                    get_logger().error("Unexpected GraphQL response format")
                     return False
 
                 response_json = json.loads(response_tuple[2])
+                errors = response_json.get("errors")
+                if errors:
+                    get_logger().error(
+                        f"GraphQL errors querying review threads: {errors}"
+                    )
+                    return False
                 review_threads = (response_json.get("data", {}).get("repository", {})
                                   .get("pullRequest", {}).get("reviewThreads", {}))
                 threads = review_threads.get("nodes", [])
@@ -727,12 +733,15 @@ class GithubProvider(GitProvider):
             is_resolved = (resolve_json.get("data", {}).get("resolveReviewThread", {})
                            .get("thread", {}).get("isResolved", False))
             if not is_resolved:
-                get_logger().warning(f"Resolve mutation returned isResolved=false for thread {thread_id} — possible permission issue")
+                get_logger().warning(
+                    f"Resolve mutation returned isResolved=false for thread "
+                    f"{thread_id} — possible permission issue"
+                )
                 return False
             get_logger().info(f"Resolved review thread {thread_id}")
             return True
         except Exception as e:
-            get_logger().error(f"Failed to resolve comment thread: {e}")
+            get_logger().exception(f"Failed to resolve comment thread: {e}")
             return False
 
     def _publish_inline_comments_fallback_with_verification(self, comments: list[dict]):
