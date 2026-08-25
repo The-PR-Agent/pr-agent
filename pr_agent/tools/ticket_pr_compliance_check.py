@@ -54,10 +54,11 @@ MAX_ASANA_TICKETS = 3
 MAX_GITHUB_TICKETS = 3
 MAX_GITLAB_TICKETS = 3
 GITLAB_TICKET_PATTERN = re.compile(
-    r"(?P<url>https?://[^\s<>()]+?/-/issues/(?P<url_issue>\d+))(?=$|[^\w])"
+    r"(?P<url>https?://[^\s<>(),;]+)"
     r"|(?<![\w./-])(?P<project>[\w.-]+(?:/[\w.-]+)+)#(?P<project_issue>\d+)\b"
     r"|(?<![\w/])#(?P<local_issue>\d+)\b"
 )
+GITLAB_ISSUE_PATH_PATTERN = re.compile(r"/-/issues/(?P<iid>\d+)(?=/|$)")
 
 
 def find_asana_tickets(text: str | None) -> list:
@@ -201,7 +202,7 @@ def extract_gitlab_ticket_references(pr_description, repo_path, gitlab_url):
     for match in GITLAB_TICKET_PATTERN.finditer(pr_description):
         if match.group("url"):
             try:
-                parsed_ticket_url = urlparse(match.group("url"))
+                parsed_ticket_url = urlparse(match.group("url").rstrip(".:!?'\\\"]}`*"))
             except ValueError:
                 continue
             if not provider_host or parsed_ticket_url.hostname != provider_host:
@@ -213,11 +214,11 @@ def extract_gitlab_ticket_references(pr_description, repo_path, gitlab_url):
                     continue
                 ticket_path = ticket_path[len(provider_base_path):]
 
-            issue_iid = int(match.group("url_issue"))
-            issue_suffix = f"/-/issues/{issue_iid}"
-            if not ticket_path.endswith(issue_suffix):
+            path_match = GITLAB_ISSUE_PATH_PATTERN.search(ticket_path)
+            if not path_match:
                 continue
-            issue_project = ticket_path[:-len(issue_suffix)].strip("/")
+            issue_iid = int(path_match.group("iid"))
+            issue_project = ticket_path[:path_match.start()].strip("/")
         elif match.group("project"):
             issue_project = match.group("project")
             issue_iid = int(match.group("project_issue"))

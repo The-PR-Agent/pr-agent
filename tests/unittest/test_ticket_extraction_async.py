@@ -15,6 +15,7 @@ from pr_agent.git_providers import AzureDevopsProvider, GithubProvider, GitLabPr
 from pr_agent.tools import ticket_pr_compliance_check as tpc
 from pr_agent.tools.ticket_pr_compliance_check import (
     extract_and_cache_pr_tickets,
+    extract_gitlab_ticket_references,
     extract_tickets,
 )
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
@@ -599,6 +600,50 @@ class TestAzureDevopsExtraction:
 # ---------------------------------------------------------------------------
 
 class TestGitLabExtraction:
+    @pytest.mark.parametrize(
+        ("description", "repo_path", "gitlab_url", "expected"),
+        [
+            (
+                "See https://gitlab.com/group/repo/-/issues/7.",
+                "group/repo",
+                "https://gitlab.com",
+                [("group/repo", 7)],
+            ),
+            (
+                "See (**`https://gitlab.com/group/repo/-/issues/7`**)",
+                "group/repo",
+                "https://gitlab.com",
+                [("group/repo", 7)],
+            ),
+            (
+                "https://gitlab.example.com:8443/gitlab/group/sub/repo/-/issues/7#note_42",
+                "group/sub/repo",
+                "https://gitlab.example.com:8443/gitlab",
+                [("group/sub/repo", 7)],
+            ),
+            (
+                "https://gitlab.com/group/repo/-/issues/007",
+                "group/repo",
+                "https://gitlab.com",
+                [("group/repo", 7)],
+            ),
+            (
+                "https://gitlab.com/group/repo/-/issues/7abc",
+                "group/repo",
+                "https://gitlab.com",
+                [],
+            ),
+            (
+                "https://gitlab.com/not-an-issue,https://gitlab.com/group/repo/-/issues/7",
+                "group/repo",
+                "https://gitlab.com",
+                [("group/repo", 7)],
+            ),
+        ],
+    )
+    def test_url_reference_boundaries(self, description, repo_path, gitlab_url, expected):
+        assert extract_gitlab_ticket_references(description, repo_path, gitlab_url) == expected
+
     @pytest.mark.parametrize(
         "reference",
         [
