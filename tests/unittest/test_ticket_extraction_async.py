@@ -645,6 +645,17 @@ class TestGitLabExtraction:
         assert extract_gitlab_ticket_references(description, repo_path, gitlab_url) == expected
 
     @pytest.mark.parametrize(
+        ("description", "expected"),
+        [
+            ("##7", []),
+            ("group/proj#7", [("group/proj", 7)]),
+            ("#7", [("group/repo", 7)]),
+        ],
+    )
+    def test_shorthand_reference_boundaries(self, description, expected):
+        assert extract_gitlab_ticket_references(description, "group/repo", "https://gitlab.com") == expected
+
+    @pytest.mark.parametrize(
         "reference",
         [
             "https://gitlab.com/group/repo/-/issues/7",

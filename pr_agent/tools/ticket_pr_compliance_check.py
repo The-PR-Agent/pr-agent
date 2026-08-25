@@ -56,7 +56,7 @@ MAX_GITLAB_TICKETS = 3
 GITLAB_TICKET_PATTERN = re.compile(
     r"(?P<url>https?://[^\s<>(),;]+)"
     r"|(?<![\w./-])(?P<project>[\w.-]+(?:/[\w.-]+)+)#(?P<project_issue>\d+)\b"
-    r"|(?<![\w/])#(?P<local_issue>\d+)\b"
+    r"|(?<![\w/#])#(?P<local_issue>\d+)\b"
 )
 GITLAB_ISSUE_PATH_PATTERN = re.compile(r"/-/issues/(?P<iid>\d+)(?=/|$)")
 
