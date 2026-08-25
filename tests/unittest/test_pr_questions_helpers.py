@@ -487,10 +487,10 @@ class TestThreadResolvedMarkerParsing:
     (after rstrip). Mid-message occurrences are treated as normal text.
     """
 
-    def _parse_marker(self, answer):
+    def _parse_marker(self, answer, resolve_threads=True):
         """Replicate the endswith-based parsing from PR_LineQuestions.run()."""
         answer_stripped = answer.rstrip()
-        if answer_stripped.endswith("[THREAD_RESOLVED]"):
+        if resolve_threads and answer_stripped.endswith("[THREAD_RESOLVED]"):
             return True, answer_stripped[:-len("[THREAD_RESOLVED]")].rstrip()
         return False, answer
 
@@ -513,6 +513,12 @@ class TestThreadResolvedMarkerParsing:
     def test_no_marker_means_no_resolve(self):
         answer = "I think this still needs work."
         should_resolve, cleaned = self._parse_marker(answer)
+        assert should_resolve is False
+        assert cleaned == answer
+
+    def test_marker_ignored_when_resolve_threads_disabled(self):
+        answer = "The issue is fixed.\n\n[THREAD_RESOLVED]"
+        should_resolve, cleaned = self._parse_marker(answer, resolve_threads=False)
         assert should_resolve is False
         assert cleaned == answer
 
