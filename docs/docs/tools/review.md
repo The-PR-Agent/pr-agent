@@ -60,7 +60,15 @@ extra_instructions = "..."
       </tr>
       <tr>
         <td><b>review_heading</b></td>
-        <td>Visible base heading for review comments, without the Markdown prefix or the incremental label. For example, <code>review_heading = "Guideline Compliance Check"</code> renders <code>## Guideline Compliance Check 🔍</code> for a full review and <code>## Incremental Guideline Compliance Check 🔍</code> for an incremental review. On GitHub, GitLab, Azure DevOps, and Bitbucket Cloud, changing this value updates the same persistent review comment; it does not create a separate review channel. Default is <code>PR Reviewer Guide</code>.</td>
+        <td>
+          Visible base heading for review comments, without the Markdown prefix or incremental label.
+          For example, <code>review_heading = "Guideline Compliance Check"</code> renders
+          <code>## Guideline Compliance Check 🔍</code> for a full review and
+          <code>## Incremental Guideline Compliance Check 🔍</code> for an incremental review.
+          On GitHub, GitLab, Azure DevOps, and Bitbucket Cloud, changing this value updates the same
+          persistent review comment; it does not create a separate review channel.
+          Default is <code>PR Reviewer Guide</code>.
+        </td>
       </tr>
       <tr>
       <td><b>final_update_message</b></td>

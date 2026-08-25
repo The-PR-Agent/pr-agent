@@ -150,7 +150,7 @@ class TestBitbucketProvider:
 
     def test_persistent_review_migrates_legacy_heading_to_stable_identity(self):
         legacy = MagicMock()
-        legacy.raw = "provider prefix\n## PR Reviewer Guide 🔍\n\nprevious review"
+        legacy.raw = "## PR Reviewer Guide 🔍\n\nprevious review"
         provider = self._make_persistent_provider([legacy])
 
         provider.publish_persistent_comment(
@@ -190,11 +190,13 @@ class TestBitbucketProvider:
         marked.put.assert_called_once()
         legacy.put.assert_not_called()
 
-    def test_persistent_review_does_not_match_marker_outside_header_region(self):
+    def test_persistent_review_does_not_match_quoted_identity(self):
         unrelated = MagicMock()
         unrelated.raw = (
-            "## Human comment\n\na\nb\nc\nd\n"
-            f"{PRReviewIdentity.REGULAR.value}\nquoted output"
+            "## Human comment\n\n"
+            f"{PRReviewHeader.REGULAR.value} 🔍\n"
+            "quoted review\nmore context\n"
+            f"{PRReviewIdentity.REGULAR.value}\n"
         )
         provider = self._make_persistent_provider([unrelated])
 

@@ -413,7 +413,11 @@ class BitbucketProvider(GitProvider):
                 )
                 if comment_to_update is None and legacy_initial_header:
                     comment_to_update = next(
-                        (comment for comment in comments if legacy_initial_header in comment.raw),
+                        (
+                            comment
+                            for comment in comments
+                            if comment_matches_identity(comment.raw, legacy_initial_header)
+                        ),
                         None,
                     )
             else:

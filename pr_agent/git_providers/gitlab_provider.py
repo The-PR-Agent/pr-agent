@@ -428,8 +428,8 @@ class GitLabProvider(GitProvider):
             get_logger().error(f"Could not get diff for merge request {self.id_mr}")
             raise DiffNotFoundError(f"Could not get diff for merge request {self.id_mr}") from e
 
-    # Anchor-note identities per incremental "kind". An incremental run looks for the most recent
-    # prior note matching any identity and uses its timestamp as the timeline anchor.
+    # Match the most recent prior note for each incremental kind against any accepted identity,
+    # then use its timestamp as the timeline anchor.
     _INCREMENTAL_ANCHOR_PREFIXES = {
         "review": get_pr_review_comment_identifiers(full=True, incremental=True),
         "suggestions": (
