@@ -1,7 +1,10 @@
 import copy
 import importlib
+import json
 
 import pytest
+from starlette.background import BackgroundTasks
+from starlette_context import request_cycle_context
 
 import pr_agent.servers.bitbucket_server_webhook as bitbucket_server_webhook
 from pr_agent.config_loader import get_settings
@@ -43,6 +46,55 @@ def _bitbucket_server_payload(**overrides):
     }
     payload["pullRequest"].update(overrides)
     return payload
+
+
+class _StubRequest:
+    """Minimal stand-in for a starlette Request, exposing only what handle_webhook reads."""
+
+    def __init__(self, payload: dict):
+        self._payload = payload
+        self.headers = {}
+
+    async def json(self):
+        return self._payload
+
+    async def body(self):
+        return json.dumps(self._payload).encode()
+
+
+@pytest.mark.parametrize("event_key", ["pr:from_ref_updated", "repo:refs_changed"])
+async def test_bitbucket_server_handle_webhook_accepts_push_trigger_event_keys(event_key, monkeypatch):
+    # Regression test: "pr:from_ref_updated" used to be excluded from this branch and
+    # fell through to the "Unsupported event" 400 response instead of running push commands.
+    settings = get_settings()
+    original_webhook_secret = settings.get("BITBUCKET_SERVER.WEBHOOK_SECRET", None)
+    original_handle_push_trigger = settings.get("BITBUCKET_SERVER.HANDLE_PUSH_TRIGGER", None)
+    settings.set("BITBUCKET_SERVER.WEBHOOK_SECRET", None)
+    settings.set("BITBUCKET_SERVER.HANDLE_PUSH_TRIGGER", True)
+
+    monkeypatch.setattr(bitbucket_server_webhook, "apply_repo_settings", lambda url: None)
+    monkeypatch.setattr(bitbucket_server_webhook, "should_process_pr_logic", lambda data: True)
+    monkeypatch.setattr(
+        bitbucket_server_webhook,
+        "_get_commands_list_from_settings",
+        lambda key: ["/review"] if key == "BITBUCKET_SERVER.PUSH_COMMANDS" else [],
+    )
+
+    payload = _bitbucket_server_payload()
+    payload["eventKey"] = event_key
+    request = _StubRequest(payload)
+    background_tasks = BackgroundTasks()
+
+    try:
+        with request_cycle_context({}):
+            response = await bitbucket_server_webhook.handle_webhook(background_tasks, request)
+    finally:
+        settings.set("BITBUCKET_SERVER.WEBHOOK_SECRET", original_webhook_secret)
+        settings.set("BITBUCKET_SERVER.HANDLE_PUSH_TRIGGER", original_handle_push_trigger)
+
+    assert response.status_code == 200
+    assert json.loads(response.body)["message"] == "success"
+    assert len(background_tasks.tasks) == 1
 
 
 def _gitlab_payload(**object_attributes):
