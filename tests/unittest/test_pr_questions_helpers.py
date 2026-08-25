@@ -1,4 +1,4 @@
-"""Focused unit tests for PRQuestions / PR_LineQuestions pure helpers.
+﻿"""Focused unit tests for PRQuestions / PR_LineQuestions pure helpers.
 
 These tests avoid constructing the tool objects through their public
 ``__init__`` (which would create real git providers and a TokenHandler).
@@ -650,6 +650,7 @@ class TestPRLineQuestionsRunSkipsEmptySelection:
         settings.unset("comment_id", force=True)
         return saved
 
+    @pytest.mark.asyncio
     async def test_skips_model_call_when_range_misses_hunks(self):
         obj = self._provider()
         saved = self._set_ask_settings("100", "200")
@@ -663,6 +664,7 @@ class TestPRLineQuestionsRunSkipsEmptySelection:
         finally:
             restore_settings(saved)
 
+    @pytest.mark.asyncio
     async def test_skips_model_call_when_patch_is_unparseable(self):
         obj = self._provider()
         obj.git_provider.get_diff_files.return_value = [SimpleNamespace(
@@ -678,6 +680,7 @@ class TestPRLineQuestionsRunSkipsEmptySelection:
         finally:
             restore_settings(saved)
 
+    @pytest.mark.asyncio
     async def test_calls_model_when_lines_are_selected(self):
         obj = self._provider()
         saved = self._set_ask_settings("6", "8")
@@ -690,6 +693,7 @@ class TestPRLineQuestionsRunSkipsEmptySelection:
         finally:
             restore_settings(saved)
 
+    @pytest.mark.asyncio
     async def test_skips_model_call_when_ask_diff_misses_hunks(self):
         obj = self._provider()
         saved = self._set_ask_settings("100", "200")
@@ -702,6 +706,7 @@ class TestPRLineQuestionsRunSkipsEmptySelection:
         finally:
             restore_settings(saved)
 
+    @pytest.mark.asyncio
     async def test_calls_model_when_ask_diff_selects_lines(self):
         obj = self._provider()
         saved = self._set_ask_settings("6", "8")
