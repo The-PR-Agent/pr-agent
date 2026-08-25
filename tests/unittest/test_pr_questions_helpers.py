@@ -14,7 +14,6 @@ import pytest
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
 import pr_agent.tools.pr_line_questions as plq
-from pr_agent.tools.pr_line_questions import PR_LineQuestions
 from pr_agent.tools.pr_questions import PRQuestions
 from tests.unittest._settings_helpers import SENTINEL, restore_settings, snapshot_settings
 
@@ -35,8 +34,8 @@ def _make_pr_questions(question_str: str = "", prediction: str = "", git_provide
     return obj
 
 
-def _make_line_questions() -> PR_LineQuestions:
-    obj = PR_LineQuestions.__new__(PR_LineQuestions)
+def _make_line_questions() -> plq.PR_LineQuestions:
+    obj = plq.PR_LineQuestions.__new__(plq.PR_LineQuestions)
     obj.vars = {}
     obj.git_provider = MagicMock()
     return obj
