@@ -1317,8 +1317,13 @@ class GitLabProvider(GitProvider):
 
         # Strip the deployment sub-path prefix (e.g. '/gitlab') from the URL path
         # so projects hosted on a GitLab instance using a relative URL parse correctly.
-        base_path_parts = [part for part in urlparse(self.gitlab_url).path.split("/") if part]
-        if base_path_parts and path_parts[:len(base_path_parts)] == base_path_parts:
+        # Only strip when the URL points at the configured GitLab host, so a prefix
+        # from another host is never rewritten into a project on this instance.
+        gitlab_base = urlparse(self.gitlab_url)
+        base_path_parts = [part for part in gitlab_base.path.split("/") if part]
+        same_host = (parsed_url.scheme.lower() == gitlab_base.scheme.lower()
+                     and parsed_url.netloc.lower() == gitlab_base.netloc.lower())
+        if same_host and base_path_parts and path_parts[:len(base_path_parts)] == base_path_parts:
             path_parts = path_parts[len(base_path_parts):]
 
         if 'merge_requests' not in path_parts:

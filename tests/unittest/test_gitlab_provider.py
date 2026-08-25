@@ -1449,6 +1449,16 @@ class TestGitLabProviderUrlParsing:
         assert provider._parse_merge_request_url(
             "https://host.local/gitlab/shai/pr-agent/-/merge_requests/12") == ("shai/pr-agent", 12)
 
+    def test_parse_merge_request_url_matches_host_with_port(self):
+        provider = self._provider("https://host.local:8443/gitlab")
+        assert provider._parse_merge_request_url(
+            "https://host.local:8443/gitlab/shai/pr-agent/-/merge_requests/12") == ("shai/pr-agent", 12)
+
+    def test_parse_merge_request_url_prefix_on_other_host_is_not_stripped(self):
+        provider = self._provider("https://host.local/gitlab")
+        assert provider._parse_merge_request_url(
+            "https://other.example/gitlab/acme/repo/-/merge_requests/7") == ("gitlab/acme/repo", 7)
+
     def test_parse_merge_request_url_prefix_mismatch_keeps_current_behavior(self):
         provider = self._provider("https://gitlab.com")
         assert provider._parse_merge_request_url(
