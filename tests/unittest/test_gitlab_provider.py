@@ -1409,3 +1409,52 @@ class TestGitLabRelevantDiff:
             provider.get_relevant_diff("app.py", "+added line")
 
         assert mock_logger.return_value.debug.call_count == 1
+
+
+class TestGitLabProviderUrlParsing:
+    """Cover MR URL parsing on GitLab instances deployed under a relative URL (sub-path).
+
+    `__init__` performs network calls, so build the provider with `__new__`
+    and exercise the pure helper only.
+    """
+
+    @staticmethod
+    def _provider(gitlab_url="https://gitlab.com"):
+        provider = GitLabProvider.__new__(GitLabProvider)
+        provider.gitlab_url = gitlab_url
+        return provider
+
+    def test_parse_merge_request_url_plain(self):
+        provider = self._provider("https://gitlab.com")
+        assert provider._parse_merge_request_url(
+            "https://gitlab.com/group/subgroup/repo/-/merge_requests/123") == ("group/subgroup/repo", 123)
+
+    def test_parse_merge_request_url_strips_sub_path_prefix(self):
+        provider = self._provider("https://host.local/gitlab")
+        assert provider._parse_merge_request_url(
+            "https://host.local/gitlab/shai/pr-agent/-/merge_requests/12") == ("shai/pr-agent", 12)
+
+    def test_parse_merge_request_url_sub_path_nested_groups(self):
+        provider = self._provider("https://host.local/gitlab")
+        assert provider._parse_merge_request_url(
+            "https://host.local/gitlab/group/sub/repo/-/merge_requests/9") == ("group/sub/repo", 9)
+
+    def test_parse_merge_request_url_multi_segment_sub_path(self):
+        provider = self._provider("https://gitlab.example.com/gitlab/app")
+        assert provider._parse_merge_request_url(
+            "https://gitlab.example.com/gitlab/app/shai/pr-agent/-/merge_requests/5") == ("shai/pr-agent", 5)
+
+    def test_parse_merge_request_url_config_with_trailing_slash(self):
+        provider = self._provider("https://host.local/gitlab/")
+        assert provider._parse_merge_request_url(
+            "https://host.local/gitlab/shai/pr-agent/-/merge_requests/12") == ("shai/pr-agent", 12)
+
+    def test_parse_merge_request_url_prefix_mismatch_keeps_current_behavior(self):
+        provider = self._provider("https://gitlab.com")
+        assert provider._parse_merge_request_url(
+            "https://host.local/gitlab/shai/pr-agent/-/merge_requests/12") == ("gitlab/shai/pr-agent", 12)
+
+    def test_parse_merge_request_url_rejects_non_mr_url_with_sub_path(self):
+        provider = self._provider("https://host.local/gitlab")
+        with pytest.raises(ValueError):
+            provider._parse_merge_request_url("https://host.local/gitlab/shai/pr-agent")

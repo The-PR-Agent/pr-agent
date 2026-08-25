@@ -1314,6 +1314,13 @@ class GitLabProvider(GitProvider):
         parsed_url = urlparse(merge_request_url)
 
         path_parts = parsed_url.path.strip('/').split('/')
+
+        # Strip the deployment sub-path prefix (e.g. '/gitlab') from the URL path
+        # so projects hosted on a GitLab instance using a relative URL parse correctly.
+        base_path_parts = [part for part in urlparse(self.gitlab_url).path.split("/") if part]
+        if base_path_parts and path_parts[:len(base_path_parts)] == base_path_parts:
+            path_parts = path_parts[len(base_path_parts):]
+
         if 'merge_requests' not in path_parts:
             raise ValueError("The provided URL does not appear to be a GitLab merge request URL")
 
