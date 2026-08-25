@@ -70,13 +70,12 @@ class PRReviewIdentity(str, Enum):
     INCREMENTAL = "<!-- pr-agent:review:incremental -->"
 
 
-DEFAULT_REVIEW_HEADING = "PR Reviewer Guide"
 _REVIEW_IDENTITY_HEADER_LINES = 5
 
 
 def format_pr_review_header(incremental: bool = False) -> str:
     """Return the visible review heading while keeping identity out of presentation."""
-    configured_heading = get_settings().get("pr_reviewer.review_heading", DEFAULT_REVIEW_HEADING)
+    configured_heading = get_settings().get("pr_reviewer.review_heading")
     if (
         not isinstance(configured_heading, str)
         or not configured_heading.strip()
@@ -86,7 +85,7 @@ def format_pr_review_header(incremental: bool = False) -> str:
         get_logger().warning(
             "Invalid pr_reviewer.review_heading; using the default review heading"
         )
-        configured_heading = DEFAULT_REVIEW_HEADING
+        configured_heading = PRReviewHeader.REGULAR.value.removeprefix("## ")
     heading = configured_heading.strip()
     incremental_prefix = "Incremental " if incremental else ""
     return f"## {incremental_prefix}{heading} 🔍"
