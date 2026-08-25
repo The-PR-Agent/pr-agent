@@ -5,6 +5,7 @@ from atlassian.bitbucket import Bitbucket
 from requests.exceptions import HTTPError
 
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
+from pr_agent.algo.utils import PRReviewHeader, PRReviewIdentity
 from pr_agent.git_providers import BitbucketServerProvider
 from pr_agent.git_providers.bitbucket_provider import BitbucketProvider
 
@@ -137,6 +138,93 @@ class TestBitbucketProvider:
         existing.put.assert_called_once()
         existing._update_data.assert_not_called()
         provider.publish_comment.assert_called_once_with(new_review)
+
+    def _make_persistent_provider(self, comments):
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.pr = MagicMock()
+        provider.pr.comments.return_value = comments
+        provider.get_latest_commit_url = MagicMock(return_value="https://bitbucket.org/commit/abc")
+        provider.get_comment_url = MagicMock(return_value="https://bitbucket.org/comment/1")
+        provider.publish_comment = MagicMock()
+        return provider
+
+    def test_persistent_review_migrates_legacy_heading_to_stable_identity(self):
+        legacy = MagicMock()
+        legacy.raw = "provider prefix\n## PR Reviewer Guide 🔍\n\nprevious review"
+        provider = self._make_persistent_provider([legacy])
+
+        provider.publish_persistent_comment(
+            "## Guideline Compliance Check 🔍\n\nnew review",
+            initial_header="## Guideline Compliance Check 🔍",
+            update_header=True,
+            final_update_message=False,
+            identity_marker=PRReviewIdentity.REGULAR.value,
+            legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
+        )
+
+        legacy.put.assert_called_once()
+        updated_body = legacy.put.call_args.kwargs["data"]["content"]["raw"]
+        assert updated_body.startswith("## Guideline Compliance Check 🔍\n\n")
+        assert PRReviewIdentity.REGULAR.value in updated_body
+        provider.publish_comment.assert_not_called()
+
+    def test_persistent_review_prefers_marked_comment_over_legacy_comment(self):
+        legacy = MagicMock()
+        legacy.raw = "## PR Reviewer Guide 🔍\n\nlegacy review"
+        marked = MagicMock()
+        marked.raw = (
+            "## Old Custom Heading 🔍\n\n"
+            f"{PRReviewIdentity.REGULAR.value}\n\nmarked review"
+        )
+        provider = self._make_persistent_provider([legacy, marked])
+
+        provider.publish_persistent_comment(
+            "## New Custom Heading 🔍\n\nnew review",
+            initial_header="## New Custom Heading 🔍",
+            update_header=True,
+            final_update_message=False,
+            identity_marker=PRReviewIdentity.REGULAR.value,
+            legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
+        )
+
+        marked.put.assert_called_once()
+        legacy.put.assert_not_called()
+
+    def test_persistent_review_does_not_match_marker_outside_header_region(self):
+        unrelated = MagicMock()
+        unrelated.raw = (
+            "## Human comment\n\na\nb\nc\nd\n"
+            f"{PRReviewIdentity.REGULAR.value}\nquoted output"
+        )
+        provider = self._make_persistent_provider([unrelated])
+
+        provider.publish_persistent_comment(
+            "## New Custom Heading 🔍\n\nnew review",
+            initial_header="## New Custom Heading 🔍",
+            update_header=True,
+            final_update_message=False,
+            identity_marker=PRReviewIdentity.REGULAR.value,
+            legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
+        )
+
+        unrelated.put.assert_not_called()
+        provider.publish_comment.assert_called_once()
+        assert PRReviewIdentity.REGULAR.value in provider.publish_comment.call_args.args[0]
+
+    def test_nonreview_persistent_comment_keeps_existing_bitbucket_matching(self):
+        existing = MagicMock()
+        existing.raw = "Configuration prefix\n## PR-Agent Configuration\nbody"
+        provider = self._make_persistent_provider([existing])
+
+        provider.publish_persistent_comment(
+            "## PR-Agent Configuration\nnew body",
+            initial_header="## PR-Agent Configuration",
+            update_header=False,
+            final_update_message=False,
+        )
+
+        existing.put.assert_called_once()
+        provider.publish_comment.assert_not_called()
 
 
 class TestBitbucketServerProvider:

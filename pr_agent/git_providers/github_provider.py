@@ -23,9 +23,10 @@ from ..algo.inline_comment_dedup import (body_fingerprint, body_with_markers,
                                          get_inline_comment_store, has_marker)
 from ..algo.language_handler import is_valid_file
 from ..algo.types import EDIT_TYPE
-from ..algo.utils import (PRReviewHeader, Range, clip_tokens,
+from ..algo.utils import (Range, clip_tokens, comment_matches_any_identity,
                           find_line_number_of_relevant_line_in_file,
-                          load_large_diff, set_file_languages)
+                          get_pr_review_comment_identifiers, load_large_diff,
+                          set_file_languages)
 from ..config_loader import get_settings
 from ..log import get_logger
 from ..servers.utils import RateLimitExceeded
@@ -202,13 +203,9 @@ class GithubProvider(GitProvider):
             raise ValueError("At least one of full or incremental must be True")
         if not getattr(self, "comments", None):
             self.comments = list(self.pr.get_issue_comments())
-        prefixes = []
-        if full:
-            prefixes.append(PRReviewHeader.REGULAR.value)
-        if incremental:
-            prefixes.append(PRReviewHeader.INCREMENTAL.value)
+        identifiers = get_pr_review_comment_identifiers(full=full, incremental=incremental)
         for index in range(len(self.comments) - 1, -1, -1):
-            if any(self.comments[index].body.startswith(prefix) for prefix in prefixes):
+            if comment_matches_any_identity(self.comments[index].body, identifiers):
                 return self.comments[index]
         return None
 
@@ -395,11 +392,24 @@ class GithubProvider(GitProvider):
                                    initial_header: str,
                                    update_header: bool = True,
                                    name='review',
-                                   final_update_message=True):
+                                   final_update_message=True,
+                                   identity_marker: str | None = None,
+                                   legacy_initial_header: str | None = None):
         if get_settings().github.publish_as_check_run:
             if self._publish_check_run(pr_comment, name):
                 return
-        self.publish_persistent_comment_full(pr_comment, initial_header, update_header, name, final_update_message)
+        self.publish_persistent_comment_full(
+            pr_comment,
+            initial_header,
+            update_header,
+            name,
+            final_update_message,
+            identity_marker=identity_marker,
+            legacy_initial_header=legacy_initial_header,
+        )
+
+    def supports_review_comment_identity(self) -> bool:
+        return True
 
     def _publish_check_run(self, text: str, name: str) -> bool:
         if not getattr(self, 'last_commit_id', None):

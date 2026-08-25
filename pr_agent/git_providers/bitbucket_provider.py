@@ -12,7 +12,8 @@ from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 
 from ..algo.file_filter import filter_ignored
 from ..algo.language_handler import is_valid_file
-from ..algo.utils import find_line_number_of_relevant_line_in_file
+from ..algo.utils import (add_pr_review_identity, comment_matches_identity,
+                          find_line_number_of_relevant_line_in_file)
 from ..config_loader import get_settings
 from ..log import get_logger
 from .git_provider import MAX_FILES_ALLOWED_FULL, GitProvider, get_cached_global_settings
@@ -395,31 +396,56 @@ class BitbucketProvider(GitProvider):
                                    initial_header: str,
                                    update_header: bool = True,
                                    name='review',
-                                   final_update_message=True):
+                                   final_update_message=True,
+                                   identity_marker: str | None = None,
+                                   legacy_initial_header: str | None = None):
         try:
-            for comment in self.pr.comments():
-                body = comment.raw
-                if initial_header in body:
-                    latest_commit_url = self.get_latest_commit_url()
-                    comment_url = self.get_comment_url(comment)
-                    if update_header:
-                        updated_header = f"{initial_header}\n\n#### ({name.capitalize()} updated until commit {latest_commit_url})\n"
-                        pr_comment_updated = pr_comment.replace(initial_header, updated_header)
-                    else:
-                        pr_comment_updated = pr_comment
-                    get_logger().info(f"Persistent mode - updating comment {comment_url} to latest {name} message")
-                    d = {"content": {"raw": pr_comment_updated}}
-                    response = comment._update_data(comment.put(None, data=d))
-                    if final_update_message:
-                        try:
-                            self.publish_comment(
-                                f"**[Persistent {name}]({comment_url})** updated to latest commit {latest_commit_url}")
-                        except Exception:
-                            # The review was already updated in place; a notification failure must not reach
-                            # the outer except, whose fallback publish would duplicate the review.
-                            get_logger().opt(exception=True).warning(
-                                "Failed to publish persistent review update message; review was already updated")
-                    return
+            pr_comment = add_pr_review_identity(pr_comment, identity_marker)
+            comments = list(self.pr.comments())
+            if identity_marker:
+                comment_to_update = next(
+                    (
+                        comment
+                        for comment in comments
+                        if comment_matches_identity(comment.raw, identity_marker)
+                    ),
+                    None,
+                )
+                if comment_to_update is None and legacy_initial_header:
+                    comment_to_update = next(
+                        (comment for comment in comments if legacy_initial_header in comment.raw),
+                        None,
+                    )
+            else:
+                # Preserve Bitbucket's existing behavior for non-review persistent comments.
+                comment_to_update = next(
+                    (comment for comment in comments if initial_header in comment.raw),
+                    None,
+                )
+            if comment_to_update is not None:
+                comment = comment_to_update
+                latest_commit_url = self.get_latest_commit_url()
+                comment_url = self.get_comment_url(comment)
+                if update_header:
+                    update_message = f"#### ({name.capitalize()} updated until commit {latest_commit_url})\n"
+                    update_anchor = identity_marker or initial_header
+                    updated_anchor = f"{update_anchor}\n\n{update_message}"
+                    pr_comment_updated = pr_comment.replace(update_anchor, updated_anchor, 1)
+                else:
+                    pr_comment_updated = pr_comment
+                get_logger().info(f"Persistent mode - updating comment {comment_url} to latest {name} message")
+                d = {"content": {"raw": pr_comment_updated}}
+                comment._update_data(comment.put(None, data=d))
+                if final_update_message:
+                    try:
+                        self.publish_comment(
+                            f"**[Persistent {name}]({comment_url})** updated to latest commit {latest_commit_url}")
+                    except Exception:
+                        # The review was already updated in place; a notification failure must not reach
+                        # the outer except, whose fallback publish would duplicate the review.
+                        get_logger().opt(exception=True).warning(
+                            "Failed to publish persistent review update message; review was already updated")
+                return
         except Exception as e:
             get_logger().exception(f"Failed to update persistent review, error: {e}")
             pass

@@ -20,9 +20,9 @@ from ..algo.inline_comment_dedup import (body_fingerprint, body_with_markers,
                                          code_fingerprint,
                                          get_inline_comment_store)
 from ..algo.language_handler import is_valid_file
-from ..algo.utils import (PRReviewHeader, clip_tokens,
+from ..algo.utils import (clip_tokens, comment_matches_any_identity,
                           find_line_number_of_relevant_line_in_file,
-                          load_large_diff)
+                          get_pr_review_comment_identifiers, load_large_diff)
 from ..config_loader import get_settings
 from ..log import get_logger
 from .git_provider import (MAX_FILES_ALLOWED_FULL, GitProvider, IncrementalPR,
@@ -428,13 +428,10 @@ class GitLabProvider(GitProvider):
             get_logger().error(f"Could not get diff for merge request {self.id_mr}")
             raise DiffNotFoundError(f"Could not get diff for merge request {self.id_mr}") from e
 
-    # Anchor-note prefixes per incremental "kind". An incremental run looks for the most recent
-    # prior note matching ANY of these prefixes and uses its timestamp as the timeline anchor.
+    # Anchor-note identities per incremental "kind". An incremental run looks for the most recent
+    # prior note matching any identity and uses its timestamp as the timeline anchor.
     _INCREMENTAL_ANCHOR_PREFIXES = {
-        "review": (
-            PRReviewHeader.REGULAR.value,         # "## PR Reviewer Guide"
-            PRReviewHeader.INCREMENTAL.value,     # "## Incremental PR Reviewer Guide"
-        ),
+        "review": get_pr_review_comment_identifiers(full=True, incremental=True),
         "suggestions": (
             "## PR Code Suggestions ✨",           # summary-table mode
             "**Suggestion:**",                     # commitable-suggestions inline mode
@@ -596,15 +593,11 @@ class GitLabProvider(GitProvider):
     def get_previous_review(self, *, full: bool, incremental: bool):
         if not (full or incremental):
             raise ValueError("At least one of full or incremental must be True")
-        prefixes = []
-        if full:
-            prefixes.append(PRReviewHeader.REGULAR.value)
-        if incremental:
-            prefixes.append(PRReviewHeader.INCREMENTAL.value)
-        return self._find_anchor_note(prefixes)
+        identifiers = get_pr_review_comment_identifiers(full=full, incremental=incremental)
+        return self._find_anchor_note(identifiers)
 
-    def _find_anchor_note(self, prefixes):
-        """Return the most recent MR note whose body starts with any of `prefixes`.
+    def _find_anchor_note(self, identities):
+        """Return the most recent MR note whose body matches any supplied identity.
 
         Used by incremental flows (`/review -i`, `/improve -i`) to find the timestamp
         we anchor the commit timeline on. Returns a `_GitLabIncrementalNote` adapter
@@ -621,9 +614,9 @@ class GitLabProvider(GitProvider):
         Notes authored by other users are skipped when the authenticated (bot) user is
         known: a human comment that merely starts with `**Suggestion:**` must not shift
         the anchor. When authorship can't be established (e.g. job-token auth), we keep
-        the prefix-only behaviour rather than disabling incremental runs.
+        identity-only matching rather than disabling incremental runs.
         """
-        if not prefixes:
+        if not identities:
             return None
         # Use hasattr (not truthy) so a legitimately empty notes list still counts as cached;
         # otherwise we'd re-fetch from GitLab on every call for MRs that have no notes.
@@ -639,7 +632,7 @@ class GitLabProvider(GitProvider):
             body = getattr(note, 'body', None)
             if not isinstance(body, str):
                 continue
-            if not any(body.startswith(prefix) for prefix in prefixes):
+            if not comment_matches_any_identity(body, identities):
                 continue
             if own_user_id is not None:
                 author = getattr(note, 'author', None)
@@ -851,14 +844,27 @@ class GitLabProvider(GitProvider):
     def should_publish_review_as_thread(self) -> bool:
         return bool(get_settings().get("GITLAB.PUBLISH_REVIEW_AS_THREAD", False))
 
+    def supports_review_comment_identity(self) -> bool:
+        return True
+
     def publish_persistent_comment(self, pr_comment: str,
                                    initial_header: str,
                                    update_header: bool = True,
                                    name='review',
                                    final_update_message=True,
-                                   as_thread: bool = False):
-        self.publish_persistent_comment_full(pr_comment, initial_header, update_header, name, final_update_message,
-                                             as_thread=as_thread)
+                                   as_thread: bool = False,
+                                   identity_marker: str | None = None,
+                                   legacy_initial_header: str | None = None):
+        self.publish_persistent_comment_full(
+            pr_comment,
+            initial_header,
+            update_header,
+            name,
+            final_update_message,
+            as_thread=as_thread,
+            identity_marker=identity_marker,
+            legacy_initial_header=legacy_initial_header,
+        )
 
     def publish_comment(self, mr_comment: str, is_temporary: bool = False, as_thread: bool = False):
         if is_temporary and not get_settings().config.publish_output_progress:

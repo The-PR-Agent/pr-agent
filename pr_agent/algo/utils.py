@@ -15,7 +15,7 @@ import traceback
 from datetime import datetime
 from enum import Enum
 from importlib.metadata import PackageNotFoundError, version
-from typing import Any, List, Tuple, TypedDict
+from typing import Any, Iterable, List, Tuple, TypedDict
 
 import html2text
 import requests
@@ -63,6 +63,69 @@ class TodoItem(TypedDict):
 class PRReviewHeader(str, Enum):
     REGULAR = "## PR Reviewer Guide"
     INCREMENTAL = "## Incremental PR Reviewer Guide"
+
+
+class PRReviewIdentity(str, Enum):
+    REGULAR = "<!-- pr-agent:review:full -->"
+    INCREMENTAL = "<!-- pr-agent:review:incremental -->"
+
+
+DEFAULT_REVIEW_HEADING = "PR Reviewer Guide"
+_REVIEW_IDENTITY_HEADER_LINES = 5
+
+
+def format_pr_review_header(incremental: bool = False) -> str:
+    """Return the visible review heading while keeping identity out of presentation."""
+    configured_heading = get_settings().get("pr_reviewer.review_heading", DEFAULT_REVIEW_HEADING)
+    if (
+        not isinstance(configured_heading, str)
+        or not configured_heading.strip()
+        or "\n" in configured_heading
+        or "\r" in configured_heading
+    ):
+        get_logger().warning(
+            "Invalid pr_reviewer.review_heading; using the default review heading"
+        )
+        configured_heading = DEFAULT_REVIEW_HEADING
+    heading = configured_heading.strip()
+    incremental_prefix = "Incremental " if incremental else ""
+    return f"## {incremental_prefix}{heading} 🔍"
+
+
+def comment_matches_identity(body: str, identity: str) -> bool:
+    """Match hidden markers only as exact lines near the top; legacy headers as prefixes."""
+    if not isinstance(body, str) or not isinstance(identity, str) or not identity:
+        return False
+    if identity.startswith("<!--"):
+        return any(
+            line.strip() == identity
+            for line in body.splitlines()[:_REVIEW_IDENTITY_HEADER_LINES]
+        )
+    return body.startswith(identity)
+
+
+def comment_matches_any_identity(body: str, identities: Iterable[str]) -> bool:
+    return any(comment_matches_identity(body, identity) for identity in identities)
+
+
+def get_pr_review_comment_identifiers(*, full: bool, incremental: bool) -> tuple[str, ...]:
+    """Return stable markers followed by legacy visible prefixes for migration."""
+    identifiers = []
+    if full:
+        identifiers.extend((PRReviewIdentity.REGULAR.value, PRReviewHeader.REGULAR.value))
+    if incremental:
+        identifiers.extend((PRReviewIdentity.INCREMENTAL.value, PRReviewHeader.INCREMENTAL.value))
+    return tuple(identifiers)
+
+
+def add_pr_review_identity(pr_comment: str, identity_marker: str | None) -> str:
+    """Insert a hidden identity after the visible heading without changing rendered output."""
+    if not pr_comment or not identity_marker or comment_matches_identity(pr_comment, identity_marker):
+        return pr_comment
+    heading, separator, remainder = pr_comment.partition("\n\n")
+    if not separator:
+        return f"{pr_comment.rstrip()}\n\n{identity_marker}"
+    return f"{heading}\n\n{identity_marker}\n\n{remainder}"
 
 
 class ReasoningEffort(str, Enum):
@@ -168,10 +231,8 @@ def convert_to_markdown_v2(output_data: dict,
         "Ticket compliance check": "🎫",
     }
     markdown_text = ""
-    if not incremental_review:
-        markdown_text += f"{PRReviewHeader.REGULAR.value} 🔍\n\n"
-    else:
-        markdown_text += f"{PRReviewHeader.INCREMENTAL.value} 🔍\n\n"
+    markdown_text += f"{format_pr_review_header(incremental=bool(incremental_review))}\n\n"
+    if incremental_review:
         markdown_text += f"⏮️ Review for commits since previous PR-Agent review {incremental_review}.\n\n"
     if not output_data or not output_data.get('review', {}):
         return ""

@@ -7,7 +7,7 @@ import time
 from typing import Optional, Tuple
 
 from pr_agent.algo.types import FilePatchInfo
-from pr_agent.algo.utils import Range, process_description
+from pr_agent.algo.utils import Range, add_pr_review_identity, comment_matches_identity, process_description
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
@@ -350,6 +350,9 @@ class GitProvider(ABC):
     def should_publish_review_as_thread(self) -> bool:
         return False
 
+    def supports_review_comment_identity(self) -> bool:
+        return False
+
     def unresolve_comment_thread(self, comment):  # noqa: B027 - intentional no-op
         pass
 
@@ -358,7 +361,9 @@ class GitProvider(ABC):
                                    update_header: bool = True,
                                    name='review',
                                    final_update_message=True,
-                                   as_thread: bool = False):
+                                   as_thread: bool = False,
+                                   identity_marker: str | None = None,
+                                   legacy_initial_header: str | None = None):
         return self.publish_comment(pr_comment, **({'as_thread': True} if as_thread else {}))
 
     def publish_persistent_comment_full(self, pr_comment: str,
@@ -366,40 +371,60 @@ class GitProvider(ABC):
                                    update_header: bool = True,
                                    name='review',
                                    final_update_message=True,
-                                   as_thread: bool = False):
+                                   as_thread: bool = False,
+                                   identity_marker: str | None = None,
+                                   legacy_initial_header: str | None = None):
         try:
+            pr_comment = add_pr_review_identity(pr_comment, identity_marker)
             prev_comments = list(self.get_issue_comments())
-            for comment in prev_comments:
-                if comment.body.startswith(initial_header):
-                    latest_commit_url = self.get_latest_commit_url()
-                    comment_url = self.get_comment_url(comment)
-                    if update_header:
-                        updated_header = f"{initial_header}\n\n#### ({name.capitalize()} updated until commit {latest_commit_url})\n"
-                        pr_comment_updated = pr_comment.replace(initial_header, updated_header)
-                    else:
-                        pr_comment_updated = pr_comment
-                    get_logger().info(f"Persistent mode - updating comment {comment_url} to latest {name} message")
-                    # response = self.mr.notes.update(comment.id, {'body': pr_comment_updated})
-                    self.edit_comment(comment, pr_comment_updated)
-                    if as_thread:
-                        try:
-                            # Reopen the thread if it was resolved, so the developer revisits the updated review.
-                            self.unresolve_comment_thread(comment)
-                        except Exception as e:
-                            # The review was already updated in place; a reopen failure must not reach the
-                            # outer except, whose fallback publish would duplicate the review.
-                            get_logger().warning(f"Failed to reopen review thread: {e}")
-                    if final_update_message:
-                        try:
-                            return self.publish_comment(
-                                f"**[Persistent {name}]({comment_url})** updated to latest commit {latest_commit_url}")
-                        except Exception:
-                            # The review was already updated in place; a notification failure must not reach
-                            # the outer except, whose fallback publish would duplicate the review.
-                            get_logger().opt(exception=True).warning(
-                                "Failed to publish persistent review update message; review was already updated")
-                            return comment
-                    return comment
+            identifiers = (
+                [identity_marker, legacy_initial_header]
+                if identity_marker
+                else [initial_header]
+            )
+            comment_to_update = next(
+                (
+                    comment
+                    for identifier in identifiers
+                    if identifier
+                    for comment in prev_comments
+                    if comment_matches_identity(comment.body, identifier)
+                ),
+                None,
+            )
+            if comment_to_update is not None:
+                comment = comment_to_update
+                latest_commit_url = self.get_latest_commit_url()
+                comment_url = self.get_comment_url(comment)
+                if update_header:
+                    update_message = f"#### ({name.capitalize()} updated until commit {latest_commit_url})\n"
+                    update_anchor = identity_marker or initial_header
+                    updated_anchor = f"{update_anchor}\n\n{update_message}"
+                    pr_comment_updated = pr_comment.replace(update_anchor, updated_anchor, 1)
+                else:
+                    pr_comment_updated = pr_comment
+                get_logger().info(f"Persistent mode - updating comment {comment_url} to latest {name} message")
+                # response = self.mr.notes.update(comment.id, {'body': pr_comment_updated})
+                self.edit_comment(comment, pr_comment_updated)
+                if as_thread:
+                    try:
+                        # Reopen the thread if it was resolved, so the developer revisits the updated review.
+                        self.unresolve_comment_thread(comment)
+                    except Exception as e:
+                        # The review was already updated in place; a reopen failure must not reach the
+                        # outer except, whose fallback publish would duplicate the review.
+                        get_logger().warning(f"Failed to reopen review thread: {e}")
+                if final_update_message:
+                    try:
+                        return self.publish_comment(
+                            f"**[Persistent {name}]({comment_url})** updated to latest commit {latest_commit_url}")
+                    except Exception:
+                        # The review was already updated in place; a notification failure must not reach
+                        # the outer except, whose fallback publish would duplicate the review.
+                        get_logger().opt(exception=True).warning(
+                            "Failed to publish persistent review update message; review was already updated")
+                        return comment
+                return comment
         except Exception as e:
             get_logger().exception(f"Failed to update persistent review, error: {e}")
             pass

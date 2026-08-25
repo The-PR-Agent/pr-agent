@@ -2,6 +2,7 @@ import datetime as _dt
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from pr_agent.algo.utils import PRReviewIdentity
 from pr_agent.git_providers import AzureDevopsProvider
 from pr_agent.git_providers.azuredevops_provider import (
     _AzureCommitAdapter,
@@ -89,6 +90,22 @@ class TestGetIncrementalCommits:
 
         assert provider.incremental.is_incremental is False
         assert provider.previous_review is None
+
+    def test_previous_review_accepts_custom_heading_with_stable_identity(self):
+        provider = self._make_provider()
+        review_time = _dt.datetime(2024, 6, 1, 10, 0, tzinfo=_dt.timezone.utc)
+        marked = _comment(
+            (
+                "## Guideline Compliance Check 🔍\n\n"
+                f"{PRReviewIdentity.REGULAR.value}\n\nbody"
+            ),
+            review_time,
+        )
+        provider.get_issue_comments = MagicMock(return_value=[marked])
+
+        result = provider.get_previous_review(full=True, incremental=False)
+
+        assert result is marked
 
     def test_populates_commits_range_and_files(self):
         provider = self._make_provider()

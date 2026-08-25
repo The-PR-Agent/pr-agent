@@ -6,6 +6,7 @@ from gitlab import Gitlab
 from gitlab.exceptions import GitlabGetError
 from gitlab.v4.objects import ProjectFile, ProjectMergeRequest, ProjectMergeRequestManager
 
+from pr_agent.algo.utils import PRReviewHeader, PRReviewIdentity
 from pr_agent.git_providers.git_provider import IncrementalPR
 from pr_agent.git_providers.gitlab_provider import (
     GitLabProvider,
@@ -560,6 +561,72 @@ class TestGitLabProvider:
         gitlab_provider.mr.notes.update.assert_called_once()
         gitlab_provider.unresolve_comment_thread.assert_not_called()
 
+    def test_persistent_review_migrates_legacy_heading_to_stable_identity(self, gitlab_provider):
+        legacy = MagicMock(id=7)
+        legacy.body = "## PR Reviewer Guide 🔍\n\nprevious review"
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.get_issue_comments = MagicMock(return_value=[legacy])
+        gitlab_provider.get_latest_commit_url = MagicMock(return_value="https://gitlab.com/c/abc")
+        gitlab_provider.get_comment_url = MagicMock(return_value="https://gitlab.com/n/7")
+
+        gitlab_provider.publish_persistent_comment(
+            "## Guideline Compliance Check 🔍\n\nnew review",
+            initial_header="## Guideline Compliance Check 🔍",
+            update_header=True,
+            final_update_message=False,
+            identity_marker=PRReviewIdentity.REGULAR.value,
+            legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
+        )
+
+        gitlab_provider.mr.notes.update.assert_called_once()
+        updated_body = gitlab_provider.mr.notes.update.call_args.args[1]["body"]
+        assert updated_body.startswith("## Guideline Compliance Check 🔍\n\n")
+        assert PRReviewIdentity.REGULAR.value in updated_body
+        gitlab_provider.mr.notes.create.assert_not_called()
+
+    def test_persistent_review_prefers_marked_comment_over_legacy_comment(self, gitlab_provider):
+        legacy = MagicMock(id=1)
+        legacy.body = "## PR Reviewer Guide 🔍\n\nlegacy review"
+        marked = MagicMock(id=2)
+        marked.body = (
+            "## Old Custom Heading 🔍\n\n"
+            f"{PRReviewIdentity.REGULAR.value}\n\nmarked review"
+        )
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.get_issue_comments = MagicMock(return_value=[legacy, marked])
+        gitlab_provider.get_latest_commit_url = MagicMock(return_value="https://gitlab.com/c/abc")
+        gitlab_provider.get_comment_url = MagicMock(return_value="https://gitlab.com/n/2")
+
+        gitlab_provider.publish_persistent_comment(
+            "## New Custom Heading 🔍\n\nnew review",
+            initial_header="## New Custom Heading 🔍",
+            update_header=True,
+            final_update_message=False,
+            identity_marker=PRReviewIdentity.REGULAR.value,
+            legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
+        )
+
+        assert gitlab_provider.mr.notes.update.call_args.args[0] == 2
+        gitlab_provider.mr.notes.create.assert_not_called()
+
+    def test_persistent_review_does_not_adopt_similar_human_heading(self, gitlab_provider):
+        human_comment = MagicMock(id=3)
+        human_comment.body = "## PR Reviewer Guide for maintainers\n\nhuman notes"
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.get_issue_comments = MagicMock(return_value=[human_comment])
+
+        gitlab_provider.publish_persistent_comment(
+            "## New Custom Heading 🔍\n\nnew review",
+            initial_header="## New Custom Heading 🔍",
+            update_header=True,
+            final_update_message=False,
+            identity_marker=PRReviewIdentity.REGULAR.value,
+            legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
+        )
+
+        gitlab_provider.mr.notes.update.assert_not_called()
+        gitlab_provider.mr.notes.create.assert_called_once()
+
     @pytest.mark.parametrize("resolvable,resolved,should_reopen", [
         (True, True, True),     # resolved thread -> reopen it
         (True, False, False),   # already open -> leave it
@@ -1031,8 +1098,6 @@ class TestGitLabIncrementalReview:
         assert gitlab_provider.get_files() == ["x.py"]
 
     def test_get_previous_review_returns_most_recent_match(self, gitlab_provider):
-        from pr_agent.algo.utils import PRReviewHeader
-
         # GitLab returns notes in created_at-DESC order. The helper relies on that order
         # (no local sort) — the unrelated newest note must be skipped, the newer matching
         # note must win over the older matching note.
@@ -1046,6 +1111,23 @@ class TestGitLabIncrementalReview:
 
         assert result is not None
         assert result.id == 2
+
+    def test_get_previous_review_accepts_custom_heading_with_stable_identity(self, gitlab_provider):
+        gitlab_provider.mr.notes.list.return_value = [
+            self._make_note(
+                7,
+                (
+                    "## Guideline Compliance Check 🔍\n\n"
+                    f"{PRReviewIdentity.REGULAR.value}\n\nbody"
+                ),
+                "2024-05-01T10:00:00Z",
+            ),
+        ]
+
+        result = gitlab_provider.get_previous_review(full=True, incremental=False)
+
+        assert result is not None
+        assert result.id == 7
 
     def test_master_merge_files_are_excluded_from_incremental_scope(self, gitlab_provider, mock_project):
         # Reproduction of the MR !1115 bug: user ran `git merge master` on the feature branch,
