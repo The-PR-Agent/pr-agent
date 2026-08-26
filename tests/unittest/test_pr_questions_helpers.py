@@ -609,6 +609,9 @@ class TestRunResolvesThread:
 
         lq.git_provider.reply_to_comment_from_comment_id.assert_called_once()
         lq.git_provider.resolve_comment_thread.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # PR_LineQuestions.run - model call gating (no hunk lines selected)
 # ---------------------------------------------------------------------------
 
