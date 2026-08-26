@@ -65,6 +65,7 @@ class _StubRequest:
         return json.dumps(self._payload).encode()
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize("event_key", ["pr:from_ref_updated", "repo:refs_changed"])
 async def test_bitbucket_server_handle_webhook_accepts_push_trigger_event_keys(event_key, monkeypatch):
     # Regression test: "pr:from_ref_updated" used to be excluded from this branch and
