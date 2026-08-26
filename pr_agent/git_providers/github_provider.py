@@ -771,10 +771,7 @@ class GithubProvider(GitProvider):
 
         # publish as a group the verified comments
         if verified_comments:
-            try:
-                self.pr.create_review(commit=self.last_commit_id, comments=verified_comments)
-            except Exception:
-                raise
+            self.pr.create_review(commit=self.last_commit_id, comments=verified_comments)
 
         # try to publish one by one the invalid comments as a one-line code comment
         if invalid_comments and get_settings().github.try_fix_invalid_inline_comments:
