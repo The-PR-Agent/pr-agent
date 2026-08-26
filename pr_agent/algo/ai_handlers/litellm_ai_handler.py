@@ -378,7 +378,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         return response_log
 
     @staticmethod
-    def _record_completion_metadata(response, model=None) -> None:
+    def _record_completion_metadata(response, model=None, display_model=None) -> None:
         """Count a successful call and synchronously collect usage-based cost when possible."""
         if isinstance(response, dict):
             usage = response.get("usage")
@@ -390,19 +390,20 @@ class LiteLLMAIHandler(BaseAiHandler):
             cost_usd = LiteLLMAIHandler._read_positive_response_cost(response, usage)
             if cost_usd is None and model and LiteLLMAIHandler._has_priceable_usage(usage):
                 try:
-                    # completion_cost consumes LiteLLM's full usage object, including cache,
-                    # reasoning, and provider-specific categories. For the small completed
-                    # stream wrapper, pass its dictionary while retaining `response.usage`.
+                    # Preserve LiteLLM's full usage object so completion_cost can price cache,
+                    # reasoning, and provider-specific categories. Convert the small completed
+                    # stream wrapper to a dictionary while retaining `response.usage`.
                     cost_response = response
                     if not isinstance(response, dict) and not hasattr(response, "model_dump"):
                         cost_response = response.dict()
                     cost_usd = litellm.completion_cost(completion_response=cost_response, model=model)
                 except Exception as e:
-                    # Missing model pricing or insufficient usage is expected for some providers.
-                    # Keep the successful call but mark its cost unavailable in the collector.
+                    # Treat missing model pricing or insufficient usage as an unavailable call cost.
+                    # Retain the successful call so the collector marks the aggregate safely.
                     get_logger().debug(f"Unable to estimate API cost for model {model}: {type(e).__name__}")
 
-        record_ai_call(usage, model=model, cost_usd=cost_usd)
+        recorded_model = display_model if display_model is not None else model
+        record_ai_call(usage, model=recorded_model, cost_usd=cost_usd)
 
     @staticmethod
     def _read_positive_response_cost(response, usage):
@@ -1001,7 +1002,7 @@ class LiteLLMAIHandler(BaseAiHandler):
             if get_settings().config.verbosity_level >= 2:
                 get_logger().info(f"\nAI response:\n{resp}")
 
-            self._record_completion_metadata(response_obj, model=model)
+            self._record_completion_metadata(response_obj, model=model, display_model=user_model)
 
             return resp, finish_reason
 

@@ -70,6 +70,26 @@ def test_record_completion_metadata_collects_known_non_streaming_cost(monkeypatc
     assert completion_cost.call_args.kwargs["completion_response"]["usage"] is usage
 
 
+def test_record_completion_metadata_prices_routed_model_and_records_configured_model(monkeypatch):
+    usage = _Usage(100, 10, 110)
+    response = _Response(usage)
+    _set_cost_collection(monkeypatch, True)
+    init_run_details()
+
+    with patch(
+        "pr_agent.algo.ai_handlers.litellm_ai_handler.litellm.completion_cost",
+        return_value=0.0842,
+    ) as completion_cost:
+        LiteLLMAIHandler._record_completion_metadata(
+            response,
+            model="azure/gpt-5",
+            display_model="gpt-5_thinking",
+        )
+
+    assert completion_cost.call_args.kwargs["model"] == "azure/gpt-5"
+    assert get_run_details().model_costs_usd == {"gpt-5_thinking": Decimal("0.0842")}
+
+
 def test_record_completion_metadata_uses_positive_finalized_inline_cost(monkeypatch):
     _set_cost_collection(monkeypatch, True)
     init_run_details()
@@ -267,6 +287,35 @@ async def test_chat_completion_records_the_call_it_just_made(monkeypatch):
     assert details.prompt_tokens == 100
     assert details.completion_tokens == 10
     assert details.total_tokens == 110
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_preserves_configured_model_for_cost_breakdown(monkeypatch):
+    handler = _bare_handler()
+    handler.azure = True
+    response = _Response(_Usage(100, 10, 110))
+    routed_models = []
+
+    async def fake_get_completion(**kwargs):
+        routed_models.append(kwargs["model"])
+        return "resp", "stop", response
+
+    monkeypatch.setattr(handler, "_get_completion", fake_get_completion)
+
+    with patch.object(
+        handler,
+        "_record_completion_metadata",
+        wraps=handler._record_completion_metadata,
+    ) as record_completion_metadata:
+        init_run_details()
+        await handler.chat_completion(model="gpt-4.1", system="sys", user="usr")
+
+    assert routed_models == ["azure/gpt-4.1"]
+    record_completion_metadata.assert_called_once_with(
+        response,
+        model="azure/gpt-4.1",
+        display_model="gpt-4.1",
+    )
 
 
 @pytest.mark.asyncio

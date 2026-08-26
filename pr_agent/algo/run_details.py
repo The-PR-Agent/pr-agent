@@ -45,10 +45,10 @@ class RunDetails:
     total_tokens: int = 0
     # Successful LLM invocations, counted even when their token usage is unavailable.
     num_ai_calls: int = 0
-    # Costs are accumulated only when cost output is enabled and LiteLLM can
-    # synchronously price a successful response. The known-call count distinguishes
-    # a genuine zero cost from missing pricing data, while the per-model totals keep
-    # fallback and multi-call runs auditable.
+    # Accumulate costs only when cost output is enabled and LiteLLM can synchronously
+    # price a successful response. Use the known-call count to distinguish a genuine
+    # zero cost from missing pricing data. Retain per-model totals to keep fallback and
+    # multi-call runs auditable.
     total_cost_usd: Decimal = field(default_factory=lambda: Decimal("0"))
     known_cost_call_count: int = 0
     model_costs_usd: dict[str, Decimal] = field(default_factory=dict)

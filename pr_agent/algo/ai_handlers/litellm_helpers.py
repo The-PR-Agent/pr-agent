@@ -101,7 +101,7 @@ async def _handle_streaming_response(response, model=None):
 
 
 class MockResponse:
-    """Completed streaming response that retains LiteLLM's finalized usage object."""
+    """Represent a completed streaming response while retaining LiteLLM's finalized usage object."""
 
     def __init__(self, resp, finish_reason, usage=None, model=None):
         self.usage = usage
