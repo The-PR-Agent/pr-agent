@@ -146,6 +146,28 @@ class TestPreparePrAnswer:
 
         assert header == "### **Ask**❓"
 
+    @pytest.mark.parametrize(
+        ("heading", "expected"),
+        [
+            ("Architecture **Question**", r"### **Architecture \*\*Question\*\***❓"),
+            (
+                r"Use [SDK](docs/v2) `now` \\ safely",
+                r"### **Use \[SDK\]\(docs\/v2\) \`now\` \\\\ safely**❓",
+            ),
+            ("Architecture Ω", "### **Architecture Ω**❓"),
+        ],
+    )
+    def test_heading_is_rendered_as_literal_text(self, heading, expected):
+        settings = get_settings()
+        saved = snapshot_settings(("pr_questions.ask_heading",))
+        try:
+            settings.set("pr_questions.ask_heading", heading)
+            header = format_pr_questions_header()
+        finally:
+            restore_settings(saved)
+
+        assert header == expected
+
     def test_sanitizes_leading_slash(self):
         pr = _make_pr_questions(
             question_str="q", prediction="/merge looks fine", git_provider=MagicMock()
