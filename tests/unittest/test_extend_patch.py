@@ -1,6 +1,8 @@
 import pytest
 
-from pr_agent.algo.git_patch_processing import extend_patch
+from pr_agent.algo.git_patch_processing import (RE_HUNK_HEADER, extend_patch,
+                                                extract_hunk_headers,
+                                                extract_hunk_lines_from_patch)
 from pr_agent.algo.pr_processing import pr_generate_extended_diff
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import load_large_diff
@@ -194,3 +196,30 @@ class TestLoadLargeDiff:
         assert load_large_diff("test.py", None, None) == ""
         assert (load_large_diff("test.py", "content\n", "") ==
                 '--- \n+++ \n@@ -1 +1 @@\n-\n+content\n')
+
+class TestOmittedHunkCount:
+    def test_omitted_count_is_parsed_as_one(self):
+        section_header, size1, size2, start1, start2 = extract_hunk_headers(
+            RE_HUNK_HEADER.match("@@ -1 +1 @@"))
+        assert (start1, size1, start2, size2) == (1, 1, 1, 1)
+
+    def test_omitted_count_on_one_side_only(self):
+        section_header, size1, size2, start1, start2 = extract_hunk_headers(
+            RE_HUNK_HEADER.match("@@ -10,7 +12 @@"))
+        assert (start1, size1, start2, size2) == (10, 7, 12, 1)
+
+    def test_single_line_hunk_does_not_resurrect_the_deleted_line(self):
+        original = "".join(f"l{i}\n" for i in range(1, 9))
+        new = "CHANGED\n" + "".join(f"l{i}\n" for i in range(2, 9))
+        extended = extend_patch(original, "@@ -1 +1 @@\n-l1\n+CHANGED",
+                                patch_extra_lines_before=0, patch_extra_lines_after=3,
+                                filename="m.py", new_file_str=new)
+        assert "\n l1" not in extended
+        for expected in (" l2", " l3", " l4"):
+            assert expected in extended
+
+    def test_hunk_line_range_excludes_the_line_after_the_hunk(self):
+        patch = ("@@ -10,1 +12 @@\n-old\n+only_line\n"
+                 "@@ -20,3 +20,3 @@\n ctx20\n-old21\n+new21\n ctx22")
+        full, _ = extract_hunk_lines_from_patch(patch, "f.py", 13, 13, "right")
+        assert "@@ -10,1 +12 @@" not in full

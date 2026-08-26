@@ -276,7 +276,7 @@ async def run_action():
                     url = event_payload.get("issue", {}).get("url")
 
                 if url:
-                    body = comment_body.strip().lower()
+                    body = comment_body.strip()
                     comment_id = event_payload.get("comment", {}).get("id")
                     provider = get_git_provider()(pr_url=url)
                     if is_pr:

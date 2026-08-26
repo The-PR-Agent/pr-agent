@@ -39,7 +39,7 @@ For example, you can choose to present all the suggestions as committable code c
 
 ### Automatic triggering
 
-To run the `improve` automatically when a PR is opened, define in a [configuration file](../usage-guide/configuration_options.md#wiki-configuration-file):
+To run the `improve` automatically when a PR is opened, define in a [configuration file](../usage-guide/configuration_options.md#local-configuration-file):
 
 ```toml
 [github_app]

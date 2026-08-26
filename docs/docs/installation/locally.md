@@ -1,5 +1,7 @@
 To run PR-Agent locally, you first need to acquire two keys:
 
+Local execution has two distinct cases: use the hosted-provider examples below for an existing PR/MR URL, or use the [Local Git Provider guide](../usage-guide/local_git_provider.md) for branch comparisons without a hosted PR/MR.
+
 1. An OpenAI key from [here](https://platform.openai.com/api-keys){:target="_blank"}, with access to GPT-5.6 and gpt-5.6-terra (or a key for other [language models](../usage-guide/changing_a_model.md), if you prefer).
 2. A personal access token from your Git platform (GitHub, GitLab, BitBucket, Gitea) with repo scope. GitHub token, for example, can be issued from [here](https://github.com/settings/tokens){:target="_blank"}
 

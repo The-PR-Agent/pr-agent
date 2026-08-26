@@ -21,8 +21,7 @@ from starlette.responses import JSONResponse
 from starlette_context import context
 from starlette_context.middleware import RawContextMiddleware
 
-from pr_agent.agent.pr_agent import PRAgent, command2class
-from pr_agent.algo.utils import update_settings_from_args
+from pr_agent.agent.pr_agent import PRAgent, command2class, prepare_command
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
@@ -83,6 +82,13 @@ def authorize(credentials: HTTPBasicCredentials = Depends(security)):
     if WEBHOOK_USERNAME is None or WEBHOOK_PASSWORD is None:
         return
 
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing credentials.",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+
     is_user_ok = secrets.compare_digest(credentials.username, WEBHOOK_USERNAME)
     is_pass_ok = secrets.compare_digest(credentials.password, WEBHOOK_PASSWORD)
     if not (is_user_ok and is_pass_ok):
@@ -105,11 +111,7 @@ async def _perform_commands_azure(commands_conf: str, agent: PRAgent, api_url: s
     get_settings().set("config.is_auto_command", True)
     for command in commands:
         try:
-            split_command = command.split(" ")
-            command = split_command[0]
-            args = split_command[1:]
-            other_args = update_settings_from_args(args)
-            new_command = ' '.join([command] + other_args)
+            new_command = prepare_command(command)
             get_logger().info(f"Performing command: {new_command}")
             with get_logger().contextualize(**log_context):
                 await agent.handle_request(api_url, new_command)

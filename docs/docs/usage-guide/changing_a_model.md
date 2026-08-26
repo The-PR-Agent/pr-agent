@@ -268,6 +268,17 @@ model="bedrock/us.meta.llama4-scout-17b-instruct-v1:0"
 fallback_models=["bedrock/us.meta.llama4-maverick-17b-instruct-v1:0"]
 ```
 
+Grok 4.3 is available through Amazon Bedrock Mantle rather than the classic Bedrock runtime:
+
+```toml
+[config] # in configuration.toml
+model="bedrock_mantle/xai.grok-4.3"
+fallback_models=["bedrock_mantle/xai.grok-4.3"]
+```
+
+Bedrock Mantle uses the same AWS credential sources, but its IAM permissions differ from the classic runtime. See
+the [AWS Mantle inference permissions](https://docs.aws.amazon.com/bedrock/latest/userguide/inference.html).
+
 #### Using IAM Role Credentials (Recommended on AWS Compute)
 
 When running PR-Agent on AWS infrastructure (EC2, ECS/Fargate, EKS with IRSA, Lambda, or any self-hosted GitHub Actions runner on AWS), the instance or task already has an IAM role attached. You can use those ambient credentials directly instead of storing long-lived static keys.
@@ -307,7 +318,7 @@ If you also configure static keys in `[aws]`, they serve as an automatic fallbac
 
 #### Custom Inference Profiles
 
-To use a custom inference profile with Amazon Bedrock (for cost allocation tags and other configuration settings), add the `model_id` parameter to your configuration:
+To invoke an [application inference profile](https://docs.aws.amazon.com/bedrock/latest/userguide/cost-mgmt-application-inference-profiles.html) with a classic `bedrock/` model (for cost allocation tags and other configuration settings), set `model_id` to the profile ARN in your configuration:
 
 ```toml
 [config] # in configuration.toml
@@ -320,10 +331,19 @@ AWS_SECRET_ACCESS_KEY="..."
 AWS_REGION_NAME="..."
 
 [litellm]
-model_id = "your-custom-inference-profile-id"
+model_id = "your-application-inference-profile-arn"
 ```
 
-The `model_id` parameter will be passed to all Bedrock completion calls, allowing you to use custom inference profiles for better cost allocation and reporting.
+The `litellm.model_id` parameter applies only to classic `bedrock/` calls made through the `bedrock-runtime` APIs. It does not apply to `bedrock_mantle/`; for cost allocation with the Mantle Chat Completions and Responses APIs, use [Amazon Bedrock Projects](https://docs.aws.amazon.com/bedrock/latest/userguide/cost-mgmt-projects.html).
+
+#### Using a Custom VPC Endpoint (PrivateLink)
+
+To route Bedrock traffic through a VPC interface endpoint instead of the public `bedrock-runtime` endpoint, set `AWS_BEDROCK_RUNTIME_ENDPOINT` either as an environment variable or in `[aws]`:
+
+```toml
+[aws]
+AWS_BEDROCK_RUNTIME_ENDPOINT="https://bedrock-runtime.us-east-1.amazonaws.com"
+```
 
 See [litellm](https://docs.litellm.ai/docs/providers/bedrock#usage) documentation for more information about the environment variables required for Amazon Bedrock.
 
@@ -607,3 +627,21 @@ built-in defaults.
     `thinking={"type": "enabled", "budget_tokens": ...}` request. Adaptive-only Claude models
     (e.g. Opus 4.7/4.8, Sonnet 5, Fable 5) reject `budget_tokens` and will error if you add them to
     the list — they are intentionally excluded from the built-in defaults.
+
+## Output token limit
+
+```toml
+[config]
+max_output_tokens = 0 # 0 = unset (default)
+```
+
+By default PR-Agent does not send an output token limit (`max_tokens`) on model calls, so the
+provider's own default applies. On some providers that default is low — for example, AWS Bedrock
+(Converse API) can cap Claude reasoning models at 4096 output tokens, and since reasoning tokens
+count against that budget, the visible answer can come back empty or truncated. Set
+`config.max_output_tokens` to a positive value (e.g. `16000`) to send it as `max_tokens` on every
+completion call. When Claude extended thinking is enabled, `extended_thinking_max_output_tokens`
+takes precedence.
+For models with small context windows, keep in mind that prompt and completion tokens share the
+model's context window: size `config.max_model_tokens` so the packed prompt leaves room for the
+configured output limit.

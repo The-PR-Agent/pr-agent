@@ -6,6 +6,7 @@ These tests use ``GithubProvider.__new__(GithubProvider)`` to bypass network-bou
 ``__init__`` and inject minimal fake collaborators. No real GitHub API access.
 """
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -384,3 +385,212 @@ def test_publish_code_suggestions_returns_false_on_publish_error():
         "relevant_lines_start": 1, "relevant_lines_end": 2,
     }])
     assert result is False
+
+
+# ---------------------------------------------------------------------------
+# resolve_comment_thread
+# ---------------------------------------------------------------------------
+
+
+def _make_graphql_response(data, errors=None):
+    """Build a tuple mimicking PyGitHub's requestJson return for GraphQL."""
+    body = {"data": data}
+    if errors:
+        body["errors"] = errors
+    return (200, {}, json.dumps(body))
+
+
+class _FakeRequester:
+    """Records GraphQL calls and returns canned responses."""
+
+    def __init__(self, responses):
+        self.calls = []
+        self._responses = list(responses)
+
+    def requestJsonAndCheck(self, method, url, input=None):
+        self.calls.append(("check", method, url, input))
+        return ({}, self._responses.pop(0))
+
+    def requestJson(self, method, url, input=None):
+        self.calls.append(("json", method, url, input))
+        return self._responses.pop(0)
+
+
+def _make_provider_with_graphql(rest_comment_data, graphql_responses):
+    """Build a provider wired with fake REST + GraphQL responses."""
+    p = GithubProvider.__new__(GithubProvider)
+    p.repo = "owner/repo"
+    p.pr_num = 42
+    p.base_url = "https://api.github.com"
+
+    all_responses = [rest_comment_data] + graphql_responses
+    requester = _FakeRequester(all_responses)
+    p.pr = SimpleNamespace(_requester=requester)
+    p.github_client = SimpleNamespace(_Github__requester=requester)
+    return p, requester
+
+
+def _make_threads_response(threads, has_next_page=False, end_cursor=None):
+    """Build a GraphQL response for reviewThreads with pageInfo."""
+    return _make_graphql_response({
+        "repository": {"pullRequest": {"reviewThreads": {
+            "pageInfo": {"hasNextPage": has_next_page, "endCursor": end_cursor},
+            "nodes": threads,
+        }}},
+    })
+
+
+class TestResolveCommentThread:
+    def test_resolves_thread_successfully(self):
+        rest_data = {"node_id": "PRR_comment1"}
+        threads_response = _make_threads_response([
+            {"id": "PRRT_thread1", "isResolved": False,
+             "comments": {"nodes": [{"id": "PRR_comment1"}]}},
+        ])
+        resolve_response = _make_graphql_response({
+            "resolveReviewThread": {"thread": {"isResolved": True}},
+        })
+
+        provider, requester = _make_provider_with_graphql(
+            rest_data, [threads_response, resolve_response]
+        )
+        result = provider.resolve_comment_thread(123)
+
+        assert result is True
+        assert len(requester.calls) == 3
+        assert "resolveReviewThread" in requester.calls[2][3]["query"]
+
+    def test_already_resolved_thread_returns_true(self):
+        rest_data = {"node_id": "PRR_comment1"}
+        threads_response = _make_threads_response([
+            {"id": "PRRT_thread1", "isResolved": True,
+             "comments": {"nodes": [{"id": "PRR_comment1"}]}},
+        ])
+
+        provider, requester = _make_provider_with_graphql(
+            rest_data, [threads_response]
+        )
+        result = provider.resolve_comment_thread(123)
+
+        assert result is True
+        assert len(requester.calls) == 2
+
+    def test_handles_no_matching_thread(self):
+        rest_data = {"node_id": "PRR_commentX"}
+        threads_response = _make_threads_response([
+            {"id": "PRRT_thread1", "isResolved": False,
+             "comments": {"nodes": [{"id": "PRR_other"}]}},
+        ])
+
+        provider, requester = _make_provider_with_graphql(
+            rest_data, [threads_response]
+        )
+        result = provider.resolve_comment_thread(123)
+
+        assert result is False
+        assert len(requester.calls) == 2
+
+    def test_handles_missing_node_id(self):
+        rest_data = {}  # no node_id
+
+        provider, requester = _make_provider_with_graphql(rest_data, [])
+        result = provider.resolve_comment_thread(123)
+
+        assert result is False
+        assert len(requester.calls) == 1
+
+    def test_handles_graphql_errors_in_resolve_mutation(self):
+        rest_data = {"node_id": "PRR_comment1"}
+        threads_response = _make_threads_response([
+            {"id": "PRRT_thread1", "isResolved": False,
+             "comments": {"nodes": [{"id": "PRR_comment1"}]}},
+        ])
+        error_response = _make_graphql_response(
+            {"resolveReviewThread": None},
+            errors=[{"message": "Insufficient permissions"}],
+        )
+
+        provider, requester = _make_provider_with_graphql(
+            rest_data, [threads_response, error_response]
+        )
+        result = provider.resolve_comment_thread(123)
+
+        assert result is False
+        assert len(requester.calls) == 3
+
+    def test_handles_resolve_returning_false(self):
+        rest_data = {"node_id": "PRR_comment1"}
+        threads_response = _make_threads_response([
+            {"id": "PRRT_thread1", "isResolved": False,
+             "comments": {"nodes": [{"id": "PRR_comment1"}]}},
+        ])
+        resolve_response = _make_graphql_response({
+            "resolveReviewThread": {"thread": {"isResolved": False}},
+        })
+
+        provider, requester = _make_provider_with_graphql(
+            rest_data, [threads_response, resolve_response]
+        )
+        result = provider.resolve_comment_thread(123)
+
+        assert result is False
+        assert len(requester.calls) == 3
+
+    def test_handles_unexpected_mutation_response_format(self):
+        """Mutation returns non-tuple — should return False, not fall through to True."""
+        rest_data = {"node_id": "PRR_comment1"}
+        threads_response = _make_threads_response([
+            {"id": "PRRT_thread1", "isResolved": False,
+             "comments": {"nodes": [{"id": "PRR_comment1"}]}},
+        ])
+
+        provider, requester = _make_provider_with_graphql(
+            rest_data, [threads_response, "not-a-tuple"]
+        )
+        result = provider.resolve_comment_thread(123)
+
+        assert result is False
+
+    def test_paginates_to_find_thread(self):
+        """Thread is on the second page — pagination must follow."""
+        rest_data = {"node_id": "PRR_comment1"}
+        page1 = _make_threads_response(
+            [{"id": "PRRT_other", "isResolved": False,
+              "comments": {"nodes": [{"id": "PRR_other"}]}}],
+            has_next_page=True, end_cursor="cursor1",
+        )
+        page2 = _make_threads_response([
+            {"id": "PRRT_target", "isResolved": False,
+             "comments": {"nodes": [{"id": "PRR_comment1"}]}},
+        ])
+        resolve_response = _make_graphql_response({
+            "resolveReviewThread": {"thread": {"isResolved": True}},
+        })
+
+        provider, requester = _make_provider_with_graphql(
+            rest_data, [page1, page2, resolve_response]
+        )
+        result = provider.resolve_comment_thread(123)
+
+        assert result is True
+        assert 'after: "cursor1"' in requester.calls[2][3]["query"]
+        assert "resolveReviewThread" in requester.calls[3][3]["query"]
+
+    def test_handles_rest_api_exception(self):
+        """REST call to fetch comment throws — should not propagate."""
+        p = GithubProvider.__new__(GithubProvider)
+        p.repo = "owner/repo"
+        p.pr_num = 42
+        p.base_url = "https://api.github.com"
+
+        class _BrokenRequester:
+            def requestJsonAndCheck(self, *a, **kw):
+                raise RuntimeError("network error")
+            def requestJson(self, *a, **kw):
+                raise RuntimeError("network error")
+
+        p.pr = SimpleNamespace(_requester=_BrokenRequester())
+        p.github_client = SimpleNamespace(_Github__requester=_BrokenRequester())
+
+        result = p.resolve_comment_thread(123)
+        assert result is False

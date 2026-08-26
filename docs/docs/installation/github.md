@@ -345,6 +345,13 @@ When the GitHub Actions runner is on AWS infrastructure (EC2, ECS, EKS), use the
 
 The IAM role must have `bedrock:InvokeModel` on the target model ARN. See [Bedrock model configuration](../usage-guide/changing_a_model.md#amazon-bedrock) for the full IAM policy example and supported models.
 
+To route calls through a VPC interface endpoint, add `AWS_BEDROCK_RUNTIME_ENDPOINT` alongside the credentials above:
+
+```yaml
+      env:
+        AWS_BEDROCK_RUNTIME_ENDPOINT: "https://bedrock-runtime.us-east-1.amazonaws.com"
+```
+
 #### Advanced Configuration Options
 
 ##### Custom Review Instructions
@@ -648,11 +655,19 @@ Allowing you to automate the review process on your private or public repositori
      - Pull requests: Read & write
      - Issue comment: Read & write
      - Metadata: Read-only
-     - Contents: Read-only
+     - Contents: Read-only (or Read & write if using `resolve_threads` — see note below)
    - Set the following events:
      - Issue comment
      - Pull request
      - Push (if you need to enable triggering on PR update)
+     - Pull request review comment (required for `/ask` on review threads)
+
+   > **Note:** If you enable `pr_questions.resolve_threads`, the GitHub App requires **Contents: Read & write** permission. GitHub's `resolveReviewThread` GraphQL mutation is gated behind the Contents permission, even though it only modifies PR thread metadata. See [GitHub community discussion](https://github.com/orgs/community/discussions/204269) for details.
+   >
+   > **Important:** When enabled, the LLM may resolve threads started by
+   > human reviewers — not only bot-generated threads. Use this setting
+   > only when your team is comfortable with AI-driven thread resolution.
+   > The feature is opt-in and defaults to off.
 
 2) Generate a random secret for your app, and save it for later. For example, you can use:
 
