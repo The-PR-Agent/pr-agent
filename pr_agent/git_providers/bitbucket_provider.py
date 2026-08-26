@@ -12,10 +12,11 @@ from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 
 from ..algo.file_filter import filter_ignored
 from ..algo.language_handler import is_valid_file
-from ..algo.utils import find_line_number_of_relevant_line_in_file
+from ..algo.utils import (add_pr_review_identity, comment_matches_identity,
+                          find_line_number_of_relevant_line_in_file)
 from ..config_loader import get_settings
 from ..log import get_logger
-from .git_provider import MAX_FILES_ALLOWED_FULL, GitProvider
+from .git_provider import MAX_FILES_ALLOWED_FULL, GitProvider, get_cached_global_settings
 
 
 def _gef_filename(diff):
@@ -78,16 +79,56 @@ class BitbucketProvider(GitProvider):
         self.bitbucket_pull_request_api_url = self.pr._BitbucketBase__data["links"]['self']['href']
 
     def get_repo_settings(self):
+        settings_files = []
+        global_settings = self._get_global_repo_settings()
+        if global_settings:
+            settings_files.append(("global", global_settings))
         try:
             url = (f"https://api.bitbucket.org/2.0/repositories/{self.workspace_slug}/{self.repo_slug}/src/"
                    f"{self.pr.destination_branch}/.pr_agent.toml")
             response = requests.request("GET", url, headers=self.headers)
-            if response.status_code == 404:  # not found
-                return ""
-            contents = response.text.encode('utf-8')
-            return contents
-        except Exception:
+            if response.status_code == 200:  # found
+                settings_files.append(("local", response.text.encode('utf-8')))
+            elif response.status_code != 404:
+                # Don't treat error bodies (401/403/500/...) as TOML content.
+                get_logger().warning(f"Failed to load local .pr_agent.toml file, status: {response.status_code}")
+        except Exception as e:
+            get_logger().warning(f"Failed to load local .pr_agent.toml file, error: {e}")
+        return settings_files if settings_files else ""
+
+    def _get_global_repo_settings(self):
+        # Load a workspace-wide <workspace>/pr-agent-settings/.pr_agent.toml.
+        if not get_settings().config.use_global_settings_file:
             return ""
+        workspace = self.get_pr_owner_id()
+        if not workspace or not getattr(self, "headers", None):
+            return ""
+        return get_cached_global_settings(
+            f"bitbucket:{workspace}", lambda: self._fetch_global_repo_settings(workspace))
+
+    def _fetch_global_repo_settings(self, workspace):
+        # A missing settings repo/file (404) is an expected fallback -> return "" (cached). Other
+        # errors raise (via raise_for_status) so the caller does not cache a transient failure.
+        repo_url = f"https://api.bitbucket.org/2.0/repositories/{workspace}/pr-agent-settings"
+        repo_resp = requests.request("GET", repo_url, headers=self.headers)
+        if repo_resp.status_code in (403, 404):  # missing repo or no access -> expected, cacheable
+            return ""
+        repo_resp.raise_for_status()
+        main_branch = (repo_resp.json().get('mainbranch') or {}).get('name')
+        if not main_branch:
+            return ""
+        file_resp = requests.request(
+            "GET", f"{repo_url}/src/{main_branch}/.pr_agent.toml", headers=self.headers)
+        if file_resp.status_code in (403, 404):  # missing file or no access -> expected, cacheable
+            return ""
+        file_resp.raise_for_status()
+        return file_resp.text.encode('utf-8')
+
+    def get_repo_file_content(self, file_path: str, from_default_branch: bool = False):
+        # Read from the PR destination (target) branch, matching the other providers,
+        # or from the repository default branch when from_default_branch is requested.
+        branch = self.get_repo_default_branch() if from_default_branch else self.pr.destination_branch
+        return self.get_pr_file_content(file_path, branch, propagate_errors=True)
 
     def get_git_repo_url(self, pr_url: str=None) -> str: #bitbucket does not support issue url, so ignore param
         try:
@@ -191,6 +232,8 @@ class BitbucketProvider(GitProvider):
     def is_supported(self, capability: str) -> bool:
         if capability in ['get_issue_comments', 'publish_inline_comments', 'get_labels', 'gfm_markdown',
                             'publish_file_comments']:
+            return False
+        if capability == "push_code" and get_settings().config.restricted_mode:
             return False
         return True
 
@@ -353,25 +396,60 @@ class BitbucketProvider(GitProvider):
                                    initial_header: str,
                                    update_header: bool = True,
                                    name='review',
-                                   final_update_message=True):
+                                   final_update_message=True,
+                                   identity_marker: str | None = None,
+                                   legacy_initial_header: str | None = None):
         try:
-            for comment in self.pr.comments():
-                body = comment.raw
-                if initial_header in body:
-                    latest_commit_url = self.get_latest_commit_url()
-                    comment_url = self.get_comment_url(comment)
-                    if update_header:
-                        updated_header = f"{initial_header}\n\n#### ({name.capitalize()} updated until commit {latest_commit_url})\n"
-                        pr_comment_updated = pr_comment.replace(initial_header, updated_header)
-                    else:
-                        pr_comment_updated = pr_comment
-                    get_logger().info(f"Persistent mode - updating comment {comment_url} to latest {name} message")
-                    d = {"content": {"raw": pr_comment_updated}}
-                    response = comment._update_data(comment.put(None, data=d))
-                    if final_update_message:
+            pr_comment = add_pr_review_identity(pr_comment, identity_marker)
+            comments = list(self.pr.comments())
+            if identity_marker:
+                comment_to_update = next(
+                    (
+                        comment
+                        for comment in comments
+                        if comment_matches_identity(comment.raw, identity_marker)
+                    ),
+                    None,
+                )
+                if comment_to_update is None and legacy_initial_header:
+                    comment_to_update = next(
+                        (
+                            comment
+                            for comment in comments
+                            if comment_matches_identity(comment.raw, legacy_initial_header)
+                        ),
+                        None,
+                    )
+            else:
+                # Preserve Bitbucket's existing behavior for non-review persistent comments.
+                comment_to_update = next(
+                    (comment for comment in comments if initial_header in comment.raw),
+                    None,
+                )
+            if comment_to_update is not None:
+                comment = comment_to_update
+                latest_commit_url = self.get_latest_commit_url()
+                comment_url = self.get_comment_url(comment)
+                if update_header:
+                    update_message = f"#### ({name.capitalize()} updated until commit {latest_commit_url})\n"
+                    update_anchor = identity_marker or initial_header
+                    updated_anchor = f"{update_anchor}\n\n{update_message}"
+                    pr_comment_updated = pr_comment.replace(update_anchor, updated_anchor, 1)
+                else:
+                    pr_comment_updated = pr_comment
+                get_logger().info(f"Persistent mode - updating comment {comment_url} to latest {name} message")
+                d = {"content": {"raw": pr_comment_updated}}
+                comment._update_data(comment.put(None, data=d))
+                if final_update_message:
+                    try:
                         self.publish_comment(
                             f"**[Persistent {name}]({comment_url})** updated to latest commit {latest_commit_url}")
-                    return
+                    except Exception:
+                        # The review was already updated in place; a notification failure must not reach
+                        # the outer except, whose fallback publish would duplicate the review.
+                        get_logger().opt(exception=True).warning(
+                            "Failed to publish persistent review update message; review was already updated")
+                return
         except Exception as e:
             get_logger().exception(f"Failed to update persistent review, error: {e}")
             pass
@@ -403,7 +481,8 @@ class BitbucketProvider(GitProvider):
 
     def remove_comment(self, comment):
         try:
-            self.pr.delete(f"comments/{comment}")
+            comment_id = comment["id"] if isinstance(comment, dict) else comment
+            self.pr.delete(f"comments/{comment_id}")
         except Exception as e:
             get_logger().exception(f"Failed to remove comment, error: {e}")
 
@@ -552,7 +631,7 @@ class BitbucketProvider(GitProvider):
     def _get_pr(self):
         return self._get_repo().pullrequests.get(self.pr_num)
 
-    def get_pr_file_content(self, file_path: str, branch: str) -> str:
+    def get_pr_file_content(self, file_path: str, branch: str, propagate_errors: bool = True) -> str:
         try:
             if branch == self.pr.source_branch:
                 branch = self.pr.data["source"]["commit"]["hash"]
@@ -563,9 +642,15 @@ class BitbucketProvider(GitProvider):
             response = requests.request("GET", url, headers=self.headers)
             if response.status_code == 404:  # not found
                 return ""
+            # Distinguish an unavailable file from a failed request to prevent an error response
+            # body from being treated as repository instructions or changelog content.
+            if propagate_errors:
+                response.raise_for_status()
             contents = response.text
             return contents
         except Exception:
+            if propagate_errors:
+                raise
             return ""
 
     def create_or_update_pr_file(self, file_path: str, branch: str, contents="", message="") -> None:
@@ -601,11 +686,10 @@ class BitbucketProvider(GitProvider):
 
     # bitbucket does not support labels
     def publish_description(self, pr_title: str, description: str):
-        payload = json.dumps({
-            "description": description,
-            "title": pr_title
-
-        })
+        payload_dict = {"description": description}
+        if pr_title is not None:
+            payload_dict["title"] = pr_title
+        payload = json.dumps(payload_dict)
 
         response = requests.request("PUT", self.bitbucket_pull_request_api_url, headers=self.headers, data=payload)
         try:

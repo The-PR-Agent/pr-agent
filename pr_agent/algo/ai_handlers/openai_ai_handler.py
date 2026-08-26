@@ -5,6 +5,7 @@ from openai import AsyncOpenAI
 from tenacity import retry, retry_if_exception_type, retry_if_not_exception_type, stop_after_attempt
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
+from pr_agent.algo.run_details import record_ai_call
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
@@ -60,6 +61,7 @@ class OpenAIHandler(BaseAiHandler):
             usage = chat_completion.usage
             get_logger().info("AI response", response=resp, messages=messages, finish_reason=finish_reason,
                               model=model, usage=usage)
+            record_ai_call(usage)
             return resp, finish_reason
         except openai.RateLimitError as e:
             get_logger().error(f"Rate limit error during LLM inference: {e}")

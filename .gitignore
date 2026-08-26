@@ -1,3 +1,5 @@
+skpro/
+
 .idea/
 .lsp/
 .vscode/
@@ -13,3 +15,4 @@ build/
 docs/.cache/
 .qodo
 poetry.lock
+.log

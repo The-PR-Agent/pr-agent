@@ -58,7 +58,7 @@ ___
 ??? note "Q: Can PR-Agent review draft/offline PRs?"
     #### Answer:<span style="display:none;">6</span>
 
-    Yes. While PR-Agent won't automatically review draft PRs, you can still get feedback by manually requesting it through [online commenting](../usage-guide/automations_and_usage.md#online-usage).
+    Yes. Draft PRs are not reviewed automatically by default, but you can enable it with the `feedback_on_draft_pr` parameter. You can also get feedback on any draft by manually requesting it through [online commenting](../usage-guide/automations_and_usage.md#online-usage).
 
     For active PRs, you can customize the automatic feedback settings [here](../usage-guide/automations_and_usage.md#pr-agent-automatic-feedback) to match your team's workflow.
 ___
@@ -107,5 +107,4 @@ ___
     Examples of ways to increase feedback include:
 
     - [Dual-publishing mode](../tools/improve.md#dual-publishing-mode)
-    - [Interactive usage](../core-abilities/interactivity.md)
 ___

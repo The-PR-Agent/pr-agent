@@ -1,7 +1,7 @@
 ## Changing a model in PR-Agent
 
 See [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py) for a list of supported models in PR-Agent.
-The default model of PR-Agent is `GPT-5` from OpenAI.
+The default model of PR-Agent is `GPT-5.6` from OpenAI.
 To use a different model than the default, you need to edit in the [configuration file](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml#L7) the fields:
 
 ```toml
@@ -9,6 +9,8 @@ To use a different model than the default, you need to edit in the [configuratio
 model = "..."
 fallback_models = ["..."]
 ```
+
+To see which of these models actually handled a given PR, enable `config.output_run_details` (see [Additional configurations](./additional_configurations.md#showing-the-agent-run-details)).
 
 For models and environments not from OpenAI, you might need to provide additional keys and other parameters.
 You can give parameters via a configuration file, or from environment variables.
@@ -18,6 +20,7 @@ You can give parameters via a configuration file, or from environment variables.
     Failing to set the needed keys of a specific model will usually result in litellm not identifying the model type, and failing to utilize it.
 
 ### OpenAI like API
+
 To use an OpenAI like API, set the following in your `.secrets.toml` file:
 
 ```toml
@@ -161,6 +164,20 @@ key = ... # your Groq api key
 
 (you can obtain a Groq key from [here](https://console.groq.com/keys))
 
+### SambaNova
+
+To use MiniMax-M3 model with SambaNova, for example, set:
+
+```toml
+[config] # in configuration.toml
+model = "sambanova/MiniMax-M3"
+fallback_models = ["sambanova/MiniMax-M2.7"]
+[sambanova] # in .secrets.toml
+key = ... # your SambaNova api key
+```
+
+(you can obtain a SambaNova key from [here](https://cloud.sambanova.ai/apis))
+
 ### xAI
 
 To use xAI's models with PR-Agent, set:
@@ -251,6 +268,17 @@ model="bedrock/us.meta.llama4-scout-17b-instruct-v1:0"
 fallback_models=["bedrock/us.meta.llama4-maverick-17b-instruct-v1:0"]
 ```
 
+Grok 4.3 is available through Amazon Bedrock Mantle rather than the classic Bedrock runtime:
+
+```toml
+[config] # in configuration.toml
+model="bedrock_mantle/xai.grok-4.3"
+fallback_models=["bedrock_mantle/xai.grok-4.3"]
+```
+
+Bedrock Mantle uses the same AWS credential sources, but its IAM permissions differ from the classic runtime. See
+the [AWS Mantle inference permissions](https://docs.aws.amazon.com/bedrock/latest/userguide/inference.html).
+
 #### Using IAM Role Credentials (Recommended on AWS Compute)
 
 When running PR-Agent on AWS infrastructure (EC2, ECS/Fargate, EKS with IRSA, Lambda, or any self-hosted GitHub Actions runner on AWS), the instance or task already has an IAM role attached. You can use those ambient credentials directly instead of storing long-lived static keys.
@@ -267,7 +295,7 @@ Set `AWS_USE_IMDS=true` in the environment. PR-Agent will resolve credentials vi
 Minimal GitHub Actions workflow (no AWS secret keys required):
 
 ```yaml
-- uses: Codium-ai/pr-agent@main
+- uses: the-pr-agent/pr-agent@main
   env:
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     AWS_USE_IMDS: "true"
@@ -290,7 +318,7 @@ If you also configure static keys in `[aws]`, they serve as an automatic fallbac
 
 #### Custom Inference Profiles
 
-To use a custom inference profile with Amazon Bedrock (for cost allocation tags and other configuration settings), add the `model_id` parameter to your configuration:
+To invoke an [application inference profile](https://docs.aws.amazon.com/bedrock/latest/userguide/cost-mgmt-application-inference-profiles.html) with a classic `bedrock/` model (for cost allocation tags and other configuration settings), set `model_id` to the profile ARN in your configuration:
 
 ```toml
 [config] # in configuration.toml
@@ -303,21 +331,30 @@ AWS_SECRET_ACCESS_KEY="..."
 AWS_REGION_NAME="..."
 
 [litellm]
-model_id = "your-custom-inference-profile-id"
+model_id = "your-application-inference-profile-arn"
 ```
 
-The `model_id` parameter will be passed to all Bedrock completion calls, allowing you to use custom inference profiles for better cost allocation and reporting.
+The `litellm.model_id` parameter applies only to classic `bedrock/` calls made through the `bedrock-runtime` APIs. It does not apply to `bedrock_mantle/`; for cost allocation with the Mantle Chat Completions and Responses APIs, use [Amazon Bedrock Projects](https://docs.aws.amazon.com/bedrock/latest/userguide/cost-mgmt-projects.html).
+
+#### Using a Custom VPC Endpoint (PrivateLink)
+
+To route Bedrock traffic through a VPC interface endpoint instead of the public `bedrock-runtime` endpoint, set `AWS_BEDROCK_RUNTIME_ENDPOINT` either as an environment variable or in `[aws]`:
+
+```toml
+[aws]
+AWS_BEDROCK_RUNTIME_ENDPOINT="https://bedrock-runtime.us-east-1.amazonaws.com"
+```
 
 See [litellm](https://docs.litellm.ai/docs/providers/bedrock#usage) documentation for more information about the environment variables required for Amazon Bedrock.
 
 ### DeepSeek
 
-To use deepseek-chat model with DeepSeek, for example, set:
+To use deepseek-v4 model with DeepSeek, for example, set:
 
 ```toml
 [config] # in configuration.toml
-model = "deepseek/deepseek-chat"
-fallback_models=["deepseek/deepseek-chat"]
+model = "deepseek/deepseek-v4-pro"
+fallback_models=["deepseek/deepseek-v4-flash"]
 ```
 
 and fill up your key
@@ -327,7 +364,85 @@ and fill up your key
 key = ...
 ```
 
-(you can obtain a deepseek-chat key from [here](https://platform.deepseek.com))
+(you can obtain a deepseek-v4 key from [here](https://platform.deepseek.com/api_keys))
+
+### GLM (Z.AI)
+
+To use GLM models with Z.AI (Zhipu), for example, set:
+
+```toml
+[config] # in configuration.toml
+model = "zai/glm-5.2"
+fallback_models=["zai/glm-5.2"]
+```
+
+and fill up your key
+
+```toml
+[zai] # in .secrets.toml
+key = ...
+```
+
+(you can obtain a Z.AI API key from [here](https://z.ai/))
+
+### Kimi (Moonshot)
+
+To use Kimi models with Moonshot, for example, set:
+
+```toml
+[config] # in configuration.toml
+model = "moonshot/kimi-k3"
+fallback_models=["moonshot/kimi-k3"]
+```
+
+and fill up your key
+
+```toml
+[moonshot] # in .secrets.toml
+key = ...
+```
+
+(you can obtain a Moonshot API key from [here](https://platform.moonshot.ai/))
+
+If you are on the China endpoint instead, add `api_base = "https://api.moonshot.cn/v1"` under `[moonshot]`.
+
+### Qwen (DashScope)
+
+To use Qwen models with Alibaba DashScope, for example, set:
+
+```toml
+[config] # in configuration.toml
+model = "dashscope/qwen3.8-max"
+fallback_models=["dashscope/qwen3.8-max"]
+```
+
+and fill up your key
+
+```toml
+[dashscope] # in .secrets.toml
+key = ...
+```
+
+(you can obtain a DashScope API key from [here](https://dashscope.console.aliyun.com/))
+
+### Xiaomi MiMo
+
+To use Xiaomi MiMo models, for example, set:
+
+```toml
+[config] # in configuration.toml
+model = "xiaomi_mimo/mimo-v2.5"
+fallback_models=["xiaomi_mimo/mimo-v2.5"]
+```
+
+and fill up your key
+
+```toml
+[xiaomi_mimo] # in .secrets.toml
+key = ...
+```
+
+(you can obtain a Xiaomi MiMo API key from [here](https://platform.xiaomimimo.com/#/docs))
 
 ### DeepInfra
 
@@ -371,6 +486,21 @@ key = "..." # your Codestral api key
 
 (you can obtain a Codestral key from [here](https://console.mistral.ai/codestral))
 
+### Databricks
+
+To use a model hosted on Databricks (e.g. an Azure Databricks serving endpoint), set:
+
+```toml
+[config] # in configuration.toml
+model = "databricks/databricks-claude-sonnet-4"
+fallback_models = ["databricks/databricks-claude-sonnet-4"]
+[databricks] # in .secrets.toml
+api_key = "..." # your Databricks personal access token (PAT)
+api_base = "https://adb-xxxx.azuredatabricks.net/serving-endpoints" # your workspace serving-endpoints URL
+```
+
+The model name after the `databricks/` prefix is the name of your serving endpoint. See LiteLLM's [Databricks provider docs](https://docs.litellm.ai/docs/providers/databricks) for details.
+
 ### Openrouter
 
 To use model from Openrouter, for example, set:
@@ -386,6 +516,54 @@ key = "..." # your openrouter api key
 ```
 
 (you can obtain an Openrouter API key from [here](https://openrouter.ai/settings/keys))
+
+#### Openrouter provider routing, reasoning and output cap
+
+For `openrouter/...` models you can optionally restrict which upstream providers Openrouter uses, control reasoning, and cap the completion length. All keys live in the `[openrouter]` section of `configuration.toml` and default to unset (no change to Openrouter's default behavior):
+
+```toml
+[openrouter]
+# Uncomment and adjust the keys you need; unset keys keep Openrouter's defaults.
+# provider_only = ["z-ai"]             # hard allowlist of upstream providers; empty = default routing
+# provider_order = ["z-ai", "novita"]  # preferred order instead of an allowlist; ignored when provider_only is set
+# allow_fallbacks = true               # when provider_order is set, allow routing beyond the list
+# reasoning_effort = "low"             # "none" disables reasoning; otherwise "low", "medium" or "high"
+# reasoning_max_tokens = 2048          # cap the reasoning budget in tokens
+# max_tokens = 16000                   # hard cap on completion tokens for the request
+```
+
+`provider_only` and `reasoning_effort = "none"` are useful to pin a specific provider and to bound the cost of reasoning models. See the Openrouter [provider routing](https://openrouter.ai/docs/features/provider-routing) and [reasoning tokens](https://openrouter.ai/docs/use-cases/reasoning-tokens) docs.
+
+### Neon AI Gateway
+
+[Neon AI Gateway](https://neon.com/docs/ai-gateway/overview) is an OpenAI-compatible inference gateway. Each Neon branch has its own gateway host, so the base URL points at a single branch and not at an account. Neon publishes that host alongside the credential as `NEON_AI_GATEWAY_BASE_URL`. The value has no path, so append `/v1` to reach chat completions.
+
+To use a model served by a Neon branch, set:
+
+```toml
+[config] # in configuration.toml
+model = "openai/gpt-5-mini"
+fallback_models = ["openai/gpt-5-mini"]
+custom_model_max_tokens = 400000 # the context window Neon publishes for the model
+
+[openai] # in .secrets.toml
+api_base = "https://<your-neon-branch-host>/v1"
+key = "..." # your Neon AI Gateway credential
+```
+
+or use the environment variables (make sure to use double underscores `__`):
+
+```bash
+OPENAI__API_BASE=https://<your-neon-branch-host>/v1
+OPENAI__KEY=...
+```
+
+Keep the `openai/` prefix on the model name, whichever Neon model ID you use: the prefix routes the request through litellm's OpenAI-compatible path. A prefixed name is not in the `MAX_TOKENS` table [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py), so you also have to set `custom_model_max_tokens`. Take the value from Neon's [model catalog](https://neon.com/docs/ai-gateway/models).
+
+Create the credential per branch in the [Neon Console](https://console.neon.tech/) with the `ai_gateway:invoke` scope. The credential also works on branches descended from the one it was created on. The gateway is in beta and requires a paid Neon plan. It runs only in AWS US East (Ohio), `aws-us-east-2`.
+
+!!! note "Chat completions only"
+    Some model IDs in Neon's catalog are served through the OpenAI Responses API, which Neon exposes under `/openai/v1` instead of `/v1`. The configuration above points at the chat-completions endpoint, so it cannot reach those models. Neon also documents a few models that return `message.content` as an array of typed blocks rather than a string, and PR-Agent reads the reply as a string.
 
 ### Custom models
 
@@ -409,7 +587,7 @@ custom_model_max_tokens= ...
 3. Go to [litellm documentation](https://litellm.vercel.app/docs/proxy/quick_start#supported-llms), find the model you want to use, and set the relevant environment variables.
 
 4. Most reasoning models do not support chat-style inputs (`system` and `user` messages) or temperature settings.
-To bypass chat templates and temperature controls, set `config.custom_reasoning_model = true` in your configuration file.
+   To bypass chat templates and temperature controls, set `config.custom_reasoning_model = true` in your configuration file.
 
 ## Dedicated parameters
 
@@ -420,7 +598,7 @@ To bypass chat templates and temperature controls, set `config.custom_reasoning_
 reasoning_effort = "medium" # "none", "minimal", "low", "medium", "high", "xhigh"
 ```
 
-With the OpenAI models that support reasoning effort (eg: gpt-5.4-mini), you can specify its reasoning effort via `config` section. The default value is `medium`. You can change it to any supported value based on your usage. Available values depend on the model and provider.
+With the OpenAI models that support reasoning effort (eg: gpt-5.6-terra), you can specify its reasoning effort via `config` section. The default value is `medium`. You can change it to any supported value based on your usage. Available values depend on the model and provider.
 
 ### Anthropic models
 
@@ -430,3 +608,40 @@ enable_claude_extended_thinking = false # Set to true to enable extended thinkin
 extended_thinking_budget_tokens = 2048
 extended_thinking_max_output_tokens = 4096
 ```
+
+By default, PR-Agent applies the extended-thinking payload only to a built-in list of Claude models
+(see `CLAUDE_EXTENDED_THINKING_MODELS` in `pr_agent/algo/__init__.py`). If you use a newer or custom
+Claude model that is not in that list, you can override it:
+
+```toml
+[config]
+claude_extended_thinking_models_override = ["anthropic/claude-my-new-model"]
+```
+
+When `claude_extended_thinking_models_override` is non-empty, it fully replaces the built-in list, so
+include every model that should receive extended thinking. Leave it empty (the default) to use the
+built-in defaults.
+
+!!! note "Only models that accept a thinking budget are supported"
+    PR-Agent enables extended thinking through the manual
+    `thinking={"type": "enabled", "budget_tokens": ...}` request. Adaptive-only Claude models
+    (e.g. Opus 4.7/4.8, Sonnet 5, Fable 5) reject `budget_tokens` and will error if you add them to
+    the list — they are intentionally excluded from the built-in defaults.
+
+## Output token limit
+
+```toml
+[config]
+max_output_tokens = 0 # 0 = unset (default)
+```
+
+By default PR-Agent does not send an output token limit (`max_tokens`) on model calls, so the
+provider's own default applies. On some providers that default is low — for example, AWS Bedrock
+(Converse API) can cap Claude reasoning models at 4096 output tokens, and since reasoning tokens
+count against that budget, the visible answer can come back empty or truncated. Set
+`config.max_output_tokens` to a positive value (e.g. `16000`) to send it as `max_tokens` on every
+completion call. When Claude extended thinking is enabled, `extended_thinking_max_output_tokens`
+takes precedence.
+For models with small context windows, keep in mind that prompt and completion tokens share the
+model's context window: size `config.max_model_tokens` so the packed prompt leaves room for the
+configured output limit.

@@ -1,0 +1,340 @@
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from pr_agent.algo.types import FilePatchInfo
+from pr_agent.config_loader import get_settings
+from pr_agent.git_providers.git_provider import GitProvider, IncrementalPR
+from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
+
+
+def _make_tool(git_provider=None):
+    tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
+    tool.git_provider = git_provider or MagicMock()
+    tool.progress_response = None
+    return tool
+
+
+def _valid_suggestion(**overrides):
+    suggestion = {
+        "one_sentence_summary": "Avoid duplicated work",
+        "label": "maintainability",
+        "relevant_file": "app.py",
+        "relevant_lines_start": 1,
+        "relevant_lines_end": 1,
+        "suggestion_content": "Use the shared helper.",
+        "existing_code": "old()",
+        "improved_code": "new()",
+    }
+    suggestion.update(overrides)
+    return suggestion
+
+
+def test_prepare_pr_code_suggestions_filters_duplicates_and_missing_required_fields():
+    tool = _make_tool()
+    prediction = """
+code_suggestions:
+  - one_sentence_summary: Avoid duplicated work
+    label: maintainability
+    relevant_file: app.py
+    suggestion_content: Use the shared helper.
+    existing_code: old()
+    improved_code: new()
+  - one_sentence_summary: Avoid duplicated work
+    label: maintainability
+    relevant_file: app.py
+    suggestion_content: Duplicate summary.
+    existing_code: old()
+    improved_code: newer()
+  - one_sentence_summary: Missing label
+    relevant_file: app.py
+    suggestion_content: Missing label should be skipped.
+    existing_code: old()
+    improved_code: new()
+"""
+
+    data = tool._prepare_pr_code_suggestions(prediction)
+
+    assert len(data["code_suggestions"]) == 1
+    assert data["code_suggestions"][0]["one_sentence_summary"] == "Avoid duplicated work"
+    assert data["code_suggestions"][0]["improved_code"] == "new()"
+
+
+def test_prepare_pr_code_suggestions_renames_critical_label_when_focusing_only_on_problems():
+    settings = get_settings()
+    original_focus = settings.get("pr_code_suggestions.focus_only_on_problems", False)
+    settings.set("pr_code_suggestions.focus_only_on_problems", True)
+    tool = _make_tool()
+    prediction = """
+code_suggestions:
+  - one_sentence_summary: Fix unsafe behavior
+    label: critical issue
+    relevant_file: app.py
+    suggestion_content: Guard this path.
+    existing_code: old()
+    improved_code: new()
+"""
+
+    try:
+        data = tool._prepare_pr_code_suggestions(prediction)
+
+        assert data["code_suggestions"][0]["label"] == "possible issue"
+    finally:
+        settings.set("pr_code_suggestions.focus_only_on_problems", original_focus)
+
+
+@pytest.mark.asyncio
+async def test_analyze_self_reflection_response_merges_scores_and_zeroes_invalid_ranges():
+    git_provider = MagicMock()
+    git_provider.get_diff_files.return_value = []
+    tool = _make_tool(git_provider)
+    settings = get_settings()
+    original_publish_output = settings.config.publish_output
+    settings.config.publish_output = False
+    suggestion = _valid_suggestion()
+    suggestion.pop("relevant_lines_start")
+    suggestion.pop("relevant_lines_end")
+    data = {"code_suggestions": [suggestion]}
+    response_reflect = """
+code_suggestions:
+  - suggestion_score: 9
+    why: Great suggestion, but line range is missing.
+    relevant_lines_start: -1
+    relevant_lines_end: -1
+"""
+
+    try:
+        await tool.analyze_self_reflection_response(data, response_reflect)
+
+        assert data["code_suggestions"][0]["score"] == 0
+        assert data["code_suggestions"][0]["score_why"] == "Great suggestion, but line range is missing."
+        assert data["code_suggestions"][0]["relevant_lines_start"] == -1
+        assert data["code_suggestions"][0]["relevant_lines_end"] == -1
+    finally:
+        settings.config.publish_output = original_publish_output
+
+
+def test_dedent_code_matches_target_file_indentation():
+    git_provider = MagicMock()
+    git_provider.diff_files = [
+        FilePatchInfo(
+            base_file="",
+            head_file="def f():\n    return old()\n",
+            patch="",
+            filename="app.py",
+        )
+    ]
+    tool = _make_tool(git_provider)
+
+    assert tool.dedent_code("app.py", 2, "return new()") == "    return new()"
+
+
+@pytest.mark.asyncio
+async def test_push_inline_code_suggestions_falls_back_to_individual_publish_calls():
+    git_provider = MagicMock()
+    git_provider.diff_files = [
+        FilePatchInfo(
+            base_file="",
+            head_file="def f():\n    return old()\n",
+            patch="",
+            filename="app.py",
+        ),
+        FilePatchInfo(
+            base_file="",
+            head_file="def work():\n    return old_worker()\n",
+            patch="",
+            filename="worker.py",
+        ),
+    ]
+    git_provider.publish_code_suggestions.side_effect = [False, True, True]
+    tool = _make_tool(git_provider)
+    data = {"code_suggestions": [
+        _valid_suggestion(
+            relevant_lines_start=2,
+            relevant_lines_end=2,
+            score=8,
+        ),
+        _valid_suggestion(
+            relevant_file="worker.py",
+            relevant_lines_start=2,
+            relevant_lines_end=2,
+            existing_code="return old_worker()",
+            improved_code="return new_worker()",
+            suggestion_content="Keep the worker result fresh.",
+        ),
+    ]}
+
+    await tool.push_inline_code_suggestions(data)
+
+    assert git_provider.publish_code_suggestions.call_count == 3
+    batch_call = git_provider.publish_code_suggestions.call_args_list[0].args[0]
+    first_retry = git_provider.publish_code_suggestions.call_args_list[1].args[0]
+    second_retry = git_provider.publish_code_suggestions.call_args_list[2].args[0]
+    assert len(batch_call) == 2
+    assert first_retry == [batch_call[0]]
+    assert second_retry == [batch_call[1]]
+    assert first_retry[0]["relevant_file"] == "app.py"
+    assert first_retry[0]["relevant_lines_start"] == 2
+    assert first_retry[0]["relevant_lines_end"] == 2
+    assert "```suggestion\n    new()" in first_retry[0]["body"]
+    assert second_retry[0]["relevant_file"] == "worker.py"
+    assert second_retry[0]["relevant_lines_start"] == 2
+    assert second_retry[0]["relevant_lines_end"] == 2
+    assert "```suggestion\n    return new_worker()" in second_retry[0]["body"]
+
+
+@pytest.fixture
+def publish_output_no_suggestions():
+    settings = get_settings()
+    original = settings.get("pr_code_suggestions.publish_output_no_suggestions", True)
+
+    def _set(value):
+        settings.set("pr_code_suggestions.publish_output_no_suggestions", value)
+
+    yield _set
+    _set(original)
+
+
+@pytest.mark.asyncio
+async def test_publish_no_suggestions_removes_the_progress_comment_when_quiet(publish_output_no_suggestions):
+    publish_output_no_suggestions(False)
+    git_provider = MagicMock()
+    tool = _make_tool(git_provider)
+    tool.progress_response = MagicMock()
+
+    await tool.publish_no_suggestions()
+
+    git_provider.remove_comment.assert_called_once_with(tool.progress_response)
+    git_provider.edit_comment.assert_not_called()
+    git_provider.publish_comment.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_tracks_non_gfm_progress_comment_when_quiet(publish_output_no_suggestions):
+    publish_output_no_suggestions(False)
+    settings = get_settings()
+    original_publish_output = settings.config.publish_output
+    original_publish_output_progress = settings.config.publish_output_progress
+    original_is_auto_command = settings.config.get("is_auto_command", False)
+    settings.config.publish_output = True
+    settings.config.publish_output_progress = True
+    settings.config.is_auto_command = False
+    git_provider = MagicMock()
+    git_provider.get_files.return_value = ["app.py"]
+    git_provider.is_supported.return_value = False
+    progress_comment = MagicMock()
+    git_provider.publish_comment.return_value = progress_comment
+    tool = _make_tool(git_provider)
+    tool.pr_url = "https://example.test/pull/1"
+    tool.progress = "Preparing suggestions..."
+    tool.prepare_prediction_main = AsyncMock()
+
+    try:
+        with (patch("pr_agent.tools.pr_code_suggestions.init_run_details"),
+              patch("pr_agent.tools.pr_code_suggestions.retry_with_fallback_models",
+                    AsyncMock(return_value={"code_suggestions": []}))):
+            await tool.run()
+    finally:
+        settings.config.publish_output = original_publish_output
+        settings.config.publish_output_progress = original_publish_output_progress
+        settings.config.is_auto_command = original_is_auto_command
+
+    git_provider.publish_comment.assert_called_once_with("Preparing suggestions...", is_temporary=True)
+    git_provider.remove_comment.assert_called_once_with(progress_comment)
+
+
+@pytest.mark.asyncio
+async def test_publish_no_suggestions_does_not_remove_unrelated_temporary_comments(publish_output_no_suggestions):
+    publish_output_no_suggestions(False)
+    git_provider = MagicMock()
+    tool = _make_tool(git_provider)
+
+    await tool.publish_no_suggestions()
+
+    git_provider.remove_initial_comment.assert_not_called()
+    git_provider.remove_comment.assert_not_called()
+    git_provider.publish_comment.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_publish_no_suggestions_still_overwrites_the_progress_comment_when_publishing(
+        publish_output_no_suggestions):
+    publish_output_no_suggestions(True)
+    git_provider = MagicMock()
+    tool = _make_tool(git_provider)
+    tool.progress_response = MagicMock()
+
+    await tool.publish_no_suggestions()
+
+    _, kwargs = git_provider.edit_comment.call_args
+    assert "No code suggestions found for the PR." in kwargs["body"]
+    git_provider.remove_comment.assert_not_called()
+
+
+def test_setup_incremental_scope_calls_provider_when_supported():
+    git_provider = MagicMock()
+    git_provider.supports_incremental_kind.return_value = True
+    tool = _make_tool(git_provider)
+    tool.incremental = IncrementalPR(True)
+
+    tool._setup_incremental_scope()
+
+    git_provider.supports_incremental_kind.assert_called_once_with("suggestions")
+    git_provider.get_incremental_commits.assert_called_once_with(tool.incremental, kind="suggestions")
+    assert tool.incremental.is_incremental is True
+
+
+def test_setup_incremental_scope_falls_back_when_unsupported():
+    git_provider = MagicMock()
+    git_provider.supports_incremental_kind.return_value = False
+    tool = _make_tool(git_provider)
+    tool.incremental = IncrementalPR(True)
+
+    tool._setup_incremental_scope()
+
+    git_provider.get_incremental_commits.assert_not_called()
+    assert tool.incremental.is_incremental is False
+
+
+def test_setup_incremental_scope_noop_without_incremental_flag():
+    git_provider = MagicMock()
+    tool = _make_tool(git_provider)
+    tool.incremental = IncrementalPR(False)
+
+    tool._setup_incremental_scope()
+
+    git_provider.supports_incremental_kind.assert_not_called()
+    git_provider.get_incremental_commits.assert_not_called()
+
+
+def test_supports_incremental_kind_defaults_to_false_on_base_provider():
+    # The base-class default must be "no support" so tools fall back to a full run
+    # on providers that never implemented kind-aware incremental anchoring.
+    assert GitProvider.supports_incremental_kind(MagicMock(), "suggestions") is False
+
+
+def test_persistent_update_survives_progress_cleanup_failure():
+    """A failing progress-note cleanup must not abort the persistent update:
+    if the cleanup error propagated, the caller would fall back to publishing
+    a new suggestions thread, re-creating the duplicate-thread bug."""
+    initial_header = "## PR Code Suggestions"
+    existing = MagicMock()
+    existing.body = f"{initial_header}\n<!-- aaa1111 -->\n<table>old suggestions</table>"
+    provider = MagicMock()
+    provider.get_issue_comments.return_value = [existing]
+    provider.get_comment_url.return_value = "https://example.test/comment/1"
+    provider.get_latest_commit_url.return_value = "https://example.test/commit/deadbee"
+    # First edit updates the persistent comment and succeeds; the second edit
+    # (re-labelling the progress note before deletion) fails.
+    provider.edit_comment.side_effect = [None, RuntimeError("cleanup failed")]
+    progress_note = MagicMock()
+
+    result = PRCodeSuggestions.publish_persistent_comment_with_history(
+        provider, f"{initial_header}\n<table>new suggestions</table>", initial_header,
+        update_header=False, name="suggestions", final_update_message=False,
+        progress_response=progress_note)
+
+    assert result is existing
+    assert provider.edit_comment.call_count == 2
+    provider.remove_comment.assert_not_called()
+    provider.publish_comment.assert_not_called()
