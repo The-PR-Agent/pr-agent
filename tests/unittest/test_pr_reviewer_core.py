@@ -2,6 +2,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from jinja2 import Environment, StrictUndefined, meta
 
 from pr_agent.algo.inline_comment_dedup import (
     body_with_markers,
@@ -1130,3 +1131,46 @@ def test_answer_mode_prefers_the_newest_question_and_answer(monkeypatch):
 
     assert reviewer.vars["question_str"] == "Questions to better understand the PR:\n- Current question?"
     assert reviewer.vars["answer_str"] == "/answer Current answer."
+
+
+def _build_reviewer(monkeypatch):
+    """Drive the real ``PRReviewer.__init__`` far enough to capture the vars dict it renders against."""
+    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+
+    provider = MagicMock()
+    provider.is_supported.return_value = True
+    provider.get_languages.return_value = {}
+    provider.get_files.return_value = []
+    provider.get_pr_description.return_value = ("desc", [])
+
+    monkeypatch.setattr(pr_reviewer_module, "get_git_provider_with_context", lambda pr_url: provider)
+    monkeypatch.setattr(pr_reviewer_module, "get_main_pr_language", lambda languages, files: "Python")
+    monkeypatch.setattr(pr_reviewer_module, "TokenHandler", MagicMock())
+
+    return PRReviewer("https://example/pr/1", ai_handler=lambda: SimpleNamespace(main_pr_language=None))
+
+
+def _referenced_prompt_variables(prompt_name):
+    environment = Environment(undefined=StrictUndefined)
+    prompt = getattr(get_settings(), prompt_name)
+    referenced = set()
+    for template in (prompt.system, prompt.user):
+        referenced |= meta.find_undeclared_variables(environment.parse(template))
+    return referenced
+
+
+def test_pr_review_prompt_variables_are_all_supplied_by_reviewer_vars(monkeypatch):
+    """Both halves of pr_review_prompt render under StrictUndefined against PRReviewer.vars.
+
+    A variable the templates reference but the dict omits raises UndefinedError at render time,
+    which fails /review on every PR, so the whole referenced set must be a subset of the keys.
+    Deriving the referenced set from the templates keeps the check honest as the prompts change,
+    and reading the dict the tool actually builds catches drift the system prompt is compared against.
+    """
+    referenced = _referenced_prompt_variables("pr_review_prompt")
+    supplied = set(_build_reviewer(monkeypatch).vars.keys())
+
+    missing = referenced - supplied
+    assert not missing, (
+        f"pr_review_prompt references variables missing from PRReviewer.vars: {sorted(missing)}"
+    )
