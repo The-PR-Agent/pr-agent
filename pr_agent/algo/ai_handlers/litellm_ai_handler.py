@@ -1008,10 +1008,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         # response normalization. Streaming avoids that conversion path.
         if model in self.streaming_required_models or force_streaming:
             kwargs["stream"] = True
-            stream_options = kwargs.get("stream_options")
-            if not isinstance(stream_options, dict):
-                stream_options = {}
-            kwargs["stream_options"] = {**stream_options, "include_usage": True}
+            kwargs["stream_options"] = {"include_usage": True}
             if force_streaming and model not in self.streaming_required_models:
                 get_logger().info(
                     f"Using streaming mode for model {model} "
