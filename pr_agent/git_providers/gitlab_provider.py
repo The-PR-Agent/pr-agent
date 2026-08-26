@@ -514,12 +514,11 @@ class GitLabProvider(GitProvider):
 
         kind = getattr(self, '_incremental_kind', 'review')
         prefixes = self._INCREMENTAL_ANCHOR_PREFIXES.get(kind, ())
-        if kind == "suggestions":
-            self.previous_review = self._find_anchor_note(self._SUGGESTIONS_STABLE_ANCHORS)
-            if self.previous_review is None:
-                self.previous_review = self._find_anchor_note(self._SUGGESTIONS_LEGACY_ANCHORS)
-        else:
-            self.previous_review = self._find_anchor_note(prefixes) if prefixes else None
+        self.previous_review = (
+            self._find_anchor_note(prefixes, prefer_latest_activity=kind == "suggestions")
+            if prefixes
+            else None
+        )
         if not self.previous_review:
             get_logger().info(
                 f"No previous {kind} comment found, will fall back to a full run"
@@ -649,7 +648,7 @@ class GitLabProvider(GitProvider):
         identifiers = get_pr_review_comment_identifiers(full=full, incremental=incremental)
         return self._find_anchor_note(identifiers)
 
-    def _find_anchor_note(self, identities):
+    def _find_anchor_note(self, identities, *, prefer_latest_activity: bool = False):
         """Return the most recent MR note whose body matches any supplied identity.
 
         Used by incremental flows (`/review -i`, `/improve -i`) to find the timestamp
@@ -657,12 +656,12 @@ class GitLabProvider(GitProvider):
         with `.created_at` parsed to a naive UTC datetime (possibly `None` when the
         GitLab payload had an unexpected shape), or `None` if no match.
 
-        We rely on GitLab returning notes in `created_at DESC` order (the API default)
-        and take the first match — re-sorting locally with a `datetime.min` fallback
-        for unparseable timestamps would silently demote the newest match in favour
-        of an older parseable one, leading to commits being re-reviewed. If the chosen
-        anchor's timestamp doesn't parse, `_get_incremental_commits` falls back to a
-        full run via the existing `last_seen_commit is None` branch.
+        By default, rely on GitLab returning notes in `created_at DESC` order (the API
+        default) and take the first match. Suggestions can instead compare `anchor_time`
+        across every matching stable or legacy identity so an older persistent note that
+        was edited more recently wins. If the newest-created match has an unparseable
+        timestamp, retain it so `_get_incremental_commits` safely falls back to a full run
+        instead of silently demoting it in favour of an older parseable note.
 
         Notes authored by other users are skipped when the authenticated (bot) user is
         known: a human comment that merely starts with `**Suggestion:**` must not shift
@@ -681,6 +680,7 @@ class GitLabProvider(GitProvider):
                 return None
         mr_web_url = getattr(self.mr, 'web_url', None)
         own_user_id = self._get_own_user_id()
+        selected_note = None
         for note in self._incremental_notes_cache:
             body = getattr(note, 'body', None)
             if not isinstance(body, str):
@@ -696,8 +696,16 @@ class GitLabProvider(GitProvider):
                         f"user (author {author_id}, bot {own_user_id})"
                     )
                     continue
-            return _GitLabIncrementalNote(note, mr_web_url=mr_web_url)
-        return None
+            candidate = _GitLabIncrementalNote(note, mr_web_url=mr_web_url)
+            if not prefer_latest_activity:
+                return candidate
+            if selected_note is None:
+                selected_note = candidate
+                if selected_note.anchor_time is None:
+                    return selected_note
+            elif candidate.anchor_time is not None and candidate.anchor_time > selected_note.anchor_time:
+                selected_note = candidate
+        return selected_note
 
     def _get_own_user_id(self) -> Optional[int]:
         """ID of the authenticated user (the one posting pr-agent notes), or None when

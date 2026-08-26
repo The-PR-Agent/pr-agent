@@ -126,6 +126,10 @@ class GitProvider(ABC):
         fall back to a full run."""
         return False
 
+    def supports_code_suggestions_artifact(self) -> bool:
+        """Return whether `publish_code_suggestions()` writes a standalone output artifact."""
+        return False
+
     #Given a url (issues or PR/MR) - get the .git repo url to which they belong. Needs to be implemented by the provider.
     def get_git_repo_url(self, issues_or_pr_url: str) -> str:
         get_logger().warning("Not implemented! Returning empty url")

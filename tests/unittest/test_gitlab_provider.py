@@ -1657,7 +1657,7 @@ class TestGitLabIncrementalReview:
         assert gitlab_provider.incremental.last_seen_commit_sha == "c1"
         mock_project.repository_compare.assert_called_once_with("c1", "head")
 
-    def test_incremental_suggestions_prefers_stable_marker_over_legacy_heading(
+    def test_incremental_suggestions_uses_newest_stable_or_legacy_anchor(
             self, gitlab_provider, mock_project):
         gitlab_provider.mr.notes.list.return_value = [
             self._make_note(
@@ -1674,7 +1674,8 @@ class TestGitLabIncrementalReview:
             ),
         ]
         gitlab_provider.mr.commits.return_value = [
-            self._make_commit("c2", "2026-05-15T11:00:00Z"),
+            self._make_commit("c2", "2026-05-15T13:00:00Z"),
+            self._make_commit("c1", "2026-05-15T11:00:00Z"),
             self._make_commit("c0", "2026-05-15T09:00:00Z"),
         ]
         mock_project.repository_compare.return_value = {
@@ -1687,8 +1688,68 @@ class TestGitLabIncrementalReview:
 
         assert gitlab_provider.incremental.is_incremental is True
         assert gitlab_provider.incremental.first_new_commit_sha == "c2"
-        assert gitlab_provider.incremental.last_seen_commit_sha == "c0"
-        mock_project.repository_compare.assert_called_once_with("c0", "head")
+        assert gitlab_provider.incremental.last_seen_commit_sha == "c1"
+        mock_project.repository_compare.assert_called_once_with("c1", "head")
+
+    def test_incremental_suggestions_uses_latest_activity_across_stable_and_legacy_anchors(
+            self, gitlab_provider, mock_project):
+        gitlab_provider.mr.notes.list.return_value = [
+            self._make_note(
+                9,
+                "## PR Code Suggestions ✨\n\n<!-- aaa1111 -->\n\n<table>legacy</table>",
+                "2026-05-15T12:00:00Z",
+            ),
+            self._make_note(
+                8,
+                "## Team Suggestions ✨\n\n"
+                f"{PRCodeSuggestionsIdentity.SUMMARY.value}\n\n"
+                "<!-- bbb2222 -->\n\n<table>marked</table>",
+                created_at="2026-05-15T09:00:00Z",
+                updated_at="2026-05-15T15:00:00Z",
+            ),
+        ]
+        gitlab_provider.mr.commits.return_value = [
+            self._make_commit("c3", "2026-05-15T16:00:00Z"),
+            self._make_commit("c2", "2026-05-15T14:00:00Z"),
+            self._make_commit("c1", "2026-05-15T11:00:00Z"),
+        ]
+        mock_project.repository_compare.return_value = {
+            "diffs": [{"new_path": "a.py", "old_path": "a.py", "diff": "@@ ... @@",
+                       "new_file": False, "deleted_file": False, "renamed_file": False}],
+        }
+        gitlab_provider.mr.changes.return_value = {"changes": [{"new_path": "a.py"}]}
+
+        gitlab_provider.get_incremental_commits(IncrementalPR(True), kind="suggestions")
+
+        assert gitlab_provider.incremental.is_incremental is True
+        assert gitlab_provider.incremental.first_new_commit_sha == "c3"
+        assert gitlab_provider.incremental.last_seen_commit_sha == "c2"
+        mock_project.repository_compare.assert_called_once_with("c2", "head")
+
+    def test_incremental_suggestions_unparseable_newest_anchor_falls_back_to_full(
+            self, gitlab_provider, mock_project):
+        gitlab_provider.mr.notes.list.return_value = [
+            self._make_note(
+                9,
+                "## PR Code Suggestions ✨\n\n<!-- aaa1111 -->\n\n<table>legacy</table>",
+                "not-a-date",
+            ),
+            self._make_note(
+                8,
+                "## Team Suggestions ✨\n\n"
+                f"{PRCodeSuggestionsIdentity.SUMMARY.value}\n\n"
+                "<!-- bbb2222 -->\n\n<table>marked</table>",
+                "2026-05-15T10:00:00Z",
+            ),
+        ]
+        gitlab_provider.mr.commits.return_value = [
+            self._make_commit("c1", "2026-05-15T11:00:00Z"),
+        ]
+
+        gitlab_provider.get_incremental_commits(IncrementalPR(True), kind="suggestions")
+
+        assert gitlab_provider.incremental.is_incremental is False
+        mock_project.repository_compare.assert_not_called()
 
     def test_incremental_suggestions_uses_newer_custom_no_suggestions_result(
             self, gitlab_provider, mock_project):

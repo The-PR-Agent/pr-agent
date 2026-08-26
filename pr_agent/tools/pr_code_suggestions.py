@@ -33,7 +33,7 @@ from pr_agent.algo.utils import (ModelType, PRCodeSuggestionsHeader,
                                  show_relevant_configurations, show_run_details)
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import (AzureDevopsProvider, GithubProvider,
-                                    GitLabProvider, LocalGitProvider, get_git_provider,
+                                    GitLabProvider, get_git_provider,
                                     get_git_provider_with_context)
 from pr_agent.git_providers.git_provider import (GitProvider, IncrementalPR,
                                                  get_main_pr_language)
@@ -301,7 +301,7 @@ class PRCodeSuggestions:
         if (get_settings().config.publish_output and
                 get_settings().pr_code_suggestions.get('publish_output_no_suggestions', True)):
             get_logger().warning("No code suggestions found for the PR.")
-            if isinstance(self.git_provider, LocalGitProvider):
+            if self.git_provider.supports_code_suggestions_artifact():
                 self.git_provider.publish_code_suggestions([])
                 return
             pr_body = add_comment_identity(

@@ -107,6 +107,7 @@ async def test_no_suggestions_uses_custom_heading_with_separate_result_identity(
         ]
     )
     provider = MagicMock()
+    provider.supports_code_suggestions_artifact.return_value = False
     tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
     tool.git_provider = provider
     tool.progress_response = None

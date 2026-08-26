@@ -224,6 +224,7 @@ async def test_pr_code_suggestions_appends_run_details_when_no_suggestions(monke
         suggestions.progress_response = None
         suggestions.git_provider = MagicMock()
         suggestions.git_provider.get_files.return_value = ["changed.py"]
+        suggestions.git_provider.supports_code_suggestions_artifact.return_value = False
         suggestions.git_provider.is_supported.side_effect = lambda cap: cap == "gfm_markdown" and gfm_supported
 
         async def _fake_retry_empty(*_args, **_kwargs):

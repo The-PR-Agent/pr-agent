@@ -168,6 +168,7 @@ async def test_publish_no_suggestions_routes_local_git_output_to_improve_file(tm
     finally:
         restore_settings(snapshot)
 
+    assert provider.supports_code_suggestions_artifact() is True
     content = improve_path.read_text()
     assert content.startswith("# Team Suggestions ✨\n\n")
     assert "No code suggestions found for the PR." in content

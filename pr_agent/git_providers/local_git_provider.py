@@ -70,6 +70,9 @@ class LocalGitProvider(GitProvider):
             return False
         return True
 
+    def supports_code_suggestions_artifact(self) -> bool:
+        return True
+
     def get_diff_files(self) -> list[FilePatchInfo]:
         diffs = self.repo.head.commit.diff(
             self.repo.merge_base(self.repo.head, self.repo.branches[self.target_branch_name]),

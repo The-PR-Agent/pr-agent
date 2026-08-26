@@ -376,6 +376,7 @@ async def test_publish_no_suggestions_still_overwrites_the_progress_comment_when
         publish_output_no_suggestions):
     publish_output_no_suggestions(True)
     git_provider = MagicMock()
+    git_provider.supports_code_suggestions_artifact.return_value = False
     tool = _make_tool(git_provider)
     tool.progress_response = MagicMock()
 
@@ -384,6 +385,20 @@ async def test_publish_no_suggestions_still_overwrites_the_progress_comment_when
     _, kwargs = git_provider.edit_comment.call_args
     assert "No code suggestions found for the PR." in kwargs["body"]
     git_provider.remove_comment.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_publish_no_suggestions_uses_provider_artifact_capability(publish_output_no_suggestions):
+    publish_output_no_suggestions(True)
+    git_provider = MagicMock()
+    git_provider.supports_code_suggestions_artifact.return_value = True
+    tool = _make_tool(git_provider)
+
+    await tool.publish_no_suggestions()
+
+    git_provider.publish_code_suggestions.assert_called_once_with([])
+    git_provider.publish_comment.assert_not_called()
+    git_provider.edit_comment.assert_not_called()
 
 
 def test_setup_incremental_scope_calls_provider_when_supported():
@@ -426,6 +441,10 @@ def test_supports_incremental_kind_defaults_to_false_on_base_provider():
     # The base-class default must be "no support" so tools fall back to a full run
     # on providers that never implemented kind-aware incremental anchoring.
     assert GitProvider.supports_incremental_kind(MagicMock(), "suggestions") is False
+
+
+def test_supports_code_suggestions_artifact_defaults_to_false_on_base_provider():
+    assert GitProvider.supports_code_suggestions_artifact(MagicMock()) is False
 
 
 @pytest.mark.asyncio
