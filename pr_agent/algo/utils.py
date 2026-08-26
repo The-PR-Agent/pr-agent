@@ -1519,7 +1519,10 @@ def show_run_details(gfm_supported: bool) -> str:
         lines.append(f"- AI calls: {details.num_ai_calls}")
     if get_settings().get("config.output_run_cost", False) and details.num_ai_calls:
         if details.cost_status == "unavailable":
-            lines.append("- Estimated API cost: unavailable (priceable usage was not available)")
+            # No causal claim here: pricing can be missing because usage was absent
+            # (streaming without a final usage chunk) or because the active handler
+            # never collects costs (openai/langchain handlers).
+            lines.append("- Estimated API cost: unavailable (no calls could be priced)")
         else:
             partial = ""
             if details.cost_status == "partial":

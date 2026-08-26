@@ -170,7 +170,7 @@ def test_unavailable_cost_never_renders_as_zero():
 
     output = show_run_details(gfm_supported=True)
 
-    assert "Estimated API cost: unavailable (priceable usage was not available)" in output
+    assert "Estimated API cost: unavailable (no calls could be priced)" in output
     assert "Estimated API cost: $0" not in output
 
 
