@@ -13,6 +13,7 @@ import textwrap
 import time
 import traceback
 from datetime import datetime
+from decimal import ROUND_HALF_UP, Decimal
 from enum import Enum
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Iterable, List, Tuple, TypedDict
@@ -1486,6 +1487,14 @@ def show_relevant_configurations(relevant_section: str) -> str:
     return markdown_text
 
 
+def _format_usd(cost: Decimal) -> str:
+    """Format cost at four decimals without turning a positive amount into false zero."""
+    rounded = cost.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+    if cost > 0 and rounded == 0:
+        return "<$0.0001"
+    return f"${rounded:.4f}"
+
+
 def show_run_details(gfm_supported: bool) -> str:
     """Render the opt-in run-details section (model, tokens, time cost, AI calls).
 
@@ -1508,6 +1517,18 @@ def show_run_details(gfm_supported: bool) -> str:
     lines.append(f"- Time cost: {details.duration_seconds:.1f}s")
     if details.num_ai_calls:
         lines.append(f"- AI calls: {details.num_ai_calls}")
+    if get_settings().get("config.output_run_cost", False) and details.num_ai_calls:
+        if details.cost_status == "unavailable":
+            lines.append("- Estimated API cost: unavailable (priceable usage was not available)")
+        else:
+            partial = ""
+            if details.cost_status == "partial":
+                partial = (f" (partial: {details.known_cost_call_count} of "
+                           f"{details.num_ai_calls} successful calls priced)")
+            lines.append(f"- Estimated API cost: {_format_usd(details.total_cost_usd)} USD{partial}")
+            if len(details.model_costs_usd) > 1:
+                for model, cost in details.model_costs_usd.items():
+                    lines.append(f"  - {model}: {_format_usd(cost)} USD")
     body = "\n".join(lines)
 
     if gfm_supported:

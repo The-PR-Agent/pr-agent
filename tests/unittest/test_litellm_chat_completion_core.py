@@ -306,7 +306,11 @@ async def test_get_completion_uses_streaming_for_required_models():
             patch("pr_agent.algo.ai_handlers.litellm_ai_handler._handle_streaming_response",
                   new_callable=AsyncMock) as mock_stream:
         mock_call.return_value = "stream"
-        mock_stream.return_value = ("streamed text", "stop")
+        completed_response = MagicMock()
+        completed_response.dict.return_value = {
+            "choices": [{"message": {"content": "streamed text"}, "finish_reason": "stop"}]
+        }
+        mock_stream.return_value = ("streamed text", "stop", completed_response)
 
         resp, finish_reason, response_obj = await handler._get_completion(
             model="streaming-model",
@@ -314,6 +318,8 @@ async def test_get_completion_uses_streaming_for_required_models():
         )
 
     assert mock_call.call_args.kwargs["stream"] is True
+    assert mock_call.call_args.kwargs["stream_options"] == {"include_usage": True}
+    mock_stream.assert_awaited_once_with("stream", model="streaming-model")
     assert resp == "streamed text"
     assert finish_reason == "stop"
     assert response_obj.dict()["choices"][0]["message"]["content"] == "streamed text"

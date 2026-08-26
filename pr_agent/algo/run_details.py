@@ -10,6 +10,7 @@ stay isolated between concurrent requests.
 import time
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 from typing import Optional
 
 _run_details: ContextVar[Optional["RunDetails"]] = ContextVar(
@@ -44,6 +45,13 @@ class RunDetails:
     total_tokens: int = 0
     # Successful LLM invocations, counted even when their token usage is unavailable.
     num_ai_calls: int = 0
+    # Costs are accumulated only when cost output is enabled and LiteLLM can
+    # synchronously price a successful response. The known-call count distinguishes
+    # a genuine zero cost from missing pricing data, while the per-model totals keep
+    # fallback and multi-call runs auditable.
+    total_cost_usd: Decimal = field(default_factory=lambda: Decimal("0"))
+    known_cost_call_count: int = 0
+    model_costs_usd: dict[str, Decimal] = field(default_factory=dict)
     # Monotonic reference taken when the collector is installed, i.e. at the top of the
     # tool's run(). Monotonic so that wall-clock adjustments cannot yield a negative duration.
     start_time: float = field(default_factory=time.monotonic)
@@ -59,6 +67,15 @@ class RunDetails:
             or self.prompt_tokens > 0
             or self.completion_tokens > 0
         )
+
+    @property
+    def cost_status(self) -> str:
+        """Return whether every, some, or none of the successful calls were priced."""
+        if self.known_cost_call_count == 0:
+            return "unavailable"
+        if self.known_cost_call_count == self.num_ai_calls:
+            return "complete"
+        return "partial"
 
 
 def init_run_details() -> RunDetails:
@@ -107,11 +124,30 @@ def add_token_usage(usage) -> None:
     details.total_tokens += total_tokens
 
 
-def record_ai_call(usage=None) -> None:
-    """Count one AI call and accumulate token usage when available."""
+def _as_decimal_cost(cost_usd) -> Optional[Decimal]:
+    """Normalize a non-negative finite USD value without introducing float math."""
+    if cost_usd is None or isinstance(cost_usd, bool):
+        return None
+    try:
+        cost = cost_usd if isinstance(cost_usd, Decimal) else Decimal(str(cost_usd))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    if not cost.is_finite() or cost < 0:
+        return None
+    return cost
+
+
+def record_ai_call(usage=None, model: Optional[str] = None, cost_usd=None) -> None:
+    """Count one successful AI call and accumulate usage and known cost."""
     details = get_run_details()
     if details is None:
         return
     details.num_ai_calls += 1
     if usage is not None:
         add_token_usage(usage)
+    cost = _as_decimal_cost(cost_usd)
+    if cost is not None:
+        details.total_cost_usd += cost
+        details.known_cost_call_count += 1
+        model_name = model or "unknown"
+        details.model_costs_usd[model_name] = details.model_costs_usd.get(model_name, Decimal("0")) + cost

@@ -47,6 +47,7 @@ secret_provider="" # "" (disabled), "google_cloud_storage", or "aws_secrets_mana
 cli_mode=false
 output_relevant_configurations=false
 output_run_details=false # if true, append an agent run details section (model, tokens, time cost, AI calls) to generated PR comments
+output_run_cost=false # if true, collect estimated LiteLLM API cost and include it inside the enabled run details section
 large_patch_policy = "clip" # "clip", "skip"
 duplicate_prompt_examples = false
 # Persistent inline comments (issue #2037): when true, the GitHub and GitLab providers

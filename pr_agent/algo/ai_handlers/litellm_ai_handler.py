@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import json
 import os
+from decimal import Decimal, InvalidOperation
 
 import httpx
 import litellm
@@ -18,7 +19,7 @@ from pr_agent.algo import (CLAUDE_EXTENDED_THINKING_MODELS,
                            USER_MESSAGE_ONLY_MODELS)
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_helpers import (
-    MockResponse, _get_azure_ad_token, _handle_streaming_response,
+    _get_azure_ad_token, _handle_streaming_response,
     _process_litellm_extra_body)
 from pr_agent.algo.run_details import record_ai_call
 from pr_agent.algo.utils import ReasoningEffort, get_version
@@ -377,12 +378,89 @@ class LiteLLMAIHandler(BaseAiHandler):
         return response_log
 
     @staticmethod
-    def _record_completion_metadata(response) -> None:
-        """Count the call and accumulate token usage when the provider reports it.
+    def _record_completion_metadata(response, model=None) -> None:
+        """Count a successful call and synchronously collect usage-based cost when possible."""
+        if isinstance(response, dict):
+            usage = response.get("usage")
+        else:
+            usage = getattr(response, "usage", None)
 
-        Streaming models return a MockResponse without `usage`, so tokens stay unset.
-        """
-        record_ai_call(getattr(response, "usage", None))
+        cost_usd = None
+        if get_settings().get("config.output_run_cost", False):
+            cost_usd = LiteLLMAIHandler._read_positive_response_cost(response, usage)
+            if cost_usd is None and model and LiteLLMAIHandler._has_priceable_usage(usage):
+                try:
+                    # completion_cost consumes LiteLLM's full usage object, including cache,
+                    # reasoning, and provider-specific categories. For the small completed
+                    # stream wrapper, pass its dictionary while retaining `response.usage`.
+                    cost_response = response
+                    if not isinstance(response, dict) and not hasattr(response, "model_dump"):
+                        cost_response = response.dict()
+                    cost_usd = litellm.completion_cost(completion_response=cost_response, model=model)
+                except Exception as e:
+                    # Missing model pricing or insufficient usage is expected for some providers.
+                    # Keep the successful call but mark its cost unavailable in the collector.
+                    get_logger().debug(f"Unable to estimate API cost for model {model}: {type(e).__name__}")
+
+        record_ai_call(usage, model=model, cost_usd=cost_usd)
+
+    @staticmethod
+    def _read_positive_response_cost(response, usage):
+        """Read a finalized inline cost, rejecting zero placeholders and invalid values."""
+        candidates = []
+        if isinstance(usage, dict):
+            candidates.extend((usage.get("response_cost"), usage.get("cost")))
+        elif usage is not None:
+            candidates.extend((getattr(usage, "response_cost", None), getattr(usage, "cost", None)))
+
+        if isinstance(response, dict):
+            hidden_params = response.get("_hidden_params")
+        else:
+            hidden_params = getattr(response, "_hidden_params", None)
+        if hasattr(hidden_params, "model_dump"):
+            hidden_params = hidden_params.model_dump()
+        if isinstance(hidden_params, dict):
+            candidates.append(hidden_params.get("response_cost"))
+
+        for candidate in candidates:
+            if candidate is None or isinstance(candidate, bool):
+                continue
+            try:
+                decimal_cost = candidate if isinstance(candidate, Decimal) else Decimal(str(candidate))
+            except (InvalidOperation, TypeError, ValueError):
+                continue
+            if decimal_cost.is_finite() and decimal_cost > 0:
+                return decimal_cost
+        return None
+
+    @staticmethod
+    def _has_priceable_usage(usage) -> bool:
+        """Return true when finalized usage contains at least one positive billable quantity."""
+        if usage is None:
+            return False
+        if hasattr(usage, "model_dump"):
+            usage = usage.model_dump()
+        elif not isinstance(usage, dict):
+            try:
+                usage = vars(usage)
+            except TypeError:
+                return False
+
+        def contains_positive_quantity(value) -> bool:
+            if isinstance(value, bool) or value is None:
+                return False
+            if isinstance(value, (int, float)):
+                return value > 0
+            if isinstance(value, dict):
+                return any(
+                    key not in {"cost", "response_cost"} and contains_positive_quantity(item)
+                    for key, item in value.items()
+                )
+            if isinstance(value, (list, tuple)):
+                return any(contains_positive_quantity(item) for item in value)
+            return False
+
+        return contains_positive_quantity(usage)
 
     def _configure_claude_extended_thinking(self, model: str, kwargs: dict) -> dict:
         """
@@ -923,7 +1001,7 @@ class LiteLLMAIHandler(BaseAiHandler):
             if get_settings().config.verbosity_level >= 2:
                 get_logger().info(f"\nAI response:\n{resp}")
 
-            self._record_completion_metadata(response_obj)
+            self._record_completion_metadata(response_obj, model=model)
 
             return resp, finish_reason
 
@@ -947,6 +1025,10 @@ class LiteLLMAIHandler(BaseAiHandler):
         # response normalization. Streaming avoids that conversion path.
         if model in self.streaming_required_models or force_streaming:
             kwargs["stream"] = True
+            stream_options = kwargs.get("stream_options")
+            if not isinstance(stream_options, dict):
+                stream_options = {}
+            kwargs["stream_options"] = {**stream_options, "include_usage": True}
             if force_streaming and model not in self.streaming_required_models:
                 get_logger().info(
                     f"Using streaming mode for model {model} "
@@ -955,10 +1037,7 @@ class LiteLLMAIHandler(BaseAiHandler):
             else:
                 get_logger().info(f"Using streaming mode for model {model}")
             response = await acompletion(**kwargs)
-            resp, finish_reason = await _handle_streaming_response(response)
-            # Create MockResponse for streaming since we don't have the full response object
-            mock_response = MockResponse(resp, finish_reason)
-            return resp, finish_reason, mock_response
+            return await _handle_streaming_response(response, model=model)
         else:
             response = await acompletion(**kwargs)
             if response is None or len(response["choices"]) == 0:
