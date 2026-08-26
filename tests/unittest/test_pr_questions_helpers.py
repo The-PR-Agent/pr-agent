@@ -14,6 +14,8 @@ import pytest
 import pr_agent.tools.pr_line_questions as plq
 from pr_agent.algo.utils import format_pr_questions_header
 from pr_agent.config_loader import get_settings
+from pr_agent.git_providers.codecommit_provider import CodeCommitProvider
+from pr_agent.git_providers.gerrit_provider import GerritProvider, adopt_to_gerrit_message
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
 from pr_agent.tools.pr_questions import PRQuestions
 from tests.unittest._settings_helpers import SENTINEL, restore_settings, snapshot_settings
@@ -167,6 +169,43 @@ class TestPreparePrAnswer:
             restore_settings(saved)
 
         assert header == expected
+
+    @pytest.mark.parametrize("provider_class", [CodeCommitProvider, GerritProvider])
+    def test_plaintext_providers_do_not_receive_markdown_escapes(self, provider_class):
+        settings = get_settings()
+        saved = snapshot_settings(("pr_questions.ask_heading",))
+        provider = provider_class.__new__(provider_class)
+        pr = _make_pr_questions(
+            question_str="why?",
+            prediction="because reasons",
+            git_provider=provider,
+        )
+        try:
+            settings.set("pr_questions.ask_heading", "Q&A / Security")
+            out = pr._prepare_pr_answer()
+        finally:
+            restore_settings(saved)
+
+        assert out.startswith("### **Q&A / Security**❓\n")
+        assert "\\" not in out.splitlines()[0]
+
+    def test_gerrit_plaintext_conversion_does_not_leak_heading_escapes(self):
+        settings = get_settings()
+        saved = snapshot_settings(("pr_questions.ask_heading",))
+        provider = GerritProvider.__new__(GerritProvider)
+        pr = _make_pr_questions(
+            question_str="why?",
+            prediction="because reasons",
+            git_provider=provider,
+        )
+        try:
+            settings.set("pr_questions.ask_heading", "Q&A / Security")
+            out = adopt_to_gerrit_message(pr._prepare_pr_answer())
+        finally:
+            restore_settings(saved)
+
+        assert out.startswith("Q&A / Security❓:")
+        assert "\\" not in out.splitlines()[0]
 
     def test_sanitizes_leading_slash(self):
         pr = _make_pr_questions(

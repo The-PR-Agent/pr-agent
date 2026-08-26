@@ -312,6 +312,7 @@ class GerritProvider(GitProvider):
             'create_inline_comment',
             'publish_inline_comments',
             'get_labels',
+            "markdown_backslash_escapes",
             'gfm_markdown'
         ]:
             return False

@@ -128,8 +128,9 @@ class PRQuestions:
         if model_answer_sanitized != model_answer:
             get_logger().debug(f"Sanitized model answer",
                                artifact={"model_answer": model_answer, "sanitized_answer": model_answer_sanitized})
-
-
-        answer_str = f"{format_pr_questions_header()}\n{self.question_str}\n\n"
+        answer_header = format_pr_questions_header(
+            escape_markdown=self.git_provider.is_supported("markdown_backslash_escapes")
+        )
+        answer_str = f"{answer_header}\n{self.question_str}\n\n"
         answer_str += f"### **Answer:**\n{model_answer_sanitized}\n\n"
         return answer_str

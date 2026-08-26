@@ -125,11 +125,12 @@ def format_pr_code_suggestions_header(markdown_level: int = 2) -> str:
     return f"{markdown_prefix} {heading} ✨"
 
 
-def format_pr_questions_header() -> str:
+def format_pr_questions_header(*, escape_markdown: bool = True) -> str:
     """Return the visible heading for top-level /ask answers."""
     heading = _get_configured_heading("pr_questions.ask_heading", "Ask")
-    escaped_heading = heading.translate(_MARKDOWN_PUNCTUATION_ESCAPE_TABLE)
-    return f"### **{escaped_heading}**❓"
+    if escape_markdown:
+        heading = heading.translate(_MARKDOWN_PUNCTUATION_ESCAPE_TABLE)
+    return f"### **{heading}**❓"
 
 
 def comment_matches_identity(body: str, identity: str) -> bool:
