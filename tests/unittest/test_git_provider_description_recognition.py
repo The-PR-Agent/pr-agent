@@ -151,3 +151,25 @@ class TestEdgeCases:
     def test_case_insensitive_marker(self):
         desc = "<!-- PR-AGENT-GENERATED -->\n### **PR Type**\nfix"
         assert _make_provider(desc)._is_generated_by_pr_agent(desc.lower()) is True
+
+
+class TestQuotedHeadersAreNotOurs:
+    """A human description that quotes our headers must not be read as generated,
+    otherwise get_user_description() returns '' and their text is lost."""
+
+    def test_blockquoted_header_is_not_generated(self):
+        desc = ("For reference the bot emits:\n\n"
+                "> ### **PR Type**\n> Bug fix\n\nLeave my text alone.")
+        assert _make_provider(desc)._is_generated_by_pr_agent(desc.lower()) is False
+
+    def test_inline_backticked_header_is_not_generated(self):
+        desc = "Our template starts with `### **PR Type**` which I am not using here."
+        assert _make_provider(desc)._is_generated_by_pr_agent(desc.lower()) is False
+
+    def test_indented_header_is_not_generated(self):
+        desc = "Example:\n\n    ### **PR Type**\n    Bug fix\n\nNot mine."
+        assert _make_provider(desc)._is_generated_by_pr_agent(desc.lower()) is False
+
+    def test_leading_content_before_header_is_still_generated(self):
+        desc = "Fixes #42\n### **PR Type**\nBug fix"
+        assert _make_provider(desc)._is_generated_by_pr_agent(desc.lower()) is True

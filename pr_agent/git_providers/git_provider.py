@@ -338,7 +338,11 @@ class GitProvider(ABC):
         # case from #2633: a description like "Fixes #42\n### **PR Type**" should
         # still be recognized as pr-agent output).
         for header in possible_headers:
-            if header in self._UNIQUE_PR_AGENT_HEADERS and header in description_lowercase:
+            # the header must start its own line: a quoted copy, e.g. inside a
+            # blockquote or backticks, is somebody else's text, not ours
+            if header in self._UNIQUE_PR_AGENT_HEADERS and (
+                    description_lowercase.startswith(header)
+                    or ("\n" + header) in description_lowercase):
                 return True
         # For generic headers (type, description, labels), require startswith
         # to avoid misclassifying human descriptions that happen to contain
