@@ -1,8 +1,10 @@
 import git
+import pytest
 
 from pr_agent.algo.types import EDIT_TYPE
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.local_git_provider import LocalGitProvider
+from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 from tests.unittest._settings_helpers import (restore_settings,
                                               snapshot_settings)
 
@@ -134,6 +136,44 @@ def test_publish_code_suggestions_uses_custom_heading_without_identity(tmp_path)
     content = improve_path.read_text()
     assert content.startswith("# Team Suggestions ✨\n\n")
     assert "<!-- pr-agent:improve" not in content
+
+
+@pytest.mark.asyncio
+async def test_publish_no_suggestions_routes_local_git_output_to_improve_file(tmp_path, monkeypatch):
+    snapshot = snapshot_settings([
+        "config.output_run_details",
+        "config.publish_output",
+        "pr_code_suggestions.publish_output_no_suggestions",
+        "pr_code_suggestions.suggestions_heading",
+    ])
+    improve_path = tmp_path / "improve.md"
+    review_path = tmp_path / "review.md"
+    provider = object.__new__(LocalGitProvider)
+    provider.improve_path = improve_path
+    provider.review_path = review_path
+    tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
+    tool.git_provider = provider
+    tool.progress_response = None
+    try:
+        get_settings().set("config.output_run_details", True)
+        get_settings().set("config.publish_output", True)
+        get_settings().set("pr_code_suggestions.publish_output_no_suggestions", True)
+        get_settings().set("pr_code_suggestions.suggestions_heading", "Team Suggestions")
+        monkeypatch.setattr(
+            "pr_agent.git_providers.local_git_provider.show_run_details",
+            lambda gfm_supported: "\n\nRun details" if not gfm_supported else "",
+        )
+
+        await tool.publish_no_suggestions()
+    finally:
+        restore_settings(snapshot)
+
+    content = improve_path.read_text()
+    assert content.startswith("# Team Suggestions ✨\n\n")
+    assert "No code suggestions found for the PR." in content
+    assert "Run details" in content
+    assert "<!-- pr-agent:improve" not in content
+    assert not review_path.exists()
 
 
 def test_publish_comment_skips_temporary(tmp_path):

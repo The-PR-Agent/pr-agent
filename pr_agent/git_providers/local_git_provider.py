@@ -5,7 +5,8 @@ from typing import List
 from git import Repo
 
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
-from pr_agent.algo.utils import format_pr_code_suggestions_header
+from pr_agent.algo.utils import (format_pr_code_suggestions_header,
+                                 show_run_details)
 from pr_agent.config_loader import _find_repository_root, get_settings
 from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.log import get_logger
@@ -164,6 +165,8 @@ class LocalGitProvider(GitProvider):
         header = format_pr_code_suggestions_header(markdown_level=1)
         pr_body = f"{header}\n\n" + "\n\n".join(sections) if sections \
             else f"{header}\n\nNo code suggestions found for the PR."
+        if not sections and get_settings().get("config.output_run_details", False):
+            pr_body += show_run_details(False)
         with open(self.improve_path, "w", encoding="utf-8") as file:
             file.write(pr_body)
         return True

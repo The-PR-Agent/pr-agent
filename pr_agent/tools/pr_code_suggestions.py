@@ -33,7 +33,7 @@ from pr_agent.algo.utils import (ModelType, PRCodeSuggestionsHeader,
                                  show_relevant_configurations, show_run_details)
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import (AzureDevopsProvider, GithubProvider,
-                                    GitLabProvider, get_git_provider,
+                                    GitLabProvider, LocalGitProvider, get_git_provider,
                                     get_git_provider_with_context)
 from pr_agent.git_providers.git_provider import (GitProvider, IncrementalPR,
                                                  get_main_pr_language)
@@ -300,6 +300,10 @@ class PRCodeSuggestions:
         pr_body = f"{format_pr_code_suggestions_header()}\n\nNo code suggestions found for the PR."
         if (get_settings().config.publish_output and
                 get_settings().pr_code_suggestions.get('publish_output_no_suggestions', True)):
+            get_logger().warning("No code suggestions found for the PR.")
+            if isinstance(self.git_provider, LocalGitProvider):
+                self.git_provider.publish_code_suggestions([])
+                return
             pr_body = add_comment_identity(
                 pr_body,
                 PRCodeSuggestionsIdentity.NO_SUGGESTIONS.value,
@@ -308,7 +312,6 @@ class PRCodeSuggestions:
             # "no suggestions" result still shows which model produced it.
             if get_settings().get('config', {}).get('output_run_details', False):
                 pr_body += show_run_details(self.git_provider.is_supported("gfm_markdown"))
-            get_logger().warning('No code suggestions found for the PR.')
             get_logger().debug(f"PR output", artifact=pr_body)
             if self.progress_response:
                 self.git_provider.edit_comment(self.progress_response, body=pr_body)
