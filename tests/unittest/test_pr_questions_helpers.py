@@ -443,21 +443,36 @@ class TestResolveThreadsDisabledWithoutCommentId:
         finally:
             restore_settings(saved)
 
-    def test_resolve_threads_cleared_when_no_comment_id(self, resolve_settings):
+    @pytest.mark.asyncio
+    async def test_resolve_threads_cleared_when_no_comment_id(self, resolve_settings):
+        # drive run() rather than restating the branch, so deleting the clearing fails here
         resolve_settings.set("pr_questions.resolve_threads", True)
+        resolve_settings.set("pr_questions.use_conversation_history", False)
         resolve_settings.set("comment_id", "")
+        resolve_settings.set("ask_diff_hunk", "@@ -1,3 +1,3 @@\n-old\n+new\n ctx")
+        resolve_settings.set("line_start", 1)
+        resolve_settings.set("line_end", 1)
+        resolve_settings.set("side", "RIGHT")
+        resolve_settings.set("file_name", "test.py")
 
         lq = _make_line_questions()
-        lq.resolve_threads = get_settings().pr_questions.get("resolve_threads", False)
-        lq.vars = {"resolve_threads": lq.resolve_threads}
+        lq.resolve_threads = True
+        lq.vars["resolve_threads"] = True
+        lq.token_handler = MagicMock()
 
-        comment_id = get_settings().get("comment_id", "")
-        if not comment_id:
-            lq.resolve_threads = False
-            lq.vars["resolve_threads"] = False
+        async def fake_retry(func, **kwargs):
+            return "Looks good.\n\n[THREAD_RESOLVED]"
 
-        assert lq.vars["resolve_threads"] is False
+        original = plq.retry_with_fallback_models
+        plq.retry_with_fallback_models = fake_retry
+        try:
+            await lq.run()
+        finally:
+            plq.retry_with_fallback_models = original
+
         assert lq.resolve_threads is False
+        assert lq.vars["resolve_threads"] is False
+        lq.git_provider.resolve_comment_thread.assert_not_called()
 
     def test_resolve_threads_kept_when_comment_id_present(self, resolve_settings):
         resolve_settings.set("pr_questions.resolve_threads", True)

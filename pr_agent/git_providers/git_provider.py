@@ -356,6 +356,10 @@ class GitProvider(ABC):
     def resolve_comment_thread(self, comment_id) -> bool:  # noqa: B027 - intentional no-op
         return False
 
+    def supports_thread_resolution(self) -> bool:
+        """Providers that implement resolve_comment_thread override this."""
+        return False
+
     def publish_persistent_comment(self, pr_comment: str,
                                    initial_header: str,
                                    update_header: bool = True,

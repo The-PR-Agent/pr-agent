@@ -627,6 +627,9 @@ class GithubProvider(GitProvider):
             get_logger().exception(f"Failed to get review comments for an inline ask command", artifact={"comment_id": comment_id, "error": e})
             return []
 
+    def supports_thread_resolution(self) -> bool:
+        return True
+
     def resolve_comment_thread(self, comment_id: int) -> bool:
         """Resolve the review thread containing the given comment via GitHub GraphQL API."""
         try:
