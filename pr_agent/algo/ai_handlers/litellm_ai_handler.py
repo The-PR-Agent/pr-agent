@@ -2,7 +2,6 @@ import asyncio
 import contextlib
 import json
 import os
-from decimal import Decimal, InvalidOperation
 
 import httpx
 import litellm
@@ -21,7 +20,7 @@ from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_helpers import (
     _get_azure_ad_token, _handle_streaming_response,
     _process_litellm_extra_body, _response_field)
-from pr_agent.algo.run_details import record_ai_call
+from pr_agent.algo.run_details import _as_decimal_cost, record_ai_call
 from pr_agent.algo.utils import ReasoningEffort, get_version
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
@@ -380,10 +379,7 @@ class LiteLLMAIHandler(BaseAiHandler):
     @staticmethod
     def _record_completion_metadata(response, model=None, display_model=None) -> None:
         """Count a successful call and synchronously collect usage-based cost when possible."""
-        if isinstance(response, dict):
-            usage = response.get("usage")
-        else:
-            usage = getattr(response, "usage", None)
+        usage = _response_field(response, "usage")
 
         cost_usd = None
         if get_settings().get("config.output_run_cost", False):
@@ -408,29 +404,20 @@ class LiteLLMAIHandler(BaseAiHandler):
     @staticmethod
     def _read_positive_response_cost(response, usage):
         """Read a finalized inline cost, rejecting zero placeholders and invalid values."""
-        candidates = []
-        if isinstance(usage, dict):
-            candidates.extend((usage.get("response_cost"), usage.get("cost")))
-        elif usage is not None:
-            candidates.extend((getattr(usage, "response_cost", None), getattr(usage, "cost", None)))
+        candidates = [
+            _response_field(usage, "response_cost"),
+            _response_field(usage, "cost"),
+        ]
 
-        if isinstance(response, dict):
-            hidden_params = response.get("_hidden_params")
-        else:
-            hidden_params = getattr(response, "_hidden_params", None)
+        hidden_params = _response_field(response, "_hidden_params")
         if hasattr(hidden_params, "model_dump"):
             hidden_params = hidden_params.model_dump()
         if isinstance(hidden_params, dict):
             candidates.append(hidden_params.get("response_cost"))
 
         for candidate in candidates:
-            if candidate is None or isinstance(candidate, bool):
-                continue
-            try:
-                decimal_cost = candidate if isinstance(candidate, Decimal) else Decimal(str(candidate))
-            except (InvalidOperation, TypeError, ValueError):
-                continue
-            if decimal_cost.is_finite() and decimal_cost > 0:
+            decimal_cost = _as_decimal_cost(candidate)
+            if decimal_cost is not None:
                 return decimal_cost
         return None
 
