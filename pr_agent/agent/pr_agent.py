@@ -1,3 +1,4 @@
+import json
 import shlex
 from functools import partial
 
@@ -47,20 +48,104 @@ command2class = {
 commands = list(command2class.keys())
 
 
+def _split_command(command: str) -> list[tuple[str, bool]]:
+    """Split an auto command and retain whether each token was quoted.
+
+    ``shlex.split`` removes quote markers before setting overrides are handed to
+    ``yaml.safe_load``. That makes a quoted ``#`` look like a YAML comment and
+    changes quoted scalar values such as ``"true"`` into booleans. This small
+    tokenizer keeps the normal shell-style token boundaries while recording the
+    presence of quotes so setting values can be normalized as strings later.
+
+    Apostrophes inside a word remain literal, matching the legacy request parser
+    (for example, ``What's``). An apostrophe at a token boundary or immediately
+    after ``=`` still starts a single-quoted value, as used by the documented
+    webhook configuration examples.
+    """
+    tokens = []
+    token = []
+    quote = None
+    has_quote = False
+    token_started = False
+
+    def flush_token():
+        nonlocal has_quote, token_started, token
+        if token_started:
+            tokens.append(("".join(token), has_quote))
+        token = []
+        has_quote = False
+        token_started = False
+
+    index = 0
+    while index < len(command):
+        character = command[index]
+        if quote is None:
+            if character.isspace():
+                flush_token()
+            elif character == "\\":
+                if index + 1 >= len(command):
+                    raise ValueError("No escaped character")
+                token.append(command[index + 1])
+                token_started = True
+                index += 1
+            elif character == '"':
+                quote = character
+                has_quote = True
+                token_started = True
+            elif character == "'" and (not token_started or command[index - 1] == "="):
+                quote = character
+                has_quote = True
+                token_started = True
+            else:
+                token.append(character)
+                token_started = True
+        elif quote == "'":
+            if character == "'":
+                quote = None
+            else:
+                token.append(character)
+        else:
+            if character == '"':
+                quote = None
+            elif character == "\\":
+                if index + 1 >= len(command):
+                    raise ValueError("No escaped character")
+                escaped = command[index + 1]
+                if escaped in {'"', "\\", "$", "`"}:
+                    token.append(escaped)
+                elif escaped != "\n":
+                    token.extend(("\\", escaped))
+                index += 1
+            else:
+                token.append(character)
+        index += 1
+
+    if quote is not None:
+        raise ValueError("No closing quotation")
+    flush_token()
+    return tokens
+
+
 def prepare_command(command: str) -> list[str]:
     """Apply command-line settings while preserving quoted argument boundaries.
 
     Webhook adapters use this before handing configured commands to ``PRAgent``. Parsing
     with ``str.split(" ")`` breaks values such as ``--section.key=\"words with spaces\"``;
-    ``shlex`` keeps the value as one argument. Returning the token list avoids serializing
-    it back to a string, which would otherwise be re-parsed by ``PRAgent`` and could alter
-    quoted arguments.
+    the tokenizer keeps the value as one argument and preserves explicit quoting for YAML.
+    Returning the token list avoids serializing it back to a string, which would otherwise
+    be re-parsed by ``PRAgent`` and could alter quoted arguments.
     """
-    tokens = shlex.split(command)
+    tokens = _split_command(command)
     if not tokens:
         return []
 
-    action, *args = tokens
+    (action, _), *token_args = tokens
+    args = []
+    for argument, was_quoted in token_args:
+        if was_quoted and argument.startswith("--") and "=" in argument:
+            key, value = argument.split("=", 1)
+            argument = f"{key}={json.dumps(value, ensure_ascii=False)}"
+        args.append(argument)
     other_args = update_settings_from_args(args)
     return [action] + other_args
 

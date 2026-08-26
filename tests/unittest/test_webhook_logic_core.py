@@ -7,7 +7,7 @@ from starlette.testclient import TestClient
 
 from pr_agent.config_loader import get_settings
 from pr_agent.identity_providers.identity_provider import Eligibility
-from pr_agent.servers import bitbucket_server_webhook, github_app
+from pr_agent.servers import bitbucket_server_webhook, gitea_app, github_app
 
 
 @pytest.fixture
@@ -268,6 +268,51 @@ async def test_github_automatic_feedback_preserves_quoted_command_arguments(monk
 
     assert commands == [["/ask", "why is this change risky?"]]
     assert repo_settings_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_github_automatic_feedback_continues_after_invalid_command(monkeypatch):
+    commands, repo_settings_calls = await _run_github_pr_commands(
+        monkeypatch,
+        repo_setting=True,
+        configured_commands=['/ask "unterminated', "/review"],
+    )
+
+    assert commands == [["/review"]]
+    assert repo_settings_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_gitea_automatic_feedback_continues_after_invalid_command(monkeypatch):
+    settings = get_settings()
+    original_gitea = copy.deepcopy(settings.get("GITEA"))
+    original_is_auto_command = settings.get("CONFIG.IS_AUTO_COMMAND")
+    settings.set("GITEA.PR_COMMANDS", ['/ask "unterminated', "/review"])
+
+    agent = RecordingAgent()
+    body = {
+        "action": "opened",
+        "pull_request": {
+            "url": "https://gitea.example.com/org/repo/pulls/1",
+            "title": "Regular PR",
+            "labels": [],
+            "head": {"ref": "feature/cache"},
+            "base": {"ref": "main"},
+        },
+        "sender": {"login": "alice"},
+        "repository": {"full_name": "org/repo"},
+    }
+
+    monkeypatch.setattr(gitea_app, "apply_repo_settings", lambda _url: None)
+    try:
+        await gitea_app._perform_commands_gitea(
+            "pr_commands", agent, body, body["pull_request"]["url"]
+        )
+    finally:
+        settings.set("GITEA", original_gitea)
+        settings.set("CONFIG.IS_AUTO_COMMAND", original_is_auto_command)
+
+    assert agent.commands == [["/review"]]
 
 
 def _run_gitlab_pr_commands(module, monkeypatch, draft, repo_setting, event="open"):

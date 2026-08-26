@@ -103,6 +103,52 @@ def test_prepare_command_preserves_quoted_non_setting_arguments():
     assert command == ["/ask", "why is this change risky?"]
 
 
+@pytest.mark.parametrize(
+    ("quoted_value", "expected_value"),
+    [
+        ('"Focus on # authentication"', "Focus on # authentication"),
+        ('"true"', "true"),
+        ('"null"', "null"),
+        ("'Focus on # authentication'", "Focus on # authentication"),
+    ],
+)
+def test_prepare_command_preserves_quoted_yaml_sensitive_values(quoted_value, expected_value):
+    settings = get_settings()
+    setting_key = "PR_REVIEWER.EXTRA_INSTRUCTIONS"
+    original = settings.get(setting_key)
+
+    try:
+        command = pr_agent_module.prepare_command(
+            f"/review --pr_reviewer.extra_instructions={quoted_value}"
+        )
+
+        assert command == ["/review"]
+        assert settings.get(setting_key) == expected_value
+    finally:
+        settings.set(setting_key, original)
+
+
+def test_prepare_command_accepts_apostrophes_in_unquoted_arguments_and_values():
+    settings = get_settings()
+    setting_key = "PR_REVIEWER.EXTRA_INSTRUCTIONS"
+    original = settings.get(setting_key)
+
+    try:
+        command = pr_agent_module.prepare_command(
+            "/review --pr_reviewer.extra_instructions=O'Reilly"
+        )
+
+        assert command == ["/review"]
+        assert settings.get(setting_key) == "O'Reilly"
+        assert pr_agent_module.prepare_command("/ask What's wrong?") == [
+            "/ask",
+            "What's",
+            "wrong?",
+        ]
+    finally:
+        settings.set(setting_key, original)
+
+
 @pytest.mark.asyncio
 async def test_handle_request_rejects_forbidden_cli_args(monkeypatch):
     class FakeTool:
