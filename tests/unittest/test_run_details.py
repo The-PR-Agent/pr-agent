@@ -133,6 +133,21 @@ def test_record_ai_call_aggregates_decimal_costs_by_model():
     }
 
 
+def test_record_ai_call_treats_zero_cost_as_unpriced():
+    """litellm.completion_cost returns 0.0 for unpriced models and empty usage;
+    recording it would render a false '$0.0000' with cost status complete."""
+    init_run_details()
+
+    record_ai_call(_Usage(10, 2, 12), model="zero-priced", cost_usd=0.0)
+    record_ai_call(_Usage(10, 2, 12), model="zero-priced", cost_usd=Decimal("0"))
+
+    details = get_run_details()
+    assert details.total_cost_usd == Decimal("0")
+    assert details.known_cost_call_count == 0
+    assert details.cost_status == "unavailable"
+    assert details.model_costs_usd == {}
+
+
 def test_record_ai_call_marks_partial_and_unavailable_cost_without_fabricating_zero():
     init_run_details()
 

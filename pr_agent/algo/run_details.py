@@ -46,9 +46,9 @@ class RunDetails:
     # Successful LLM invocations, counted even when their token usage is unavailable.
     num_ai_calls: int = 0
     # Accumulate costs only when cost output is enabled and LiteLLM can synchronously
-    # price a successful response. Use the known-call count to distinguish a genuine
-    # zero cost from missing pricing data. Retain per-model totals to keep fallback and
-    # multi-call runs auditable.
+    # price a successful response with a positive amount. Use the known-call count to
+    # distinguish priced calls from missing pricing data. Retain per-model totals to
+    # keep fallback and multi-call runs auditable.
     total_cost_usd: Decimal = field(default_factory=lambda: Decimal("0"))
     known_cost_call_count: int = 0
     model_costs_usd: dict[str, Decimal] = field(default_factory=dict)
@@ -125,14 +125,20 @@ def add_token_usage(usage) -> None:
 
 
 def _as_decimal_cost(cost_usd) -> Optional[Decimal]:
-    """Normalize a non-negative finite USD value without introducing float math."""
+    """Normalize a positive finite USD value without introducing float math.
+
+    Zero is rejected on purpose: litellm.completion_cost returns 0.0 both for
+    zero-priced model entries (e.g. local/ollama models) and for usage without
+    billable tokens, so a zero here means "could not be priced", not "free" —
+    recording it would render a false "$0.0000" with cost status complete.
+    """
     if cost_usd is None or isinstance(cost_usd, bool):
         return None
     try:
         cost = cost_usd if isinstance(cost_usd, Decimal) else Decimal(str(cost_usd))
     except (InvalidOperation, TypeError, ValueError):
         return None
-    if not cost.is_finite() or cost < 0:
+    if not cost.is_finite() or cost <= 0:
         return None
     return cost
 
