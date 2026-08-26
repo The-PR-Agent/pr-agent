@@ -1,13 +1,17 @@
 import copy
 import importlib
 import json
+from types import SimpleNamespace
 
 import pytest
 from starlette.background import BackgroundTasks
+from starlette.testclient import TestClient
 from starlette_context import request_cycle_context
 
-import pr_agent.servers.bitbucket_server_webhook as bitbucket_server_webhook
 from pr_agent.config_loader import get_settings
+from pr_agent.identity_providers.identity_provider import Eligibility
+from pr_agent.servers import bitbucket_server_webhook, github_app
+
 
 @pytest.fixture
 def gitlab_webhook_module():
