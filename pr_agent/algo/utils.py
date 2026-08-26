@@ -70,12 +70,20 @@ class PRReviewIdentity(str, Enum):
     INCREMENTAL = "<!-- pr-agent:review:incremental -->"
 
 
+class PRCodeSuggestionsHeader(str, Enum):
+    SUMMARY = "## PR Code Suggestions ✨"
+
+
+class PRCodeSuggestionsIdentity(str, Enum):
+    SUMMARY = "<!-- pr-agent:improve:summary -->"
+    NO_SUGGESTIONS = "<!-- pr-agent:improve:no-suggestions -->"
+
+
 _REVIEW_IDENTITY_HEADER_LINES = 5
 
 
-def format_pr_review_header(incremental: bool = False) -> str:
-    """Return the visible review heading while keeping identity out of presentation."""
-    configured_heading = get_settings().get("pr_reviewer.review_heading")
+def _get_configured_heading(setting_name: str, default_heading: str) -> str:
+    configured_heading = get_settings().get(setting_name)
     if (
         not isinstance(configured_heading, str)
         or not configured_heading.strip()
@@ -83,12 +91,33 @@ def format_pr_review_header(incremental: bool = False) -> str:
         or "\r" in configured_heading
     ):
         get_logger().warning(
-            "Invalid pr_reviewer.review_heading; using the default review heading"
+            f"Invalid {setting_name}; using the default heading"
         )
-        configured_heading = PRReviewHeader.REGULAR.value.removeprefix("## ")
-    heading = configured_heading.strip()
+        configured_heading = default_heading
+    return configured_heading.strip()
+
+
+def format_pr_review_header(incremental: bool = False) -> str:
+    """Return the visible review heading while keeping identity out of presentation."""
+    default_heading = PRReviewHeader.REGULAR.value.removeprefix("## ")
+    heading = _get_configured_heading("pr_reviewer.review_heading", default_heading)
     incremental_prefix = "Incremental " if incremental else ""
     return f"## {incremental_prefix}{heading} 🔍"
+
+
+def format_pr_code_suggestions_header(markdown_level: int = 2) -> str:
+    """Return the visible suggestions heading while keeping identity out of presentation."""
+    default_heading = (
+        PRCodeSuggestionsHeader.SUMMARY.value
+        .removeprefix("## ")
+        .removesuffix(" ✨")
+    )
+    heading = _get_configured_heading(
+        "pr_code_suggestions.suggestions_heading",
+        default_heading,
+    )
+    markdown_prefix = "#" * markdown_level
+    return f"{markdown_prefix} {heading} ✨"
 
 
 def comment_matches_identity(body: str, identity: str) -> bool:
@@ -117,7 +146,7 @@ def get_pr_review_comment_identifiers(*, full: bool, incremental: bool) -> tuple
     return tuple(identifiers)
 
 
-def add_pr_review_identity(pr_comment: str, identity_marker: str | None) -> str:
+def add_comment_identity(pr_comment: str, identity_marker: str | None) -> str:
     """Insert a hidden identity after the visible heading without changing rendered output."""
     if not pr_comment or not identity_marker or comment_matches_identity(pr_comment, identity_marker):
         return pr_comment
@@ -125,6 +154,10 @@ def add_pr_review_identity(pr_comment: str, identity_marker: str | None) -> str:
     if not separator:
         return f"{pr_comment.rstrip()}\n\n{identity_marker}"
     return f"{heading}\n\n{identity_marker}\n\n{remainder}"
+
+
+def add_pr_review_identity(pr_comment: str, identity_marker: str | None) -> str:
+    return add_comment_identity(pr_comment, identity_marker)
 
 
 class ReasoningEffort(str, Enum):

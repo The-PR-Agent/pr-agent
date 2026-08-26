@@ -1,7 +1,10 @@
 import git
 
 from pr_agent.algo.types import EDIT_TYPE
+from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.local_git_provider import LocalGitProvider
+from tests.unittest._settings_helpers import (restore_settings,
+                                              snapshot_settings)
 
 
 def _make_repo(tmp_path, filenames):
@@ -114,6 +117,23 @@ def test_publish_code_suggestions_no_suggestions(tmp_path):
 
     assert provider.publish_code_suggestions([]) is True
     assert "No code suggestions found" in improve_path.read_text()
+
+
+def test_publish_code_suggestions_uses_custom_heading_without_identity(tmp_path):
+    snapshot = snapshot_settings(["pr_code_suggestions.suggestions_heading"])
+    improve_path = tmp_path / "improve.md"
+    provider = object.__new__(LocalGitProvider)
+    provider.improve_path = improve_path
+    try:
+        get_settings().set("pr_code_suggestions.suggestions_heading", "Team Suggestions")
+
+        provider.publish_code_suggestions([])
+    finally:
+        restore_settings(snapshot)
+
+    content = improve_path.read_text()
+    assert content.startswith("# Team Suggestions ✨\n\n")
+    assert "<!-- pr-agent:improve" not in content
 
 
 def test_publish_comment_skips_temporary(tmp_path):

@@ -22,7 +22,9 @@ from ..algo.inline_comment_dedup import (body_fingerprint, body_with_markers,
                                          is_agent_inline_comment,
                                          marker_fingerprints)
 from ..algo.language_handler import is_valid_file
-from ..algo.utils import (clip_tokens, comment_matches_any_identity,
+from ..algo.utils import (PRCodeSuggestionsHeader,
+                          PRCodeSuggestionsIdentity, clip_tokens,
+                          comment_matches_any_identity,
                           find_line_number_of_relevant_line_in_file,
                           get_pr_review_comment_identifiers, load_large_diff)
 from ..config_loader import get_settings
@@ -473,12 +475,15 @@ class GitLabProvider(GitProvider):
 
     # Match the most recent prior note for each incremental kind against any accepted identity,
     # then use its timestamp as the timeline anchor.
+    _SUGGESTIONS_STABLE_ANCHORS = (
+        PRCodeSuggestionsIdentity.SUMMARY.value,
+        PRCodeSuggestionsIdentity.NO_SUGGESTIONS.value,
+        "**Suggestion:**",  # commitable-suggestions inline mode
+    )
+    _SUGGESTIONS_LEGACY_ANCHORS = (PRCodeSuggestionsHeader.SUMMARY.value,)
     _INCREMENTAL_ANCHOR_PREFIXES = {
         "review": get_pr_review_comment_identifiers(full=True, incremental=True),
-        "suggestions": (
-            "## PR Code Suggestions ✨",           # summary-table mode
-            "**Suggestion:**",                     # commitable-suggestions inline mode
-        ),
+        "suggestions": _SUGGESTIONS_STABLE_ANCHORS + _SUGGESTIONS_LEGACY_ANCHORS,
     }
 
     def get_incremental_commits(self, incremental: Optional[IncrementalPR] = None, kind: str = "review"):
@@ -509,7 +514,12 @@ class GitLabProvider(GitProvider):
 
         kind = getattr(self, '_incremental_kind', 'review')
         prefixes = self._INCREMENTAL_ANCHOR_PREFIXES.get(kind, ())
-        self.previous_review = self._find_anchor_note(prefixes) if prefixes else None
+        if kind == "suggestions":
+            self.previous_review = self._find_anchor_note(self._SUGGESTIONS_STABLE_ANCHORS)
+            if self.previous_review is None:
+                self.previous_review = self._find_anchor_note(self._SUGGESTIONS_LEGACY_ANCHORS)
+        else:
+            self.previous_review = self._find_anchor_note(prefixes) if prefixes else None
         if not self.previous_review:
             get_logger().info(
                 f"No previous {kind} comment found, will fall back to a full run"

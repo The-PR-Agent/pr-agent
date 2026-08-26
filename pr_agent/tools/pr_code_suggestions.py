@@ -23,10 +23,14 @@ from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.run_details import init_run_details
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_handler import TokenHandler
-from pr_agent.algo.utils import (ModelType, clip_tokens, get_max_tokens,
-                                 get_model, load_yaml, replace_code_tags,
-                                 show_relevant_configurations,
-                                 show_run_details)
+from pr_agent.algo.utils import (ModelType, PRCodeSuggestionsHeader,
+                                 PRCodeSuggestionsIdentity,
+                                 add_comment_identity, clip_tokens,
+                                 comment_matches_identity,
+                                 format_pr_code_suggestions_header,
+                                 get_max_tokens, get_model, load_yaml,
+                                 replace_code_tags,
+                                 show_relevant_configurations, show_run_details)
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import (AzureDevopsProvider, GithubProvider,
                                     GitLabProvider, get_git_provider,
@@ -230,15 +234,23 @@ class PRCodeSuggestions:
 
                     # publish the PR comment
                     if get_settings().pr_code_suggestions.persistent_comment: # true by default
-                        self.publish_persistent_comment_with_history(self.git_provider,
-                                                                     pr_body,
-                                                                     initial_header="## PR Code Suggestions ✨",
-                                                                     update_header=True,
-                                                                     name="suggestions",
-                                                                     final_update_message=False,
-                                                                     max_previous_comments=get_settings().pr_code_suggestions.max_history_len,
-                                                                     progress_response=self.progress_response)
+                        self.publish_persistent_comment_with_history(
+                            self.git_provider,
+                            pr_body,
+                            initial_header=format_pr_code_suggestions_header(),
+                            update_header=True,
+                            name="suggestions",
+                            final_update_message=False,
+                            max_previous_comments=get_settings().pr_code_suggestions.max_history_len,
+                            progress_response=self.progress_response,
+                            identity_marker=PRCodeSuggestionsIdentity.SUMMARY.value,
+                            legacy_initial_header=PRCodeSuggestionsHeader.SUMMARY.value,
+                        )
                     else:
+                        pr_body = add_comment_identity(
+                            pr_body,
+                            PRCodeSuggestionsIdentity.SUMMARY.value,
+                        )
                         if self.progress_response:
                             self.git_provider.edit_comment(self.progress_response, body=pr_body)
                         else:
@@ -285,9 +297,13 @@ class PRCodeSuggestions:
         return pr_body
 
     async def publish_no_suggestions(self):
-        pr_body = "## PR Code Suggestions ✨\n\nNo code suggestions found for the PR."
+        pr_body = f"{format_pr_code_suggestions_header()}\n\nNo code suggestions found for the PR."
         if (get_settings().config.publish_output and
                 get_settings().pr_code_suggestions.get('publish_output_no_suggestions', True)):
+            pr_body = add_comment_identity(
+                pr_body,
+                PRCodeSuggestionsIdentity.NO_SUGGESTIONS.value,
+            )
             # Output the agent run details (model, tokens, time cost) if enabled, so the
             # "no suggestions" result still shows which model produced it.
             if get_settings().get('config', {}).get('output_run_details', False):
@@ -331,19 +347,64 @@ class PRCodeSuggestions:
                                                 final_update_message=True,
                                                 max_previous_comments=4,
                                                 progress_response=None,
-                                                only_fold=False):
+                                                only_fold=False,
+                                                identity_marker: str | None = None,
+                                                legacy_initial_header: str | None = None):
         if hasattr(git_provider, '_publish_check_run') and get_settings().github.publish_as_check_run:
             if git_provider._publish_check_run(pr_comment, name):
                 return
 
         def _extract_link(comment_text: str):
-            r = re.compile(r"<!--.*?-->")
-            match = r.search(comment_text)
+            match = re.search(r"<!--\s*([0-9a-fA-F]{7,40})\s*-->", comment_text)
 
             up_to_commit_txt = ""
             if match:
-                up_to_commit_txt = f" up to commit {match.group(0)[4:-3].strip()}"
+                up_to_commit_txt = f" up to commit {match.group(1)}"
             return up_to_commit_txt
+
+        def _comment_body(comment) -> str:
+            body = getattr(comment, "body", None)
+            if body is None and isinstance(comment, dict):
+                body = comment.get("body")
+            return body if isinstance(body, str) else ""
+
+        def _is_legacy_suggestions_comment(comment_text: str) -> bool:
+            if not legacy_initial_header or not comment_text.startswith(f"{legacy_initial_header}\n"):
+                return False
+            table_index = comment_text.find("<table>")
+            if table_index == -1:
+                return False
+            return bool(
+                re.search(
+                    r"<!--\s*[0-9a-fA-F]{7,40}\s*-->",
+                    comment_text[len(legacy_initial_header):table_index],
+                )
+            )
+
+        def _without_heading(comment_text: str) -> str:
+            if comment_text.startswith(initial_header):
+                comment_text = comment_text[len(initial_header):].lstrip("\n")
+            if identity_marker and comment_text.startswith(identity_marker):
+                comment_text = comment_text[len(identity_marker):].lstrip("\n")
+            return comment_text.strip()
+
+        def _with_identity(comment_text: str) -> str:
+            return add_comment_identity(comment_text, identity_marker)
+
+        def _clean_up_progress_note():
+            if not progress_response:
+                return
+            try:
+                git_provider.edit_comment(
+                    progress_response,
+                    "Code suggestions published in the persistent thread above.",
+                )
+                git_provider.remove_comment(progress_response)
+            except Exception as cleanup_error:
+                get_logger().warning(
+                    "Failed to clean up progress note after persistent update, "
+                    f"leaving it in place: {cleanup_error}"
+                )
 
         history_header = f"#### Previous suggestions\n"
         last_commit_num = git_provider.get_latest_commit_url().split('/')[-1][:7]
@@ -353,90 +414,117 @@ class PRCodeSuggestions:
         else:
             latest_suggestion_header = f"Latest suggestions up to {last_commit_num}"
         latest_commit_html_comment = f"<!-- {last_commit_num} -->"
-        found_comment = None
+        new_suggestion_table = _without_heading(pr_comment)
 
         if max_previous_comments > 0:
             try:
                 prev_comments = list(git_provider.get_issue_comments())
-                for comment in prev_comments:
-                    if comment.body.startswith(initial_header):
-                        prev_suggestions = comment.body
-                        found_comment = comment
-                        comment_url = git_provider.get_comment_url(comment)
+                if identity_marker:
+                    comment = next(
+                        (
+                            candidate
+                            for candidate in prev_comments
+                            if comment_matches_identity(_comment_body(candidate), identity_marker)
+                        ),
+                        None,
+                    )
+                    if comment is None:
+                        comment = next(
+                            (
+                                candidate
+                                for candidate in prev_comments
+                                if _is_legacy_suggestions_comment(_comment_body(candidate))
+                            ),
+                            None,
+                        )
+                else:
+                    comment = next(
+                        (
+                            candidate
+                            for candidate in prev_comments
+                            if comment_matches_identity(_comment_body(candidate), initial_header)
+                        ),
+                        None,
+                    )
+                if comment:
+                    prev_suggestions = _comment_body(comment)
+                    comment_url = git_provider.get_comment_url(comment)
 
-                        if history_header.strip() not in comment.body:
-                            # no history section
-                            # extract everything between <table> and </table> in comment.body including <table> and </table>
-                            table_index = comment.body.find("<table>")
-                            if table_index == -1:
-                                git_provider.edit_comment(comment, pr_comment)
-                                continue
-                            # find http link from comment.body[:table_index]
-                            up_to_commit_txt = _extract_link(comment.body[:table_index])
-                            prev_suggestion_table = comment.body[
-                                                    table_index:comment.body.rfind("</table>") + len("</table>")]
+                    if history_header.strip() not in prev_suggestions:
+                        # no history section
+                        # extract everything between <table> and </table> in comment.body including <table> and </table>
+                        table_index = prev_suggestions.find("<table>")
+                        if table_index == -1:
+                            pr_comment_updated = _with_identity(
+                                f"{initial_header}\n\n{latest_commit_html_comment}\n\n"
+                                f"{new_suggestion_table}\n\n"
+                            )
+                            git_provider.edit_comment(comment, pr_comment_updated)
+                            _clean_up_progress_note()
+                            return comment
+                        # find http link from comment.body[:table_index]
+                        up_to_commit_txt = _extract_link(prev_suggestions[:table_index])
+                        prev_suggestion_table = prev_suggestions[
+                                                table_index:prev_suggestions.rfind("</table>") + len("</table>")]
 
-                            tick = "✅ " if "✅" in prev_suggestion_table else ""
-                            # surround with details tag
-                            prev_suggestion_table = f"<details><summary>{tick}{name.capitalize()}{up_to_commit_txt}</summary>\n<br>{prev_suggestion_table}\n\n</details>"
+                        tick = "✅ " if "✅" in prev_suggestion_table else ""
+                        # surround with details tag
+                        prev_suggestion_table = (
+                            f"<details><summary>{tick}{name.capitalize()}{up_to_commit_txt}</summary>\n"
+                            f"<br>{prev_suggestion_table}\n\n</details>"
+                        )
 
-                            new_suggestion_table = pr_comment.replace(initial_header, "").strip()
+                        pr_comment_updated = _with_identity(
+                            f"{initial_header}\n\n{latest_commit_html_comment}\n\n"
+                            f"{latest_suggestion_header}\n\n{new_suggestion_table}\n\n___\n\n"
+                            f"{history_header}{prev_suggestion_table}\n"
+                        )
+                    else:
+                        # get the text of the previous suggestions until the latest commit
+                        sections = prev_suggestions.split(history_header.strip())
+                        latest_table = sections[0].strip()
+                        prev_suggestion_table = sections[1].replace(history_header, "").strip()
 
-                            pr_comment_updated = f"{initial_header}\n{latest_commit_html_comment}\n\n"
-                            pr_comment_updated += f"{latest_suggestion_header}\n{new_suggestion_table}\n\n___\n\n"
-                            pr_comment_updated += f"{history_header}{prev_suggestion_table}\n"
-                        else:
-                            # get the text of the previous suggestions until the latest commit
-                            sections = prev_suggestions.split(history_header.strip())
-                            latest_table = sections[0].strip()
-                            prev_suggestion_table = sections[1].replace(history_header, "").strip()
+                        # get text after the latest_suggestion_header in comment.body
+                        table_ind = latest_table.find("<table>")
+                        up_to_commit_txt = _extract_link(latest_table[:table_ind])
 
-                            # get text after the latest_suggestion_header in comment.body
-                            table_ind = latest_table.find("<table>")
-                            up_to_commit_txt = _extract_link(latest_table[:table_ind])
+                        latest_table = latest_table[table_ind:latest_table.rfind("</table>") + len("</table>")]
+                        # enforce max_previous_comments
+                        count = prev_suggestions.count(f"\n<details><summary>{name.capitalize()}")
+                        count += prev_suggestions.count(f"\n<details><summary>✅ {name.capitalize()}")
+                        if count >= max_previous_comments:
+                            # remove the oldest suggestion
+                            prev_suggestion_table = prev_suggestion_table[:prev_suggestion_table.rfind(
+                                f"<details><summary>{name.capitalize()} up to commit")]
 
-                            latest_table = latest_table[table_ind:latest_table.rfind("</table>") + len("</table>")]
-                            # enforce max_previous_comments
-                            count = prev_suggestions.count(f"\n<details><summary>{name.capitalize()}")
-                            count += prev_suggestions.count(f"\n<details><summary>✅ {name.capitalize()}")
-                            if count >= max_previous_comments:
-                                # remove the oldest suggestion
-                                prev_suggestion_table = prev_suggestion_table[:prev_suggestion_table.rfind(
-                                    f"<details><summary>{name.capitalize()} up to commit")]
+                        tick = "✅ " if "✅" in latest_table else ""
+                        # Add to the prev_suggestions section
+                        last_prev_table = (
+                            f"\n<details><summary>{tick}{name.capitalize()}{up_to_commit_txt}</summary>\n"
+                            f"<br>{latest_table}\n\n</details>"
+                        )
+                        prev_suggestion_table = last_prev_table + "\n" + prev_suggestion_table
 
-                            tick = "✅ " if "✅" in latest_table else ""
-                            # Add to the prev_suggestions section
-                            last_prev_table = f"\n<details><summary>{tick}{name.capitalize()}{up_to_commit_txt}</summary>\n<br>{latest_table}\n\n</details>"
-                            prev_suggestion_table = last_prev_table + "\n" + prev_suggestion_table
+                        pr_comment_updated = _with_identity(
+                            f"{initial_header}\n\n{latest_commit_html_comment}\n\n"
+                            f"{latest_suggestion_header}\n\n{new_suggestion_table}\n\n"
+                            f"___\n\n{history_header}\n{prev_suggestion_table}\n"
+                        )
 
-                            new_suggestion_table = pr_comment.replace(initial_header, "").strip()
-
-                            pr_comment_updated = f"{initial_header}\n"
-                            pr_comment_updated += f"{latest_commit_html_comment}\n\n"
-                            pr_comment_updated += f"{latest_suggestion_header}\n\n{new_suggestion_table}\n\n"
-                            pr_comment_updated += "___\n\n"
-                            pr_comment_updated += f"{history_header}\n"
-                            pr_comment_updated += f"{prev_suggestion_table}\n"
-
-                        get_logger().info(f"Persistent mode - updating comment {comment_url} to latest {name} message")
-                        git_provider.edit_comment(comment, pr_comment_updated)
-                        if progress_response:
-                            # best-effort: propagating would re-trigger the duplicate-thread fallback below
-                            try:
-                                git_provider.edit_comment(progress_response, "Code suggestions published in the persistent thread above.")
-                                git_provider.remove_comment(progress_response)
-                            except Exception as cleanup_error:
-                                get_logger().warning(
-                                    f"Failed to clean up progress note after persistent update, leaving it in place: {cleanup_error}"
-                                )
-                        return comment
+                    get_logger().info(f"Persistent mode - updating comment {comment_url} to latest {name} message")
+                    git_provider.edit_comment(comment, pr_comment_updated)
+                    _clean_up_progress_note()
+                    return comment
             except Exception as e:
                 get_logger().exception(f"Failed to update persistent review, error: {e}")
                 pass
 
         # if we are here, we did not find a previous comment to update
-        body = pr_comment.replace(initial_header, "").strip()
-        pr_comment = f"{initial_header}\n\n{latest_commit_html_comment}\n\n{body}\n\n"
+        pr_comment = _with_identity(
+            f"{initial_header}\n\n{latest_commit_html_comment}\n\n"
+            f"{new_suggestion_table}\n\n"
+        )
         if progress_response:
             git_provider.edit_comment(progress_response, pr_comment)
             new_comment = progress_response
@@ -984,7 +1072,7 @@ class PRCodeSuggestions:
 
     def generate_summarized_suggestions(self, data: Dict) -> str:
         try:
-            pr_body = "## PR Code Suggestions ✨\n\n"
+            pr_body = f"{format_pr_code_suggestions_header()}\n\n"
 
             if len(data.get('code_suggestions', [])) == 0:
                 pr_body += "No suggestions found to improve this PR."

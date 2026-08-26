@@ -6,7 +6,8 @@ from gitlab import Gitlab
 from gitlab.exceptions import GitlabGetError
 from gitlab.v4.objects import ProjectFile, ProjectMergeRequest, ProjectMergeRequestManager
 
-from pr_agent.algo.utils import PRReviewHeader, PRReviewIdentity
+from pr_agent.algo.utils import (PRCodeSuggestionsIdentity, PRReviewHeader,
+                                 PRReviewIdentity)
 from pr_agent.git_providers.git_provider import IncrementalPR
 from pr_agent.git_providers.gitlab_provider import (
     GitLabProvider,
@@ -1651,6 +1652,74 @@ class TestGitLabIncrementalReview:
         gitlab_provider.get_incremental_commits(IncrementalPR(True), kind="suggestions")
 
         # Only c2 is in scope; c1 must NOT be re-included (that was the reported bug).
+        assert gitlab_provider.incremental.is_incremental is True
+        assert gitlab_provider.incremental.first_new_commit_sha == "c2"
+        assert gitlab_provider.incremental.last_seen_commit_sha == "c1"
+        mock_project.repository_compare.assert_called_once_with("c1", "head")
+
+    def test_incremental_suggestions_prefers_stable_marker_over_legacy_heading(
+            self, gitlab_provider, mock_project):
+        gitlab_provider.mr.notes.list.return_value = [
+            self._make_note(
+                9,
+                "## PR Code Suggestions ✨\n\n<!-- aaa1111 -->\n\n<table>legacy</table>",
+                "2026-05-15T12:00:00Z",
+            ),
+            self._make_note(
+                8,
+                "## Team Suggestions ✨\n\n"
+                f"{PRCodeSuggestionsIdentity.SUMMARY.value}\n\n"
+                "<!-- bbb2222 -->\n\n<table>marked</table>",
+                "2026-05-15T10:00:00Z",
+            ),
+        ]
+        gitlab_provider.mr.commits.return_value = [
+            self._make_commit("c2", "2026-05-15T11:00:00Z"),
+            self._make_commit("c0", "2026-05-15T09:00:00Z"),
+        ]
+        mock_project.repository_compare.return_value = {
+            "diffs": [{"new_path": "a.py", "old_path": "a.py", "diff": "@@ ... @@",
+                       "new_file": False, "deleted_file": False, "renamed_file": False}],
+        }
+        gitlab_provider.mr.changes.return_value = {"changes": [{"new_path": "a.py"}]}
+
+        gitlab_provider.get_incremental_commits(IncrementalPR(True), kind="suggestions")
+
+        assert gitlab_provider.incremental.is_incremental is True
+        assert gitlab_provider.incremental.first_new_commit_sha == "c2"
+        assert gitlab_provider.incremental.last_seen_commit_sha == "c0"
+        mock_project.repository_compare.assert_called_once_with("c0", "head")
+
+    def test_incremental_suggestions_uses_newer_custom_no_suggestions_result(
+            self, gitlab_provider, mock_project):
+        gitlab_provider.mr.notes.list.return_value = [
+            self._make_note(
+                9,
+                "## Team Suggestions ✨\n\n"
+                f"{PRCodeSuggestionsIdentity.NO_SUGGESTIONS.value}\n\n"
+                "No code suggestions found for the PR.",
+                "2026-05-15T12:00:00Z",
+            ),
+            self._make_note(
+                8,
+                "## Previous Suggestions ✨\n\n"
+                f"{PRCodeSuggestionsIdentity.SUMMARY.value}\n\n"
+                "<!-- bbb2222 -->\n\n<table>marked</table>",
+                "2026-05-15T10:00:00Z",
+            ),
+        ]
+        gitlab_provider.mr.commits.return_value = [
+            self._make_commit("c2", "2026-05-15T13:00:00Z"),
+            self._make_commit("c1", "2026-05-15T11:00:00Z"),
+        ]
+        mock_project.repository_compare.return_value = {
+            "diffs": [{"new_path": "a.py", "old_path": "a.py", "diff": "@@ ... @@",
+                       "new_file": False, "deleted_file": False, "renamed_file": False}],
+        }
+        gitlab_provider.mr.changes.return_value = {"changes": [{"new_path": "a.py"}]}
+
+        gitlab_provider.get_incremental_commits(IncrementalPR(True), kind="suggestions")
+
         assert gitlab_provider.incremental.is_incremental is True
         assert gitlab_provider.incremental.first_new_commit_sha == "c2"
         assert gitlab_provider.incremental.last_seen_commit_sha == "c1"

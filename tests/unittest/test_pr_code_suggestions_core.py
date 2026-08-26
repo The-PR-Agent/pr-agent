@@ -3,6 +3,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from pr_agent.algo.types import FilePatchInfo
+from pr_agent.algo.utils import (PRCodeSuggestionsHeader,
+                                 PRCodeSuggestionsIdentity)
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import GitProvider, IncrementalPR
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
@@ -621,3 +623,123 @@ def test_persistent_update_survives_progress_cleanup_failure():
     assert provider.edit_comment.call_count == 2
     provider.remove_comment.assert_not_called()
     provider.publish_comment.assert_not_called()
+
+
+def _persistent_provider(existing_comments):
+    provider = MagicMock()
+    provider.get_issue_comments.return_value = existing_comments
+    provider.get_comment_url.return_value = "https://example.test/comment/1"
+    provider.get_latest_commit_url.return_value = "https://example.test/commit/deadbee"
+    return provider
+
+
+def test_custom_heading_migrates_legacy_persistent_suggestions_in_place():
+    legacy = MagicMock()
+    legacy.body = (
+        f"{PRCodeSuggestionsHeader.SUMMARY.value}\n\n"
+        "<!-- aaa1111 -->\n\n<table>old suggestions</table>"
+    )
+    provider = _persistent_provider([legacy])
+    custom_header = "## Guideline Improvement Suggestions ✨"
+
+    result = PRCodeSuggestions.publish_persistent_comment_with_history(
+        provider,
+        f"{custom_header}\n\n<table>new suggestions</table>",
+        initial_header=custom_header,
+        name="suggestions",
+        identity_marker=PRCodeSuggestionsIdentity.SUMMARY.value,
+        legacy_initial_header=PRCodeSuggestionsHeader.SUMMARY.value,
+    )
+
+    assert result is legacy
+    updated = provider.edit_comment.call_args.args[1]
+    assert updated.startswith(
+        f"{custom_header}\n\n"
+        f"{PRCodeSuggestionsIdentity.SUMMARY.value}\n\n"
+        "<!-- deadbee -->"
+    )
+    assert "Suggestions up to commit aaa1111" in updated
+    provider.publish_comment.assert_not_called()
+
+
+def test_marked_persistent_suggestions_take_precedence_over_legacy_comment():
+    legacy = MagicMock()
+    legacy.body = (
+        f"{PRCodeSuggestionsHeader.SUMMARY.value}\n\n"
+        "<!-- aaa1111 -->\n\n<table>legacy</table>"
+    )
+    marked = MagicMock()
+    marked.body = (
+        "## Previous Custom Heading ✨\n\n"
+        f"{PRCodeSuggestionsIdentity.SUMMARY.value}\n\n"
+        "<!-- bbb2222 -->\n\n<table>marked</table>"
+    )
+    provider = _persistent_provider([legacy, marked])
+    custom_header = "## Latest Custom Heading ✨"
+
+    result = PRCodeSuggestions.publish_persistent_comment_with_history(
+        provider,
+        f"{custom_header}\n\n<table>new suggestions</table>",
+        initial_header=custom_header,
+        name="suggestions",
+        identity_marker=PRCodeSuggestionsIdentity.SUMMARY.value,
+        legacy_initial_header=PRCodeSuggestionsHeader.SUMMARY.value,
+    )
+
+    assert result is marked
+    assert provider.edit_comment.call_args.args[0] is marked
+    assert provider.edit_comment.call_args.args[1].startswith(
+        f"{custom_header}\n\n{PRCodeSuggestionsIdentity.SUMMARY.value}\n\n"
+    )
+    provider.publish_comment.assert_not_called()
+
+
+def test_persistent_suggestions_do_not_adopt_quoted_or_late_identity():
+    human = MagicMock()
+    human.body = (
+        "## Human discussion\n\n"
+        f"> {PRCodeSuggestionsIdentity.SUMMARY.value}\n\n"
+        f"Quoted output:\n{PRCodeSuggestionsHeader.SUMMARY.value}\n"
+    )
+    provider = _persistent_provider([human])
+    custom_header = "## Team Suggestions ✨"
+
+    PRCodeSuggestions.publish_persistent_comment_with_history(
+        provider,
+        f"{custom_header}\n\n<table>new suggestions</table>",
+        initial_header=custom_header,
+        name="suggestions",
+        identity_marker=PRCodeSuggestionsIdentity.SUMMARY.value,
+        legacy_initial_header=PRCodeSuggestionsHeader.SUMMARY.value,
+    )
+
+    provider.edit_comment.assert_not_called()
+    published = provider.publish_comment.call_args.args[0]
+    assert published.startswith(
+        f"{custom_header}\n\n"
+        f"{PRCodeSuggestionsIdentity.SUMMARY.value}\n\n"
+        "<!-- deadbee -->\n\n"
+    )
+
+
+def test_legacy_heading_without_generated_shape_is_not_adopted():
+    human = MagicMock()
+    human.body = (
+        f"{PRCodeSuggestionsHeader.SUMMARY.value}\n\n"
+        "A human-authored comment using the same heading."
+    )
+    provider = _persistent_provider([human])
+    custom_header = "## Team Suggestions ✨"
+
+    PRCodeSuggestions.publish_persistent_comment_with_history(
+        provider,
+        f"{custom_header}\n\n<table>new suggestions</table>",
+        initial_header=custom_header,
+        name="suggestions",
+        identity_marker=PRCodeSuggestionsIdentity.SUMMARY.value,
+        legacy_initial_header=PRCodeSuggestionsHeader.SUMMARY.value,
+    )
+
+    provider.edit_comment.assert_not_called()
+    published = provider.publish_comment.call_args.args[0]
+    assert PRCodeSuggestionsIdentity.SUMMARY.value in published

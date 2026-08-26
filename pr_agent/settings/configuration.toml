@@ -169,6 +169,8 @@ dual_publishing_score_threshold=-1 # -1 to disable, [0-10] to set the threshold 
 focus_only_on_problems=true
 #
 extra_instructions = ""
+# Visible base heading for summary-table /improve comments. Identity is tracked separately.
+suggestions_heading = "PR Code Suggestions"
 enable_help_text=false
 enable_chat_text=false
 persistent_comment=true
