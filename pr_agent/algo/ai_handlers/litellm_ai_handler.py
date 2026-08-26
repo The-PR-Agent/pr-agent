@@ -974,19 +974,23 @@ class LiteLLMAIHandler(BaseAiHandler):
                     body=None,
                 ) from e
 
-            get_logger().debug(f"\nAI response:\n{resp}")
+        # Post-response bookkeeping happens outside the Bedrock IMDS lock above: it
+        # touches no os.environ credentials, and in IMDS mode the lock serializes
+        # every concurrent call, so holding it through logging and cost pricing
+        # would make each waiting coroutine pay for them serially.
+        get_logger().debug(f"\nAI response:\n{resp}")
 
-            # log the full response for debugging
-            response_log = self.prepare_logs(response_obj, system, user, resp, finish_reason)
-            get_logger().debug("Full_response", artifact=response_log)
+        # log the full response for debugging
+        response_log = self.prepare_logs(response_obj, system, user, resp, finish_reason)
+        get_logger().debug("Full_response", artifact=response_log)
 
-            # for CLI debugging
-            if get_settings().config.verbosity_level >= 2:
-                get_logger().info(f"\nAI response:\n{resp}")
+        # for CLI debugging
+        if get_settings().config.verbosity_level >= 2:
+            get_logger().info(f"\nAI response:\n{resp}")
 
-            self._record_completion_metadata(response_obj, model=model, display_model=user_model)
+        self._record_completion_metadata(response_obj, model=model, display_model=user_model)
 
-            return resp, finish_reason
+        return resp, finish_reason
 
     async def _get_completion(self, **kwargs):
         """
