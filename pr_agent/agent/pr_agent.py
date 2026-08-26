@@ -65,16 +65,18 @@ def _split_command(command: str) -> list[tuple[str, bool]]:
     tokens = []
     token = []
     quote = None
-    has_quote = False
+    value_was_quoted = False
+    equals_seen = False
     token_started = False
 
     def flush_token():
-        nonlocal has_quote, token_started, token
+        nonlocal equals_seen, token_started, token, value_was_quoted
         if token_started:
-            tokens.append(("".join(token), has_quote))
+            tokens.append(("".join(token), value_was_quoted))
         token = []
-        has_quote = False
+        equals_seen = False
         token_started = False
+        value_was_quoted = False
 
     index = 0
     while index < len(command):
@@ -88,13 +90,17 @@ def _split_command(command: str) -> list[tuple[str, bool]]:
                 token.append(command[index + 1])
                 token_started = True
                 index += 1
+            elif character == "=":
+                token.append(character)
+                equals_seen = True
+                token_started = True
             elif character == '"':
                 quote = character
-                has_quote = True
+                value_was_quoted = equals_seen
                 token_started = True
             elif character == "'" and (not token_started or command[index - 1] == "="):
                 quote = character
-                has_quote = True
+                value_was_quoted = equals_seen
                 token_started = True
             else:
                 token.append(character)
@@ -141,8 +147,8 @@ def prepare_command(command: str) -> list[str]:
 
     (action, _), *token_args = tokens
     args = []
-    for argument, was_quoted in token_args:
-        if was_quoted and argument.startswith("--") and "=" in argument:
+    for argument, value_was_quoted in token_args:
+        if value_was_quoted and argument.startswith("--") and "=" in argument:
             key, value = argument.split("=", 1)
             argument = f"{key}={json.dumps(value, ensure_ascii=False)}"
         args.append(argument)

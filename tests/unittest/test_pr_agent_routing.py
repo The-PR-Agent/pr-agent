@@ -149,6 +149,23 @@ def test_prepare_command_accepts_apostrophes_in_unquoted_arguments_and_values():
         settings.set(setting_key, original)
 
 
+def test_prepare_command_keeps_unquoted_value_type_when_key_is_quoted():
+    settings = get_settings()
+    setting_key = "PR_CODE_SUGGESTIONS.NUM_CODE_SUGGESTIONS"
+    original = settings.get(setting_key)
+
+    try:
+        command = pr_agent_module.prepare_command(
+            '/review --"pr_code_suggestions.num_code_suggestions"=3'
+        )
+
+        assert command == ["/review"]
+        assert settings.get(setting_key) == 3
+        assert isinstance(settings.get(setting_key), int)
+    finally:
+        settings.set(setting_key, original)
+
+
 @pytest.mark.asyncio
 async def test_handle_request_rejects_forbidden_cli_args(monkeypatch):
     class FakeTool:
