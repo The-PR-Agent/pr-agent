@@ -81,6 +81,28 @@ async def test_handle_request_routes_list_request_without_string_parsing(monkeyp
     assert runs == [("https://example/pr/1", "fake-ai", ["don't split", "--flag=value"])]
 
 
+def test_prepare_command_preserves_spaces_in_quoted_config_values():
+    settings = get_settings()
+    setting_key = "PR_REVIEWER.EXTRA_INSTRUCTIONS"
+    original = settings.get(setting_key)
+
+    try:
+        command = pr_agent_module.prepare_command(
+            '/review --pr_reviewer.extra_instructions="Focus on authentication and authorization"'
+        )
+
+        assert command == ["/review"]
+        assert settings.get(setting_key) == "Focus on authentication and authorization"
+    finally:
+        settings.set(setting_key, original)
+
+
+def test_prepare_command_preserves_quoted_non_setting_arguments():
+    command = pr_agent_module.prepare_command('/ask "why is this change risky?"')
+
+    assert command == ["/ask", "why is this change risky?"]
+
+
 @pytest.mark.asyncio
 async def test_handle_request_rejects_forbidden_cli_args(monkeypatch):
     class FakeTool:

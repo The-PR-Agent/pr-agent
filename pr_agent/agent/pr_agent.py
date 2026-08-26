@@ -47,6 +47,23 @@ command2class = {
 commands = list(command2class.keys())
 
 
+def prepare_command(command: str) -> list[str]:
+    """Apply command-line settings while preserving quoted argument boundaries.
+
+    Webhook adapters use this before handing configured commands to ``PRAgent``. Parsing
+    with ``str.split(" ")`` breaks values such as ``--section.key=\"words with spaces\"``;
+    ``shlex`` keeps the value as one argument. Returning the token list avoids serializing
+    it back to a string, which would otherwise be re-parsed by ``PRAgent`` and could alter
+    quoted arguments.
+    """
+    tokens = shlex.split(command)
+    if not tokens:
+        return []
+
+    action, *args = tokens
+    other_args = update_settings_from_args(args)
+    return [action] + other_args
+
 
 class PRAgent:
     def __init__(self, ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
@@ -85,7 +102,7 @@ class PRAgent:
                 if str(type(setting)) == "<class 'dynaconf.utils.boxing.DynaBox'>":
                     if hasattr(setting, 'extra_instructions'):
                         current_extra_instructions = setting.extra_instructions
-                        
+
                         # Define the language-specific instruction and the separator
                         lang_instruction_text = f"Your response MUST be written in the language corresponding to locale code: '{response_language}'. This is crucial."
                         separator_text = "\n======\n\nIn addition, "

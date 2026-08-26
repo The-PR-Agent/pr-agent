@@ -101,14 +101,15 @@ def test_bitbucket_server_should_process_pr_logic_ignores_author_title_and_branc
         settings.set("CONFIG.IGNORE_PR_TARGET_BRANCHES", original["ignore_pr_target_branches"])
 
 
-def test_bitbucket_server_process_command_applies_repo_settings_and_filters_args(monkeypatch):
+def test_bitbucket_server_process_command_applies_repo_settings_before_preparing_command(monkeypatch):
     calls = []
 
     monkeypatch.setattr(bitbucket_server_webhook, "apply_repo_settings", lambda url: calls.append(("repo", url)))
+    prepared = []
     monkeypatch.setattr(
         bitbucket_server_webhook,
-        "update_settings_from_args",
-        lambda args: [arg for arg in args if not arg.startswith("--config.")],
+        "prepare_command",
+        lambda command: prepared.append(command) or ["/review"],
     )
 
     command = bitbucket_server_webhook._process_command(
@@ -117,7 +118,8 @@ def test_bitbucket_server_process_command_applies_repo_settings_and_filters_args
     )
 
     assert calls == [("repo", "https://example/pr/1")]
-    assert command == "/review --pr_reviewer.extra_instructions=test"
+    assert prepared == ["/review --config.temperature=0 --pr_reviewer.extra_instructions=test"]
+    assert command == ["/review"]
 
 
 def test_bitbucket_server_to_list_rejects_non_list_strings():
@@ -182,13 +184,18 @@ class RecordingAgent:
         self.commands.append(command)
 
 
-async def _run_github_pr_commands(monkeypatch, repo_setting, action="opened", draft=True):
+async def _run_github_pr_commands(
+    monkeypatch, repo_setting, action="opened", draft=True, configured_commands=None
+):
     # draft=None omits the field from the payload.
     settings = get_settings()
     original_github_app = copy.deepcopy(settings.get("GITHUB_APP"))
     original_is_auto_command = settings.get("CONFIG.IS_AUTO_COMMAND")
     settings.set("GITHUB_APP.HANDLE_PR_ACTIONS", ["opened", "reopened", "ready_for_review"])
-    settings.set("GITHUB_APP.PR_COMMANDS", ["/review"])
+    settings.set(
+        "GITHUB_APP.PR_COMMANDS",
+        configured_commands if configured_commands is not None else ["/review"],
+    )
     # Prove the repo setting, not the global default, decides.
     settings.set("GITHUB_APP.FEEDBACK_ON_DRAFT_PR", not repo_setting)
 
@@ -235,8 +242,8 @@ async def _run_github_pr_commands(monkeypatch, repo_setting, action="opened", dr
         ("opened", True, False, []),
         # A missing draft field defaults to draft and is rejected.
         ("opened", None, False, []),
-        ("opened", True, True, ["/review"]),
-        ("ready_for_review", False, False, ["/review"]),
+        ("opened", True, True, [["/review"]]),
+        ("ready_for_review", False, False, [["/review"]]),
         ("ready_for_review", False, True, []),
     ],
 )
@@ -248,6 +255,18 @@ async def test_github_automatic_feedback_follows_draft_setting(
     )
 
     assert commands == expected_commands
+    assert repo_settings_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_github_automatic_feedback_preserves_quoted_command_arguments(monkeypatch):
+    commands, repo_settings_calls = await _run_github_pr_commands(
+        monkeypatch,
+        repo_setting=True,
+        configured_commands=['/ask "why is this change risky?"'],
+    )
+
+    assert commands == [["/ask", "why is this change risky?"]]
     assert repo_settings_calls == 1
 
 
@@ -303,13 +322,13 @@ def _run_gitlab_pr_commands(module, monkeypatch, draft, repo_setting, event="ope
     ("event", "draft", "feedback_on_draft_pr", "expected_commands"),
     [
         ("open", True, False, []),
-        ("open", True, True, ["/review"]),
-        ("open", False, False, ["/review"]),
+        ("open", True, True, [["/review"]]),
+        ("open", False, False, [["/review"]]),
         ("reopen", True, False, []),
-        ("reopen", True, True, ["/review"]),
+        ("reopen", True, True, [["/review"]]),
         ("update", True, False, []),
-        ("update", True, True, ["/review"]),
-        ("draft_ready", False, False, ["/review"]),
+        ("update", True, True, [["/review"]]),
+        ("draft_ready", False, False, [["/review"]]),
         ("draft_ready", False, True, []),
     ],
 )
