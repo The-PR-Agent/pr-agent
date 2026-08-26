@@ -383,9 +383,13 @@ class LiteLLMAIHandler(BaseAiHandler):
 
         cost_usd = None
         if get_settings().get("config.output_run_cost", False):
-            cost_usd = LiteLLMAIHandler._read_positive_response_cost(response, usage)
-            if cost_usd is None and model and LiteLLMAIHandler._has_priceable_usage(usage):
-                try:
+            # The guard covers the whole cost block, not just completion_cost:
+            # reading inline costs and probing usage call model_dump() on
+            # provider-specific objects, and a cost estimate must never fail a
+            # call that already succeeded and was billed.
+            try:
+                cost_usd = LiteLLMAIHandler._read_positive_response_cost(response, usage)
+                if cost_usd is None and model and LiteLLMAIHandler._has_priceable_usage(usage):
                     # Preserve LiteLLM's full usage object so completion_cost can price cache,
                     # reasoning, and provider-specific categories. Convert the small completed
                     # stream wrapper to a dictionary while retaining `response.usage`.
@@ -393,10 +397,10 @@ class LiteLLMAIHandler(BaseAiHandler):
                     if not isinstance(response, dict) and not hasattr(response, "model_dump"):
                         cost_response = response.dict()
                     cost_usd = litellm.completion_cost(completion_response=cost_response, model=model)
-                except Exception as e:
-                    # Treat missing model pricing or insufficient usage as an unavailable call cost.
-                    # Retain the successful call so the collector marks the aggregate safely.
-                    get_logger().debug(f"Unable to estimate API cost for model {model}: {type(e).__name__}")
+            except Exception as e:
+                # Treat missing model pricing or insufficient usage as an unavailable call cost.
+                # Retain the successful call so the collector marks the aggregate safely.
+                get_logger().debug(f"Unable to estimate API cost for model {model}: {type(e).__name__}")
 
         recorded_model = display_model if display_model is not None else model
         record_ai_call(usage, model=recorded_model, cost_usd=cost_usd)
