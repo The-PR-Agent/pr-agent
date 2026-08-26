@@ -401,15 +401,16 @@ class GitLabProvider(GitProvider):
             get_logger().error("Cannot get canonical URL parts: missing either context PR URL or a repo GIT URL")
             return ("", "")
         if not repo_git_url: #Use PR url as context
-            repo_path = self._get_project_path_from_pr_or_issue_url(self.pr_url)
             try:
                 desired_branch = self.gl.projects.get(self.id_project).default_branch
             except Exception as e:
                 get_logger().exception(f"Cannot get PR: {self.pr_url} default branch. Tried project ID: {self.id_project}")
                 return ("", "")
+            # numeric-alias URLs need the "projects/" segment, same as get_line_link
+            prefix = f"{self._get_project_web_url()}/-/blob/{desired_branch}"
         else: #Use repo git url
             repo_path = repo_git_url.split('.git')[0].split('.com/')[-1]
-        prefix = f"{self.gitlab_url}/{repo_path}/-/blob/{desired_branch}"
+            prefix = f"{self.gitlab_url}/{repo_path}/-/blob/{desired_branch}"
         suffix = "?ref_type=heads"  # gitlab cloud adds this suffix. gitlab server does not, but it is harmless.
         return (prefix, suffix)
 

@@ -94,3 +94,37 @@ def test_get_line_link_keeps_standard_project_path():
         "https://gitlab.example.com/group/project/-/blob/feature/test/src/app.py"
         "?ref_type=heads#L8"
     )
+
+
+def test_get_canonical_url_parts_uses_numeric_alias_when_merge_request_url_is_unavailable():
+    provider = _provider()
+    provider.pr_url = "https://gitlab.example.com/projects/127014/-/merge_requests/5"
+    provider.id_project = "127014"
+    provider.gl = SimpleNamespace(
+        url="https://gitlab.example.com",
+        projects=SimpleNamespace(get=lambda _: SimpleNamespace(default_branch="main")),
+    )
+    provider.mr = SimpleNamespace(web_url="")
+
+    assert provider.get_canonical_url_parts(repo_git_url=None, desired_branch=None) == (
+        "https://gitlab.example.com/projects/127014/-/blob/main",
+        "?ref_type=heads",
+    )
+
+
+def test_get_canonical_url_parts_keeps_standard_project_path():
+    provider = _provider()
+    provider.pr_url = "https://gitlab.example.com/group/project/-/merge_requests/5"
+    provider.id_project = "group/project"
+    provider.gl = SimpleNamespace(
+        url="https://gitlab.example.com",
+        projects=SimpleNamespace(get=lambda _: SimpleNamespace(default_branch="main")),
+    )
+    provider.mr = SimpleNamespace(
+        web_url="https://gitlab.example.com/group/project/-/merge_requests/5"
+    )
+
+    assert provider.get_canonical_url_parts(repo_git_url=None, desired_branch=None) == (
+        "https://gitlab.example.com/group/project/-/blob/main",
+        "?ref_type=heads",
+    )
