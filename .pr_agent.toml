@@ -7,6 +7,9 @@
 enable_review_labels_effort = true
 enable_auto_approval = true
 
+[pr_questions]
+ask_heading = "Ask"
+
 [github_app]
 pr_commands = [
     "/describe --pr_description.publish_description_as_comment=true",

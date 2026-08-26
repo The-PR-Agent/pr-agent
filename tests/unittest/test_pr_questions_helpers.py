@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import pr_agent.tools.pr_line_questions as plq
+from pr_agent.algo.utils import format_pr_questions_header
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
 from pr_agent.tools.pr_questions import PRQuestions
@@ -119,10 +120,31 @@ class TestPreparePrAnswer:
             git_provider=MagicMock(),  # not GitLab
         )
         out = pr._prepare_pr_answer()
-        assert "### **Ask**❓" in out
-        assert "why?" in out
-        assert "### **Answer:**" in out
-        assert "because reasons" in out
+        assert out == "### **Ask**❓\nwhy?\n\n### **Answer:**\nbecause reasons\n\n"
+
+    def test_custom_heading_changes_only_the_ask_header(self):
+        settings = get_settings()
+        saved = snapshot_settings(("pr_questions.ask_heading",))
+        pr = _make_pr_questions(question_str="why?", prediction="because reasons")
+        try:
+            settings.set("pr_questions.ask_heading", "  Architecture Question  ")
+            out = pr._prepare_pr_answer()
+        finally:
+            restore_settings(saved)
+
+        assert out == "### **Architecture Question**❓\nwhy?\n\n### **Answer:**\nbecause reasons\n\n"
+
+    @pytest.mark.parametrize("invalid_heading", [None, "", "   ", "Ask\nNow", "Ask\rNow", 42])
+    def test_invalid_heading_falls_back_to_ask(self, invalid_heading):
+        settings = get_settings()
+        saved = snapshot_settings(("pr_questions.ask_heading",))
+        try:
+            settings.set("pr_questions.ask_heading", invalid_heading)
+            header = format_pr_questions_header()
+        finally:
+            restore_settings(saved)
+
+        assert header == "### **Ask**❓"
 
     def test_sanitizes_leading_slash(self):
         pr = _make_pr_questions(

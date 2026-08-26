@@ -158,6 +158,8 @@ async_ai_calls=true
 [pr_questions] # /ask #
 enable_help_text=false
 use_conversation_history=true
+# Visible base heading for top-level /ask answer comments. Markdown and emoji are added automatically.
+ask_heading = "Ask"
 # Enable to let /ask_line resolve the review thread when the LLM judges the
 # issue addressed. Note: also resolves threads started by human reviewers.
 resolve_threads=false
