@@ -71,7 +71,7 @@ See a full video tutorial [here](https://codium.ai/images/pr_agent/ask_image_vid
         <td>
           Plain-text heading for top-level <code>/ask</code> answers. The default is <code>Ask</code>.
           Markdown renderers escape punctuation to keep the surrounding formatting and ❓ emoji fixed,
-          while plain-text converters receive the configured text without escape characters.
+          while plain-text converters publish the configured text without escape characters.
           This does not affect <code>/ask_line</code> replies or the <code>Answer</code> section heading.
         </td>
       </tr>

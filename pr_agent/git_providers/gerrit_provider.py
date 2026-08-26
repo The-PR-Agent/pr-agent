@@ -1,7 +1,9 @@
 import json
 import os
 import pathlib
+import re
 import shutil
+import string
 import subprocess
 import uuid
 from collections import Counter, namedtuple
@@ -109,10 +111,35 @@ def prepare_repo(url: urllib3.util.Url, project, refspec):
     return directory
 
 
+_ASK_HEADING_PREFIX = "### **"
+_ASK_HEADING_SUFFIX = "**❓"
+_ESCAPED_MARKDOWN_PUNCTUATION = re.compile(
+    r"\\([" + re.escape(string.punctuation) + r"])"
+)
+
+
+def _convert_gerrit_ask_heading(line: str) -> str | None:
+    """Convert only the generated /ask heading to Gerrit's plain-text form."""
+    if not line.startswith(_ASK_HEADING_PREFIX) or not line.endswith(_ASK_HEADING_SUFFIX):
+        return None
+    escaped_heading = line[len(_ASK_HEADING_PREFIX):-len(_ASK_HEADING_SUFFIX)]
+    heading = _ESCAPED_MARKDOWN_PUNCTUATION.sub(
+        lambda match: match.group(1),
+        escaped_heading,
+    )
+    return f"{heading}❓"
+
+
 def adopt_to_gerrit_message(message):
     lines = message.splitlines()
     buf = []
-    for line in lines:
+    for line_number, line in enumerate(lines):
+        if line_number == 0:
+            ask_heading = _convert_gerrit_ask_heading(line.strip())
+            if ask_heading is not None:
+                buf.append(f"\n{ask_heading}:")
+                continue
+
         # remove markdown formatting
         line = (line.replace("*", "")
                 .replace("``", "`")
@@ -312,7 +339,6 @@ class GerritProvider(GitProvider):
             'create_inline_comment',
             'publish_inline_comments',
             'get_labels',
-            "markdown_backslash_escapes",
             'gfm_markdown'
         ]:
             return False

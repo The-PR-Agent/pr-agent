@@ -170,11 +170,10 @@ class TestPreparePrAnswer:
 
         assert header == expected
 
-    @pytest.mark.parametrize("provider_class", [CodeCommitProvider, GerritProvider])
-    def test_plaintext_providers_do_not_receive_markdown_escapes(self, provider_class):
+    def test_codecommit_does_not_receive_markdown_escapes(self):
         settings = get_settings()
         saved = snapshot_settings(("pr_questions.ask_heading",))
-        provider = provider_class.__new__(provider_class)
+        provider = CodeCommitProvider.__new__(CodeCommitProvider)
         pr = _make_pr_questions(
             question_str="why?",
             prediction="because reasons",
@@ -189,7 +188,7 @@ class TestPreparePrAnswer:
         assert out.startswith("### **Q&A / Security**❓\n")
         assert "\\" not in out.splitlines()[0]
 
-    def test_gerrit_plaintext_conversion_does_not_leak_heading_escapes(self):
+    def test_gerrit_preserves_literal_heading_punctuation(self):
         settings = get_settings()
         saved = snapshot_settings(("pr_questions.ask_heading",))
         provider = GerritProvider.__new__(GerritProvider)
@@ -198,14 +197,24 @@ class TestPreparePrAnswer:
             prediction="because reasons",
             git_provider=provider,
         )
+        heading = r"Hash #, star *, [docs](v2), /, `tick`, |, \ path"
         try:
-            settings.set("pr_questions.ask_heading", "Q&A / Security")
-            out = adopt_to_gerrit_message(pr._prepare_pr_answer())
+            settings.set("pr_questions.ask_heading", heading)
+            answer = pr._prepare_pr_answer()
+            out = adopt_to_gerrit_message(answer)
         finally:
             restore_settings(saved)
 
-        assert out.startswith("Q&A / Security❓:")
-        assert "\\" not in out.splitlines()[0]
+        raw_heading = answer.splitlines()[0]
+        assert r"\#" in raw_heading
+        assert r"\*" in raw_heading
+        assert r"\\" in raw_heading
+        assert out.splitlines()[0] == f"{heading}❓:"
+
+    def test_gerrit_keeps_existing_conversion_for_other_markdown_headings(self):
+        message = "### **Answer:**\n- item\n### **Model # Heading:**"
+
+        assert adopt_to_gerrit_message(message) == "Answer:\nitem\n\nModel  Heading:"
 
     def test_sanitizes_leading_slash(self):
         pr = _make_pr_questions(
