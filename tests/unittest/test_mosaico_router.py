@@ -5,9 +5,8 @@ Pins: each path returns a string and NEVER raises; no-files/no-suggestions/empty
 with no exception escaping.
 
 asyncio_mode=auto."""
-import pytest
-
 import aiohttp
+import pytest
 
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.mosaico import dispatch
@@ -778,6 +777,7 @@ class TestPublishOutputForced:
         monkeypatch.setattr("pr_agent.tools.pr_questions.PRQuestions", CapturingPRQuestions)
 
         from pr_agent.mosaico.dispatch import _run_ask
+
         # Force global default to True (production default) so the test would fail
         # if _run_ask does NOT explicitly override it.
         global_settings.set("CONFIG.PUBLISH_OUTPUT", True)

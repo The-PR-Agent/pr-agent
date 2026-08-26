@@ -2,7 +2,8 @@ import asyncio
 import os
 import time
 
-from pr_agent.algo.ai_handlers.langchain_ai_handler import LangChainOpenAIHandler
+from pr_agent.algo.ai_handlers.langchain_ai_handler import \
+    LangChainOpenAIHandler
 from pr_agent.config_loader import get_settings
 
 

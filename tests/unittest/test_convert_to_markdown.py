@@ -2,7 +2,8 @@
 import textwrap
 from unittest.mock import Mock
 
-from pr_agent.algo.utils import PRReviewHeader, _expand_minute_suffix, convert_to_markdown_v2
+from pr_agent.algo.utils import (PRReviewHeader, _expand_minute_suffix,
+                                 convert_to_markdown_v2)
 from pr_agent.tools.pr_description import insert_br_after_x_chars
 
 """

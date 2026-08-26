@@ -12,14 +12,14 @@ from unittest.mock import MagicMock
 import pytest
 
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers import AzureDevopsProvider, GithubProvider, GitLabProvider
+from pr_agent.git_providers import (AzureDevopsProvider, GithubProvider,
+                                    GitLabProvider)
 from pr_agent.tools import ticket_pr_compliance_check as tpc
 from pr_agent.tools.ticket_pr_compliance_check import (
-    extract_and_cache_pr_tickets,
-    extract_gitlab_ticket_references,
-    extract_tickets,
-)
-from tests.unittest._settings_helpers import restore_settings, snapshot_settings
+    extract_and_cache_pr_tickets, extract_gitlab_ticket_references,
+    extract_tickets)
+from tests.unittest._settings_helpers import (restore_settings,
+                                              snapshot_settings)
 
 # ---------------------------------------------------------------------------
 # Test doubles

@@ -1,6 +1,7 @@
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import utils
-from pr_agent.git_providers.utils import apply_repo_settings, handle_configurations_errors
+from pr_agent.git_providers.utils import (apply_repo_settings,
+                                          handle_configurations_errors)
 
 
 class FakeMarkdownProvider:

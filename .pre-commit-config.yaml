@@ -29,11 +29,11 @@ repos:
   #   rev: v1.7.3
   #   hooks:
   #     - id: actionlint
-#  - repo: https://github.com/pycqa/isort
-#    # rev must match what's in dev-requirements.txt
-#    rev: 5.13.2
-#    hooks:
-#      - id: isort
+  - repo: https://github.com/pycqa/isort
+    # rev must match what's in dev-requirements.txt
+    rev: 5.13.2
+    hooks:
+      - id: isort
   # - repo: https://github.com/PyCQA/bandit
   #   rev: 1.7.10
   #   hooks:

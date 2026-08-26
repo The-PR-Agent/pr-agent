@@ -16,7 +16,8 @@ from ..algo.utils import (add_pr_review_identity, comment_matches_identity,
                           find_line_number_of_relevant_line_in_file)
 from ..config_loader import get_settings
 from ..log import get_logger
-from .git_provider import MAX_FILES_ALLOWED_FULL, GitProvider, get_cached_global_settings
+from .git_provider import (MAX_FILES_ALLOWED_FULL, GitProvider,
+                           get_cached_global_settings)
 
 
 def _gef_filename(diff):

@@ -27,8 +27,7 @@ from starlette_context import context as sctx
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.log import get_logger
 from pr_agent.mosaico.dispatch import route_and_run_result
-from pr_agent.mosaico.observability import (langfuse_span,
-                                            mosaico_log_context,
+from pr_agent.mosaico.observability import (langfuse_span, mosaico_log_context,
                                             parse_observability_metadata)
 
 

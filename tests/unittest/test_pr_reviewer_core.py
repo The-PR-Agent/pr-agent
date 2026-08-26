@@ -3,11 +3,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from pr_agent.algo.inline_comment_dedup import (
-    body_with_markers,
-    get_inline_comment_store,
-    key_issue_fingerprint,
-)
+from pr_agent.algo.inline_comment_dedup import (body_with_markers,
+                                                get_inline_comment_store,
+                                                key_issue_fingerprint)
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import PRReviewHeader, PRReviewIdentity
 from pr_agent.config_loader import get_settings

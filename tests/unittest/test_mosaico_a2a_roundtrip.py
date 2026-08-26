@@ -22,14 +22,13 @@ Note: import pr_agent.config_loader first to avoid the pr_agent.log <->
 custom_merge_loader circular import (mirrors server.py)."""
 import os
 
-import pr_agent.config_loader  # noqa: F401  (import-order load; see module docstring)
-
 import httpx
 import pytest
+from a2a.types import Message, Part, Role, SendMessageRequest
 from google.protobuf.json_format import MessageToDict
 from httpx import ASGITransport
 
-from a2a.types import Message, Part, Role, SendMessageRequest
+import pr_agent.config_loader  # noqa: F401  (import-order load; see module docstring)
 
 # A small, valid unified diff wrapped in a ```diff fence -> the supplied-diff (path b)
 # of the router: no PR URL, no network, parsed by the mosaico_diff provider.

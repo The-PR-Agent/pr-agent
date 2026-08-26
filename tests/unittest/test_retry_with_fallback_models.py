@@ -6,7 +6,8 @@ from pr_agent.algo.pr_processing import retry_with_fallback_models
 from pr_agent.algo.run_details import get_run_details, init_run_details
 from pr_agent.algo.utils import ModelType
 from pr_agent.config_loader import get_settings
-from tests.unittest._settings_helpers import SENTINEL, restore_settings, snapshot_settings
+from tests.unittest._settings_helpers import (SENTINEL, restore_settings,
+                                              snapshot_settings)
 
 _TRACKED_KEYS = (
     "config.model",

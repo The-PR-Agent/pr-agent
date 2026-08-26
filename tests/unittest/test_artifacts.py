@@ -1,13 +1,10 @@
 import os
 from unittest.mock import patch
 
-from pr_agent.algo.artifacts import (
-    DEFAULT_ARTIFACT_INSTRUCTIONS,
-    _read_and_truncate,
-    format_artifact_content,
-    load_artifact,
-    resolve_artifact_path,
-)
+from pr_agent.algo.artifacts import (DEFAULT_ARTIFACT_INSTRUCTIONS,
+                                     _read_and_truncate,
+                                     format_artifact_content, load_artifact,
+                                     resolve_artifact_path)
 
 
 class TestResolveArtifactPathRobustness:

@@ -262,7 +262,8 @@ class PRSimilarIssue:
             message = "The /similar_issue tool is currently supported only for GitHub."
             if get_settings().config.publish_output:
                 try:
-                    from pr_agent.git_providers import get_git_provider_with_context
+                    from pr_agent.git_providers import \
+                        get_git_provider_with_context
 
                     provider = get_git_provider_with_context(self.issue_url)
                     provider.publish_comment(message)

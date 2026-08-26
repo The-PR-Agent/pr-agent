@@ -6,11 +6,8 @@ from jinja2 import Environment, StrictUndefined, select_autoescape
 
 from pr_agent.algo import repo_context
 from pr_agent.algo.repo_context import (
-    TRUNCATION_MARKER,
-    build_repo_context,
-    render_instruction_files,
-    render_instruction_files_with_line_budget,
-)
+    TRUNCATION_MARKER, build_repo_context, render_instruction_files,
+    render_instruction_files_with_line_budget)
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.git_providers.github_provider import GithubProvider

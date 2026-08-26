@@ -9,8 +9,7 @@ import litellm
 import pytest
 
 from pr_agent.config_loader import get_settings, global_settings
-from pr_agent.mosaico.env_bridge import (apply_mosaico_env,
-                                         langfuse_env_present)
+from pr_agent.mosaico.env_bridge import apply_mosaico_env, langfuse_env_present
 from pr_agent.mosaico.observability import (mosaico_log_context,
                                             parse_observability_metadata)
 
@@ -157,7 +156,8 @@ class TestApplyMosaicoEnv:
 
         apply_mosaico_env()
 
-        from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
+        from pr_agent.algo.ai_handlers.litellm_ai_handler import \
+            LiteLLMAIHandler
         LiteLLMAIHandler()
         assert litellm.success_callback == ["langfuse_otel"]
         assert litellm.failure_callback == ["langfuse_otel"]

@@ -6,7 +6,8 @@ from urllib.parse import urlparse
 import aiohttp
 
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers import AzureDevopsProvider, GithubProvider, GitLabProvider
+from pr_agent.git_providers import (AzureDevopsProvider, GithubProvider,
+                                    GitLabProvider)
 from pr_agent.log import get_logger
 
 # Compile the regex pattern once, outside the function

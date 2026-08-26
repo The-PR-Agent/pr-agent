@@ -4,16 +4,15 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 from gitlab import Gitlab
 from gitlab.exceptions import GitlabGetError
-from gitlab.v4.objects import ProjectFile, ProjectMergeRequest, ProjectMergeRequestManager
+from gitlab.v4.objects import (ProjectFile, ProjectMergeRequest,
+                               ProjectMergeRequestManager)
 
 from pr_agent.algo.utils import PRReviewHeader, PRReviewIdentity
 from pr_agent.git_providers.git_provider import IncrementalPR
-from pr_agent.git_providers.gitlab_provider import (
-    GitLabProvider,
-    _GitLabIncrementalCommit,
-    _GitLabIncrementalNote,
-    _parse_gitlab_iso_datetime,
-)
+from pr_agent.git_providers.gitlab_provider import (GitLabProvider,
+                                                    _GitLabIncrementalCommit,
+                                                    _GitLabIncrementalNote,
+                                                    _parse_gitlab_iso_datetime)
 
 
 def _mock_settings(publish_review_as_thread=False, resolve_outdated_inline_threads=False):
