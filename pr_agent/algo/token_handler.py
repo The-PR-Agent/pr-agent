@@ -1,6 +1,6 @@
-from threading import Lock
-from math import ceil
 import re
+from math import ceil
+from threading import Lock
 
 from jinja2 import Environment, StrictUndefined
 from tiktoken import encoding_for_model, get_encoding
@@ -13,7 +13,7 @@ class ModelTypeValidator:
     @staticmethod
     def is_openai_model(model_name: str) -> bool:
         return 'gpt' in model_name or re.match(r"^o[1-9](-mini|-preview)?$", model_name)
-    
+
     @staticmethod
     def is_anthropic_model(model_name: str) -> bool:
         return 'claude' in model_name
@@ -67,7 +67,7 @@ class TokenHandler:
         - user: The user string.
         """
         self.encoder = TokenEncoder.get_token_encoder()
-        
+
         if pr is not None:
             self.prompt_tokens = self._get_system_user_tokens(pr, self.encoder, vars, system, user)
 
@@ -99,16 +99,14 @@ class TokenHandler:
     def _calc_claude_tokens(self, patch: str) -> int:
         try:
             import anthropic
-            from pr_agent.algo import MAX_TOKENS
-            
+
             client = anthropic.Anthropic(api_key=get_settings(use_context=False).get('anthropic.key'))
-            max_tokens = MAX_TOKENS[get_settings().config.model]
 
             if len(patch.encode('utf-8')) > self.CLAUDE_MAX_CONTENT_SIZE:
                 get_logger().warning(
                     "Content too large for Anthropic token counting API, falling back to local tokenizer"
                 )
-                return max_tokens
+                return 0
 
             response = client.messages.count_tokens(
                 model=self.CLAUDE_MODEL,
@@ -155,7 +153,7 @@ class TokenHandler:
             int: The calculated token count.
         """
         model_name = get_settings().config.model.lower()
-        
+
         if ModelTypeValidator.is_openai_model(model_name) and get_settings(use_context=False).get('openai.key'):
             return default_estimate
 
@@ -166,7 +164,7 @@ class TokenHandler:
             return self._apply_estimation_factor(model_name, default_estimate)
 
         return self._apply_estimation_factor(model_name, default_estimate)
-    
+
     def count_tokens(self, patch: str, force_accurate: bool = False) -> int:
         """
         Counts the number of tokens in a given patch string.
