@@ -145,9 +145,9 @@ def test_renders_complete_cost_and_rounded_multi_model_breakdown():
 
     output = show_run_details(gfm_supported=True)
 
-    assert "Estimated API cost: $0.0843 USD" in output
-    assert "  - model-a: $0.0710 USD" in output
-    assert "  - model-b: $0.0132 USD" in output
+    assert "Estimated API cost: $0.08 USD" in output
+    assert "  - model-a: $0.07 USD" in output
+    assert "  - model-b: $0.01 USD" in output
 
 
 def test_renders_partial_cost_with_priced_call_count():
@@ -159,7 +159,7 @@ def test_renders_partial_cost_with_priced_call_count():
 
     output = show_run_details(gfm_supported=True)
 
-    assert "Estimated API cost: $0.0042 USD (partial: 1 of 2 successful calls priced)" in output
+    assert "Estimated API cost: <$0.01 USD (partial: 1 of 2 successful calls priced)" in output
 
 
 def test_unavailable_cost_never_renders_as_zero():
@@ -182,5 +182,5 @@ def test_tiny_positive_cost_is_not_rounded_to_false_zero():
 
     output = show_run_details(gfm_supported=True)
 
-    assert "Estimated API cost: <$0.0001 USD" in output
-    assert "Estimated API cost: $0.0000" not in output
+    assert "Estimated API cost: <$0.01 USD" in output
+    assert "Estimated API cost: $0.00" not in output

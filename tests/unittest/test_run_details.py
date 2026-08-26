@@ -135,7 +135,7 @@ def test_record_ai_call_aggregates_decimal_costs_by_model():
 
 def test_record_ai_call_treats_zero_cost_as_unpriced():
     """litellm.completion_cost returns 0.0 for unpriced models and empty usage;
-    recording it would render a false '$0.0000' with cost status complete."""
+    recording it would render a false '$0.00' with cost status complete."""
     init_run_details()
 
     record_ai_call(_Usage(10, 2, 12), model="zero-priced", cost_usd=0.0)

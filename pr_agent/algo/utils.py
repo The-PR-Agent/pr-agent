@@ -1488,11 +1488,11 @@ def show_relevant_configurations(relevant_section: str) -> str:
 
 
 def _format_usd(cost: Decimal) -> str:
-    """Format cost at four decimals without turning a positive amount into false zero."""
-    rounded = cost.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+    """Format cost at two decimals without turning a positive amount into false zero."""
+    rounded = cost.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     if cost > 0 and rounded == 0:
-        return "<$0.0001"
-    return f"${rounded:.4f}"
+        return "<$0.01"
+    return f"${rounded:.2f}"
 
 
 def show_run_details(gfm_supported: bool) -> str:

@@ -130,7 +130,7 @@ def _as_decimal_cost(cost_usd) -> Optional[Decimal]:
     Zero is rejected on purpose: litellm.completion_cost returns 0.0 both for
     zero-priced model entries (e.g. local/ollama models) and for usage without
     billable tokens, so a zero here means "could not be priced", not "free" —
-    recording it would render a false "$0.0000" with cost status complete.
+    recording it would render a false "$0.00" with cost status complete.
     """
     if cost_usd is None or isinstance(cost_usd, bool):
         return None
