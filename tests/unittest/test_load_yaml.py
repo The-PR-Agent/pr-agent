@@ -128,3 +128,14 @@ PR Feedback:
         expected = {"name": "John"}
         assert load_yaml("prefix text\n```yaml\nname: John\n```") == expected
         assert load_yaml("prefix text\n``` yaml\nname: John\n```") == expected
+
+
+class TestFenceLabelIsNotStrippedByPrefix:
+    def test_key_starting_with_yml_is_not_truncated(self):
+        assert load_yaml("yml_config:\n  a: 1") == {"yml_config": {"a": 1}}
+
+    def test_plain_yml_key_survives(self):
+        assert load_yaml("yml: true") == {"yml": True}
+
+    def test_list_key_starting_with_yml_survives(self):
+        assert load_yaml("ymls:\n  - a") == {"ymls": ["a"]}

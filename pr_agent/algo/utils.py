@@ -809,7 +809,13 @@ def sanitize_yaml_control_chars(text: str, log: bool = True) -> str:
 
 def load_yaml(response_text: str, keys_fix_yaml: List[str] = [], first_key="", last_key="") -> dict:
     response_text_original = copy.deepcopy(response_text)
-    response_text = response_text.strip('\n').removeprefix('yaml').removeprefix('yml').removeprefix('```yaml').removeprefix('``` yaml').removeprefix('```yml').removeprefix('``` yml').rstrip().removesuffix('```')
+    response_text = response_text.strip('\n')
+    # strip the fence label only when it is a complete info string, so a key such as
+    # "yml_config" is not truncated to "_config"
+    unfenced = re.sub(r'^```[ \t]*(?:yaml|yml)?[ \t]*(?=\r?\n)', '', response_text)
+    if unfenced == response_text:
+        unfenced = response_text.removeprefix('yaml')
+    response_text = unfenced.rstrip().removesuffix('```')
     response_text = sanitize_yaml_control_chars(response_text)
     response_text_original_sanitized = sanitize_yaml_control_chars(response_text_original, log=False)
     try:
