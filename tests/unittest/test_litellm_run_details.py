@@ -123,6 +123,26 @@ def test_zero_inline_cost_without_priceable_usage_stays_unavailable(monkeypatch)
     completion_cost.assert_not_called()
 
 
+def test_zero_token_usage_with_provider_timing_floats_stays_unavailable(monkeypatch):
+    """Groq-style timing floats (queue_time, prompt_time) are not billable
+    quantities and must not send zero-token usage to completion_cost."""
+    _set_cost_collection(monkeypatch, True)
+    init_run_details()
+    response = {"usage": {"prompt_tokens": 0, "completion_tokens": 0,
+                          "queue_time": 0.019, "prompt_time": 0.004}}
+
+    with patch(
+        "pr_agent.algo.ai_handlers.litellm_ai_handler.litellm.completion_cost",
+        return_value=0.0,
+    ) as completion_cost:
+        LiteLLMAIHandler._record_completion_metadata(response, model="model-a")
+
+    details = get_run_details()
+    assert details.known_cost_call_count == 0
+    assert details.cost_status == "unavailable"
+    completion_cost.assert_not_called()
+
+
 def test_disabled_cost_collection_does_not_calculate_or_record_cost(monkeypatch):
     _set_cost_collection(monkeypatch, False)
     init_run_details()

@@ -20,7 +20,7 @@ from pr_agent.algo import (CLAUDE_EXTENDED_THINKING_MODELS,
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_helpers import (
     _get_azure_ad_token, _handle_streaming_response,
-    _process_litellm_extra_body)
+    _process_litellm_extra_body, _response_field)
 from pr_agent.algo.run_details import record_ai_call
 from pr_agent.algo.utils import ReasoningEffort, get_version
 from pr_agent.config_loader import get_settings
@@ -436,32 +436,23 @@ class LiteLLMAIHandler(BaseAiHandler):
 
     @staticmethod
     def _has_priceable_usage(usage) -> bool:
-        """Return true when finalized usage contains at least one positive billable quantity."""
+        """Return true when finalized usage reports a positive token count.
+
+        Only token counters gate pricing: provider extras such as Groq's timing
+        floats (queue_time, prompt_time) are not billable quantities, and letting
+        them pass would send zero-token usage to completion_cost, which prices
+        it as 0.0 instead of raising.
+        """
         if usage is None:
             return False
-        if hasattr(usage, "model_dump"):
-            usage = usage.model_dump()
-        elif not isinstance(usage, dict):
-            try:
-                usage = vars(usage)
-            except TypeError:
-                return False
-
-        def contains_positive_quantity(value) -> bool:
-            if isinstance(value, bool) or value is None:
-                return False
-            if isinstance(value, (int, float)):
-                return value > 0
-            if isinstance(value, dict):
-                return any(
-                    key not in {"cost", "response_cost"} and contains_positive_quantity(item)
-                    for key, item in value.items()
-                )
-            if isinstance(value, (list, tuple)):
-                return any(contains_positive_quantity(item) for item in value)
-            return False
-
-        return contains_positive_quantity(usage)
+        return any(
+            isinstance(count, int) and not isinstance(count, bool) and count > 0
+            for count in (
+                _response_field(usage, "prompt_tokens"),
+                _response_field(usage, "completion_tokens"),
+                _response_field(usage, "total_tokens"),
+            )
+        )
 
     def _configure_claude_extended_thinking(self, model: str, kwargs: dict) -> dict:
         """
