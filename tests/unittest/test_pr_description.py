@@ -4,13 +4,11 @@ import pytest
 import yaml
 
 from pr_agent.algo.types import FilePatchInfo
-from pr_agent.tools.pr_description import (
-    PRDescription,
-    _longest_diagram_chain,
-    _parse_diagram_edges,
-    apply_diagram_direction,
-    sanitize_diagram,
-)
+from pr_agent.tools.pr_description import (PRDescription,
+                                           _longest_diagram_chain,
+                                           _parse_diagram_edges,
+                                           apply_diagram_direction,
+                                           sanitize_diagram)
 
 KEYS_FIX = ["filename:", "language:", "changes_summary:", "changes_title:", "description:", "title:"]
 
@@ -108,6 +106,65 @@ class TestPRDescriptionDiagram:
 
     def test_non_mermaid_fence_returns_empty(self):
         assert sanitize_diagram('```python\nprint("hello")\n```') == ''
+
+    @pytest.mark.parametrize("diagram", [
+        "Mention the ```mermaid marker inline without a diagram.",
+        "```mermaid-extra\ngraph LR\nA --> B\n```",
+    ])
+    def test_mermaid_marker_that_is_not_a_fence_returns_empty(self, diagram):
+        assert sanitize_diagram(diagram) == ''
+
+    def test_leading_and_trailing_prose_around_mermaid_fence_is_ignored(self):
+        diagram = sanitize_diagram(
+            'Here is the requested diagram:\n'
+            '```mermaid\n'
+            'graph LR\n'
+            'A --> B\n'
+            '```\n'
+            'The diagram shows the main flow.'
+        )
+
+        assert diagram == '\n```mermaid\ngraph LR\nA --> B\n```'
+
+    def test_backticks_inside_a_label_do_not_end_the_fence(self):
+        diagram = sanitize_diagram('```mermaid\ngraph LR\nA["```file```"] --> B\n```')
+
+        assert diagram == '\n```mermaid\ngraph LR\nA["file"] --> B\n```'
+
+    def test_longer_closing_fence_is_preserved(self):
+        diagram = sanitize_diagram('```mermaid\ngraph LR\nA --> B\n````\nTrailing prose')
+
+        assert diagram == '\n```mermaid\ngraph LR\nA --> B\n````'
+
+    @pytest.mark.parametrize(("label", "quoted_label"), [
+        ("Parse (safe)", "Parse (safe)"),
+        ("status: ready", "status: ready"),
+        ('say "hello"', "say #quot;hello#quot;"),
+    ])
+    def test_unquoted_square_node_labels_are_quoted(self, label, quoted_label):
+        diagram = sanitize_diagram(f"```mermaid\ngraph LR\nA[{label}]\n```")
+
+        assert diagram == f'\n```mermaid\ngraph LR\nA["{quoted_label}"]\n```'
+
+    @pytest.mark.parametrize(("body", "expected"), [
+        ('A["Use items[index]"] --> B[Next]', 'A["Use items[index]"] --> B["Next"]'),
+        ('A["array]"] --> B[Next]', 'A["array]"] --> B["Next"]'),
+        ('A -- "array[index]" --> B[Next]', 'A -- "array[index]" --> B["Next"]'),
+    ])
+    def test_square_brackets_inside_existing_labels_are_preserved(self, body, expected):
+        diagram = sanitize_diagram(f"```mermaid\ngraph LR\n{body}\n```")
+
+        assert diagram == f"\n```mermaid\ngraph LR\n{expected}\n```"
+
+    @pytest.mark.parametrize("node", [
+        "A[(Database)]",
+        "B[[Subprocess]]",
+        "C[/Input/]",
+    ])
+    def test_non_rectangular_node_shapes_are_preserved(self, node):
+        diagram = sanitize_diagram(f"```mermaid\ngraph LR\n{node}\n```")
+
+        assert diagram == f"\n```mermaid\ngraph LR\n{node}\n```"
 
 
 class TestPRDescriptionCore:

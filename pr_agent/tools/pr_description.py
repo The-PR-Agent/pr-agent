@@ -15,9 +15,9 @@ from pr_agent.algo.pr_processing import (OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
                                          get_pr_diff,
                                          get_pr_diff_multiple_patchs,
                                          retry_with_fallback_models)
+from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.run_details import init_run_details
 from pr_agent.algo.skills_loader import get_skills_context
-from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (ModelType, PRDescriptionHeader, clip_tokens,
                                  get_max_tokens, get_user_labels, load_yaml,
@@ -806,25 +806,73 @@ class PRDescription:
         return pr_body
 
 
+DIAGRAM_OPENING_FENCE_PATTERN = re.compile(
+    r'^[ \t]*(?P<fence>```mermaid)(?=[ \t]*\r?$)',
+    re.MULTILINE,
+)
+DIAGRAM_CLOSING_FENCE_PATTERN = re.compile(
+    r'^[ \t]*(?P<fence>`{3,})(?=[ \t]*\r?$)',
+    re.MULTILINE,
+)
+DIAGRAM_SQUARE_NODE_PATTERN = re.compile(
+    r'(?<![\w-])(?P<node_id>[A-Za-z0-9_][A-Za-z0-9_-]*\s*)'
+    r'\[(?![\[(\\/])(?P<label>"(?:\\.|[^"\\])*"|[^\[\]\n]*)\]'
+)
+
+
+def _is_inside_diagram_label(line: str, position: int) -> bool:
+    """Return whether a match starts inside an existing label."""
+    square_depth = 0
+    in_double_quotes = False
+    escaped = False
+    for char in line[:position]:
+        if char == '"' and not escaped:
+            in_double_quotes = not in_double_quotes
+        elif not in_double_quotes:
+            if char == '[':
+                square_depth += 1
+            elif char == ']' and square_depth:
+                square_depth -= 1
+
+        if char == '\\':
+            escaped = not escaped
+        else:
+            escaped = False
+
+    return in_double_quotes or square_depth > 0
+
+
 def sanitize_diagram(diagram_raw: str) -> str:
-    """Sanitize a diagram string: fix missing closing fence and remove backticks."""
+    """Extract and sanitize a Mermaid diagram."""
     if not isinstance(diagram_raw, str):
         return ''
     diagram = diagram_raw.strip()
-    if not diagram.startswith('```mermaid'):
+    opening_fence = DIAGRAM_OPENING_FENCE_PATTERN.search(diagram)
+    if opening_fence is None:
         return ''
+    diagram = diagram[opening_fence.start('fence'):]
 
-    # fallback missing closing
-    if not diagram.endswith('```'):
+    closing_fence = DIAGRAM_CLOSING_FENCE_PATTERN.search(diagram, len('```mermaid'))
+    if closing_fence is None:
         diagram += '\n```'
+    else:
+        diagram = diagram[:closing_fence.end('fence')]
 
+    def quote_node_label(match: re.Match) -> str:
+        label = match.group('label').strip()
+        if len(label) >= 2 and label.startswith('"') and label.endswith('"'):
+            label = label[1:-1]
+        label = label.replace('`', '').replace('\\"', '#quot;').replace('"', '#quot;')
+        return f'{match.group("node_id")}["{label}"]'
 
-    # remove backticks inside node labels: ["`label`"] -> ["label"]
     result = []
     for line in diagram.split('\n'):
-        line = re.sub(
-            r'\["([^"]*?)"\]',
-            lambda m: '["' + m.group(1).replace('`', '') + '"]',
+        line = DIAGRAM_SQUARE_NODE_PATTERN.sub(
+            lambda match, current_line=line: (
+                match.group(0)
+                if _is_inside_diagram_label(current_line, match.start())
+                else quote_node_label(match)
+            ),
             line,
         )
         result.append(line)
