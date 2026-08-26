@@ -1494,6 +1494,8 @@ class GithubProvider(GitProvider):
             get_logger().info(f"Github Sub-issues fetched: {len(nodes)}", artifact={"nodes": nodes})
 
             for sub_issue in nodes:
+                if not sub_issue:
+                    continue
                 if "url" in sub_issue:
                     sub_issues.add(sub_issue["url"])
 
