@@ -95,7 +95,12 @@ class PR_LineQuestions:
                                                                                                line_start=line_start,
                                                                                                line_end=line_end,
                                                                                                side=side)
-        if self.selected_lines:
+        # A matched hunk always contributes its '@@' header; a miss leaves only the file
+        # title. Gating on selected_lines instead would also silence the case where GitHub
+        # truncates diff_hunk from the front but keeps the original header, which leaves the
+        # requested line outside the shortened body with the hunk itself still present.
+        hunk_found = any(line.startswith('@@') for line in self.patch_with_lines.splitlines())
+        if hunk_found:
             model_answer = await retry_with_fallback_models(self._get_prediction, model_type=ModelType.WEAK)
 
             should_resolve = False
@@ -120,8 +125,16 @@ class PR_LineQuestions:
             else:
                 self.git_provider.publish_comment(model_answer_sanitized)
         else:
-            get_logger().info("No lines selected in the patch range for "
+            get_logger().info("No hunk matched the requested range for "
                               f"'{file_name}'; skipping the /ask_line model call")
+            # Without this the run is silent and the asker cannot tell us apart from a
+            # broken bot, so say why nothing was answered.
+            no_hunk_message = (f"Could not find the requested lines of `{file_name}` in this "
+                               "pull request's diff, so there is nothing to answer about.")
+            if comment_id:
+                self.git_provider.reply_to_comment_from_comment_id(comment_id, no_hunk_message)
+            else:
+                self.git_provider.publish_comment(no_hunk_message)
 
         return ""
         

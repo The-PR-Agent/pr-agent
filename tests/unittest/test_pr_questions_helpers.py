@@ -1,4 +1,4 @@
-﻿"""Focused unit tests for PRQuestions / PR_LineQuestions pure helpers.
+"""Focused unit tests for PRQuestions / PR_LineQuestions pure helpers.
 
 These tests avoid constructing the tool objects through their public
 ``__init__`` (which would create real git providers and a TokenHandler).
@@ -734,5 +734,39 @@ class TestPRLineQuestionsRunSkipsEmptySelection:
                 await obj.run()
             mock_retry.assert_awaited_once()
             obj.git_provider.publish_comment.assert_called_once_with("an answer")
+        finally:
+            restore_settings(saved)
+
+
+    @pytest.mark.asyncio
+    async def test_answers_when_github_truncated_the_hunk_body(self):
+        # GitHub truncates diff_hunk from the front on long hunks but keeps the original
+        # @@ header, so the requested line sits outside the shortened body and no line is
+        # selected. The hunk is real, so the question is still answerable.
+        obj = self._provider()
+        obj.git_provider.get_diff_files.return_value = [SimpleNamespace(
+            filename="x.py",
+            patch="@@ -5,400 +5,400 @@ def main():\n     tail = 1\n     tail = 2\n")]
+        saved = self._set_ask_settings("300", "300")
+        try:
+            with patch("pr_agent.tools.pr_line_questions.retry_with_fallback_models",
+                       new=AsyncMock(return_value="an answer")) as mock_retry:
+                await obj.run()
+            mock_retry.assert_awaited_once()
+            obj.git_provider.publish_comment.assert_called_once_with("an answer")
+        finally:
+            restore_settings(saved)
+
+    @pytest.mark.asyncio
+    async def test_tells_the_asker_when_no_hunk_matched(self):
+        obj = self._provider()
+        saved = self._set_ask_settings("100", "200")
+        try:
+            with patch("pr_agent.tools.pr_line_questions.retry_with_fallback_models",
+                       new=AsyncMock()) as mock_retry:
+                await obj.run()
+            mock_retry.assert_not_awaited()
+            obj.git_provider.publish_comment.assert_called_once()
+            assert "nothing to answer about" in obj.git_provider.publish_comment.call_args[0][0]
         finally:
             restore_settings(saved)
