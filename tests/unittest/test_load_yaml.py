@@ -101,3 +101,41 @@ PR Feedback:
             assert not any("Preprocessing/sanitization removed all content" in m for m in captured)
         finally:
             get_logger().remove(sink_id)
+
+    # Tests that a fenced block whose info string is separated by a space
+    # (CommonMark allows whitespace after the opening fence) parses the same
+    # as the flush form.
+    def test_space_before_yaml_info_string(self):
+        expected = {"name": "John"}
+
+        assert load_yaml("```yaml\nname: John\n```") == expected
+        assert load_yaml("``` yaml\nname: John\n```") == expected
+        assert load_yaml("``` yml\nname: John\n```") == expected
+
+    # A fence labeled with a non-YAML info string (e.g. ```text or ```python)
+    # must not be extracted and parsed as a YAML snippet. The old pattern's
+    # optional (yaml|yml) group let any info string through, so the body
+    # started with the stray label and a plain-scalar body came back as a
+    # folded string instead of None.
+    def test_non_yaml_info_string_not_parsed_as_yaml_snippet(self):
+        assert load_yaml("```text\nhello world\n```") is None
+        assert load_yaml("```python\nname: John\n```") is None
+
+    # A fenced block that only becomes reachable through the snippet fallback
+    # (the initial parse fails because of surrounding text) must be extracted
+    # and parsed, not crash on a stale group index.
+    def test_snippet_fallback_with_surrounding_text(self):
+        expected = {"name": "John"}
+        assert load_yaml("prefix text\n```yaml\nname: John\n```") == expected
+        assert load_yaml("prefix text\n``` yaml\nname: John\n```") == expected
+
+
+class TestFenceLabelIsNotStrippedByPrefix:
+    def test_key_starting_with_yml_is_not_truncated(self):
+        assert load_yaml("yml_config:\n  a: 1") == {"yml_config": {"a": 1}}
+
+    def test_plain_yml_key_survives(self):
+        assert load_yaml("yml: true") == {"yml": True}
+
+    def test_list_key_starting_with_yml_survives(self):
+        assert load_yaml("ymls:\n  - a") == {"ymls": ["a"]}

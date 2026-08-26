@@ -35,8 +35,10 @@ def filter_ignored(files, platform = 'github'):
         for r in patterns:
             try:
                 compiled_patterns.append(re.compile(r))
-            except re.error:
-                pass
+            except re.error as e:
+                get_logger().warning(
+                    "Skipping invalid ignore pattern; files it was meant to exclude will be "
+                    "sent to the model", artifact={"pattern": r, "error": str(e)})
 
         # keep filenames that _don't_ match the ignore regex
         if files and isinstance(files, list):

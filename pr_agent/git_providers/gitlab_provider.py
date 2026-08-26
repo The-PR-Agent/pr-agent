@@ -20,9 +20,9 @@ from ..algo.inline_comment_dedup import (body_fingerprint, body_with_markers,
                                          code_fingerprint,
                                          get_inline_comment_store)
 from ..algo.language_handler import is_valid_file
-from ..algo.utils import (PRReviewHeader, clip_tokens,
+from ..algo.utils import (clip_tokens, comment_matches_any_identity,
                           find_line_number_of_relevant_line_in_file,
-                          load_large_diff)
+                          get_pr_review_comment_identifiers, load_large_diff)
 from ..config_loader import get_settings
 from ..log import get_logger
 from .git_provider import (MAX_FILES_ALLOWED_FULL, GitProvider, IncrementalPR,
@@ -401,15 +401,16 @@ class GitLabProvider(GitProvider):
             get_logger().error("Cannot get canonical URL parts: missing either context PR URL or a repo GIT URL")
             return ("", "")
         if not repo_git_url: #Use PR url as context
-            repo_path = self._get_project_path_from_pr_or_issue_url(self.pr_url)
             try:
                 desired_branch = self.gl.projects.get(self.id_project).default_branch
             except Exception as e:
                 get_logger().exception(f"Cannot get PR: {self.pr_url} default branch. Tried project ID: {self.id_project}")
                 return ("", "")
+            # numeric-alias URLs need the "projects/" segment, same as get_line_link
+            prefix = f"{self._get_project_web_url()}/-/blob/{desired_branch}"
         else: #Use repo git url
             repo_path = repo_git_url.split('.git')[0].split('.com/')[-1]
-        prefix = f"{self.gitlab_url}/{repo_path}/-/blob/{desired_branch}"
+            prefix = f"{self.gitlab_url}/{repo_path}/-/blob/{desired_branch}"
         suffix = "?ref_type=heads"  # gitlab cloud adds this suffix. gitlab server does not, but it is harmless.
         return (prefix, suffix)
 
@@ -428,13 +429,10 @@ class GitLabProvider(GitProvider):
             get_logger().error(f"Could not get diff for merge request {self.id_mr}")
             raise DiffNotFoundError(f"Could not get diff for merge request {self.id_mr}") from e
 
-    # Anchor-note prefixes per incremental "kind". An incremental run looks for the most recent
-    # prior note matching ANY of these prefixes and uses its timestamp as the timeline anchor.
+    # Match the most recent prior note for each incremental kind against any accepted identity,
+    # then use its timestamp as the timeline anchor.
     _INCREMENTAL_ANCHOR_PREFIXES = {
-        "review": (
-            PRReviewHeader.REGULAR.value,         # "## PR Reviewer Guide"
-            PRReviewHeader.INCREMENTAL.value,     # "## Incremental PR Reviewer Guide"
-        ),
+        "review": get_pr_review_comment_identifiers(full=True, incremental=True),
         "suggestions": (
             "## PR Code Suggestions ✨",           # summary-table mode
             "**Suggestion:**",                     # commitable-suggestions inline mode
@@ -596,15 +594,11 @@ class GitLabProvider(GitProvider):
     def get_previous_review(self, *, full: bool, incremental: bool):
         if not (full or incremental):
             raise ValueError("At least one of full or incremental must be True")
-        prefixes = []
-        if full:
-            prefixes.append(PRReviewHeader.REGULAR.value)
-        if incremental:
-            prefixes.append(PRReviewHeader.INCREMENTAL.value)
-        return self._find_anchor_note(prefixes)
+        identifiers = get_pr_review_comment_identifiers(full=full, incremental=incremental)
+        return self._find_anchor_note(identifiers)
 
-    def _find_anchor_note(self, prefixes):
-        """Return the most recent MR note whose body starts with any of `prefixes`.
+    def _find_anchor_note(self, identities):
+        """Return the most recent MR note whose body matches any supplied identity.
 
         Used by incremental flows (`/review -i`, `/improve -i`) to find the timestamp
         we anchor the commit timeline on. Returns a `_GitLabIncrementalNote` adapter
@@ -621,9 +615,9 @@ class GitLabProvider(GitProvider):
         Notes authored by other users are skipped when the authenticated (bot) user is
         known: a human comment that merely starts with `**Suggestion:**` must not shift
         the anchor. When authorship can't be established (e.g. job-token auth), we keep
-        the prefix-only behaviour rather than disabling incremental runs.
+        identity-only matching rather than disabling incremental runs.
         """
-        if not prefixes:
+        if not identities:
             return None
         # Use hasattr (not truthy) so a legitimately empty notes list still counts as cached;
         # otherwise we'd re-fetch from GitLab on every call for MRs that have no notes.
@@ -639,7 +633,7 @@ class GitLabProvider(GitProvider):
             body = getattr(note, 'body', None)
             if not isinstance(body, str):
                 continue
-            if not any(body.startswith(prefix) for prefix in prefixes):
+            if not comment_matches_any_identity(body, identities):
                 continue
             if own_user_id is not None:
                 author = getattr(note, 'author', None)
@@ -851,14 +845,27 @@ class GitLabProvider(GitProvider):
     def should_publish_review_as_thread(self) -> bool:
         return bool(get_settings().get("GITLAB.PUBLISH_REVIEW_AS_THREAD", False))
 
+    def supports_review_comment_identity(self) -> bool:
+        return True
+
     def publish_persistent_comment(self, pr_comment: str,
                                    initial_header: str,
                                    update_header: bool = True,
                                    name='review',
                                    final_update_message=True,
-                                   as_thread: bool = False):
-        self.publish_persistent_comment_full(pr_comment, initial_header, update_header, name, final_update_message,
-                                             as_thread=as_thread)
+                                   as_thread: bool = False,
+                                   identity_marker: str | None = None,
+                                   legacy_initial_header: str | None = None):
+        self.publish_persistent_comment_full(
+            pr_comment,
+            initial_header,
+            update_header,
+            name,
+            final_update_message,
+            as_thread=as_thread,
+            identity_marker=identity_marker,
+            legacy_initial_header=legacy_initial_header,
+        )
 
     def publish_comment(self, mr_comment: str, is_temporary: bool = False, as_thread: bool = False):
         if is_temporary and not get_settings().config.publish_output_progress:
@@ -1188,7 +1195,17 @@ class GitLabProvider(GitProvider):
         if not self.gitlab_url or 'gitlab.com' in self.gitlab_url:
             if not self.id_project:
                 return None
-            return self.id_project.split('/')[0]
+            project_id = str(self.id_project)
+            if project_id.isascii() and project_id.isdigit():
+                try:
+                    project_path = self.gl.projects.get(project_id).path_with_namespace
+                except Exception as e:
+                    get_logger().warning(f"Failed to resolve canonical GitLab project path, error: {e}")
+                    return None
+                if not project_path:
+                    return None
+                return project_path.split('/')[0]
+            return project_id.split('/')[0]
         # extract host name
         host = urlparse(self.gitlab_url).hostname
         return host
@@ -1252,8 +1269,12 @@ class GitLabProvider(GitProvider):
                 ref = getattr(self.mr, "target_branch", None) or project.default_branch
             contents = project.files.get(file_path=file_path, ref=ref).decode()
             return decode_if_bytes(contents)
-        except GitlabGetError:
-            return ""
+        except GitlabGetError as e:
+            # A missing optional file is expected, but transient/provider failures must reach
+            # repo_context so the failed result is not cached as a successful empty context.
+            if getattr(e, "response_code", None) == 404:
+                return ""
+            raise
 
     def get_workspace_name(self):
         return self.id_project.split('/')[0]
@@ -1310,6 +1331,18 @@ class GitLabProvider(GitProvider):
         parsed_url = urlparse(merge_request_url)
 
         path_parts = parsed_url.path.strip('/').split('/')
+
+        # Strip the deployment sub-path prefix (e.g. '/gitlab') from the URL path
+        # so projects hosted on a GitLab instance using a relative URL parse correctly.
+        # Only strip when the URL points at the configured GitLab host, so a prefix
+        # from another host is never rewritten into a project on this instance.
+        gitlab_base = urlparse(self.gitlab_url)
+        base_path_parts = [part for part in gitlab_base.path.split("/") if part]
+        same_host = (parsed_url.scheme.lower() == gitlab_base.scheme.lower()
+                     and parsed_url.netloc.lower() == gitlab_base.netloc.lower())
+        if same_host and base_path_parts and path_parts[:len(base_path_parts)] == base_path_parts:
+            path_parts = path_parts[len(base_path_parts):]
+
         if 'merge_requests' not in path_parts:
             raise ValueError("The provided URL does not appear to be a GitLab merge request URL")
 
@@ -1323,12 +1356,26 @@ class GitLabProvider(GitProvider):
         except ValueError as e:
             raise ValueError("Unable to convert merge request ID to integer") from e
 
-        # Handle special delimiter (-)
-        project_path = "/".join(path_parts[:mr_index])
-        if project_path.endswith('/-'):
-            project_path = project_path[:-2]
+        # Handle GitLab's numeric-ID alias /projects/<project-id> by using
+        # the numeric ID as the API project identifier. Restrict handling to
+        # the exact top-level form so namespace paths containing "projects"
+        # keep their existing behaviour.
+        project_parts = path_parts[:mr_index]
+        if (
+            len(project_parts) == 3
+            and project_parts[0] == "projects"
+            and project_parts[1].isascii()
+            and project_parts[1].isdigit()
+            and project_parts[-1] == "-"
+        ):
+            project_path = project_parts[1]
+        else:
+            # Handle the standard GitLab /-/ delimiter.
+            project_path = "/".join(project_parts)
+            if project_path.endswith('/-'):
+                project_path = project_path[:-2]
 
-        # Return the path before 'merge_requests' and the ID
+        # Return the project identifier and the MR IID.
         return project_path, mr_id
 
     def _get_merge_request(self):
@@ -1432,13 +1479,29 @@ class GitLabProvider(GitProvider):
         except:
             return ""
 
+    def _get_project_web_url(self) -> str:
+        mr_web_url = getattr(self.mr, 'web_url', '')
+        if '/-/merge_requests/' in mr_web_url:
+            return mr_web_url.split('/-/merge_requests/', 1)[0]
+        project_path = str(self.id_project)
+        if project_path.isascii() and project_path.isdigit():
+            project_path = f"projects/{project_path}"
+        return f"{self.gl.url}/{project_path}"
+
     def get_line_link(self, relevant_file: str, relevant_line_start: int, relevant_line_end: int = None) -> str:
+        project_web_url = self._get_project_web_url()
         if relevant_line_start == -1:
-            link = f"{self.gl.url}/{self.id_project}/-/blob/{self.mr.source_branch}/{relevant_file}?ref_type=heads"
+            link = f"{project_web_url}/-/blob/{self.mr.source_branch}/{relevant_file}?ref_type=heads"
         elif relevant_line_end:
-            link = f"{self.gl.url}/{self.id_project}/-/blob/{self.mr.source_branch}/{relevant_file}?ref_type=heads#L{relevant_line_start}-{relevant_line_end}"
+            link = (
+                f"{project_web_url}/-/blob/{self.mr.source_branch}/{relevant_file}?ref_type=heads"
+                f"#L{relevant_line_start}-{relevant_line_end}"
+            )
         else:
-            link = f"{self.gl.url}/{self.id_project}/-/blob/{self.mr.source_branch}/{relevant_file}?ref_type=heads#L{relevant_line_start}"
+            link = (
+                f"{project_web_url}/-/blob/{self.mr.source_branch}/{relevant_file}?ref_type=heads"
+                f"#L{relevant_line_start}"
+            )
         return link
 
 
@@ -1454,7 +1517,7 @@ class GitLabProvider(GitProvider):
 
             if absolute_position != -1:
                 # link to right file only
-                link = f"{self.gl.url}/{self.id_project}/-/blob/{self.mr.source_branch}/{relevant_file}?ref_type=heads#L{absolute_position}"
+                link = self.get_line_link(relevant_file, absolute_position)
 
                 # # link to diff
                 # sha_file = hashlib.sha1(relevant_file.encode('utf-8')).hexdigest()

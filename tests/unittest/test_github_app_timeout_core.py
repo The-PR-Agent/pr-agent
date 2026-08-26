@@ -328,6 +328,18 @@ class TestHandleLineComments:
         finally:
             _restore_ask_diff_hunk(settings, outer_original, outer_sentinel)
 
+    def test_outdated_comment_falls_back_to_original_line(self):
+        body = self._payload(start_line=None, line=None, original_start_line=5, original_line=7)
+        result = github_app.handle_line_comments(body, "/ask Is this still relevant?")
+        assert "--line_start=5" in result
+        assert "--line_end=7" in result
+
+    def test_outdated_comment_single_line_falls_back_to_original(self):
+        body = self._payload(start_line=None, line=None, original_start_line=None, original_line=7)
+        result = github_app.handle_line_comments(body, "/ask question")
+        assert "--line_start=7" in result
+        assert "--line_end=7" in result
+
     def test_non_ask_comment_returned_unchanged(self):
         body = self._payload()
         result = github_app.handle_line_comments(body, "just a comment")

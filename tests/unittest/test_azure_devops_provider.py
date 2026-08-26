@@ -43,16 +43,81 @@ class TestAzureDevopsProviderRepoContext:
         _, kwargs = provider.azure_devops_client.get_item.call_args
         assert kwargs["version_descriptor"] is None  # no version -> default branch
 
-    def test_get_repo_file_content_treats_failure_as_empty(self):
+    def test_get_repo_file_content_treats_missing_file_as_empty(self):
         provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
         provider.repo_slug = "my-repo"
         provider.workspace_slug = "my-project"
         provider.pr = MagicMock()
         provider.pr.last_merge_target_commit.commit_id = "base-sha"
         provider.azure_devops_client = MagicMock()
-        provider.azure_devops_client.get_item.side_effect = Exception("not found")
+        provider.azure_devops_client.get_item.side_effect = Exception("Operation returned a 404 status code.")
 
         assert provider.get_repo_file_content("MISSING.md") == ""
+
+    def test_get_repo_file_content_propagates_non_404_errors(self):
+        provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+        provider.repo_slug = "my-repo"
+        provider.workspace_slug = "my-project"
+        provider.pr = MagicMock()
+        provider.pr.last_merge_target_commit.commit_id = "base-sha"
+        provider.azure_devops_client = MagicMock()
+        provider.azure_devops_client.get_item.side_effect = Exception("Operation returned a 500 status code.")
+
+        with pytest.raises(Exception, match="500 status code"):
+            provider.get_repo_file_content("AGENTS.md")
+
+
+class TestAzureDevopsProviderFiles:
+    @staticmethod
+    def _provider():
+        provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+        provider.repo_slug = "my-repo"
+        provider.workspace_slug = "my-project"
+        provider.pr_num = 1
+        provider.azure_devops_client = MagicMock()
+        provider.azure_devops_client.get_pull_request_commits.return_value = [SimpleNamespace(commit_id="m1")]
+        return provider
+
+    def test_get_files_full_skips_commits_without_changes(self):
+        provider = self._provider()
+        provider.azure_devops_client.get_pull_request_commits.return_value = [
+            SimpleNamespace(commit_id="m1"),
+            SimpleNamespace(commit_id="m2"),
+        ]
+        provider.azure_devops_client.get_changes.side_effect = [
+            SimpleNamespace(changes=None),
+            SimpleNamespace(changes=[{"item": {"path": "/src/app.py"}}]),
+        ]
+
+        assert provider._get_files_full() == ["/src/app.py"]
+
+    def test_get_files_full_skips_changes_without_paths(self):
+        provider = self._provider()
+        provider.azure_devops_client.get_changes.return_value = SimpleNamespace(changes=[
+            {},
+            {"item": None},
+            {"item": {"path": ""}},
+            {"item": {"path": "/src/app.py"}},
+        ])
+
+        assert provider._get_files_full() == ["/src/app.py"]
+
+    def test_get_files_full_supports_sdk_change_objects(self):
+        provider = self._provider()
+        provider.azure_devops_client.get_changes.return_value = SimpleNamespace(changes=[
+            SimpleNamespace(item=SimpleNamespace(path="/src/sdk.py")),
+        ])
+
+        assert provider._get_files_full() == ["/src/sdk.py"]
+
+    def test_get_files_full_skips_tree_entries(self):
+        provider = self._provider()
+        provider.azure_devops_client.get_changes.return_value = SimpleNamespace(changes=[
+            {"item": {"path": "/src", "gitObjectType": "tree"}},
+            {"item": {"path": "/src/app.py", "gitObjectType": "blob"}},
+        ])
+
+        assert provider._get_files_full() == ["/src/app.py"]
 
 
 def _provider_with_diff(*filenames):

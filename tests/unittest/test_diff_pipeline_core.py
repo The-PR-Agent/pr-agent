@@ -14,6 +14,8 @@ formatting tweaks.
 
 from unittest.mock import patch
 
+import pytest
+
 import pr_agent.algo.pr_processing as pr_processing
 from pr_agent.algo.git_patch_processing import (
     decouple_and_convert_to_hunks_with_lines_numbers,
@@ -203,15 +205,13 @@ class TestExtractHunkLinesFromPatch:
         assert "## File: 'src/sample.py'" in full
         assert selected == ""
 
-    def test_malformed_patch_returns_empty_tuple(self):
-        # An '@@' line that does not match RE_HUNK_HEADER causes the
-        # implementation to raise inside extract_hunk_headers; the function
-        # catches it and returns ("", "").
+    def test_malformed_patch_yields_no_hunk_content(self):
         bad_patch = "@@ not a real header @@\n+something\n"
         full, selected = extract_hunk_lines_from_patch(
             bad_patch, "src/sample.py", line_start=1, line_end=1, side="right"
         )
-        assert full == ""
+        assert "@@" not in full
+        assert "+something" not in full
         assert selected == ""
 
     def test_remove_trailing_chars_false_preserves_trailing_newlines(self):
@@ -226,6 +226,28 @@ class TestExtractHunkLinesFromPatch:
         # Trimmed variants are strict suffixes (no trailing whitespace).
         assert full_stripped == full_raw.rstrip()
         assert sel_stripped == sel_raw.rstrip()
+
+    @pytest.mark.parametrize("line_start, line_end", [
+        ("", ""),
+        (None, None),
+        ("None", "None"),
+    ])
+    def test_non_numeric_line_params_do_not_crash(self, line_start, line_end):
+        full, selected = extract_hunk_lines_from_patch(
+            MULTI_HUNK_PATCH, "src/sample.py", line_start=line_start, line_end=line_end, side="right"
+        )
+        assert "## File: 'src/sample.py'" in full
+        assert selected == ""
+
+    def test_string_line_params_are_coerced_to_int(self):
+        full_str, sel_str = extract_hunk_lines_from_patch(
+            MULTI_HUNK_PATCH, "src/sample.py", line_start="2", line_end="2", side="right"
+        )
+        full_int, sel_int = extract_hunk_lines_from_patch(
+            MULTI_HUNK_PATCH, "src/sample.py", line_start=2, line_end=2, side="right"
+        )
+        assert full_str == full_int
+        assert sel_str == sel_int
 
 
 # ---------------------------------------------------------------------------

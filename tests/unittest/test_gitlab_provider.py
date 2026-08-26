@@ -6,6 +6,7 @@ from gitlab import Gitlab
 from gitlab.exceptions import GitlabGetError
 from gitlab.v4.objects import ProjectFile, ProjectMergeRequest, ProjectMergeRequestManager
 
+from pr_agent.algo.utils import PRReviewHeader, PRReviewIdentity
 from pr_agent.git_providers.git_provider import IncrementalPR
 from pr_agent.git_providers.gitlab_provider import (
     GitLabProvider,
@@ -130,11 +131,21 @@ class TestGitLabProvider:
     def test_get_repo_file_content_treats_missing_file_as_empty(self, gitlab_provider, mock_project):
         mock_project.default_branch = "main"
         gitlab_provider.mr = MagicMock(target_branch="main")
-        mock_project.files.get.side_effect = GitlabGetError("404 Not Found")
+        mock_project.files.get.side_effect = GitlabGetError("404 Not Found", response_code=404)
 
         content = gitlab_provider.get_repo_file_content("AGENTS.md")
 
         assert content == ""
+
+    def test_get_repo_file_content_propagates_non_404_errors(self, gitlab_provider, mock_project):
+        mock_project.default_branch = "main"
+        gitlab_provider.mr = MagicMock(target_branch="main")
+        mock_project.files.get.side_effect = GitlabGetError(
+            "500 Server Error", response_code=500, response_body=b"upstream failure"
+        )
+
+        with pytest.raises(GitlabGetError, match="500 Server Error"):
+            gitlab_provider.get_repo_file_content("AGENTS.md")
 
     def test_create_or_update_pr_file_create_new(self, gitlab_provider, mock_project):
         mock_project.files.get.side_effect = GitlabGetError("404 Not Found")
@@ -481,6 +492,57 @@ class TestGitLabProvider:
         gitlab_provider.mr.discussions.create.assert_not_called()
         gitlab_provider.mr.notes.create.assert_not_called()
 
+    def test_persistent_review_update_does_not_duplicate_when_status_message_fails(self, gitlab_provider):
+        # The review was already updated successfully, so a failure publishing the optional status
+        # message must not reach the outer fallback and publish the full review again.
+        header = "## PR Review"
+        existing = MagicMock()
+        existing.body = f"{header}\n\nprevious review"
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.get_issue_comments = MagicMock(return_value=[existing])
+        gitlab_provider.get_latest_commit_url = MagicMock(return_value="https://gitlab.com/c/abc")
+        gitlab_provider.get_comment_url = MagicMock(return_value="https://gitlab.com/n/1")
+        gitlab_provider.unresolve_comment_thread = MagicMock()
+        gitlab_provider.mr.notes.create.side_effect = Exception("status publish failed")
+
+        with patch("pr_agent.git_providers.git_provider.get_logger") as mock_get_logger:
+            result = gitlab_provider.publish_persistent_comment_full(f"{header}\n\nnew review",
+                                                                     initial_header=header,
+                                                                     update_header=True,
+                                                                     final_update_message=True,
+                                                                     as_thread=True)
+
+        assert result is existing
+        gitlab_provider.mr.notes.update.assert_called_once()
+        gitlab_provider.mr.notes.create.assert_called_once()
+        assert "updated to latest commit" in gitlab_provider.mr.notes.create.call_args.args[0]["body"]
+        gitlab_provider.mr.discussions.create.assert_not_called()
+        mock_get_logger.return_value.opt.assert_called_once_with(exception=True)
+        mock_get_logger.return_value.opt.return_value.warning.assert_called_once_with(
+            "Failed to publish persistent review update message; review was already updated")
+
+    def test_persistent_review_update_falls_back_when_edit_fails(self, gitlab_provider):
+        # A failure before the existing review is updated must retain the full-review fallback.
+        header = "## PR Review"
+        existing = MagicMock()
+        existing.body = f"{header}\n\nprevious review"
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.discussions.create.return_value.attributes = {"notes": [{"id": 42}]}
+        gitlab_provider.get_issue_comments = MagicMock(return_value=[existing])
+        gitlab_provider.get_latest_commit_url = MagicMock(return_value="https://gitlab.com/c/abc")
+        gitlab_provider.get_comment_url = MagicMock(return_value="https://gitlab.com/n/1")
+        gitlab_provider.edit_comment = MagicMock(side_effect=Exception("edit failed"))
+
+        gitlab_provider.publish_persistent_comment_full(f"{header}\n\nnew review",
+                                                        initial_header=header,
+                                                        update_header=True,
+                                                        final_update_message=True,
+                                                        as_thread=True)
+
+        gitlab_provider.edit_comment.assert_called_once()
+        gitlab_provider.mr.discussions.create.assert_called_once_with({"body": f"{header}\n\nnew review"})
+        gitlab_provider.mr.notes.create.assert_not_called()
+
     def test_persistent_review_update_without_thread_keeps_resolution(self, gitlab_provider):
         # Without as_thread (the persistent comment isn't a thread), resolution state must not be touched.
         header = "## PR Review"
@@ -498,6 +560,72 @@ class TestGitLabProvider:
 
         gitlab_provider.mr.notes.update.assert_called_once()
         gitlab_provider.unresolve_comment_thread.assert_not_called()
+
+    def test_persistent_review_migrates_legacy_heading_to_stable_identity(self, gitlab_provider):
+        legacy = MagicMock(id=7)
+        legacy.body = "## PR Reviewer Guide 🔍\n\nprevious review"
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.get_issue_comments = MagicMock(return_value=[legacy])
+        gitlab_provider.get_latest_commit_url = MagicMock(return_value="https://gitlab.com/c/abc")
+        gitlab_provider.get_comment_url = MagicMock(return_value="https://gitlab.com/n/7")
+
+        gitlab_provider.publish_persistent_comment(
+            "## Guideline Compliance Check 🔍\n\nnew review",
+            initial_header="## Guideline Compliance Check 🔍",
+            update_header=True,
+            final_update_message=False,
+            identity_marker=PRReviewIdentity.REGULAR.value,
+            legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
+        )
+
+        gitlab_provider.mr.notes.update.assert_called_once()
+        updated_body = gitlab_provider.mr.notes.update.call_args.args[1]["body"]
+        assert updated_body.startswith("## Guideline Compliance Check 🔍\n\n")
+        assert PRReviewIdentity.REGULAR.value in updated_body
+        gitlab_provider.mr.notes.create.assert_not_called()
+
+    def test_persistent_review_prefers_marked_comment_over_legacy_comment(self, gitlab_provider):
+        legacy = MagicMock(id=1)
+        legacy.body = "## PR Reviewer Guide 🔍\n\nlegacy review"
+        marked = MagicMock(id=2)
+        marked.body = (
+            "## Old Custom Heading 🔍\n\n"
+            f"{PRReviewIdentity.REGULAR.value}\n\nmarked review"
+        )
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.get_issue_comments = MagicMock(return_value=[legacy, marked])
+        gitlab_provider.get_latest_commit_url = MagicMock(return_value="https://gitlab.com/c/abc")
+        gitlab_provider.get_comment_url = MagicMock(return_value="https://gitlab.com/n/2")
+
+        gitlab_provider.publish_persistent_comment(
+            "## New Custom Heading 🔍\n\nnew review",
+            initial_header="## New Custom Heading 🔍",
+            update_header=True,
+            final_update_message=False,
+            identity_marker=PRReviewIdentity.REGULAR.value,
+            legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
+        )
+
+        assert gitlab_provider.mr.notes.update.call_args.args[0] == 2
+        gitlab_provider.mr.notes.create.assert_not_called()
+
+    def test_persistent_review_does_not_adopt_similar_human_heading(self, gitlab_provider):
+        human_comment = MagicMock(id=3)
+        human_comment.body = "## PR Reviewer Guide for maintainers\n\nhuman notes"
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.get_issue_comments = MagicMock(return_value=[human_comment])
+
+        gitlab_provider.publish_persistent_comment(
+            "## New Custom Heading 🔍\n\nnew review",
+            initial_header="## New Custom Heading 🔍",
+            update_header=True,
+            final_update_message=False,
+            identity_marker=PRReviewIdentity.REGULAR.value,
+            legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
+        )
+
+        gitlab_provider.mr.notes.update.assert_not_called()
+        gitlab_provider.mr.notes.create.assert_called_once()
 
     @pytest.mark.parametrize("resolvable,resolved,should_reopen", [
         (True, True, True),     # resolved thread -> reopen it
@@ -725,6 +853,23 @@ class TestGitLabGlobalSettings:
         assert result == b"[pr_reviewer]\nnum_max_findings = 5\n"
         provider.gl.projects.get.assert_called_with("mygroup/pr-agent-settings")
         proj.files.get.assert_called_once_with(file_path=".pr_agent.toml", ref="main")
+
+    def test_numeric_project_id_uses_canonical_group_for_global_settings(self):
+        provider = self._provider()
+        provider.id_project = "127014"
+        project = MagicMock(path_with_namespace="mygroup/myrepo")
+        settings_project = MagicMock()
+        settings_project.default_branch = "main"
+        settings_project.files.get.return_value.decode.return_value = b"[pr_reviewer]\nnum_max_findings = 5\n"
+        provider.gl.projects.get.side_effect = [project, settings_project]
+
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = True
+            result = provider._get_global_repo_settings()
+
+        assert result == b"[pr_reviewer]\nnum_max_findings = 5\n"
+        assert provider.gl.projects.get.call_args_list[0].args == ("127014",)
+        assert provider.gl.projects.get.call_args_list[1].args == ("mygroup/pr-agent-settings",)
 
     def test_skips_on_self_hosted(self):
         # "mygitlab.com" contains the substring "gitlab.com" but is NOT GitLab.com — must be skipped.
@@ -970,8 +1115,6 @@ class TestGitLabIncrementalReview:
         assert gitlab_provider.get_files() == ["x.py"]
 
     def test_get_previous_review_returns_most_recent_match(self, gitlab_provider):
-        from pr_agent.algo.utils import PRReviewHeader
-
         # GitLab returns notes in created_at-DESC order. The helper relies on that order
         # (no local sort) — the unrelated newest note must be skipped, the newer matching
         # note must win over the older matching note.
@@ -985,6 +1128,23 @@ class TestGitLabIncrementalReview:
 
         assert result is not None
         assert result.id == 2
+
+    def test_get_previous_review_accepts_custom_heading_with_stable_identity(self, gitlab_provider):
+        gitlab_provider.mr.notes.list.return_value = [
+            self._make_note(
+                7,
+                (
+                    "## Guideline Compliance Check 🔍\n\n"
+                    f"{PRReviewIdentity.REGULAR.value}\n\nbody"
+                ),
+                "2024-05-01T10:00:00Z",
+            ),
+        ]
+
+        result = gitlab_provider.get_previous_review(full=True, incremental=False)
+
+        assert result is not None
+        assert result.id == 7
 
     def test_master_merge_files_are_excluded_from_incremental_scope(self, gitlab_provider, mock_project):
         # Reproduction of the MR !1115 bug: user ran `git merge master` on the feature branch,
@@ -1399,3 +1559,62 @@ class TestGitLabRelevantDiff:
             provider.get_relevant_diff("app.py", "+added line")
 
         assert mock_logger.return_value.debug.call_count == 1
+
+
+class TestGitLabProviderUrlParsing:
+    """Cover MR URL parsing on GitLab instances deployed under a relative URL (sub-path).
+
+    `__init__` performs network calls, so build the provider with `__new__`
+    and exercise the pure helper only.
+    """
+
+    @staticmethod
+    def _provider(gitlab_url="https://gitlab.com"):
+        provider = GitLabProvider.__new__(GitLabProvider)
+        provider.gitlab_url = gitlab_url
+        return provider
+
+    def test_parse_merge_request_url_plain(self):
+        provider = self._provider("https://gitlab.com")
+        assert provider._parse_merge_request_url(
+            "https://gitlab.com/group/subgroup/repo/-/merge_requests/123") == ("group/subgroup/repo", 123)
+
+    def test_parse_merge_request_url_strips_sub_path_prefix(self):
+        provider = self._provider("https://host.local/gitlab")
+        assert provider._parse_merge_request_url(
+            "https://host.local/gitlab/shai/pr-agent/-/merge_requests/12") == ("shai/pr-agent", 12)
+
+    def test_parse_merge_request_url_sub_path_nested_groups(self):
+        provider = self._provider("https://host.local/gitlab")
+        assert provider._parse_merge_request_url(
+            "https://host.local/gitlab/group/sub/repo/-/merge_requests/9") == ("group/sub/repo", 9)
+
+    def test_parse_merge_request_url_multi_segment_sub_path(self):
+        provider = self._provider("https://gitlab.example.com/gitlab/app")
+        assert provider._parse_merge_request_url(
+            "https://gitlab.example.com/gitlab/app/shai/pr-agent/-/merge_requests/5") == ("shai/pr-agent", 5)
+
+    def test_parse_merge_request_url_config_with_trailing_slash(self):
+        provider = self._provider("https://host.local/gitlab/")
+        assert provider._parse_merge_request_url(
+            "https://host.local/gitlab/shai/pr-agent/-/merge_requests/12") == ("shai/pr-agent", 12)
+
+    def test_parse_merge_request_url_matches_host_with_port(self):
+        provider = self._provider("https://host.local:8443/gitlab")
+        assert provider._parse_merge_request_url(
+            "https://host.local:8443/gitlab/shai/pr-agent/-/merge_requests/12") == ("shai/pr-agent", 12)
+
+    def test_parse_merge_request_url_prefix_on_other_host_is_not_stripped(self):
+        provider = self._provider("https://host.local/gitlab")
+        assert provider._parse_merge_request_url(
+            "https://other.example/gitlab/acme/repo/-/merge_requests/7") == ("gitlab/acme/repo", 7)
+
+    def test_parse_merge_request_url_prefix_mismatch_keeps_current_behavior(self):
+        provider = self._provider("https://gitlab.com")
+        assert provider._parse_merge_request_url(
+            "https://host.local/gitlab/shai/pr-agent/-/merge_requests/12") == ("gitlab/shai/pr-agent", 12)
+
+    def test_parse_merge_request_url_rejects_non_mr_url_with_sub_path(self):
+        provider = self._provider("https://host.local/gitlab")
+        with pytest.raises(ValueError):
+            provider._parse_merge_request_url("https://host.local/gitlab/shai/pr-agent")

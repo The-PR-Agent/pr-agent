@@ -7,14 +7,16 @@ network access is performed.
 """
 import asyncio
 import json
+from unittest.mock import MagicMock
 
 import pytest
 
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers import AzureDevopsProvider, GithubProvider
+from pr_agent.git_providers import AzureDevopsProvider, GithubProvider, GitLabProvider
 from pr_agent.tools import ticket_pr_compliance_check as tpc
 from pr_agent.tools.ticket_pr_compliance_check import (
     extract_and_cache_pr_tickets,
+    extract_gitlab_ticket_references,
     extract_tickets,
 )
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
@@ -100,6 +102,26 @@ def _make_azure_provider(work_items):
     provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
     provider.get_linked_work_items = lambda: work_items
     return provider
+
+
+def _make_gitlab_provider(user_description):
+    provider = GitLabProvider.__new__(GitLabProvider)
+    provider.id_project = "group/repo"
+    provider.gitlab_url = "https://gitlab.com"
+    provider.get_user_description = lambda: user_description
+
+    issue = MagicMock(
+        iid=7,
+        web_url="https://gitlab.com/group/repo/-/issues/7",
+        title="GitLab issue",
+        description="Issue body",
+        labels=["bug", "backend"],
+    )
+    project = MagicMock()
+    project.issues.get.return_value = issue
+    provider.gl = MagicMock()
+    provider.gl.projects.get.return_value = project
+    return provider, project
 
 
 # ---------------------------------------------------------------------------
@@ -572,6 +594,93 @@ class TestAzureDevopsExtraction:
         assert result[1]["body"] == "short"
         assert result[1]["labels"] == ""
         assert result[1].get("requirements", "") == ""
+
+
+# ---------------------------------------------------------------------------
+# Scenario 7b: GitLab issues referenced in the MR description
+# ---------------------------------------------------------------------------
+
+class TestGitLabExtraction:
+    @pytest.mark.parametrize(
+        ("description", "repo_path", "gitlab_url", "expected"),
+        [
+            (
+                "See https://gitlab.com/group/repo/-/issues/7.",
+                "group/repo",
+                "https://gitlab.com",
+                [("group/repo", 7)],
+            ),
+            (
+                "See (**`https://gitlab.com/group/repo/-/issues/7`**)",
+                "group/repo",
+                "https://gitlab.com",
+                [("group/repo", 7)],
+            ),
+            (
+                "https://gitlab.example.com:8443/gitlab/group/sub/repo/-/issues/7#note_42",
+                "group/sub/repo",
+                "https://gitlab.example.com:8443/gitlab",
+                [("group/sub/repo", 7)],
+            ),
+            (
+                "https://gitlab.com/group/repo/-/issues/007",
+                "group/repo",
+                "https://gitlab.com",
+                [("group/repo", 7)],
+            ),
+            (
+                "https://gitlab.com/group/repo/-/issues/7abc",
+                "group/repo",
+                "https://gitlab.com",
+                [],
+            ),
+            (
+                "https://gitlab.com/not-an-issue,https://gitlab.com/group/repo/-/issues/7",
+                "group/repo",
+                "https://gitlab.com",
+                [("group/repo", 7)],
+            ),
+        ],
+    )
+    def test_url_reference_boundaries(self, description, repo_path, gitlab_url, expected):
+        assert extract_gitlab_ticket_references(description, repo_path, gitlab_url) == expected
+
+    @pytest.mark.parametrize(
+        ("description", "expected"),
+        [
+            ("##7", []),
+            ("group/proj#7", [("group/proj", 7)]),
+            ("#7", [("group/repo", 7)]),
+        ],
+    )
+    def test_shorthand_reference_boundaries(self, description, expected):
+        assert extract_gitlab_ticket_references(description, "group/repo", "https://gitlab.com") == expected
+
+    @pytest.mark.parametrize(
+        "reference",
+        [
+            "https://gitlab.com/group/repo/-/issues/7",
+            "group/repo#7",
+            "#7",
+        ],
+    )
+    def test_issue_reference_is_mapped_to_ticket_context(self, reference, settings_snapshot):
+        provider, project = _make_gitlab_provider(f"Fixes {reference}")
+
+        result = asyncio.run(extract_tickets(provider))
+
+        assert result is not None, "GitLab issue references must produce ticket context"
+        assert result == [
+            {
+                "ticket_id": 7,
+                "ticket_url": "https://gitlab.com/group/repo/-/issues/7",
+                "title": "GitLab issue",
+                "body": "Issue body",
+                "labels": "bug, backend",
+            }
+        ]
+        provider.gl.projects.get.assert_called_once_with("group/repo")
+        project.issues.get.assert_called_once_with(7)
 
 
 # ---------------------------------------------------------------------------

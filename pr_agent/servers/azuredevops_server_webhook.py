@@ -21,8 +21,7 @@ from starlette.responses import JSONResponse
 from starlette_context import context
 from starlette_context.middleware import RawContextMiddleware
 
-from pr_agent.agent.pr_agent import PRAgent, command2class
-from pr_agent.algo.utils import update_settings_from_args
+from pr_agent.agent.pr_agent import PRAgent, command2class, prepare_command
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
@@ -112,11 +111,7 @@ async def _perform_commands_azure(commands_conf: str, agent: PRAgent, api_url: s
     get_settings().set("config.is_auto_command", True)
     for command in commands:
         try:
-            split_command = command.split(" ")
-            command = split_command[0]
-            args = split_command[1:]
-            other_args = update_settings_from_args(args)
-            new_command = ' '.join([command] + other_args)
+            new_command = prepare_command(command)
             get_logger().info(f"Performing command: {new_command}")
             with get_logger().contextualize(**log_context):
                 await agent.handle_request(api_url, new_command)

@@ -12,8 +12,7 @@ from starlette.middleware import Middleware
 from starlette_context import context
 from starlette_context.middleware import RawContextMiddleware
 
-from pr_agent.agent.pr_agent import PRAgent
-from pr_agent.algo.utils import update_settings_from_args
+from pr_agent.agent.pr_agent import PRAgent, prepare_command
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import (get_git_provider,
                                     get_git_provider_with_context)
@@ -361,8 +360,8 @@ async def handle_request(body: Dict[str, Any], event: str):
 def handle_line_comments(body: Dict, comment_body: [str, Any]) -> str:
     if not comment_body:
         return ""
-    start_line = body["comment"]["start_line"]
-    end_line = body["comment"]["line"]
+    start_line = body["comment"]["start_line"] or body["comment"].get("original_start_line")
+    end_line = body["comment"]["line"] or body["comment"].get("original_line")
     start_line = end_line if not start_line else start_line
     question = comment_body.replace('/ask', '').strip()
     diff_hunk = body["comment"]["diff_hunk"]
@@ -413,13 +412,12 @@ async def _perform_auto_commands_github(commands_conf: str, agent: PRAgent, body
         return
     get_settings().set("config.is_auto_command", True)
     for command in commands:
-        split_command = command.split(" ")
-        command = split_command[0]
-        args = split_command[1:]
-        other_args = update_settings_from_args(args)
-        new_command = ' '.join([command] + other_args)
-        get_logger().info(f"{commands_conf}. Performing auto command '{new_command}', for {api_url=}")
-        await agent.handle_request(api_url, new_command)
+        try:
+            new_command = prepare_command(command)
+            get_logger().info(f"{commands_conf}. Performing auto command '{new_command}', for {api_url=}")
+            await agent.handle_request(api_url, new_command)
+        except Exception as e:
+            get_logger().error(f"Failed to perform command {command}: {e}")
 
 
 @router.get("/")

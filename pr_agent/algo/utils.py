@@ -15,7 +15,7 @@ import traceback
 from datetime import datetime
 from enum import Enum
 from importlib.metadata import PackageNotFoundError, version
-from typing import Any, List, Tuple, TypedDict
+from typing import Any, Iterable, List, Tuple, TypedDict
 
 import html2text
 import requests
@@ -63,6 +63,68 @@ class TodoItem(TypedDict):
 class PRReviewHeader(str, Enum):
     REGULAR = "## PR Reviewer Guide"
     INCREMENTAL = "## Incremental PR Reviewer Guide"
+
+
+class PRReviewIdentity(str, Enum):
+    REGULAR = "<!-- pr-agent:review:full -->"
+    INCREMENTAL = "<!-- pr-agent:review:incremental -->"
+
+
+_REVIEW_IDENTITY_HEADER_LINES = 5
+
+
+def format_pr_review_header(incremental: bool = False) -> str:
+    """Return the visible review heading while keeping identity out of presentation."""
+    configured_heading = get_settings().get("pr_reviewer.review_heading")
+    if (
+        not isinstance(configured_heading, str)
+        or not configured_heading.strip()
+        or "\n" in configured_heading
+        or "\r" in configured_heading
+    ):
+        get_logger().warning(
+            "Invalid pr_reviewer.review_heading; using the default review heading"
+        )
+        configured_heading = PRReviewHeader.REGULAR.value.removeprefix("## ")
+    heading = configured_heading.strip()
+    incremental_prefix = "Incremental " if incremental else ""
+    return f"## {incremental_prefix}{heading} 🔍"
+
+
+def comment_matches_identity(body: str, identity: str) -> bool:
+    """Match hidden markers only as exact lines near the top; legacy headers as prefixes."""
+    if not isinstance(body, str) or not isinstance(identity, str) or not identity:
+        return False
+    if identity.startswith("<!--"):
+        return any(
+            line.strip() == identity
+            for line in body.splitlines()[:_REVIEW_IDENTITY_HEADER_LINES]
+        )
+    return body.startswith(identity)
+
+
+def comment_matches_any_identity(body: str, identities: Iterable[str]) -> bool:
+    return any(comment_matches_identity(body, identity) for identity in identities)
+
+
+def get_pr_review_comment_identifiers(*, full: bool, incremental: bool) -> tuple[str, ...]:
+    """Return stable markers followed by legacy visible prefixes for migration."""
+    identifiers = []
+    if full:
+        identifiers.extend((PRReviewIdentity.REGULAR.value, PRReviewHeader.REGULAR.value))
+    if incremental:
+        identifiers.extend((PRReviewIdentity.INCREMENTAL.value, PRReviewHeader.INCREMENTAL.value))
+    return tuple(identifiers)
+
+
+def add_pr_review_identity(pr_comment: str, identity_marker: str | None) -> str:
+    """Insert a hidden identity after the visible heading without changing rendered output."""
+    if not pr_comment or not identity_marker or comment_matches_identity(pr_comment, identity_marker):
+        return pr_comment
+    heading, separator, remainder = pr_comment.partition("\n\n")
+    if not separator:
+        return f"{pr_comment.rstrip()}\n\n{identity_marker}"
+    return f"{heading}\n\n{identity_marker}\n\n{remainder}"
 
 
 class ReasoningEffort(str, Enum):
@@ -168,10 +230,8 @@ def convert_to_markdown_v2(output_data: dict,
         "Ticket compliance check": "🎫",
     }
     markdown_text = ""
-    if not incremental_review:
-        markdown_text += f"{PRReviewHeader.REGULAR.value} 🔍\n\n"
-    else:
-        markdown_text += f"{PRReviewHeader.INCREMENTAL.value} 🔍\n\n"
+    markdown_text += f"{format_pr_review_header(incremental=bool(incremental_review))}\n\n"
+    if incremental_review:
         markdown_text += f"⏮️ Review for commits since previous PR-Agent review {incremental_review}.\n\n"
     if not output_data or not output_data.get('review', {}):
         return ""
@@ -199,6 +259,7 @@ def convert_to_markdown_v2(output_data: dict,
                     value_int = int(value.split(',')[0])
                 except ValueError:
                     continue
+            value_int = max(1, min(5, value_int))
             blue_bars = '🔵' * value_int
             white_bars = '⚪' * (5 - value_int)
             value = f"{value_int} {blue_bars}{white_bars}"
@@ -808,7 +869,13 @@ def sanitize_yaml_control_chars(text: str, log: bool = True) -> str:
 
 def load_yaml(response_text: str, keys_fix_yaml: List[str] = [], first_key="", last_key="") -> dict:
     response_text_original = copy.deepcopy(response_text)
-    response_text = response_text.strip('\n').removeprefix('yaml').removeprefix('```yaml').rstrip().removesuffix('```')
+    response_text = response_text.strip('\n')
+    # strip the fence label only when it is a complete info string, so a key such as
+    # "yml_config" is not truncated to "_config"
+    unfenced = re.sub(r'^```[ \t]*(?:yaml|yml)?[ \t]*(?=\r?\n)', '', response_text)
+    if unfenced == response_text:
+        unfenced = response_text.removeprefix('yaml')
+    response_text = unfenced.rstrip().removesuffix('```')
     response_text = sanitize_yaml_control_chars(response_text)
     response_text_original_sanitized = sanitize_yaml_control_chars(response_text_original, log=False)
     try:
@@ -886,13 +953,13 @@ def try_fix_yaml(response_text: str,
         pass
 
     # second fallback - try to extract only range from first ```yaml to the last ```
-    snippet_pattern = r'```(yaml|yml)?([\s\S]*?)```(?=\s*$|")'
+    snippet_pattern = r'```[ \t]*(?:(?:yaml|yml)[ \t]*)?\r?\n([\s\S]*?)```(?=\s*$|")'
     snippet = re.search(snippet_pattern, '\n'.join(response_text_lines_copy))
     if not snippet:
         snippet = re.search(snippet_pattern, response_text_original) # before we removed the "```"
     if snippet:
-        # group(2) is the snippet body, without the ``` fences or the optional yaml/yml language identifier
-        snippet_text = snippet.group(2)
+        # group(1) is the snippet body, without the ``` fences or the optional yaml/yml language identifier
+        snippet_text = snippet.group(1)
         try:
             data = yaml.safe_load(snippet_text)
             if data is not None:
@@ -1035,7 +1102,8 @@ def set_custom_labels(variables, git_provider=None):
     counter = 0
     labels_minimal_to_labels_dict = {}
     for k, v in labels.items():
-        description = "'" + v['description'].strip('\n').replace('\n', '\\n') + "'"
+        description = v.get('description', '') if isinstance(v, dict) else str(v)
+        description = "'" + description.strip('\n').replace('\n', '\\n').replace("'", "\\'") + "'"
         # variables["custom_labels_class"] += f"\n    {k.lower().replace(' ', '_')} = '{k}' # {description}"
         variables["custom_labels_class"] += f"\n    {k.lower().replace(' ', '_')} = {description}"
         labels_minimal_to_labels_dict[k.lower().replace(' ', '_')] = k
