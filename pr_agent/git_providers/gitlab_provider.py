@@ -1073,8 +1073,6 @@ class GitLabProvider(GitProvider):
                     store.add(code_fp)
                 return True
 
-                # get_logger().debug(
-                #     f"Failed to create comment in MR {self.id_mr} with position {pos_obj} (probably not a '+' line)")
             except Exception as e:
                 get_logger().exception(f"Failed to create comment in MR {self.id_mr}")
                 return False
@@ -1150,7 +1148,14 @@ class GitLabProvider(GitProvider):
                 # retrying to publish drafts left over from an earlier run whose bulk_publish failed -
                 # even if every suggestion in this run was skipped as a dedup-detected duplicate of one
                 # of those still-pending drafts.
-                if self.mr.draft_notes.list(get_all=True):
+                try:
+                    pending = self.mr.draft_notes.list(get_all=True)
+                except Exception as e:
+                    # Draft notes are unusable on this instance/token; send_inline_comment has
+                    # already degraded every suggestion to a live comment, so nothing is pending.
+                    get_logger().warning(f"Could not list draft notes for MR {self.id_mr}: {e}")
+                    pending = []
+                if pending:
                     self.mr.draft_notes.bulk_publish()
             except Exception as e:
                 # Draft notes are only visible to the posting user until published, so a failure here
