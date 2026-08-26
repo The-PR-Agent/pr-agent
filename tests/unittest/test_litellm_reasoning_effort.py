@@ -170,6 +170,30 @@ class TestLiteLLMReasoningEffort:
             mock_logger.info.assert_any_call("Using reasoning_effort='xhigh' for GPT-5 model")
 
     @pytest.mark.asyncio
+    async def test_gpt5_valid_reasoning_effort_max(self, monkeypatch, mock_logger):
+        """Test GPT-5 with valid reasoning_effort='max' from config."""
+        fake_settings = create_mock_settings("max")
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
+
+        with patch(
+            'pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion',
+            new_callable=AsyncMock,
+        ) as mock_completion:
+            mock_completion.return_value = create_mock_acompletion_response()
+
+            handler = LiteLLMAIHandler()
+            await handler.chat_completion(
+                model="gpt-5.6",
+                system="test system",
+                user="test user"
+            )
+
+            call_kwargs = mock_completion.call_args[1]
+            assert call_kwargs["reasoning_effort"] == "max"
+            assert "reasoning_effort" in call_kwargs["allowed_openai_params"]
+            mock_logger.info.assert_any_call("Using reasoning_effort='max' for GPT-5 model")
+
+    @pytest.mark.asyncio
     async def test_gpt5_valid_reasoning_effort_minimal(self, monkeypatch, mock_logger):
         """Test GPT-5 with valid reasoning_effort='minimal' from config."""
         fake_settings = create_mock_settings("minimal")
@@ -311,7 +335,17 @@ class TestLiteLLMReasoningEffort:
             "gpt-5-2025-08-07",
             "gpt-5.1",
             "gpt-5.4",
+            "gpt-5.4-nano",
+            "gpt-5.4-nano-2026-03-17",
+            "gpt-5.4-mini",
+            "gpt-5.4-mini-2026-03-17",
             "gpt-5.4-2026-03-05",
+            "gpt-5.5",
+            "gpt-5.5-2026-04-23",
+            "gpt-5.6",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
             "gpt-5-turbo",
             "gpt-5.1-codex",
             "gpt-5.3-codex",
@@ -676,3 +710,225 @@ class TestLiteLLMReasoningEffort:
             # Should have reasoning_effort
             call_kwargs = mock_completion.call_args[1]
             assert call_kwargs["reasoning_effort"] == "medium"
+
+    # ========== Group 8: Provider Prefix Handling ==========
+
+    @pytest.mark.asyncio
+    async def test_gpt5_with_openai_prefix_triggers_reasoning_effort(self, monkeypatch, mock_logger):
+        """Regression: model="openai/gpt-5*" must enter the GPT-5 reasoning_effort path.
+
+        Before the fix, startswith('gpt-5') was False for prefixed names, so the handler
+        sent temperature=0.2 to litellm and the request failed with UnsupportedParamsError
+        for gpt-5 codex models.
+        """
+        fake_settings = create_mock_settings("medium")
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
+        # Isolate from runner env: LiteLLMAIHandler.__init__ branches on these vars.
+        for _var in ("AWS_USE_IMDS", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+                     "AWS_SESSION_TOKEN", "AWS_REGION_NAME", "OPENAI_API_KEY"):
+            monkeypatch.delenv(_var, raising=False)
+
+        prefixed_models = [
+            "openai/gpt-5",
+            "openai/gpt-5.1-codex",
+            "openai/gpt-5.1-codex-max",
+            "openai/gpt-5.4-mini",
+        ]
+
+        for model in prefixed_models:
+            with patch(
+                'pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion',
+                new_callable=AsyncMock,
+            ) as mock_completion:
+                mock_completion.return_value = create_mock_acompletion_response()
+
+                handler = LiteLLMAIHandler()
+                await handler.chat_completion(
+                    model=model,
+                    system="test system",
+                    user="test user"
+                )
+
+                call_kwargs = mock_completion.call_args[1]
+                # GPT-5 path must trigger and drop temperature in favor of reasoning_effort
+                assert call_kwargs["reasoning_effort"] == "medium", f"failed for {model}"
+                assert "reasoning_effort" in call_kwargs["allowed_openai_params"], f"failed for {model}"
+                assert "temperature" not in call_kwargs, f"temperature leaked for {model}"
+                # Model name passed to litellm must keep the openai/ prefix exactly once
+                assert call_kwargs["model"] == model, f"model double-prefixed: {call_kwargs['model']}"
+
+    @pytest.mark.asyncio
+    async def test_gpt5_with_openai_prefix_strips_thinking_suffix(self, monkeypatch, mock_logger):
+        """Prefixed _thinking models must have the suffix removed without double-prefixing."""
+        fake_settings = create_mock_settings("low")
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
+        # Isolate from runner env: LiteLLMAIHandler.__init__ branches on these vars.
+        for _var in ("AWS_USE_IMDS", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+                     "AWS_SESSION_TOKEN", "AWS_REGION_NAME", "OPENAI_API_KEY"):
+            monkeypatch.delenv(_var, raising=False)
+
+        with patch(
+            'pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion',
+            new_callable=AsyncMock,
+        ) as mock_completion:
+            mock_completion.return_value = create_mock_acompletion_response()
+
+            handler = LiteLLMAIHandler()
+            await handler.chat_completion(
+                model="openai/gpt-5_thinking",
+                system="test system",
+                user="test user"
+            )
+
+            call_kwargs = mock_completion.call_args[1]
+            assert call_kwargs["model"] == "openai/gpt-5"
+            assert call_kwargs["reasoning_effort"] == "low"
+
+    @pytest.mark.asyncio
+    async def test_gpt5_with_explicit_azure_prefix_preserves_routing(self, monkeypatch, mock_logger):
+        """Explicit `azure/` prefix in user config must be preserved (not silently rewritten to openai/)."""
+        fake_settings = create_mock_settings("medium")
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
+        # Isolate from runner env: LiteLLMAIHandler.__init__ branches on these vars.
+        for _var in ("AWS_USE_IMDS", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+                     "AWS_SESSION_TOKEN", "AWS_REGION_NAME", "OPENAI_API_KEY"):
+            monkeypatch.delenv(_var, raising=False)
+
+        with patch(
+            'pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion',
+            new_callable=AsyncMock,
+        ) as mock_completion:
+            mock_completion.return_value = create_mock_acompletion_response()
+
+            handler = LiteLLMAIHandler()
+            # self.azure is False by default (no Azure AD creds in test env)
+            await handler.chat_completion(
+                model="azure/gpt-5.1-codex-max",
+                system="test system",
+                user="test user"
+            )
+
+            call_kwargs = mock_completion.call_args[1]
+            assert call_kwargs["reasoning_effort"] == "medium"
+            assert "temperature" not in call_kwargs
+            # Provider prefix from user config must be preserved verbatim
+            assert call_kwargs["model"] == "azure/gpt-5.1-codex-max"
+
+    @pytest.mark.asyncio
+    async def test_gpt5_in_azure_mode_does_not_stack_prefixes(self, monkeypatch, mock_logger):
+        """Azure mode must produce exactly one `azure/` prefix, even if user config also has a prefix."""
+        fake_settings = create_mock_settings("medium")
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
+        # Isolate from runner env: LiteLLMAIHandler.__init__ branches on these vars.
+        for _var in ("AWS_USE_IMDS", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+                     "AWS_SESSION_TOKEN", "AWS_REGION_NAME", "OPENAI_API_KEY"):
+            monkeypatch.delenv(_var, raising=False)
+
+        # Cases: bare name, openai/-prefixed config, azure/-prefixed config — all in azure mode
+        cases = [
+            ("gpt-5.1-codex", "azure/gpt-5.1-codex"),
+            ("openai/gpt-5.1-codex", "azure/gpt-5.1-codex"),
+            ("azure/gpt-5.1-codex", "azure/gpt-5.1-codex"),
+        ]
+
+        for input_model, expected in cases:
+            with patch(
+                'pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion',
+                new_callable=AsyncMock,
+            ) as mock_completion:
+                mock_completion.return_value = create_mock_acompletion_response()
+
+                handler = LiteLLMAIHandler()
+                handler.azure = True  # simulate Azure-mode handler
+                await handler.chat_completion(
+                    model=input_model,
+                    system="test system",
+                    user="test user"
+                )
+
+                call_kwargs = mock_completion.call_args[1]
+                # GPT-5 path must trigger
+                assert call_kwargs["reasoning_effort"] == "medium", f"failed for {input_model}"
+                assert "temperature" not in call_kwargs, f"temperature leaked for {input_model}"
+                # Exactly one azure/ prefix, no stacked/duplicated provider segments
+                assert call_kwargs["model"] == expected, (
+                    f"wrong routing for {input_model}: got {call_kwargs['model']}, expected {expected}"
+                )
+
+
+class TestLiteLLMReasoningEffortGemini:
+    """Gemini 2.5 reasoning_effort handling via the SUPPORT_REASONING_EFFORT_MODELS path.
+
+    Gemini 2.5 exposes a thinking budget that LiteLLM maps from reasoning_effort. The
+    membership test in chat_completion matches the bare model id as well as any
+    provider-prefixed form (e.g. "openrouter/google/gemini-2.5-pro"), so a configured
+    reasoning_effort is not silently dropped for models referenced with a prefix.
+    """
+
+    def _isolate_env(self, monkeypatch):
+        # LiteLLMAIHandler.__init__ branches on these; clear them for a deterministic handler.
+        for _var in ("AWS_USE_IMDS", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+                     "AWS_SESSION_TOKEN", "AWS_REGION_NAME", "OPENAI_API_KEY"):
+            monkeypatch.delenv(_var, raising=False)
+
+    @pytest.mark.asyncio
+    async def test_gemini_prefixed_forms_get_reasoning_effort(self, monkeypatch, mock_logger):
+        """Bare and provider-prefixed Gemini 2.5 ids all receive the configured reasoning_effort."""
+        fake_settings = create_mock_settings("low")
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
+        self._isolate_env(monkeypatch)
+
+        gemini_models = [
+            "gemini-2.5-pro",
+            "gemini-2.5-flash",
+            "gemini/gemini-2.5-pro",
+            "vertex_ai/gemini-2.5-pro",
+            "openrouter/google/gemini-2.5-pro",
+            "openrouter/google/gemini-2.5-flash",
+        ]
+
+        for model in gemini_models:
+            with patch('pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion', new_callable=AsyncMock) as mock_completion:
+                mock_completion.return_value = create_mock_acompletion_response()
+
+                handler = LiteLLMAIHandler()
+                await handler.chat_completion(model=model, system="test system", user="test user")
+
+                call_kwargs = mock_completion.call_args[1]
+                assert call_kwargs["reasoning_effort"] == "low", f"failed for {model}"
+                # Gemini keeps temperature (it supports it) — unlike the GPT-5 path.
+                assert call_kwargs["model"] == model, f"model mutated for {model}: {call_kwargs['model']}"
+
+    @pytest.mark.asyncio
+    async def test_non_listed_gemini_gets_no_reasoning_effort(self, monkeypatch, mock_logger):
+        """A Gemini model not in the support list (e.g. 1.5) must not receive reasoning_effort."""
+        fake_settings = create_mock_settings("low")
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
+        self._isolate_env(monkeypatch)
+
+        for model in ("openrouter/google/gemini-1.5-pro", "gemini-1.5-flash"):
+            with patch('pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion', new_callable=AsyncMock) as mock_completion:
+                mock_completion.return_value = create_mock_acompletion_response()
+
+                handler = LiteLLMAIHandler()
+                await handler.chat_completion(model=model, system="test system", user="test user")
+
+                call_kwargs = mock_completion.call_args[1]
+                assert "reasoning_effort" not in call_kwargs, f"unexpected reasoning_effort for {model}"
+
+    @pytest.mark.asyncio
+    async def test_suffix_match_does_not_overmatch(self, monkeypatch, mock_logger):
+        """endswith('/' + id) must not match a model whose id is a substring without the slash boundary."""
+        fake_settings = create_mock_settings("low")
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
+        self._isolate_env(monkeypatch)
+
+        # "my-gemini-2.5-pro" is not equal to and does not end with "/gemini-2.5-pro".
+        with patch('pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion', new_callable=AsyncMock) as mock_completion:
+            mock_completion.return_value = create_mock_acompletion_response()
+
+            handler = LiteLLMAIHandler()
+            await handler.chat_completion(model="my-gemini-2.5-pro", system="test system", user="test user")
+
+            call_kwargs = mock_completion.call_args[1]
+            assert "reasoning_effort" not in call_kwargs

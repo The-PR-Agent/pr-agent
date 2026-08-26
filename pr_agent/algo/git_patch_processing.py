@@ -7,6 +7,11 @@ from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
+# Optimized: Pre-compile the hunk header regex at the module level to avoid redundant compilation
+# in performance-critical patch processing functions.
+RE_HUNK_HEADER = re.compile(
+    r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@[ ]?(.*)")
+
 
 def extend_patch(original_file_str, patch_str, patch_extra_lines_before=0,
                  patch_extra_lines_after=0, filename: str = "", new_file_str="") -> str:
@@ -65,8 +70,6 @@ def process_patch_lines(patch_str, original_file_str, patch_extra_lines_before, 
 
     is_valid_hunk = True
     start1, size1, start2, size2 = -1, -1, -1, -1
-    RE_HUNK_HEADER = re.compile(
-        r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@[ ]?(.*)")
     try:
         for i,line in enumerate(patch_lines):
             if line.startswith('@@'):
@@ -114,7 +117,7 @@ def process_patch_lines(patch_str, original_file_str, patch_extra_lines_before, 
                                         found_header = True
                                         section_header = ''
                                     else:
-                                        pass  # its ok to be here. We cant apply dynamic context if the lines are different if 'old' and 'new' hunks
+                                        pass  # its ok to be here. We can't apply dynamic context if the lines are different if 'old' and 'new' hunks
                                     break
 
                             if not found_header:
@@ -213,15 +216,11 @@ def check_if_hunk_lines_matches_to_file(i, original_lines, patch_lines, start1):
 
 def extract_hunk_headers(match):
     res = list(match.groups())
-    for i in range(len(res)):
-        if res[i] is None:
-            res[i] = 0
-    try:
-        start1, size1, start2, size2 = map(int, res[:4])
-    except:  # '@@ -0,0 +1 @@' case
-        start1, size1, size2 = map(int, res[:3])
-        start2 = 0
-    section_header = res[4]
+    start1 = int(res[0]) if res[0] is not None else 0
+    size1 = int(res[1]) if res[1] is not None else 1
+    start2 = int(res[2]) if res[2] is not None else 0
+    size2 = int(res[3]) if res[3] is not None else 1
+    section_header = res[4] if res[4] is not None else ""
     return section_header, size1, size2, start1, start2
 
 
@@ -238,16 +237,17 @@ def omit_deletion_hunks(patch_lines) -> str:
     added_patched = []
     add_hunk = False
     inside_hunk = False
-    RE_HUNK_HEADER = re.compile(
-        r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))?\ @@[ ]?(.*)")
 
     for line in patch_lines:
         if line.startswith('@@'):
             match = RE_HUNK_HEADER.match(line)
             if match:
-                # finish previous hunk
-                if inside_hunk and add_hunk:
-                    added_patched.extend(temp_hunk)
+                # finish previous hunk: keep it only if it had additions,
+                # otherwise drop it entirely (a deletion-only hunk must not
+                # leak into the next hunk's output)
+                if inside_hunk:
+                    if add_hunk:
+                        added_patched.extend(temp_hunk)
                     temp_hunk = []
                     add_hunk = False
                 temp_hunk.append(line)
@@ -341,21 +341,27 @@ __old hunk__
         patch_with_lines_str = ""
 
     patch_lines = patch.splitlines()
-    RE_HUNK_HEADER = re.compile(
-        r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@[ ]?(.*)")
     new_content_lines = []
     old_content_lines = []
     match = None
     start1, size1, start2, size2 = -1, -1, -1, -1
     prev_header_line = []
     header_line = []
+    skip_hunk = False
     for line_i, line in enumerate(patch_lines):
         if 'no newline at end of file' in line.lower():
             continue
 
         if line.startswith('@@'):
+            hunk_header_match = RE_HUNK_HEADER.match(line)
+            if not hunk_header_match:
+                get_logger().warning("Skipping a line that starts with '@@' but is not a unified "
+                                     "hunk header", artifact={"line": line})
+                skip_hunk = True
+                continue
+            skip_hunk = False
             header_line = line
-            match = RE_HUNK_HEADER.match(line)
+            match = hunk_header_match
             if match and (new_content_lines or old_content_lines):  # found a new hunk, split the previous lines
                 if prev_header_line:
                     patch_with_lines_str += f'\n{prev_header_line}\n'
@@ -379,6 +385,8 @@ __old hunk__
 
             section_header, size1, size2, start1, start2 = extract_hunk_headers(match)
 
+        elif skip_hunk:
+            continue
         elif line.startswith('+'):
             new_content_lines.append(line)
         elif line.startswith('-'):
@@ -393,7 +401,7 @@ __old hunk__
             old_content_lines.append(line)
 
     # finishing last hunk
-    if match and new_content_lines:
+    if match and (new_content_lines or old_content_lines):
         patch_with_lines_str += f'\n{header_line}\n'
         is_plus_lines = is_minus_lines = False
         if new_content_lines:
@@ -414,11 +422,19 @@ __old hunk__
 
 def extract_hunk_lines_from_patch(patch: str, file_name, line_start, line_end, side, remove_trailing_chars: bool = True) -> tuple[str, str]:
     try:
+        try:
+            line_start = int(line_start)
+        except (ValueError, TypeError):
+            get_logger().warning(f"Ignoring invalid line_start {line_start!r} for '{file_name}'")
+            line_start = -1
+        try:
+            line_end = int(line_end)
+        except (ValueError, TypeError):
+            get_logger().warning(f"Ignoring invalid line_end {line_end!r} for '{file_name}'")
+            line_end = -1
         patch_with_lines_str = f"\n\n## File: '{file_name.strip()}'\n\n"
         selected_lines = ""
         patch_lines = patch.splitlines()
-        RE_HUNK_HEADER = re.compile(
-            r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@[ ]?(.*)")
         match = None
         start1, size1, start2, size2 = -1, -1, -1, -1
         skip_hunk = False
@@ -428,34 +444,42 @@ def extract_hunk_lines_from_patch(patch: str, file_name, line_start, line_end, s
                 continue
 
             if line.startswith('@@'):
+                match = RE_HUNK_HEADER.match(line)
+                if not match:
+                    get_logger().warning("Skipping a line that starts with '@@' but is not a "
+                                         "unified hunk header", artifact={"line": line})
+                    skip_hunk = True
+                    continue
                 skip_hunk = False
                 selected_lines_num = 0
                 header_line = line
-
-                match = RE_HUNK_HEADER.match(line)
 
                 section_header, size1, size2, start1, start2 = extract_hunk_headers(match)
 
                 # check if line range is in this hunk
                 if side.lower() == 'left':
                     # check if line range is in this hunk
-                    if not (start1 <= line_start <= start1 + size1):
+                    if not (start1 <= line_start <= start1 + size1 - 1):
                         skip_hunk = True
                         continue
                 elif side.lower() == 'right':
-                    if not (start2 <= line_start <= start2 + size2):
+                    if not (start2 <= line_start <= start2 + size2 - 1):
                         skip_hunk = True
                         continue
                 patch_with_lines_str += f'\n{header_line}\n'
 
             elif not skip_hunk:
-                if side.lower() == 'right' and line_start <= start2 + selected_lines_num <= line_end:
-                    selected_lines += line + '\n'
-                if side.lower() == 'left' and start1 <= selected_lines_num + start1 <= line_end:
-                    selected_lines += line + '\n'
+                side_lower = side.lower()
+                if side_lower in ("left", "right"):
+                    is_left = side_lower == "left"
+                    hunk_start = start1 if is_left else start2
+                    line_exists_on_side = not line.startswith("+" if is_left else "-")
+                    in_range = line_start <= hunk_start + selected_lines_num <= line_end
+                    if in_range and (line_exists_on_side or not is_left):
+                        selected_lines += line + '\n'
+                    if line_exists_on_side:
+                        selected_lines_num += 1
                 patch_with_lines_str += line + '\n'
-                if not line.startswith('-'): # currently we don't support /ask line for deleted lines
-                    selected_lines_num += 1
     except Exception as e:
         get_logger().error(f"Failed to extract hunk lines from patch: {e}", artifact={"traceback": traceback.format_exc()})
         return "", ""
