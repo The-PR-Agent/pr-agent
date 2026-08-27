@@ -130,7 +130,7 @@ def format_pr_questions_header(*, escape_markdown: bool = True) -> str:
     heading = _get_configured_heading("pr_questions.ask_heading", "Ask")
     if escape_markdown:
         heading = heading.translate(_MARKDOWN_PUNCTUATION_ESCAPE_TABLE)
-    return f"### **{heading}**❓"
+    return f"### **{heading}** ❓"
 
 
 def comment_matches_identity(body: str, identity: str) -> bool:

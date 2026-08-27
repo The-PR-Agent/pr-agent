@@ -112,7 +112,7 @@ def prepare_repo(url: urllib3.util.Url, project, refspec):
 
 
 _ASK_HEADING_PREFIX = "### **"
-_ASK_HEADING_SUFFIX = "**❓"
+_ASK_HEADING_SUFFIX = "** ❓"
 _ESCAPED_MARKDOWN_PUNCTUATION = re.compile(
     r"\\([" + re.escape(string.punctuation) + r"])"
 )

@@ -97,7 +97,7 @@ ask_heading = "Architecture Question"
 extra_instructions = "Do not answer questions that ask to rate PR quality on a scale of 1 to 10."
 ```
 
-The heading above renders as <code>### **Architecture Question**❓</code>.
+The heading above renders as `### **Architecture Question** ❓`.
 
 Example usage in a PR comment:
 

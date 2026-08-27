@@ -122,7 +122,7 @@ class TestPreparePrAnswer:
             git_provider=MagicMock(),  # not GitLab
         )
         out = pr._prepare_pr_answer()
-        assert out == "### **Ask**❓\nwhy?\n\n### **Answer:**\nbecause reasons\n\n"
+        assert out == "### **Ask** ❓\nwhy?\n\n### **Answer:**\nbecause reasons\n\n"
 
     def test_custom_heading_changes_only_the_ask_header(self):
         settings = get_settings()
@@ -134,7 +134,7 @@ class TestPreparePrAnswer:
         finally:
             restore_settings(saved)
 
-        assert out == "### **Architecture Question**❓\nwhy?\n\n### **Answer:**\nbecause reasons\n\n"
+        assert out == "### **Architecture Question** ❓\nwhy?\n\n### **Answer:**\nbecause reasons\n\n"
 
     @pytest.mark.parametrize("invalid_heading", [None, "", "   ", "Ask\nNow", "Ask\rNow", 42])
     def test_invalid_heading_falls_back_to_ask(self, invalid_heading):
@@ -146,17 +146,17 @@ class TestPreparePrAnswer:
         finally:
             restore_settings(saved)
 
-        assert header == "### **Ask**❓"
+        assert header == "### **Ask** ❓"
 
     @pytest.mark.parametrize(
         ("heading", "expected"),
         [
-            ("Architecture **Question**", r"### **Architecture \*\*Question\*\***❓"),
+            ("Architecture **Question**", r"### **Architecture \*\*Question\*\*** ❓"),
             (
                 r"Use [SDK](docs/v2) `now` \\ safely",
-                r"### **Use \[SDK\]\(docs\/v2\) \`now\` \\\\ safely**❓",
+                r"### **Use \[SDK\]\(docs\/v2\) \`now\` \\\\ safely** ❓",
             ),
-            ("Architecture Ω", "### **Architecture Ω**❓"),
+            ("Architecture Ω", "### **Architecture Ω** ❓"),
         ],
     )
     def test_heading_is_rendered_as_literal_text(self, heading, expected):
@@ -185,7 +185,7 @@ class TestPreparePrAnswer:
         finally:
             restore_settings(saved)
 
-        assert out.startswith("### **Q&A / Security**❓\n")
+        assert out.startswith("### **Q&A / Security** ❓\n")
         assert "\\" not in out.splitlines()[0]
 
     def test_gerrit_preserves_literal_heading_punctuation(self):
