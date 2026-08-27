@@ -316,6 +316,7 @@ async def run_action():
 
         # Inject artifact context after repo settings are applied for workflow_run
         _inject_artifact_context()
+        _inject_ci_conclusion(workflow_run.get("conclusion"))
 
         auto_review = get_setting_or_env("GITHUB_ACTION.AUTO_REVIEW", None)
         if auto_review is None:
@@ -340,6 +341,38 @@ async def run_action():
             await PRReviewer(pr_url).run()
         if auto_improve is None or is_true(auto_improve):
             await PRCodeSuggestions(pr_url).run()
+
+
+def _inject_ci_conclusion(conclusion):
+    """Tell the model how the workflow that triggered this run finished.
+
+    Mirrors the append-to-extra_instructions pattern already used for the
+    response-language instruction above and by _inject_artifact_context, so a
+    reviewer running after CI knows a failed/cancelled run without config
+    changes or new prompt variables.
+    """
+    if not conclusion:
+        return
+    text = (
+        "CI status\n"
+        "=====\n"
+        f"The workflow run that triggered this review concluded: {conclusion}.\n"
+        "=====\n"
+        "If the conclusion is not 'success', the change has not passed CI. "
+        "Say so in your output rather than implying the change is clean."
+    )
+    separator = "\n======\n\n"
+    for key in get_settings():
+        setting = get_settings().get(key)
+        if str(type(setting)) == "<class 'dynaconf.utils.boxing.DynaBox'>":
+            if key.lower() in ('pr_reviewer', 'pr_description', 'pr_code_suggestions'):
+                if hasattr(setting, 'extra_instructions'):
+                    extra_instructions = str(setting.extra_instructions or "")
+                    if text not in extra_instructions:
+                        setting.extra_instructions = (
+                            extra_instructions + separator + text
+                            if extra_instructions else text
+                        )
 
 
 async def _run_action_and_drain():
