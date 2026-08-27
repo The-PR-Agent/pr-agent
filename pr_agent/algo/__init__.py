@@ -394,12 +394,11 @@ SUPPORT_REASONING_EFFORT_MODELS = [
     "o3-2025-04-16",
     "o4-mini",
     "o4-mini-2025-04-16",
-    # Gemini 2.5 exposes a thinking budget that LiteLLM maps from reasoning_effort
-    # (low/medium/high -> thinkingConfig.thinkingBudget). Without these entries a
-    # configured reasoning_effort is silently dropped for Gemini, so a runaway
-    # thinking trace can consume the whole output budget and return an empty
-    # completion. Matched provider-prefix-insensitively in litellm_ai_handler so
-    # prefixed forms (e.g. "openrouter/google/gemini-2.5-pro") are covered too.
+    # Gemini 2.5 exposes a thinking budget controlled by reasoning_effort. Without
+    # these entries a configured effort is silently dropped, so a runaway thinking
+    # trace can consume the whole output budget and return an empty completion.
+    # LiteLLM maps native provider paths to thinkingConfig.thinkingBudget, while
+    # LiteLLMAIHandler routes OpenRouter-prefixed forms through extra_body.reasoning.
     "gemini-2.5-pro",
     "gemini-2.5-flash",
 ]

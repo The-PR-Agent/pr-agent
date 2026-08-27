@@ -749,12 +749,18 @@ class LiteLLMAIHandler(BaseAiHandler):
                     if 'temperature' in kwargs:
                         del kwargs['temperature']
 
+                openrouter_reasoning_effort = None
+                reasoning_model = model.rsplit(":", 1)[0] if model.startswith("openrouter/") else model
                 # Add reasoning_effort if model supports it. Match the bare model
                 # id as well as any provider-prefixed form (e.g.
                 # "openrouter/google/gemini-2.5-pro", "gemini/gemini-2.5-pro"), so a
                 # configured reasoning_effort is not silently dropped for models the
-                # user references with a provider prefix.
-                if any(model == m or model.endswith("/" + m) for m in self.support_reasoning_models):
+                # user references with a provider prefix. OpenRouter routing variants
+                # such as :nitro and :floor are stripped only for this membership test.
+                if any(
+                    reasoning_model == m or reasoning_model.endswith("/" + m)
+                    for m in self.support_reasoning_models
+                ):
                     config_effort = get_settings().config.reasoning_effort
                     try:
                         ReasoningEffort(config_effort)
@@ -767,8 +773,14 @@ class LiteLLMAIHandler(BaseAiHandler):
                                 f"Using default '{reasoning_effort}'. Valid values: {[e.value for e in ReasoningEffort]}"
                             )
 
-                    get_logger().info(f"Adding reasoning_effort with value {reasoning_effort} to model {model}.")
-                    kwargs["reasoning_effort"] = reasoning_effort
+                    if model.startswith("openrouter/"):
+                        # LiteLLM 1.98.0 rejects top-level reasoning_effort for some
+                        # OpenRouter model IDs it does not mark as reasoning-capable;
+                        # defer to OpenRouter's unified reasoning object below.
+                        openrouter_reasoning_effort = reasoning_effort
+                    else:
+                        get_logger().info(f"Adding reasoning_effort with value {reasoning_effort} to model {model}.")
+                        kwargs["reasoning_effort"] = reasoning_effort
 
                 # https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking
                 if (model in self.claude_extended_thinking_models) and get_settings().config.get("enable_claude_extended_thinking", False):
@@ -863,9 +875,8 @@ class LiteLLMAIHandler(BaseAiHandler):
                     get_logger().info(f"Using Bedrock custom inference profile: {model_id}")
 
                 # OpenRouter provider routing, reasoning control and output cap.
-                # Applied only to "openrouter/*" models. Every key defaults to unset in
-                # the [openrouter] section of configuration.toml, so this block is a
-                # no-op unless explicitly configured, and never affects other providers.
+                # Registered reasoning models inherit config.reasoning_effort when
+                # no OpenRouter-specific effort or token budget is configured.
                 if isinstance(model, str) and model.startswith("openrouter/"):
                     openrouter_settings = get_settings().get("openrouter", {})
                     extra_body = kwargs.get("extra_body") or {}
@@ -903,20 +914,52 @@ class LiteLLMAIHandler(BaseAiHandler):
                         provider["allow_fallbacks"] = _as_bool(openrouter_settings.get("allow_fallbacks", True))
 
                     reasoning = {}
-                    reasoning_effort = str(openrouter_settings.get("reasoning_effort", "") or "").strip().lower()
-                    if reasoning_effort == "none":
-                        reasoning["enabled"] = False
-                    elif reasoning_effort in ("low", "medium", "high"):
-                        reasoning["effort"] = reasoning_effort
-                    elif reasoning_effort:
-                        get_logger().warning(
-                            f"Ignoring invalid openrouter.reasoning_effort '{reasoning_effort}'. "
-                            "Valid values: none, low, medium, high."
-                        )
+                    effective_reasoning_effort = str(
+                        openrouter_settings.get("reasoning_effort", "") or ""
+                    ).strip().lower()
                     reasoning_max_tokens = _as_int(openrouter_settings.get("reasoning_max_tokens", 0))
-                    if reasoning_max_tokens > 0 and reasoning.get("enabled") is not False:
+                    if effective_reasoning_effort:
+                        try:
+                            ReasoningEffort(effective_reasoning_effort)
+                        except (TypeError, ValueError):
+                            get_logger().warning(
+                                f"Ignoring invalid openrouter.reasoning_effort '{effective_reasoning_effort}'. "
+                                f"Valid values: {[effort.value for effort in ReasoningEffort]}."
+                            )
+                            effective_reasoning_effort = ""
+                    if not effective_reasoning_effort:
+                        if reasoning_max_tokens > 0 and openrouter_reasoning_effort:
+                            get_logger().warning(
+                                f"Ignoring config.reasoning_effort='{openrouter_reasoning_effort}' because "
+                                "openrouter.reasoning_max_tokens takes precedence."
+                            )
+                        elif reasoning_max_tokens <= 0:
+                            effective_reasoning_effort = openrouter_reasoning_effort or ""
+
+                    # Preserve explicit disablement; otherwise keep effort and
+                    # max_tokens mutually exclusive by preferring the token budget.
+                    if effective_reasoning_effort == "none":
+                        if reasoning_max_tokens > 0:
+                            get_logger().warning(
+                                "Ignoring openrouter.reasoning_max_tokens because "
+                                "openrouter.reasoning_effort='none' disables reasoning."
+                            )
+                        reasoning["enabled"] = False
+                    elif reasoning_max_tokens > 0:
+                        if effective_reasoning_effort:
+                            get_logger().warning(
+                                f"Ignoring openrouter.reasoning_effort='{effective_reasoning_effort}' because "
+                                "openrouter.reasoning_max_tokens takes precedence."
+                            )
                         reasoning["max_tokens"] = reasoning_max_tokens
+                    elif effective_reasoning_effort:
+                        # OpenRouter uses xhigh for the max alias; extra_body bypasses
+                        # LiteLLM's OpenRouter parameter mapping.
+                        reasoning["effort"] = (
+                            "xhigh" if effective_reasoning_effort == "max" else effective_reasoning_effort
+                        )
                     if reasoning:
+                        get_logger().info(f"Adding OpenRouter reasoning {reasoning} to model {model}.")
                         extra_body["reasoning"] = reasoning
 
                     if extra_body:
@@ -926,6 +969,17 @@ class LiteLLMAIHandler(BaseAiHandler):
                     if max_tokens > 0:
                         existing = _as_int(kwargs.get("max_tokens", 0))
                         kwargs["max_tokens"] = min(existing, max_tokens) if existing > 0 else max_tokens
+                    effective_max_tokens = _as_int(kwargs.get("max_tokens", 0))
+                    effective_reasoning_max_tokens = _as_int(reasoning.get("max_tokens", 0))
+                    if (
+                        model.startswith("openrouter/anthropic/")
+                        and effective_reasoning_max_tokens > 0
+                        and 0 < effective_max_tokens <= effective_reasoning_max_tokens
+                    ):
+                        get_logger().warning(
+                            f"OpenRouter Anthropic max_tokens ({effective_max_tokens}) must be greater than "
+                            f"reasoning_max_tokens ({effective_reasoning_max_tokens}) to leave output headroom."
+                        )
 
                 get_logger().debug("Prompts", artifact={"system": system, "user": user})
 

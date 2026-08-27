@@ -5,8 +5,8 @@ LiteLLMAIHandler.chat_completion.
 The [openrouter] settings (provider_only, provider_order, allow_fallbacks,
 reasoning_effort, reasoning_max_tokens, max_tokens) are injected into the request
 as `extra_body.provider`, `extra_body.reasoning` and `max_tokens`, but only for
-models addressed as "openrouter/...". When nothing is configured the block is a
-no-op, and non-openrouter models are never touched.
+models addressed as "openrouter/...". Registered reasoning models inherit the
+global effort when no OpenRouter effort or budget is set; other models are no-op.
 """
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import litellm
 import openai
 import pytest
+from litellm.utils import get_optional_params
 
 import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_handler
 
@@ -33,17 +34,24 @@ _HANDLER_ENV_VARS = (
 @pytest.fixture(autouse=True)
 def _restore_litellm_globals():
     """LiteLLMAIHandler.__init__ mutates global litellm/openai state and, when
-    AWS_USE_IMDS is set, os.environ; snapshot and restore both, and drop
-    AWS_USE_IMDS so the AWS credential path never runs in these tests."""
-    saved = (litellm.api_key, getattr(litellm, "openai_key", None), openai.api_key)
+    AWS_USE_IMDS is set, os.environ; snapshot and restore both, and isolate
+    drop_params so parameter-validation tests are deterministic."""
+    saved = (
+        litellm.api_key,
+        getattr(litellm, "openai_key", None),
+        openai.api_key,
+        litellm.drop_params,
+    )
     saved_env = {name: os.environ.get(name) for name in _HANDLER_ENV_VARS}
     os.environ.pop("AWS_USE_IMDS", None)
+    litellm.drop_params = False
     try:
         yield
     finally:
         litellm.api_key = saved[0]
         litellm.openai_key = saved[1]
         openai.api_key = saved[2]
+        litellm.drop_params = saved[3]
         for name, value in saved_env.items():
             if value is None:
                 os.environ.pop(name, None)
@@ -51,12 +59,12 @@ def _restore_litellm_globals():
                 os.environ[name] = value
 
 
-def _make_settings(openrouter=None):
+def _make_settings(openrouter=None, reasoning_effort="medium"):
     """Minimal settings whose `.get("openrouter", ...)` returns the given dict."""
     openrouter = openrouter or {}
     return type("Settings", (), {
         "config": type("Config", (), {
-            "reasoning_effort": None,
+            "reasoning_effort": reasoning_effort,
             "ai_timeout": 30,
             "custom_reasoning_model": False,
             "max_model_tokens": 32000,
@@ -79,8 +87,12 @@ def _mock_response():
     return mock
 
 
-async def _run(monkeypatch, model, openrouter):
-    monkeypatch.setattr(litellm_handler, "get_settings", lambda: _make_settings(openrouter))
+async def _run(monkeypatch, model, openrouter, reasoning_effort="medium"):
+    monkeypatch.setattr(
+        litellm_handler,
+        "get_settings",
+        lambda: _make_settings(openrouter, reasoning_effort),
+    )
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion",
                new_callable=AsyncMock) as mock_call:
         mock_call.return_value = _mock_response()
@@ -124,11 +136,12 @@ class TestOpenRouterControls:
 
     @pytest.mark.asyncio
     async def test_reasoning_max_tokens(self, monkeypatch):
+        """Verify that a token budget suppresses the mutually exclusive effort control."""
         kwargs = await _run(monkeypatch, "openrouter/z-ai/glm-5.2", {
             "reasoning_effort": "high",
             "reasoning_max_tokens": 2048,
         })
-        assert kwargs["extra_body"]["reasoning"] == {"effort": "high", "max_tokens": 2048}
+        assert kwargs["extra_body"]["reasoning"] == {"max_tokens": 2048}
 
     @pytest.mark.asyncio
     async def test_no_config_is_noop(self, monkeypatch):
@@ -151,12 +164,168 @@ class TestOpenRouterControls:
         assert "extra_body" not in kwargs
 
     @pytest.mark.asyncio
-    async def test_reasoning_max_tokens_dropped_when_disabled(self, monkeypatch):
+    async def test_reasoning_none_overrides_budget(self, monkeypatch):
         kwargs = await _run(monkeypatch, "openrouter/z-ai/glm-5.2", {
             "reasoning_effort": "none",
             "reasoning_max_tokens": 2048,
         })
         assert kwargs["extra_body"]["reasoning"] == {"enabled": False}
+
+    @pytest.mark.asyncio
+    async def test_reasoning_budget_overrides_global_none(self, monkeypatch):
+        logger = MagicMock()
+        monkeypatch.setattr(litellm_handler, "get_logger", lambda: logger)
+        kwargs = await _run(
+            monkeypatch,
+            "openrouter/google/gemini-2.5-pro",
+            {"reasoning_max_tokens": 2048},
+            reasoning_effort="none",
+        )
+        assert kwargs["extra_body"]["reasoning"] == {"max_tokens": 2048}
+        assert any(
+            "Ignoring config.reasoning_effort='none'" in call.args[0]
+            for call in logger.warning.call_args_list
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "openrouter/google/gemini-2.5-pro",
+            "openrouter/google/gemini-2.5-pro:nitro",
+            "openrouter/google/gemini-2.5-pro:floor",
+            "openrouter/google/gemini-2.5-flash",
+        ],
+    )
+    async def test_global_reasoning_effort_uses_openrouter_body(self, monkeypatch, model):
+        kwargs = await _run(
+            monkeypatch,
+            model,
+            {},
+            reasoning_effort="low",
+        )
+        assert "reasoning_effort" not in kwargs
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "low"}
+        assert kwargs["model"] == model
+
+    @pytest.mark.asyncio
+    async def test_openrouter_effort_overrides_global_effort(self, monkeypatch):
+        kwargs = await _run(
+            monkeypatch,
+            "openrouter/google/gemini-2.5-pro",
+            {"reasoning_effort": "high"},
+            reasoning_effort="low",
+        )
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "high"}
+
+    @pytest.mark.asyncio
+    async def test_invalid_openrouter_effort_falls_back_to_global_effort(self, monkeypatch):
+        kwargs = await _run(
+            monkeypatch,
+            "openrouter/google/gemini-2.5-pro",
+            {"reasoning_effort": "hgh"},
+            reasoning_effort="high",
+        )
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "high"}
+
+    @pytest.mark.asyncio
+    async def test_registered_model_inherits_default_global_effort(self, monkeypatch):
+        kwargs = await _run(monkeypatch, "openrouter/google/gemini-2.5-pro", {})
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "medium"}
+
+    @pytest.mark.asyncio
+    async def test_global_none_disables_reasoning(self, monkeypatch):
+        kwargs = await _run(
+            monkeypatch,
+            "openrouter/google/gemini-2.5-flash",
+            {},
+            reasoning_effort="none",
+        )
+        assert kwargs["extra_body"]["reasoning"] == {"enabled": False}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("global_effort", "openrouter", "expected"),
+        [
+            ("max", {}, "xhigh"),
+            ("medium", {"reasoning_effort": "max"}, "xhigh"),
+            ("minimal", {}, "minimal"),
+        ],
+    )
+    async def test_openrouter_effort_normalization(
+        self, monkeypatch, global_effort, openrouter, expected
+    ):
+        kwargs = await _run(
+            monkeypatch,
+            "openrouter/google/gemini-2.5-pro",
+            openrouter,
+            reasoning_effort=global_effort,
+        )
+        assert kwargs["extra_body"]["reasoning"] == {"effort": expected}
+
+    @pytest.mark.asyncio
+    async def test_reasoning_budget_suppresses_global_effort(self, monkeypatch):
+        kwargs = await _run(
+            monkeypatch,
+            "openrouter/google/gemini-2.5-pro",
+            {"reasoning_max_tokens": 2048},
+            reasoning_effort="high",
+        )
+        assert kwargs["extra_body"]["reasoning"] == {"max_tokens": 2048}
+
+    def test_litellm_requires_openrouter_reasoning_in_extra_body(self):
+        """Pin the LiteLLM 1.98.0 workaround boundary so upgrades expose when it can be removed."""
+        with pytest.raises(litellm.UnsupportedParamsError):
+            get_optional_params(
+                model="google/gemini-2.5-pro",
+                custom_llm_provider="openrouter",
+                reasoning_effort="low",
+            )
+
+        params = get_optional_params(
+            model="google/gemini-2.5-pro",
+            custom_llm_provider="openrouter",
+            extra_body={"reasoning": {"effort": "low"}},
+        )
+        assert params["extra_body"]["reasoning"] == {"effort": "low"}
+
+        disabled_params = get_optional_params(
+            model="google/gemini-2.5-flash",
+            custom_llm_provider="openrouter",
+            extra_body={"reasoning": {"enabled": False}},
+        )
+        assert disabled_params["extra_body"]["reasoning"] == {"enabled": False}
+
+    @pytest.mark.asyncio
+    async def test_anthropic_reasoning_budget_warns_without_output_headroom(self, monkeypatch):
+        logger = MagicMock()
+        monkeypatch.setattr(litellm_handler, "get_logger", lambda: logger)
+        kwargs = await _run(
+            monkeypatch,
+            "openrouter/anthropic/claude-3.7-sonnet",
+            {"reasoning_max_tokens": 2048, "max_tokens": 1024},
+        )
+        assert kwargs["extra_body"]["reasoning"] == {"max_tokens": 2048}
+        assert kwargs["max_tokens"] == 1024
+        assert any(
+            "must be greater than reasoning_max_tokens" in call.args[0]
+            for call in logger.warning.call_args_list
+        )
+
+    @pytest.mark.asyncio
+    async def test_anthropic_disabled_reasoning_skips_headroom_warning(self, monkeypatch):
+        logger = MagicMock()
+        monkeypatch.setattr(litellm_handler, "get_logger", lambda: logger)
+        kwargs = await _run(
+            monkeypatch,
+            "openrouter/anthropic/claude-3.7-sonnet",
+            {"reasoning_effort": "none", "reasoning_max_tokens": 2048, "max_tokens": 1024},
+        )
+        assert kwargs["extra_body"]["reasoning"] == {"enabled": False}
+        assert not any(
+            "must be greater than reasoning_max_tokens" in call.args[0]
+            for call in logger.warning.call_args_list
+        )
 
     @pytest.mark.asyncio
     async def test_string_overrides_are_coerced(self, monkeypatch):

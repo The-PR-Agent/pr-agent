@@ -519,7 +519,7 @@ key = "..." # your openrouter api key
 
 #### Openrouter provider routing, reasoning and output cap
 
-For `openrouter/...` models you can optionally restrict which upstream providers Openrouter uses, control reasoning, and cap the completion length. All keys live in the `[openrouter]` section of `configuration.toml` and default to unset (no change to Openrouter's default behavior):
+For `openrouter/...` models you can optionally restrict which upstream providers Openrouter uses, control reasoning, and cap the completion length. All keys live in the `[openrouter]` section of `configuration.toml`. Models listed in [`SUPPORT_REASONING_EFFORT_MODELS`](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py) inherit `config.reasoning_effort` unless an Openrouter-specific effort or token budget is set.
 
 ```toml
 [openrouter]
@@ -527,12 +527,12 @@ For `openrouter/...` models you can optionally restrict which upstream providers
 # provider_only = ["z-ai"]             # hard allowlist of upstream providers; empty = default routing
 # provider_order = ["z-ai", "novita"]  # preferred order instead of an allowlist; ignored when provider_only is set
 # allow_fallbacks = true               # when provider_order is set, allow routing beyond the list
-# reasoning_effort = "low"             # "none" disables reasoning; otherwise "low", "medium" or "high"
-# reasoning_max_tokens = 2048          # cap the reasoning budget in tokens
+# reasoning_effort = "low"             # override global effort: "none", "minimal", "low", "medium", "high", "xhigh" or "max"
+# reasoning_max_tokens = 2048          # explicit budget; takes precedence over effort unless effort is "none"
 # max_tokens = 16000                   # hard cap on completion tokens for the request
 ```
 
-`provider_only` and `reasoning_effort = "none"` are useful to pin a specific provider and to bound the cost of reasoning models. See the Openrouter [provider routing](https://openrouter.ai/docs/features/provider-routing) and [reasoning tokens](https://openrouter.ai/docs/use-cases/reasoning-tokens) docs.
+`provider_only` and `reasoning_effort = "none"` are useful to pin a specific provider and to bound the cost of reasoning models. Because Openrouter treats effort and token budgets as mutually exclusive, an explicit Openrouter-specific `"none"` keeps reasoning disabled; otherwise a positive `reasoning_max_tokens` value takes precedence over the global effort and other Openrouter-specific values. Invalid Openrouter-specific effort values are warned about and treated as unset, so registered reasoning models fall back to `config.reasoning_effort`. Openrouter normalizes `"max"` to `"xhigh"` in this path to match LiteLLM 1.98.0. Supported effort values vary by model, and models whose metadata marks reasoning as mandatory reject `"none"`. For Anthropic models using a reasoning budget, set the effective output `max_tokens` higher than `reasoning_max_tokens` so the final answer has output headroom. See the Openrouter [provider routing](https://openrouter.ai/docs/guides/routing/provider-selection) and [reasoning tokens](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens) docs.
 
 ### Neon AI Gateway
 
@@ -595,7 +595,7 @@ custom_model_max_tokens= ...
 
 ```toml
 [config]
-reasoning_effort = "medium" # "none", "minimal", "low", "medium", "high", "xhigh"
+reasoning_effort = "medium" # "none", "minimal", "low", "medium", "high", "xhigh", "max"
 ```
 
 With the OpenAI models that support reasoning effort (eg: gpt-5.6-terra), you can specify its reasoning effort via `config` section. The default value is `medium`. You can change it to any supported value based on your usage. Available values depend on the model and provider.
