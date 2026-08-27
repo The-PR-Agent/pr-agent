@@ -186,11 +186,18 @@ class GithubProvider(GitProvider):
             get_logger().info("No previous review found, will review the entire PR")
             self.incremental.is_incremental = False
 
+    @staticmethod
+    def _commit_timeline_date(commit):
+        """Prefer the committer date: rebasing rewrites content but preserves the author
+        date, so anchoring on it classifies rewritten commits as already-reviewed."""
+        committer_date = getattr(getattr(commit.commit, 'committer', None), 'date', None)
+        return committer_date or commit.commit.author.date
+
     def get_commit_range(self):
         last_review_time = self.previous_review.created_at
         first_new_commit_index = None
         for index in range(len(self.pr_commits) - 1, -1, -1):
-            if self.pr_commits[index].commit.author.date > last_review_time:
+            if self._commit_timeline_date(self.pr_commits[index]) > last_review_time:
                 self.incremental.first_new_commit = self.pr_commits[index]
                 first_new_commit_index = index
             else:
