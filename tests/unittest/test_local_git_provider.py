@@ -62,6 +62,14 @@ def test_get_languages_matches_full_names_and_multipart_extensions(tmp_path):
     assert all(abs(v - 100 / 3) < 1e-6 for v in languages.values())
 
 
+def test_get_languages_preserves_case_sensitive_extensions(tmp_path):
+    repo = _make_repo(tmp_path, ["lower.c", "upper.C"])
+    provider = object.__new__(LocalGitProvider)
+    provider.repo = repo
+
+    assert provider.get_languages() == {"C": 50.0, "C++": 50.0}
+
+
 def test_get_diff_files_deleted_file_falls_back_to_old_path(tmp_path):
     # A plain deletion has no "new side": GitPython sets diff_item.b_path to None.
     # The filename must fall back to a_path (the old path) instead of None, or

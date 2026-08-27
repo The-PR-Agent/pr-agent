@@ -44,13 +44,20 @@ def build_language_file_matcher(language_extension_map: Dict) -> Callable[[str],
             token = extension.lstrip("*")
             exact_to_language.setdefault(token, language)
             folded_to_languages.setdefault(token.casefold(), set()).add(language)
+    max_suffix_depth = max(
+        (token.count(".") for token in exact_to_language if token.startswith(".")),
+        default=0,
+    )
 
     def get_language(filename: str) -> str | None:
         name = filename.replace("\\", "/").rsplit("/", 1)[-1]
         parts = name.split(".")
         candidates = [name] + [
             "." + ".".join(parts[i:])
-            for i in range(1, len(parts))
+            for i in range(
+                max(1, len(parts) - max_suffix_depth),
+                len(parts),
+            )
         ]
 
         for candidate in candidates:

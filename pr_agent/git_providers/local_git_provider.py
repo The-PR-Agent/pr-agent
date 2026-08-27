@@ -4,6 +4,7 @@ from typing import List
 
 from git import Repo
 
+from pr_agent.algo.language_handler import build_language_file_matcher
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.algo.utils import (format_pr_code_suggestions_header,
                                  show_run_details)
@@ -202,39 +203,19 @@ class LocalGitProvider(GitProvider):
         Keys are language NAMES (e.g. "Python"), not raw extensions: the consumer
         sort_files_by_main_languages() maps each name back to its extensions, so
         returning extensions ("py") silently drops every file into the "Other"
-        bucket and defeats the prioritisation this method exists for. Invert the
-        settings map (name -> [extensions]) into an extension -> name lookup;
-        files with unknown extensions are left out and fall through to "Other".
+        bucket and defeats the prioritisation this method exists for. Use the
+        shared configured filename matcher so all providers apply the same
+        full-filename, multipart-extension, and case-sensitive rules.
         """
-        # Invert to a filename-token -> language lookup. Map entries are mostly
-        # ".ext", but also include multi-part extensions (".cmake.in") and full
-        # filenames ("Dockerfile", "Makefile"); normalize the glob form ("*.bsl").
-        ext_to_lang = {}
         lang_map = get_settings().get("language_extension_map_org", {}) or {}
-        for language, extensions in lang_map.items():
-            for ext in extensions:
-                ext_to_lang.setdefault(ext.lower().lstrip("*"), language)
-
-        def _match_language(name: str):
-            # Full-filename rules (Dockerfile, Makefile) carry no extension.
-            language = ext_to_lang.get(name.lower())
-            if language:
-                return language
-            # Try progressively shorter dotted suffixes so multi-part extensions
-            # (".cmake.in") win over their simple tail (".in") when both exist.
-            parts = name.split(".")
-            for i in range(1, len(parts)):
-                language = ext_to_lang.get("." + ".".join(parts[i:]).lower())
-                if language:
-                    return language
-            return None
+        get_language = build_language_file_matcher(lang_map)
 
         # Get all files in repository
         filepaths = [Path(item.path) for item in self.repo.tree().traverse() if item.type == 'blob']
         # Identify language by filename (mapped to its language name) and count
         lang_count = Counter()
         for filepath in filepaths:
-            language = _match_language(filepath.name)
+            language = get_language(filepath.name)
             if language:
                 lang_count[language] += 1
         # Convert counts to percentages
