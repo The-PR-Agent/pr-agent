@@ -364,18 +364,20 @@ async def test_issue_comment_from_user_is_processed(monkeypatch, tmp_path, resto
     assert handled == [("https://api.github.com/repos/org/repo/pulls/1", "/review")]
 
 
-def _write_workflow_run_event(tmp_path, originating_event="pull_request", pull_requests=None):
+def _write_workflow_run_event(tmp_path, originating_event="pull_request", pull_requests=None, conclusion="success"):
     if pull_requests is None:
         pull_requests = [{"url": "https://api.github.com/repos/org/repo/pulls/42", "number": 42}]
     event_path = tmp_path / "event.json"
+    workflow_run_payload = {
+        "id": 9999,
+        "event": originating_event,
+        "pull_requests": pull_requests,
+    }
+    if conclusion is not None:
+        workflow_run_payload["conclusion"] = conclusion
     event_path.write_text(json.dumps({
         "action": "completed",
-        "workflow_run": {
-            "id": 9999,
-            "event": originating_event,
-            "conclusion": "success",
-            "pull_requests": pull_requests,
-        },
+        "workflow_run": workflow_run_payload,
     }))
     return event_path
 
@@ -431,6 +433,102 @@ async def test_workflow_run_runs_auto_tools(monkeypatch, tmp_path, restore_githu
         ("describe", "https://api.github.com/repos/org/repo/pulls/42"),
         ("review", "https://api.github.com/repos/org/repo/pulls/42"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_workflow_run_injects_ci_conclusion_failure(monkeypatch, tmp_path, restore_github_settings):
+    settings = get_settings()
+    orig_reviewer = getattr(settings.pr_reviewer, "extra_instructions", None)
+    orig_description = getattr(settings.pr_description, "extra_instructions", None)
+    orig_suggestions = getattr(settings.pr_code_suggestions, "extra_instructions", None)
+    
+    try:
+        settings.pr_reviewer.extra_instructions = ""
+        settings.pr_description.extra_instructions = ""
+        settings.pr_code_suggestions.extra_instructions = ""
+
+        runs = []
+        _patch_workflow_run_deps(monkeypatch, runs)
+        monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_run")
+        monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_workflow_run_event(tmp_path, conclusion="failure")))
+        monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+        def fake_get_setting_or_env(key, default=None):
+            values = {
+                "GITHUB_ACTION.AUTO_DESCRIBE": True,
+                "GITHUB_ACTION.AUTO_REVIEW": True,
+                "GITHUB_ACTION.AUTO_IMPROVE": False,
+                "GITHUB_ACTION_CONFIG.ENABLE_OUTPUT": True,
+            }
+            return values.get(key, default)
+
+        monkeypatch.setattr(github_action_runner, "get_setting_or_env", fake_get_setting_or_env)
+
+        await github_action_runner.run_action()
+
+        assert "failure" in settings.pr_reviewer.extra_instructions
+        assert "The workflow run that triggered this review concluded: failure" in settings.pr_reviewer.extra_instructions
+        assert "If the conclusion is not 'success'" in settings.pr_reviewer.extra_instructions
+    finally:
+        if orig_reviewer is not None:
+            settings.pr_reviewer.extra_instructions = orig_reviewer
+        else:
+            settings.pr_reviewer.extra_instructions = ""
+        if orig_description is not None:
+            settings.pr_description.extra_instructions = orig_description
+        else:
+            settings.pr_description.extra_instructions = ""
+        if orig_suggestions is not None:
+            settings.pr_code_suggestions.extra_instructions = orig_suggestions
+        else:
+            settings.pr_code_suggestions.extra_instructions = ""
+
+
+@pytest.mark.asyncio
+async def test_workflow_run_no_conclusion_does_not_inject(monkeypatch, tmp_path, restore_github_settings):
+    settings = get_settings()
+    orig_reviewer = getattr(settings.pr_reviewer, "extra_instructions", None)
+    orig_description = getattr(settings.pr_description, "extra_instructions", None)
+    orig_suggestions = getattr(settings.pr_code_suggestions, "extra_instructions", None)
+    
+    try:
+        settings.pr_reviewer.extra_instructions = ""
+        settings.pr_description.extra_instructions = ""
+        settings.pr_code_suggestions.extra_instructions = ""
+
+        runs = []
+        _patch_workflow_run_deps(monkeypatch, runs)
+        monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_run")
+        monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_workflow_run_event(tmp_path, conclusion=None)))
+        monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+        def fake_get_setting_or_env(key, default=None):
+            values = {
+                "GITHUB_ACTION.AUTO_DESCRIBE": True,
+                "GITHUB_ACTION.AUTO_REVIEW": True,
+                "GITHUB_ACTION.AUTO_IMPROVE": False,
+                "GITHUB_ACTION_CONFIG.ENABLE_OUTPUT": True,
+            }
+            return values.get(key, default)
+
+        monkeypatch.setattr(github_action_runner, "get_setting_or_env", fake_get_setting_or_env)
+
+        await github_action_runner.run_action()
+
+        assert "CI status" not in settings.pr_reviewer.extra_instructions
+    finally:
+        if orig_reviewer is not None:
+            settings.pr_reviewer.extra_instructions = orig_reviewer
+        else:
+            settings.pr_reviewer.extra_instructions = ""
+        if orig_description is not None:
+            settings.pr_description.extra_instructions = orig_description
+        else:
+            settings.pr_description.extra_instructions = ""
+        if orig_suggestions is not None:
+            settings.pr_code_suggestions.extra_instructions = orig_suggestions
+        else:
+            settings.pr_code_suggestions.extra_instructions = ""
 
 
 @pytest.mark.asyncio
