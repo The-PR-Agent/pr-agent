@@ -534,6 +534,34 @@ For `openrouter/...` models you can optionally restrict which upstream providers
 
 `provider_only` and `reasoning_effort = "none"` are useful to pin a specific provider and to bound the cost of reasoning models. See the Openrouter [provider routing](https://openrouter.ai/docs/features/provider-routing) and [reasoning tokens](https://openrouter.ai/docs/use-cases/reasoning-tokens) docs.
 
+### OrcaRouter
+
+[OrcaRouter](https://www.orcarouter.ai) is an OpenAI-compatible AI gateway for models and agents. Like OpenRouter it exposes a provider/model namespace across many models, plus adaptive routing, automatic failover, observability and guardrails behind the same endpoint. It needs no provider-specific code in PR-Agent: the `openai/` prefix routes the request to OrcaRouter's base URL through litellm's OpenAI-compatible path, the same way the [Neon AI Gateway](#neon-ai-gateway) is handled.
+
+To use a model through OrcaRouter, set:
+
+```toml
+[config] # in configuration.toml
+model = "openai/anthropic/claude-fable-5"
+fallback_models = ["openai/auto"]
+custom_model_max_tokens = 20000
+
+[openai] # in .secrets.toml
+api_base = "https://api.orcarouter.ai/v1"
+key = "..." # your OrcaRouter api key
+```
+
+or use the environment variables (make sure to use double underscores `__`):
+
+```bash
+OPENAI__API_BASE=https://api.orcarouter.ai/v1
+OPENAI__KEY=...
+```
+
+(you can obtain an OrcaRouter API key from [here](https://www.orcarouter.ai/register))
+
+Keep the `openai/` prefix on the model name, whatever OrcaRouter model ID you use (`openai/anthropic/claude-fable-5`, `openai/auto`, ...): the prefix routes the request through litellm's OpenAI-compatible path. A prefixed name is not in the `MAX_TOKENS` table [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py), so you also have to set `custom_model_max_tokens`. OrcaRouter governs routing, reasoning and guardrails itself, so the usual `reasoning_effort` controls do not apply.
+
 ### Neon AI Gateway
 
 [Neon AI Gateway](https://neon.com/docs/ai-gateway/overview) is an OpenAI-compatible inference gateway. Each Neon branch has its own gateway host, so the base URL points at a single branch and not at an account. Neon publishes that host alongside the credential as `NEON_AI_GATEWAY_BASE_URL`. The value has no path, so append `/v1` to reach chat completions.
