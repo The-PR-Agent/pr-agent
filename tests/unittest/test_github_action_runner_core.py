@@ -107,9 +107,12 @@ async def test_run_action_invokes_enabled_auto_tools_for_pull_request_event(monk
 
 @pytest.fixture
 def restore_github_settings():
-    """run_action mutates global GITHUB/GITHUB_ACTION_CONFIG/GITHUB_APP settings, plus the
-    extra_instructions of the three auto-run tools (artifact/CI-conclusion injection);
-    snapshot and restore them so these tests don't leak state into others."""
+    """Snapshot and restore global settings that run_action mutates.
+
+    Covers GITHUB/GITHUB_ACTION_CONFIG/GITHUB_APP plus the extra_instructions
+    of the three auto-run tools (artifact/CI-conclusion injection), so these
+    tests don't leak state into others.
+    """
     settings = get_settings()
     had_github = "GITHUB" in settings
     original_github = copy.deepcopy(settings.get("GITHUB", None))
@@ -471,8 +474,10 @@ async def test_workflow_run_skips_when_pull_requests_empty(monkeypatch, tmp_path
 
 @pytest.mark.asyncio
 async def test_workflow_run_injects_ci_conclusion_when_not_success(monkeypatch, tmp_path, restore_github_settings):
-    """A failing/cancelled triggering workflow must be surfaced to the model, not silently
-    reviewed as if CI were green (see issue #2841)."""
+    """Verify a failing/cancelled triggering workflow is surfaced to the model.
+
+    Not silently reviewed as if CI were green (see issue #2841).
+    """
     runs = []
     _patch_workflow_run_deps(monkeypatch, runs)
     monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_run")
@@ -488,8 +493,10 @@ async def test_workflow_run_injects_ci_conclusion_when_not_success(monkeypatch, 
 
 @pytest.mark.asyncio
 async def test_workflow_run_does_not_inject_ci_conclusion_when_absent(monkeypatch, tmp_path, restore_github_settings):
-    """No conclusion in the payload (e.g. an older event shape) must not append a
-    'concluded: None' instruction."""
+    """Verify an absent conclusion does not append a 'concluded: None' instruction.
+
+    Covers an older event shape that has no conclusion field at all.
+    """
     runs = []
     _patch_workflow_run_deps(monkeypatch, runs)
     monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_run")

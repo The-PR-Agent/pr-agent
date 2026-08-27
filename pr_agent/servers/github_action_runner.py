@@ -365,8 +365,8 @@ def _inject_ci_conclusion(conclusion):
     for key in get_settings():
         setting = get_settings().get(key)
         if str(type(setting)) == "<class 'dynaconf.utils.boxing.DynaBox'>":
-            if key.lower() in ('pr_reviewer', 'pr_description', 'pr_code_suggestions'):
-                if hasattr(setting, 'extra_instructions'):
+            if key.lower() in ("pr_reviewer", "pr_description", "pr_code_suggestions"):
+                if hasattr(setting, "extra_instructions"):
                     extra_instructions = str(setting.extra_instructions or "")
                     if text not in extra_instructions:
                         setting.extra_instructions = (
