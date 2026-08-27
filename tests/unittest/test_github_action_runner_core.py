@@ -441,7 +441,7 @@ async def test_workflow_run_injects_ci_conclusion_failure(monkeypatch, tmp_path,
     orig_reviewer = getattr(settings.pr_reviewer, "extra_instructions", None)
     orig_description = getattr(settings.pr_description, "extra_instructions", None)
     orig_suggestions = getattr(settings.pr_code_suggestions, "extra_instructions", None)
-    
+
     try:
         settings.pr_reviewer.extra_instructions = ""
         settings.pr_description.extra_instructions = ""
@@ -490,7 +490,7 @@ async def test_workflow_run_no_conclusion_does_not_inject(monkeypatch, tmp_path,
     orig_reviewer = getattr(settings.pr_reviewer, "extra_instructions", None)
     orig_description = getattr(settings.pr_description, "extra_instructions", None)
     orig_suggestions = getattr(settings.pr_code_suggestions, "extra_instructions", None)
-    
+
     try:
         settings.pr_reviewer.extra_instructions = ""
         settings.pr_description.extra_instructions = ""
@@ -529,6 +529,63 @@ async def test_workflow_run_no_conclusion_does_not_inject(monkeypatch, tmp_path,
             settings.pr_code_suggestions.extra_instructions = orig_suggestions
         else:
             settings.pr_code_suggestions.extra_instructions = ""
+
+
+@pytest.mark.asyncio
+async def test_workflow_run_malformed_target_tools_does_not_crash(monkeypatch, tmp_path, restore_github_settings):
+    settings = get_settings()
+    orig_reviewer = getattr(settings.pr_reviewer, "extra_instructions", None)
+    orig_description = getattr(settings.pr_description, "extra_instructions", None)
+    orig_suggestions = getattr(settings.pr_code_suggestions, "extra_instructions", None)
+    orig_target_tools = settings.get("ARTIFACTS.TARGET_TOOLS", None)
+
+    try:
+        settings.pr_reviewer.extra_instructions = ""
+        settings.pr_description.extra_instructions = ""
+        settings.pr_code_suggestions.extra_instructions = ""
+
+        # Set TARGET_TOOLS to a non-iterable malformed value
+        settings.set("ARTIFACTS.TARGET_TOOLS", 123)
+
+        runs = []
+        _patch_workflow_run_deps(monkeypatch, runs)
+        monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_run")
+        monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_workflow_run_event(tmp_path, conclusion="failure")))
+        monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+        def fake_get_setting_or_env(key, default=None):
+            values = {
+                "GITHUB_ACTION.AUTO_DESCRIBE": True,
+                "GITHUB_ACTION.AUTO_REVIEW": True,
+                "GITHUB_ACTION.AUTO_IMPROVE": False,
+                "GITHUB_ACTION_CONFIG.ENABLE_OUTPUT": True,
+            }
+            return values.get(key, default)
+
+        monkeypatch.setattr(github_action_runner, "get_setting_or_env", fake_get_setting_or_env)
+
+        # Should not crash on malformed target_tools
+        await github_action_runner.run_action()
+
+        # The fallback should target "pr_reviewer"
+        assert "failure" in settings.pr_reviewer.extra_instructions
+    finally:
+        if orig_reviewer is not None:
+            settings.pr_reviewer.extra_instructions = orig_reviewer
+        else:
+            settings.pr_reviewer.extra_instructions = ""
+        if orig_description is not None:
+            settings.pr_description.extra_instructions = orig_description
+        else:
+            settings.pr_description.extra_instructions = ""
+        if orig_suggestions is not None:
+            settings.pr_code_suggestions.extra_instructions = orig_suggestions
+        else:
+            settings.pr_code_suggestions.extra_instructions = ""
+        if orig_target_tools is not None:
+            settings.set("ARTIFACTS.TARGET_TOOLS", orig_target_tools)
+        else:
+            settings.unset("ARTIFACTS.TARGET_TOOLS", force=True)
 
 
 @pytest.mark.asyncio

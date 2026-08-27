@@ -41,12 +41,19 @@ def _append_tool_context(text: str) -> None:
     )
     if isinstance(target_tools, str):
         target_tools = [t.strip() for t in target_tools.split(",") if t.strip()]
+    elif not isinstance(target_tools, (list, set, tuple)):
+        target_tools = ["pr_reviewer", "pr_description", "pr_code_suggestions"]
     target_tools = {str(t).lower() for t in target_tools}
     for key in get_settings():
         setting = get_settings().get(key)
         if str(type(setting)) == "<class 'dynaconf.utils.boxing.DynaBox'>":
             if key.lower() in target_tools and hasattr(setting, "extra_instructions"):
-                existing = str(setting.extra_instructions or "")
+                try:
+                    existing = setting.extra_instructions
+                    if not isinstance(existing, str):
+                        existing = str(existing or "")
+                except Exception:
+                    existing = ""
                 if text not in existing:
                     setting.extra_instructions = (
                         existing + "\n======\n\n" + text if existing else text
@@ -57,6 +64,11 @@ def _inject_ci_conclusion(conclusion: str) -> None:
     """Tell the model how the workflow that triggered this run finished."""
     if not conclusion:
         return
+    if not isinstance(conclusion, str):
+        try:
+            conclusion = str(conclusion)
+        except Exception:
+            return
     _append_tool_context(
         "CI status\n"
         "=====\n"
