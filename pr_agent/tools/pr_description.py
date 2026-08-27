@@ -222,6 +222,13 @@ class PRDescription:
         finally:
             if progress_response is not None:
                 try:
+                    self.git_provider.edit_comment(
+                        progress_response, "PR description generation finished.")
+                except Exception as e:
+                    get_logger().exception(
+                        f"Failed to update PR description progress comment, "
+                        f"error: {e}")
+                try:
                     self.git_provider.remove_comment(progress_response)
                 except Exception as e:
                     get_logger().exception(
