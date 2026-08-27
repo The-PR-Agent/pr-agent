@@ -15,6 +15,7 @@ import urllib3.util
 from git import Repo
 
 from pr_agent.algo.file_filter import filter_ignored
+from pr_agent.algo.language_handler import build_language_file_matcher
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import GitProvider
@@ -318,22 +319,8 @@ class GerritProvider(GitProvider):
         Calculate percentage of languages in repository. Used for hunk
         prioritisation.
         """
-        ext_to_lang = {}
         lang_map = get_settings().get("language_extension_map_org", {}) or {}
-        for language, extensions in lang_map.items():
-            for ext in extensions:
-                ext_to_lang.setdefault(ext.lower().lstrip("*"), language)
-
-        def _match_language(name: str):
-            language = ext_to_lang.get(name.lower())
-            if language:
-                return language
-            parts = name.split(".")
-            for i in range(1, len(parts)):
-                language = ext_to_lang.get("." + ".".join(parts[i:]).lower())
-                if language:
-                    return language
-            return None
+        get_language = build_language_file_matcher(lang_map)
 
         # Get all files in repository
         filepaths = [Path(item.path) for item in
@@ -341,7 +328,7 @@ class GerritProvider(GitProvider):
         # Identify language by filename and count
         lang_count = Counter()
         for filepath in filepaths:
-            language = _match_language(filepath.name)
+            language = get_language(filepath.name)
             if language:
                 lang_count[language] += 1
         # Convert counts to percentages

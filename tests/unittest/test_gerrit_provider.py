@@ -3,8 +3,7 @@ import git
 from pr_agent.algo.types import EDIT_TYPE
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.gerrit_provider import GerritProvider
-from tests.unittest._settings_helpers import (restore_settings,
-                                              snapshot_settings)
+from tests.unittest import _settings_helpers as settings_helpers
 
 
 def _make_repo(tmp_path, filenames):
@@ -67,6 +66,65 @@ def test_get_languages_matches_filenames_and_multipart_extensions(tmp_path):
     assert set(languages) == {"Dockerfile", "CMake", "Python"}
     assert all(abs(percentage - 100 / 3) < 1e-6 for percentage in languages.values())
 
+    from pr_agent.algo.language_handler import sort_files_by_main_languages
+
+    files = [
+        type("File", (), {"filename": name})()
+        for name in ["Dockerfile", "build.cmake.in", "app.py", "notes.unknown"]
+    ]
+    buckets = {
+        bucket["language"]: {file.filename for file in bucket["files"]}
+        for bucket in sort_files_by_main_languages(languages, files)
+    }
+    assert buckets == {
+        "Dockerfile": {"Dockerfile"},
+        "CMake": {"build.cmake.in"},
+        "Python": {"app.py"},
+        "Other": {"notes.unknown"},
+    }
+
+
+def test_get_languages_preserves_case_sensitive_extensions(tmp_path):
+    repo = _make_repo(tmp_path, ["lower.c", "upper.C"])
+    provider = object.__new__(GerritProvider)
+    provider.repo = repo
+
+    languages = provider.get_languages()
+    assert languages == {"C": 50.0, "C++": 50.0}
+
+    from pr_agent.algo.language_handler import sort_files_by_main_languages
+
+    files = [
+        type("File", (), {"filename": name})()
+        for name in ["lower.c", "upper.C"]
+    ]
+    buckets = {
+        bucket["language"]: {file.filename for file in bucket["files"]}
+        for bucket in sort_files_by_main_languages(languages, files)
+    }
+    assert buckets == {
+        "C": {"lower.c"},
+        "C++": {"upper.C"},
+        "Other": set(),
+    }
+
+
+def test_language_prioritization_falls_back_for_unambiguous_case(tmp_path):
+    repo = _make_repo(tmp_path, ["module.PY"])
+    provider = object.__new__(GerritProvider)
+    provider.repo = repo
+
+    languages = provider.get_languages()
+    assert languages == {"Python": 100.0}
+
+    from pr_agent.algo.language_handler import sort_files_by_main_languages
+
+    file = type("File", (), {"filename": "module.PY"})()
+    assert sort_files_by_main_languages(languages, [file]) == [
+        {"language": "Python", "files": [file]},
+        {"language": "Other", "files": []},
+    ]
+
 
 def test_get_diff_files_applies_glob_and_regex_ignore_rules(tmp_path):
     repo = _make_repo(tmp_path, ["src/keep.py", "generated/skip.py", "notes.ignore.py"])
@@ -77,14 +135,14 @@ def test_get_diff_files_applies_glob_and_regex_ignore_rules(tmp_path):
 
     provider = object.__new__(GerritProvider)
     provider.repo = repo
-    settings_snapshot = snapshot_settings(["ignore.glob", "ignore.regex"])
+    settings_snapshot = settings_helpers.snapshot_settings(["ignore.glob", "ignore.regex"])
     try:
         get_settings().set("ignore.glob", ["generated/**"])
         get_settings().set("ignore.regex", [r"^notes\."])
 
         diff_files = provider.get_diff_files()
     finally:
-        restore_settings(settings_snapshot)
+        settings_helpers.restore_settings(settings_snapshot)
 
     assert [file.filename for file in diff_files] == ["src/keep.py"]
 
@@ -110,14 +168,14 @@ def test_get_diff_files_filters_each_gitpython_path_shape(tmp_path):
 
     provider = object.__new__(GerritProvider)
     provider.repo = repo
-    settings_snapshot = snapshot_settings(["ignore.glob", "ignore.regex"])
+    settings_snapshot = settings_helpers.snapshot_settings(["ignore.glob", "ignore.regex"])
     try:
         get_settings().set("ignore.glob", ["generated/**"])
         get_settings().set("ignore.regex", [])
 
         diff_files = provider.get_diff_files()
     finally:
-        restore_settings(settings_snapshot)
+        settings_helpers.restore_settings(settings_snapshot)
 
     assert {file.filename for file in diff_files} == {"src/keep.py", "src/rename_out.py"}
     renamed = next(file for file in diff_files if file.filename == "src/rename_out.py")
