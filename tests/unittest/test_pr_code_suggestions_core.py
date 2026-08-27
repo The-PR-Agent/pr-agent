@@ -762,3 +762,37 @@ def test_legacy_heading_without_generated_shape_is_not_adopted():
     provider.edit_comment.assert_not_called()
     published = provider.publish_comment.call_args.args[0]
     assert PRCodeSuggestionsIdentity.SUMMARY.value in published
+
+
+def test_custom_heading_is_kept_when_a_history_section_already_exists():
+    existing = MagicMock()
+    existing.body = (
+        "## Previous Custom Heading ✨\n\n"
+        f"{PRCodeSuggestionsIdentity.SUMMARY.value}\n\n"
+        "<!-- aaa1111 -->\n\n"
+        "Latest suggestions up to commit aaa1111\n\n"
+        "<table>latest</table>\n\n___\n\n"
+        "#### Previous suggestions\n"
+        "<details><summary>Suggestions up to commit 0000000</summary>\n"
+        "<br><table>older</table>\n\n</details>\n"
+    )
+    provider = _persistent_provider([existing])
+    custom_header = "## Latest Custom Heading ✨"
+
+    result = PRCodeSuggestions.publish_persistent_comment_with_history(
+        provider,
+        f"{custom_header}\n\n<table>new suggestions</table>",
+        initial_header=custom_header,
+        name="suggestions",
+        identity_marker=PRCodeSuggestionsIdentity.SUMMARY.value,
+        legacy_initial_header=PRCodeSuggestionsHeader.SUMMARY.value,
+    )
+
+    assert result is existing
+    updated = provider.edit_comment.call_args.args[1]
+    assert updated.startswith(
+        f"{custom_header}\n\n{PRCodeSuggestionsIdentity.SUMMARY.value}\n\n<!-- deadbee -->"
+    )
+    assert "Suggestions up to commit aaa1111" in updated
+    assert "Suggestions up to commit 0000000" in updated
+    provider.publish_comment.assert_not_called()

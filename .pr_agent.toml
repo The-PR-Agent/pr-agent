@@ -7,9 +7,6 @@
 enable_review_labels_effort = true
 enable_auto_approval = true
 
-[pr_code_suggestions]
-suggestions_heading = "PR Code Suggestions"
-
 [github_app]
 pr_commands = [
     "/describe --pr_description.publish_description_as_comment=true",
