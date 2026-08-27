@@ -766,6 +766,10 @@ class TestGiteaProviderPublishCodeSuggestions:
     """Regression tests for #2259: ``publish_code_suggestions`` returned ``None`` against a base
     class declaring ``-> bool``, so ``PRCodeSuggestions`` read every successful run as a failure
     and republished each suggestion one by one, posting all of them twice.
+
+    The aggregate is any-succeeded rather than all-succeeded, matching the other per-item
+    publisher in ``azuredevops_provider.py``. A partial failure must not report failure: the
+    caller republishes the whole list, which would post the accepted suggestions a second time.
     """
 
     @staticmethod
@@ -806,6 +810,22 @@ class TestGiteaProviderPublishCodeSuggestions:
 
         assert provider.publish_code_suggestions([{"relevant_file": "a.py"}, self._suggestion("b.py")]) is True
         assert provider.repo_api.create_inline_comment.call_count == 1
+
+    def test_a_partial_failure_still_reports_success_so_the_caller_does_not_republish(self):
+        provider = self._provider()
+        provider.repo_api.create_inline_comment.side_effect = [object(), None, object()]
+
+        published = provider.publish_code_suggestions(
+            [self._suggestion("a.py"), self._suggestion("b.py"), self._suggestion("c.py")]
+        )
+
+        assert published is True
+        assert provider.repo_api.create_inline_comment.call_count == 3
+
+    def test_returns_false_when_every_suggestion_fails(self):
+        provider = self._provider(create_inline_comment_return=None)
+
+        assert provider.publish_code_suggestions([self._suggestion("a.py"), self._suggestion("b.py")]) is False
 
     def test_publish_inline_comments_reports_the_api_outcome(self):
         assert self._provider().publish_inline_comments([{"body": "x"}]) is True

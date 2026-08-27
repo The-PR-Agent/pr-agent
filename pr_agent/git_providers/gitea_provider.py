@@ -406,7 +406,8 @@ class GiteaProvider(GitProvider):
 
     def publish_code_suggestions(self, suggestions: List[Dict[str, Any]]) -> bool:
         """Publish code suggestions"""
-        published_all = True
+        publishable_count = 0
+        published_count = 0
         for suggestion in suggestions:
             body = suggestion.get("body","")
             if not body:
@@ -418,14 +419,16 @@ class GiteaProvider(GitProvider):
             old_position = suggestion.get("relevant_lines_start",0) if "original_suggestion" not in suggestion else suggestion["original_suggestion"].get("relevant_lines_start",0)
             title_body = suggestion["original_suggestion"].get("suggestion_content","") if "original_suggestion" in suggestion else ""
             payload = dict(body=body, path=path, old_position=old_position,new_position = new_position)
+            publishable_count += 1
             if title_body:
                 title_body = f"**Suggestion:** {title_body}"
                 published = self.publish_inline_comments([payload],title_body)
             else:
                 published = self.publish_inline_comments([payload])
-            published_all = published_all and published
+            if published:
+                published_count += 1
 
-        return published_all
+        return published_count > 0 or publishable_count == 0
 
     def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
         """Add eyes reaction to a comment"""
