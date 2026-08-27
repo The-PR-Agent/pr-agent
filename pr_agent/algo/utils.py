@@ -92,8 +92,7 @@ def _get_configured_heading(setting_name: str, default_heading: str) -> str:
     if (
         not isinstance(configured_heading, str)
         or not configured_heading.strip()
-        or "\n" in configured_heading
-        or "\r" in configured_heading
+        or configured_heading.splitlines() != [configured_heading]
     ):
         get_logger().warning(
             f"Invalid {setting_name}; using the default heading"

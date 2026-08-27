@@ -136,7 +136,26 @@ class TestPreparePrAnswer:
 
         assert out == "### **Architecture Question** ❓\nwhy?\n\n### **Answer:**\nbecause reasons\n\n"
 
-    @pytest.mark.parametrize("invalid_heading", [None, "", "   ", "Ask\nNow", "Ask\rNow", 42])
+    @pytest.mark.parametrize(
+        "invalid_heading",
+        [
+            None,
+            "",
+            "   ",
+            "Ask\nNow",
+            "Ask\rNow",
+            "Ask\vNow",
+            "Ask\fNow",
+            "Ask\x1cNow",
+            "Ask\x1dNow",
+            "Ask\x1eNow",
+            "Ask\x85Now",
+            "Ask\u2028Now",
+            "Ask\u2029Now",
+            "Ask\u2028",
+            42,
+        ],
+    )
     def test_invalid_heading_falls_back_to_ask(self, invalid_heading):
         settings = get_settings()
         saved = snapshot_settings(("pr_questions.ask_heading",))
@@ -210,6 +229,25 @@ class TestPreparePrAnswer:
         assert r"\*" in raw_heading
         assert r"\\" in raw_heading
         assert out.splitlines()[0] == f"{heading}❓:"
+
+    def test_gerrit_falls_back_for_a_unicode_line_separator(self):
+        settings = get_settings()
+        saved = snapshot_settings(("pr_questions.ask_heading",))
+        provider = GerritProvider.__new__(GerritProvider)
+        pr = _make_pr_questions(
+            question_str="why?",
+            prediction="because reasons",
+            git_provider=provider,
+        )
+        try:
+            settings.set("pr_questions.ask_heading", "Architecture\u2028Question")
+            answer = pr._prepare_pr_answer()
+            out = adopt_to_gerrit_message(answer)
+        finally:
+            restore_settings(saved)
+
+        assert answer.startswith("### **Ask** ❓\n")
+        assert out.splitlines()[0] == "Ask❓:"
 
     def test_gerrit_keeps_existing_conversion_for_other_markdown_headings(self):
         message = "### **Answer:**\n- item\n### **Model # Heading:**"
