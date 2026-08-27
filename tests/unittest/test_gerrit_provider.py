@@ -1,5 +1,6 @@
 import git
 
+from pr_agent.algo.language_handler import sort_files_by_main_languages
 from pr_agent.algo.types import EDIT_TYPE
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.gerrit_provider import GerritProvider
@@ -42,8 +43,6 @@ def test_get_languages_returns_names_used_for_hunk_prioritization(tmp_path):
 
     assert languages == {"Python": 75.0, "JavaScript": 25.0}
 
-    from pr_agent.algo.language_handler import sort_files_by_main_languages
-
     files = [type("File", (), {"filename": name})() for name in ["a.py", "app.js", "notes.unknown"]]
     buckets = {
         bucket["language"]: {file.filename for file in bucket["files"]}
@@ -65,8 +64,6 @@ def test_get_languages_matches_filenames_and_multipart_extensions(tmp_path):
 
     assert set(languages) == {"Dockerfile", "CMake", "Python"}
     assert all(abs(percentage - 100 / 3) < 1e-6 for percentage in languages.values())
-
-    from pr_agent.algo.language_handler import sort_files_by_main_languages
 
     files = [
         type("File", (), {"filename": name})()
@@ -92,8 +89,6 @@ def test_get_languages_preserves_case_sensitive_extensions(tmp_path):
     languages = provider.get_languages()
     assert languages == {"C": 50.0, "C++": 50.0}
 
-    from pr_agent.algo.language_handler import sort_files_by_main_languages
-
     files = [
         type("File", (), {"filename": name})()
         for name in ["lower.c", "upper.C"]
@@ -116,8 +111,6 @@ def test_language_prioritization_falls_back_for_unambiguous_case(tmp_path):
 
     languages = provider.get_languages()
     assert languages == {"Python": 100.0}
-
-    from pr_agent.algo.language_handler import sort_files_by_main_languages
 
     file = type("File", (), {"filename": "module.PY"})()
     assert sort_files_by_main_languages(languages, [file]) == [
