@@ -175,6 +175,16 @@ class GithubProvider(GitProvider):
         self.previous_review = self.get_previous_review(full=True, incremental=True)
         if self.previous_review:
             self.incremental.commits_range = self.get_commit_range()
+            if self.incremental.commits_range and self.incremental.last_seen_commit is None:
+                # Every commit post-dates the review (e.g. the branch was fully rebased), so there
+                # is no baseline commit to diff against. Fall back to a full review rather than
+                # diffing against a None ref, which silently yields empty original content.
+                get_logger().info(
+                    "Incremental review cannot anchor a base commit (no commit predates the "
+                    "previous review); falling back to a full review"
+                )
+                self.incremental.is_incremental = False
+                return
             # Get all files changed during the commit range
 
             for commit in self.incremental.commits_range:

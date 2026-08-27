@@ -47,6 +47,23 @@ def test_falls_back_to_author_date_when_committer_is_missing():
     assert provider.get_commit_range() == [commit]
 
 
+def test_fully_rebased_branch_falls_back_to_full_review():
+    # Every commit post-dates the review, so there is no baseline commit to diff against.
+    commits = [
+        _commit("a", author_date=datetime(2026, 1, 1), committer_date=datetime(2026, 1, 5)),
+        _commit("b", author_date=datetime(2026, 1, 2), committer_date=datetime(2026, 1, 5)),
+    ]
+    provider = _make_provider(commits)
+    provider.pr = SimpleNamespace(get_commits=lambda: commits)
+    provider.unreviewed_files_map = {}
+    provider.get_previous_review = lambda **kwargs: provider.previous_review
+
+    provider._get_incremental_commits()
+
+    assert provider.incremental.is_incremental is False
+    assert provider.incremental.last_seen_commit_sha is None
+
+
 def test_only_commits_after_the_review_are_returned():
     reviewed = _commit("reviewed", author_date=datetime(2026, 1, 1), committer_date=datetime(2026, 1, 1))
     pushed = _commit("pushed", author_date=datetime(2026, 1, 4), committer_date=datetime(2026, 1, 4))
