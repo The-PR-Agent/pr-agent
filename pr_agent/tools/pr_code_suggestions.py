@@ -911,18 +911,46 @@ class PRCodeSuggestions:
             get_logger().info(f"Number of PR chunk calls: {len(self.patches_diff_list)}")
             get_logger().debug(f"PR diff:", artifact=self.patches_diff_list)
 
+            prediction_list = []
+            chunk_errors = []
+            chunk_pairs = list(zip(self.patches_diff_list, self.patches_diff_list_no_line_numbers))
+
             # parallelize calls to AI:
             if get_settings().pr_code_suggestions.parallel_calls:
-                prediction_list = await asyncio.gather(
+                prediction_results = await asyncio.gather(
                     *[self._get_prediction(model, patches_diff, patches_diff_no_line_numbers) for
-                      patches_diff, patches_diff_no_line_numbers in
-                      zip(self.patches_diff_list, self.patches_diff_list_no_line_numbers)])
-                self.prediction_list = prediction_list
+                      patches_diff, patches_diff_no_line_numbers in chunk_pairs],
+                    return_exceptions=True)
+                for chunk_index, prediction in enumerate(prediction_results):
+                    if isinstance(prediction, Exception):
+                        chunk_errors.append(prediction)
+                        get_logger().warning(
+                            f"Failed to generate code suggestions for chunk {chunk_index + 1}; "
+                            "retaining successful chunks",
+                            artifact={"error": prediction},
+                        )
+                    elif isinstance(prediction, BaseException):
+                        raise prediction
+                    else:
+                        prediction_list.append(prediction)
             else:
-                prediction_list = []
-                for patches_diff, patches_diff_no_line_numbers in zip(self.patches_diff_list, self.patches_diff_list_no_line_numbers):
-                    prediction = await self._get_prediction(model, patches_diff, patches_diff_no_line_numbers)
-                    prediction_list.append(prediction)
+                for chunk_index, (patches_diff, patches_diff_no_line_numbers) in enumerate(
+                        chunk_pairs):
+                    try:
+                        prediction = await self._get_prediction(model, patches_diff, patches_diff_no_line_numbers)
+                    except Exception as e:
+                        chunk_errors.append(e)
+                        get_logger().warning(
+                            f"Failed to generate code suggestions for chunk {chunk_index + 1}; "
+                            "retaining successful chunks",
+                            artifact={"error": e},
+                        )
+                    else:
+                        prediction_list.append(prediction)
+
+            if chunk_errors and not prediction_list:
+                raise chunk_errors[0]
+            self.prediction_list = prediction_list
 
             data = {"code_suggestions": []}
             for j, predictions in enumerate(prediction_list):  # each call adds an element to the list

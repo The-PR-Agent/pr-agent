@@ -1,11 +1,15 @@
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import pr_agent.tools.pr_code_suggestions as pr_code_suggestions_module
+from pr_agent.algo.pr_processing import retry_with_fallback_models
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import GitProvider, IncrementalPR
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
+from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 
 def _make_tool(git_provider=None):
@@ -112,6 +116,154 @@ code_suggestions:
         assert data["code_suggestions"][0]["relevant_lines_end"] == -1
     finally:
         settings.config.publish_output = original_publish_output
+
+
+@pytest.mark.asyncio
+async def test_prepare_prediction_main_keeps_successful_chunks_when_one_parallel_chunk_fails():
+    settings = get_settings()
+    original_decouple_hunks = settings.pr_code_suggestions.decouple_hunks
+    original_parallel_calls = settings.pr_code_suggestions.parallel_calls
+    settings.pr_code_suggestions.decouple_hunks = True
+    settings.pr_code_suggestions.parallel_calls = True
+    tool = _make_tool()
+    tool.token_handler = MagicMock()
+    calls = []
+    successful_chunk_started = asyncio.Event()
+    release_successful_chunk = asyncio.Event()
+    successful_chunk_finished = asyncio.Event()
+
+    async def fake_get_prediction(model, patches_diff, patches_diff_no_line_numbers):
+        calls.append(patches_diff)
+        if patches_diff == "chunk-b":
+            await successful_chunk_started.wait()
+            release_successful_chunk.set()
+            raise RuntimeError("chunk b failed")
+        successful_chunk_started.set()
+        await release_successful_chunk.wait()
+        successful_chunk_finished.set()
+        return {"code_suggestions": [_valid_suggestion(relevant_file="chunk-a.py")]}
+
+    try:
+        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", return_value=["chunk-a", "chunk-b"]):
+            tool._get_prediction = fake_get_prediction
+
+            data = await tool.prepare_prediction_main("primary-model")
+    finally:
+        settings.pr_code_suggestions.decouple_hunks = original_decouple_hunks
+        settings.pr_code_suggestions.parallel_calls = original_parallel_calls
+
+    assert calls == ["chunk-a", "chunk-b"]
+    assert successful_chunk_finished.is_set()
+    assert data["code_suggestions"] == [_valid_suggestion(relevant_file="chunk-a.py")]
+
+
+@pytest.mark.asyncio
+async def test_prepare_prediction_main_propagates_chunk_cancellation_after_waiting_for_siblings():
+    settings = get_settings()
+    original_decouple_hunks = settings.pr_code_suggestions.decouple_hunks
+    original_parallel_calls = settings.pr_code_suggestions.parallel_calls
+    settings.pr_code_suggestions.decouple_hunks = True
+    settings.pr_code_suggestions.parallel_calls = True
+    tool = _make_tool()
+    tool.token_handler = MagicMock()
+    successful_chunk_finished = asyncio.Event()
+
+    async def fake_get_prediction(model, patches_diff, patches_diff_no_line_numbers):
+        if patches_diff == "chunk-b":
+            raise asyncio.CancelledError
+        await asyncio.sleep(0.01)
+        successful_chunk_finished.set()
+        return {"code_suggestions": []}
+
+    try:
+        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", return_value=["chunk-a", "chunk-b"]):
+            tool._get_prediction = fake_get_prediction
+
+            with pytest.raises(asyncio.CancelledError):
+                await tool.prepare_prediction_main("primary-model")
+    finally:
+        settings.pr_code_suggestions.decouple_hunks = original_decouple_hunks
+        settings.pr_code_suggestions.parallel_calls = original_parallel_calls
+
+    assert successful_chunk_finished.is_set()
+
+
+@pytest.mark.asyncio
+async def test_prepare_prediction_main_keeps_processing_after_one_sequential_chunk_fails():
+    settings = get_settings()
+    original_decouple_hunks = settings.pr_code_suggestions.decouple_hunks
+    original_parallel_calls = settings.pr_code_suggestions.parallel_calls
+    settings.pr_code_suggestions.decouple_hunks = True
+    settings.pr_code_suggestions.parallel_calls = False
+    tool = _make_tool()
+    tool.token_handler = MagicMock()
+    calls = []
+
+    async def fake_get_prediction(model, patches_diff, patches_diff_no_line_numbers):
+        calls.append(patches_diff)
+        if patches_diff == "chunk-b":
+            raise RuntimeError("chunk b failed")
+        return {"code_suggestions": [_valid_suggestion(relevant_file=f"{patches_diff}.py")]}
+
+    try:
+        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", return_value=[
+            "chunk-a", "chunk-b", "chunk-c"
+        ]):
+            tool._get_prediction = fake_get_prediction
+
+            data = await tool.prepare_prediction_main("primary-model")
+    finally:
+        settings.pr_code_suggestions.decouple_hunks = original_decouple_hunks
+        settings.pr_code_suggestions.parallel_calls = original_parallel_calls
+
+    assert calls == ["chunk-a", "chunk-b", "chunk-c"]
+    assert data["code_suggestions"] == [
+        _valid_suggestion(relevant_file="chunk-a.py"),
+        _valid_suggestion(relevant_file="chunk-c.py"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_prepare_prediction_main_keeps_outer_fallback_when_all_chunks_fail():
+    settings_snapshot = snapshot_settings(
+        ("config.model", "config.fallback_models", "openai.deployment_id", "openai.fallback_deployments")
+    )
+    settings = get_settings()
+    settings.set("config.model", "primary-model")
+    settings.set("config.fallback_models", ["fallback-model"])
+    settings.set("openai.deployment_id", None)
+    settings.set("openai.fallback_deployments", [])
+    original_decouple_hunks = settings.pr_code_suggestions.decouple_hunks
+    original_parallel_calls = settings.pr_code_suggestions.parallel_calls
+    settings.pr_code_suggestions.decouple_hunks = True
+    settings.pr_code_suggestions.parallel_calls = True
+    tool = _make_tool()
+    tool.token_handler = MagicMock()
+    attempted = []
+
+    async def fake_get_prediction(model, patches_diff, patches_diff_no_line_numbers):
+        attempted.append((model, patches_diff))
+        if model == "primary-model":
+            raise RuntimeError(f"{patches_diff} failed")
+        return {"code_suggestions": [_valid_suggestion(relevant_file=f"{patches_diff}.py")]}
+
+    try:
+        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", return_value=["chunk-a", "chunk-b"]):
+            tool._get_prediction = fake_get_prediction
+
+            data = await retry_with_fallback_models(tool.prepare_prediction_main)
+    finally:
+        settings.pr_code_suggestions.decouple_hunks = original_decouple_hunks
+        settings.pr_code_suggestions.parallel_calls = original_parallel_calls
+        restore_settings(settings_snapshot)
+
+    assert attempted == [
+        ("primary-model", "chunk-a"),
+        ("primary-model", "chunk-b"),
+        ("fallback-model", "chunk-a"),
+        ("fallback-model", "chunk-b"),
+    ]
+    assert len(data["code_suggestions"]) == 2
 
 
 def test_dedent_code_matches_target_file_indentation():
