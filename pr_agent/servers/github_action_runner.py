@@ -57,27 +57,44 @@ def _inject_artifact_context():
         artifact_text = load_artifact()
         if not artifact_text:
             return
-        target_tools = get_settings().get(
-            "ARTIFACTS.TARGET_TOOLS",
-            ["pr_reviewer", "pr_description", "pr_code_suggestions"]
-        )
-        if isinstance(target_tools, str):
-            target_tools = [t.strip() for t in target_tools.split(",") if t.strip()]
-        target_tools = {str(t).lower() for t in target_tools}
-        separator = "\n======\n\n"
-        for key in get_settings():
-            setting = get_settings().get(key)
-            if str(type(setting)) == "<class 'dynaconf.utils.boxing.DynaBox'>":
-                if key.lower() in target_tools and hasattr(setting, 'extra_instructions'):
-                    extra_instructions = str(setting.extra_instructions or "")
-                    if artifact_text not in extra_instructions:
-                        setting.extra_instructions = (
-                            extra_instructions + separator + artifact_text
-                            if extra_instructions else artifact_text
-                        )
-        get_logger().info(f"Injected artifact context into tools: {target_tools}")
+        _append_tool_context(artifact_text)
+        get_logger().info("Injected artifact context into tools")
     except (OSError, ValueError, TypeError) as e:
         get_logger().warning(f"github action: failed to process artifacts: {e}", exc_info=True)
+
+
+def _append_tool_context(text: str) -> None:
+    """Append a labelled block to the extra_instructions of each artifact target tool."""
+    target_tools = get_settings().get(
+        "ARTIFACTS.TARGET_TOOLS",
+        ["pr_reviewer", "pr_description", "pr_code_suggestions"],
+    )
+    if isinstance(target_tools, str):
+        target_tools = [t.strip() for t in target_tools.split(",") if t.strip()]
+    target_tools = {str(t).lower() for t in target_tools}
+    for key in get_settings():
+        setting = get_settings().get(key)
+        if str(type(setting)) == "<class 'dynaconf.utils.boxing.DynaBox'>":
+            if key.lower() in target_tools and hasattr(setting, "extra_instructions"):
+                existing = str(setting.extra_instructions or "")
+                if text not in existing:
+                    setting.extra_instructions = (
+                        existing + "\n======\n\n" + text if existing else text
+                    )
+
+
+def _inject_ci_conclusion(conclusion: str) -> None:
+    """Tell the model how the workflow that triggered this run finished."""
+    if not conclusion:
+        return
+    _append_tool_context(
+        "CI status\n"
+        "=====\n"
+        f"The workflow run that triggered this review concluded: {conclusion}.\n"
+        "=====\n"
+        "If the conclusion is not 'success', the change has not passed CI. "
+        "Say so in your output rather than implying the change is clean."
+    )
 
 
 async def run_action():
@@ -316,6 +333,7 @@ async def run_action():
 
         # Inject artifact context after repo settings are applied for workflow_run
         _inject_artifact_context()
+        _inject_ci_conclusion(workflow_run.get("conclusion"))
 
         auto_review = get_setting_or_env("GITHUB_ACTION.AUTO_REVIEW", None)
         if auto_review is None:
