@@ -17,6 +17,9 @@ from pr_agent.tools.pr_description import PRDescription
 from pr_agent.tools.pr_reviewer import PRReviewer
 
 
+DEFAULT_ARTIFACT_TARGET_TOOLS = ["pr_reviewer", "pr_description", "pr_code_suggestions"]
+
+
 def is_true(value: Union[str, bool]) -> bool:
     if isinstance(value, bool):
         return value
@@ -37,12 +40,12 @@ def _append_tool_context(text: str) -> None:
     """Append a labelled block to the extra_instructions of each artifact target tool."""
     target_tools = get_settings().get(
         "ARTIFACTS.TARGET_TOOLS",
-        ["pr_reviewer", "pr_description", "pr_code_suggestions"],
+        DEFAULT_ARTIFACT_TARGET_TOOLS,
     )
     if isinstance(target_tools, str):
         target_tools = [t.strip() for t in target_tools.split(",") if t.strip()]
     elif not isinstance(target_tools, (list, set, tuple)):
-        target_tools = ["pr_reviewer", "pr_description", "pr_code_suggestions"]
+        target_tools = DEFAULT_ARTIFACT_TARGET_TOOLS
     target_tools = {str(t).lower() for t in target_tools}
     for key in get_settings():
         setting = get_settings().get(key)
