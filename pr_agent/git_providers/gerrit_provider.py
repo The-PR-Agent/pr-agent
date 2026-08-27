@@ -14,6 +14,7 @@ import requests
 import urllib3.util
 from git import Repo
 
+from pr_agent.algo.file_filter import filter_ignored
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import GitProvider
@@ -259,11 +260,14 @@ class GerritProvider(GitProvider):
             return b""
 
     def get_diff_files(self) -> list[FilePatchInfo]:
-        diffs = self.repo.head.commit.diff(
-            self.repo.head.commit.parents[0],  # previous commit
-            create_patch=True,
-            R=True
+        diffs = list(
+            self.repo.head.commit.diff(
+                self.repo.head.commit.parents[0],  # previous commit
+                create_patch=True,
+                R=True
+            )
         )
+        diffs = filter_ignored(diffs, "gerrit")
 
         diff_files = []
         for diff_item in diffs:
@@ -290,7 +294,7 @@ class GerritProvider(GitProvider):
                     original_file_content_str,
                     new_file_content_str,
                     diff_item.diff.decode('utf-8'),
-                    diff_item.b_path,
+                    diff_item.b_path or diff_item.a_path,
                     edit_type=edit_type,
                     old_filename=None
                     if diff_item.a_path == diff_item.b_path
@@ -314,18 +318,35 @@ class GerritProvider(GitProvider):
         Calculate percentage of languages in repository. Used for hunk
         prioritisation.
         """
+        ext_to_lang = {}
+        lang_map = get_settings().get("language_extension_map_org", {}) or {}
+        for language, extensions in lang_map.items():
+            for ext in extensions:
+                ext_to_lang.setdefault(ext.lower().lstrip("*"), language)
+
+        def _match_language(name: str):
+            language = ext_to_lang.get(name.lower())
+            if language:
+                return language
+            parts = name.split(".")
+            for i in range(1, len(parts)):
+                language = ext_to_lang.get("." + ".".join(parts[i:]).lower())
+                if language:
+                    return language
+            return None
+
         # Get all files in repository
         filepaths = [Path(item.path) for item in
                      self.repo.tree().traverse() if item.type == 'blob']
-        # Identify language by file extension and count
-        lang_count = Counter(
-            ext.lstrip('.') for filepath in filepaths for ext in
-            [filepath.suffix.lower()])
+        # Identify language by filename and count
+        lang_count = Counter()
+        for filepath in filepaths:
+            language = _match_language(filepath.name)
+            if language:
+                lang_count[language] += 1
         # Convert counts to percentages
-        total_files = len(filepaths)
-        lang_percentage = {lang: count / total_files * 100 for lang, count
-                           in lang_count.items()}
-        return lang_percentage
+        total = sum(lang_count.values()) or 1
+        return {lang: count / total * 100 for lang, count in lang_count.items()}
 
     def get_pr_description_full(self):
         return self.repo.head.commit.message
