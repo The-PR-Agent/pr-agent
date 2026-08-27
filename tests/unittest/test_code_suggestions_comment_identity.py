@@ -46,7 +46,7 @@ def test_default_suggestions_heading_is_unchanged():
 
 @pytest.mark.parametrize(
     "invalid_heading",
-    [None, "", "  ", "first\nsecond", "first\rsecond", 42],
+    [None, "", "  ", "first\nsecond", "first\rsecond", "first\u2028second", 42],
 )
 def test_invalid_suggestions_heading_falls_back_to_default(invalid_heading):
     snapshot = snapshot_settings(["pr_code_suggestions.suggestions_heading"])
