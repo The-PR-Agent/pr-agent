@@ -29,9 +29,8 @@ class TokenEncoder:
         configured_model = get_settings().config.model
         model = model or configured_model
 
-        # A fallback attempt may use a different tokenizer from the configured
-        # primary model. Keep the existing cache for the common path, but
-        # do not replace it when a caller explicitly asks for another model.
+        # Use a fresh tokenizer for explicit fallback models without replacing
+        # the cached tokenizer for the configured primary model.
         if model != configured_model:
             return cls._create_encoder(model)
 
@@ -46,7 +45,7 @@ class TokenEncoder:
     def _create_encoder(model):
         try:
             return encoding_for_model(model) if "gpt" in model else get_encoding("o200k_base")
-        except:
+        except Exception:
             return get_encoding("o200k_base")
 
 

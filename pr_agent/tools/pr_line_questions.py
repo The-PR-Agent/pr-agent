@@ -2,13 +2,17 @@ import argparse
 import copy
 from functools import partial
 
-from jinja2 import Environment, StrictUndefined
+from jinja2 import Environment, StrictUndefined, select_autoescape
+from litellm import token_counter
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.git_patch_processing import (
-    decouple_and_convert_to_hunks_with_lines_numbers, extract_hunk_lines_from_patch)
-from pr_agent.algo.pr_processing import get_pr_diff, retry_with_fallback_models
+    decouple_and_convert_to_hunks_with_lines_numbers,
+    extract_hunk_lines_from_patch)
+from pr_agent.algo.pr_processing import (OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+                                         get_pr_diff,
+                                         retry_with_fallback_models)
 from pr_agent.algo.token_handler import TokenEncoder, TokenHandler
 from pr_agent.algo.utils import ModelType, get_max_tokens
 from pr_agent.config_loader import get_settings
@@ -17,6 +21,7 @@ from pr_agent.git_providers.git_provider import get_main_pr_language
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
+
 
 class PR_LineQuestions:
     def __init__(self, pr_url: str, args=None, ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
@@ -137,26 +142,26 @@ class PR_LineQuestions:
                 self.git_provider.publish_comment(no_hunk_message)
 
         return ""
-        
+
     def _load_conversation_history(self) -> str:
         """Generate conversation history from the code review thread
-        
+
         Returns:
             str: The formatted conversation history
         """
         comment_id = get_settings().get('comment_id', '')
         file_path = get_settings().get('file_name', '')
         line_number = get_settings().get('line_end', '')
-        
+
         # early return if any required parameter is missing
         if not all([comment_id, file_path, line_number]):
             get_logger().error("Missing required parameters for conversation history")
             return ""
-        
+
         try:
             # retrieve thread comments
             thread_comments = self.git_provider.get_review_thread_comments(comment_id)
-            
+
             # filter and prepare comments
             filtered_comments = []
             for comment in thread_comments:
@@ -165,23 +170,23 @@ class PR_LineQuestions:
                 # skip empty comments, current comment(will be added as a question at prompt)
                 if not body or not body.strip() or comment_id == comment.id:
                     continue
-                
+
                 user = comment.user
                 author = user.login if hasattr(user, 'login') else 'Unknown'
                 filtered_comments.append((author, body))
-            
+
             # transform conversation history to string using the same pattern as get_commit_messages
             if filtered_comments:
                 comment_count = len(filtered_comments)
                 get_logger().info(f"Loaded {comment_count} comments from the code review thread")
-                
+
                 # Format as numbered list, similar to get_commit_messages
-                conversation_history_str = "\n".join([f"{i + 1}. {author}: {body}" 
+                conversation_history_str = "\n".join([f"{i + 1}. {author}: {body}"
                                                    for i, (author, body) in enumerate(filtered_comments)])
                 return conversation_history_str
-            
+
             return ""
-        
+
         except Exception as e:
             get_logger().error(f"Error processing conversation history, error: {e}")
             return ""
@@ -203,15 +208,24 @@ class PR_LineQuestions:
         return response
 
     def _render_prompts(self, variables):
-        environment = Environment(undefined=StrictUndefined)
+        environment = Environment(
+            autoescape=select_autoescape(default_for_string=False),
+            undefined=StrictUndefined,
+        )
         system_prompt = environment.from_string(get_settings().pr_line_questions_prompt.system).render(variables)
         user_prompt = environment.from_string(get_settings().pr_line_questions_prompt.user).render(variables)
         return system_prompt, user_prompt
 
     def _fit_conversation_history(self, variables, model):
         conversation_history = variables.get("conversation_history", "")
-        encoder = TokenEncoder.get_token_encoder(model)
-        max_tokens = get_max_tokens(model)
+        encoder = None
+        try:
+            completion_tokens = int(get_settings().config.get("max_output_tokens", 0))
+        except (TypeError, ValueError):
+            completion_tokens = 0
+        if completion_tokens <= 0:
+            completion_tokens = OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD
+        max_tokens = max(get_max_tokens(model) - completion_tokens, 0)
 
         def render_with_history(history):
             prompt_variables = copy.deepcopy(variables)
@@ -219,7 +233,22 @@ class PR_LineQuestions:
             return self._render_prompts(prompt_variables)
 
         def count_prompts(prompts):
+            nonlocal encoder
             system_prompt, user_prompt = prompts
+            try:
+                model_token_count = token_counter(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                )
+                if model_token_count > 0:
+                    return model_token_count
+            except Exception as e:
+                get_logger().debug(f"Model-aware token counting failed for {model}: {e}")
+            if encoder is None:
+                encoder = TokenEncoder.get_token_encoder(model)
             return len(encoder.encode(system_prompt, disallowed_special=())) + len(
                 encoder.encode(user_prompt, disallowed_special=()))
 
@@ -248,6 +277,6 @@ class PR_LineQuestions:
                 high = keep_chars - 1
 
         get_logger().warning(
-            f"Conversation history was clipped for /ask_line to fit the {max_tokens}-token model limit"
+            f"Conversation history was clipped for /ask_line to fit the {max_tokens}-token input limit"
         )
         return best_history
