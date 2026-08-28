@@ -268,6 +268,16 @@ class PRCodeSuggestions:
                 pr_body = self.generate_summarized_suggestions(data)
                 get_settings().data = {"artifact": pr_body}
                 return
+        except asyncio.CancelledError:
+            if self.progress_response is not None:
+                try:
+                    self.git_provider.remove_comment(self.progress_response)
+                except Exception as cleanup_error:
+                    get_logger().exception(
+                        f"Failed to remove code suggestions progress comment after cancellation, "
+                        f"error: {cleanup_error}"
+                    )
+            raise
         except Exception as e:
             get_logger().error(f"Failed to generate code suggestions for PR, error: {e}",
                                artifact={"traceback": traceback.format_exc()})
