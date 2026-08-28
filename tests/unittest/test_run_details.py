@@ -1,4 +1,5 @@
 import asyncio
+from decimal import Decimal
 
 import pytest
 
@@ -26,6 +27,10 @@ def test_init_returns_fresh_instance_with_zeroed_counters():
     assert details.completion_tokens == 0
     assert details.total_tokens == 0
     assert details.num_ai_calls == 0
+    assert details.total_cost_usd == Decimal("0")
+    assert details.known_cost_call_count == 0
+    assert details.model_costs_usd == {}
+    assert details.cost_status == "unavailable"
     assert details.has_token_usage is False
     assert details.duration_seconds >= 0
 
@@ -107,6 +112,61 @@ def test_record_ai_call_counts_calls_even_without_usage():
     details = get_run_details()
     assert details.num_ai_calls == 2
     assert details.total_tokens == 12
+
+
+def test_record_ai_call_aggregates_decimal_costs_by_model():
+    init_run_details()
+    record_model_used("model-b", is_fallback=True)
+
+    record_ai_call(_Usage(10, 2, 12), model="model-a", cost_usd=Decimal("0.0710"))
+    record_ai_call(_Usage(5, 1, 6), model="model-b", cost_usd="0.0132")
+    record_ai_call(_Usage(1, 1, 2), model="model-a", cost_usd=0.00001)
+
+    details = get_run_details()
+    assert details.total_cost_usd == Decimal("0.08421")
+    assert details.known_cost_call_count == 3
+    assert details.cost_status == "complete"
+    assert details.fallback_used is True
+    assert details.model_costs_usd == {
+        "model-a": Decimal("0.07101"),
+        "model-b": Decimal("0.0132"),
+    }
+
+
+def test_record_ai_call_treats_zero_cost_as_unpriced():
+    """litellm.completion_cost returns 0.0 for unpriced models and empty usage;
+    recording it would render a false '$0.00' with cost status complete."""
+    init_run_details()
+
+    record_ai_call(_Usage(10, 2, 12), model="zero-priced", cost_usd=0.0)
+    record_ai_call(_Usage(10, 2, 12), model="zero-priced", cost_usd=Decimal("0"))
+
+    details = get_run_details()
+    assert details.total_cost_usd == Decimal("0")
+    assert details.known_cost_call_count == 0
+    assert details.cost_status == "unavailable"
+    assert details.model_costs_usd == {}
+
+
+def test_record_ai_call_marks_partial_and_unavailable_cost_without_fabricating_zero():
+    init_run_details()
+
+    record_ai_call(_Usage(10, 2, 12), model="known", cost_usd=Decimal("0.0042"))
+    record_ai_call(None, model="unknown", cost_usd=None)
+
+    details = get_run_details()
+    assert details.total_cost_usd == Decimal("0.0042")
+    assert details.known_cost_call_count == 1
+    assert details.cost_status == "partial"
+
+    init_run_details()
+    record_ai_call(None, model="unknown", cost_usd=None)
+
+    details = get_run_details()
+    assert details.total_cost_usd == Decimal("0")
+    assert details.known_cost_call_count == 0
+    assert details.cost_status == "unavailable"
+    assert details.model_costs_usd == {}
 
 
 @pytest.mark.asyncio

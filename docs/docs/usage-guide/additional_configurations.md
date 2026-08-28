@@ -30,6 +30,14 @@ To see which model actually answered, how many tokens the run consumed, and how 
 /review --config.output_run_details=true
 ```
 
+API-cost collection is a separate, default-off option controlled by `config.output_run_cost`. Enable both flags to collect it and add it inside the run-details section:
+
+```
+/review --config.output_run_details=true --config.output_run_cost=true
+```
+
+`config.output_run_details` remains the public-output gate: setting only `config.output_run_cost=true` collects run-level cost data but never adds it to a PR comment.
+
 On providers that support GitHub-Flavored Markdown this appends a collapsible section to the generated comment; elsewhere `/review` and `/describe` append the same information as plain text:
 
 ```
@@ -38,9 +46,16 @@ On providers that support GitHub-Flavored Markdown this appends a collapsible se
 - Tokens: 12,340 in / 1,205 out / 13,545 total
 - Time cost: 8.2s
 - AI calls: 1
+- Estimated API cost: $0.08 USD
+  - anthropic/claude-opus-5: $0.07 USD
+  - anthropic/claude-sonnet-5: $0.01 USD
 ```
 
 `Model` shows the model that produced the answer, marked `(fallback)` when the primary model failed and a fallback took over. The `Tokens` line appears only when the model provider reports usage. `AI calls` counts the successful LLM invocations made during the run. The flag is disabled by default.
+
+`Estimated API cost` is derived synchronously from each completed LiteLLM response and its finalized usage. LiteLLM can account for cache reads, cache writes, reasoning tokens, and provider-specific usage categories when the response and its pricing data include them. Multi-model runs show a compact breakdown of the known costs. Exact `Decimal` values are retained for aggregation, while public currency output is rounded to two decimal places; a tiny positive value that would round to zero is shown as `<$0.01` instead of `$0.00`. If only some successful calls can be priced, the total is marked `partial` with the priced-call count; if none can be priced, the line reports `unavailable`. Missing pricing is never rendered as `$0`.
+
+The amount is an estimate based on LiteLLM's pricing data, not provider-invoice-authoritative billing. Reconcile it with the provider's billing records before using it for accounting or chargeback. Streaming responses are priced only after finalized usage is available; asynchronous callbacks and transient `response_cost` callback metadata are not treated as the sole source of truth. The public section contains only aggregate costs and configured model names, never prompts, response bodies, API keys, or provider request IDs.
 
 Notes:
 

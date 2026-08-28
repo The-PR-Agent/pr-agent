@@ -76,7 +76,8 @@ class CodeCommitProvider(GitProvider):
             "create_inline_comment",
             "publish_inline_comments",
             "get_labels",
-            "gfm_markdown"
+            "gfm_markdown",
+            "markdown_backslash_escapes",
         ]:
             return False
         return True

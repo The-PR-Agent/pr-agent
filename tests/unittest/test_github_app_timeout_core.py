@@ -533,6 +533,63 @@ class TestPushTriggerDedupe:
         assert push_trigger_env["count"] == 0
         assert github_app._duplicate_push_triggers[api_url] == 1
 
+    def test_cancelled_backlog_waiter_releases_dedupe_slot(self, push_trigger_env, monkeypatch):
+        settings = github_app.get_settings()
+        settings.github_app.push_trigger_pending_tasks_backlog = True
+        first_started = asyncio.Event()
+        release_first = asyncio.Event()
+
+        async def fake_perform(*args, **kwargs):
+            push_trigger_env["count"] += 1
+            if push_trigger_env["count"] == 1:
+                first_started.set()
+                await release_first.wait()
+
+        monkeypatch.setattr(github_app, "_perform_auto_commands_github", fake_perform)
+
+        async def exercise_cancelled_waiter():
+            body = _push_body()
+            api_url = body["pull_request"]["url"]
+            first = asyncio.create_task(
+                github_app.handle_push_trigger_for_new_commits(
+                    body, "push", "alice", "1", "synchronize", {}, agent=None
+                )
+            )
+            await asyncio.wait_for(first_started.wait(), timeout=1)
+
+            second = asyncio.create_task(
+                github_app.handle_push_trigger_for_new_commits(
+                    body, "push", "alice", "1", "synchronize", {}, agent=None
+                )
+            )
+            for _ in range(10):
+                if github_app._duplicate_push_triggers[api_url] == 2:
+                    break
+                await asyncio.sleep(0)
+            assert github_app._duplicate_push_triggers[api_url] == 2
+
+            second.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await second
+
+            try:
+                # Cancelling the waiting task must return its reserved slot.
+                assert github_app._duplicate_push_triggers[api_url] == 1
+            finally:
+                release_first.set()
+                await first
+
+            assert github_app._duplicate_push_triggers[api_url] == 0
+            await asyncio.wait_for(
+                github_app.handle_push_trigger_for_new_commits(
+                    body, "push", "alice", "1", "synchronize", {}, agent=None
+                ),
+                timeout=1,
+            )
+            assert push_trigger_env["count"] == 2
+
+        asyncio.run(exercise_cancelled_waiter())
+
     def test_invalid_pr_event_short_circuits(self, push_trigger_env):
         body = _push_body()
         body["pull_request"]["state"] = "closed"

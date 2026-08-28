@@ -39,7 +39,10 @@ def test_custom_review_heading_changes_presentation_only():
     assert "<!-- pr-agent:review" not in incremental
 
 
-@pytest.mark.parametrize("invalid_heading", [None, "", "  ", "first\nsecond", 42])
+@pytest.mark.parametrize(
+    "invalid_heading",
+    [None, "", "  ", "first\nsecond", "first\u2028second", 42],
+)
 def test_invalid_review_heading_falls_back_to_default(invalid_heading):
     snapshot = snapshot_settings(["pr_reviewer.review_heading"])
     try:

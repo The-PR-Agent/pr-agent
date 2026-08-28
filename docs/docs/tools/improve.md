@@ -294,6 +294,18 @@ Note: Chunking is primarily relevant for large PRs. For most PRs (up to 600 line
         <td>Optional extra instructions to the tool. For example: "focus on the changes in the file X. Ignore change in ...".</td>
       </tr>
       <tr>
+        <td><b>suggestions_heading</b></td>
+        <td>
+          Visible base heading for summary-table improve comments, without the Markdown prefix.
+          For example, <code>suggestions_heading = "Guideline Improvement Suggestions"</code> renders
+          <code>## Guideline Improvement Suggestions ✨</code>. On GitHub, GitLab, and Azure DevOps,
+          changing this value updates the same persistent suggestions comment; it does not create a separate
+          suggestions channel. LocalGit uses the same visible heading in <code>improve.md</code>, without a
+          hidden identity marker. The setting does not affect committable inline suggestions. Default is
+          <code>PR Code Suggestions</code>.
+        </td>
+      </tr>
+      <tr>
         <td><b>commitable_code_suggestions</b></td>
         <td>If set to true, the tool will display the suggestions as committable code comments. Default is false.</td>
       </tr>
@@ -324,6 +336,13 @@ Note: Chunking is primarily relevant for large PRs. For most PRs (up to 600 line
       <tr>
         <td><b>publish_output_no_suggestions</b></td>
         <td>If set to true, the tool will publish a comment even if no suggestions were found. Default is true.</td>
+      </tr>
+      <tr>
+        <td><b>enable_suggestions_coverage_footer</b></td>
+        <td>
+          If set to true, the tool will display a coverage notice when failed analysis chunks make the
+          suggestions incomplete. Default is true.
+        </td>
       </tr>
     </table>
 

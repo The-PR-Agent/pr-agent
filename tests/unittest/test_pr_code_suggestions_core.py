@@ -1,11 +1,18 @@
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import pr_agent.tools.pr_code_suggestions as pr_code_suggestions_module
+from pr_agent.algo.pr_processing import retry_with_fallback_models
 from pr_agent.algo.types import FilePatchInfo
+from pr_agent.algo.utils import (PRCodeSuggestionsHeader,
+                                 PRCodeSuggestionsIdentity)
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import GitProvider, IncrementalPR
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
+from tests.unittest._settings_helpers import (restore_settings,
+                                              snapshot_settings)
 
 
 def _make_tool(git_provider=None):
@@ -114,6 +121,218 @@ code_suggestions:
         settings.config.publish_output = original_publish_output
 
 
+@pytest.mark.asyncio
+async def test_prepare_prediction_main_keeps_successful_chunks_when_one_parallel_chunk_fails():
+    settings = get_settings()
+    original_decouple_hunks = settings.pr_code_suggestions.decouple_hunks
+    original_parallel_calls = settings.pr_code_suggestions.parallel_calls
+    settings.pr_code_suggestions.decouple_hunks = True
+    settings.pr_code_suggestions.parallel_calls = True
+    tool = _make_tool()
+    tool.token_handler = MagicMock()
+    calls = []
+    successful_chunk_started = asyncio.Event()
+    release_successful_chunk = asyncio.Event()
+    successful_chunk_finished = asyncio.Event()
+
+    async def fake_get_prediction(model, patches_diff, patches_diff_no_line_numbers):
+        calls.append(patches_diff)
+        if patches_diff == "chunk-b":
+            await successful_chunk_started.wait()
+            release_successful_chunk.set()
+            raise RuntimeError("chunk b failed")
+        successful_chunk_started.set()
+        await release_successful_chunk.wait()
+        successful_chunk_finished.set()
+        return {"code_suggestions": [_valid_suggestion(relevant_file="chunk-a.py")]}
+
+    try:
+        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", return_value=["chunk-a", "chunk-b"]):
+            tool._get_prediction = fake_get_prediction
+
+            data = await tool.prepare_prediction_main("primary-model")
+    finally:
+        settings.pr_code_suggestions.decouple_hunks = original_decouple_hunks
+        settings.pr_code_suggestions.parallel_calls = original_parallel_calls
+
+    assert calls == ["chunk-a", "chunk-b"]
+    assert successful_chunk_finished.is_set()
+    assert tool.failed_chunk_count == 1
+    assert tool.total_chunk_count == 2
+    assert data["code_suggestions"] == [_valid_suggestion(relevant_file="chunk-a.py")]
+
+
+@pytest.mark.asyncio
+async def test_prepare_prediction_main_propagates_chunk_cancellation_after_waiting_for_siblings():
+    settings = get_settings()
+    original_decouple_hunks = settings.pr_code_suggestions.decouple_hunks
+    original_parallel_calls = settings.pr_code_suggestions.parallel_calls
+    settings.pr_code_suggestions.decouple_hunks = True
+    settings.pr_code_suggestions.parallel_calls = True
+    tool = _make_tool()
+    tool.token_handler = MagicMock()
+    successful_chunk_finished = asyncio.Event()
+
+    async def fake_get_prediction(model, patches_diff, patches_diff_no_line_numbers):
+        if patches_diff == "chunk-b":
+            raise asyncio.CancelledError
+        await asyncio.sleep(0.01)
+        successful_chunk_finished.set()
+        return {"code_suggestions": []}
+
+    try:
+        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", return_value=["chunk-a", "chunk-b"]):
+            tool._get_prediction = fake_get_prediction
+
+            with pytest.raises(asyncio.CancelledError):
+                await tool.prepare_prediction_main("primary-model")
+    finally:
+        settings.pr_code_suggestions.decouple_hunks = original_decouple_hunks
+        settings.pr_code_suggestions.parallel_calls = original_parallel_calls
+
+    assert successful_chunk_finished.is_set()
+
+
+@pytest.mark.asyncio
+async def test_prepare_prediction_main_keeps_processing_after_one_sequential_chunk_fails():
+    settings = get_settings()
+    original_decouple_hunks = settings.pr_code_suggestions.decouple_hunks
+    original_parallel_calls = settings.pr_code_suggestions.parallel_calls
+    settings.pr_code_suggestions.decouple_hunks = True
+    settings.pr_code_suggestions.parallel_calls = False
+    tool = _make_tool()
+    tool.token_handler = MagicMock()
+    calls = []
+
+    async def fake_get_prediction(model, patches_diff, patches_diff_no_line_numbers):
+        calls.append(patches_diff)
+        if patches_diff == "chunk-b":
+            raise RuntimeError("chunk b failed")
+        return {"code_suggestions": [_valid_suggestion(relevant_file=f"{patches_diff}.py")]}
+
+    try:
+        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", return_value=[
+            "chunk-a", "chunk-b", "chunk-c"
+        ]):
+            tool._get_prediction = fake_get_prediction
+
+            data = await tool.prepare_prediction_main("primary-model")
+    finally:
+        settings.pr_code_suggestions.decouple_hunks = original_decouple_hunks
+        settings.pr_code_suggestions.parallel_calls = original_parallel_calls
+
+    assert calls == ["chunk-a", "chunk-b", "chunk-c"]
+    assert tool.failed_chunk_count == 1
+    assert tool.total_chunk_count == 3
+    assert data["code_suggestions"] == [
+        _valid_suggestion(relevant_file="chunk-a.py"),
+        _valid_suggestion(relevant_file="chunk-c.py"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_prepare_prediction_main_keeps_outer_fallback_when_all_chunks_fail():
+    settings_snapshot = snapshot_settings(
+        ("config.model", "config.fallback_models", "openai.deployment_id", "openai.fallback_deployments")
+    )
+    settings = get_settings()
+    settings.set("config.model", "primary-model")
+    settings.set("config.fallback_models", ["fallback-model"])
+    settings.set("openai.deployment_id", None)
+    settings.set("openai.fallback_deployments", [])
+    original_decouple_hunks = settings.pr_code_suggestions.decouple_hunks
+    original_parallel_calls = settings.pr_code_suggestions.parallel_calls
+    settings.pr_code_suggestions.decouple_hunks = True
+    settings.pr_code_suggestions.parallel_calls = True
+    tool = _make_tool()
+    tool.token_handler = MagicMock()
+    attempted = []
+
+    async def fake_get_prediction(model, patches_diff, patches_diff_no_line_numbers):
+        attempted.append((model, patches_diff))
+        if model == "primary-model":
+            raise RuntimeError(f"{patches_diff} failed")
+        return {"code_suggestions": [_valid_suggestion(relevant_file=f"{patches_diff}.py")]}
+
+    try:
+        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", return_value=["chunk-a", "chunk-b"]):
+            tool._get_prediction = fake_get_prediction
+
+            data = await retry_with_fallback_models(tool.prepare_prediction_main)
+    finally:
+        settings.pr_code_suggestions.decouple_hunks = original_decouple_hunks
+        settings.pr_code_suggestions.parallel_calls = original_parallel_calls
+        restore_settings(settings_snapshot)
+
+    assert attempted == [
+        ("primary-model", "chunk-a"),
+        ("primary-model", "chunk-b"),
+        ("fallback-model", "chunk-a"),
+        ("fallback-model", "chunk-b"),
+    ]
+    assert len(data["code_suggestions"]) == 2
+    assert tool.failed_chunk_count == 0
+    assert tool.total_chunk_count == 2
+
+
+def test_suggestions_coverage_footer_reports_partial_runs_and_respects_flag():
+    settings = get_settings()
+    snapshot = snapshot_settings(["pr_code_suggestions.enable_suggestions_coverage_footer"])
+    tool = _make_tool()
+    tool.failed_chunk_count = 1
+    tool.total_chunk_count = 3
+
+    try:
+        settings.set("pr_code_suggestions.enable_suggestions_coverage_footer", True)
+        footer = tool._get_suggestions_coverage_footer()
+        assert "1 of 3 analysis chunks failed" in footer
+        assert "successful chunks only" in footer
+
+        empty_footer = tool._get_suggestions_coverage_footer(suggestions_present=False)
+        assert "no suggestions were found in the successful chunks" in empty_footer
+        assert "failed chunks could not be analyzed" in empty_footer
+
+        settings.set("pr_code_suggestions.enable_suggestions_coverage_footer", False)
+        assert tool._get_suggestions_coverage_footer() == ""
+    finally:
+        restore_settings(snapshot)
+
+
+def test_suggestions_coverage_footer_is_safe_for_tools_built_without_init():
+    tool = _make_tool()
+
+    assert tool._get_suggestions_coverage_footer() == ""
+
+
+@pytest.mark.asyncio
+async def test_run_appends_partial_suggestions_coverage_to_the_summary():
+    snapshot = snapshot_settings([
+        "config.publish_output",
+        "data",
+        "pr_code_suggestions.enable_suggestions_coverage_footer",
+    ])
+    tool = _make_tool()
+    tool.pr_url = "https://example.test/pull/1"
+    tool.git_provider.get_files.return_value = ["app.py"]
+    tool.generate_summarized_suggestions = MagicMock(return_value="Base suggestions body")
+    tool.failed_chunk_count = 1
+    tool.total_chunk_count = 2
+
+    try:
+        get_settings().set("config.publish_output", False)
+        get_settings().set("pr_code_suggestions.enable_suggestions_coverage_footer", True)
+        with (patch("pr_agent.tools.pr_code_suggestions.init_run_details"),
+              patch("pr_agent.tools.pr_code_suggestions.retry_with_fallback_models",
+                    AsyncMock(return_value={"code_suggestions": [_valid_suggestion()]}))):
+            await tool.run()
+
+        artifact = get_settings().data["artifact"]
+        assert artifact.startswith("Base suggestions body")
+        assert "1 of 2 analysis chunks failed" in artifact
+    finally:
+        restore_settings(snapshot)
+
+
 def test_dedent_code_matches_target_file_indentation():
     git_provider = MagicMock()
     git_provider.diff_files = [
@@ -129,6 +348,273 @@ def test_dedent_code_matches_target_file_indentation():
     assert tool.dedent_code("app.py", 2, "return new()") == "    return new()"
 
 
+def test_dedent_code_preserves_relative_indentation_across_anchor_and_snippet_styles():
+    anchors = [
+        ("", "spaces", 0),
+        ("  ", "spaces", 2),
+        ("    ", "spaces", 4),
+        ("\t", "tabs", 1),
+        ("\t\t", "tabs", 2),
+    ]
+    indentation_units = [1, 2, 4]
+    initial_depths = [0, 1, 2]
+    relative_depth_patterns = [(0, 1, 0), (0, 1, 2)]
+    checked_cases = 0
+
+    for anchor, anchor_style, anchor_depth in anchors:
+        for indentation_unit in indentation_units:
+            for initial_depth in initial_depths:
+                for relative_depths in relative_depth_patterns:
+                    snippet = "\n".join(
+                        " " * ((initial_depth + relative_depth) * indentation_unit) + f"line_{index}"
+                        for index, relative_depth in enumerate(relative_depths)
+                    )
+                    if anchor_style == "tabs":
+                        expected = "\n".join(
+                            "\t" * (anchor_depth + relative_depth) + f"line_{index}"
+                            for index, relative_depth in enumerate(relative_depths)
+                        )
+                    else:
+                        expected = "\n".join(
+                            " " * (anchor_depth + relative_depth * indentation_unit) + f"line_{index}"
+                            for index, relative_depth in enumerate(relative_depths)
+                        )
+
+                    git_provider = MagicMock()
+                    git_provider.diff_files = [FilePatchInfo(
+                        base_file="",
+                        head_file=f"{anchor}anchor\n",
+                        patch="",
+                        filename="app.py",
+                    )]
+                    tool = _make_tool(git_provider)
+
+                    actual = tool.dedent_code("app.py", 1, snippet)
+
+                    assert actual == expected, (
+                        anchor, indentation_unit, initial_depth, relative_depths, actual, expected
+                    )
+                    checked_cases += 1
+
+    assert checked_cases == 90
+
+
+def test_dedent_code_preserves_existing_tab_indentation_levels():
+    git_provider = MagicMock()
+    git_provider.diff_files = [FilePatchInfo(
+        base_file="",
+        head_file="\t\tanchor\n",
+        patch="",
+        filename="app.py",
+    )]
+    tool = _make_tool(git_provider)
+
+    assert tool.dedent_code("app.py", 1, "\touter\n\t\tinner\n\touter") == (
+        "\t\touter\n\t\t\tinner\n\t\touter"
+    )
+
+
+@pytest.mark.parametrize("snippet", [
+    " outer\n   inner\n outer",
+    "   outer\n     inner\n   outer",
+    "\t outer\n\t   inner\n\t outer",
+])
+def test_dedent_code_infers_tab_depth_from_relative_widths(snippet):
+    git_provider = MagicMock()
+    git_provider.diff_files = [FilePatchInfo(
+        base_file="",
+        head_file="\tanchor\n",
+        patch="",
+        filename="app.py",
+    )]
+    tool = _make_tool(git_provider)
+
+    assert tool.dedent_code("app.py", 1, snippet) == "\touter\n\t\tinner\n\touter"
+
+
+def test_dedent_code_preserves_alignment_spaces_after_the_tab_anchor():
+    git_provider = MagicMock()
+    git_provider.diff_files = [FilePatchInfo(
+        base_file="",
+        head_file="\t    anchor\n",
+        patch="",
+        filename="app.py",
+    )]
+    tool = _make_tool(git_provider)
+
+    assert tool.dedent_code("app.py", 1, "outer\n    inner\nouter") == (
+        "\t    outer\n\t\t    inner\n\t    outer"
+    )
+
+
+@pytest.mark.parametrize("alignment_spaces", [1, 2])
+def test_dedent_code_preserves_continuation_alignment_spaces(alignment_spaces):
+    git_provider = MagicMock()
+    git_provider.diff_files = [FilePatchInfo(
+        base_file="",
+        head_file="\tanchor\n",
+        patch="",
+        filename="app.py",
+    )]
+    tool = _make_tool(git_provider)
+
+    snippet = "outer\n    inner\n        deeper\n" + " " * (8 + alignment_spaces) + "aligned"
+    assert tool.dedent_code("app.py", 1, snippet) == (
+        "\touter\n\t\tinner\n\t\t\tdeeper\n\t\t\t" + " " * alignment_spaces + "aligned"
+    )
+
+
+def test_dedent_code_preserves_alignment_without_adjacent_depths():
+    git_provider = MagicMock()
+    git_provider.diff_files = [FilePatchInfo(
+        base_file="",
+        head_file="\tanchor\n",
+        patch="",
+        filename="app.py",
+    )]
+    tool = _make_tool(git_provider)
+
+    snippet = "outer\n    inner\n            deeper\n              aligned"
+    assert tool.dedent_code("app.py", 1, snippet) == (
+        "\touter\n\t\tinner\n\t\t\t\tdeeper\n\t\t\t\t  aligned"
+    )
+
+
+def test_dedent_code_excludes_closed_continuations_from_unit_inference():
+    git_provider = MagicMock()
+    git_provider.diff_files = [FilePatchInfo(
+        base_file="",
+        head_file="\tanchor\n",
+        patch="",
+        filename="app.py",
+    )]
+    tool = _make_tool(git_provider)
+
+    snippet = "outer(\n  arg\n)\nif cond:\n    inner\n        deeper"
+    assert tool.dedent_code("app.py", 1, snippet) == (
+        "\touter(\n\t  arg\n\t)\n\tif cond:\n\t\tinner\n\t\t\tdeeper"
+    )
+
+
+def test_dedent_code_infers_structure_inside_a_closed_continuation():
+    git_provider = MagicMock()
+    git_provider.diff_files = [FilePatchInfo(
+        base_file="",
+        head_file="\tanchor\n",
+        patch="",
+        filename="app.py",
+    )]
+    tool = _make_tool(git_provider)
+
+    snippet = "outer(\n  function() {\n      if (cond) {\n          work()\n      }\n  }\n)"
+    assert tool.dedent_code("app.py", 1, snippet) == (
+        "\touter(\n\t  function() {\n\t\t  if (cond) {\n"
+        "\t\t\t  work()\n\t\t  }\n\t  }\n\t)"
+    )
+
+
+def test_dedent_code_preserves_spaces_in_a_pure_continuation():
+    git_provider = MagicMock()
+    git_provider.diff_files = [FilePatchInfo(
+        base_file="",
+        head_file="\tanchor\n",
+        patch="",
+        filename="app.py",
+    )]
+    tool = _make_tool(git_provider)
+
+    snippet = "call(\n    arg\n)"
+    assert tool.dedent_code("app.py", 1, snippet) == "\tcall(\n\t    arg\n\t)"
+
+
+def test_dedent_code_keeps_two_space_structural_indentation():
+    git_provider = MagicMock()
+    git_provider.diff_files = [FilePatchInfo(
+        base_file="",
+        head_file="\tanchor\n",
+        patch="",
+        filename="app.py",
+    )]
+    tool = _make_tool(git_provider)
+
+    snippet = "if outer:\n  if inner:\n    work()"
+    assert tool.dedent_code("app.py", 1, snippet) == (
+        "\tif outer:\n\t\tif inner:\n\t\t\twork()"
+    )
+
+
+def test_dedent_code_infers_structure_across_outdents_and_continuations():
+    git_provider = MagicMock()
+    git_provider.diff_files = [FilePatchInfo(
+        base_file="",
+        head_file="\t\t\tanchor\n",
+        patch="",
+        filename="app.py",
+    )]
+    tool = _make_tool(git_provider)
+
+    snippet = "        deep()\n    call(\n      arg\n    )\nouter()"
+    assert tool.dedent_code("app.py", 1, snippet) == (
+        "\t\t\tdeep()\n\t\tcall(\n\t\t  arg\n\t\t)\n\touter()"
+    )
+
+
+def test_dedent_code_removes_whitespace_from_blank_lines_when_shifting_left():
+    git_provider = MagicMock()
+    git_provider.diff_files = [FilePatchInfo(
+        base_file="",
+        head_file="    anchor\n",
+        patch="",
+        filename="app.py",
+    )]
+    tool = _make_tool(git_provider)
+
+    assert tool.dedent_code("app.py", 1, "        outer\n          \n            inner") == (
+        "    outer\n\n        inner"
+    )
+
+
+def test_dedent_code_ignores_blank_line_width_when_inferring_tab_depth():
+    git_provider = MagicMock()
+    git_provider.diff_files = [FilePatchInfo(
+        base_file="",
+        head_file="\tanchor\n",
+        patch="",
+        filename="app.py",
+    )]
+    tool = _make_tool(git_provider)
+
+    assert tool.dedent_code("app.py", 1, " outer\n       \n   inner\n outer") == (
+        "\touter\n\n\t\tinner\n\touter"
+    )
+
+
+def test_dedent_code_ignores_leading_blank_line_when_inferring_tab_depth():
+    git_provider = MagicMock()
+    git_provider.diff_files = [FilePatchInfo(
+        base_file="",
+        head_file="\tanchor\n",
+        patch="",
+        filename="app.py",
+    )]
+    tool = _make_tool(git_provider)
+
+    assert tool.dedent_code("app.py", 1, "\n  return new()") == "\n\treturn new()"
+
+
+def test_dedent_code_ignores_leading_blank_line_when_shifting_spaces():
+    git_provider = MagicMock()
+    git_provider.diff_files = [FilePatchInfo(
+        base_file="",
+        head_file="    anchor\n",
+        patch="",
+        filename="app.py",
+    )]
+    tool = _make_tool(git_provider)
+
+    assert tool.dedent_code("app.py", 1, "\n        return new()") == "\n    return new()"
+
+
 def test_dedent_code_uses_patch_when_file_content_is_unavailable():
     git_provider = MagicMock()
     git_provider.diff_files = [FilePatchInfo(
@@ -140,6 +626,20 @@ def test_dedent_code_uses_patch_when_file_content_is_unavailable():
     tool = _make_tool(git_provider)
 
     assert tool.dedent_code("app.py", 2, "return new()") == "    return new()"
+
+
+def test_dedent_code_uses_patch_when_head_file_is_partial():
+    git_provider = MagicMock()
+    git_provider.diff_files = [FilePatchInfo(
+        base_file="def f():\n    return older()\n",
+        head_file="def f():\n    return old()\n",
+        patch="@@ -19,2 +19,2 @@\n def f():\n-\told()\n+\told()\n",
+        filename="app.py",
+        head_file_is_complete=False,
+    )]
+    tool = _make_tool(git_provider)
+
+    assert tool.dedent_code("app.py", 20, "new()") == "\tnew()"
 
 
 @pytest.mark.asyncio
@@ -239,10 +739,81 @@ def _published_suggestion(git_provider):
     return published[0]
 
 
+def test_summarized_suggestions_use_the_target_file_indentation():
+    git_provider = _provider_with_file("func f() {\n\told()\n}\n", filename="main.go")
+    git_provider.get_line_link.return_value = "https://example.com/main.go#L2"
+    tool = _make_tool(git_provider)
+    suggestion = _valid_suggestion(
+        relevant_file="main.go",
+        relevant_lines_start=2,
+        relevant_lines_end=2,
+        existing_code="old()",
+        improved_code="replacement() {\n    nested()\n}",
+        score=8,
+    )
+
+    summary = tool.generate_summarized_suggestions({"code_suggestions": [suggestion]})
+
+    assert "+\treplacement() {" in summary
+    assert "+\t\tnested()" in summary
+    assert "+\t}" in summary
+
+
+def test_summarized_suggestions_use_patch_anchor_for_partial_head_file():
+    git_provider = MagicMock()
+    git_provider.diff_files = [FilePatchInfo(
+        base_file="func f() {\n\tolder()\n",
+        head_file="func f() {\n\told()\n",
+        patch="@@ -19,2 +19,2 @@\n func f() {\n-\tolder()\n+\told()\n",
+        filename="main.go",
+        head_file_is_complete=False,
+    )]
+    git_provider.get_line_link.return_value = "https://example.com/main.go#L20"
+    tool = _make_tool(git_provider)
+    suggestion = _valid_suggestion(
+        relevant_file="main.go",
+        relevant_lines_start=20,
+        relevant_lines_end=20,
+        existing_code="old()",
+        improved_code="replacement() {\n    nested()\n}",
+        score=8,
+    )
+
+    summary = tool.generate_summarized_suggestions({"code_suggestions": [suggestion]})
+
+    assert "+\treplacement() {" in summary
+    assert "+\t\tnested()" in summary
+    assert "+\t}" in summary
+
+
+def test_summarized_suggestions_normalize_both_sides_of_the_diff():
+    git_provider = _provider_with_file(
+        "func f() {\n\tif old() {\n\t\tkeep()\n\t}\n}\n",
+        filename="main.go",
+    )
+    git_provider.get_line_link.return_value = "https://example.com/main.go#L2-L4"
+    tool = _make_tool(git_provider)
+    suggestion = _valid_suggestion(
+        relevant_file="main.go",
+        relevant_lines_start=2,
+        relevant_lines_end=4,
+        existing_code="if old() {\n    keep()\n}",
+        improved_code="if new() {\n    keep()\n}",
+        score=8,
+    )
+
+    summary = tool.generate_summarized_suggestions({"code_suggestions": [suggestion]})
+
+    diff_block = summary.split("```diff\n", 1)[1].split("\n```", 1)[0]
+    assert diff_block == "-\tif old() {\n+\tif new() {\n \t\tkeep()\n \t}"
+
+
 @pytest.mark.asyncio
 async def test_suggestion_covering_the_anchored_range_is_published_as_committable():
     git_provider = _provider_with_file("def f():\n    return old()\n")
     tool = _make_tool(git_provider)
+    tool.failed_chunk_count = 1
+    tool.total_chunk_count = 2
 
     await tool.push_inline_code_suggestions({"code_suggestions": [
         _valid_suggestion(
@@ -374,6 +945,7 @@ async def test_publish_no_suggestions_still_overwrites_the_progress_comment_when
         publish_output_no_suggestions):
     publish_output_no_suggestions(True)
     git_provider = MagicMock()
+    git_provider.supports_code_suggestions_artifact.return_value = False
     tool = _make_tool(git_provider)
     tool.progress_response = MagicMock()
 
@@ -382,6 +954,69 @@ async def test_publish_no_suggestions_still_overwrites_the_progress_comment_when
     _, kwargs = git_provider.edit_comment.call_args
     assert "No code suggestions found for the PR." in kwargs["body"]
     git_provider.remove_comment.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_publish_no_suggestions_qualifies_partial_results(publish_output_no_suggestions):
+    publish_output_no_suggestions(True)
+    snapshot = snapshot_settings(["pr_code_suggestions.enable_suggestions_coverage_footer"])
+    git_provider = MagicMock()
+    git_provider.supports_code_suggestions_artifact.return_value = False
+    tool = _make_tool(git_provider)
+    tool.failed_chunk_count = 1
+    tool.total_chunk_count = 2
+
+    try:
+        get_settings().set("pr_code_suggestions.enable_suggestions_coverage_footer", True)
+        await tool.publish_no_suggestions()
+    finally:
+        restore_settings(snapshot)
+
+    body = git_provider.publish_comment.call_args.args[0]
+    assert "No code suggestions found in the successfully analyzed chunks." in body
+    assert "1 of 2 analysis chunks failed" in body
+    assert "failed chunks could not be analyzed" in body
+
+
+@pytest.mark.asyncio
+async def test_publish_no_suggestions_uses_provider_artifact_capability(publish_output_no_suggestions):
+    publish_output_no_suggestions(True)
+    git_provider = MagicMock()
+    git_provider.supports_code_suggestions_artifact.return_value = True
+    tool = _make_tool(git_provider)
+
+    await tool.publish_no_suggestions()
+
+    git_provider.publish_code_suggestions_artifact.assert_called_once_with(
+        [], artifact_footer="", no_suggestions_message="No code suggestions found for the PR.")
+    git_provider.publish_code_suggestions.assert_not_called()
+    git_provider.publish_comment.assert_not_called()
+    git_provider.edit_comment.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_publish_no_suggestions_keeps_partial_notice_in_disabled_output_artifact(
+        publish_output_no_suggestions):
+    publish_output_no_suggestions(True)
+    snapshot = snapshot_settings([
+        "config.publish_output",
+        "data",
+        "pr_code_suggestions.enable_suggestions_coverage_footer",
+    ])
+    tool = _make_tool()
+    tool.failed_chunk_count = 1
+    tool.total_chunk_count = 2
+
+    try:
+        get_settings().set("config.publish_output", False)
+        get_settings().set("pr_code_suggestions.enable_suggestions_coverage_footer", True)
+        await tool.publish_no_suggestions()
+        artifact = get_settings().data["artifact"]
+    finally:
+        restore_settings(snapshot)
+
+    assert "No code suggestions found in the successfully analyzed chunks." in artifact
+    assert "1 of 2 analysis chunks failed" in artifact
 
 
 def test_setup_incremental_scope_calls_provider_when_supported():
@@ -424,6 +1059,10 @@ def test_supports_incremental_kind_defaults_to_false_on_base_provider():
     # The base-class default must be "no support" so tools fall back to a full run
     # on providers that never implemented kind-aware incremental anchoring.
     assert GitProvider.supports_incremental_kind(MagicMock(), "suggestions") is False
+
+
+def test_supports_code_suggestions_artifact_defaults_to_false_on_base_provider():
+    assert GitProvider.supports_code_suggestions_artifact(MagicMock()) is False
 
 
 @pytest.mark.asyncio
@@ -502,6 +1141,7 @@ async def test_dual_publishing_keeps_suggestions_without_replacement_code():
         ]})
 
         assert "Use the shared helper." in _published_suggestion(git_provider)["body"]
+        git_provider.publish_comment.assert_not_called()
     finally:
         settings.set("pr_code_suggestions.dual_publishing_score_threshold", original_threshold)
 
@@ -620,4 +1260,158 @@ def test_persistent_update_survives_progress_cleanup_failure():
     assert result is existing
     assert provider.edit_comment.call_count == 2
     provider.remove_comment.assert_not_called()
+    provider.publish_comment.assert_not_called()
+
+
+def _persistent_provider(existing_comments):
+    provider = MagicMock()
+    provider.get_issue_comments.return_value = existing_comments
+    provider.get_comment_url.return_value = "https://example.test/comment/1"
+    provider.get_latest_commit_url.return_value = "https://example.test/commit/deadbee"
+    return provider
+
+
+def test_custom_heading_migrates_legacy_persistent_suggestions_in_place():
+    legacy = MagicMock()
+    legacy.body = (
+        f"{PRCodeSuggestionsHeader.SUMMARY.value}\n\n"
+        "<!-- aaa1111 -->\n\n<table>old suggestions</table>"
+    )
+    provider = _persistent_provider([legacy])
+    custom_header = "## Guideline Improvement Suggestions ✨"
+
+    result = PRCodeSuggestions.publish_persistent_comment_with_history(
+        provider,
+        f"{custom_header}\n\n<table>new suggestions</table>",
+        initial_header=custom_header,
+        name="suggestions",
+        identity_marker=PRCodeSuggestionsIdentity.SUMMARY.value,
+        legacy_initial_header=PRCodeSuggestionsHeader.SUMMARY.value,
+    )
+
+    assert result is legacy
+    updated = provider.edit_comment.call_args.args[1]
+    assert updated.startswith(
+        f"{custom_header}\n\n"
+        f"{PRCodeSuggestionsIdentity.SUMMARY.value}\n\n"
+        "<!-- deadbee -->"
+    )
+    assert "Suggestions up to commit aaa1111" in updated
+    provider.publish_comment.assert_not_called()
+
+
+def test_marked_persistent_suggestions_take_precedence_over_legacy_comment():
+    legacy = MagicMock()
+    legacy.body = (
+        f"{PRCodeSuggestionsHeader.SUMMARY.value}\n\n"
+        "<!-- aaa1111 -->\n\n<table>legacy</table>"
+    )
+    marked = MagicMock()
+    marked.body = (
+        "## Previous Custom Heading ✨\n\n"
+        f"{PRCodeSuggestionsIdentity.SUMMARY.value}\n\n"
+        "<!-- bbb2222 -->\n\n<table>marked</table>"
+    )
+    provider = _persistent_provider([legacy, marked])
+    custom_header = "## Latest Custom Heading ✨"
+
+    result = PRCodeSuggestions.publish_persistent_comment_with_history(
+        provider,
+        f"{custom_header}\n\n<table>new suggestions</table>",
+        initial_header=custom_header,
+        name="suggestions",
+        identity_marker=PRCodeSuggestionsIdentity.SUMMARY.value,
+        legacy_initial_header=PRCodeSuggestionsHeader.SUMMARY.value,
+    )
+
+    assert result is marked
+    assert provider.edit_comment.call_args.args[0] is marked
+    assert provider.edit_comment.call_args.args[1].startswith(
+        f"{custom_header}\n\n{PRCodeSuggestionsIdentity.SUMMARY.value}\n\n"
+    )
+    provider.publish_comment.assert_not_called()
+
+
+def test_persistent_suggestions_do_not_adopt_quoted_or_late_identity():
+    human = MagicMock()
+    human.body = (
+        "## Human discussion\n\n"
+        f"> {PRCodeSuggestionsIdentity.SUMMARY.value}\n\n"
+        f"Quoted output:\n{PRCodeSuggestionsHeader.SUMMARY.value}\n"
+    )
+    provider = _persistent_provider([human])
+    custom_header = "## Team Suggestions ✨"
+
+    PRCodeSuggestions.publish_persistent_comment_with_history(
+        provider,
+        f"{custom_header}\n\n<table>new suggestions</table>",
+        initial_header=custom_header,
+        name="suggestions",
+        identity_marker=PRCodeSuggestionsIdentity.SUMMARY.value,
+        legacy_initial_header=PRCodeSuggestionsHeader.SUMMARY.value,
+    )
+
+    provider.edit_comment.assert_not_called()
+    published = provider.publish_comment.call_args.args[0]
+    assert published.startswith(
+        f"{custom_header}\n\n"
+        f"{PRCodeSuggestionsIdentity.SUMMARY.value}\n\n"
+        "<!-- deadbee -->\n\n"
+    )
+
+
+def test_legacy_heading_without_generated_shape_is_not_adopted():
+    human = MagicMock()
+    human.body = (
+        f"{PRCodeSuggestionsHeader.SUMMARY.value}\n\n"
+        "A human-authored comment using the same heading."
+    )
+    provider = _persistent_provider([human])
+    custom_header = "## Team Suggestions ✨"
+
+    PRCodeSuggestions.publish_persistent_comment_with_history(
+        provider,
+        f"{custom_header}\n\n<table>new suggestions</table>",
+        initial_header=custom_header,
+        name="suggestions",
+        identity_marker=PRCodeSuggestionsIdentity.SUMMARY.value,
+        legacy_initial_header=PRCodeSuggestionsHeader.SUMMARY.value,
+    )
+
+    provider.edit_comment.assert_not_called()
+    published = provider.publish_comment.call_args.args[0]
+    assert PRCodeSuggestionsIdentity.SUMMARY.value in published
+
+
+def test_custom_heading_is_kept_when_a_history_section_already_exists():
+    existing = MagicMock()
+    existing.body = (
+        "## Previous Custom Heading ✨\n\n"
+        f"{PRCodeSuggestionsIdentity.SUMMARY.value}\n\n"
+        "<!-- aaa1111 -->\n\n"
+        "Latest suggestions up to commit aaa1111\n\n"
+        "<table>latest</table>\n\n___\n\n"
+        "#### Previous suggestions\n"
+        "<details><summary>Suggestions up to commit 0000000</summary>\n"
+        "<br><table>older</table>\n\n</details>\n"
+    )
+    provider = _persistent_provider([existing])
+    custom_header = "## Latest Custom Heading ✨"
+
+    result = PRCodeSuggestions.publish_persistent_comment_with_history(
+        provider,
+        f"{custom_header}\n\n<table>new suggestions</table>",
+        initial_header=custom_header,
+        name="suggestions",
+        identity_marker=PRCodeSuggestionsIdentity.SUMMARY.value,
+        legacy_initial_header=PRCodeSuggestionsHeader.SUMMARY.value,
+    )
+
+    assert result is existing
+    updated = provider.edit_comment.call_args.args[1]
+    assert updated.startswith(
+        f"{custom_header}\n\n{PRCodeSuggestionsIdentity.SUMMARY.value}\n\n<!-- deadbee -->"
+    )
+    assert "Suggestions up to commit aaa1111" in updated
+    assert "Suggestions up to commit 0000000" in updated
     provider.publish_comment.assert_not_called()

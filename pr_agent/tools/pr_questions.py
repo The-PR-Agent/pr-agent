@@ -7,7 +7,7 @@ from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.pr_processing import get_pr_diff, retry_with_fallback_models
 from pr_agent.algo.token_handler import TokenHandler
-from pr_agent.algo.utils import ModelType
+from pr_agent.algo.utils import ModelType, format_pr_questions_header
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.git_provider import get_main_pr_language
@@ -128,8 +128,9 @@ class PRQuestions:
         if model_answer_sanitized != model_answer:
             get_logger().debug(f"Sanitized model answer",
                                artifact={"model_answer": model_answer, "sanitized_answer": model_answer_sanitized})
-
-
-        answer_str = f"### **Ask**❓\n{self.question_str}\n\n"
+        answer_header = format_pr_questions_header(
+            escape_markdown=self.git_provider.is_supported("markdown_backslash_escapes")
+        )
+        answer_str = f"{answer_header}\n{self.question_str}\n\n"
         answer_str += f"### **Answer:**\n{model_answer_sanitized}\n\n"
         return answer_str

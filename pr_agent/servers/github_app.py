@@ -184,16 +184,16 @@ async def handle_push_trigger_for_new_commits(body: Dict[str, Any],
             f"Skipping push trigger for {api_url=} because another event already triggered the same processing"
         )
         return {}
-    async with _pending_task_duplicate_push_conditions[api_url]:
-        if current_active_tasks == 1:
-            # second task waits
-            get_logger().info(
-                f"Waiting to process push trigger for {api_url=} because the first task is still in progress"
-            )
-            await _pending_task_duplicate_push_conditions[api_url].wait()
-            get_logger().info(f"Finished waiting to process push trigger for {api_url=} - continue with flow")
-
     try:
+        async with _pending_task_duplicate_push_conditions[api_url]:
+            if current_active_tasks == 1:
+                # second task waits
+                get_logger().info(
+                    f"Waiting to process push trigger for {api_url=} because the first task is still in progress"
+                )
+                await _pending_task_duplicate_push_conditions[api_url].wait()
+                get_logger().info(f"Finished waiting to process push trigger for {api_url=} - continue with flow")
+
         if get_identity_provider().verify_eligibility("github", sender_id, api_url) is not Eligibility.NOT_ELIGIBLE:
             get_logger().info(f"Performing incremental review for {api_url=} because of {event=} and {action=}")
             await _perform_auto_commands_github("push_commands", agent, body, api_url, log_context)

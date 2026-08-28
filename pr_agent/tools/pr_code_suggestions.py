@@ -23,8 +23,13 @@ from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.run_details import init_run_details
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_handler import TokenHandler
-from pr_agent.algo.utils import (ModelType, clip_tokens, get_max_tokens,
-                                 get_model, load_yaml, replace_code_tags,
+from pr_agent.algo.utils import (ModelType, PRCodeSuggestionsHeader,
+                                 PRCodeSuggestionsIdentity,
+                                 add_comment_identity, clip_tokens,
+                                 comment_matches_identity,
+                                 format_pr_code_suggestions_header,
+                                 get_max_tokens, get_model, load_yaml,
+                                 replace_code_tags,
                                  show_relevant_configurations,
                                  show_run_details)
 from pr_agent.config_loader import get_settings
@@ -203,6 +208,7 @@ class PRCodeSuggestions:
 
                     # generate summarized suggestions
                     pr_body = self.generate_summarized_suggestions(data)
+                    pr_body += self._get_suggestions_coverage_footer()
                     get_logger().debug(f"PR output", artifact=pr_body)
 
                     # require self-review
@@ -230,15 +236,23 @@ class PRCodeSuggestions:
 
                     # publish the PR comment
                     if get_settings().pr_code_suggestions.persistent_comment: # true by default
-                        self.publish_persistent_comment_with_history(self.git_provider,
-                                                                     pr_body,
-                                                                     initial_header="## PR Code Suggestions ✨",
-                                                                     update_header=True,
-                                                                     name="suggestions",
-                                                                     final_update_message=False,
-                                                                     max_previous_comments=get_settings().pr_code_suggestions.max_history_len,
-                                                                     progress_response=self.progress_response)
+                        self.publish_persistent_comment_with_history(
+                            self.git_provider,
+                            pr_body,
+                            initial_header=format_pr_code_suggestions_header(),
+                            update_header=True,
+                            name="suggestions",
+                            final_update_message=False,
+                            max_previous_comments=get_settings().pr_code_suggestions.max_history_len,
+                            progress_response=self.progress_response,
+                            identity_marker=PRCodeSuggestionsIdentity.SUMMARY.value,
+                            legacy_initial_header=PRCodeSuggestionsHeader.SUMMARY.value,
+                        )
                     else:
+                        pr_body = add_comment_identity(
+                            pr_body,
+                            PRCodeSuggestionsIdentity.SUMMARY.value,
+                        )
                         if self.progress_response:
                             self.git_provider.edit_comment(self.progress_response, body=pr_body)
                         else:
@@ -254,6 +268,7 @@ class PRCodeSuggestions:
             else:
                 get_logger().info('Code suggestions generated for PR, but not published since publish_output is False.')
                 pr_body = self.generate_summarized_suggestions(data)
+                pr_body += self._get_suggestions_coverage_footer()
                 get_settings().data = {"artifact": pr_body}
                 return
         except Exception as e:
@@ -284,22 +299,46 @@ class PRCodeSuggestions:
             pr_body += ' <!-- approve and fold suggestions self-review -->'
         return pr_body
 
+    def _get_suggestions_coverage_footer(self, suggestions_present: bool = True) -> str:
+        failed_chunk_count = getattr(self, "failed_chunk_count", 0)
+        if (not failed_chunk_count or
+                not get_settings().pr_code_suggestions.get("enable_suggestions_coverage_footer", True)):
+            return ""
+        total_chunk_count = getattr(self, "total_chunk_count", failed_chunk_count)
+        coverage_detail = ("the suggestions above are based on the successful chunks only."
+                           if suggestions_present else
+                           "no suggestions were found in the successful chunks; failed chunks could not be analyzed.")
+        return (f"\n\n⚠️ **Suggestion coverage:** {failed_chunk_count} of {total_chunk_count} "
+                "analysis chunks failed; "
+                f"{coverage_detail}")
+
     async def publish_no_suggestions(self):
-        pr_body = "## PR Code Suggestions ✨\n\nNo code suggestions found for the PR."
+        coverage_footer = self._get_suggestions_coverage_footer(suggestions_present=False)
+        no_suggestions_message = ("No code suggestions found in the successfully analyzed chunks."
+                                  if coverage_footer else "No code suggestions found for the PR.")
+        pr_body = f"{format_pr_code_suggestions_header()}\n\n{no_suggestions_message}{coverage_footer}"
         if (get_settings().config.publish_output and
                 get_settings().pr_code_suggestions.get('publish_output_no_suggestions', True)):
+            get_logger().warning("No code suggestions found for the PR.")
+            if self.git_provider.supports_code_suggestions_artifact() is True:
+                self.git_provider.publish_code_suggestions_artifact(
+                    [], artifact_footer=coverage_footer, no_suggestions_message=no_suggestions_message)
+                return
+            pr_body = add_comment_identity(
+                pr_body,
+                PRCodeSuggestionsIdentity.NO_SUGGESTIONS.value,
+            )
             # Output the agent run details (model, tokens, time cost) if enabled, so the
             # "no suggestions" result still shows which model produced it.
             if get_settings().get('config', {}).get('output_run_details', False):
                 pr_body += show_run_details(self.git_provider.is_supported("gfm_markdown"))
-            get_logger().warning('No code suggestions found for the PR.')
             get_logger().debug(f"PR output", artifact=pr_body)
             if self.progress_response:
                 self.git_provider.edit_comment(self.progress_response, body=pr_body)
             else:
                 self.git_provider.publish_comment(pr_body)
         else:
-            get_settings().data = {"artifact": ""}
+            get_settings().data = {"artifact": pr_body if coverage_footer else ""}
             if self.progress_response:
                 self.git_provider.remove_comment(self.progress_response)
 
@@ -318,7 +357,7 @@ class PRCodeSuggestions:
             if data_above_threshold['code_suggestions']:
                 get_logger().info(
                     f"Publishing {len(data_above_threshold['code_suggestions'])} suggestions in dual publishing mode")
-                await self.push_inline_code_suggestions(data_above_threshold)
+                await self.push_inline_code_suggestions(data_above_threshold, include_coverage_footer=False)
         except Exception as e:
             get_logger().error(f"Failed to publish dual publishing suggestions, error: {e}")
 
@@ -331,19 +370,64 @@ class PRCodeSuggestions:
                                                 final_update_message=True,
                                                 max_previous_comments=4,
                                                 progress_response=None,
-                                                only_fold=False):
+                                                only_fold=False,
+                                                identity_marker: str | None = None,
+                                                legacy_initial_header: str | None = None):
         if hasattr(git_provider, '_publish_check_run') and get_settings().github.publish_as_check_run:
             if git_provider._publish_check_run(pr_comment, name):
                 return
 
         def _extract_link(comment_text: str):
-            r = re.compile(r"<!--.*?-->")
-            match = r.search(comment_text)
+            match = re.search(r"<!--\s*([0-9a-fA-F]{7,40})\s*-->", comment_text)
 
             up_to_commit_txt = ""
             if match:
-                up_to_commit_txt = f" up to commit {match.group(0)[4:-3].strip()}"
+                up_to_commit_txt = f" up to commit {match.group(1)}"
             return up_to_commit_txt
+
+        def _comment_body(comment) -> str:
+            body = getattr(comment, "body", None)
+            if body is None and isinstance(comment, dict):
+                body = comment.get("body")
+            return body if isinstance(body, str) else ""
+
+        def _is_legacy_suggestions_comment(comment_text: str) -> bool:
+            if not legacy_initial_header or not comment_text.startswith(f"{legacy_initial_header}\n"):
+                return False
+            table_index = comment_text.find("<table>")
+            if table_index == -1:
+                return False
+            return bool(
+                re.search(
+                    r"<!--\s*[0-9a-fA-F]{7,40}\s*-->",
+                    comment_text[len(legacy_initial_header):table_index],
+                )
+            )
+
+        def _without_heading(comment_text: str) -> str:
+            if comment_text.startswith(initial_header):
+                comment_text = comment_text[len(initial_header):].lstrip("\n")
+            if identity_marker and comment_text.startswith(identity_marker):
+                comment_text = comment_text[len(identity_marker):].lstrip("\n")
+            return comment_text.strip()
+
+        def _with_identity(comment_text: str) -> str:
+            return add_comment_identity(comment_text, identity_marker)
+
+        def _clean_up_progress_note():
+            if not progress_response:
+                return
+            try:
+                git_provider.edit_comment(
+                    progress_response,
+                    "Code suggestions published in the persistent thread above.",
+                )
+                git_provider.remove_comment(progress_response)
+            except Exception as cleanup_error:
+                get_logger().warning(
+                    "Failed to clean up progress note after persistent update, "
+                    f"leaving it in place: {cleanup_error}"
+                )
 
         history_header = f"#### Previous suggestions\n"
         last_commit_num = git_provider.get_latest_commit_url().split('/')[-1][:7]
@@ -353,90 +437,117 @@ class PRCodeSuggestions:
         else:
             latest_suggestion_header = f"Latest suggestions up to {last_commit_num}"
         latest_commit_html_comment = f"<!-- {last_commit_num} -->"
-        found_comment = None
+        new_suggestion_table = _without_heading(pr_comment)
 
         if max_previous_comments > 0:
             try:
                 prev_comments = list(git_provider.get_issue_comments())
-                for comment in prev_comments:
-                    if comment.body.startswith(initial_header):
-                        prev_suggestions = comment.body
-                        found_comment = comment
-                        comment_url = git_provider.get_comment_url(comment)
+                if identity_marker:
+                    comment = next(
+                        (
+                            candidate
+                            for candidate in prev_comments
+                            if comment_matches_identity(_comment_body(candidate), identity_marker)
+                        ),
+                        None,
+                    )
+                    if comment is None:
+                        comment = next(
+                            (
+                                candidate
+                                for candidate in prev_comments
+                                if _is_legacy_suggestions_comment(_comment_body(candidate))
+                            ),
+                            None,
+                        )
+                else:
+                    comment = next(
+                        (
+                            candidate
+                            for candidate in prev_comments
+                            if comment_matches_identity(_comment_body(candidate), initial_header)
+                        ),
+                        None,
+                    )
+                if comment:
+                    prev_suggestions = _comment_body(comment)
+                    comment_url = git_provider.get_comment_url(comment)
 
-                        if history_header.strip() not in comment.body:
-                            # no history section
-                            # extract everything between <table> and </table> in comment.body including <table> and </table>
-                            table_index = comment.body.find("<table>")
-                            if table_index == -1:
-                                git_provider.edit_comment(comment, pr_comment)
-                                continue
-                            # find http link from comment.body[:table_index]
-                            up_to_commit_txt = _extract_link(comment.body[:table_index])
-                            prev_suggestion_table = comment.body[
-                                                    table_index:comment.body.rfind("</table>") + len("</table>")]
+                    if history_header.strip() not in prev_suggestions:
+                        # no history section
+                        # extract everything between <table> and </table> in comment.body including <table> and </table>
+                        table_index = prev_suggestions.find("<table>")
+                        if table_index == -1:
+                            pr_comment_updated = _with_identity(
+                                f"{initial_header}\n\n{latest_commit_html_comment}\n\n"
+                                f"{new_suggestion_table}\n\n"
+                            )
+                            git_provider.edit_comment(comment, pr_comment_updated)
+                            _clean_up_progress_note()
+                            return comment
+                        # find http link from comment.body[:table_index]
+                        up_to_commit_txt = _extract_link(prev_suggestions[:table_index])
+                        prev_suggestion_table = prev_suggestions[
+                                                table_index:prev_suggestions.rfind("</table>") + len("</table>")]
 
-                            tick = "✅ " if "✅" in prev_suggestion_table else ""
-                            # surround with details tag
-                            prev_suggestion_table = f"<details><summary>{tick}{name.capitalize()}{up_to_commit_txt}</summary>\n<br>{prev_suggestion_table}\n\n</details>"
+                        tick = "✅ " if "✅" in prev_suggestion_table else ""
+                        # surround with details tag
+                        prev_suggestion_table = (
+                            f"<details><summary>{tick}{name.capitalize()}{up_to_commit_txt}</summary>\n"
+                            f"<br>{prev_suggestion_table}\n\n</details>"
+                        )
 
-                            new_suggestion_table = pr_comment.replace(initial_header, "").strip()
+                        pr_comment_updated = _with_identity(
+                            f"{initial_header}\n\n{latest_commit_html_comment}\n\n"
+                            f"{latest_suggestion_header}\n\n{new_suggestion_table}\n\n___\n\n"
+                            f"{history_header}{prev_suggestion_table}\n"
+                        )
+                    else:
+                        # get the text of the previous suggestions until the latest commit
+                        sections = prev_suggestions.split(history_header.strip())
+                        latest_table = sections[0].strip()
+                        prev_suggestion_table = sections[1].replace(history_header, "").strip()
 
-                            pr_comment_updated = f"{initial_header}\n{latest_commit_html_comment}\n\n"
-                            pr_comment_updated += f"{latest_suggestion_header}\n{new_suggestion_table}\n\n___\n\n"
-                            pr_comment_updated += f"{history_header}{prev_suggestion_table}\n"
-                        else:
-                            # get the text of the previous suggestions until the latest commit
-                            sections = prev_suggestions.split(history_header.strip())
-                            latest_table = sections[0].strip()
-                            prev_suggestion_table = sections[1].replace(history_header, "").strip()
+                        # get text after the latest_suggestion_header in comment.body
+                        table_ind = latest_table.find("<table>")
+                        up_to_commit_txt = _extract_link(latest_table[:table_ind])
 
-                            # get text after the latest_suggestion_header in comment.body
-                            table_ind = latest_table.find("<table>")
-                            up_to_commit_txt = _extract_link(latest_table[:table_ind])
+                        latest_table = latest_table[table_ind:latest_table.rfind("</table>") + len("</table>")]
+                        # enforce max_previous_comments
+                        count = prev_suggestions.count(f"\n<details><summary>{name.capitalize()}")
+                        count += prev_suggestions.count(f"\n<details><summary>✅ {name.capitalize()}")
+                        if count >= max_previous_comments:
+                            # remove the oldest suggestion
+                            prev_suggestion_table = prev_suggestion_table[:prev_suggestion_table.rfind(
+                                f"<details><summary>{name.capitalize()} up to commit")]
 
-                            latest_table = latest_table[table_ind:latest_table.rfind("</table>") + len("</table>")]
-                            # enforce max_previous_comments
-                            count = prev_suggestions.count(f"\n<details><summary>{name.capitalize()}")
-                            count += prev_suggestions.count(f"\n<details><summary>✅ {name.capitalize()}")
-                            if count >= max_previous_comments:
-                                # remove the oldest suggestion
-                                prev_suggestion_table = prev_suggestion_table[:prev_suggestion_table.rfind(
-                                    f"<details><summary>{name.capitalize()} up to commit")]
+                        tick = "✅ " if "✅" in latest_table else ""
+                        # Add to the prev_suggestions section
+                        last_prev_table = (
+                            f"\n<details><summary>{tick}{name.capitalize()}{up_to_commit_txt}</summary>\n"
+                            f"<br>{latest_table}\n\n</details>"
+                        )
+                        prev_suggestion_table = last_prev_table + "\n" + prev_suggestion_table
 
-                            tick = "✅ " if "✅" in latest_table else ""
-                            # Add to the prev_suggestions section
-                            last_prev_table = f"\n<details><summary>{tick}{name.capitalize()}{up_to_commit_txt}</summary>\n<br>{latest_table}\n\n</details>"
-                            prev_suggestion_table = last_prev_table + "\n" + prev_suggestion_table
+                        pr_comment_updated = _with_identity(
+                            f"{initial_header}\n\n{latest_commit_html_comment}\n\n"
+                            f"{latest_suggestion_header}\n\n{new_suggestion_table}\n\n"
+                            f"___\n\n{history_header}\n{prev_suggestion_table}\n"
+                        )
 
-                            new_suggestion_table = pr_comment.replace(initial_header, "").strip()
-
-                            pr_comment_updated = f"{initial_header}\n"
-                            pr_comment_updated += f"{latest_commit_html_comment}\n\n"
-                            pr_comment_updated += f"{latest_suggestion_header}\n\n{new_suggestion_table}\n\n"
-                            pr_comment_updated += "___\n\n"
-                            pr_comment_updated += f"{history_header}\n"
-                            pr_comment_updated += f"{prev_suggestion_table}\n"
-
-                        get_logger().info(f"Persistent mode - updating comment {comment_url} to latest {name} message")
-                        git_provider.edit_comment(comment, pr_comment_updated)
-                        if progress_response:
-                            # best-effort: propagating would re-trigger the duplicate-thread fallback below
-                            try:
-                                git_provider.edit_comment(progress_response, "Code suggestions published in the persistent thread above.")
-                                git_provider.remove_comment(progress_response)
-                            except Exception as cleanup_error:
-                                get_logger().warning(
-                                    f"Failed to clean up progress note after persistent update, leaving it in place: {cleanup_error}"
-                                )
-                        return comment
+                    get_logger().info(f"Persistent mode - updating comment {comment_url} to latest {name} message")
+                    git_provider.edit_comment(comment, pr_comment_updated)
+                    _clean_up_progress_note()
+                    return comment
             except Exception as e:
                 get_logger().exception(f"Failed to update persistent review, error: {e}")
                 pass
 
         # if we are here, we did not find a previous comment to update
-        body = pr_comment.replace(initial_header, "").strip()
-        pr_comment = f"{initial_header}\n\n{latest_commit_html_comment}\n\n{body}\n\n"
+        pr_comment = _with_identity(
+            f"{initial_header}\n\n{latest_commit_html_comment}\n\n"
+            f"{new_suggestion_table}\n\n"
+        )
         if progress_response:
             git_provider.edit_comment(progress_response, pr_comment)
             new_comment = progress_response
@@ -649,17 +760,24 @@ class PRCodeSuggestions:
 
         return data
 
-    async def push_inline_code_suggestions(self, data):
+    async def push_inline_code_suggestions(self, data, include_coverage_footer: bool = True):
         code_suggestions = []
         fallback_comments = []
+        coverage_footer = self._get_suggestions_coverage_footer() if include_coverage_footer else ""
+        supports_suggestions_artifact = self.git_provider.supports_code_suggestions_artifact() is True
 
         if not data['code_suggestions']:
             get_logger().info('No suggestions found to improve this PR.')
+            empty_coverage_footer = (self._get_suggestions_coverage_footer(suggestions_present=False)
+                                     if include_coverage_footer else "")
+            no_suggestions_message = ("No suggestions found in the successfully analyzed chunks."
+                                      if empty_coverage_footer else "No suggestions found to improve this PR.")
+            pr_body = no_suggestions_message + empty_coverage_footer
             if self.progress_response:
                 return self.git_provider.edit_comment(self.progress_response,
-                                                      body='No suggestions found to improve this PR.')
+                                                      body=pr_body)
             else:
-                return self.git_provider.publish_comment('No suggestions found to improve this PR.')
+                return self.git_provider.publish_comment(pr_body)
 
         for d in data['code_suggestions']:
             try:
@@ -705,11 +823,17 @@ class PRCodeSuggestions:
                                          'original_suggestion': d})
 
         if code_suggestions:
-            is_successful = self.git_provider.publish_code_suggestions(code_suggestions)
+            if supports_suggestions_artifact:
+                is_successful = self.git_provider.publish_code_suggestions_artifact(
+                    code_suggestions, artifact_footer=coverage_footer)
+            else:
+                is_successful = self.git_provider.publish_code_suggestions(code_suggestions)
             if not is_successful:
                 get_logger().info("Failed to publish code suggestions, trying to publish each suggestion separately")
                 for code_suggestion in code_suggestions:
                     self.git_provider.publish_code_suggestions([code_suggestion])
+        if coverage_footer and not supports_suggestions_artifact:
+            fallback_comments.append(coverage_footer.strip())
         if fallback_comments:
             self.git_provider.publish_comment("\n\n---\n\n".join(fallback_comments))
 
@@ -785,6 +909,142 @@ class PRCodeSuggestions:
         return self._suggestion_applyability(relevant_file, relevant_lines_start,
                                              relevant_lines_end, existing_code)[0]
 
+    @staticmethod
+    def _shift_code_indentation(code_snippet: str, delta_spaces: int) -> str:
+        shifted_lines = []
+        for line in code_snippet.splitlines():
+            if not line.strip():
+                shifted_lines.append("")
+                continue
+            if delta_spaces > 0:
+                shifted_lines.append(" " * delta_spaces + line)
+            elif delta_spaces < 0:
+                shift = -delta_spaces
+                leading_whitespace = len(line) - len(line.lstrip())
+                shifted_lines.append(line[min(shift, leading_whitespace):])
+            else:
+                shifted_lines.append(line)
+        return "\n".join(shifted_lines)
+
+    @staticmethod
+    def _infer_space_indentation_unit(space_deltas: list[int]) -> int:
+        if not space_deltas:
+            return 1
+        unique_deltas = sorted(set(space_deltas))
+        for delta in unique_deltas:
+            if delta * 2 in unique_deltas:
+                return delta
+        return unique_deltas[0]
+
+    @staticmethod
+    def _continuation_space_adjustments(
+        lines: list[str],
+        leading_whitespace: list[str],
+    ) -> list[int]:
+        openers = []
+        adjustments = [0] * len(lines)
+        closer_for = {"(": ")", "[": "]"}
+        for index, (line, prefix) in enumerate(
+            zip(lines, leading_whitespace, strict=True)
+        ):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            for opener_position in range(len(openers) - 1, -1, -1):
+                opener_index, opener_prefix, closer = openers[opener_position]
+                if prefix == opener_prefix and stripped.startswith(closer):
+                    interior_indexes = [
+                        line_index
+                        for line_index in range(opener_index + 1, index)
+                        if lines[line_index].strip()
+                    ]
+                    opener_spaces = opener_prefix.count(" ")
+                    positive_offsets = [
+                        leading_whitespace[line_index].count(" ") - opener_spaces
+                        for line_index in interior_indexes
+                        if leading_whitespace[line_index].count(" ") > opener_spaces
+                    ]
+                    if positive_offsets:
+                        continuation_offset = min(positive_offsets)
+                        for line_index in interior_indexes:
+                            if leading_whitespace[line_index].count(" ") > opener_spaces:
+                                adjustments[line_index] += continuation_offset
+                    del openers[opener_position:]
+                    break
+            if stripped[-1] in closer_for:
+                openers.append((index, prefix, closer_for[stripped[-1]]))
+        return adjustments
+
+    @staticmethod
+    def _align_code_with_tabs(code_snippet: str, anchor_prefix: str) -> str:
+        lines = code_snippet.splitlines()
+        if not lines:
+            return code_snippet
+        leading_whitespace = [line[:len(line) - len(line.lstrip())] for line in lines]
+        anchor_depth = len(anchor_prefix) - len(anchor_prefix.lstrip("\t"))
+        anchor_alignment = anchor_prefix[anchor_depth:]
+        initial_index, initial_prefix = next(
+            (
+                (index, prefix)
+                for index, (line, prefix) in enumerate(
+                    zip(lines, leading_whitespace, strict=True)
+                )
+                if line.strip()
+            ),
+            (0, ""),
+        )
+        initial_spaces = initial_prefix.count(" ")
+        initial_tabs = initial_prefix.count("\t")
+        continuation_adjustments = PRCodeSuggestions._continuation_space_adjustments(
+            lines,
+            leading_whitespace,
+        )
+        initial_continuation_adjustment = continuation_adjustments[initial_index]
+        adjusted_initial_spaces = initial_spaces - initial_continuation_adjustment
+        space_deltas = [
+            abs(
+                prefix.count(" ")
+                - continuation_adjustments[index]
+                - adjusted_initial_spaces
+            )
+            for index, (line, prefix) in enumerate(
+                zip(lines, leading_whitespace, strict=True)
+            )
+            if (
+                line.strip()
+                and prefix.count(" ") - continuation_adjustments[index]
+                != adjusted_initial_spaces
+            )
+        ]
+        space_unit = PRCodeSuggestions._infer_space_indentation_unit(space_deltas)
+        aligned_lines = []
+        for index, (line, prefix) in enumerate(
+            zip(lines, leading_whitespace, strict=True)
+        ):
+            if not line.strip():
+                aligned_lines.append("")
+                continue
+            continuation_alignment = (
+                continuation_adjustments[index] - initial_continuation_adjustment
+            )
+            relative_space_depth, alignment_spaces = divmod(
+                prefix.count(" ")
+                - initial_spaces
+                - continuation_alignment,
+                space_unit,
+            )
+            relative_depth = (
+                prefix.count("\t") - initial_tabs
+                + relative_space_depth
+            )
+            aligned_lines.append(
+                "\t" * max(0, anchor_depth + relative_depth)
+                + anchor_alignment
+                + " " * (alignment_spaces + continuation_alignment)
+                + line[len(prefix):]
+            )
+        return "\n".join(aligned_lines).rstrip("\n")
+
     def dedent_code(self, relevant_file, relevant_lines_start, new_code_snippet):
         try:  # dedent code snippet
             self.diff_files = getattr(self.git_provider, "diff_files", None)
@@ -793,7 +1053,7 @@ class PRCodeSuggestions:
             original_initial_line = None
             for file in self.diff_files:
                 if file.filename.strip() == relevant_file:
-                    if file.head_file:
+                    if file.head_file and getattr(file, "head_file_is_complete", True):
                         file_lines = file.head_file.splitlines()
                         if relevant_lines_start > len(file_lines):
                             get_logger().warning(
@@ -818,14 +1078,18 @@ class PRCodeSuggestions:
                         original_initial_line = patch_lines[0]
                     break
             if original_initial_line:
-                suggested_initial_line = new_code_snippet.splitlines()[0]
-                original_initial_spaces = len(original_initial_line) - len(original_initial_line.lstrip()) # lstrip works both for spaces and tabs
+                suggested_initial_line = next(
+                    (line for line in new_code_snippet.splitlines() if line.strip()),
+                    "",
+                )
+                original_initial_spaces = len(original_initial_line) - len(original_initial_line.lstrip())
                 suggested_initial_spaces = len(suggested_initial_line) - len(suggested_initial_line.lstrip())
-                delta_spaces = original_initial_spaces - suggested_initial_spaces
-                if delta_spaces > 0:
-                    # Detect indentation character from original line
-                    indent_char = '\t' if original_initial_line.startswith('\t') else ' '
-                    new_code_snippet = textwrap.indent(new_code_snippet, delta_spaces * indent_char).rstrip('\n')
+                if original_initial_line.startswith("\t"):
+                    original_prefix = original_initial_line[:original_initial_spaces]
+                    new_code_snippet = self._align_code_with_tabs(new_code_snippet, original_prefix)
+                else:
+                    delta_spaces = original_initial_spaces - suggested_initial_spaces
+                    new_code_snippet = self._shift_code_indentation(new_code_snippet, delta_spaces)
         except Exception as e:
             get_logger().error(f"Error when dedenting code snippet for file {relevant_file}, error: {e}")
 
@@ -881,6 +1145,8 @@ class PRCodeSuggestions:
             return patches_diff_list
 
     async def prepare_prediction_main(self, model: str) -> dict:
+        self.failed_chunk_count = 0
+        self.total_chunk_count = 0
         # get PR diff
         if get_settings().pr_code_suggestions.decouple_hunks:
             self.patches_diff_list = get_pr_multi_diffs(self.git_provider,
@@ -911,18 +1177,48 @@ class PRCodeSuggestions:
             get_logger().info(f"Number of PR chunk calls: {len(self.patches_diff_list)}")
             get_logger().debug(f"PR diff:", artifact=self.patches_diff_list)
 
+            prediction_list = []
+            chunk_errors = []
+            chunk_pairs = list(zip(self.patches_diff_list, self.patches_diff_list_no_line_numbers))
+            self.total_chunk_count = len(chunk_pairs)
+
             # parallelize calls to AI:
             if get_settings().pr_code_suggestions.parallel_calls:
-                prediction_list = await asyncio.gather(
+                prediction_results = await asyncio.gather(
                     *[self._get_prediction(model, patches_diff, patches_diff_no_line_numbers) for
-                      patches_diff, patches_diff_no_line_numbers in
-                      zip(self.patches_diff_list, self.patches_diff_list_no_line_numbers)])
-                self.prediction_list = prediction_list
+                      patches_diff, patches_diff_no_line_numbers in chunk_pairs],
+                    return_exceptions=True)
+                for chunk_index, prediction in enumerate(prediction_results):
+                    if isinstance(prediction, Exception):
+                        chunk_errors.append(prediction)
+                        get_logger().warning(
+                            f"Failed to generate code suggestions for chunk {chunk_index + 1}; "
+                            "retaining successful chunks",
+                            artifact={"error": prediction},
+                        )
+                    elif isinstance(prediction, BaseException):
+                        raise prediction
+                    else:
+                        prediction_list.append(prediction)
             else:
-                prediction_list = []
-                for patches_diff, patches_diff_no_line_numbers in zip(self.patches_diff_list, self.patches_diff_list_no_line_numbers):
-                    prediction = await self._get_prediction(model, patches_diff, patches_diff_no_line_numbers)
-                    prediction_list.append(prediction)
+                for chunk_index, (patches_diff, patches_diff_no_line_numbers) in enumerate(
+                        chunk_pairs):
+                    try:
+                        prediction = await self._get_prediction(model, patches_diff, patches_diff_no_line_numbers)
+                    except Exception as e:
+                        chunk_errors.append(e)
+                        get_logger().warning(
+                            f"Failed to generate code suggestions for chunk {chunk_index + 1}; "
+                            "retaining successful chunks",
+                            artifact={"error": e},
+                        )
+                    else:
+                        prediction_list.append(prediction)
+
+            self.failed_chunk_count = len(chunk_errors)
+            if chunk_errors and not prediction_list:
+                raise chunk_errors[0]
+            self.prediction_list = prediction_list
 
             data = {"code_suggestions": []}
             for j, predictions in enumerate(prediction_list):  # each call adds an element to the list
@@ -984,7 +1280,7 @@ class PRCodeSuggestions:
 
     def generate_summarized_suggestions(self, data: Dict) -> str:
         try:
-            pr_body = "## PR Code Suggestions ✨\n\n"
+            pr_body = f"{format_pr_code_suggestions_header()}\n\n"
 
             if len(data.get('code_suggestions', [])) == 0:
                 pr_body += "No suggestions found to improve this PR."
@@ -1046,8 +1342,14 @@ class PRCodeSuggestions:
                     CHAR_LIMIT_PER_LINE = 84
                     suggestion_content = insert_br_after_x_chars(suggestion_content, CHAR_LIMIT_PER_LINE)
                     # pr_body += f"<tr><td><details><summary>{suggestion_content}</summary>"
-                    existing_code = suggestion['existing_code'].rstrip() + "\n"
-                    improved_code = suggestion['improved_code'].rstrip() + "\n"
+                    existing_code = suggestion["existing_code"].rstrip()
+                    if existing_code:
+                        existing_code = self.dedent_code(relevant_file, relevant_lines_start, existing_code)
+                    existing_code += "\n"
+                    improved_code = suggestion["improved_code"].rstrip()
+                    if improved_code:
+                        improved_code = self.dedent_code(relevant_file, relevant_lines_start, improved_code)
+                    improved_code += "\n"
 
                     diff = difflib.unified_diff(existing_code.split('\n'),
                                                 improved_code.split('\n'), n=999)

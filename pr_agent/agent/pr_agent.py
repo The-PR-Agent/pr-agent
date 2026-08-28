@@ -230,6 +230,6 @@ class PRAgent:
     async def handle_request(self, pr_url, request, notify=None) -> bool:
         try:
             return await self._handle_request(pr_url, request, notify)
-        except:
+        except Exception:
             get_logger().exception("Failed to process the command.")
             return False

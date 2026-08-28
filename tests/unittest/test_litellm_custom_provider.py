@@ -123,9 +123,9 @@ async def test_openai_compatible_endpoint_calls_force_streaming(monkeypatch):
             new_callable=AsyncMock,
         ) as mock_stream_handler,
     ):
-        mock_stream_handler.return_value = ("test", "stop")
+        mock_stream_handler.return_value = ("test", "stop", None)
         handler = LiteLLMAIHandler()
-        await handler._get_completion(
+        result = await handler._get_completion(
             model="claude-sonnet-4-5",
             messages=[],
             timeout=120,
@@ -133,8 +133,11 @@ async def test_openai_compatible_endpoint_calls_force_streaming(monkeypatch):
             custom_llm_provider="openai",
         )
 
+        assert result == ("test", "stop", None)
         call_kwargs = mock_completion.call_args[1]
         assert call_kwargs["stream"] is True
+        assert call_kwargs["stream_options"] == {"include_usage": True}
+        assert mock_stream_handler.call_args.kwargs["model"] == "claude-sonnet-4-5"
 
 
 @pytest.mark.asyncio
@@ -152,9 +155,9 @@ async def test_openai_compatible_endpoint_normalizes_custom_provider_for_streami
             new_callable=AsyncMock,
         ) as mock_stream_handler,
     ):
-        mock_stream_handler.return_value = ("test", "stop")
+        mock_stream_handler.return_value = ("test", "stop", None)
         handler = LiteLLMAIHandler()
-        await handler._get_completion(
+        result = await handler._get_completion(
             model="claude-sonnet-4-5",
             messages=[],
             timeout=120,
@@ -162,8 +165,10 @@ async def test_openai_compatible_endpoint_normalizes_custom_provider_for_streami
             custom_llm_provider=" OpenAI ",
         )
 
+        assert result == ("test", "stop", None)
         call_kwargs = mock_completion.call_args[1]
         assert call_kwargs["stream"] is True
+        assert call_kwargs["stream_options"] == {"include_usage": True}
 
 
 @pytest.mark.asyncio

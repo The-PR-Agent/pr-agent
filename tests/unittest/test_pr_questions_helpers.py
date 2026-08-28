@@ -12,7 +12,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import pr_agent.tools.pr_line_questions as plq
+from pr_agent.algo.utils import format_pr_questions_header
 from pr_agent.config_loader import get_settings
+from pr_agent.git_providers.codecommit_provider import CodeCommitProvider
+from pr_agent.git_providers.gerrit_provider import GerritProvider, adopt_to_gerrit_message
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
 from pr_agent.tools.pr_questions import PRQuestions
 from tests.unittest._settings_helpers import (SENTINEL, restore_settings,
@@ -120,10 +123,137 @@ class TestPreparePrAnswer:
             git_provider=MagicMock(),  # not GitLab
         )
         out = pr._prepare_pr_answer()
-        assert "### **Ask**❓" in out
-        assert "why?" in out
-        assert "### **Answer:**" in out
-        assert "because reasons" in out
+        assert out == "### **Ask** ❓\nwhy?\n\n### **Answer:**\nbecause reasons\n\n"
+
+    def test_custom_heading_changes_only_the_ask_header(self):
+        settings = get_settings()
+        saved = snapshot_settings(("pr_questions.ask_heading",))
+        pr = _make_pr_questions(question_str="why?", prediction="because reasons")
+        try:
+            settings.set("pr_questions.ask_heading", "  Architecture Question  ")
+            out = pr._prepare_pr_answer()
+        finally:
+            restore_settings(saved)
+
+        assert out == "### **Architecture Question** ❓\nwhy?\n\n### **Answer:**\nbecause reasons\n\n"
+
+    @pytest.mark.parametrize(
+        "invalid_heading",
+        [
+            None,
+            "",
+            "   ",
+            "Ask\nNow",
+            "Ask\rNow",
+            "Ask\vNow",
+            "Ask\fNow",
+            "Ask\x1cNow",
+            "Ask\x1dNow",
+            "Ask\x1eNow",
+            "Ask\x85Now",
+            "Ask\u2028Now",
+            "Ask\u2029Now",
+            "Ask\u2028",
+            42,
+        ],
+    )
+    def test_invalid_heading_falls_back_to_ask(self, invalid_heading):
+        settings = get_settings()
+        saved = snapshot_settings(("pr_questions.ask_heading",))
+        try:
+            settings.set("pr_questions.ask_heading", invalid_heading)
+            header = format_pr_questions_header()
+        finally:
+            restore_settings(saved)
+
+        assert header == "### **Ask** ❓"
+
+    @pytest.mark.parametrize(
+        ("heading", "expected"),
+        [
+            ("Architecture **Question**", r"### **Architecture \*\*Question\*\*** ❓"),
+            (
+                r"Use [SDK](docs/v2) `now` \\ safely",
+                r"### **Use \[SDK\]\(docs\/v2\) \`now\` \\\\ safely** ❓",
+            ),
+            ("Architecture Ω", "### **Architecture Ω** ❓"),
+        ],
+    )
+    def test_heading_is_rendered_as_literal_text(self, heading, expected):
+        settings = get_settings()
+        saved = snapshot_settings(("pr_questions.ask_heading",))
+        try:
+            settings.set("pr_questions.ask_heading", heading)
+            header = format_pr_questions_header()
+        finally:
+            restore_settings(saved)
+
+        assert header == expected
+
+    def test_codecommit_does_not_receive_markdown_escapes(self):
+        settings = get_settings()
+        saved = snapshot_settings(("pr_questions.ask_heading",))
+        provider = CodeCommitProvider.__new__(CodeCommitProvider)
+        pr = _make_pr_questions(
+            question_str="why?",
+            prediction="because reasons",
+            git_provider=provider,
+        )
+        try:
+            settings.set("pr_questions.ask_heading", "Q&A / Security")
+            out = pr._prepare_pr_answer()
+        finally:
+            restore_settings(saved)
+
+        assert out.startswith("### **Q&A / Security** ❓\n")
+        assert "\\" not in out.splitlines()[0]
+
+    def test_gerrit_preserves_literal_heading_punctuation(self):
+        settings = get_settings()
+        saved = snapshot_settings(("pr_questions.ask_heading",))
+        provider = GerritProvider.__new__(GerritProvider)
+        pr = _make_pr_questions(
+            question_str="why?",
+            prediction="because reasons",
+            git_provider=provider,
+        )
+        heading = r"Hash #, star *, [docs](v2), /, `tick`, |, \ path"
+        try:
+            settings.set("pr_questions.ask_heading", heading)
+            answer = pr._prepare_pr_answer()
+            out = adopt_to_gerrit_message(answer)
+        finally:
+            restore_settings(saved)
+
+        raw_heading = answer.splitlines()[0]
+        assert r"\#" in raw_heading
+        assert r"\*" in raw_heading
+        assert r"\\" in raw_heading
+        assert out.splitlines()[0] == f"{heading}❓:"
+
+    def test_gerrit_falls_back_for_a_unicode_line_separator(self):
+        settings = get_settings()
+        saved = snapshot_settings(("pr_questions.ask_heading",))
+        provider = GerritProvider.__new__(GerritProvider)
+        pr = _make_pr_questions(
+            question_str="why?",
+            prediction="because reasons",
+            git_provider=provider,
+        )
+        try:
+            settings.set("pr_questions.ask_heading", "Architecture\u2028Question")
+            answer = pr._prepare_pr_answer()
+            out = adopt_to_gerrit_message(answer)
+        finally:
+            restore_settings(saved)
+
+        assert answer.startswith("### **Ask** ❓\n")
+        assert out.splitlines()[0] == "Ask❓:"
+
+    def test_gerrit_keeps_existing_conversion_for_other_markdown_headings(self):
+        message = "### **Answer:**\n- item\n### **Model # Heading:**"
+
+        assert adopt_to_gerrit_message(message) == "Answer:\nitem\n\nModel  Heading:"
 
     def test_sanitizes_leading_slash(self):
         pr = _make_pr_questions(
