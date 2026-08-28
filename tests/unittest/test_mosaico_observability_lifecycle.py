@@ -16,9 +16,11 @@ def _install_fake_langfuse(monkeypatch, *, teardown_failure=False):
     class FakeClient:
         @contextlib.contextmanager
         def start_as_current_observation(self, **kwargs):
-            yield
-            if teardown_failure:
-                raise RuntimeError("span flush failed")
+            try:
+                yield
+            finally:
+                if teardown_failure:
+                    raise RuntimeError("span flush failed")
 
     fake_langfuse = types.ModuleType("langfuse")
     fake_langfuse.get_client = lambda: FakeClient()
