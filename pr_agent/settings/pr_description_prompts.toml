@@ -8,6 +8,14 @@ Your task is to provide a full description for the PR content: type, description
 - When quoting variables, names or file paths from the code, use backticks (`) instead of single quote (').
 - When needed, use '- ' as bullets
 
+{%- if skills_context %}
+
+Organizational standards and review skills (apply the ones relevant to this PR):
+=====
+{{ skills_context }}
+=====
+{%- endif %}
+
 {%- if extra_instructions %}
 
 Extra instructions from the user:
@@ -16,6 +24,13 @@ Extra instructions from the user:
 =====
 {% endif %}
 
+{%- if repo_context %}
+
+Repository context:
+=====
+{{ repo_context }}
+=====
+{% endif %}
 
 The output must be a YAML object equivalent to type $PRDescription, according to the following Pydantic definitions:
 =====
@@ -45,7 +60,9 @@ class FileDescription(BaseModel):
 
 class PRDescription(BaseModel):
     type: List[PRType] = Field(description="one or more types that describe the PR content. Return the label member value (e.g. 'Bug fix', not 'bug_fix')")
+{%- if enable_pr_description %}
     description: str = Field(description="summarize the PR changes with 1-4 bullet points, each up to 8 words. For large PRs, add sub-bullets for each bullet if needed. Order bullets by importance, with each bullet highlighting a key change group.")
+{%- endif %}
     title: str = Field(description="a concise and descriptive title that captures the PR's main theme")
 {%- if enable_pr_diagram %}
     changes_diagram: str = Field(description='a horizontal diagram that represents the main PR changes, in the format of a valid mermaid LR flowchart. The diagram should be concise and easy to read. Leave empty if no diagram is relevant. To create robust Mermaid diagrams, follow this two-step process: (1) Declare the nodes: nodeID["node description"]. (2) Then define the links: nodeID1 -- "link text" --> nodeID2. Node description must always be surrounded with double quotation marks')
@@ -62,9 +79,11 @@ Example output:
 type:
 - ...
 - ...
+{%- if enable_pr_description %}
 description: |
   - ...
   - ...
+{%- endif %}
 title: |
   ...
 {%- if enable_pr_diagram %}
@@ -99,7 +118,7 @@ Related Ticket Info:
 {% for ticket in related_tickets %}
 =====
 Ticket Title: '{{ ticket.title }}'
-{%- if ticket.labels %}
+{%- if ticket.labels is defined and ticket.labels %}
 Ticket Labels: {{ ticket.labels }}
 {%- endif %}
 {%- if ticket.body %}
@@ -151,9 +170,11 @@ type:
 - Bug fix
 - Refactoring
 - ...
+{%- if enable_pr_description %}
 description: |
   - ...
   - ...
+{%- endif %}
 title: |
   ...
 {%- if enable_pr_diagram %}

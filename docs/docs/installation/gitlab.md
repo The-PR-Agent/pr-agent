@@ -2,6 +2,8 @@
 
 You can use a pre-built Action Docker image to run PR-Agent as a GitLab pipeline. This is a simple way to get started with PR-Agent without setting up your own server.
 
+Pipeline mode runs configured commands automatically when GitLab creates a merge request pipeline. It does not receive GitLab comment events. If you want users to invoke commands such as `/review` or `/improve` in merge request comments, deploy the [GitLab webhook server](#run-a-gitlab-webhook-server) instead and enable the **Comments** webhook trigger.
+
 (1) Add the following file to your repository under `.gitlab-ci.yml`:
 
 ```yaml
@@ -11,7 +13,7 @@ stages:
 pr_agent_job:
   stage: pr_agent
   image:
-    name: codiumai/pr-agent:latest
+    name: pragent/pr-agent:latest
     entrypoint: [""]
   script:
     - cd /app
@@ -29,8 +31,30 @@ pr_agent_job:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
 ```
 
-This script will run PR-Agent on every new merge request. You can modify the `rules` section to run PR-Agent on different events.
+This script runs PR-Agent when a merge request pipeline is created, including when a merge request is opened and when new commits are pushed to its source branch. You can modify the `rules` section to run PR-Agent on different events.
 You can also modify the `script` section to run different PR-Agent commands, or with different parameters by exporting different environment variables.
+
+### Ignore bot-created merge requests
+
+Dependency update bots usually use predictable source branch prefixes. Add a higher-priority `when: never` rule before the general merge request rule to skip those branches:
+
+```yaml
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME =~ /^(dependabot|renovate)\//'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+```
+
+Adjust the regular expression to match the branch naming conventions used by your bots. Filtering on `CI_MERGE_REQUEST_SOURCE_BRANCH_NAME` is more reliable than `GITLAB_USER_LOGIN`, because `GITLAB_USER_LOGIN` identifies the user who started the pipeline and can change when a pipeline is run manually.
+
+The webhook server can apply the equivalent filter to automatic merge request events through a repository-level `.pr_agent.toml` file:
+
+```toml
+[config]
+ignore_pr_source_branches = ["^(dependabot|renovate)/"]
+```
+
+For all supported filters, see [Ignoring automatic commands in PRs](../usage-guide/additional_configurations.md#ignoring-automatic-commands-in-prs).
 
 (2) Add the following masked variables to your GitLab repository (CI/CD -> Variables):
 
@@ -47,7 +71,9 @@ Note that if your base branches are not protected, don't set the variables as `p
 
 ## Run a GitLab webhook server
 
-1. In GitLab create a new user and give it "Reporter" role for the intended group or project.
+1. In GitLab create a new user and give it "Developer" role for the intended group or project.
+   > **Note:** "Reporter" role is sufficient for adding comments for `/improve` or `/review` for example,
+   > but "Developer" role is required to update the Merge Request description when using the `/describe` command.
 
 2. For the user from step 1, generate a `personal_access_token` with `api` access.
 
@@ -60,7 +86,7 @@ SHARED_SECRET=$(python -c "import secrets; print(secrets.token_hex(10))")
 4. Clone this repository:
 
 ```bash
-git clone https://github.com/qodo-ai/pr-agent.git
+git clone https://github.com/the-pr-agent/pr-agent.git
 ```
 
 5. Prepare variables and secrets. Skip this step if you plan on setting these as environment variables when running the agent:
@@ -75,8 +101,11 @@ git clone https://github.com/qodo-ai/pr-agent.git
 6. Build a Docker image for the app and optionally push it to a Docker repository. We'll use Dockerhub as an example:
 
 ```bash
-docker build . -t gitlab_pr_agent --target gitlab_webhook -f docker/Dockerfile
-docker push codiumai/pr-agent:gitlab_webhook  # Push to your Docker repository
+docker build . -t pr-agent:gitlab_webhook --target gitlab_webhook -f docker/Dockerfile
+
+# Optional, to push it to your own Docker repository:
+docker tag pr-agent:gitlab_webhook <your-registry>/pr-agent:gitlab_webhook
+docker push <your-registry>/pr-agent:gitlab_webhook
 ```
 
 7. Set the environmental variables, the method depends on your docker runtime. Skip this step if you included your secrets/configuration directly in the Docker image.
@@ -95,6 +124,8 @@ PORT=3000  # Optional: override the webhook server port
 
 9. Test your installation by opening a merge request or commenting on a merge request using one of PR Agent's commands.
 
+10. The webhook server runs under gunicorn with multiple worker processes. See [Sizing a self-hosted webhook server](./index.md#sizing-a-self-hosted-webhook-server) for the `GUNICORN_WORKERS` / `GUNICORN_MAX_WORKERS` knobs and memory guidance — worth reading before setting a memory limit.
+
 ## Deploy as a Lambda Function
 
 Note that since AWS Lambda env vars cannot have "." in the name, you can replace each "." in an env variable with "__".<br>
@@ -104,19 +135,19 @@ For example: `GITLAB.PERSONAL_ACCESS_TOKEN` --> `GITLAB__PERSONAL_ACCESS_TOKEN`
 2. Build a docker image that can be used as a lambda function
 
     ```shell
-    docker buildx build --platform=linux/amd64 . -t codiumai/pr-agent:gitlab_lambda --target gitlab_lambda -f docker/Dockerfile.lambda
+    docker buildx build --platform=linux/amd64 . -t pr-agent:gitlab_lambda --target gitlab_lambda -f docker/Dockerfile.lambda
    ```
 
 3. Push image to ECR
 
     ```shell
-    docker tag codiumai/pr-agent:gitlab_lambda <AWS_ACCOUNT>.dkr.ecr.<AWS_REGION>.amazonaws.com/codiumai/pr-agent:gitlab_lambda
-    docker push <AWS_ACCOUNT>.dkr.ecr.<AWS_REGION>.amazonaws.com/codiumai/pr-agent:gitlab_lambda
+    docker tag pr-agent:gitlab_lambda <AWS_ACCOUNT>.dkr.ecr.<AWS_REGION>.amazonaws.com/pr-agent:gitlab_lambda
+    docker push <AWS_ACCOUNT>.dkr.ecr.<AWS_REGION>.amazonaws.com/pr-agent:gitlab_lambda
     ```
 
 4. Create a lambda function that uses the uploaded image. Set the lambda timeout to be at least 3m.
 5. Configure the lambda function to have a Function URL.
-6. In the environment variables of the Lambda function, specify `AZURE_DEVOPS_CACHE_DIR` to a writable location such as /tmp. (see [link](https://github.com/qodo-ai/pr-agent/pull/450#issuecomment-1840242269))
+6. In the environment variables of the Lambda function, specify `AZURE_DEVOPS_CACHE_DIR` to a writable location such as /tmp. (see [link](https://github.com/the-pr-agent/pr-agent/pull/450#issuecomment-1840242269))
 7. Go back to steps 8-9 of [Run a GitLab webhook server](#run-a-gitlab-webhook-server) with the function URL as your Webhook URL.
     The Webhook URL would look like `https://<LAMBDA_FUNCTION_URL>/webhook`
 

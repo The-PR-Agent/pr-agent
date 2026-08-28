@@ -35,6 +35,7 @@ PR-Agent automates AI-assisted reviews for pull requests across multiple git pro
 
 - Python sources follow the Ruff configuration in `pyproject.toml` (`line-length = 120`, Pyflakes plus `flake8-bugbear` checks, and isort ordering). Keep imports grouped as isort would produce and prefer double quotes for strings.
 - Pre-commit (`.pre-commit-config.yaml`) enforces trailing whitespace cleanup, final newlines, TOML/YAML validity, and optional `isort`; run `pre-commit run --all-files` before submitting patches if installed.
+- Before committing, run `flake8` and fix every issue it reports. Keep fixes mechanical (rename, reformat, remove unused imports, add missing newlines); do not alter program logic while cleaning up—if a lint fix would change behavior, surface it instead of applying it silently.
 - Match existing docstring and comment style—concise English comments using imperative phrasing only where necessary.
 - Configuration files in `pr_agent/settings/` are TOML; preserve formatting, section order, and comments when editing prompts or defaults.
 - Markdown in `docs/` uses MkDocs conventions (YAML front matter absent; rely on heading hierarchy already in place).

@@ -1,4 +1,4 @@
-from unittest.mock import patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -27,6 +27,30 @@ class TestCodeCommitFile:
 
 
 class TestCodeCommitProvider:
+    def test_get_diff_files_includes_deleted_file(self):
+        provider = object.__new__(CodeCommitProvider)
+        provider.repo_name = "my_test_repo"
+        provider.pr = PullRequestCCMimic("Delete file", [])
+        provider.pr.destination_commit = "destination-commit"
+        provider.pr.source_commit = "source-commit"
+        provider.diff_files = None
+        provider.git_files = [
+            CodeCommitFile("deleted.py", "before-id", "", "", EDIT_TYPE.DELETED)
+        ]
+        provider.codecommit_client = MagicMock()
+        provider.codecommit_client.get_file.side_effect = lambda _, path, __: b"old contents\n" if path else ""
+
+        diff_files = provider.get_diff_files()
+
+        assert [diff_file.filename for diff_file in diff_files] == ["deleted.py"]
+        assert diff_files[0].base_file == "old contents\n"
+        assert diff_files[0].head_file == ""
+        assert diff_files[0].edit_type == EDIT_TYPE.DELETED
+        assert "-old contents" in diff_files[0].patch
+        assert provider.codecommit_client.get_file.call_args_list == [
+            call("my_test_repo", "deleted.py", "destination-commit")
+        ]
+
     def test_get_title(self):
         # Test that the get_title() function returns the PR title
         with patch.object(CodeCommitProvider, "__init__", lambda x, y: None):

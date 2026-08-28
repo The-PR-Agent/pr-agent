@@ -39,7 +39,7 @@ async def handle_gerrit_request(action: Action, item: Item):
 
     if action == Action.ask:
         if not item.msg:
-            return HTTPException(
+            raise HTTPException(
                 status_code=400,
                 detail="msg is required for ask command"
             )
@@ -64,6 +64,7 @@ async def root():
 
 
 def start():
+    get_settings().set("CONFIG.GIT_PROVIDER", "gerrit")
     # to prevent adding help messages with the output
     get_settings().set("CONFIG.CLI_MODE", True)
     middleware = [Middleware(RawContextMiddleware)]

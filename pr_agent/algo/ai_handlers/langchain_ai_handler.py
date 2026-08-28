@@ -2,6 +2,7 @@ _LANGCHAIN_INSTALLED = False
 
 try:
     from langchain_core.messages import HumanMessage, SystemMessage
+    from langchain_core.runnables import Runnable
     from langchain_openai import AzureChatOpenAI, ChatOpenAI
     _LANGCHAIN_INSTALLED = True
 except:  # we don't enforce langchain as a dependency, so if it's not installed, just move on
@@ -11,9 +12,9 @@ import functools
 
 import openai
 from tenacity import retry, retry_if_exception_type, retry_if_not_exception_type, stop_after_attempt
-from langchain_core.runnables import Runnable
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
+from pr_agent.algo.run_details import record_ai_call
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
@@ -98,6 +99,13 @@ class LangChainOpenAIHandler(BaseAiHandler):
                 resp = await llm.ainvoke(input=messages)
 
             finish_reason = "completed"
+            # Count the call but not its tokens. Langchain reports usage under key names of its
+            # own (input_tokens/output_tokens) rather than the ones the collector reads, so
+            # forwarding it unmapped would render zeros. Mapping them is not worth it while this
+            # path stays cold: langchain is commented out in requirements.txt and no setting
+            # selects this handler, so it is reachable only by injecting it into a tool
+            # programmatically.
+            record_ai_call()
             return resp.content, finish_reason
 
         except openai.RateLimitError as e:
