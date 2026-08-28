@@ -299,22 +299,30 @@ class PRCodeSuggestions:
             pr_body += ' <!-- approve and fold suggestions self-review -->'
         return pr_body
 
-    def _get_suggestions_coverage_footer(self) -> str:
+    def _get_suggestions_coverage_footer(self, suggestions_present: bool = True) -> str:
         failed_chunk_count = getattr(self, "failed_chunk_count", 0)
         if (not failed_chunk_count or
                 not get_settings().pr_code_suggestions.get("enable_suggestions_coverage_footer", True)):
             return ""
         total_chunk_count = getattr(self, "total_chunk_count", failed_chunk_count)
-        return (f"\n\n⚠️ **Suggestion coverage:** {failed_chunk_count} of {total_chunk_count} analysis chunks failed; "
-                "the suggestions above are based on the successful chunks only.")
+        coverage_detail = ("the suggestions above are based on the successful chunks only."
+                           if suggestions_present else
+                           "no suggestions were found in the successful chunks; failed chunks could not be analyzed.")
+        return (f"\n\n⚠️ **Suggestion coverage:** {failed_chunk_count} of {total_chunk_count} "
+                "analysis chunks failed; "
+                f"{coverage_detail}")
 
     async def publish_no_suggestions(self):
-        pr_body = f"{format_pr_code_suggestions_header()}\n\nNo code suggestions found for the PR."
+        coverage_footer = self._get_suggestions_coverage_footer(suggestions_present=False)
+        no_suggestions_message = ("No code suggestions found in the successfully analyzed chunks."
+                                  if coverage_footer else "No code suggestions found for the PR.")
+        pr_body = f"{format_pr_code_suggestions_header()}\n\n{no_suggestions_message}{coverage_footer}"
         if (get_settings().config.publish_output and
                 get_settings().pr_code_suggestions.get('publish_output_no_suggestions', True)):
             get_logger().warning("No code suggestions found for the PR.")
-            if self.git_provider.supports_code_suggestions_artifact():
-                self.git_provider.publish_code_suggestions([])
+            if self.git_provider.supports_code_suggestions_artifact() is True:
+                self.git_provider.publish_code_suggestions_artifact(
+                    [], artifact_footer=coverage_footer, no_suggestions_message=no_suggestions_message)
                 return
             pr_body = add_comment_identity(
                 pr_body,
@@ -330,7 +338,7 @@ class PRCodeSuggestions:
             else:
                 self.git_provider.publish_comment(pr_body)
         else:
-            get_settings().data = {"artifact": ""}
+            get_settings().data = {"artifact": pr_body if coverage_footer else ""}
             if self.progress_response:
                 self.git_provider.remove_comment(self.progress_response)
 
@@ -349,7 +357,7 @@ class PRCodeSuggestions:
             if data_above_threshold['code_suggestions']:
                 get_logger().info(
                     f"Publishing {len(data_above_threshold['code_suggestions'])} suggestions in dual publishing mode")
-                await self.push_inline_code_suggestions(data_above_threshold)
+                await self.push_inline_code_suggestions(data_above_threshold, include_coverage_footer=False)
         except Exception as e:
             get_logger().error(f"Failed to publish dual publishing suggestions, error: {e}")
 
@@ -752,17 +760,24 @@ class PRCodeSuggestions:
 
         return data
 
-    async def push_inline_code_suggestions(self, data):
+    async def push_inline_code_suggestions(self, data, include_coverage_footer: bool = True):
         code_suggestions = []
         fallback_comments = []
+        coverage_footer = self._get_suggestions_coverage_footer() if include_coverage_footer else ""
+        supports_suggestions_artifact = self.git_provider.supports_code_suggestions_artifact() is True
 
         if not data['code_suggestions']:
             get_logger().info('No suggestions found to improve this PR.')
+            empty_coverage_footer = (self._get_suggestions_coverage_footer(suggestions_present=False)
+                                     if include_coverage_footer else "")
+            no_suggestions_message = ("No suggestions found in the successfully analyzed chunks."
+                                      if empty_coverage_footer else "No suggestions found to improve this PR.")
+            pr_body = no_suggestions_message + empty_coverage_footer
             if self.progress_response:
                 return self.git_provider.edit_comment(self.progress_response,
-                                                      body='No suggestions found to improve this PR.')
+                                                      body=pr_body)
             else:
-                return self.git_provider.publish_comment('No suggestions found to improve this PR.')
+                return self.git_provider.publish_comment(pr_body)
 
         for d in data['code_suggestions']:
             try:
@@ -808,11 +823,17 @@ class PRCodeSuggestions:
                                          'original_suggestion': d})
 
         if code_suggestions:
-            is_successful = self.git_provider.publish_code_suggestions(code_suggestions)
+            if supports_suggestions_artifact:
+                is_successful = self.git_provider.publish_code_suggestions_artifact(
+                    code_suggestions, artifact_footer=coverage_footer)
+            else:
+                is_successful = self.git_provider.publish_code_suggestions(code_suggestions)
             if not is_successful:
                 get_logger().info("Failed to publish code suggestions, trying to publish each suggestion separately")
                 for code_suggestion in code_suggestions:
                     self.git_provider.publish_code_suggestions([code_suggestion])
+        if coverage_footer and not supports_suggestions_artifact:
+            fallback_comments.append(coverage_footer.strip())
         if fallback_comments:
             self.git_provider.publish_comment("\n\n---\n\n".join(fallback_comments))
 

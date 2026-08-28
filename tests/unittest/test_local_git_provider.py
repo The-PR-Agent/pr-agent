@@ -121,6 +121,22 @@ def test_publish_code_suggestions_no_suggestions(tmp_path):
     assert "No code suggestions found" in improve_path.read_text()
 
 
+def test_publish_code_suggestions_artifact_includes_partial_coverage(tmp_path):
+    improve_path = tmp_path / "improve.md"
+    provider = object.__new__(LocalGitProvider)
+    provider.improve_path = improve_path
+
+    assert provider.publish_code_suggestions_artifact(
+        [],
+        artifact_footer="\n\n⚠️ **Suggestion coverage:** 1 of 2 analysis chunks failed.",
+        no_suggestions_message="No code suggestions found in the successfully analyzed chunks.",
+    ) is True
+
+    content = improve_path.read_text()
+    assert "No code suggestions found in the successfully analyzed chunks." in content
+    assert "1 of 2 analysis chunks failed" in content
+
+
 def test_publish_code_suggestions_uses_custom_heading_without_identity(tmp_path):
     snapshot = snapshot_settings(["pr_code_suggestions.suggestions_heading"])
     improve_path = tmp_path / "improve.md"

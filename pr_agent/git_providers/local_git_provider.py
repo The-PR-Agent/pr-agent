@@ -145,6 +145,11 @@ class LocalGitProvider(GitProvider):
         raise NotImplementedError('Publishing code suggestions is not implemented for the local git provider')
 
     def publish_code_suggestions(self, code_suggestions: list) -> bool:
+        return self.publish_code_suggestions_artifact(code_suggestions)
+
+    def publish_code_suggestions_artifact(
+            self, code_suggestions: list, artifact_footer: str = "",
+            no_suggestions_message: str = "No code suggestions found for the PR.") -> bool:
         """
         Write /improve output to a file (improve.md by default).
 
@@ -167,7 +172,8 @@ class LocalGitProvider(GitProvider):
             sections.append(f"{header}\n\n{suggestion.get('body', '').strip()}")
         header = format_pr_code_suggestions_header(markdown_level=1)
         pr_body = f"{header}\n\n" + "\n\n".join(sections) if sections \
-            else f"{header}\n\nNo code suggestions found for the PR."
+            else f"{header}\n\n{no_suggestions_message}"
+        pr_body += artifact_footer
         if not sections and get_settings().get("config.output_run_details", False):
             pr_body += show_run_details(False)
         with open(self.improve_path, "w", encoding="utf-8") as file:

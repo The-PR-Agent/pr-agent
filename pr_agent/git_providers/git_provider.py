@@ -1,13 +1,14 @@
-from abc import ABC, abstractmethod
 # enum EDIT_TYPE (ADDED, DELETED, MODIFIED, RENAMED)
 import os
 import shutil
 import subprocess
 import time
+from abc import ABC, abstractmethod
 from typing import Optional, Tuple
 
 from pr_agent.algo.types import FilePatchInfo
-from pr_agent.algo.utils import Range, add_pr_review_identity, comment_matches_identity, process_description
+from pr_agent.algo.utils import (Range, add_pr_review_identity,
+                                 comment_matches_identity, process_description)
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
@@ -129,6 +130,17 @@ class GitProvider(ABC):
     def supports_code_suggestions_artifact(self) -> bool:
         """Return whether `publish_code_suggestions()` writes a standalone output artifact."""
         return False
+
+    def publish_code_suggestions_artifact(
+            self, code_suggestions: list, artifact_footer: str = "",
+            no_suggestions_message: str = "No code suggestions found for the PR.") -> bool:
+        """Publish suggestions to a standalone artifact, optionally with additional context.
+
+        Providers that return True from `supports_code_suggestions_artifact()` should override
+        this method when they can preserve the footer in the same artifact. The default keeps
+        backward compatibility for providers that only implement `publish_code_suggestions()`.
+        """
+        return self.publish_code_suggestions(code_suggestions)
 
     #Given a url (issues or PR/MR) - get the .git repo url to which they belong. Needs to be implemented by the provider.
     def get_git_repo_url(self, issues_or_pr_url: str) -> str:
