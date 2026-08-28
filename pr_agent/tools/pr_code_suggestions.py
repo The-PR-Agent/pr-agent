@@ -246,7 +246,7 @@ class PRCodeSuggestions:
                             identity_marker=PRCodeSuggestionsIdentity.SUMMARY.value,
                             legacy_initial_header=PRCodeSuggestionsHeader.SUMMARY.value,
                         )
-                        if published_comment is self.progress_response:
+                        if published_comment is not None:
                             self.progress_response = None
                     else:
                         pr_body = add_comment_identity(
