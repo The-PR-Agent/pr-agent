@@ -29,11 +29,13 @@ To edit [configurations](#configuration-options) related to the `improve` tool, 
 /improve --pr_code_suggestions.some_config1=... --pr_code_suggestions.some_config2=...
 ```
 
-For example, you can choose to present all the suggestions as committable code comments, by running the following command:
+For example, you can present suggestions with verified replacement ranges as committable code comments by running:
 
 ```toml
 /improve --pr_code_suggestions.commitable_code_suggestions=true
 ```
+
+Suggestions whose replacement ranges cannot be verified remain regular comments without an apply action.
 
 ![improve](https://codium.ai/images/pr_agent/improve.png){width=512}
 
@@ -58,9 +60,9 @@ num_code_suggestions_per_chunk = ...
 
 ### Table vs Committable code comments
 
-PR-Agent supports two modes for presenting code suggestions: 
+PR-Agent supports two modes for presenting code suggestions:
 
-1) [Table](https://codium.ai/images/pr_agent/code_suggestions_as_comment_closed.png) mode 
+1) [Table](https://codium.ai/images/pr_agent/code_suggestions_as_comment_closed.png) mode
 
 2) [Inline Committable](https://codium.ai/images/pr_agent/improve.png) code comments mode.
 
@@ -72,7 +74,7 @@ The table format offers several key advantages:
 - **Centralized tracking**: Shows suggestion implementation status in one place
 - **IDE integration**: Allows applying suggestions directly in your IDE via the CLI tool
 
-Table mode is the default of PR-Agent, and is recommended approach for most users due to these benefits. 
+Table mode is the default of PR-Agent, and is recommended approach for most users due to these benefits.
 
 ![code_suggestions_as_comment_closed.png](https://codium.ai/images/pr_agent/code_suggestions_as_comment_closed.png){width=512}
 
@@ -111,9 +113,9 @@ Use triple quotes to write multi-line instructions. Use bullet points or numbers
 PR-Agent supports both simple and hierarchical best practices configurations to provide guidance to the AI model for generating relevant code suggestions.
 
 ???- tip "Writing effective best practices files"
-    
+
     The following guidelines apply to all best practices files:
-    
+
     - Write clearly and concisely
     - Include brief code examples when helpful with before/after patterns
     - Focus on project-specific guidelines that will result in relevant suggestions you actually want to get
@@ -124,9 +126,9 @@ PR-Agent supports both simple and hierarchical best practices configurations to 
     - Use pattern-based structure rather than simple bullet points for better clarity
 
 ???- tip "Example of a best practices file"
- 
+
     Pattern 1: Add proper error handling with try-except blocks around external function calls.
-    
+
     Example code before:
 
     ```python
@@ -145,7 +147,7 @@ PR-Agent supports both simple and hierarchical best practices configurations to 
     ```
 
     Pattern 2: Add defensive null/empty checks before accessing object properties or performing operations on potentially null variables to prevent runtime errors.
-    
+
     Example code before:
 
     ```python
@@ -224,6 +226,19 @@ To enable it, use the following setting:
 persistent_inline_comments = true
 ```
 
+### Batch-publishing committable suggestions on GitLab
+
+`Platforms supported: GitLab`
+
+By default, when `commitable_code_suggestions` is enabled, GitLab posts each suggestion as its own live discussion as soon as it's created - which means a separate notification (and email, if configured) per suggestion. To instead queue all suggestions and publish them together in a single batch, similar to using "start a review" in the GitLab UI, enable:
+
+```toml
+[gitlab]
+publish_code_suggestions_as_review = true
+```
+
+Suggestions are posted as GitLab draft notes (visible only to PR-Agent's user until published) and published together with a single API call once all suggestions have been queued. The suggestions remain fully committable either way - this setting only changes how they're delivered. The publish call is only made if at least one suggestion was actually queued, so a run with nothing to post won't accidentally publish unrelated drafts already pending on the MR.
+
 ### Self-review
 
 `Platforms supported: GitHub, GitLab`
@@ -279,6 +294,18 @@ Note: Chunking is primarily relevant for large PRs. For most PRs (up to 600 line
         <td>Optional extra instructions to the tool. For example: "focus on the changes in the file X. Ignore change in ...".</td>
       </tr>
       <tr>
+        <td><b>suggestions_heading</b></td>
+        <td>
+          Visible base heading for summary-table improve comments, without the Markdown prefix.
+          For example, <code>suggestions_heading = "Guideline Improvement Suggestions"</code> renders
+          <code>## Guideline Improvement Suggestions ✨</code>. On GitHub, GitLab, and Azure DevOps,
+          changing this value updates the same persistent suggestions comment; it does not create a separate
+          suggestions channel. LocalGit uses the same visible heading in <code>improve.md</code>, without a
+          hidden identity marker. The setting does not affect committable inline suggestions. Default is
+          <code>PR Code Suggestions</code>.
+        </td>
+      </tr>
+      <tr>
         <td><b>commitable_code_suggestions</b></td>
         <td>If set to true, the tool will display the suggestions as committable code comments. Default is false.</td>
       </tr>
@@ -288,7 +315,7 @@ Note: Chunking is primarily relevant for large PRs. For most PRs (up to 600 line
       </tr>
       <tr>
         <td><b>focus_only_on_problems</b></td>
-        <td>If set to true, suggestions will focus primarily on identifying and fixing code problems, and less on style considerations like best practices, maintainability, or readability. Default is true.</td> 
+        <td>If set to true, suggestions will focus primarily on identifying and fixing code problems, and less on style considerations like best practices, maintainability, or readability. Default is true.</td>
       </tr>
       <tr>
         <td><b>persistent_comment</b></td>
@@ -309,6 +336,13 @@ Note: Chunking is primarily relevant for large PRs. For most PRs (up to 600 line
       <tr>
         <td><b>publish_output_no_suggestions</b></td>
         <td>If set to true, the tool will publish a comment even if no suggestions were found. Default is true.</td>
+      </tr>
+      <tr>
+        <td><b>enable_suggestions_coverage_footer</b></td>
+        <td>
+          If set to true, the tool will display a coverage notice when failed analysis chunks make the
+          suggestions incomplete. Default is true.
+        </td>
       </tr>
     </table>
 

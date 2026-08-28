@@ -8,11 +8,13 @@ import html
 import json
 import os
 import re
+import string
 import sys
 import textwrap
 import time
 import traceback
 from datetime import datetime
+from decimal import ROUND_HALF_UP, Decimal
 from enum import Enum
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Iterable, List, Tuple, TypedDict
@@ -70,25 +72,64 @@ class PRReviewIdentity(str, Enum):
     INCREMENTAL = "<!-- pr-agent:review:incremental -->"
 
 
+class PRCodeSuggestionsHeader(str, Enum):
+    SUMMARY = "## PR Code Suggestions ✨"
+
+
+class PRCodeSuggestionsIdentity(str, Enum):
+    SUMMARY = "<!-- pr-agent:improve:summary -->"
+    NO_SUGGESTIONS = "<!-- pr-agent:improve:no-suggestions -->"
+
+
 _REVIEW_IDENTITY_HEADER_LINES = 5
+_MARKDOWN_PUNCTUATION_ESCAPE_TABLE = str.maketrans(
+    {character: f"\\{character}" for character in string.punctuation}
+)
+
+
+def _get_configured_heading(setting_name: str, default_heading: str) -> str:
+    configured_heading = get_settings().get(setting_name)
+    if (
+        not isinstance(configured_heading, str)
+        or not configured_heading.strip()
+        or configured_heading.splitlines() != [configured_heading]
+    ):
+        get_logger().warning(
+            f"Invalid {setting_name}; using the default heading"
+        )
+        configured_heading = default_heading
+    return configured_heading.strip()
 
 
 def format_pr_review_header(incremental: bool = False) -> str:
     """Return the visible review heading while keeping identity out of presentation."""
-    configured_heading = get_settings().get("pr_reviewer.review_heading")
-    if (
-        not isinstance(configured_heading, str)
-        or not configured_heading.strip()
-        or "\n" in configured_heading
-        or "\r" in configured_heading
-    ):
-        get_logger().warning(
-            "Invalid pr_reviewer.review_heading; using the default review heading"
-        )
-        configured_heading = PRReviewHeader.REGULAR.value.removeprefix("## ")
-    heading = configured_heading.strip()
+    default_heading = PRReviewHeader.REGULAR.value.removeprefix("## ")
+    heading = _get_configured_heading("pr_reviewer.review_heading", default_heading)
     incremental_prefix = "Incremental " if incremental else ""
     return f"## {incremental_prefix}{heading} 🔍"
+
+
+def format_pr_code_suggestions_header(markdown_level: int = 2) -> str:
+    """Return the visible suggestions heading while keeping identity out of presentation."""
+    default_heading = (
+        PRCodeSuggestionsHeader.SUMMARY.value
+        .removeprefix("## ")
+        .removesuffix(" ✨")
+    )
+    heading = _get_configured_heading(
+        "pr_code_suggestions.suggestions_heading",
+        default_heading,
+    )
+    markdown_prefix = "#" * markdown_level
+    return f"{markdown_prefix} {heading} ✨"
+
+
+def format_pr_questions_header(*, escape_markdown: bool = True) -> str:
+    """Return the visible heading for top-level /ask answers."""
+    heading = _get_configured_heading("pr_questions.ask_heading", "Ask")
+    if escape_markdown:
+        heading = heading.translate(_MARKDOWN_PUNCTUATION_ESCAPE_TABLE)
+    return f"### **{heading}** ❓"
 
 
 def comment_matches_identity(body: str, identity: str) -> bool:
@@ -117,7 +158,7 @@ def get_pr_review_comment_identifiers(*, full: bool, incremental: bool) -> tuple
     return tuple(identifiers)
 
 
-def add_pr_review_identity(pr_comment: str, identity_marker: str | None) -> str:
+def add_comment_identity(pr_comment: str, identity_marker: str | None) -> str:
     """Insert a hidden identity after the visible heading without changing rendered output."""
     if not pr_comment or not identity_marker or comment_matches_identity(pr_comment, identity_marker):
         return pr_comment
@@ -125,6 +166,10 @@ def add_pr_review_identity(pr_comment: str, identity_marker: str | None) -> str:
     if not separator:
         return f"{pr_comment.rstrip()}\n\n{identity_marker}"
     return f"{heading}\n\n{identity_marker}\n\n{remainder}"
+
+
+def add_pr_review_identity(pr_comment: str, identity_marker: str | None) -> str:
+    return add_comment_identity(pr_comment, identity_marker)
 
 
 class ReasoningEffort(str, Enum):
@@ -872,7 +917,7 @@ def load_yaml(response_text: str, keys_fix_yaml: List[str] = [], first_key="", l
     response_text = response_text.strip('\n')
     # strip the fence label only when it is a complete info string, so a key such as
     # "yml_config" is not truncated to "_config"
-    unfenced = re.sub(r'^```[ \t]*(?:yaml|yml)?[ \t]*(?=\r?\n)', '', response_text)
+    unfenced = re.sub(r'^```[ \t]*(?:(?i:yaml|yml))?[ \t]*(?=\r?\n)', '', response_text)
     if unfenced == response_text:
         unfenced = response_text.removeprefix('yaml')
     response_text = unfenced.rstrip().removesuffix('```')
@@ -953,7 +998,7 @@ def try_fix_yaml(response_text: str,
         pass
 
     # second fallback - try to extract only range from first ```yaml to the last ```
-    snippet_pattern = r'```[ \t]*(?:(?:yaml|yml)[ \t]*)?\r?\n([\s\S]*?)```(?=\s*$|")'
+    snippet_pattern = r'```[ \t]*(?:(?i:yaml|yml)[ \t]*)?\r?\n([\s\S]*?)```(?=\s*$|")'
     snippet = re.search(snippet_pattern, '\n'.join(response_text_lines_copy))
     if not snippet:
         snippet = re.search(snippet_pattern, response_text_original) # before we removed the "```"
@@ -1013,6 +1058,45 @@ def try_fix_yaml(response_text: str,
             return data
     except:
         pass
+
+    # 5.5 fallback - try to normalize diff-style removal markers ('-') within list items
+    response_text_lines_copy = response_text_lines.copy()
+    modified = False
+
+    for i, line in enumerate(response_text_lines_copy):
+        if line.startswith('+'):
+            response_text_lines_copy[i] = ' ' + line[1:]
+            modified = True
+
+    # normalize lines starting with '-'. Distinguish real YAML list items from diff deletions.
+    for i, line in enumerate(response_text_lines_copy):
+        if not line.startswith('-'):
+            continue
+
+        remainder = line[1:]
+        if line.startswith('- '):
+            second_char = remainder[1] if len(remainder) > 1 else ''
+            if second_char and second_char not in (' ', '\t', '+', '-'):
+                continue # real list item → keep as-is
+
+        # treat it as a diff "removed" marker inside block content
+        cleaned = remainder
+        while cleaned and cleaned[0] in ('+', '-'):
+            cleaned = cleaned[1:]
+        if cleaned and cleaned[0] not in (' ', '\t'):
+            cleaned = ' ' + cleaned
+        if cleaned != line:
+            response_text_lines_copy[i] = cleaned
+            modified = True
+    if modified:
+        try:
+            data = yaml.safe_load('\n'.join(response_text_lines_copy))
+            if data is not None:
+                get_logger().info("Successfully parsed AI prediction after normalizing diff removal markers")
+                return data
+        except Exception:
+            pass
+
 
     # sixth fallback - replace tabs with spaces
     if '\t' in response_text:
@@ -1486,6 +1570,14 @@ def show_relevant_configurations(relevant_section: str) -> str:
     return markdown_text
 
 
+def _format_usd(cost: Decimal) -> str:
+    """Format cost at two decimals without turning a positive amount into false zero."""
+    rounded = cost.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    if cost > 0 and rounded == 0:
+        return "<$0.01"
+    return f"${rounded:.2f}"
+
+
 def show_run_details(gfm_supported: bool) -> str:
     """Render the opt-in run-details section (model, tokens, time cost, AI calls).
 
@@ -1508,6 +1600,21 @@ def show_run_details(gfm_supported: bool) -> str:
     lines.append(f"- Time cost: {details.duration_seconds:.1f}s")
     if details.num_ai_calls:
         lines.append(f"- AI calls: {details.num_ai_calls}")
+    if get_settings().get("config.output_run_cost", False) and details.num_ai_calls:
+        if details.cost_status == "unavailable":
+            # No causal claim here: pricing can be missing because usage was absent
+            # (streaming without a final usage chunk) or because the active handler
+            # never collects costs (openai/langchain handlers).
+            lines.append("- Estimated API cost: unavailable (no calls could be priced)")
+        else:
+            partial = ""
+            if details.cost_status == "partial":
+                partial = (f" (partial: {details.known_cost_call_count} of "
+                           f"{details.num_ai_calls} successful calls priced)")
+            lines.append(f"- Estimated API cost: {_format_usd(details.total_cost_usd)} USD{partial}")
+            if len(details.model_costs_usd) > 1:
+                for model, cost in details.model_costs_usd.items():
+                    lines.append(f"  - {model}: {_format_usd(cost)} USD")
     body = "\n".join(lines)
 
     if gfm_supported:

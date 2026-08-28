@@ -52,6 +52,20 @@ def has_marker(body: str) -> bool:
     return bool(BODY_MARKER_RE.search(body or "") or CODE_MARKER_RE.search(body or ""))
 
 
+def is_agent_inline_comment(body: str) -> bool:
+    body = (body or "").lstrip()
+    return has_marker(body) or bool(_LEAD_RE.match(body))
+
+
+def marker_fingerprints(body: str) -> set:
+    """All dedup-marker fingerprints embedded in one comment body."""
+    found = set()
+    for marker_re in _MARKER_RES:
+        for match in marker_re.finditer(body or ""):
+            found.add(match.group(1))
+    return found
+
+
 def _strip_markers(body: str) -> str:
     """Remove embedded dedup markers so a pre-marked body fingerprints the
     same as its original (markers are appended after marking)."""
@@ -150,6 +164,13 @@ def iter_existing_inline_comment_bodies(git_provider) -> Iterator[str]:
         # are seen on later runs.
         for note in git_provider.mr.notes.list(get_all=True):
             yield getattr(note, "body", "") or ""
+        # gitlab.publish_code_suggestions_as_review queues suggestions as draft notes
+        # (invisible in the discussions/notes listings above until published). Scan
+        # them too, so a marker from a draft that's still pending - e.g. because a
+        # prior run's bulk-publish failed - is still seen, instead of being re-posted
+        # as a duplicate once it (or a fresh copy) is eventually published.
+        for draft in git_provider.mr.draft_notes.list(get_all=True):
+            yield getattr(draft, "note", "") or ""
     elif provider_name == "AzureDevopsProvider":
         yield from git_provider.get_inline_comment_bodies()
     else:
@@ -175,6 +196,7 @@ class InlineCommentStore:
     def __init__(self, git_provider):
         self._git_provider = git_provider
         self._keys: set = set()
+        self._released: set = set()
         self._loaded = False
         self._load_failed = False
 
@@ -191,6 +213,7 @@ class InlineCommentStore:
                 f"Persistent inline comments: could not load existing comments, "
                 f"within-run dedup only. error={e}"
             )
+        self._keys -= self._released
         self._loaded = True
         return self._keys
 
@@ -208,9 +231,15 @@ class InlineCommentStore:
             self._keys.add(fingerprint)
 
     def add_body(self, body: str) -> None:
-        for marker_re in _MARKER_RES:
-            for match in marker_re.finditer(body or ""):
-                self._keys.add(match.group(1))
+        self._keys |= marker_fingerprints(body)
+
+    def release(self, fingerprints) -> None:
+        """Forget fingerprints whose threads the outdated-thread sweep resolved, so they
+        stop suppressing their own replacements. Applied to what is already loaded and
+        again after any later load, since the sweep and the load can run in either order.
+        Human-resolved threads never reach here and stay suppressive."""
+        self._released |= set(fingerprints)
+        self._keys -= self._released
 
 
 def get_inline_comment_store(git_provider) -> InlineCommentStore:

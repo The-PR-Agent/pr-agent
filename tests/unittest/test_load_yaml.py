@@ -112,6 +112,10 @@ PR Feedback:
         assert load_yaml("``` yaml\nname: John\n```") == expected
         assert load_yaml("``` yml\nname: John\n```") == expected
 
+    @pytest.mark.parametrize("label", ["YAML", "YML", "Yaml", "yMl"])
+    def test_yaml_info_string_is_case_insensitive(self, label):
+        assert load_yaml(f"```\t{label}\t\nname: John\n```") == {"name": "John"}
+
     # A fence labeled with a non-YAML info string (e.g. ```text or ```python)
     # must not be extracted and parsed as a YAML snippet. The old pattern's
     # optional (yaml|yml) group let any info string through, so the body

@@ -1,7 +1,9 @@
 import json
 import os
 import pathlib
+import re
 import shutil
+import string
 import subprocess
 import uuid
 from collections import Counter, namedtuple
@@ -12,6 +14,8 @@ import requests
 import urllib3.util
 from git import Repo
 
+from pr_agent.algo.file_filter import filter_ignored
+from pr_agent.algo.language_handler import build_language_file_matcher
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import GitProvider
@@ -109,10 +113,35 @@ def prepare_repo(url: urllib3.util.Url, project, refspec):
     return directory
 
 
+_ASK_HEADING_PREFIX = "### **"
+_ASK_HEADING_SUFFIX = "** ❓"
+_ESCAPED_MARKDOWN_PUNCTUATION = re.compile(
+    r"\\([" + re.escape(string.punctuation) + r"])"
+)
+
+
+def _convert_gerrit_ask_heading(line: str) -> str | None:
+    """Convert only the generated /ask heading to Gerrit's plain-text form."""
+    if not line.startswith(_ASK_HEADING_PREFIX) or not line.endswith(_ASK_HEADING_SUFFIX):
+        return None
+    escaped_heading = line[len(_ASK_HEADING_PREFIX):-len(_ASK_HEADING_SUFFIX)]
+    heading = _ESCAPED_MARKDOWN_PUNCTUATION.sub(
+        lambda match: match.group(1),
+        escaped_heading,
+    )
+    return f"{heading}❓"
+
+
 def adopt_to_gerrit_message(message):
     lines = message.splitlines()
     buf = []
-    for line in lines:
+    for line_number, line in enumerate(lines):
+        if line_number == 0:
+            ask_heading = _convert_gerrit_ask_heading(line.strip())
+            if ask_heading is not None:
+                buf.append(f"\n{ask_heading}:")
+                continue
+
         # remove markdown formatting
         line = (line.replace("*", "")
                 .replace("``", "`")
@@ -232,11 +261,14 @@ class GerritProvider(GitProvider):
             return b""
 
     def get_diff_files(self) -> list[FilePatchInfo]:
-        diffs = self.repo.head.commit.diff(
-            self.repo.head.commit.parents[0],  # previous commit
-            create_patch=True,
-            R=True
+        diffs = list(
+            self.repo.head.commit.diff(
+                self.repo.head.commit.parents[0],  # previous commit
+                create_patch=True,
+                R=True
+            )
         )
+        diffs = filter_ignored(diffs, "gerrit")
 
         diff_files = []
         for diff_item in diffs:
@@ -263,7 +295,7 @@ class GerritProvider(GitProvider):
                     original_file_content_str,
                     new_file_content_str,
                     diff_item.diff.decode('utf-8'),
-                    diff_item.b_path,
+                    diff_item.b_path or diff_item.a_path,
                     edit_type=edit_type,
                     old_filename=None
                     if diff_item.a_path == diff_item.b_path
@@ -287,18 +319,21 @@ class GerritProvider(GitProvider):
         Calculate percentage of languages in repository. Used for hunk
         prioritisation.
         """
+        lang_map = get_settings().get("language_extension_map_org", {}) or {}
+        get_language = build_language_file_matcher(lang_map)
+
         # Get all files in repository
         filepaths = [Path(item.path) for item in
                      self.repo.tree().traverse() if item.type == 'blob']
-        # Identify language by file extension and count
-        lang_count = Counter(
-            ext.lstrip('.') for filepath in filepaths for ext in
-            [filepath.suffix.lower()])
+        # Identify language by filename and count
+        lang_count = Counter()
+        for filepath in filepaths:
+            language = get_language(filepath.name)
+            if language:
+                lang_count[language] += 1
         # Convert counts to percentages
-        total_files = len(filepaths)
-        lang_percentage = {lang: count / total_files * 100 for lang, count
-                           in lang_count.items()}
-        return lang_percentage
+        total = sum(lang_count.values()) or 1
+        return {lang: count / total * 100 for lang, count in lang_count.items()}
 
     def get_pr_description_full(self):
         return self.repo.head.commit.message

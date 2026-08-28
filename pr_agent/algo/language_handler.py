@@ -1,4 +1,5 @@
 # Language Selection, source: https://github.com/bigcode-project/bigcode-dataset/blob/main/language_selection/programming-languages-to-file-extensions.json  # noqa E501
+from collections.abc import Callable
 from typing import Dict
 
 from pr_agent.config_loader import get_settings
@@ -34,6 +35,37 @@ def is_valid_file(filename:str, bad_extensions=None) -> bool:
     return filename.split('.')[-1] not in bad_extensions
 
 
+def build_language_file_matcher(language_extension_map: Dict) -> Callable[[str], str | None]:
+    """Build a filename classifier from the configured language extensions."""
+    exact_to_language = {}
+    folded_to_languages = {}
+    for language, extensions in language_extension_map.items():
+        for extension in extensions:
+            token = extension.lstrip("*")
+            exact_to_language.setdefault(token, language)
+            folded_to_languages.setdefault(token.casefold(), set()).add(language)
+
+    def get_language(filename: str) -> str | None:
+        name = filename.replace("\\", "/").rsplit("/", 1)[-1]
+        parts = name.split(".")
+        candidates = [name] + [
+            "." + ".".join(parts[i:])
+            for i in range(1, len(parts))
+        ]
+
+        for candidate in candidates:
+            language = exact_to_language.get(candidate)
+            if language:
+                return language
+            languages = folded_to_languages.get(candidate.casefold(), set())
+            if len(languages) == 1:
+                return next(iter(languages))
+
+        return None
+
+    return get_language
+
+
 def sort_files_by_main_languages(languages: Dict, files: list):
     """
     Sort files by their main language, put the files that are in the main language first and the rest files after
@@ -42,19 +74,22 @@ def sort_files_by_main_languages(languages: Dict, files: list):
     languages_sorted_list = [k for k, v in sorted(languages.items(), key=lambda item: item[1], reverse=True)]
     # languages_sorted = sorted(languages, key=lambda x: x[1], reverse=True)
     # get all extensions for the languages
-    main_extensions = []
     language_extension_map_org = get_settings().language_extension_map_org
-    language_extension_map = {k.lower(): v for k, v in language_extension_map_org.items()}
-    for language in languages_sorted_list:
-        if language.lower() in language_extension_map:
-            main_extensions.append(language_extension_map[language.lower()])
-        else:
-            main_extensions.append([])
+    configured_language_names = {
+        language.lower(): language
+        for language in language_extension_map_org
+    }
+    selected_language_names = {
+        configured_language_names[language.lower()]: language
+        for language in languages_sorted_list
+        if language.lower() in configured_language_names
+    }
+    get_language = build_language_file_matcher(language_extension_map_org)
 
     # filter out files bad extensions
     files_filtered = filter_bad_extensions(files)
 
-    # sort files by their extension, put the files that are in the main extension first
+    # sort files by their language, put the files that are in the main language first
     # and the rest files after, map languages_sorted to their respective files
     files_sorted = []
     rest_files = {}
@@ -64,20 +99,17 @@ def sort_files_by_main_languages(languages: Dict, files: list):
         files_sorted = [({"language": "Other", "files": list(files_filtered)})]
         return files_sorted
 
-    main_extensions_flat = []
-    for ext in main_extensions:
-        main_extensions_flat.extend(ext)
+    files_by_language = {language: [] for language in languages_sorted_list}
+    for file in files_filtered:
+        configured_language = get_language(file.filename)
+        selected_language = selected_language_names.get(configured_language)
+        if selected_language:
+            files_by_language[selected_language].append(file)
+        else:
+            rest_files.setdefault(file.filename, file)
 
-    for extensions, lang in zip(main_extensions, languages_sorted_list):  # noqa: B905
-        tmp = []
-        for file in files_filtered:
-            extension_str = f".{file.filename.split('.')[-1]}"
-            if extension_str in extensions:
-                tmp.append(file)
-            else:
-                if (file.filename not in rest_files) and (extension_str not in main_extensions_flat):
-                    rest_files[file.filename] = file
-        if len(tmp) > 0:
-            files_sorted.append({"language": lang, "files": tmp})
+    for language in languages_sorted_list:
+        if files_by_language[language]:
+            files_sorted.append({"language": language, "files": files_by_language[language]})
     files_sorted.append({"language": "Other", "files": list(rest_files.values())})
     return files_sorted

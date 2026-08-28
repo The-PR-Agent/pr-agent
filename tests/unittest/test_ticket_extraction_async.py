@@ -6,6 +6,7 @@ These tests are deterministic and fake-provider based — no live API or
 network access is performed.
 """
 import asyncio
+import json
 from unittest.mock import MagicMock
 
 import pytest
@@ -782,3 +783,135 @@ class TestExtractAndCachePrTickets:
         vars_ = {}
         asyncio.run(extract_and_cache_pr_tickets(object(), vars_))
         assert "related_tickets" not in vars_
+
+
+# ---------------------------------------------------------------------------
+# Scenario: GraphQL null values in GithubProvider.fetch_sub_issues
+# ---------------------------------------------------------------------------
+
+class _FakeRequester:
+    """Mimic PyGithub's private requester: ``requestJson`` -> (status, headers, body)."""
+
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.queries = []
+
+    def requestJson(self, verb, url, input=None):
+        self.queries.append((input or {}).get("query", ""))
+        return (200, {}, json.dumps(self._responses.pop(0)))
+
+
+class _FakeClientWithRequester:
+    """Mimic PyGithub's Github object for the GraphQL path only."""
+
+    def __init__(self, responses):
+        # Name matches the attribute the provider reads; it is not name-mangled
+        # here because it already starts with a single underscore.
+        self._Github__requester = _FakeRequester(responses)
+
+
+def _provider_with_graphql(responses):
+    """Build a GithubProvider exposing the real fetch_sub_issues over faked GraphQL."""
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.github_client = _FakeClientWithRequester(responses)
+    return provider
+
+
+def _capture_logs(fn):
+    """Run ``fn`` while capturing loguru output.
+
+    pr-agent uses loguru; pytest's caplog does not see it because the sink was
+    bound before pytest swapped sys.stderr. Add a sink directly, as done in
+    test_extra_config_url.py.
+    """
+    from loguru import logger as loguru_logger
+
+    lines = []
+    sink_id = loguru_logger.add(lambda msg: lines.append(str(msg)), level="DEBUG")
+    try:
+        result = fn()
+    finally:
+        loguru_logger.remove(sink_id)
+    return result, "\n".join(lines)
+
+
+ISSUE_URL = "https://github.com/org/repo/issues/89"
+
+
+class TestFetchSubIssuesNullGraphQLFields:
+    """GitHub returns ``null`` — not a missing key — for unresolvable nodes.
+
+    ``.get(key, {})`` only falls back on a *missing* key, so a present-but-null
+    value yielded ``None`` and the next ``.get()`` in the chain raised
+    ``AttributeError: 'NoneType' object has no attribute 'get'``.
+
+    The exception was swallowed by the method's broad ``except``, so the return
+    value alone cannot distinguish the bug from correct handling. These tests
+    therefore assert on the log output, which is the only observable difference.
+    """
+
+    def test_null_issue_is_handled_without_traceback(self):
+        """``repository.issue`` is null when the number belongs to a pull request."""
+        responses = [{
+            "data": {"repository": {"issue": None}},
+            "errors": [{
+                "type": "NOT_FOUND",
+                "path": ["repository", "issue"],
+                "message": "Could not resolve to an Issue with the number of 89.",
+            }],
+        }]
+        provider = _provider_with_graphql(responses)
+
+        result, logs = _capture_logs(lambda: provider.fetch_sub_issues(ISSUE_URL))
+
+        assert result == set()
+        assert "Failed to fetch sub-issues" not in logs, (
+            "null repository.issue must take the 'Issue ID not found' branch, "
+            "not raise into the broad except"
+        )
+        assert "Issue ID not found" in logs
+        # The second (sub-issues) query must not be attempted.
+        assert len(provider.github_client._Github__requester.queries) == 1
+
+    def test_null_repository_is_handled_without_traceback(self):
+        """``repository`` itself is null when the repo cannot be resolved."""
+        provider = _provider_with_graphql([{"data": {"repository": None}}])
+
+        result, logs = _capture_logs(lambda: provider.fetch_sub_issues(ISSUE_URL))
+
+        assert result == set()
+        assert "Failed to fetch sub-issues" not in logs
+        assert "Issue ID not found" in logs
+
+    def test_null_node_in_sub_issues_response_is_handled_without_traceback(self):
+        """The second query resolves the issue id; ``node`` may still be null."""
+        responses = [
+            {"data": {"repository": {"issue": {"id": "I_kwDO_fake"}}}},
+            {"data": {"node": None}},
+        ]
+        provider = _provider_with_graphql(responses)
+
+        result, logs = _capture_logs(lambda: provider.fetch_sub_issues(ISSUE_URL))
+
+        assert result == set()
+        assert "Failed to fetch sub-issues" not in logs
+        assert "Invalid sub-issues response structure" in logs
+
+    def test_sub_issues_are_returned_when_present(self):
+        """Happy path stays intact."""
+        responses = [
+            {"data": {"repository": {"issue": {"id": "I_kwDO_fake"}}}},
+            {"data": {"node": {"subIssues": {"nodes": [
+                {"url": "https://github.com/org/repo/issues/1"},
+                {"url": "https://github.com/org/repo/issues/2"},
+            ]}}}},
+        ]
+        provider = _provider_with_graphql(responses)
+
+        result, logs = _capture_logs(lambda: provider.fetch_sub_issues(ISSUE_URL))
+
+        assert result == {
+            "https://github.com/org/repo/issues/1",
+            "https://github.com/org/repo/issues/2",
+        }
+        assert "Failed to fetch sub-issues" not in logs

@@ -79,7 +79,7 @@ class GiteaProvider(GitProvider):
         self.sha = None
         self.base_sha = ""
         self.base_ref = ""
-        self.diff_files = []
+        self.diff_files = None
         self.incremental = IncrementalPR(False)
         self.comments_list = []
         self.unreviewed_files_map = dict()

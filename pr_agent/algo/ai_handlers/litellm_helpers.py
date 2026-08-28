@@ -43,7 +43,24 @@ _LITELLM_BATCH_CALLBACK_TYPES = {
 }
 
 
-async def _handle_streaming_response(response):
+def _response_field(response, name):
+    if isinstance(response, dict):
+        return response.get(name)
+    return getattr(response, name, None)
+
+
+def _stream_usage(chunk):
+    """Read finalized usage from a regular or metadata-only LiteLLM chunk."""
+    usage = _response_field(chunk, "usage")
+    if usage is not None:
+        return usage
+    hidden_params = _response_field(chunk, "_hidden_params")
+    if isinstance(hidden_params, dict):
+        return hidden_params.get("usage")
+    return None
+
+
+async def _handle_streaming_response(response, model=None):
     """
     Handle streaming response from acompletion and collect the full response.
 
@@ -51,13 +68,17 @@ async def _handle_streaming_response(response):
         response: The streaming response object from acompletion
 
     Returns:
-        tuple: (full_response_content, finish_reason)
+        tuple: (full_response_content, finish_reason, completed_response)
     """
     full_response = ""
     finish_reason = None
+    finalized_usage = None
 
     try:
         async for chunk in response:
+            usage = _stream_usage(chunk)
+            if usage is not None:
+                finalized_usage = usage
             if chunk.choices and len(chunk.choices) > 0:
                 choice = chunk.choices[0]
                 delta = choice.delta
@@ -76,13 +97,14 @@ async def _handle_streaming_response(response):
     elif not full_response and finish_reason:
         get_logger().debug(f"Streaming response resulted in empty content but completed with finish_reason: {finish_reason}")
         raise openai.APIError(f"Streaming response completed with finish_reason '{finish_reason}' but no content received")
-    return full_response, finish_reason
+    return full_response, finish_reason, MockResponse(full_response, finish_reason, finalized_usage, model)
 
 
 class MockResponse:
-    """Mock response object for streaming models to enable consistent logging."""
+    """Represent a completed streaming response while retaining LiteLLM's finalized usage object."""
 
-    def __init__(self, resp, finish_reason):
+    def __init__(self, resp, finish_reason, usage=None, model=None):
+        self.usage = usage
         self._data = {
             "choices": [
                 {
@@ -91,9 +113,19 @@ class MockResponse:
                 }
             ]
         }
+        if model is not None:
+            self._data["model"] = model
 
     def dict(self):
-        return self._data
+        data = self._data.copy()
+        if self.usage is not None:
+            if hasattr(self.usage, "model_dump"):
+                data["usage"] = self.usage.model_dump()
+            elif isinstance(self.usage, dict):
+                data["usage"] = self.usage.copy()
+            else:
+                data["usage"] = vars(self.usage).copy()
+        return data
 
 
 def _get_azure_ad_token():

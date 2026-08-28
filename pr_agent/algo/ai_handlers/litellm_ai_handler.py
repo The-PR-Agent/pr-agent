@@ -18,9 +18,9 @@ from pr_agent.algo import (CLAUDE_EXTENDED_THINKING_MODELS,
                            USER_MESSAGE_ONLY_MODELS)
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_helpers import (
-    MockResponse, _get_azure_ad_token, _handle_streaming_response,
-    _process_litellm_extra_body)
-from pr_agent.algo.run_details import record_ai_call
+    _get_azure_ad_token, _handle_streaming_response,
+    _process_litellm_extra_body, _response_field)
+from pr_agent.algo.run_details import _as_decimal_cost, record_ai_call
 from pr_agent.algo.utils import ReasoningEffort, get_version
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
@@ -302,6 +302,25 @@ class LiteLLMAIHandler(BaseAiHandler):
 
         # Models that require streaming
         self.streaming_required_models = STREAMING_REQUIRED_MODELS
+        self.force_streaming_provider = str(
+            getattr(get_settings().litellm, "force_streaming_custom_llm_provider", "") or ""
+        ).strip().lower()
+        raw_force_streaming_api_base_substrings = getattr(
+            get_settings().litellm, "force_streaming_api_base_substrings", []
+        )
+        if isinstance(raw_force_streaming_api_base_substrings, (list, tuple, set)):
+            self.force_streaming_api_base_substrings = [
+                str(value).strip().lower()
+                for value in raw_force_streaming_api_base_substrings
+                if value is not None and str(value).strip()
+            ]
+        else:
+            if raw_force_streaming_api_base_substrings:
+                get_logger().warning(
+                    "LITELLM.FORCE_STREAMING_API_BASE_SUBSTRINGS must be a list, tuple, or set. "
+                    "Ignoring invalid value."
+                )
+            self.force_streaming_api_base_substrings = []
 
     @staticmethod
     def _write_frozen_aws_creds_to_env(frozen) -> None:
@@ -358,12 +377,73 @@ class LiteLLMAIHandler(BaseAiHandler):
         return response_log
 
     @staticmethod
-    def _record_completion_metadata(response) -> None:
-        """Count the call and accumulate token usage when the provider reports it.
+    def _record_completion_metadata(response, model=None, display_model=None) -> None:
+        """Count a successful call and synchronously collect usage-based cost when possible."""
+        usage = _response_field(response, "usage")
 
-        Streaming models return a MockResponse without `usage`, so tokens stay unset.
+        cost_usd = None
+        if get_settings().get("config.output_run_cost", False):
+            # The guard covers the whole cost block, not just completion_cost:
+            # reading inline costs and probing usage call model_dump() on
+            # provider-specific objects, and a cost estimate must never fail a
+            # call that already succeeded and was billed.
+            try:
+                cost_usd = LiteLLMAIHandler._read_positive_response_cost(response, usage)
+                if cost_usd is None and model and LiteLLMAIHandler._has_priceable_usage(usage):
+                    # Preserve LiteLLM's full usage object so completion_cost can price cache,
+                    # reasoning, and provider-specific categories. Convert the small completed
+                    # stream wrapper to a dictionary while retaining `response.usage`.
+                    cost_response = response
+                    if not isinstance(response, dict) and not hasattr(response, "model_dump"):
+                        cost_response = response.dict()
+                    cost_usd = litellm.completion_cost(completion_response=cost_response, model=model)
+            except Exception as e:
+                # Treat missing model pricing or insufficient usage as an unavailable call cost.
+                # Retain the successful call so the collector marks the aggregate safely.
+                get_logger().debug(f"Unable to estimate API cost for model {model}: {type(e).__name__}")
+
+        recorded_model = display_model if display_model is not None else model
+        record_ai_call(usage, model=recorded_model, cost_usd=cost_usd)
+
+    @staticmethod
+    def _read_positive_response_cost(response, usage):
+        """Read a finalized inline cost, rejecting zero placeholders and invalid values."""
+        candidates = [
+            _response_field(usage, "response_cost"),
+            _response_field(usage, "cost"),
+        ]
+
+        hidden_params = _response_field(response, "_hidden_params")
+        if hasattr(hidden_params, "model_dump"):
+            hidden_params = hidden_params.model_dump()
+        if isinstance(hidden_params, dict):
+            candidates.append(hidden_params.get("response_cost"))
+
+        for candidate in candidates:
+            decimal_cost = _as_decimal_cost(candidate)
+            if decimal_cost is not None:
+                return decimal_cost
+        return None
+
+    @staticmethod
+    def _has_priceable_usage(usage) -> bool:
+        """Return true when finalized usage reports a positive token count.
+
+        Only token counters gate pricing: provider extras such as Groq's timing
+        floats (queue_time, prompt_time) are not billable quantities, and letting
+        them pass would send zero-token usage to completion_cost, which prices
+        it as 0.0 instead of raising.
         """
-        record_ai_call(getattr(response, "usage", None))
+        if usage is None:
+            return False
+        return any(
+            isinstance(count, int) and not isinstance(count, bool) and count > 0
+            for count in (
+                _response_field(usage, "prompt_tokens"),
+                _response_field(usage, "completion_tokens"),
+                _response_field(usage, "total_tokens"),
+            )
+        )
 
     def _configure_claude_extended_thinking(self, model: str, kwargs: dict) -> dict:
         """
@@ -669,12 +749,18 @@ class LiteLLMAIHandler(BaseAiHandler):
                     if 'temperature' in kwargs:
                         del kwargs['temperature']
 
+                openrouter_reasoning_effort = None
+                reasoning_model = model.rsplit(":", 1)[0] if model.startswith("openrouter/") else model
                 # Add reasoning_effort if model supports it. Match the bare model
                 # id as well as any provider-prefixed form (e.g.
                 # "openrouter/google/gemini-2.5-pro", "gemini/gemini-2.5-pro"), so a
                 # configured reasoning_effort is not silently dropped for models the
-                # user references with a provider prefix.
-                if any(model == m or model.endswith("/" + m) for m in self.support_reasoning_models):
+                # user references with a provider prefix. OpenRouter routing variants
+                # such as :nitro and :floor are stripped only for this membership test.
+                if any(
+                    reasoning_model == m or reasoning_model.endswith("/" + m)
+                    for m in self.support_reasoning_models
+                ):
                     config_effort = get_settings().config.reasoning_effort
                     try:
                         ReasoningEffort(config_effort)
@@ -687,8 +773,14 @@ class LiteLLMAIHandler(BaseAiHandler):
                                 f"Using default '{reasoning_effort}'. Valid values: {[e.value for e in ReasoningEffort]}"
                             )
 
-                    get_logger().info(f"Adding reasoning_effort with value {reasoning_effort} to model {model}.")
-                    kwargs["reasoning_effort"] = reasoning_effort
+                    if model.startswith("openrouter/"):
+                        # LiteLLM 1.98.0 rejects top-level reasoning_effort for some
+                        # OpenRouter model IDs it does not mark as reasoning-capable;
+                        # defer to OpenRouter's unified reasoning object below.
+                        openrouter_reasoning_effort = reasoning_effort
+                    else:
+                        get_logger().info(f"Adding reasoning_effort with value {reasoning_effort} to model {model}.")
+                        kwargs["reasoning_effort"] = reasoning_effort
 
                 # https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking
                 if (model in self.claude_extended_thinking_models) and get_settings().config.get("enable_claude_extended_thinking", False):
@@ -783,9 +875,8 @@ class LiteLLMAIHandler(BaseAiHandler):
                     get_logger().info(f"Using Bedrock custom inference profile: {model_id}")
 
                 # OpenRouter provider routing, reasoning control and output cap.
-                # Applied only to "openrouter/*" models. Every key defaults to unset in
-                # the [openrouter] section of configuration.toml, so this block is a
-                # no-op unless explicitly configured, and never affects other providers.
+                # Registered reasoning models inherit config.reasoning_effort when
+                # no OpenRouter-specific effort or token budget is configured.
                 if isinstance(model, str) and model.startswith("openrouter/"):
                     openrouter_settings = get_settings().get("openrouter", {})
                     extra_body = kwargs.get("extra_body") or {}
@@ -823,20 +914,58 @@ class LiteLLMAIHandler(BaseAiHandler):
                         provider["allow_fallbacks"] = _as_bool(openrouter_settings.get("allow_fallbacks", True))
 
                     reasoning = {}
-                    reasoning_effort = str(openrouter_settings.get("reasoning_effort", "") or "").strip().lower()
-                    if reasoning_effort == "none":
-                        reasoning["enabled"] = False
-                    elif reasoning_effort in ("low", "medium", "high"):
-                        reasoning["effort"] = reasoning_effort
-                    elif reasoning_effort:
-                        get_logger().warning(
-                            f"Ignoring invalid openrouter.reasoning_effort '{reasoning_effort}'. "
-                            "Valid values: none, low, medium, high."
-                        )
+                    effective_reasoning_effort = str(
+                        openrouter_settings.get("reasoning_effort", "") or ""
+                    ).strip().lower()
                     reasoning_max_tokens = _as_int(openrouter_settings.get("reasoning_max_tokens", 0))
-                    if reasoning_max_tokens > 0 and reasoning.get("enabled") is not False:
+                    if effective_reasoning_effort:
+                        try:
+                            ReasoningEffort(effective_reasoning_effort)
+                        except (TypeError, ValueError):
+                            get_logger().warning(
+                                f"Ignoring invalid openrouter.reasoning_effort '{effective_reasoning_effort}'. "
+                                f"Valid values: {[effort.value for effort in ReasoningEffort]}."
+                            )
+                            effective_reasoning_effort = ""
+                    if not effective_reasoning_effort:
+                        if reasoning_max_tokens > 0 and openrouter_reasoning_effort:
+                            if openrouter_reasoning_effort == "none":
+                                get_logger().warning(
+                                    f"Ignoring config.reasoning_effort='{openrouter_reasoning_effort}' because "
+                                    "openrouter.reasoning_max_tokens takes precedence."
+                                )
+                            else:
+                                get_logger().info(
+                                    "Using openrouter.reasoning_max_tokens over"
+                                    f" config.reasoning_effort='{openrouter_reasoning_effort}'."
+                                )
+                        elif reasoning_max_tokens <= 0:
+                            effective_reasoning_effort = openrouter_reasoning_effort or ""
+
+                    # Preserve explicit disablement; otherwise keep effort and
+                    # max_tokens mutually exclusive by preferring the token budget.
+                    if effective_reasoning_effort == "none":
+                        if reasoning_max_tokens > 0:
+                            get_logger().warning(
+                                "Ignoring openrouter.reasoning_max_tokens because "
+                                "openrouter.reasoning_effort='none' disables reasoning."
+                            )
+                        reasoning["enabled"] = False
+                    elif reasoning_max_tokens > 0:
+                        if effective_reasoning_effort:
+                            get_logger().warning(
+                                f"Ignoring openrouter.reasoning_effort='{effective_reasoning_effort}' because "
+                                "openrouter.reasoning_max_tokens takes precedence."
+                            )
                         reasoning["max_tokens"] = reasoning_max_tokens
+                    elif effective_reasoning_effort:
+                        # OpenRouter uses xhigh for the max alias; extra_body bypasses
+                        # LiteLLM's OpenRouter parameter mapping.
+                        reasoning["effort"] = (
+                            "xhigh" if effective_reasoning_effort == "max" else effective_reasoning_effort
+                        )
                     if reasoning:
+                        get_logger().info(f"Adding OpenRouter reasoning {reasoning} to model {model}.")
                         extra_body["reasoning"] = reasoning
 
                     if extra_body:
@@ -846,6 +975,17 @@ class LiteLLMAIHandler(BaseAiHandler):
                     if max_tokens > 0:
                         existing = _as_int(kwargs.get("max_tokens", 0))
                         kwargs["max_tokens"] = min(existing, max_tokens) if existing > 0 else max_tokens
+                    effective_max_tokens = _as_int(kwargs.get("max_tokens", 0))
+                    effective_reasoning_max_tokens = _as_int(reasoning.get("max_tokens", 0))
+                    if (
+                        model.startswith("openrouter/anthropic/")
+                        and effective_reasoning_max_tokens > 0
+                        and 0 < effective_max_tokens <= effective_reasoning_max_tokens
+                    ):
+                        get_logger().warning(
+                            f"OpenRouter Anthropic max_tokens ({effective_max_tokens}) must be greater than "
+                            f"reasoning_max_tokens ({effective_reasoning_max_tokens}) to leave output headroom."
+                        )
 
                 get_logger().debug("Prompts", artifact={"system": system, "user": user})
 
@@ -860,6 +1000,14 @@ class LiteLLMAIHandler(BaseAiHandler):
                 if (litellm.api_key and litellm.api_key != DUMMY_LITELLM_API_KEY
                         and not is_databricks):
                     kwargs["api_key"] = litellm.api_key
+
+                # Optional fixed provider override, so a raw hosted model id reaches the
+                # provider unchanged instead of being rewritten by LiteLLM's prefix inference.
+                custom_llm_provider = str(
+                    getattr(get_settings().litellm, "custom_llm_provider", "") or ""
+                ).strip().lower()
+                if custom_llm_provider:
+                    kwargs["custom_llm_provider"] = custom_llm_provider
 
                 # Get completion with automatic streaming detection
                 resp, finish_reason, response_obj = await self._get_completion(**kwargs)
@@ -886,33 +1034,54 @@ class LiteLLMAIHandler(BaseAiHandler):
                     body=None,
                 ) from e
 
-            get_logger().debug(f"\nAI response:\n{resp}")
+        # Post-response bookkeeping happens outside the Bedrock IMDS lock above: it
+        # touches no os.environ credentials, and in IMDS mode the lock serializes
+        # every concurrent call, so holding it through logging and cost pricing
+        # would make each waiting coroutine pay for them serially.
+        get_logger().debug(f"\nAI response:\n{resp}")
 
-            # log the full response for debugging
-            response_log = self.prepare_logs(response_obj, system, user, resp, finish_reason)
-            get_logger().debug("Full_response", artifact=response_log)
+        # log the full response for debugging
+        response_log = self.prepare_logs(response_obj, system, user, resp, finish_reason)
+        get_logger().debug("Full_response", artifact=response_log)
 
-            # for CLI debugging
-            if get_settings().config.verbosity_level >= 2:
-                get_logger().info(f"\nAI response:\n{resp}")
+        # for CLI debugging
+        if get_settings().config.verbosity_level >= 2:
+            get_logger().info(f"\nAI response:\n{resp}")
 
-            self._record_completion_metadata(response_obj)
+        self._record_completion_metadata(response_obj, model=model, display_model=user_model)
 
-            return resp, finish_reason
+        return resp, finish_reason
 
     async def _get_completion(self, **kwargs):
         """
         Wrapper that automatically handles streaming for required models.
         """
         model = kwargs["model"]
-        if model in self.streaming_required_models:
+        custom_llm_provider = str(kwargs.get("custom_llm_provider") or "").strip().lower()
+        api_base_value = kwargs.get("api_base")
+        api_base = api_base_value.strip().lower() if isinstance(api_base_value, str) else ""
+        force_streaming = (
+            bool(custom_llm_provider)
+            and custom_llm_provider == self.force_streaming_provider
+            and bool(self.force_streaming_api_base_substrings)
+            and any(substring in api_base for substring in self.force_streaming_api_base_substrings)
+        )
+
+        # Some OpenAI-compatible endpoints can return an empty-string
+        # finish_reason on non-streaming responses, which LiteLLM rejects during
+        # response normalization. Streaming avoids that conversion path.
+        if model in self.streaming_required_models or force_streaming:
             kwargs["stream"] = True
-            get_logger().info(f"Using streaming mode for model {model}")
+            kwargs["stream_options"] = {"include_usage": True}
+            if force_streaming and model not in self.streaming_required_models:
+                get_logger().info(
+                    f"Using streaming mode for model {model} "
+                    "due to OpenAI-compatible endpoint compatibility"
+                )
+            else:
+                get_logger().info(f"Using streaming mode for model {model}")
             response = await acompletion(**kwargs)
-            resp, finish_reason = await _handle_streaming_response(response)
-            # Create MockResponse for streaming since we don't have the full response object
-            mock_response = MockResponse(resp, finish_reason)
-            return resp, finish_reason, mock_response
+            return await _handle_streaming_response(response, model=model)
         else:
             response = await acompletion(**kwargs)
             if response is None or len(response["choices"]) == 0:

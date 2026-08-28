@@ -5,7 +5,8 @@ import pytest
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import get_settings
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
-from tests.unittest._settings_helpers import restore_settings, snapshot_settings
+from tests.unittest._settings_helpers import (restore_settings,
+                                              snapshot_settings)
 
 TRUNCATION_SETTINGS = (
     "pr_code_suggestions.max_code_suggestion_length",
@@ -133,6 +134,31 @@ async def test_push_inline_renders_body_with_score_and_label():
 
 
 @pytest.mark.asyncio
+async def test_push_inline_publishes_partial_coverage_notice():
+    git_provider = MagicMock()
+    git_provider.diff_files = [
+        FilePatchInfo(
+            base_file="",
+            head_file="def f():\n    return old()\n",
+            patch="",
+            filename="app.py",
+        )
+    ]
+    git_provider.publish_code_suggestions.return_value = True
+    git_provider.supports_code_suggestions_artifact.return_value = False
+    tool = _make_tool(git_provider)
+    tool.failed_chunk_count = 1
+    tool.total_chunk_count = 2
+
+    await tool.push_inline_code_suggestions({"code_suggestions": [_suggestion()]})
+
+    git_provider.publish_code_suggestions.assert_called_once()
+    coverage_comment = git_provider.publish_comment.call_args.args[0]
+    assert "1 of 2 analysis chunks failed" in coverage_comment
+    assert "successful chunks only" in coverage_comment
+
+
+@pytest.mark.asyncio
 async def test_push_inline_renders_body_without_score_when_missing_or_zero():
     git_provider = MagicMock()
     git_provider.diff_files = [
@@ -167,6 +193,21 @@ async def test_push_inline_publishes_no_suggestions_comment_when_empty():
         "No suggestions found to improve this PR."
     )
     git_provider.publish_code_suggestions.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_push_inline_qualifies_empty_partial_results():
+    git_provider = MagicMock()
+    tool = _make_tool(git_provider)
+    tool.failed_chunk_count = 1
+    tool.total_chunk_count = 3
+
+    await tool.push_inline_code_suggestions({"code_suggestions": []})
+
+    body = git_provider.publish_comment.call_args.args[0]
+    assert "successfully analyzed chunks" in body
+    assert "1 of 3 analysis chunks failed" in body
+    assert "could not be analyzed" in body
 
 
 # ---------------------------------------------------------------------------

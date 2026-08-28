@@ -75,6 +75,13 @@ def filter_ignored(files, platform = 'github'):
                     files = [f for f in files if not r.match(f)]
                 elif platform == 'gitea':
                     files = [f for f in files if not r.match(f.get("filename", ""))]
+                elif platform == "gerrit":
+                    files_o = []
+                    for f in files:
+                        path = f.b_path or f.a_path
+                        if path and not r.match(path):
+                            files_o.append(f)
+                    files = files_o
 
 
     except Exception as e:

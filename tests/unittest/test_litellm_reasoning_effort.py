@@ -860,9 +860,9 @@ class TestLiteLLMReasoningEffortGemini:
     """Gemini 2.5 reasoning_effort handling via the SUPPORT_REASONING_EFFORT_MODELS path.
 
     Gemini 2.5 exposes a thinking budget that LiteLLM maps from reasoning_effort. The
-    membership test in chat_completion matches the bare model id as well as any
-    provider-prefixed form (e.g. "openrouter/google/gemini-2.5-pro"), so a configured
-    reasoning_effort is not silently dropped for models referenced with a prefix.
+    membership test in chat_completion matches bare and provider-prefixed ids such as
+    "vertex_ai/gemini-2.5-pro". OpenRouter models use extra_body.reasoning instead and
+    are covered by test_litellm_openrouter_controls.py.
     """
 
     def _isolate_env(self, monkeypatch):
@@ -883,8 +883,6 @@ class TestLiteLLMReasoningEffortGemini:
             "gemini-2.5-flash",
             "gemini/gemini-2.5-pro",
             "vertex_ai/gemini-2.5-pro",
-            "openrouter/google/gemini-2.5-pro",
-            "openrouter/google/gemini-2.5-flash",
         ]
 
         for model in gemini_models:

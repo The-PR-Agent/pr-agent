@@ -519,7 +519,7 @@ key = "..." # your openrouter api key
 
 #### Openrouter provider routing, reasoning and output cap
 
-For `openrouter/...` models you can optionally restrict which upstream providers Openrouter uses, control reasoning, and cap the completion length. All keys live in the `[openrouter]` section of `configuration.toml` and default to unset (no change to Openrouter's default behavior):
+For `openrouter/...` models you can optionally restrict which upstream providers Openrouter uses, control reasoning, and cap the completion length. All keys live in the `[openrouter]` section of `configuration.toml`. Models listed in [`SUPPORT_REASONING_EFFORT_MODELS`](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py) inherit `config.reasoning_effort` unless an Openrouter-specific effort or token budget is set.
 
 ```toml
 [openrouter]
@@ -527,12 +527,40 @@ For `openrouter/...` models you can optionally restrict which upstream providers
 # provider_only = ["z-ai"]             # hard allowlist of upstream providers; empty = default routing
 # provider_order = ["z-ai", "novita"]  # preferred order instead of an allowlist; ignored when provider_only is set
 # allow_fallbacks = true               # when provider_order is set, allow routing beyond the list
-# reasoning_effort = "low"             # "none" disables reasoning; otherwise "low", "medium" or "high"
-# reasoning_max_tokens = 2048          # cap the reasoning budget in tokens
+# reasoning_effort = "low"             # override global effort: "none", "minimal", "low", "medium", "high", "xhigh" or "max"
+# reasoning_max_tokens = 2048          # explicit budget; takes precedence over effort unless effort is "none"
 # max_tokens = 16000                   # hard cap on completion tokens for the request
 ```
 
-`provider_only` and `reasoning_effort = "none"` are useful to pin a specific provider and to bound the cost of reasoning models. See the Openrouter [provider routing](https://openrouter.ai/docs/features/provider-routing) and [reasoning tokens](https://openrouter.ai/docs/use-cases/reasoning-tokens) docs.
+`provider_only` and `reasoning_effort = "none"` are useful to pin a specific provider and to bound the cost of reasoning models. Because Openrouter treats effort and token budgets as mutually exclusive, an explicit Openrouter-specific `"none"` keeps reasoning disabled; otherwise a positive `reasoning_max_tokens` value takes precedence over the global effort and other Openrouter-specific values. Invalid Openrouter-specific effort values are warned about and treated as unset, so registered reasoning models fall back to `config.reasoning_effort`. Openrouter normalizes `"max"` to `"xhigh"` in this path to match LiteLLM 1.98.0. Supported effort values vary by model, and models whose metadata marks reasoning as mandatory reject `"none"`. For Anthropic models using a reasoning budget, set the effective output `max_tokens` higher than `reasoning_max_tokens` so the final answer has output headroom. See the Openrouter [provider routing](https://openrouter.ai/docs/guides/routing/provider-selection) and [reasoning tokens](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens) docs.
+
+### OrcaRouter
+
+[OrcaRouter](https://www.orcarouter.ai) is an OpenAI-compatible AI gateway. It needs no provider-specific code in PR-Agent: the `openai/` prefix routes the request to OrcaRouter's base URL through litellm's OpenAI-compatible path, the same way the [Neon AI Gateway](#neon-ai-gateway) is handled.
+
+To use a model through OrcaRouter, set:
+
+```toml
+[config] # in configuration.toml
+model = "openai/anthropic/claude-fable-5"
+fallback_models = ["openai/auto"]
+custom_model_max_tokens = 20000
+
+[openai] # in .secrets.toml
+api_base = "https://api.orcarouter.ai/v1"
+key = "..." # your OrcaRouter api key
+```
+
+or use the environment variables (make sure to use double underscores `__`):
+
+```bash
+OPENAI__API_BASE=https://api.orcarouter.ai/v1
+OPENAI__KEY=...
+```
+
+(you can obtain an OrcaRouter API key from [here](https://www.orcarouter.ai/register))
+
+Keep the `openai/` prefix on the model name, whatever OrcaRouter model ID you use (`openai/anthropic/claude-fable-5`, `openai/auto`, ...): the prefix routes the request through litellm's OpenAI-compatible path. A prefixed name is not in the `MAX_TOKENS` table [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py), so you also have to set `custom_model_max_tokens`. OrcaRouter governs routing and guardrails itself, but `config.reasoning_effort` still reaches it: PR-Agent matches the last segment of the model ID against `SUPPORT_REASONING_EFFORT_MODELS`, so an ID such as `openai/google/gemini-2.5-pro` or `openai/o3` sends the configured effort (default `"medium"`) even with nothing set. The example IDs above are not in that list and are unaffected.
 
 ### Neon AI Gateway
 
@@ -595,7 +623,7 @@ custom_model_max_tokens= ...
 
 ```toml
 [config]
-reasoning_effort = "medium" # "none", "minimal", "low", "medium", "high", "xhigh"
+reasoning_effort = "medium" # "none", "minimal", "low", "medium", "high", "xhigh", "max"
 ```
 
 With the OpenAI models that support reasoning effort (eg: gpt-5.6-terra), you can specify its reasoning effort via `config` section. The default value is `medium`. You can change it to any supported value based on your usage. Available values depend on the model and provider.

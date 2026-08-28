@@ -18,9 +18,13 @@ from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import decode_if_bytes
 from ..algo.inline_comment_dedup import (body_fingerprint, body_with_markers,
                                          code_fingerprint,
-                                         get_inline_comment_store)
+                                         get_inline_comment_store,
+                                         is_agent_inline_comment,
+                                         marker_fingerprints)
 from ..algo.language_handler import is_valid_file
-from ..algo.utils import (clip_tokens, comment_matches_any_identity,
+from ..algo.utils import (PRCodeSuggestionsHeader,
+                          PRCodeSuggestionsIdentity, clip_tokens,
+                          comment_matches_any_identity,
                           find_line_number_of_relevant_line_in_file,
                           get_pr_review_comment_identifiers, load_large_diff)
 from ..config_loader import get_settings
@@ -57,6 +61,35 @@ def _parse_gitlab_iso_datetime(value) -> Optional[datetime]:
         return dt
     except (ValueError, AttributeError):
         return None
+
+
+def _is_outdated_own_inline_thread(discussion, own_user_id: int, current_head_sha: str) -> bool:
+    notes = discussion.attributes.get('notes') or []
+    if not notes or not isinstance(notes[0], dict):
+        return False
+    opener = notes[0]
+    if opener.get('resolved') or opener.get('resolvable') is False:
+        return False
+    position = opener.get('position')
+    if not isinstance(position, dict) or position.get('position_type') != 'text':
+        return False
+    if position.get('new_line') is None and position.get('old_line') is None:
+        return False
+    recorded_head_sha = position.get('head_sha')
+    if not recorded_head_sha or recorded_head_sha == current_head_sha:
+        return False
+    if not is_agent_inline_comment(opener.get('body')):
+        return False
+    for note in notes:
+        if not isinstance(note, dict):
+            return False
+        if note.get('system'):
+            continue
+        author = note.get('author')
+        author_id = author.get('id') if isinstance(author, dict) else None
+        if author_id != own_user_id:
+            return False
+    return True
 
 
 class _GitLabIncrementalCommit:
@@ -361,6 +394,17 @@ class GitLabProvider(GitProvider):
                 })
         return out
 
+    def _get_merge_request_changes(self) -> dict:
+        """Retrieve the complete merge request change set when GitLab reports overflow."""
+        changes = self.mr.changes()
+        if isinstance(changes, dict) and changes.get("overflow"):
+            get_logger().warning(
+                f"GitLab returned an overflowed diff for merge request {self.id_mr}; "
+                "retrying with access_raw_diffs=True"
+            )
+            return self.mr.changes(access_raw_diffs=True)
+        return changes
+
     def is_supported(self, capability: str) -> bool:
         if capability in ['create_inline_comment', 'publish_inline_comments',
             'publish_file_comments']: # gfm_markdown is supported in gitlab !
@@ -431,12 +475,15 @@ class GitLabProvider(GitProvider):
 
     # Match the most recent prior note for each incremental kind against any accepted identity,
     # then use its timestamp as the timeline anchor.
+    _SUGGESTIONS_STABLE_ANCHORS = (
+        PRCodeSuggestionsIdentity.SUMMARY.value,
+        PRCodeSuggestionsIdentity.NO_SUGGESTIONS.value,
+        "**Suggestion:**",  # commitable-suggestions inline mode
+    )
+    _SUGGESTIONS_LEGACY_ANCHORS = (PRCodeSuggestionsHeader.SUMMARY.value,)
     _INCREMENTAL_ANCHOR_PREFIXES = {
         "review": get_pr_review_comment_identifiers(full=True, incremental=True),
-        "suggestions": (
-            "## PR Code Suggestions ✨",           # summary-table mode
-            "**Suggestion:**",                     # commitable-suggestions inline mode
-        ),
+        "suggestions": _SUGGESTIONS_STABLE_ANCHORS + _SUGGESTIONS_LEGACY_ANCHORS,
     }
 
     def get_incremental_commits(self, incremental: Optional[IncrementalPR] = None, kind: str = "review"):
@@ -467,7 +514,11 @@ class GitLabProvider(GitProvider):
 
         kind = getattr(self, '_incremental_kind', 'review')
         prefixes = self._INCREMENTAL_ANCHOR_PREFIXES.get(kind, ())
-        self.previous_review = self._find_anchor_note(prefixes) if prefixes else None
+        self.previous_review = (
+            self._find_anchor_note(prefixes, prefer_latest_activity=kind == "suggestions")
+            if prefixes
+            else None
+        )
         if not self.previous_review:
             get_logger().info(
                 f"No previous {kind} comment found, will fall back to a full run"
@@ -537,7 +588,7 @@ class GitLabProvider(GitProvider):
         try:
             mr_change_paths = {
                 c.get('new_path')
-                for c in self.mr.changes().get('changes', [])
+                for c in self._get_merge_request_changes().get('changes', [])
                 if c.get('new_path')
             }
         except Exception as e:
@@ -597,7 +648,7 @@ class GitLabProvider(GitProvider):
         identifiers = get_pr_review_comment_identifiers(full=full, incremental=incremental)
         return self._find_anchor_note(identifiers)
 
-    def _find_anchor_note(self, identities):
+    def _find_anchor_note(self, identities, *, prefer_latest_activity: bool = False):
         """Return the most recent MR note whose body matches any supplied identity.
 
         Used by incremental flows (`/review -i`, `/improve -i`) to find the timestamp
@@ -605,12 +656,12 @@ class GitLabProvider(GitProvider):
         with `.created_at` parsed to a naive UTC datetime (possibly `None` when the
         GitLab payload had an unexpected shape), or `None` if no match.
 
-        We rely on GitLab returning notes in `created_at DESC` order (the API default)
-        and take the first match — re-sorting locally with a `datetime.min` fallback
-        for unparseable timestamps would silently demote the newest match in favour
-        of an older parseable one, leading to commits being re-reviewed. If the chosen
-        anchor's timestamp doesn't parse, `_get_incremental_commits` falls back to a
-        full run via the existing `last_seen_commit is None` branch.
+        By default, rely on GitLab returning notes in `created_at DESC` order (the API
+        default) and take the first match. Suggestions can instead compare `anchor_time`
+        across every matching stable or legacy identity so an older persistent note that
+        was edited more recently wins. If the newest-created match has an unparseable
+        timestamp, retain it so `_get_incremental_commits` safely falls back to a full run
+        instead of silently demoting it in favour of an older parseable note.
 
         Notes authored by other users are skipped when the authenticated (bot) user is
         known: a human comment that merely starts with `**Suggestion:**` must not shift
@@ -629,6 +680,7 @@ class GitLabProvider(GitProvider):
                 return None
         mr_web_url = getattr(self.mr, 'web_url', None)
         own_user_id = self._get_own_user_id()
+        selected_note = None
         for note in self._incremental_notes_cache:
             body = getattr(note, 'body', None)
             if not isinstance(body, str):
@@ -644,8 +696,16 @@ class GitLabProvider(GitProvider):
                         f"user (author {author_id}, bot {own_user_id})"
                     )
                     continue
-            return _GitLabIncrementalNote(note, mr_web_url=mr_web_url)
-        return None
+            candidate = _GitLabIncrementalNote(note, mr_web_url=mr_web_url)
+            if not prefer_latest_activity:
+                return candidate
+            if selected_note is None:
+                selected_note = candidate
+                if selected_note.anchor_time is None:
+                    return selected_note
+            elif candidate.anchor_time is not None and candidate.anchor_time > selected_note.anchor_time:
+                selected_note = candidate
+        return selected_note
 
     def _get_own_user_id(self) -> Optional[int]:
         """ID of the authenticated user (the one posting pr-agent notes), or None when
@@ -657,7 +717,7 @@ class GitLabProvider(GitProvider):
             except Exception as e:
                 get_logger().warning(
                     f"Could not resolve the authenticated GitLab user; "
-                    f"incremental anchor notes will not be filtered by author: {e}"
+                    f"author-based filtering is disabled for this run: {e}"
                 )
                 self._own_user_id = None
         return self._own_user_id
@@ -738,7 +798,7 @@ class GitLabProvider(GitProvider):
             if not head_sha_for_content:
                 head_sha_for_content = (self.mr.diff_refs or {}).get('head_sha')
         else:
-            raw_changes = self.mr.changes().get('changes', [])
+            raw_changes = self._get_merge_request_changes().get('changes', [])
             raw_changes = self._expand_submodule_changes(raw_changes)
             base_sha_for_content = self.mr.diff_refs['base_sha']
             head_sha_for_content = self.mr.diff_refs['head_sha']
@@ -816,7 +876,7 @@ class GitLabProvider(GitProvider):
                 and getattr(self, 'unreviewed_files_map', None)):
             return list(self.unreviewed_files_map.keys())
         if not self.git_files:
-            raw_changes = self.mr.changes().get('changes', [])
+            raw_changes = self._get_merge_request_changes().get('changes', [])
             raw_changes = self._expand_submodule_changes(raw_changes)
             self.git_files = [c.get('new_path') for c in raw_changes if c.get('new_path')]
         return self.git_files
@@ -914,6 +974,46 @@ class GitLabProvider(GitProvider):
         except Exception as e:
             get_logger().warning(f"Failed to reopen resolved review thread: {e}")
 
+    def resolve_outdated_inline_threads(self):
+        if not get_settings().get("GITLAB.RESOLVE_OUTDATED_INLINE_THREADS", False):
+            return
+        own_user_id = self._get_own_user_id()
+        try:
+            current_head_sha = self.mr.diff_refs['head_sha']
+        except (KeyError, TypeError, AttributeError):
+            current_head_sha = None
+        if own_user_id is None or not current_head_sha:
+            get_logger().warning(
+                f"Skipping outdated inline thread cleanup on merge request {self.id_mr} "
+                f"(bot user: {own_user_id}, current head sha: {current_head_sha})"
+            )
+            return
+        try:
+            discussions = self.mr.discussions.list(get_all=True)
+        except Exception as e:
+            get_logger().warning(f"Failed to list discussions of merge request {self.id_mr}: {e}")
+            return
+        resolved = 0
+        released_fps = set()
+        for discussion in discussions:
+            discussion_id = getattr(discussion, 'id', None)
+            try:
+                if not _is_outdated_own_inline_thread(discussion, own_user_id, current_head_sha):
+                    continue
+                discussion.resolved = True
+                discussion.save()
+                resolved += 1
+                for note in discussion.attributes.get('notes') or []:
+                    if isinstance(note, dict):
+                        released_fps |= marker_fingerprints(note.get('body'))
+            except Exception as e:
+                get_logger().warning(f"Failed to resolve outdated inline thread {discussion_id}: {e}")
+        if released_fps:
+            get_inline_comment_store(self).release(released_fps)
+        if resolved:
+            get_logger().info(
+                f"Resolved {resolved} outdated inline thread(s) on merge request {self.id_mr}")
+
     def edit_comment_from_comment_id(self, comment_id: int, body: str):
         body = self.limit_output_characters(body, self.max_comment_chars)
         comment = self.mr.notes.get(comment_id)
@@ -945,9 +1045,11 @@ class GitLabProvider(GitProvider):
     def send_inline_comment(self, body: str, edit_type: str, found: bool, relevant_file: str,
                             relevant_line_in_file: str,
                             source_line_no: int, target_file: str, target_line_no: int,
-                            original_suggestion=None) -> None:
+                            original_suggestion=None, as_draft: bool = False) -> bool:
+        """Returns True iff a comment (live or draft, primary or fallback) was created."""
         if not found:
             get_logger().info(f"Could not find position for {relevant_file} {relevant_line_in_file}")
+            return False
         else:
             store = None
             body_fp = code_fp = None
@@ -963,7 +1065,7 @@ class GitLabProvider(GitProvider):
                     get_logger().info(
                         f"Persistent inline comments: skipping duplicate inline "
                         f"comment on {relevant_file}:{anchor_line}")
-                    return
+                    return False
                 body = body_with_markers(
                     body, body_fp, code_fp, getattr(self, "max_comment_chars", None))
             # in order to have exact sha's we have to find correct diff for this change
@@ -983,76 +1085,100 @@ class GitLabProvider(GitProvider):
                 pos_obj['new_line'] = target_line_no - 1
                 pos_obj['old_line'] = source_line_no - 1
             get_logger().debug(f"Creating comment in MR {self.id_mr} with body {body} and position {pos_obj}")
-            try:
+            created = self._create_suggestion_note(as_draft, body, pos_obj, diff, target_file, relevant_file,
+                                                    original_suggestion, store, body_fp, code_fp)
+            if not created and as_draft:
+                # Draft notes are unavailable/erroring outright for this MR (unsupported GitLab
+                # version, insufficient permissions, ...) - degrade to a normal live comment rather
+                # than silently dropping the suggestion. It publishes immediately and falls outside
+                # the batch, which is an acceptable trade-off against losing it entirely.
+                get_logger().warning(
+                    f"Draft note creation failed for MR {self.id_mr}; retrying this suggestion as a "
+                    f"live comment instead of a draft")
+                created = self._create_suggestion_note(False, body, pos_obj, diff, target_file, relevant_file,
+                                                        original_suggestion, store, body_fp, code_fp)
+            return created
+
+    def _create_suggestion_note(self, as_draft: bool, body: str, pos_obj: dict, diff, target_file,
+                                relevant_file: str, original_suggestion, store, body_fp, code_fp) -> bool:
+        """Creates the anchored suggestion comment, falling back to a general file note if GitLab
+        rejects the position (e.g. the suggestion isn't on a '+' line). Returns True iff either
+        attempt succeeded."""
+        try:
+            if as_draft:
+                self.mr.draft_notes.create({'note': body, 'position': pos_obj})
+            else:
                 self.mr.discussions.create({'body': body, 'position': pos_obj})
+            if store is not None:
+                store.add(body_fp)
+                store.add(code_fp)
+            return True
+        except Exception as e:
+            try:
+                # fallback - create a general note on the file in the MR
+                if 'suggestion_orig_location' in original_suggestion:
+                    line_start = original_suggestion['suggestion_orig_location']['start_line']
+                    line_end = original_suggestion['suggestion_orig_location']['end_line']
+                    old_code_snippet = original_suggestion['prev_code_snippet']
+                    new_code_snippet = original_suggestion['new_code_snippet']
+                    content = original_suggestion['suggestion_summary']
+                    label = original_suggestion['category']
+                    if 'score' in original_suggestion:
+                        score = original_suggestion['score']
+                    else:
+                        score = 7
+                else:
+                    line_start = original_suggestion['relevant_lines_start']
+                    line_end = original_suggestion['relevant_lines_end']
+                    old_code_snippet = original_suggestion['existing_code']
+                    new_code_snippet = original_suggestion['improved_code']
+                    content = original_suggestion['suggestion_content']
+                    label = original_suggestion['label']
+                    score = original_suggestion.get('score', 7)
+
+                if hasattr(self, 'main_language'):
+                    language = self.main_language
+                else:
+                    language = ''
+                link = self.get_line_link(relevant_file, line_start, line_end)
+                body_fallback =f"**Suggestion:** {content} [{label}, importance: {score}]\n\n"
+                body_fallback +=f"\n\n<details><summary>[{target_file.filename} [{line_start}-{line_end}]]({link}):</summary>\n\n"
+                body_fallback += f"\n\n___\n\n`(Cannot implement directly - GitLab API allows committable suggestions strictly on MR diff lines)`"
+                body_fallback+="</details>\n\n"
+                diff_patch = difflib.unified_diff(old_code_snippet.split('\n'),
+                                            new_code_snippet.split('\n'), n=999)
+                patch_orig = "\n".join(diff_patch)
+                patch = "\n".join(patch_orig.splitlines()[5:]).strip('\n')
+                diff_code = f"\n\n```diff\n{patch.rstrip()}\n```"
+                body_fallback += diff_code
+
+                if store is not None:
+                    body_fallback = body_with_markers(
+                        body_fallback, body_fp, code_fp, getattr(self, "max_comment_chars", None))
+                # Create a general note on the file in the MR
+                fallback_position = {
+                    'base_sha': diff.base_commit_sha,
+                    'start_sha': diff.start_commit_sha,
+                    'head_sha': diff.head_commit_sha,
+                    'position_type': 'text',
+                    'file_path': f'{target_file.filename}',
+                }
+                if as_draft:
+                    self.mr.draft_notes.create({'note': body_fallback, 'position': fallback_position})
+                else:
+                    self.mr.notes.create({'body': body_fallback, 'position': fallback_position})
+                get_logger().debug(f"Created fallback comment in MR {self.id_mr} with position {pos_obj}")
                 if store is not None:
                     store.add(body_fp)
                     store.add(code_fp)
+                return True
+
             except Exception as e:
-                try:
-                    # fallback - create a general note on the file in the MR
-                    if 'suggestion_orig_location' in original_suggestion:
-                        line_start = original_suggestion['suggestion_orig_location']['start_line']
-                        line_end = original_suggestion['suggestion_orig_location']['end_line']
-                        old_code_snippet = original_suggestion['prev_code_snippet']
-                        new_code_snippet = original_suggestion['new_code_snippet']
-                        content = original_suggestion['suggestion_summary']
-                        label = original_suggestion['category']
-                        if 'score' in original_suggestion:
-                            score = original_suggestion['score']
-                        else:
-                            score = 7
-                    else:
-                        line_start = original_suggestion['relevant_lines_start']
-                        line_end = original_suggestion['relevant_lines_end']
-                        old_code_snippet = original_suggestion['existing_code']
-                        new_code_snippet = original_suggestion['improved_code']
-                        content = original_suggestion['suggestion_content']
-                        label = original_suggestion['label']
-                        score = original_suggestion.get('score', 7)
-
-                    if hasattr(self, 'main_language'):
-                        language = self.main_language
-                    else:
-                        language = ''
-                    link = self.get_line_link(relevant_file, line_start, line_end)
-                    body_fallback =f"**Suggestion:** {content} [{label}, importance: {score}]\n\n"
-                    body_fallback +=f"\n\n<details><summary>[{target_file.filename} [{line_start}-{line_end}]]({link}):</summary>\n\n"
-                    body_fallback += f"\n\n___\n\n`(Cannot implement directly - GitLab API allows committable suggestions strictly on MR diff lines)`"
-                    body_fallback+="</details>\n\n"
-                    diff_patch = difflib.unified_diff(old_code_snippet.split('\n'),
-                                                new_code_snippet.split('\n'), n=999)
-                    patch_orig = "\n".join(diff_patch)
-                    patch = "\n".join(patch_orig.splitlines()[5:]).strip('\n')
-                    diff_code = f"\n\n```diff\n{patch.rstrip()}\n```"
-                    body_fallback += diff_code
-
-                    if store is not None:
-                        body_fallback = body_with_markers(
-                            body_fallback, body_fp, code_fp, getattr(self, "max_comment_chars", None))
-                    # Create a general note on the file in the MR
-                    self.mr.notes.create({
-                        'body': body_fallback,
-                        'position': {
-                            'base_sha': diff.base_commit_sha,
-                            'start_sha': diff.start_commit_sha,
-                            'head_sha': diff.head_commit_sha,
-                            'position_type': 'text',
-                            'file_path': f'{target_file.filename}',
-                        }
-                    })
-                    get_logger().debug(f"Created fallback comment in MR {self.id_mr} with position {pos_obj}")
-                    if store is not None:
-                        store.add(body_fp)
-                        store.add(code_fp)
-
-                    # get_logger().debug(
-                    #     f"Failed to create comment in MR {self.id_mr} with position {pos_obj} (probably not a '+' line)")
-                except Exception as e:
-                    get_logger().exception(f"Failed to create comment in MR {self.id_mr}")
+                get_logger().exception(f"Failed to create comment in MR {self.id_mr}")
+                return False
 
     def get_relevant_diff(self, relevant_file: str, relevant_line_in_file: str) -> Optional[dict]:
-        _changes = self.mr.changes()  # dict
+        _changes = self._get_merge_request_changes()
         _changes['changes'] = self._expand_submodule_changes(_changes.get('changes', []))
         changes = _changes
         if not changes:
@@ -1070,6 +1196,12 @@ class GitLabProvider(GitProvider):
         return self.last_diff  # fallback to the latest diff if no relevant diff is found
 
     def publish_code_suggestions(self, code_suggestions: list) -> bool:
+        # Runs first so the fingerprints it frees are in the store before any dedup lookup.
+        self.resolve_outdated_inline_threads()
+        # When true, suggestions are queued as GitLab draft notes and published together in a single
+        # batch at the end, instead of each one going out as its own live discussion (and its own
+        # notification/email) as soon as it's created.
+        as_review = get_settings().get("gitlab.publish_code_suggestions_as_review", False)
         for suggestion in code_suggestions:
             try:
                 if suggestion and 'original_suggestion' in suggestion:
@@ -1103,10 +1235,40 @@ class GitLabProvider(GitProvider):
                 found = True
                 edit_type = 'addition'
 
-                self.send_inline_comment(body, edit_type, found, relevant_file, relevant_line_in_file, source_line_no,
-                                         target_file, target_line_no, original_suggestion)
+                self.send_inline_comment(body, edit_type, found, relevant_file, relevant_line_in_file,
+                                         source_line_no, target_file, target_line_no, original_suggestion,
+                                         as_draft=as_review)
             except Exception as e:
                 get_logger().exception(f"Could not publish code suggestion:\nsuggestion: {suggestion}\nerror: {e}")
+
+        if as_review:
+            try:
+                # Check the MR's actual pending drafts rather than tracking creations from this call
+                # alone: this correctly skips bulk-publish when nothing is pending (e.g. an empty or
+                # all-failed suggestion list, which would otherwise publish unrelated drafts already on
+                # the MR from a previous run or a manual draft review in progress), while still
+                # retrying to publish drafts left over from an earlier run whose bulk_publish failed -
+                # even if every suggestion in this run was skipped as a dedup-detected duplicate of one
+                # of those still-pending drafts.
+                try:
+                    pending = self.mr.draft_notes.list(get_all=True)
+                except Exception as e:
+                    # Draft notes are unusable on this instance/token; send_inline_comment has
+                    # already degraded every suggestion to a live comment, so nothing is pending.
+                    get_logger().warning(f"Could not list draft notes for MR {self.id_mr}: {e}")
+                    pending = []
+                if pending:
+                    self.mr.draft_notes.bulk_publish()
+            except Exception as e:
+                # Draft notes are only visible to the posting user until published, so a failure here
+                # leaves the suggestions invisible to everyone else. They aren't lost: GitLab keeps
+                # pending drafts on the MR, so a manual publish from the GitLab UI, or the next
+                # successful run of this method (which also ends in a bulk_publish call), will surface
+                # them - but that won't happen automatically, so this needs to be visible in logs/alerts.
+                get_logger().exception(
+                    f"Failed to bulk-publish draft code-suggestion notes for MR {self.id_mr}; they remain "
+                    f"as pending drafts, visible only to the posting user, until published manually from "
+                    f"the GitLab UI or by a subsequent successful run: {e}")
 
         # note that we publish suggestions one-by-one. so, if one fails, the rest will still be published
         return True
