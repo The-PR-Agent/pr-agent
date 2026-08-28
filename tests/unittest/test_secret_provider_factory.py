@@ -2,7 +2,38 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from pr_agent.secret_providers import get_secret_provider
+from pr_agent.secret_providers import SUPPORTED_SECRET_PROVIDERS, get_secret_provider, validate_secret_provider_setting
+
+
+class TestValidateSecretProviderSetting:
+    """Startup validation that rejects a typo without constructing a cloud client."""
+
+    def _settings(self, value):
+        settings = MagicMock()
+        settings.get.return_value = value
+        return settings
+
+    @pytest.mark.parametrize("provider_id", SUPPORTED_SECRET_PROVIDERS)
+    def test_accepts_supported_providers(self, provider_id):
+        with patch('pr_agent.secret_providers.get_settings', return_value=self._settings(provider_id)):
+            validate_secret_provider_setting()
+
+    def test_accepts_unset_provider(self):
+        with patch('pr_agent.secret_providers.get_settings', return_value=self._settings("")):
+            validate_secret_provider_setting()
+
+    def test_rejects_unknown_provider(self):
+        with patch('pr_agent.secret_providers.get_settings', return_value=self._settings("gcs")):
+            with pytest.raises(ValueError, match="Unknown SECRET_PROVIDER"):
+                validate_secret_provider_setting()
+
+    def test_does_not_construct_a_client(self):
+        # The whole point: validation must stay free of the cloud SDKs, so it can run at
+        # import time in the gunicorn master without creating a client that gets forked.
+        with patch('pr_agent.secret_providers.get_settings', return_value=self._settings("aws_secrets_manager")):
+            with patch('pr_agent.secret_providers.get_secret_provider') as mock_build:
+                validate_secret_provider_setting()
+            mock_build.assert_not_called()
 
 
 class TestSecretProviderFactory:

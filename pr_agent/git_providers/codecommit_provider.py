@@ -76,7 +76,8 @@ class CodeCommitProvider(GitProvider):
             "create_inline_comment",
             "publish_inline_comments",
             "get_labels",
-            "gfm_markdown"
+            "gfm_markdown",
+            "markdown_backslash_escapes",
         ]:
             return False
         return True
@@ -118,7 +119,7 @@ class CodeCommitProvider(GitProvider):
         files = self.get_files()
         for diff_item in files:
             patch_filename = ""
-            if diff_item.a_blob_id is not None:
+            if diff_item.a_blob_id:
                 patch_filename = diff_item.a_path
                 original_file_content_str = self.codecommit_client.get_file(
                     self.repo_name, diff_item.a_path, self.pr.destination_commit)
@@ -127,7 +128,7 @@ class CodeCommitProvider(GitProvider):
             else:
                 original_file_content_str = ""
 
-            if diff_item.b_blob_id is not None:
+            if diff_item.b_blob_id:
                 patch_filename = diff_item.b_path
                 new_file_content_str = self.codecommit_client.get_file(self.repo_name, diff_item.b_path, self.pr.source_commit)
                 if isinstance(new_file_content_str, (bytes, bytearray)):
@@ -142,7 +143,7 @@ class CodeCommitProvider(GitProvider):
                 original_file_content_str,
                 new_file_content_str,
                 patch,
-                diff_item.b_path,
+                diff_item.filename,
                 edit_type=diff_item.edit_type,
                 old_filename=None
                 if diff_item.a_path == diff_item.b_path
