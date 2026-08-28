@@ -78,6 +78,22 @@ class Skill:
     resources: Tuple[SkillResource, ...] = field(default_factory=tuple)
 
 
+def _expand_skill_path(raw_path: object) -> Optional[str]:
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return None
+    return os.path.expanduser(os.path.expandvars(raw_path.strip()))
+
+
+def _expanded_skill_paths(paths: List[str]) -> Tuple[str, ...]:
+    """Return the normalized path values used by discovery and cache keys."""
+    expanded_paths = []
+    for raw_path in paths or []:
+        expanded = _expand_skill_path(raw_path)
+        if expanded is not None:
+            expanded_paths.append(expanded)
+    return tuple(expanded_paths)
+
+
 def _count_tokens(text: str) -> int:
     return len(TokenEncoder.get_token_encoder().encode(text))
 
@@ -190,9 +206,9 @@ def discover_skills(paths: List[str]) -> List[Skill]:
     seen: set = set()
 
     for raw_path in paths or []:
-        if not isinstance(raw_path, str) or not raw_path.strip():
+        expanded = _expand_skill_path(raw_path)
+        if expanded is None:
             continue
-        expanded = os.path.expanduser(os.path.expandvars(raw_path.strip()))
         if not os.path.exists(expanded):
             get_logger().warning(f"Skills path does not exist: {expanded}")
             continue
@@ -310,9 +326,10 @@ def get_skills_context() -> str:
     settings = get_settings()
     enabled = bool(settings.skills.enabled)
     paths = list(settings.skills.paths or [])
+    expanded_paths = _expanded_skill_paths(paths)
 
     if not enabled:
-        cache_settings = (False, tuple(paths), None)
+        cache_settings = (False, expanded_paths, None)
         cached = _get_cached_context(cache_settings)
         if cached is not None:
             return cached
@@ -327,7 +344,7 @@ def get_skills_context() -> str:
         invalid_max = True
         max_tokens = _DEFAULT_MAX_SKILLS_TOKENS
 
-    cache_settings = (True, tuple(paths), max_tokens)
+    cache_settings = (True, expanded_paths, max_tokens)
     cached = _get_cached_context(cache_settings)
     if cached is not None:
         return cached

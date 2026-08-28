@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from jinja2 import Environment, StrictUndefined
 from starlette_context import request_cycle_context
 
-import pr_agent.algo.skills_loader as skills_loader
+from pr_agent.algo import skills_loader
 from pr_agent.algo.skills_loader import (
     Skill,
     _parse_skill_file,
@@ -222,6 +222,9 @@ class TestGetSkillsContext:
             settings.skills.max_skills_tokens = 1000
             assert get_skills_context() == "budget=1000"
 
+            settings.skills.paths = ["/other/skills"]
+            assert get_skills_context() == "budget=1000"
+
             settings.skills.enabled = False
             assert get_skills_context() == ""
 
@@ -229,7 +232,39 @@ class TestGetSkillsContext:
             settings.skills.max_skills_tokens = 200
             assert get_skills_context() == "budget=200"
 
-        assert discover_calls == [["/host/skills"], ["/host/skills"], ["/host/skills"]]
+        assert discover_calls == [
+            ["/host/skills"],
+            ["/host/skills"],
+            ["/other/skills"],
+            ["/other/skills"],
+        ]
+
+    def test_request_cache_respects_expanded_path_changes(self, tmp_path, monkeypatch):
+        first_dir = tmp_path / "first"
+        second_dir = tmp_path / "second"
+        _write_skill(first_dir, "first-skill")
+        _write_skill(second_dir, "second-skill")
+        settings = SimpleNamespace(
+            skills=SimpleNamespace(
+                enabled=True,
+                paths=["$SKILLS_TEST_DIR"],
+                max_skills_tokens=8000,
+            )
+        )
+
+        monkeypatch.setenv("SKILLS_TEST_DIR", str(first_dir))
+        monkeypatch.setattr(skills_loader, "get_settings", lambda: settings)
+        monkeypatch.setattr(
+            skills_loader,
+            "format_skills_context",
+            lambda skills, max_tokens: ",".join(skill.name for skill in skills),
+        )
+
+        with request_cycle_context({}):
+            assert get_skills_context() == "first-skill"
+
+            monkeypatch.setenv("SKILLS_TEST_DIR", str(second_dir))
+            assert get_skills_context() == "second-skill"
 
 
 class TestJinjaSafety:
