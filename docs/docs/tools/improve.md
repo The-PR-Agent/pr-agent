@@ -125,7 +125,8 @@ Use triple quotes to write multi-line instructions. Use bullet points or numbers
     to read them from the pull request's target branch instead. Providers without repository file fetching log a
     warning and skip this context.
 
-Qodo Merge supports both simple and hierarchical best practices configurations to provide guidance to the AI model for generating relevant code suggestions.
+Qodo Merge supports both simple and hierarchical best practices configurations to provide guidance to the AI model
+for generating relevant code suggestions.
 
 ???- tip "Writing effective best practices files"
 
