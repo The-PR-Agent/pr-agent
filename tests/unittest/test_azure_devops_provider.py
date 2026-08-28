@@ -119,6 +119,61 @@ class TestAzureDevopsProviderFiles:
 
         assert provider._get_files_full() == ["/src/app.py"]
 
+    @staticmethod
+    def _provider_with_pull_request_diff(*get_item_results):
+        provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+        provider.repo_slug = "my-repo"
+        provider.workspace_slug = "my-project"
+        provider.pr_num = 1
+        provider.pr = SimpleNamespace(
+            last_merge_target_commit=SimpleNamespace(commit_id="base-sha"),
+            last_merge_commit=SimpleNamespace(commit_id="head-sha"),
+        )
+        provider.azure_devops_client = MagicMock()
+        client = provider.azure_devops_client
+        client.get_pull_request_iterations.return_value = [SimpleNamespace(id=1)]
+        client.get_pull_request_iteration_changes.return_value = SimpleNamespace(
+            change_entries=[
+                SimpleNamespace(
+                    additional_properties={
+                        "item": {"path": "/src/app.py"},
+                        "changeType": "edit",
+                    }
+                )
+            ]
+        )
+        client.get_item.side_effect = get_item_results
+        provider.diff_files = None
+        provider.incremental = None
+        provider.unreviewed_files_map = {}
+        return provider
+
+    def test_get_diff_files_keeps_file_when_new_content_fetch_fails(self):
+        provider = self._provider_with_pull_request_diff(
+            Exception("head fetch failed"),
+            SimpleNamespace(content="old content\n"),
+        )
+
+        diff_files = provider.get_diff_files()
+
+        assert len(diff_files) == 1
+        assert diff_files[0].filename == "/src/app.py"
+        assert diff_files[0].head_file == ""
+        assert diff_files[0].base_file == "old content\n"
+
+    def test_get_diff_files_keeps_file_when_original_content_fetch_fails(self):
+        provider = self._provider_with_pull_request_diff(
+            SimpleNamespace(content="new content\n"),
+            Exception("base fetch failed"),
+        )
+
+        diff_files = provider.get_diff_files()
+
+        assert len(diff_files) == 1
+        assert diff_files[0].filename == "/src/app.py"
+        assert diff_files[0].head_file == "new content\n"
+        assert diff_files[0].base_file == ""
+
 
 def _provider_with_diff(*filenames):
     provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
