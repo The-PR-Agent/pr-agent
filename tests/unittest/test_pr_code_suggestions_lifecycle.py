@@ -17,6 +17,7 @@ _TRACKED_SETTINGS = (
     "pr_code_suggestions.commitable_code_suggestions",
     "pr_code_suggestions.dual_publishing_score_threshold",
     "pr_code_suggestions.persistent_comment",
+    "github.publish_as_check_run",
 )
 
 
@@ -178,5 +179,43 @@ async def test_run_preserves_cancellation_when_progress_cleanup_fails(monkeypatc
             progress_comment, "Code suggestions generation cancelled."
         )
         provider.remove_comment.assert_called_once_with(progress_comment)
+    finally:
+        restore_settings(settings_snapshot)
+
+
+@pytest.mark.asyncio
+async def test_run_cleans_up_progress_comment_on_check_run_publish(monkeypatch):
+    settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
+    try:
+        provider = MagicMock()
+        progress_comment = MagicMock(name="progress_comment")
+        provider.get_files.return_value = [object()]
+        provider.is_supported.return_value = True
+        provider.publish_comment.return_value = progress_comment
+        provider.get_latest_commit_url.return_value = "https://example.invalid/commit/abcdef1234567890"
+        provider._publish_check_run = MagicMock(return_value=True)
+        tool = _make_tool(provider)
+        tool.progress = "progress body"
+        tool.generate_summarized_suggestions = MagicMock(return_value="final summary")
+
+        monkeypatch.setattr(
+            pr_code_suggestions_module,
+            "retry_with_fallback_models",
+            AsyncMock(return_value={"code_suggestions": [{"score": 1}]}),
+        )
+        _configure_published_run()
+        settings = get_settings()
+        settings.github.publish_as_check_run = True
+        settings.pr_code_suggestions.commitable_code_suggestions = False
+        settings.pr_code_suggestions.persistent_comment = True
+
+        await tool.run()
+
+        provider._publish_check_run.assert_called_once()
+        provider.edit_comment.assert_called_once_with(
+            progress_comment, "Code suggestions published in the persistent thread above."
+        )
+        provider.remove_comment.assert_called_once_with(progress_comment)
+        assert tool.progress_response is None
     finally:
         restore_settings(settings_snapshot)

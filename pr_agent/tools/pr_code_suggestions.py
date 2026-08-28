@@ -376,9 +376,25 @@ class PRCodeSuggestions:
                                                 only_fold=False,
                                                 identity_marker: str | None = None,
                                                 legacy_initial_header: str | None = None):
+        def _clean_up_progress_note():
+            if not progress_response:
+                return
+            try:
+                git_provider.edit_comment(
+                    progress_response,
+                    "Code suggestions published in the persistent thread above.",
+                )
+                git_provider.remove_comment(progress_response)
+            except Exception as cleanup_error:
+                get_logger().warning(
+                    "Failed to clean up progress note after persistent update, "
+                    f"leaving it in place: {cleanup_error}"
+                )
+
         if hasattr(git_provider, '_publish_check_run') and get_settings().github.publish_as_check_run:
             if git_provider._publish_check_run(pr_comment, name):
-                return
+                _clean_up_progress_note()
+                return progress_response
 
         def _extract_link(comment_text: str):
             match = re.search(r"<!--\s*([0-9a-fA-F]{7,40})\s*-->", comment_text)
@@ -416,21 +432,6 @@ class PRCodeSuggestions:
 
         def _with_identity(comment_text: str) -> str:
             return add_comment_identity(comment_text, identity_marker)
-
-        def _clean_up_progress_note():
-            if not progress_response:
-                return
-            try:
-                git_provider.edit_comment(
-                    progress_response,
-                    "Code suggestions published in the persistent thread above.",
-                )
-                git_provider.remove_comment(progress_response)
-            except Exception as cleanup_error:
-                get_logger().warning(
-                    "Failed to clean up progress note after persistent update, "
-                    f"leaving it in place: {cleanup_error}"
-                )
 
         history_header = f"#### Previous suggestions\n"
         last_commit_num = git_provider.get_latest_commit_url().split('/')[-1][:7]
