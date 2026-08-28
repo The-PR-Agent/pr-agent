@@ -118,23 +118,32 @@ class CodeCommitProvider(GitProvider):
 
         files = self.get_files()
         for diff_item in files:
-            patch_filename = ""
-            if diff_item.a_blob_id:
-                patch_filename = diff_item.a_path
-                original_file_content_str = self.codecommit_client.get_file(
-                    self.repo_name, diff_item.a_path, self.pr.destination_commit)
-                if isinstance(original_file_content_str, (bytes, bytearray)):
-                    original_file_content_str = original_file_content_str.decode("utf-8")
-            else:
-                original_file_content_str = ""
+            # Skip "bad extensions" from language_extensions.toml, lockfiles and minified assets
+            if not is_valid_file(diff_item.filename):
+                continue
 
-            if diff_item.b_blob_id:
-                patch_filename = diff_item.b_path
-                new_file_content_str = self.codecommit_client.get_file(self.repo_name, diff_item.b_path, self.pr.source_commit)
-                if isinstance(new_file_content_str, (bytes, bytearray)):
-                    new_file_content_str = new_file_content_str.decode("utf-8")
-            else:
-                new_file_content_str = ""
+            patch_filename = ""
+            try:
+                if diff_item.a_blob_id:
+                    patch_filename = diff_item.a_path
+                    original_file_content_str = self.codecommit_client.get_file(
+                        self.repo_name, diff_item.a_path, self.pr.destination_commit)
+                    if isinstance(original_file_content_str, (bytes, bytearray)):
+                        original_file_content_str = original_file_content_str.decode("utf-8")
+                else:
+                    original_file_content_str = ""
+
+                if diff_item.b_blob_id:
+                    patch_filename = diff_item.b_path
+                    new_file_content_str = self.codecommit_client.get_file(
+                        self.repo_name, diff_item.b_path, self.pr.source_commit)
+                    if isinstance(new_file_content_str, (bytes, bytearray)):
+                        new_file_content_str = new_file_content_str.decode("utf-8")
+                else:
+                    new_file_content_str = ""
+            except UnicodeDecodeError as e:
+                get_logger().warning(f"Skipping non-UTF-8 file in CodeCommit diff: {diff_item.filename!r} ({e})")
+                continue
 
             patch = load_large_diff(patch_filename, new_file_content_str, original_file_content_str)
 
@@ -149,11 +158,7 @@ class CodeCommitProvider(GitProvider):
                 if diff_item.a_path == diff_item.b_path
                 else diff_item.a_path,
             )
-            # Only add valid files to the diff list
-            # "bad extensions" are set in the language_extensions.toml file
-            # a "valid file" is one that is not in the "bad extensions" list
-            if is_valid_file(info.filename):
-                self.diff_files.append(info)
+            self.diff_files.append(info)
 
         return self.diff_files
 
