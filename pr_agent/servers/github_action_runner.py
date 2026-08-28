@@ -362,10 +362,17 @@ def _inject_ci_conclusion(conclusion):
         "Say so in your output rather than implying the change is clean."
     )
     separator = "\n======\n\n"
+    default_target_tools = ["pr_reviewer", "pr_description", "pr_code_suggestions"]
+    target_tools = get_settings().get("ARTIFACTS.TARGET_TOOLS", default_target_tools)
+    if isinstance(target_tools, str):
+        target_tools = [t.strip() for t in target_tools.split(",") if t.strip()]
+    elif not isinstance(target_tools, (list, set, tuple)):
+        target_tools = default_target_tools
+    target_tools = {str(t).lower() for t in target_tools}
     for key in get_settings():
         setting = get_settings().get(key)
         if str(type(setting)) == "<class 'dynaconf.utils.boxing.DynaBox'>":
-            if key.lower() in ("pr_reviewer", "pr_description", "pr_code_suggestions"):
+            if key.lower() in target_tools:
                 if hasattr(setting, "extra_instructions"):
                     extra_instructions = str(setting.extra_instructions or "")
                     if text not in extra_instructions:
