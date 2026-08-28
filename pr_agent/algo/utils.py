@@ -1036,7 +1036,7 @@ def try_fix_yaml(response_text: str,
         index_end = response_text.find("\n\n", index_last_code) # look for newlines after last_key
         if index_end == -1:
             index_end = len(response_text)
-        response_text_copy = response_text[index_start:index_end].strip().strip('```yaml').strip('`').strip()
+        response_text_copy = response_text[index_start:index_end].strip().strip("`").strip()
         if response_text_copy:
             try:
                 data = yaml.safe_load(response_text_copy)
