@@ -1,6 +1,6 @@
-import asyncio
 import copy
 import os
+import re
 from typing import Any, Dict
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
@@ -9,8 +9,9 @@ from starlette.middleware import Middleware
 from starlette_context import context
 from starlette_context.middleware import RawContextMiddleware
 
-from pr_agent.agent.pr_agent import PRAgent
+from pr_agent.agent.pr_agent import PRAgent, prepare_command
 from pr_agent.config_loader import get_settings, global_settings
+from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.servers.utils import verify_signature
 
@@ -50,7 +51,7 @@ async def get_body(request: Request):
         if not signature_header:
             get_logger().error("Missing signature header")
             raise HTTPException(status_code=400, detail="Missing signature header")
-        
+
         try:
             verify_signature(body_bytes, webhook_secret, f"sha256={signature_header}")
         except Exception as ex:
@@ -70,6 +71,9 @@ async def handle_request(body: Dict[str, Any], event: str):
 
     # Handle different event types
     if event == "pull_request":
+        if not should_process_pr_logic(body):
+            get_logger().debug(f"Request ignored: PR logic filtering")
+            return {}
         if action in ["opened", "reopened", "synchronized"]:
             await handle_pr_event(body, event, action, agent)
     elif event == "issue_comment":
@@ -90,12 +94,21 @@ async def handle_pr_event(body: Dict[str, Any], event: str, action: str, agent: 
 
     # Handle PR based on action
     if action in ["opened", "reopened"]:
-        commands = get_settings().get("gitea.pr_commands", [])
-        for command in commands:
-            await agent.handle_request(api_url, command)
+        # commands = get_settings().get("gitea.pr_commands", [])
+        await _perform_commands_gitea("pr_commands", agent, body, api_url)
+        # for command in commands:
+        #     await agent.handle_request(api_url, command)
     elif action == "synchronized":
         # Handle push to PR
-        await agent.handle_request(api_url, "/review --incremental")
+        commands_on_push = get_settings().get(f"gitea.push_commands", {})
+        handle_push_trigger = get_settings().get(f"gitea.handle_push_trigger", False)
+        if not commands_on_push or not handle_push_trigger:
+            get_logger().info("Push event, but no push commands found or push trigger is disabled")
+            return
+        get_logger().debug(f'A push event has been received: {api_url}')
+        await _perform_commands_gitea("push_commands", agent, body, api_url)
+        # for command in commands_on_push:
+        #     await agent.handle_request(api_url, command)
 
 async def handle_comment_event(body: Dict[str, Any], event: str, action: str, agent: PRAgent):
     """Handle comment events"""
@@ -112,6 +125,84 @@ async def handle_comment_event(body: Dict[str, Any], event: str, action: str, ag
         return
 
     await agent.handle_request(pr_url, comment_body)
+
+async def _perform_commands_gitea(commands_conf: str, agent: PRAgent, body: dict, api_url: str):
+    apply_repo_settings(api_url)
+    if commands_conf == "pr_commands" and get_settings().config.disable_auto_feedback:  # auto commands for PR, and auto feedback is disabled
+        get_logger().info(f"Auto feedback is disabled, skipping auto commands for PR {api_url=}")
+        return
+    if not should_process_pr_logic(body): # Here we already updated the configuration with the repo settings
+        return {}
+    commands = get_settings().get(f"gitea.{commands_conf}")
+    if not commands:
+        get_logger().info(f"New PR, but no auto commands configured")
+        return
+    get_settings().set("config.is_auto_command", True)
+    for command in commands:
+        try:
+            new_command = prepare_command(command)
+            get_logger().info(f"{commands_conf}. Performing auto command '{new_command}', for {api_url=}")
+            await agent.handle_request(api_url, new_command)
+        except Exception as e:
+            get_logger().error(f"Failed to perform command {command}: {e}")
+
+def should_process_pr_logic(body) -> bool:
+    try:
+        pull_request = body.get("pull_request", {})
+        title = pull_request.get("title", "")
+        pr_labels = pull_request.get("labels", [])
+        source_branch = pull_request.get("head", {}).get("ref", "")
+        target_branch = pull_request.get("base", {}).get("ref", "")
+        sender = body.get("sender", {}).get("login")
+        repo_full_name = body.get("repository", {}).get("full_name", "")
+
+        # logic to ignore PRs from specific repositories
+        ignore_repos = get_settings().get("CONFIG.IGNORE_REPOSITORIES", [])
+        if ignore_repos and repo_full_name:
+            if any(re.search(regex, repo_full_name) for regex in ignore_repos):
+                get_logger().info(f"Ignoring PR from repository '{repo_full_name}' due to 'config.ignore_repositories' setting")
+                return False
+
+        # logic to ignore PRs from specific users
+        ignore_pr_users = get_settings().get("CONFIG.IGNORE_PR_AUTHORS", [])
+        if ignore_pr_users and sender:
+            if any(re.search(regex, sender) for regex in ignore_pr_users):
+                get_logger().info(f"Ignoring PR from user '{sender}' due to 'config.ignore_pr_authors' setting")
+                return False
+
+        # logic to ignore PRs with specific titles
+        if title:
+            ignore_pr_title_re = get_settings().get("CONFIG.IGNORE_PR_TITLE", [])
+            if not isinstance(ignore_pr_title_re, list):
+                ignore_pr_title_re = [ignore_pr_title_re]
+            if ignore_pr_title_re and any(re.search(regex, title) for regex in ignore_pr_title_re):
+                get_logger().info(f"Ignoring PR with title '{title}' due to config.ignore_pr_title setting")
+                return False
+
+        # logic to ignore PRs with specific labels or source branches or target branches.
+        ignore_pr_labels = get_settings().get("CONFIG.IGNORE_PR_LABELS", [])
+        if pr_labels and ignore_pr_labels:
+            labels = [label['name'] for label in pr_labels]
+            if any(label in ignore_pr_labels for label in labels):
+                labels_str = ", ".join(labels)
+                get_logger().info(f"Ignoring PR with labels '{labels_str}' due to config.ignore_pr_labels settings")
+                return False
+
+        # logic to ignore PRs with specific source or target branches
+        ignore_pr_source_branches = get_settings().get("CONFIG.IGNORE_PR_SOURCE_BRANCHES", [])
+        ignore_pr_target_branches = get_settings().get("CONFIG.IGNORE_PR_TARGET_BRANCHES", [])
+        if pull_request and (ignore_pr_source_branches or ignore_pr_target_branches):
+            if any(re.search(regex, source_branch) for regex in ignore_pr_source_branches):
+                get_logger().info(
+                    f"Ignoring PR with source branch '{source_branch}' due to config.ignore_pr_source_branches settings")
+                return False
+            if any(re.search(regex, target_branch) for regex in ignore_pr_target_branches):
+                get_logger().info(
+                    f"Ignoring PR with target branch '{target_branch}' due to config.ignore_pr_target_branches settings")
+                return False
+    except Exception as e:
+        get_logger().error(f"Failed 'should_process_pr_logic': {e}")
+    return True
 
 # FastAPI app setup
 middleware = [Middleware(RawContextMiddleware)]

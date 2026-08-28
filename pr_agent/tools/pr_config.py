@@ -30,8 +30,24 @@ class PRConfig:
         return ""
 
     def _prepare_pr_configs(self) -> str:
-        conf_file = get_settings().find_file("configuration.toml")
-        conf_settings = Dynaconf(settings_files=[conf_file])
+        try:
+            conf_file = get_settings().find_file("configuration.toml")
+            dynconf_kwargs = {'core_loaders': [],  # DISABLE default loaders, otherwise will load toml files more than once.
+                 'loaders': ['pr_agent.custom_merge_loader'],
+                 # Use a custom loader to merge sections, but overwrite their overlapping values. Do not use ENV variables.
+                 'merge_enabled': True
+                 # Merge multiple TOML files; prevent full section overwrite—only overlapping keys in sections overwrite prior ones.
+             }
+            conf_settings = Dynaconf(settings_files=[conf_file],
+                                     # Security: Disable all dynamic loading features
+                                     load_dotenv=False,  # Don't load .env files
+                                     envvar_prefix=False,
+                                     **dynconf_kwargs
+                                     )
+        except Exception as e:
+            get_logger().error("Caught exception during Dynaconf loading. Returning empty dict",
+                               artifact={"exception": e})
+            conf_settings = {}
         configuration_headers = [header.lower() for header in conf_settings.keys()]
         relevant_configs = {
             header: configs for header, configs in get_settings().to_dict().items()
@@ -43,7 +59,7 @@ class PRConfig:
                      'APP_NAME', 'PERSONAL_ACCESS_TOKEN', 'shared_secret', 'key', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'user_token',
                      'private_key', 'private_key_id', 'client_id', 'client_secret', 'token', 'bearer_token', 'jira_api_token','webhook_secret']
         partial_skip_keys = ['key', 'secret', 'token', 'private']
-        extra_skip_keys = get_settings().config.get('config.skip_keys', [])
+        extra_skip_keys = get_settings().config.get("skip_keys", [])
         if extra_skip_keys:
             skip_keys.extend(extra_skip_keys)
         skip_keys_lower = [key.lower() for key in skip_keys]

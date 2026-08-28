@@ -82,3 +82,16 @@ class TestOmitDeletionHunks:
         patch_lines = ['@@ -1,1 +1,0 @@\n', '-deleted line\n']
         expected_output = ''
         assert omit_deletion_hunks(patch_lines) == expected_output
+
+    # Tests that a deletion-only hunk followed by a hunk with additions is
+    # dropped entirely and does not leak into the later hunk's output.
+    def test_deletion_only_hunk_before_added_hunk_is_omitted(self):
+        patch_lines = [
+            "@@ -1,1 +1,0 @@\n",
+            "-deleted line\n",
+            "@@ -10,0 +10,1 @@\n",
+            "+added line\n",
+        ]
+        assert omit_deletion_hunks(patch_lines) == (
+            "@@ -10,0 +10,1 @@\n\n+added line\n"
+        )

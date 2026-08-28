@@ -11,10 +11,14 @@ from requests.auth import HTTPBasicAuth
 
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger, setup_logger
-from tests.e2e_tests.e2e_utils import (FILE_PATH,
-                                       IMPROVE_START_WITH_REGEX_PATTERN,
-                                       NEW_FILE_CONTENT, NUM_MINUTES,
-                                       PR_HEADER_START_WITH, REVIEW_START_WITH)
+from tests.e2e_tests.e2e_utils import (
+    FILE_PATH,
+    IMPROVE_START_WITH_REGEX_PATTERN,
+    NEW_FILE_CONTENT,
+    NUM_MINUTES,
+    PR_HEADER_START_WITH,
+    REVIEW_START_WITH,
+)
 
 log_level = os.environ.get("LOG_LEVEL", "INFO")
 setup_logger(log_level)
@@ -42,7 +46,7 @@ def test_e2e_run_bitbucket_app():
         target_repo = repo.branches.create(new_branch,source_branch.hash)
 
         # Update the file content
-        url = (f"https://api.bitbucket.org/2.0/repositories/{project_key}/{repo_slug}/src")
+        url = f"https://api.bitbucket.org/2.0/repositories/{project_key}/{repo_slug}/src"
         files={FILE_PATH: NEW_FILE_CONTENT}
         data={
             "message": "update cli_pip.py",

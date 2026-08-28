@@ -28,7 +28,7 @@ If you want to edit [configurations](#configuration-options), add the relevant o
 
 ### Automatic triggering
 
-To run the `describe` automatically when a PR is opened, define in a [configuration file](https://qodo-merge-docs.qodo.ai/usage-guide/configuration_options/#wiki-configuration-file):
+To run the `describe` automatically when a PR is opened, define in a [configuration file](../usage-guide/configuration_options.md#local-configuration-file):
 
 ```
 [github_app]
@@ -47,10 +47,10 @@ publish_labels = true
 
 ## Preserving the original user description
 
-By default, Qodo Merge tries to preserve your original PR description by placing it above the generated content.
+By default, PR-Agent tries to preserve your original PR description by placing it above the generated content.
 This requires including your description during the initial PR creation.
 
-"Qodo removed the original description from the PR. Why"?
+"PR-Agent removed the original description from the PR. Why"?
 
 From our experience, there are two possible reasons:
 
@@ -65,6 +65,8 @@ Everything below this marker is treated as previously auto-generated content and
 The `/describe` tool includes a Mermaid sequence diagram showing component/function interactions. 
 
 This option is enabled by default via the `pr_description.enable_pr_diagram` param.
+
+The direction of the diagram adapts to its shape. A diagram whose longest chain of nodes exceeds `pr_description.pr_diagram_direction_threshold` is drawn top-down rather than left-to-right, so that wide diagrams are not scaled down until they become unreadable. Set `pr_description.pr_diagram_direction` to `LR` or `TD` to pin the direction instead.
 
 
 [//]: # (### How to enable\disable)
@@ -117,8 +119,12 @@ This option is enabled by default via the `pr_description.enable_pr_diagram` par
         <td>If set to false, it will not show the `PR type` as a text value in the description content. Default is true.</td>
       </tr>
       <tr>
+        <td><b>enable_pr_description</b></td>
+        <td>If set to false, the AI-generated summary section will not be requested from the model, nor shown in the description content. The other sections (diagram, changes walkthrough) are unaffected. Default is true.</td>
+      </tr>
+      <tr>
         <td><b>final_update_message</b></td>
-        <td>If set to true, it will add a comment message [`PR Description updated to latest commit...`](https://github.com/Codium-ai/pr-agent/pull/499#issuecomment-1837412176) after finishing calling `/describe`. Default is false.</td>
+        <td>If set to true, it will add a comment message [`PR Description updated to latest commit...`](https://github.com/the-pr-agent/pr-agent/pull/499#issuecomment-1837412176) after finishing calling `/describe`. Default is true.</td>
       </tr>
       <tr>
         <td><b>enable_semantic_files_types</b></td>
@@ -133,7 +139,7 @@ This option is enabled by default via the `pr_description.enable_pr_diagram` par
         <td>If set to true, the file list in the "Changes walkthrough" section will be collapsible. If set to "adaptive", the file list will be collapsible only if there are more than 8 files. Default is "adaptive".</td>
       </tr>
       <tr>
-        <td><b>enable_large_pr_handling 💎</b></td>
+        <td><b>enable_large_pr_handling</b></td>
         <td>If set to true, in case of a large PR the tool will make several calls to the AI and combine them to be able to cover more files. Default is true.</td>
       </tr>
       <tr>
@@ -142,35 +148,21 @@ This option is enabled by default via the `pr_description.enable_pr_diagram` par
       </tr>
       <tr>
         <td><b>enable_pr_diagram</b></td>
-        <td>If set to true, the tool will generate a horizontal Mermaid flowchart summarizing the main pull request changes. This field remains empty if not applicable. Default is true.</td>
+        <td>If set to true, the tool will generate a Mermaid flowchart summarizing the main pull request changes. This field remains empty if not applicable. Default is true.</td>
+      </tr>
+      <tr>
+        <td><b>pr_diagram_direction</b></td>
+        <td>Direction of the generated Mermaid flowchart: <b>adaptive</b>, <b>LR</b> or <b>TD</b>. With adaptive, the direction is chosen from the shape of the diagram. Default is adaptive.</td>
+      </tr>
+      <tr>
+        <td><b>pr_diagram_direction_threshold</b></td>
+        <td>With <b>adaptive</b> direction, a diagram whose longest chain exceeds this many nodes is drawn top-down instead of left-to-right. Default is 5.</td>
       </tr>
       <tr>
         <td><b>auto_create_ticket</b></td>
-        <td>If set to true, this will <a href="https://qodo-merge-docs.qodo.ai/tools/pr_to_ticket/">automatically create a ticket</a> in the ticketing system when a PR is opened. Default is false.</td>
+        <td>If set to true, this will automatically create a ticket in the ticketing system when a PR is opened. Default is false.</td>
       </tr>
     </table>
-
-## Inline file summary 💎
-
-This feature enables you to copy the `changes walkthrough` table to the "Files changed" tab, so you can quickly understand the changes in each file while reviewing the code changes (diff view).
-
-To copy the `changes walkthrough` table to the "Files changed" tab, you can click on the checkbox that appears PR Description status message below the main PR Description:
-
-![Add table checkbox](https://codium.ai/images/pr_agent/add_table_checkbox.png){width=512}
-
-If you prefer to have the file summaries appear in the "Files changed" tab on every PR, change the `pr_description.inline_file_summary` parameter in the configuration file, possible values are:
-
-- `'table'`: File changes walkthrough table will be displayed on the top of the "Files changed" tab, in addition to the "Conversation" tab.
-
-![Diffview table](https://codium.ai/images/pr_agent/diffview-table.png){width=512}
-
-- `true`: A collapsible file comment with changes title and a changes summary for each file in the PR.
-
-![Diffview changes](https://codium.ai/images/pr_agent/diffview_changes.png){width=512}
-
-- `false` (`default`): File changes walkthrough will be added only to the "Conversation" tab.
-
-**Note**: that this feature is currently available only for GitHub.
 
 ## Markers template
 
@@ -214,7 +206,7 @@ becomes
 The default labels of the describe tool are quite generic, since they are meant to be used in any repo: [`Bug fix`, `Tests`, `Enhancement`, `Documentation`, `Other`].
 
 You can define custom labels that are relevant for your repo and use cases.
-Custom labels can be defined in a [configuration file](https://qodo-merge-docs.qodo.ai/tools/custom_labels/#configuration-options), or directly in the repo's [labels page](#handle-custom-labels-from-the-repos-labels-page).
+Custom labels can be defined in a configuration file, or directly in the repo's [labels page](#handle-custom-labels-from-the-repos-labels-page).
 
 Make sure to provide proper title, and a detailed and well-phrased description for each label, so the tool will know when to suggest it.
 Each label description should be a **conditional statement**, that indicates if to add the label to the PR or not, according to the PR content.
@@ -241,7 +233,7 @@ description = "use when a PR primarily contains new tests"
 ...
 ```
 
-### Handle custom labels from the Repo's labels page 💎
+### Handle custom labels from the Repo's labels page
 
 You can also control the custom labels that will be suggested by the `describe` tool from the repo's labels page:
 
@@ -267,7 +259,7 @@ The description should be comprehensive and detailed, indicating when to add the
 ## Usage Tips
 
 !!! tip "Automation"
-    - When you first install Qodo Merge app, the [default mode](../usage-guide/automations_and_usage.md#github-app) for the describe tool is:
+    - When you first install PR-Agent app, the [default mode](../usage-guide/automations_and_usage.md#github-app) for the describe tool is:
     ```
     pr_commands = ["/describe", ...]
     ```

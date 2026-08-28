@@ -1,7 +1,7 @@
 ## Overview
 
 The `help` tool provides a list of all the available tools and their descriptions.
-For Qodo Merge users, it also enables to trigger each tool by checking the relevant box.
+For PR-Agent users, it also enables to trigger each tool by checking the relevant box.
 
 It can be invoked manually by commenting on any PR:
 

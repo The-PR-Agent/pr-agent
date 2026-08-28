@@ -28,7 +28,7 @@ stages:
     pool:
       vmImage: 'ubuntu-latest'
     container:
-      image: codiumai/pr-agent:latest
+      image: pragent/pr-agent:latest
       options: --entrypoint ""
     variables:
       - group: pr_agent
@@ -53,17 +53,17 @@ stages:
       env:
         azure_devops__pat: $(azure_devops_pat)
         openai__key: $(OPENAI_KEY)
-      displayName: 'Run Qodo Merge'
+      displayName: 'Run PR-Agent'
 ```
 
-This script will run Qodo Merge on every new merge request, with the `improve`, `review`, and `describe` commands.
+This script will run PR-Agent on every new merge request, with the `improve`, `review`, and `describe` commands.
 Note that you need to export the `azure_devops__pat` and `OPENAI_KEY` variables in the Azure DevOps pipeline settings (Pipelines -> Library -> + Variable group):
 
-![Qodo Merge](https://codium.ai/images/pr_agent/azure_devops_pipeline_secrets.png){width=468}
+![PR-Agent](https://codium.ai/images/pr_agent/azure_devops_pipeline_secrets.png){width=468}
 
 Make sure to give pipeline permissions to the `pr_agent` variable group.
 
-> Note that Azure Pipelines lacks support for triggering workflows from PR comments. If you find a viable solution, please contribute it to our [issue tracker](https://github.com/Codium-ai/pr-agent/issues)
+> Note that Azure Pipelines lacks support for triggering workflows from PR comments. If you find a viable solution, please contribute it to our [issue tracker](https://github.com/the-pr-agent/pr-agent/issues)
 
 ### Azure Repos Git PR triggers and Build Validation
 

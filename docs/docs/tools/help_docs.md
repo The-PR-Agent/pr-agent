@@ -1,3 +1,13 @@
+!!! warning "`/help_docs` is currently disabled"
+    As of **v0.36.1**, the `/help_docs` command is temporarily disabled as a mitigation for a
+    credential-exposure vulnerability ([#2445](https://github.com/The-PR-Agent/pr-agent/issues/2445)):
+    the command accepted an untrusted runtime override of its git clone target, and the clone-URL
+    host validation only checked substring containment, so a host that merely *contained* the
+    allowed host could receive the git provider token.
+
+    The command is not registered in `PRAgent`, so invoking it has no effect on any provider. The
+    page below documents the tool as it behaves once it is re-enabled.
+
 ## Overview
 
 The `help_docs` tool can answer a free-text question based on a git documentation folder.
@@ -44,7 +54,7 @@ This can be useful, for example, for providing immediate feedback to users who o
 
 Here's how:
 
-1) Follow the steps depicted under [Run as a Github Action](https://qodo-merge-docs.qodo.ai/installation/github/#run-as-a-github-action) to create a new workflow, such as:`.github/workflows/help_docs.yml`:
+1) Follow the steps depicted under [Run as a Github Action](../installation/github.md#run-as-a-github-action) to create a new workflow, such as:`.github/workflows/help_docs.yml`:
 
 2) Edit your yaml file to the following:
 
@@ -79,7 +89,7 @@ jobs:
     steps:
       - name: Run PR Agent on Issues
         if: ${{ env.ISSUE_URL != '' }}
-        uses: docker://codiumai/pr-agent:latest
+        uses: docker://pragent/pr-agent:latest
         with:
           entrypoint: /bin/bash #Replace invoking cli.py directly with a shell
           args: |
@@ -100,7 +110,7 @@ When a new issue is opened, you should see a comment from `github-actions` bot w
 
 ## Configuration options
 
-Under the section `pr_help_docs`, the [configuration file](https://github.com/Codium-ai/pr-agent/blob/main/pr_agent/settings/configuration.toml#L50) contains options to customize the 'help docs' tool:
+Under the section `pr_help_docs`, the [configuration file](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml#L199) contains options to customize the 'help docs' tool:
 
 - `repo_url`: If not overwritten, will use the repo from where the context came from (issue or PR), otherwise - use the given repo as context.
 - `repo_default_branch`: The branch to use in case repo_url overwritten, otherwise - has no effect.

@@ -5,6 +5,16 @@ Your goal is to answer questions\\tasks about specific lines of code in the PR, 
 Be informative, constructive, and give examples. Try to be as specific as possible.
 Don't avoid answering the questions. You must answer the questions, as best as you can, without adding any unrelated content.
 
+{%- if extra_instructions %}
+
+
+Extra instructions from the user:
+======
+{{ extra_instructions }}
+======
+Follow the extra instructions above; they take precedence over any conflicting guidance in this prompt.
+{%- endif %}
+
 Additional guidelines:
 - When quoting variables or names from the code, use backticks (`) instead of single quote (').
 - If relevant, use bullet points.
@@ -61,6 +71,17 @@ A question about the selected lines:
 ======
 {{ question|trim }}
 ======
+
+{%- if resolve_threads %}
+
+After answering the question, determine whether the discussion thread is now fully resolved based on the conversation history and the current question. A thread is resolved when:
+- The developer confirms they have addressed the feedback (e.g. "fixed", "done", "updated")
+- The question has been fully answered with no remaining open issues
+- The concern raised in the thread is no longer applicable
+
+If the thread is resolved, end your response with the exact marker: [THREAD_RESOLVED]
+Do not include this marker if there are unresolved concerns, open questions, or the developer is still seeking clarification.
+{%- endif %}
 
 Response to the question:
 """

@@ -1,6 +1,6 @@
 ## Local repo (CLI)
 
-When running from your locally cloned Qodo Merge repo (CLI), your local configuration file will be used.
+When running from your locally cloned PR-Agent repo (CLI), your local configuration file will be used.
 Examples of invoking the different tools via the CLI:
 
 - **Review**:       `python -m pr_agent.cli --pr_url=<pr_url>  review`
@@ -9,7 +9,7 @@ Examples of invoking the different tools via the CLI:
 - **Ask**:          `python -m pr_agent.cli --pr_url=<pr_url>  ask "Write me a poem about this PR"`
 - **Update Changelog**:      `python -m pr_agent.cli --pr_url=<pr_url>  update_changelog`
 
-`<pr_url>` is the url of the relevant PR (for example: [#50](https://github.com/Codium-ai/pr-agent/pull/50)).
+`<pr_url>` is the url of the relevant PR (for example: [#50](https://github.com/the-pr-agent/pr-agent/pull/50)).
 
 **Notes:**
 
@@ -29,12 +29,12 @@ verbosity_level=2
 
 This is useful for debugging or experimenting with different tools.
 
-3. **git provider**: The [git_provider](https://github.com/Codium-ai/pr-agent/blob/main/pr_agent/settings/configuration.toml#L5) field in a configuration file determines the GIT provider that will be used by Qodo Merge. Currently, the following providers are supported:
+3. **git provider**: The [git_provider](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml#L12) field in a configuration file determines the GIT provider that will be used by PR-Agent. Currently, the following providers are supported:
 `github` **(default)**, `gitlab`, `bitbucket`, `azure`, `codecommit`, `local`, and `gitea`.
 
 ### CLI Health Check
 
-To verify that Qodo Merge has been configured correctly, you can run this health check command from the repository root:
+To verify that PR-Agent has been configured correctly, you can run this health check command from the repository root:
 
 ```bash
 python -m tests.health_test.main
@@ -52,12 +52,12 @@ At the end of the run.
 
 Before running the health check, ensure you have:
 
-- Configured your [LLM provider](https://qodo-merge-docs.qodo.ai/usage-guide/changing_a_model/)
+- Configured your [LLM provider](./changing_a_model.md)
 - Added a valid GitHub token to your configuration file
 
 ## Online usage
 
-Online usage means invoking Qodo Merge tools by [comments](https://github.com/Codium-ai/pr-agent/pull/229#issuecomment-1695021901) on a PR.
+Online usage means invoking PR-Agent tools by [comments](https://github.com/the-pr-agent/pr-agent/pull/229#issuecomment-1695021901) on a PR.
 Commands for invoking the different tools via comments:
 
 - **Review**:       `/review`
@@ -73,30 +73,30 @@ For example, if you want to edit the `review` tool configurations, you can run:
 /review --pr_reviewer.extra_instructions="..." --pr_reviewer.require_score_review=false
 ```
 
-Any configuration value in [configuration file](https://github.com/Codium-ai/pr-agent/blob/main/pr_agent/settings/configuration.toml) file can be similarly edited. Comment `/config` to see the list of available configurations.
+Any configuration value in [configuration file](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) file can be similarly edited. Comment `/config` to see the list of available configurations.
 
-## Qodo Merge Automatic Feedback
+## PR-Agent Automatic Feedback
 
 ### Disabling all automatic feedback
 
-To easily disable all automatic feedback from Qodo Merge (GitHub App, GitLab Webhook, BitBucket App, Azure DevOps Webhook), set in a configuration file:
+To easily disable all automatic feedback from PR-Agent (GitHub App, GitLab Webhook, BitBucket App, Azure DevOps Webhook), set in a configuration file:
 
 ```toml
 [config]
 disable_auto_feedback = true
 ```
 
-When this parameter is set to `true`, Qodo Merge will not run any automatic tools (like `describe`, `review`, `improve`) when a new PR is opened, or when new code is pushed to an open PR.
+When this parameter is set to `true`, PR-Agent will not run any automatic tools (like `describe`, `review`, `improve`) when a new PR is opened, or when new code is pushed to an open PR.
 
 ### GitHub App
 
-!!! note "Configurations for Qodo Merge"
-    Qodo Merge for GitHub is an App, hosted by Qodo. So all the instructions below are relevant also for Qodo Merge users.
+!!! note "Configurations for PR-Agent"
+    PR-Agent for GitHub is an App, hosted by Codium. So all the instructions below are relevant for PR-Agent users.
     Same goes for [GitLab webhook](#gitlab-webhook) and [BitBucket App](#bitbucket-app) sections.
 
 #### GitHub app automatic tools when a new PR is opened
 
-The [github_app](https://github.com/Codium-ai/pr-agent/blob/main/pr_agent/settings/configuration.toml#L220) section defines GitHub app specific configurations.
+The [github_app](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml#L223) section defines GitHub app specific configurations.
 
 The configuration parameter `pr_commands` defines the list of tools that will be **run automatically** when a new PR is opened:
 
@@ -109,11 +109,13 @@ pr_commands = [
 ]
 ```
 
-This means that when a new PR is opened/reopened or marked as ready for review, Qodo Merge will run the `describe`, `review` and `improve` tools.  
+This means that when a new PR is opened/reopened or marked as ready for review, PR-Agent will run the `describe`, `review` and `improve` tools.  
 
 **Draft PRs:** 
 
 By default, draft PRs are not considered for automatic tools, but you can change this by setting the `feedback_on_draft_pr` parameter to `true` in the configuration file.
+When enabled, marking the PR as ready does not run `pr_commands` a second time.
+Because this setting can be overridden per repository, draft PR events, including each `synchronize` event caused by a push, still fetch the repository configuration before being skipped.
 
 ```toml
 [github_app]
@@ -122,7 +124,7 @@ feedback_on_draft_pr = true
 
 **Changing default tool parameters:**
 
-You can override the default tool parameters by using one the three options for a [configuration file](https://qodo-merge-docs.qodo.ai/usage-guide/configuration_options/): **wiki**, **local**, or **global**.
+You can override the default tool parameters by using one the three options for a [configuration file](./configuration_options.md): **local**, **global**, or **external URL**.
 For example, if your configuration file contains:
 
 ```toml
@@ -147,9 +149,9 @@ pr_commands = [
 ]
 ```
 
-#### GitHub app automatic tools for push actions (commits to an open PR)
+#### Automatic tools for push actions (commits to an open PR)
 
-In addition to running automatic tools when a PR is opened, the GitHub app can also respond to new code that is pushed to an open PR.
+In addition to running automatic tools when a PR is opened, PR-Agent can also respond to new code that is pushed to an open PR. This works for both **GitHub App** and **GitHub Action** deployments.
 
 The configuration toggle `handle_push_trigger` can be used to enable this feature.
 The configuration parameter `push_commands` defines the list of tools that will be **run automatically** when new code is pushed to the PR.
@@ -163,12 +165,17 @@ push_commands = [
 ]
 ```
 
-This means that when new code is pushed to the PR, the Qodo Merge will run the `describe` and `review` tools, with the specified parameters.
+For GitHub Action, settings fall back from `github_action_config.*` to `github_app.*`, so you can set either section.
+
+This means that when new code is pushed to the PR, PR-Agent will run the `describe` and `review` tools, with the specified parameters.
 
 ### GitHub Action
 
-`GitHub Action` is a different way to trigger Qodo Merge tools, and uses a different configuration mechanism than `GitHub App`.<br>
+`GitHub Action` is a different way to trigger PR-Agent tools, and uses a different configuration mechanism than `GitHub App`.<br>
 You can configure settings for `GitHub Action` by adding environment variables under the env section in `.github/workflows/pr_agent.yml` file.
+
+!!! tip "Fork/contribution support"
+    To support PRs from forked repositories, use the `pull_request_target` event instead of `pull_request`. See the [fork contribution guide](../installation/github.md#using-with-pull_request_target-forkcontribution-support) for a complete example and security considerations.
 Specifically, start by setting the following environment variables:
 
 ```yaml
@@ -186,12 +193,23 @@ If not set, the default configuration is for all three tools to run automaticall
 
 `github_action_config.pr_actions` is used to configure which `pull_requests` events will trigger the enabled auto flags
 If not set, the default configuration is `["opened", "reopened", "ready_for_review", "review_requested"]`
+Adding `"synchronize"` to this list enables auto tools on new commits pushed to an open PR. You must also add `synchronize` to the workflow `pull_request: types:` list.
+
+`github_action_config.handle_push_trigger` controls whether synchronize events run the push commands (default `false`). Settings fall back to `github_app.*` if not set under `github_action_config`. Since it defaults to `false`, synchronize is opt-in — you must explicitly enable it by either adding `"synchronize"` to `pr_actions` or setting `handle_push_trigger = true`.
+
+`github_action_config.push_commands` defines which tools run on synchronize events when `handle_push_trigger` is enabled (fallback to `github_app.push_commands`).
+
+`github_action_config.push_trigger_ignore_merge_commits` (default `true`) skips processing when the push contains a merge commit, avoiding duplicate reviews on "Update branch" clicks.
+
+`github_action_config.push_trigger_ignore_bot_commits` (default `true`) skips processing when the push author is a bot, avoiding redundant runs on automated commits.
 
 `github_action_config.enable_output` are used to enable/disable github actions [output parameter](https://docs.github.com/en/actions/creating-actions/metadata-syntax-for-github-actions#outputs-for-docker-container-and-javascript-actions) (default is `true`).
 Review result is output as JSON to `steps.{step-id}.outputs.review` property.
-The JSON structure is equivalent to the yaml data structure defined in [pr_reviewer_prompts.toml](https://github.com/qodo-ai/pr-agent/blob/main/pr_agent/settings/pr_reviewer_prompts.toml).
+The JSON structure is equivalent to the yaml data structure defined in [pr_reviewer_prompts.toml](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/pr_reviewer_prompts.toml).
 
-Note that you can give additional config parameters by adding environment variables to `.github/workflows/pr_agent.yml`, or by using a `.pr_agent.toml` [configuration file](https://qodo-merge-docs.qodo.ai/usage-guide/configuration_options/#global-configuration-file) in the root of your repo
+`github.publish_as_check_run` controls whether tool output (review, describe, improve) is published as a GitHub Check Run instead of a PR comment (default is `false`). When enabled, results appear in the "Checks" tab of the PR. Requires `checks: write` permission in the workflow YAML.
+
+Note that you can give additional config parameters by adding environment variables to `.github/workflows/pr_agent.yml`, or by using a `.pr_agent.toml` [configuration file](./configuration_options.md#global-configuration-file) in the root of your repo
 
 For example, you can set an environment variable: `pr_description.publish_labels=false`, or add a `.pr_agent.toml` file with the following content:
 
@@ -200,7 +218,7 @@ For example, you can set an environment variable: `pr_description.publish_labels
 publish_labels = false
 ```
 
-to prevent Qodo Merge from publishing labels when running the `describe` tool.
+to prevent PR-Agent from publishing labels when running the `describe` tool.
 
 #### Enable using commands in PR
 
@@ -214,7 +232,7 @@ on:
     types: [created, edited]
 ```
 
-When this is configured, Qodo merge can be invoked by commenting on the PR.
+When this is configured, PR-Agent can be invoked by commenting on the PR.
 
 #### Quick Reference: Model Configuration in GitHub Actions
 
@@ -222,7 +240,7 @@ For detailed step-by-step examples of configuring different models (Gemini, Clau
 
 **Common Model Configuration Patterns:**
 
-- **OpenAI**: Set `config.model: "gpt-4o"` and `OPENAI_KEY`
+- **OpenAI**: Set `config.model: "gpt-5.6"` and `OPENAI_KEY`
 - **Gemini**: Set `config.model: "gemini/gemini-1.5-flash"` and `GOOGLE_AI_STUDIO.GEMINI_API_KEY` (no `OPENAI_KEY` needed)
 - **Claude**: Set `config.model: "anthropic/claude-3-opus-20240229"` and `ANTHROPIC.KEY` (no `OPENAI_KEY` needed)
 - **Azure OpenAI**: Set `OPENAI.API_TYPE: "azure"`, `OPENAI.API_BASE`, and `OPENAI.DEPLOYMENT_ID`
@@ -248,6 +266,11 @@ pr_commands = [
 ]
 ```
 
+Draft MRs are skipped by default. Set `feedback_on_draft_pr = true` under `[gitlab]` to enable automatic feedback.
+When enabled, marking the MR as ready does not run `pr_commands` a second time.
+Because this setting can be overridden per repository, draft MR events still fetch the repository configuration before being skipped.
+For environment-based deployments, set `GITLAB__FEEDBACK_ON_DRAFT_PR=true`.
+
 the GitLab webhook can also respond to new code that is pushed to an open MR.
 The configuration toggle `handle_push_trigger` can be used to enable this feature.
 The configuration parameter `push_commands` defines the list of tools that will be **run automatically** when new code is pushed to the MR.
@@ -265,7 +288,7 @@ Note that to use the 'handle_push_trigger' feature, you need to give the gitlab 
 
 ### BitBucket App
 
-Similar to GitHub app, when running Qodo Merge from BitBucket App, the default [configuration file](https://github.com/Codium-ai/pr-agent/blob/main/pr_agent/settings/configuration.toml) will be initially loaded.
+Similar to GitHub app, when running PR-Agent from BitBucket App, the default [configuration file](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) will be initially loaded.
 
 By uploading a local `.pr_agent.toml` file to the root of the repo's default branch, you can edit and customize any configuration parameter. Note that you need to upload `.pr_agent.toml` prior to creating a PR, in order for the configuration to take effect.
 
@@ -279,8 +302,8 @@ extra_instructions = "Answer in japanese"
 Each time you invoke a `/review` tool, it will use the extra instructions you set in the local configuration file.
 
 Note that among other limitations, BitBucket provides relatively low rate-limits for applications (up to 1000 requests per hour), and does not provide an API to track the actual rate-limit usage.
-If you experience a lack of responses from Qodo Merge, you might want to set: `bitbucket_app.avoid_full_files=true` in your configuration file.
-This will prevent Qodo Merge from acquiring the full file content, and will only use the diff content. This will reduce the number of requests made to BitBucket, at the cost of small decrease in accuracy, as dynamic context will not be applicable.
+If you experience a lack of responses from PR-Agent, you might want to set: `bitbucket_app.avoid_full_files=true` in your configuration file.
+This will prevent PR-Agent from acquiring the full file content, and will only use the diff content. This will reduce the number of requests made to BitBucket, at the cost of small decrease in accuracy, as dynamic context will not be applicable.
 
 #### BitBucket Self-Hosted App automatic tools
 
