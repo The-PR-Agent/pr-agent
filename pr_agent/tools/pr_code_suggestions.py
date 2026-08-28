@@ -234,7 +234,7 @@ class PRCodeSuggestions:
 
                     # publish the PR comment
                     if get_settings().pr_code_suggestions.persistent_comment: # true by default
-                        self.publish_persistent_comment_with_history(
+                        published_comment = self.publish_persistent_comment_with_history(
                             self.git_provider,
                             pr_body,
                             initial_header=format_pr_code_suggestions_header(),
@@ -246,6 +246,8 @@ class PRCodeSuggestions:
                             identity_marker=PRCodeSuggestionsIdentity.SUMMARY.value,
                             legacy_initial_header=PRCodeSuggestionsHeader.SUMMARY.value,
                         )
+                        if published_comment is self.progress_response:
+                            self.progress_response = None
                     else:
                         pr_body = add_comment_identity(
                             pr_body,
