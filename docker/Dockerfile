@@ -1,4 +1,4 @@
-FROM python:3.12.13-slim AS base
+FROM python:3.12.14-slim AS base
 
 RUN apt update && apt install --no-install-recommends -y git curl && apt-get clean && rm -rf /var/lib/apt/lists/*
 
@@ -27,7 +27,7 @@ CMD ["python", "pr_agent/servers/github_polling.py"]
 
 FROM base AS gitlab_webhook
 ADD pr_agent pr_agent
-CMD ["python", "pr_agent/servers/gitlab_webhook.py"]
+CMD ["python", "-m", "gunicorn", "-k", "uvicorn.workers.UvicornWorker", "-c", "pr_agent/servers/gunicorn_config.py", "--forwarded-allow-ips", "*", "pr_agent.servers.gitlab_webhook:app"]
 
 FROM base AS azure_devops_webhook
 ADD pr_agent pr_agent

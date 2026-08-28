@@ -53,6 +53,7 @@ class TestParseUnifiedDiff:
         # head has the new line, base has the old
         assert "x = 2" in existing.head_file
         assert "x = 1" in existing.base_file
+        assert existing.head_file_is_complete is False
         # context lines preserved in both
         assert "import os" in existing.head_file
         assert "import os" in existing.base_file
@@ -159,7 +160,7 @@ def mosaico_input():
 # ---------------------------------------------------------------------------
 
 _INCREMENTAL_ONLY_METHODS = (
-    "get_incremental_commits", "unreviewed_files_set", "previous_review", "auto_approve",
+    "get_incremental_commits", "unreviewed_files_map", "previous_review", "auto_approve",
 )
 
 

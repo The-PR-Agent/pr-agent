@@ -54,6 +54,56 @@ def test_generate_full_patch_keeps_remaining_files_when_patch_exceeds_soft_budge
         settings.config.verbosity_level = original_verbosity_level
 
 
+def test_generate_full_patch_records_files_after_hard_token_stop():
+    class HardStopTokenHandler(FakeTokenHandler):
+        def count_tokens(self, patch):
+            if "first.py" in patch:
+                return 2_000
+            return super().count_tokens(patch)
+
+    token_handler = HardStopTokenHandler(prompt_tokens=100)
+    file_dict = {
+        "first.py": {"patch": "+ first change", "tokens": 1, "edit_type": EDIT_TYPE.MODIFIED},
+        "hard_stop.py": {"patch": "+ hard stop change", "tokens": 1, "edit_type": EDIT_TYPE.MODIFIED},
+        "after_stop.py": {"patch": "+ after stop change", "tokens": 1, "edit_type": EDIT_TYPE.MODIFIED},
+    }
+
+    total_tokens, patches, remaining_files, files_in_patch = pr_processing.generate_full_patch(
+        convert_hunks_to_line_numbers=False,
+        file_dict=file_dict,
+        max_tokens_model=3_000,
+        remaining_files_list_prev=list(file_dict),
+        token_handler=token_handler,
+    )
+
+    assert total_tokens > 3_000 - pr_processing.OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD
+    assert files_in_patch == ["first.py"]
+    assert remaining_files == ["hard_stop.py", "after_stop.py"]
+    assert len(patches) == 1
+
+
+def test_generate_full_patch_records_too_large_patch_files():
+    token_handler = FakeTokenHandler(prompt_tokens=100)
+    file_dict = {
+        "included.py": {"patch": "+ included change", "tokens": 5, "edit_type": EDIT_TYPE.MODIFIED},
+        "too_large.py": {"patch": "+ too large change", "tokens": 5_000, "edit_type": EDIT_TYPE.MODIFIED},
+        "after_large.py": {"patch": "+ after large change", "tokens": 5, "edit_type": EDIT_TYPE.MODIFIED},
+    }
+
+    total_tokens, patches, remaining_files, files_in_patch = pr_processing.generate_full_patch(
+        convert_hunks_to_line_numbers=False,
+        file_dict=file_dict,
+        max_tokens_model=4_000,
+        remaining_files_list_prev=list(file_dict),
+        token_handler=token_handler,
+    )
+
+    assert total_tokens > token_handler.prompt_tokens
+    assert files_in_patch == ["included.py", "after_large.py"]
+    assert remaining_files == ["too_large.py"]
+    assert len(patches) == 2
+
+
 def test_get_all_models_uses_requested_model_type_and_string_fallbacks():
     settings = get_settings()
     original = {
@@ -131,3 +181,23 @@ def test_get_pr_multi_diffs_clips_large_patch_when_policy_is_clip(monkeypatch):
         settings.config.patch_extra_lines_after = original["patch_extra_lines_after"]
         settings.config.large_patch_policy = original["large_patch_policy"]
         settings.config.verbosity_level = original["verbosity_level"]
+
+
+def test_pr_description_reads_fall_back_when_keys_missing():
+    # Regression for "'DynaBox' object has no attribute 'enable_large_pr_handling'":
+    # custom_merge_loader replaces a section instead of merging it, so a custom
+    # .pr_agent.toml that defines [pr_description] without the large-PR keys drops
+    # their defaults. /describe must still work via .get(..., default) instead of crashing.
+    from dynaconf.utils.boxing import DynaBox
+
+    # A [pr_description] section overridden without the large-PR keys
+    pr_description = DynaBox({"publish_labels": False})
+
+    # Bare attribute access is what used to raise and abort the run
+    with pytest.raises(AttributeError):
+        _ = pr_description.enable_large_pr_handling
+
+    # Guarded reads (matching the call sites) resolve to the documented defaults
+    assert pr_description.get("enable_large_pr_handling", True) is True
+    assert pr_description.get("async_ai_calls", True) is True
+    assert pr_description.get("max_ai_calls", 4) == 4

@@ -1,18 +1,19 @@
-"""MOSAICO A2A server.
+"""MOSAICO A2A server (A2A 1.0).
 
-Mounts the A2A SDK app (POST / for message/send, GET /.well-known/agent-card.json)
-plus a GET /health route, with RawContextMiddleware on the SAME app so every request
-runs inside a starlette_context scope (MANDATORY: the executor installs a request-scoped
-deepcopy of the settings there; without the scope it raises ContextDoesNotExistError).
+Builds a plain Starlette app with A2A routes (agent-card + JSONRPC) plus a GET /health
+route, with RawContextMiddleware on the SAME app so every request runs inside a
+starlette_context scope (MANDATORY: the executor installs a request-scoped deepcopy of
+the settings there; without the scope it raises ContextDoesNotExistError).
 
 Module import side effects (so build_app works in tests): JSON logger, apply_mosaico_env(),
 provider registration, and a one-time Langfuse client construction when creds are present.
 uvicorn.run is only invoked under __main__."""
 import os
 
-from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
+from a2a.server.routes import create_agent_card_routes, create_jsonrpc_routes
 from a2a.server.tasks import InMemoryTaskStore
+from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -36,22 +37,14 @@ DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 9000
 
 
-class _HealthApp(A2AStarletteApplication):
-    """A2A app extended with a GET /health route (mirrors mosaico-base-agents/app.py)."""
-
-    def routes(self, *args, **kwargs):
-        routes = super().routes(*args, **kwargs)
-        routes.append(Route(HEALTH_PATH, self._health, methods=["GET"], name="health"))
-        return routes
-
-    async def _health(self, request: Request) -> JSONResponse:
-        health = await health_check()
-        is_healthy = health == "OK"
-        status_code = 200 if is_healthy else 503
-        content = {"is_healthy": is_healthy, "status": health}
-        if not is_healthy:
-            content["detail"] = health
-        return JSONResponse(content, status_code=status_code)
+async def _health(request: Request) -> JSONResponse:
+    health = await health_check()
+    is_healthy = health == "OK"
+    status_code = 200 if is_healthy else 503
+    content = {"is_healthy": is_healthy, "status": health}
+    if not is_healthy:
+        content["detail"] = health
+    return JSONResponse(content, status_code=status_code)
 
 
 def _configure_runtime() -> None:
@@ -83,14 +76,20 @@ def _configure_langfuse() -> None:
 
 
 def build_app():
-    """Build the Starlette app: A2A routes + /health, with RawContextMiddleware mounted
-    on the SAME app. build(**kwargs) forwards to Starlette(**kwargs) (a2a-sdk 0.3.26)."""
+    """Build the Starlette app: A2A card + JSONRPC routes + /health, with
+    RawContextMiddleware on the same app (A2A 1.0)."""
+    card = build_agent_card()
     handler = DefaultRequestHandler(
         agent_executor=PRAgentExecutor(),
         task_store=InMemoryTaskStore(),
+        agent_card=card,
     )
-    sdk_app = _HealthApp(agent_card=build_agent_card(), http_handler=handler)
-    return sdk_app.build(middleware=[Middleware(RawContextMiddleware)])
+    routes = [
+        *create_agent_card_routes(card),          # GET /.well-known/agent-card.json
+        *create_jsonrpc_routes(handler, rpc_url="/"),
+        Route(HEALTH_PATH, _health, methods=["GET"]),
+    ]
+    return Starlette(routes=routes, middleware=[Middleware(RawContextMiddleware)])
 
 
 def start() -> None:

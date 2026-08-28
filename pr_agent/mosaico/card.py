@@ -1,12 +1,17 @@
 """Builds the MOSAICO A2A agent card for pr-agent.
 
-Mirrors docstring-agent/__main__.py:36-68. The observability extension is advertised
-as required=True; streaming is advertised as False (load-bearing: the reference agent
-selects message/send vs message/stream from capabilities.streaming)."""
+The observability extension is advertised as required=True because the AISP spec says so
+("AISP-specific extension: observability metadata ... Required: true" in the demonstrator's
+docs/agent-requirements.md). Do NOT relax it to match the peer agents: docstring-agent
+advertises required=False, ip-solution-agent and mini-swe-agent omit the flag entirely, and
+the reference agent's own card omits it too, but they are the ones out of spec.
+
+Streaming is advertised as False, which is load-bearing: the reference agent selects
+message/send vs message/stream from capabilities.streaming."""
 import os
 
 from a2a.types import (AgentCapabilities, AgentCard, AgentExtension,
-                       AgentSkill)
+                       AgentInterface, AgentSkill)
 
 from pr_agent.algo.utils import get_version
 
@@ -16,10 +21,14 @@ AGENT_NAME = "PR-Agent Solution Agent"
 DEFAULT_PORT = 9000
 
 
-def _card_url() -> str:
+def _jsonrpc_interface() -> AgentInterface:
     host = os.getenv("AGENT_CARD_HOST") or "localhost"
     port = os.getenv("AGENT_CARD_PORT") or os.getenv("PORT") or str(DEFAULT_PORT)
-    return f"http://{host}:{port}/"
+    return AgentInterface(
+        protocol_binding="JSONRPC",
+        protocol_version="1.0",
+        url=f"http://{host}:{port}/",
+    )
 
 
 def _build_skills() -> list:
@@ -80,8 +89,8 @@ def build_agent_card() -> AgentCard:
                     "suggestions, a generated PR title and description, and answers to questions "
                     "about that specific pull request or diff. Every action is anchored to a "
                     "concrete pull request or git diff supplied in the request.",
-        url=_card_url(),
         version=get_version(),
+        supported_interfaces=[_jsonrpc_interface()],
         default_input_modes=["text", "text/plain"],
         default_output_modes=["text", "text/plain", "text/markdown"],
         capabilities=AgentCapabilities(

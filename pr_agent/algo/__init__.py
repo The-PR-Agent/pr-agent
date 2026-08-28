@@ -51,6 +51,10 @@ MAX_TOKENS = {
     'gpt-5.4-nano-2026-03-17': 400000,  # 400K, but may be limited by config.max_model_tokens
     'gpt-5.5': 1050000,  # 1.05M, but may be limited by config.max_model_tokens
     'gpt-5.5-2026-04-23': 1050000,  # 1.05M, but may be limited by config.max_model_tokens
+    'gpt-5.6': 1050000,  # 1.05M, but may be limited by config.max_model_tokens
+    'gpt-5.6-sol': 1050000,  # 1.05M, but may be limited by config.max_model_tokens
+    'gpt-5.6-terra': 1050000,  # 1.05M, but may be limited by config.max_model_tokens
+    'gpt-5.6-luna': 1050000,  # 1.05M, but may be limited by config.max_model_tokens
     'o1-mini': 128000,  # 128K, but may be limited by config.max_model_tokens
     'o1-mini-2024-09-12': 128000,  # 128K, but may be limited by config.max_model_tokens
     'o1-preview': 128000,  # 128K, but may be limited by config.max_model_tokens
@@ -68,6 +72,10 @@ MAX_TOKENS = {
     'command-nightly': 4096,
     'deepseek/deepseek-chat': 128000,  # 128K, but may be limited by config.max_model_tokens
     'deepseek/deepseek-reasoner': 64000,  # 64K, but may be limited by config.max_model_tokens
+    'deepseek/deepseek-v4-pro': 1000000,  # 1M, but may be limited by config.max_model_tokens
+    'deepseek/deepseek-v4-flash': 1000000,  # 1M, but may be limited by config.max_model_tokens
+    'zai/glm-5.2': 200000,  # 200K, matching the Z.AI GLM-5/5.1 lineage, but may be limited by config.max_model_tokens
+    'moonshot/kimi-k3': 262144,  # 256K, matching the Moonshot Kimi-k2.5/k2.6 lineage, but may be limited by config.max_model_tokens
     'openai/qwq-plus': 131072,  # 131K context length, but may be limited by config.max_model_tokens
     'replicate/llama-2-70b-chat:2c1608e18606fad2812020dc541930f2d0495ce32eee50074220b87300bc16e1': 4096,
     'meta-llama/Llama-2-7b-chat-hf': 4096,
@@ -84,12 +92,15 @@ MAX_TOKENS = {
     'vertex_ai/claude-opus-4-6@20260120': 200000,
     'vertex_ai/claude-opus-4-6': 200000,
     'vertex_ai/claude-opus-4-7': 1000000,
+    'vertex_ai/claude-opus-4-8': 1000000,
+    'vertex_ai/claude-opus-5': 1000000,
     'vertex_ai/claude-3-5-sonnet@20240620': 100000,
     'vertex_ai/claude-3-5-sonnet-v2@20241022': 100000,
     'vertex_ai/claude-3-7-sonnet@20250219': 200000,
     'vertex_ai/claude-sonnet-4@20250514': 200000,
     'vertex_ai/claude-sonnet-4-5@20250929': 200000,
     'vertex_ai/claude-sonnet-4-6': 200000,
+    'vertex_ai/claude-sonnet-5': 1000000,
     'vertex_ai/gemini-1.5-pro': 1048576,
     'vertex_ai/gemini-2.5-pro-preview-03-25': 1048576,
     'vertex_ai/gemini-2.5-pro-preview-05-06': 1048576,
@@ -102,8 +113,15 @@ MAX_TOKENS = {
     'vertex_ai/gemini-2.5-flash': 1048576,
     'vertex_ai/gemini-3-flash-preview': 1048576,
     'vertex_ai/gemini-3-pro-preview': 1048576,
+    'vertex_ai/gemini-3.1-flash': 1048576,
+    'vertex_ai/gemini-3.1-pro': 1048576,
     'vertex_ai/gemini-3.1-flash-lite-preview': 1048576,
     'vertex_ai/gemini-3.1-pro-preview': 1048576,
+    'vertex_ai/gemini-3.5-flash': 1048576,
+    'vertex_ai/gemini-3.5-flash-lite': 1048576,
+    'vertex_ai/gemini-3.5-pro': 1048576,
+    'vertex_ai/gemini-3.6-flash': 1048576,
+    'vertex_ai/gemini-3.7-flash': 1048576,
     'vertex_ai/gemma2': 8200,
     'gemini/gemini-1.5-pro': 1048576,
     'gemini/gemini-1.5-flash': 1048576,
@@ -117,8 +135,15 @@ MAX_TOKENS = {
     'gemini/gemini-2.5-pro': 1048576,
     'gemini/gemini-3-flash-preview': 1048576,
     'gemini/gemini-3-pro-preview': 1048576,
+    'gemini/gemini-3.1-flash': 1048576,
+    'gemini/gemini-3.1-pro': 1048576,
     'gemini/gemini-3.1-flash-lite-preview': 1048576,
     'gemini/gemini-3.1-pro-preview': 1048576,
+    'gemini/gemini-3.5-flash': 1048576,
+    'gemini/gemini-3.5-flash-lite': 1048576,
+    'gemini/gemini-3.5-pro': 1048576,
+    'gemini/gemini-3.6-flash': 1048576,
+    'gemini/gemini-3.7-flash': 1048576,
     'codechat-bison': 6144,
     'codechat-bison-32k': 32000,
     'anthropic.claude-instant-v1': 100000,
@@ -131,19 +156,25 @@ MAX_TOKENS = {
     'anthropic/claude-opus-4-6': 200000,
     'anthropic/claude-opus-4-6-20260120': 200000,
     'anthropic/claude-opus-4-7': 1000000,
+    'anthropic/claude-opus-4-8': 1000000,
+    'anthropic/claude-opus-5': 1000000,
     'anthropic/claude-3-5-sonnet-20240620': 100000,
     'anthropic/claude-3-5-sonnet-20241022': 100000,
     'anthropic/claude-3-7-sonnet-20250219': 200000,
     'anthropic/claude-sonnet-4-20250514': 200000,
     'anthropic/claude-sonnet-4-5-20250929': 200000,
     'anthropic/claude-sonnet-4-6': 200000,
+    'anthropic/claude-sonnet-5': 1000000,
     'claude-opus-4-1-20250805': 200000,
     'claude-opus-4-5-20251101': 200000,
     'claude-opus-4-6': 200000,
     'claude-opus-4-6-20260120': 200000,
     'claude-opus-4-7': 1000000,
+    'claude-opus-4-8': 1000000,
+    'claude-opus-5': 1000000,
     'claude-3-7-sonnet-20250219': 200000,
     'claude-sonnet-4-6': 200000,
+    'claude-sonnet-5': 1000000,
     'anthropic/claude-3-5-haiku-20241022': 100000,
     'anthropic/claude-haiku-4-5-20251001': 200000,
     'claude-haiku-4-5-20251001': 200000,
@@ -156,6 +187,9 @@ MAX_TOKENS = {
     'bedrock/anthropic.claude-opus-4-6-20260120-v1:0': 200000,
     'bedrock/anthropic.claude-opus-4-6-v1:0': 200000,
     'bedrock/anthropic.claude-opus-4-7': 1000000,
+    'bedrock/anthropic.claude-opus-4-7-v1:0': 1000000,
+    'bedrock/anthropic.claude-opus-4-8': 1000000,
+    'bedrock/anthropic.claude-opus-5': 1000000,
     'bedrock/anthropic.claude-3-haiku-20240307-v1:0': 100000,
     'bedrock/anthropic.claude-3-5-haiku-20241022-v1:0': 100000,
     'bedrock/anthropic.claude-haiku-4-5-20251001-v1:0': 200000,
@@ -166,6 +200,7 @@ MAX_TOKENS = {
     'bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0': 200000,
     'bedrock/anthropic.claude-sonnet-4-6': 200000,
     'bedrock/anthropic.claude-sonnet-4-6-v1:0': 200000,
+    'bedrock/anthropic.claude-sonnet-5': 1000000,
     'bedrock/anthropic.claude-opus-4-5-20251101-v1:0': 200000,
     "bedrock/us.anthropic.claude-opus-4-20250514-v1:0": 200000,
     "bedrock/us.anthropic.claude-opus-4-1-20250805-v1:0": 200000,
@@ -184,6 +219,16 @@ MAX_TOKENS = {
     "bedrock/us.anthropic.claude-opus-4-6-v1:0": 200000,
     "bedrock/global.anthropic.claude-opus-4-7": 1000000,
     "bedrock/us.anthropic.claude-opus-4-7": 1000000,
+    "bedrock/global.anthropic.claude-opus-4-8": 1000000,
+    "bedrock/us.anthropic.claude-opus-4-8": 1000000,
+    "bedrock/global.anthropic.claude-opus-5": 1000000,
+    "bedrock/us.anthropic.claude-opus-5": 1000000,
+    "bedrock/eu.anthropic.claude-opus-5": 1000000,
+    "bedrock/au.anthropic.claude-opus-5": 1000000,
+    "bedrock/jp.anthropic.claude-opus-5": 1000000,
+    "bedrock/eu.anthropic.claude-opus-4-8": 1000000,
+    "bedrock/au.anthropic.claude-opus-4-8": 1000000,
+    "bedrock/jp.anthropic.claude-opus-4-8": 1000000,
     "bedrock/us.anthropic.claude-3-5-sonnet-20241022-v2:0": 100000,
     "bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0": 200000,
     "bedrock/eu.anthropic.claude-haiku-4-5-20251001-v1:0": 200000,
@@ -214,18 +259,26 @@ MAX_TOKENS = {
     "bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0": 200000,
     "bedrock/global.anthropic.claude-sonnet-4-6": 200000,
     "bedrock/global.anthropic.claude-sonnet-4-6-v1:0": 200000,
+    "bedrock/us.anthropic.claude-sonnet-5": 1000000,
+    "bedrock/au.anthropic.claude-sonnet-5": 1000000,
+    "bedrock/eu.anthropic.claude-sonnet-5": 1000000,
+    "bedrock/jp.anthropic.claude-sonnet-5": 1000000,
+    "bedrock/global.anthropic.claude-sonnet-5": 1000000,
     'claude-3-5-sonnet': 100000,
     'bedrock/us.meta.llama4-scout-17b-instruct-v1:0': 128000,
     'bedrock/us.meta.llama4-maverick-17b-instruct-v1:0': 128000,
+    "bedrock_mantle/xai.grok-4.3": 1000000,  # 1M context, but may be limited by config.max_model_tokens
     'groq/openai/gpt-oss-120b': 131072,
     'groq/openai/gpt-oss-20b': 131072,
     'groq/qwen/qwen3-32b': 131000,
+    'dashscope/qwen3.8-max': 1000000,  # 1M, qwen3.8-max is the actual DashScope model id (context_window 1M per QwenCode metadata), but may be limited by config.max_model_tokens
     'groq/moonshotai/kimi-k2-instruct': 131072,
     'groq/deepseek-r1-distill-llama-70b': 128000,
     'groq/meta-llama/llama-4-maverick-17b-128e-instruct': 131072,
     'groq/meta-llama/llama-4-scout-17b-16e-instruct': 131072,
     'groq/llama-3.3-70b-versatile': 128000,
     'groq/llama-3.1-8b-instant': 128000,
+    'sambanova/MiniMax-M3': 192000,
     'sambanova/MiniMax-M2.7': 192000,
     'sambanova/MiniMax-M2.5': 160000,
     'sambanova/Meta-Llama-3.3-70B-Instruct': 128000,
@@ -266,6 +319,8 @@ MAX_TOKENS = {
     "mistral/codestral-mamba-latest": 256000,
     "codestral/codestral-latest": 8191,
     "codestral/codestral-2405": 8191,
+    'xiaomi_mimo/mimo-v2.5': 1048576,  # 1M, matching the LiteLLM registry for mimo-v2.5, xiaomi_mimo/ is the native LiteLLM Xiaomi provider, but may be limited by config.max_model_tokens
+    'xiaomi_mimo/mimo-v2.5-pro': 1048576,  # 1M, matching the LiteLLM registry for mimo-v2.5-pro, but may be limited by config.max_model_tokens
 }
 
 USER_MESSAGE_ONLY_MODELS = [
@@ -292,7 +347,44 @@ NO_SUPPORT_TEMPERATURE_MODELS = [
     "gpt-5.1-codex-mini",
     "gpt-5.2-codex",
     "gpt-5.3-codex",
-    "gpt-5-mini"
+    "gpt-5-mini",
+    # Anthropic Claude Opus 4-7 — temperature is deprecated (Issue #2400), (Issue #2449)
+    "claude-opus-4-7",
+    "anthropic/claude-opus-4-7",
+    "claude-opus-4-8",
+    "anthropic/claude-opus-4-8",
+    "vertex_ai/claude-opus-4-8",
+    "bedrock/anthropic.claude-opus-4-8",
+    "bedrock/global.anthropic.claude-opus-4-8",
+    "bedrock/us.anthropic.claude-opus-4-8",
+    "bedrock/eu.anthropic.claude-opus-4-8",
+    "bedrock/au.anthropic.claude-opus-4-8",
+    "bedrock/jp.anthropic.claude-opus-4-8",
+    "claude-opus-5",
+    "anthropic/claude-opus-5",
+    "vertex_ai/claude-opus-5",
+    "bedrock/anthropic.claude-opus-5",
+    "bedrock/global.anthropic.claude-opus-5",
+    "bedrock/us.anthropic.claude-opus-5",
+    "bedrock/eu.anthropic.claude-opus-5",
+    "bedrock/au.anthropic.claude-opus-5",
+    "bedrock/jp.anthropic.claude-opus-5",
+    "claude-fable-5",
+    "anthropic/claude-fable-5",
+    "claude-sonnet-5",
+    "anthropic/claude-sonnet-5",
+    "vertex_ai/claude-sonnet-5",
+    "bedrock/anthropic.claude-sonnet-5",
+    "bedrock/global.anthropic.claude-sonnet-5",
+    "bedrock/us.anthropic.claude-sonnet-5",
+    "bedrock/au.anthropic.claude-sonnet-5",
+    "bedrock/eu.anthropic.claude-sonnet-5",
+    "bedrock/jp.anthropic.claude-sonnet-5",
+    "vertex_ai/claude-opus-4-7",
+    "bedrock/anthropic.claude-opus-4-7",
+    "bedrock/anthropic.claude-opus-4-7-v1:0",
+    "bedrock/us.anthropic.claude-opus-4-7",
+    "bedrock/global.anthropic.claude-opus-4-7",
 ]
 
 SUPPORT_REASONING_EFFORT_MODELS = [
@@ -302,11 +394,71 @@ SUPPORT_REASONING_EFFORT_MODELS = [
     "o3-2025-04-16",
     "o4-mini",
     "o4-mini-2025-04-16",
+    # Gemini 2.5 exposes a thinking budget controlled by reasoning_effort. Without
+    # these entries a configured effort is silently dropped, so a runaway thinking
+    # trace can consume the whole output budget and return an empty completion.
+    # LiteLLM maps native provider paths to thinkingConfig.thinkingBudget, while
+    # LiteLLMAIHandler routes OpenRouter-prefixed forms through extra_body.reasoning.
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
 ]
 
+# Claude models that support "extended thinking" through the manual
+# thinking={"type": "enabled", "budget_tokens": ...} request built by
+# LiteLLMAIHandler._configure_claude_extended_thinking(). Only models that
+# accept budget_tokens belong here. Adaptive-only models (Claude Opus 4.7/4.8,
+# Opus 5, Sonnet 5, Fable 5) reject budget_tokens with an HTTP 400 and must not be added
+# without also adding an adaptive-thinking code path. This list is the built-in
+# default; it can be replaced via the `claude_extended_thinking_models_override`
+# configuration option.
 CLAUDE_EXTENDED_THINKING_MODELS = [
     "anthropic/claude-3-7-sonnet-20250219",
-    "claude-3-7-sonnet-20250219"
+    "claude-3-7-sonnet-20250219",
+    "anthropic/claude-sonnet-4-6",
+    "claude-sonnet-4-6",
+    "vertex_ai/claude-sonnet-4-6",
+    "bedrock/anthropic.claude-sonnet-4-6",
+    "bedrock/us.anthropic.claude-sonnet-4-6",
+    "bedrock/au.anthropic.claude-sonnet-4-6",
+    "bedrock/eu.anthropic.claude-sonnet-4-6",
+    "bedrock/jp.anthropic.claude-sonnet-4-6",
+    "bedrock/global.anthropic.claude-sonnet-4-6",
+    "anthropic/claude-sonnet-4-5-20250929",
+    "claude-sonnet-4-5-20250929",
+    "vertex_ai/claude-sonnet-4-5@20250929",
+    "bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "bedrock/au.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "bedrock/eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "bedrock/jp.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "anthropic/claude-opus-4-5-20251101",
+    "claude-opus-4-5-20251101",
+    "vertex_ai/claude-opus-4-5@20251101",
+    "bedrock/anthropic.claude-opus-4-5-20251101-v1:0",
+    "bedrock/us.anthropic.claude-opus-4-5-20251101-v1:0",
+    "bedrock/au.anthropic.claude-opus-4-5-20251101-v1:0",
+    "bedrock/eu.anthropic.claude-opus-4-5-20251101-v1:0",
+    "bedrock/jp.anthropic.claude-opus-4-5-20251101-v1:0",
+    "bedrock/global.anthropic.claude-opus-4-5-20251101-v1:0",
+    "anthropic/claude-opus-4-6",
+    "claude-opus-4-6",
+    "vertex_ai/claude-opus-4-6",
+    "bedrock/anthropic.claude-opus-4-6-v1:0",
+    "bedrock/us.anthropic.claude-opus-4-6-v1:0",
+    "bedrock/au.anthropic.claude-opus-4-6-v1:0",
+    "bedrock/eu.anthropic.claude-opus-4-6-v1:0",
+    "bedrock/jp.anthropic.claude-opus-4-6-v1:0",
+    "bedrock/global.anthropic.claude-opus-4-6-v1:0",
+    "anthropic/claude-haiku-4-5-20251001",
+    "claude-haiku-4-5-20251001",
+    "vertex_ai/claude-haiku-4-5@20251001",
+    "bedrock/anthropic.claude-haiku-4-5-20251001-v1:0",
+    "bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "bedrock/au.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "bedrock/eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "bedrock/jp.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0",
 ]
 
 # Models that require streaming mode

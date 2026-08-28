@@ -100,6 +100,7 @@ def parse_unified_diff(diff_text: str) -> List[FilePatchInfo]:
             filename=filename,
             edit_type=edit_type,
             old_filename=old_filename,
+            head_file_is_complete=False,
         ))
     return files
 
