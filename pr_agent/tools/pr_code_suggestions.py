@@ -253,6 +253,7 @@ class PRCodeSuggestions:
                         )
                         if self.progress_response:
                             self.git_provider.edit_comment(self.progress_response, body=pr_body)
+                            self.progress_response = None
                         else:
                             self.git_provider.publish_comment(pr_body)
 
@@ -270,6 +271,16 @@ class PRCodeSuggestions:
                 return
         except asyncio.CancelledError:
             if self.progress_response is not None:
+                try:
+                    self.git_provider.edit_comment(
+                        self.progress_response,
+                        "Code suggestions generation cancelled.",
+                    )
+                except Exception as cleanup_error:
+                    get_logger().exception(
+                        f"Failed to update code suggestions progress comment after cancellation, "
+                        f"error: {cleanup_error}"
+                    )
                 try:
                     self.git_provider.remove_comment(self.progress_response)
                 except Exception as cleanup_error:
