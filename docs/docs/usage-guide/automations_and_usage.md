@@ -286,6 +286,22 @@ push_commands = [
 
 Note that to use the 'handle_push_trigger' feature, you need to give the gitlab webhook also the "Push events" scope.
 
+The GitLab webhook can also respond to the bot being assigned as a reviewer on an open MR.
+The configuration toggle `handle_reviewer_assignment` can be used to enable this feature.
+The configuration parameter `reviewer_commands` defines the list of tools that will be **run automatically** when the bot is added to the MR's reviewers.
+
+```toml
+[gitlab]
+handle_reviewer_assignment = true
+reviewer_commands = [
+    "/review",
+]
+```
+
+The commands run only when the bot is newly added to the reviewer list, so re-saving an MR without changing its reviewers does not run them again.
+The bot is identified by the user behind `gitlab.personal_access_token`, which must therefore be set for this feature to work.
+Draft MRs and MRs matching the [ignore settings](additional_configurations.md#ignoring-automatic-commands-in-prs) are skipped.
+
 ### BitBucket App
 
 Similar to GitHub app, when running PR-Agent from BitBucket App, the default [configuration file](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) will be initially loaded.
