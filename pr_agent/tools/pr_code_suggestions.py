@@ -376,9 +376,9 @@ class PRCodeSuggestions:
                                                 only_fold=False,
                                                 identity_marker: str | None = None,
                                                 legacy_initial_header: str | None = None):
-        def _clean_up_progress_note():
+        def _clean_up_progress_note() -> bool:
             if not progress_response:
-                return
+                return True
             try:
                 git_provider.edit_comment(
                     progress_response,
@@ -390,11 +390,12 @@ class PRCodeSuggestions:
                     "Failed to clean up progress note after persistent update, "
                     f"leaving it in place: {cleanup_error}"
                 )
+                return False
+            return True
 
         if hasattr(git_provider, '_publish_check_run') and get_settings().github.publish_as_check_run:
             if git_provider._publish_check_run(pr_comment, name):
-                _clean_up_progress_note()
-                return progress_response
+                return progress_response if _clean_up_progress_note() else None
 
         def _extract_link(comment_text: str):
             match = re.search(r"<!--\s*([0-9a-fA-F]{7,40})\s*-->", comment_text)
