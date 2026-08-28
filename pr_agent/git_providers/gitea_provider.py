@@ -396,7 +396,7 @@ class GiteaProvider(GitProvider):
         self.publish_inline_comments([payload])
 
 
-    def publish_inline_comments(self, comments: List[Dict[str, Any]],body : str = "Inline comment") -> None:
+    def publish_inline_comments(self, comments: List[Dict[str, Any]],body : str = "Inline comment") -> bool:
         response = self.repo_api.create_inline_comment(
             owner=self.owner,
             repo=self.repo,
@@ -408,12 +408,14 @@ class GiteaProvider(GitProvider):
 
         if not response:
             self.logger.error("Failed to publish inline comment")
-            return
+            return False
 
         self.logger.info("Inline comment published")
+        return True
 
-    def publish_code_suggestions(self, suggestions: List[Dict[str, Any]]):
+    def publish_code_suggestions(self, suggestions: List[Dict[str, Any]]) -> bool:
         """Publish code suggestions"""
+        all_successful = True
         for suggestion in suggestions:
             body = suggestion.get("body","")
             if not body:
@@ -427,9 +429,11 @@ class GiteaProvider(GitProvider):
             payload = dict(body=body, path=path, old_position=old_position,new_position = new_position)
             if title_body:
                 title_body = f"**Suggestion:** {title_body}"
-                self.publish_inline_comments([payload],title_body)
+                all_successful &= self.publish_inline_comments([payload],title_body)
             else:
-                self.publish_inline_comments([payload])
+                all_successful &= self.publish_inline_comments([payload])
+        return all_successful
+
 
     def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
         """Add eyes reaction to a comment"""
@@ -881,6 +885,12 @@ class RepoApi(giteapy.RepositoryApi):
             "body": body,
             "comments": comments,
             "commit_id": commit_id,
+            # Gitea/Forgejo defaults an event-less review to a draft (state
+            # PENDING), invisible to everyone but the review's author until
+            # someone manually submits it from the web UI. There is no such
+            # "submit" step in this flow, so the review must be submitted as
+            # a real event up front.
+            "event": "COMMENT",
         }
         return self.api_client.call_api(
             '/repos/{owner}/{repo}/pulls/{pr_number}/reviews',

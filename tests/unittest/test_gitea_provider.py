@@ -796,3 +796,80 @@ class TestGiteaProviderUrlParsing:
         assert provider._parse_issue_url("https://gitea.example.com/owner/repo/issues/5") == ("owner", "repo", 5)
         assert provider._parse_issue_url(
             "https://gitea.example.com/api/v1/repos/owner/repo/issues/5") == ("owner", "repo", 5)
+
+
+class TestGiteaProviderInlineCommentStatus:
+    """Regression tests for the ``/improve`` inline-comment path:
+
+    1. ``publish_inline_comments``/``publish_code_suggestions`` never reported
+       success or failure, so ``PRCodeSuggestions.push_inline_code_suggestions``
+       always treated the call as failed and republished every suggestion a
+       second time, duplicating each one.
+    2. ``RepoApi.create_inline_comment`` posted to ``pulls/{id}/reviews``
+       without an ``event``, which Gitea/Forgejo defaults to a draft review
+       (state ``PENDING``) invisible to everyone but its author - there is no
+       later step in this flow that submits it.
+    """
+
+    @staticmethod
+    def _provider(create_inline_comment_result=True):
+        provider = GiteaProvider.__new__(GiteaProvider)
+        provider.logger = MagicMock()
+        provider.owner = "owner"
+        provider.repo = "repo"
+        provider.pr_number = 4
+        provider.enabled_pr = True
+        provider.last_commit = MagicMock(sha="head-sha")
+        provider.diff_files = []
+        provider.repo_api = MagicMock()
+        provider.repo_api.create_inline_comment.return_value = (
+            MagicMock() if create_inline_comment_result else None
+        )
+        return provider
+
+    def test_publish_inline_comments_reports_success(self):
+        provider = self._provider(create_inline_comment_result=True)
+
+        assert provider.publish_inline_comments([{"path": "a.py", "body": "x"}]) is True
+
+    def test_publish_inline_comments_reports_failure(self):
+        provider = self._provider(create_inline_comment_result=False)
+
+        assert provider.publish_inline_comments([{"path": "a.py", "body": "x"}]) is False
+
+    def test_publish_code_suggestions_does_not_republish_on_success(self):
+        # Before the fix, a truthy result here was still treated as failure by
+        # PRCodeSuggestions.push_inline_code_suggestions, which republished
+        # every suggestion a second time.
+        provider = self._provider(create_inline_comment_result=True)
+        suggestions = [{"body": "**Suggestion:** fix it", "relevant_file": "a.py",
+                        "relevant_lines_start": 3}]
+
+        result = provider.publish_code_suggestions(suggestions)
+
+        assert result is True
+        assert provider.repo_api.create_inline_comment.call_count == 1
+
+    def test_publish_code_suggestions_reports_failure(self):
+        provider = self._provider(create_inline_comment_result=False)
+        suggestions = [{"body": "**Suggestion:** fix it", "relevant_file": "a.py",
+                        "relevant_lines_start": 3}]
+
+        assert provider.publish_code_suggestions(suggestions) is False
+
+    @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
+    def test_create_inline_comment_submits_as_comment_not_pending(self, mock_api_client_cls):
+        from pr_agent.git_providers.gitea_provider import RepoApi
+
+        client = mock_api_client_cls.return_value
+        client.call_api.return_value = MagicMock()
+        repo_api = RepoApi(client)
+
+        repo_api.create_inline_comment(
+            owner="owner", repo="repo", pr_number=4,
+            body="Inline comment", commit_id="head-sha",
+            comments=[{"path": "a.py", "body": "x"}],
+        )
+
+        _, kwargs = client.call_api.call_args
+        assert kwargs["body"]["event"] == "COMMENT"
