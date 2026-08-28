@@ -1091,9 +1091,10 @@ def try_fix_yaml(response_text: str,
     if modified:
         try:
             data = yaml.safe_load('\n'.join(response_text_lines_copy))
-            get_logger().info("Successfully parsed AI prediction after normalizing diff removal markers")
-            return data
-        except:
+            if data is not None:
+                get_logger().info("Successfully parsed AI prediction after normalizing diff removal markers")
+                return data
+        except Exception:
             pass
 
 

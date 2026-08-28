@@ -307,3 +307,16 @@ code_suggestions:
             assert any("Failed to parse AI prediction after fallbacks" in m for m in captured)
         finally:
             get_logger().remove(sink_id)
+
+    def test_diff_marker_fallback_does_not_log_success_on_none(self):
+        # This input reaches the diff-marker fallback and still parses to None, unlike the
+        # '\x08\x08\x08' case above, which never enters that branch at all.
+        captured = []
+        sink_id = get_logger().add(lambda msg: captured.append(msg), level="INFO")
+        try:
+            result = load_yaml('-\n-#x')
+            assert result is None
+            assert not any("normalizing diff removal markers" in m for m in captured)
+            assert any("Failed to parse AI prediction after fallbacks" in m for m in captured)
+        finally:
+            get_logger().remove(sink_id)
