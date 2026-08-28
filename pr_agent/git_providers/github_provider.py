@@ -775,14 +775,25 @@ class GithubProvider(GitProvider):
 
         # try to publish one by one the invalid comments as a one-line code comment
         if invalid_comments and get_settings().github.try_fix_invalid_inline_comments:
-            fixed_comments_as_one_liner = self._try_fix_invalid_inline_comments(
-                [comment for comment, _ in invalid_comments])
+            invalid_comments_list = [comment for comment, _ in invalid_comments]
+            fixed_comments_as_one_liner = self._try_fix_invalid_inline_comments(invalid_comments_list)
             for comment in fixed_comments_as_one_liner:
                 try:
                     self.publish_inline_comments([comment], disable_fallback=True)
                     get_logger().info(f"Published invalid comment as a single line comment: {comment}")
                 except:
                     get_logger().error(f"Failed to publish invalid comment as a single line comment: {comment}")
+            
+            dropped_count = len(invalid_comments) - len(fixed_comments_as_one_liner)
+            if dropped_count > 0:
+                dropped_paths = [
+                    c.get("path") for c, _ in invalid_comments 
+                    if not ("```suggestion" in c.get("body", "") or "start_line" in c or "start_side" in c)
+                ]
+                get_logger().warning(f"Dropped {dropped_count} invalid comments that could not be fixed. Paths: {dropped_paths}")
+        elif invalid_comments:
+            dropped_paths = [c.get("path") for c, _ in invalid_comments]
+            get_logger().warning(f"Dropped {len(invalid_comments)} invalid comments (try_fix_invalid_inline_comments is off). Paths: {dropped_paths}")
 
     def _verify_code_comment(self, comment: dict):
         is_verified = False
