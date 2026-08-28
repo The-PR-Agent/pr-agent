@@ -8,13 +8,10 @@ from jinja2 import Environment, StrictUndefined
 from starlette_context import request_cycle_context
 
 from pr_agent.algo import skills_loader
-from pr_agent.algo.skills_loader import (
-    Skill,
-    _parse_skill_file,
-    discover_skills,
-    format_skills_context,
-    get_skills_context,
-)
+from pr_agent.algo.skills_loader import (Skill, _parse_skill_file,
+                                         discover_skills,
+                                         format_skills_context,
+                                         get_skills_context)
 
 
 def _write_skill(directory: Path, name: str, body: str = "Body content."):

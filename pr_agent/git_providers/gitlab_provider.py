@@ -22,9 +22,8 @@ from ..algo.inline_comment_dedup import (body_fingerprint, body_with_markers,
                                          is_agent_inline_comment,
                                          marker_fingerprints)
 from ..algo.language_handler import is_valid_file
-from ..algo.utils import (PRCodeSuggestionsHeader,
-                          PRCodeSuggestionsIdentity, clip_tokens,
-                          comment_matches_any_identity,
+from ..algo.utils import (PRCodeSuggestionsHeader, PRCodeSuggestionsIdentity,
+                          clip_tokens, comment_matches_any_identity,
                           find_line_number_of_relevant_line_in_file,
                           get_pr_review_comment_identifiers, load_large_diff)
 from ..config_loader import get_settings

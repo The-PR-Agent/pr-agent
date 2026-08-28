@@ -6,8 +6,7 @@ import requests
 
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger, setup_logger
-from tests.e2e_tests.e2e_utils import (FILE_PATH,
-                                       NEW_FILE_CONTENT, NUM_MINUTES)
+from tests.e2e_tests.e2e_utils import FILE_PATH, NEW_FILE_CONTENT, NUM_MINUTES
 
 log_level = os.environ.get("LOG_LEVEL", "INFO")
 setup_logger(log_level)
