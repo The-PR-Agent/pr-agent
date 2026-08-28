@@ -440,15 +440,21 @@ class GerritProvider(GitProvider):
         if self.repo_path and pathlib.Path(self.repo_path).exists():
             try:
                 shutil.rmtree(self.repo_path, ignore_errors=True)
-                get_logger().info("Cleaned up temp repo at %s", self.repo_path)
+                get_logger().info("Cleaned up temp repo at {}", self.repo_path)
             except (OSError, PermissionError) as e:
                 get_logger().warning(
-                    "Failed to clean up temp repo at %s: %s",
+                    "Failed to clean up temp repo at {}: {}",
                     self.repo_path, e
                 )
 
     def __del__(self):
-        """Safety net: clean up temp repo if cleanup() was not called."""
+        """Safety net: clean up temp repo if cleanup() was not called.
+
+        The server's finally block can only reach providers stored in
+        starlette_context. PRQuestions builds its own provider with
+        get_git_provider(), so an /ask request never registers there and
+        would leak its clone without this.
+        """
         try:
             self.cleanup()
         except Exception:
