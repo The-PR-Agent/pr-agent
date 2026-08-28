@@ -30,7 +30,8 @@ from pr_agent.algo.utils import (ModelType, PRCodeSuggestionsHeader,
                                  format_pr_code_suggestions_header,
                                  get_max_tokens, get_model, load_yaml,
                                  replace_code_tags,
-                                 show_relevant_configurations, show_run_details)
+                                 show_relevant_configurations,
+                                 show_run_details)
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import (AzureDevopsProvider, GithubProvider,
                                     GitLabProvider, get_git_provider,
@@ -207,6 +208,7 @@ class PRCodeSuggestions:
 
                     # generate summarized suggestions
                     pr_body = self.generate_summarized_suggestions(data)
+                    pr_body += self._get_suggestions_coverage_footer()
                     get_logger().debug(f"PR output", artifact=pr_body)
 
                     # require self-review
@@ -266,6 +268,7 @@ class PRCodeSuggestions:
             else:
                 get_logger().info('Code suggestions generated for PR, but not published since publish_output is False.')
                 pr_body = self.generate_summarized_suggestions(data)
+                pr_body += self._get_suggestions_coverage_footer()
                 get_settings().data = {"artifact": pr_body}
                 return
         except Exception as e:
@@ -295,6 +298,15 @@ class PRCodeSuggestions:
         else:
             pr_body += ' <!-- approve and fold suggestions self-review -->'
         return pr_body
+
+    def _get_suggestions_coverage_footer(self) -> str:
+        failed_chunk_count = getattr(self, "failed_chunk_count", 0)
+        if (not failed_chunk_count or
+                not get_settings().pr_code_suggestions.get("enable_suggestions_coverage_footer", True)):
+            return ""
+        total_chunk_count = getattr(self, "total_chunk_count", failed_chunk_count)
+        return (f"\n\n⚠️ **Suggestion coverage:** {failed_chunk_count} of {total_chunk_count} analysis chunks failed; "
+                "the suggestions above are based on the successful chunks only.")
 
     async def publish_no_suggestions(self):
         pr_body = f"{format_pr_code_suggestions_header()}\n\nNo code suggestions found for the PR."
@@ -1112,6 +1124,8 @@ class PRCodeSuggestions:
             return patches_diff_list
 
     async def prepare_prediction_main(self, model: str) -> dict:
+        self.failed_chunk_count = 0
+        self.total_chunk_count = 0
         # get PR diff
         if get_settings().pr_code_suggestions.decouple_hunks:
             self.patches_diff_list = get_pr_multi_diffs(self.git_provider,
@@ -1145,6 +1159,7 @@ class PRCodeSuggestions:
             prediction_list = []
             chunk_errors = []
             chunk_pairs = list(zip(self.patches_diff_list, self.patches_diff_list_no_line_numbers))
+            self.total_chunk_count = len(chunk_pairs)
 
             # parallelize calls to AI:
             if get_settings().pr_code_suggestions.parallel_calls:
@@ -1179,6 +1194,7 @@ class PRCodeSuggestions:
                     else:
                         prediction_list.append(prediction)
 
+            self.failed_chunk_count = len(chunk_errors)
             if chunk_errors and not prediction_list:
                 raise chunk_errors[0]
             self.prediction_list = prediction_list
