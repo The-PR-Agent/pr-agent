@@ -106,6 +106,33 @@ age: 35
             "issue": {"id": 1},
         }
 
+    @pytest.mark.parametrize(
+        "closing_fence",
+        ["```yaml", "```yml", "```YAML", "```YML"],
+    )
+    def test_key_extraction_accepts_labeled_closing_fence(self, closing_fence):
+        response_text = (
+            "{\n"
+            "Some garbage: [unclosed\n\n"
+            "review:\n"
+            "  summary: example\n"
+            "issue:\n"
+            "  id: 1\n"
+            f"{closing_fence}\n"
+        )
+
+        result = try_fix_yaml(
+            response_text,
+            first_key="review",
+            last_key="issue",
+        )
+
+        assert result == {
+            "review": {"summary": "example"},
+            "issue": {"id": 1},
+        }
+
+
     # The YAML string is empty.
     def test_empty_yaml_fixed(self):
         review_text = ""
