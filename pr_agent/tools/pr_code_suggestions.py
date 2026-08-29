@@ -236,7 +236,7 @@ class PRCodeSuggestions:
 
                     # publish the PR comment
                     if get_settings().pr_code_suggestions.persistent_comment: # true by default
-                        self.publish_persistent_comment_with_history(
+                        published_comment = self.publish_persistent_comment_with_history(
                             self.git_provider,
                             pr_body,
                             initial_header=format_pr_code_suggestions_header(),
@@ -248,6 +248,8 @@ class PRCodeSuggestions:
                             identity_marker=PRCodeSuggestionsIdentity.SUMMARY.value,
                             legacy_initial_header=PRCodeSuggestionsHeader.SUMMARY.value,
                         )
+                        if published_comment is not None:
+                            self.progress_response = None
                     else:
                         pr_body = add_comment_identity(
                             pr_body,
@@ -255,6 +257,7 @@ class PRCodeSuggestions:
                         )
                         if self.progress_response:
                             self.git_provider.edit_comment(self.progress_response, body=pr_body)
+                            self.progress_response = None
                         else:
                             self.git_provider.publish_comment(pr_body)
 
@@ -271,6 +274,26 @@ class PRCodeSuggestions:
                 pr_body += self._get_suggestions_coverage_footer()
                 get_settings().data = {"artifact": pr_body}
                 return
+        except asyncio.CancelledError:
+            if self.progress_response is not None:
+                try:
+                    self.git_provider.edit_comment(
+                        self.progress_response,
+                        "Code suggestions generation cancelled.",
+                    )
+                except Exception as cleanup_error:
+                    get_logger().exception(
+                        f"Failed to update code suggestions progress comment after cancellation, "
+                        f"error: {cleanup_error}"
+                    )
+                try:
+                    self.git_provider.remove_comment(self.progress_response)
+                except Exception as cleanup_error:
+                    get_logger().exception(
+                        f"Failed to remove code suggestions progress comment after cancellation, "
+                        f"error: {cleanup_error}"
+                    )
+            raise
         except Exception as e:
             get_logger().error(f"Failed to generate code suggestions for PR, error: {e}",
                                artifact={"traceback": traceback.format_exc()})
@@ -373,9 +396,26 @@ class PRCodeSuggestions:
                                                 only_fold=False,
                                                 identity_marker: str | None = None,
                                                 legacy_initial_header: str | None = None):
+        def _clean_up_progress_note() -> bool:
+            if not progress_response:
+                return True
+            try:
+                git_provider.edit_comment(
+                    progress_response,
+                    "Code suggestions published in the persistent thread above.",
+                )
+                git_provider.remove_comment(progress_response)
+            except Exception as cleanup_error:
+                get_logger().warning(
+                    "Failed to clean up progress note after persistent update, "
+                    f"leaving it in place: {cleanup_error}"
+                )
+                return False
+            return True
+
         if hasattr(git_provider, '_publish_check_run') and get_settings().github.publish_as_check_run:
             if git_provider._publish_check_run(pr_comment, name):
-                return
+                return progress_response if _clean_up_progress_note() else None
 
         def _extract_link(comment_text: str):
             match = re.search(r"<!--\s*([0-9a-fA-F]{7,40})\s*-->", comment_text)
@@ -413,21 +453,6 @@ class PRCodeSuggestions:
 
         def _with_identity(comment_text: str) -> str:
             return add_comment_identity(comment_text, identity_marker)
-
-        def _clean_up_progress_note():
-            if not progress_response:
-                return
-            try:
-                git_provider.edit_comment(
-                    progress_response,
-                    "Code suggestions published in the persistent thread above.",
-                )
-                git_provider.remove_comment(progress_response)
-            except Exception as cleanup_error:
-                get_logger().warning(
-                    "Failed to clean up progress note after persistent update, "
-                    f"leaving it in place: {cleanup_error}"
-                )
 
         history_header = f"#### Previous suggestions\n"
         last_commit_num = git_provider.get_latest_commit_url().split('/')[-1][:7]
