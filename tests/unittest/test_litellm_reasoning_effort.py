@@ -170,6 +170,30 @@ class TestLiteLLMReasoningEffort:
             mock_logger.info.assert_any_call("Using reasoning_effort='xhigh' for GPT-5 model")
 
     @pytest.mark.asyncio
+    async def test_gpt5_valid_reasoning_effort_max(self, monkeypatch, mock_logger):
+        """Test GPT-5 with valid reasoning_effort='max' from config."""
+        fake_settings = create_mock_settings("max")
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
+
+        with patch(
+            'pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion',
+            new_callable=AsyncMock,
+        ) as mock_completion:
+            mock_completion.return_value = create_mock_acompletion_response()
+
+            handler = LiteLLMAIHandler()
+            await handler.chat_completion(
+                model="gpt-5.6",
+                system="test system",
+                user="test user"
+            )
+
+            call_kwargs = mock_completion.call_args[1]
+            assert call_kwargs["reasoning_effort"] == "max"
+            assert "reasoning_effort" in call_kwargs["allowed_openai_params"]
+            mock_logger.info.assert_any_call("Using reasoning_effort='max' for GPT-5 model")
+
+    @pytest.mark.asyncio
     async def test_gpt5_valid_reasoning_effort_minimal(self, monkeypatch, mock_logger):
         """Test GPT-5 with valid reasoning_effort='minimal' from config."""
         fake_settings = create_mock_settings("minimal")
@@ -318,6 +342,10 @@ class TestLiteLLMReasoningEffort:
             "gpt-5.4-2026-03-05",
             "gpt-5.5",
             "gpt-5.5-2026-04-23",
+            "gpt-5.6",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
             "gpt-5-turbo",
             "gpt-5.1-codex",
             "gpt-5.3-codex",
@@ -826,3 +854,79 @@ class TestLiteLLMReasoningEffort:
                 assert call_kwargs["model"] == expected, (
                     f"wrong routing for {input_model}: got {call_kwargs['model']}, expected {expected}"
                 )
+
+
+class TestLiteLLMReasoningEffortGemini:
+    """Gemini 2.5 reasoning_effort handling via the SUPPORT_REASONING_EFFORT_MODELS path.
+
+    Gemini 2.5 exposes a thinking budget that LiteLLM maps from reasoning_effort. The
+    membership test in chat_completion matches bare and provider-prefixed ids such as
+    "vertex_ai/gemini-2.5-pro". OpenRouter models use extra_body.reasoning instead and
+    are covered by test_litellm_openrouter_controls.py.
+    """
+
+    def _isolate_env(self, monkeypatch):
+        # LiteLLMAIHandler.__init__ branches on these; clear them for a deterministic handler.
+        for _var in ("AWS_USE_IMDS", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+                     "AWS_SESSION_TOKEN", "AWS_REGION_NAME", "OPENAI_API_KEY"):
+            monkeypatch.delenv(_var, raising=False)
+
+    @pytest.mark.asyncio
+    async def test_gemini_prefixed_forms_get_reasoning_effort(self, monkeypatch, mock_logger):
+        """Bare and provider-prefixed Gemini 2.5 ids all receive the configured reasoning_effort."""
+        fake_settings = create_mock_settings("low")
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
+        self._isolate_env(monkeypatch)
+
+        gemini_models = [
+            "gemini-2.5-pro",
+            "gemini-2.5-flash",
+            "gemini/gemini-2.5-pro",
+            "vertex_ai/gemini-2.5-pro",
+        ]
+
+        for model in gemini_models:
+            with patch('pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion', new_callable=AsyncMock) as mock_completion:
+                mock_completion.return_value = create_mock_acompletion_response()
+
+                handler = LiteLLMAIHandler()
+                await handler.chat_completion(model=model, system="test system", user="test user")
+
+                call_kwargs = mock_completion.call_args[1]
+                assert call_kwargs["reasoning_effort"] == "low", f"failed for {model}"
+                # Gemini keeps temperature (it supports it) — unlike the GPT-5 path.
+                assert call_kwargs["model"] == model, f"model mutated for {model}: {call_kwargs['model']}"
+
+    @pytest.mark.asyncio
+    async def test_non_listed_gemini_gets_no_reasoning_effort(self, monkeypatch, mock_logger):
+        """A Gemini model not in the support list (e.g. 1.5) must not receive reasoning_effort."""
+        fake_settings = create_mock_settings("low")
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
+        self._isolate_env(monkeypatch)
+
+        for model in ("openrouter/google/gemini-1.5-pro", "gemini-1.5-flash"):
+            with patch('pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion', new_callable=AsyncMock) as mock_completion:
+                mock_completion.return_value = create_mock_acompletion_response()
+
+                handler = LiteLLMAIHandler()
+                await handler.chat_completion(model=model, system="test system", user="test user")
+
+                call_kwargs = mock_completion.call_args[1]
+                assert "reasoning_effort" not in call_kwargs, f"unexpected reasoning_effort for {model}"
+
+    @pytest.mark.asyncio
+    async def test_suffix_match_does_not_overmatch(self, monkeypatch, mock_logger):
+        """endswith('/' + id) must not match a model whose id is a substring without the slash boundary."""
+        fake_settings = create_mock_settings("low")
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
+        self._isolate_env(monkeypatch)
+
+        # "my-gemini-2.5-pro" is not equal to and does not end with "/gemini-2.5-pro".
+        with patch('pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion', new_callable=AsyncMock) as mock_completion:
+            mock_completion.return_value = create_mock_acompletion_response()
+
+            handler = LiteLLMAIHandler()
+            await handler.chat_completion(model="my-gemini-2.5-pro", system="test system", user="test user")
+
+            call_kwargs = mock_completion.call_args[1]
+            assert "reasoning_effort" not in call_kwargs

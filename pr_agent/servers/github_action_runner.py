@@ -4,6 +4,9 @@ import os
 from typing import Union
 
 from pr_agent.agent.pr_agent import PRAgent
+from pr_agent.algo.ai_handlers.litellm_helpers import (
+    DEFAULT_CALLBACK_TIMEOUT_SECONDS, drain_litellm_callbacks,
+    litellm_callbacks_registered)
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.utils import apply_repo_settings
@@ -28,6 +31,53 @@ def get_setting_or_env(key: str, default: Union[str, bool] = None) -> Union[str,
     except AttributeError:  # TBD still need to debug why this happens on GitHub Actions
         value = os.getenv(key, None) or os.getenv(key.upper(), None) or os.getenv(key.lower(), None) or default
     return value
+
+
+def _inject_artifact_context():
+    """Inject CI artifact content into extra_instructions for configured tools."""
+    artifact_path_env = (
+        os.environ.get("ARTIFACT_PATH") or os.environ.get("PR_AGENT_ARTIFACT_PATH") or ""
+    ).strip()
+    artifact_instructions_env = (
+        os.environ.get("ARTIFACT_INSTRUCTIONS") or os.environ.get("PR_AGENT_ARTIFACT_INSTRUCTIONS") or ""
+    ).strip()
+    if artifact_path_env:
+        get_settings().set("ARTIFACTS.ENABLE", True)
+        get_settings().set("ARTIFACTS.ARTIFACT_PATH", artifact_path_env)
+        if artifact_instructions_env:
+            get_settings().set("ARTIFACTS.ARTIFACT_INSTRUCTIONS", artifact_instructions_env)
+
+    artifacts_enabled = get_settings().get("ARTIFACTS.ENABLE", False)
+    if not is_true(artifacts_enabled):
+        return
+
+    try:
+        from pr_agent.algo.artifacts import load_artifact
+
+        artifact_text = load_artifact()
+        if not artifact_text:
+            return
+        target_tools = get_settings().get(
+            "ARTIFACTS.TARGET_TOOLS",
+            ["pr_reviewer", "pr_description", "pr_code_suggestions"]
+        )
+        if isinstance(target_tools, str):
+            target_tools = [t.strip() for t in target_tools.split(",") if t.strip()]
+        target_tools = {str(t).lower() for t in target_tools}
+        separator = "\n======\n\n"
+        for key in get_settings():
+            setting = get_settings().get(key)
+            if str(type(setting)) == "<class 'dynaconf.utils.boxing.DynaBox'>":
+                if key.lower() in target_tools and hasattr(setting, 'extra_instructions'):
+                    extra_instructions = str(setting.extra_instructions or "")
+                    if artifact_text not in extra_instructions:
+                        setting.extra_instructions = (
+                            extra_instructions + separator + artifact_text
+                            if extra_instructions else artifact_text
+                        )
+        get_logger().info(f"Injected artifact context into tools: {target_tools}")
+    except (OSError, ValueError, TypeError) as e:
+        get_logger().warning(f"github action: failed to process artifacts: {e}", exc_info=True)
 
 
 async def run_action():
@@ -106,8 +156,11 @@ async def run_action():
                                 setting.extra_instructions = updated_instructions
     except Exception as e:
         get_logger().info(f"github action: failed to apply language-specific instructions: {e}")
+
     # Handle pull request opened event
     if GITHUB_EVENT_NAME == "pull_request" or GITHUB_EVENT_NAME == "pull_request_target":
+        # Inject artifact context here so it runs after apply_repo_settings above
+        _inject_artifact_context()
         action = event_payload.get("action")
 
         # Retrieve the list of actions from the configuration
@@ -223,10 +276,11 @@ async def run_action():
                     url = event_payload.get("issue", {}).get("url")
 
                 if url:
-                    body = comment_body.strip().lower()
+                    body = comment_body.strip()
                     comment_id = event_payload.get("comment", {}).get("id")
                     provider = get_git_provider()(pr_url=url)
                     if is_pr:
+                        _inject_artifact_context()
                         await PRAgent().handle_request(
                             url, body, notify=lambda: provider.add_eyes_reaction(
                                 comment_id, disable_eyes=disable_eyes
@@ -235,6 +289,74 @@ async def run_action():
                     else:
                         await PRAgent().handle_request(url, body)
 
+    # Handle workflow_run event (triggered after another workflow completes, e.g. after a terraform plan)
+    elif GITHUB_EVENT_NAME == "workflow_run":
+        workflow_run = event_payload.get("workflow_run", {})
+        if workflow_run.get("event") not in ("pull_request", "pull_request_target"):
+            get_logger().info(
+                f"Skipping workflow_run: originating event is '{workflow_run.get('event')}', "
+                "not 'pull_request' or 'pull_request_target'"
+            )
+            return
+
+        pull_requests = workflow_run.get("pull_requests", [])
+        if not pull_requests:
+            get_logger().info("Skipping workflow_run: no pull_requests found in payload (fork PRs are not supported)")
+            return
+
+        pr_url = pull_requests[0].get("url")
+        if not pr_url:
+            get_logger().info("Skipping workflow_run: pull_requests[0] has no url")
+            return
+
+        try:
+            apply_repo_settings(pr_url)
+        except Exception as e:
+            get_logger().warning(f"github action: failed to apply repo settings for workflow_run: {e}")
+
+        # Inject artifact context after repo settings are applied for workflow_run
+        _inject_artifact_context()
+
+        auto_review = get_setting_or_env("GITHUB_ACTION.AUTO_REVIEW", None)
+        if auto_review is None:
+            auto_review = get_setting_or_env("GITHUB_ACTION_CONFIG.AUTO_REVIEW", None)
+        auto_describe = get_setting_or_env("GITHUB_ACTION.AUTO_DESCRIBE", None)
+        if auto_describe is None:
+            auto_describe = get_setting_or_env("GITHUB_ACTION_CONFIG.AUTO_DESCRIBE", None)
+        auto_improve = get_setting_or_env("GITHUB_ACTION.AUTO_IMPROVE", None)
+        if auto_improve is None:
+            auto_improve = get_setting_or_env("GITHUB_ACTION_CONFIG.AUTO_IMPROVE", None)
+
+        get_settings().config.is_auto_command = True
+        get_settings().pr_description.final_update_message = False
+        get_logger().info(
+            f"Running auto actions for workflow_run: auto_describe={auto_describe}, "
+            f"auto_review={auto_review}, auto_improve={auto_improve}"
+        )
+
+        if auto_describe is None or is_true(auto_describe):
+            await PRDescription(pr_url).run()
+        if auto_review is None or is_true(auto_review):
+            await PRReviewer(pr_url).run()
+        if auto_improve is None or is_true(auto_improve):
+            await PRCodeSuggestions(pr_url).run()
+
+
+async def _run_action_and_drain():
+    """
+    Run the action, then flush litellm's deferred callbacks before the loop closes.
+
+    Wrapping here rather than at the end of run_action() covers its many early
+    returns too, and keeps run_action() itself free of teardown concerns.
+    """
+    try:
+        return await run_action()
+    finally:
+        if litellm_callbacks_registered():
+            await drain_litellm_callbacks(
+                get_settings().litellm.get("callback_timeout_seconds", DEFAULT_CALLBACK_TIMEOUT_SECONDS)
+            )
+
 
 if __name__ == '__main__':
-    asyncio.run(run_action())
+    asyncio.run(_run_action_and_drain())

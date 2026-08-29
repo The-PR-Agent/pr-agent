@@ -3,8 +3,7 @@ from starlette_context import context
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
 from pr_agent.git_providers.bitbucket_provider import BitbucketProvider
-from pr_agent.git_providers.bitbucket_server_provider import \
-    BitbucketServerProvider
+from pr_agent.git_providers.bitbucket_server_provider import BitbucketServerProvider
 from pr_agent.git_providers.codecommit_provider import CodeCommitProvider
 from pr_agent.git_providers.gerrit_provider import GerritProvider
 from pr_agent.git_providers.git_provider import GitProvider
@@ -12,7 +11,7 @@ from pr_agent.git_providers.gitea_provider import GiteaProvider
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
 from pr_agent.git_providers.local_git_provider import LocalGitProvider
-from pr_agent.git_providers.gitea_provider import GiteaProvider
+from pr_agent.git_providers.plain_diff_provider import PlainDiffGitProvider
 
 _GIT_PROVIDERS = {
     'github': GithubProvider,
@@ -23,7 +22,8 @@ _GIT_PROVIDERS = {
     'codecommit': CodeCommitProvider,
     'local': LocalGitProvider,
     'gerrit': GerritProvider,
-    'gitea': GiteaProvider
+    'gitea': GiteaProvider,
+    'plain-diff': PlainDiffGitProvider,
 }
 
 
@@ -32,6 +32,12 @@ def get_git_provider():
         provider_id = get_settings().config.git_provider
     except AttributeError as e:
         raise ValueError("git_provider is a required attribute in the configuration file") from e
+    # Same plain-diff keying as get_git_provider_with_context(): tools that build
+    # their provider through this function (e.g. PRQuestions for `ask`) must also
+    # honor loaded diff content, so an extra/repo config that overwrote
+    # config.git_provider can't route a supported command to a hosted provider.
+    if get_settings().get("plain_diff.content", None):
+        provider_id = "plain-diff"
     if provider_id not in _GIT_PROVIDERS:
         raise ValueError(f"Unknown git provider: {provider_id}")
     return _GIT_PROVIDERS[provider_id]
@@ -57,6 +63,11 @@ def get_git_provider_with_context(pr_url) -> GitProvider:
     else:
         try:
             provider_id = get_settings().config.git_provider
+            # Plain-diff mode is keyed on loaded diff content; it must not be
+            # overridden by an extra/repo config file that sets a different
+            # git_provider (apply_repo_settings merges those before this call).
+            if get_settings().get("plain_diff.content", None):
+                provider_id = "plain-diff"
             if provider_id not in _GIT_PROVIDERS:
                 raise ValueError(f"Unknown git provider: {provider_id}")
             git_provider = _GIT_PROVIDERS[provider_id](pr_url)

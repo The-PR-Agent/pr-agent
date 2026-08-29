@@ -23,6 +23,7 @@ class CliArgs:
                     forbidden_cli_args[i] = '.' + forbidden_cli_args[i]
 
             for arg in args:
+                arg = arg.strip()
                 if arg.startswith('--'):
                     arg_word = arg.lower()
                     arg_word = arg_word.replace('__', '.')  # replace double underscore with dot, e.g. --openai__key -> --openai.key

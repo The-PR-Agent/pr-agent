@@ -6,11 +6,14 @@ TaskUpdater that captures add_artifact()/complete()/failed() calls. asyncio_mode
 Non-vacuity (Fix C): test_non_vacuity_ok_false_must_not_complete verifies that if
 ok=False causes complete() instead of failed(), the assertion fails — proving the
 test can detect a Fix C regression."""
+import asyncio
+
 import pytest
 from a2a.types import Message, Part, Role
 from starlette_context import request_cycle_context
 
 import pr_agent.mosaico.executor as executor_mod
+from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.mosaico.dispatch import RouteResult
 from pr_agent.mosaico.executor import PRAgentExecutor
 
@@ -228,3 +231,30 @@ class TestExecute:
     async def test_cancel_raises_not_implemented(self):
         with pytest.raises(NotImplementedError):
             await PRAgentExecutor().cancel(_FakeRequestContext("z"), _RecordingEventQueue())
+
+    @pytest.mark.asyncio
+    async def test_settings_writes_are_request_scoped_under_concurrency(self, monkeypatch, spy_updater):
+        """Each execute() gets its own settings deepcopy: two in-flight requests must not
+        observe each other's propagate_tool_errors, and global_settings stays untouched."""
+        seen = {}
+
+        async def fake_route_and_run_result(text):
+            settings = get_settings()
+            settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", text == "a")
+            await asyncio.sleep(0)  # yield so the two runs interleave between write and read
+            seen[text] = (id(settings), settings.config.get("propagate_tool_errors"))
+            return RouteResult(f"done-{text}", ok=True)
+
+        monkeypatch.setattr(executor_mod, "route_and_run_result", fake_route_and_run_result)
+        global_before = global_settings.config.get("propagate_tool_errors", None)
+
+        async def run(text):
+            with request_cycle_context({}):
+                await PRAgentExecutor().execute(_FakeRequestContext(text), _RecordingEventQueue())
+
+        await asyncio.gather(run("a"), run("b"))
+
+        assert seen["a"][1] is True
+        assert seen["b"][1] is False, "one request observed another's settings write"
+        assert seen["a"][0] != seen["b"][0], "both requests shared one settings object"
+        assert global_settings.config.get("propagate_tool_errors", None) == global_before

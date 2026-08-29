@@ -90,6 +90,23 @@ class TestSortFilesByMainLanguages:
         ]
         assert sort_files_by_main_languages(languages, files) == expected_output
 
+    def test_case_fallback_preserves_global_extension_ambiguity(self):
+        languages = {"C": 100}
+        file = type("", (object,), {"filename": "upper.C"})()
+
+        assert sort_files_by_main_languages(languages, [file]) == [
+            {"language": "Other", "files": [file]},
+        ]
+
+    def test_longest_multipart_extension_precedes_shorter_exact_match(self):
+        languages = {"reStructuredText": 60, "Text": 40}
+        file = type("", (object,), {"filename": "guide.REST.txt"})()
+
+        assert sort_files_by_main_languages(languages, [file]) == [
+            {"language": "reStructuredText", "files": [file]},
+            {"language": "Other", "files": []},
+        ]
+
     # Tests the behavior of the function when all files have bad extensions and only one new valid file is added.
     def test_edge_case_files_with_bad_extensions_only(self):
         languages = {'Python': 10, 'Java': 5, 'C++': 3}

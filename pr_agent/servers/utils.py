@@ -75,12 +75,26 @@ class DefaultDictWithTimeout(defaultdict):
         if self.__update_key_time_on_get:
             self.__key_times[__key] = self.__time()
         self.__refresh()
-        return super().__getitem__(__key)
+        try:
+            return super().__getitem__(__key)
+        except KeyError:
+            self.__key_times.pop(__key, None)
+            raise
 
     def __setitem__(self, __key, __value):
         self.__key_times[__key] = self.__time()
         return super().__setitem__(__key, __value)
 
     def __delitem__(self, __key):
-        del self.__key_times[__key]
-        return super().__delitem__(__key)
+        self.__key_times.pop(__key, None)
+        if super().__contains__(__key):
+            super().__delitem__(__key)
+
+    def setdefault(self, __key, __default=None):
+        self.__refresh()
+        if super().__contains__(__key):
+            if self.__update_key_time_on_get:
+                self.__key_times[__key] = self.__time()
+            return super().__getitem__(__key)
+        self[__key] = __default
+        return __default

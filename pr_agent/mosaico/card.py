@@ -1,8 +1,13 @@
 """Builds the MOSAICO A2A agent card for pr-agent.
 
-Mirrors docstring-agent/__main__.py:36-68. The observability extension is advertised
-as required=True; streaming is advertised as False (load-bearing: the reference agent
-selects message/send vs message/stream from capabilities.streaming)."""
+The observability extension is advertised as required=True because the AISP spec says so
+("AISP-specific extension: observability metadata ... Required: true" in the demonstrator's
+docs/agent-requirements.md). Do NOT relax it to match the peer agents: docstring-agent
+advertises required=False, ip-solution-agent and mini-swe-agent omit the flag entirely, and
+the reference agent's own card omits it too, but they are the ones out of spec.
+
+Streaming is advertised as False, which is load-bearing: the reference agent selects
+message/send vs message/stream from capabilities.streaming."""
 import os
 
 from a2a.types import (AgentCapabilities, AgentCard, AgentExtension,

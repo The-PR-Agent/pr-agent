@@ -67,8 +67,11 @@ python cli.py --pr_url https://git.on-prem-instance-of-bitbucket.com/projects/PR
 To run PR-Agent as webhook, build the docker image:
 
 ```bash
-docker build . -t pragent/pr-agent:bitbucket_server_webhook --target bitbucket_server_webhook -f docker/Dockerfile
-docker push pragent/pr-agent:bitbucket_server_webhook  # Push to your Docker repository
+docker build . -t pr-agent:bitbucket_server_webhook --target bitbucket_server_webhook -f docker/Dockerfile
+
+# Optional, to push it to your own Docker repository:
+docker tag pr-agent:bitbucket_server_webhook <your-registry>/pr-agent:bitbucket_server_webhook
+docker push <your-registry>/pr-agent:bitbucket_server_webhook
 ```
 
 Navigate to `Projects` or `Repositories`, `Settings`, `Webhooks`, `Create Webhook`.

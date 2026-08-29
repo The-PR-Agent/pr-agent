@@ -7,9 +7,9 @@ from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.pr_processing import get_pr_diff, retry_with_fallback_models
 from pr_agent.algo.token_handler import TokenHandler
-from pr_agent.algo.utils import ModelType
+from pr_agent.algo.utils import ModelType, format_pr_questions_header
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers import get_git_provider, GitLabProvider
+from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.git_provider import get_main_pr_language
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
@@ -117,29 +117,20 @@ class PRQuestions:
                 model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
         return response
 
-    def gitlab_protections(self, model_answer: str) -> str:
-        github_quick_actions_MR = ["/approve", "/close", "/merge", "/reopen", "/unapprove", "/title", "/assign",
-                                "/copy_metadata", "/target_branch"]
-        if any(action in model_answer for action in github_quick_actions_MR):
-            str_err = "Model answer contains GitHub quick actions, which are not supported in GitLab"
-            get_logger().error(str_err)
-            return str_err
-        return model_answer
-
     def _prepare_pr_answer(self) -> str:
         model_answer = self.prediction.strip()
-        # sanitize the answer so that no line will start with "/"
+        # sanitize the answer so that no line will start with "/", which would
+        # trigger quick actions on providers that support them (e.g. GitLab)
         model_answer_sanitized = model_answer.replace("\n/", "\n /")
         model_answer_sanitized = model_answer_sanitized.replace("\r/", "\r /")
-        if isinstance(self.git_provider, GitLabProvider):
-            model_answer_sanitized = self.gitlab_protections(model_answer_sanitized)
         if model_answer_sanitized.startswith("/"):
             model_answer_sanitized = " " + model_answer_sanitized
         if model_answer_sanitized != model_answer:
             get_logger().debug(f"Sanitized model answer",
                                artifact={"model_answer": model_answer, "sanitized_answer": model_answer_sanitized})
-
-
-        answer_str = f"### **Ask**❓\n{self.question_str}\n\n"
+        answer_header = format_pr_questions_header(
+            escape_markdown=self.git_provider.is_supported("markdown_backslash_escapes")
+        )
+        answer_str = f"{answer_header}\n{self.question_str}\n\n"
         answer_str += f"### **Answer:**\n{model_answer_sanitized}\n\n"
         return answer_str
