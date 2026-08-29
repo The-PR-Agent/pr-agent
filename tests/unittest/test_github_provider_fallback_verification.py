@@ -1,8 +1,5 @@
 from unittest.mock import MagicMock, patch
 
-import pytest
-
-from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.github_provider import GithubProvider
 
 

@@ -2,14 +2,15 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from pr_agent.algo.utils import (PRCodeSuggestionsIdentity,
-                                 add_comment_identity,
-                                 comment_matches_identity,
-                                 format_pr_code_suggestions_header)
+from pr_agent.algo.utils import (
+    PRCodeSuggestionsIdentity,
+    add_comment_identity,
+    comment_matches_identity,
+    format_pr_code_suggestions_header,
+)
 from pr_agent.config_loader import get_settings
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
-from tests.unittest._settings_helpers import (restore_settings,
-                                              snapshot_settings)
+from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 
 def test_custom_suggestions_heading_changes_presentation_only():

@@ -9,7 +9,6 @@ from pr_agent.tools import pr_code_suggestions as pr_code_suggestions_module
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
-
 _TRACKED_SETTINGS = (
     "config.publish_output",
     "config.publish_output_progress",

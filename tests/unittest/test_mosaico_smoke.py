@@ -14,11 +14,11 @@ provider->render chain works through the wire."""
 import uuid
 
 import pytest
+from a2a.types import Message, Part, Role, SendMessageRequest
 from google.protobuf.json_format import MessageToDict
 from starlette.testclient import TestClient
 
 import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_mod
-from a2a.types import Message, Part, Role, SendMessageRequest
 from pr_agent.mosaico.server import build_app
 
 REVIEW_DIFF = """```diff

@@ -11,7 +11,6 @@ from tests.unittest._settings_helpers import (
     snapshot_settings,
 )
 
-
 _TRACKED_SETTINGS = (
     "config.publish_output",
     "config.is_auto_command",

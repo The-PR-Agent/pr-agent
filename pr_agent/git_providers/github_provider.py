@@ -11,27 +11,35 @@ from datetime import datetime
 from typing import Optional, Tuple
 from urllib.parse import urlparse
 
-from github.Issue import Issue
 from github import AppAuthentication, Auth, Github, GithubException
+from github.Issue import Issue
 from retry.api import retry_call
 from starlette_context import context
 
 from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import extract_hunk_headers
-from ..algo.inline_comment_dedup import (body_fingerprint, body_with_markers,
-                                         code_fingerprint,
-                                         get_inline_comment_store, has_marker)
+from ..algo.inline_comment_dedup import (
+    body_fingerprint,
+    body_with_markers,
+    code_fingerprint,
+    get_inline_comment_store,
+    has_marker,
+)
 from ..algo.language_handler import is_valid_file
 from ..algo.types import EDIT_TYPE
-from ..algo.utils import (Range, clip_tokens, comment_matches_any_identity,
-                          find_line_number_of_relevant_line_in_file,
-                          get_pr_review_comment_identifiers, load_large_diff,
-                          set_file_languages)
+from ..algo.utils import (
+    Range,
+    clip_tokens,
+    comment_matches_any_identity,
+    find_line_number_of_relevant_line_in_file,
+    get_pr_review_comment_identifiers,
+    load_large_diff,
+    set_file_languages,
+)
 from ..config_loader import get_settings
 from ..log import get_logger
 from ..servers.utils import RateLimitExceeded
-from .git_provider import (MAX_FILES_ALLOWED_FULL, FilePatchInfo, GitProvider,
-                           IncrementalPR, get_cached_global_settings)
+from .git_provider import MAX_FILES_ALLOWED_FULL, FilePatchInfo, GitProvider, IncrementalPR, get_cached_global_settings
 
 
 def _next_page_url(headers: dict) -> str:
@@ -154,7 +162,7 @@ class GithubProvider(GitProvider):
             scheme_and_netloc = self.base_url_html
             desired_branch = self.repo_obj.default_branch
         if not all([scheme_and_netloc, owner, repo]): #"else": Not invoked from a PR context,but no provided git url for context
-            get_logger().error(f"Unable to get canonical url parts since missing context (PR or explicit git url)")
+            get_logger().error("Unable to get canonical url parts since missing context (PR or explicit git url)")
             return ("", "")
 
         prefix = f"{scheme_and_netloc}/{owner}/{repo}/blob/{desired_branch}"
@@ -266,7 +274,7 @@ class GithubProvider(GitProvider):
                 try:
                     names_original = [file.filename for file in files_original]
                     names_new = [file.filename for file in files]
-                    get_logger().info(f"Filtered out [ignore] files for pull request:", extra=
+                    get_logger().info("Filtered out [ignore] files for pull request:", extra=
                     {"files": names_original,
                      "filtered_files": names_new})
                 except Exception:
@@ -311,7 +319,7 @@ class GithubProvider(GitProvider):
                     if counter_valid >= MAX_FILES_ALLOWED_FULL and patch and not self.incremental.is_incremental:
                         avoid_load = True
                         if counter_valid == MAX_FILES_ALLOWED_FULL:
-                            get_logger().info(f"Too many files in PR, will avoid loading full content for rest of files")
+                            get_logger().info("Too many files in PR, will avoid loading full content for rest of files")
 
                     if avoid_load:
                         new_file_content_str = ""
@@ -466,7 +474,7 @@ class GithubProvider(GitProvider):
             self._check_run_ids[name] = data["id"]
             return True
         except Exception:
-            get_logger().warning(f"Failed to create check run, falling back to comment")
+            get_logger().warning("Failed to create check run, falling back to comment")
             return False
 
     def _find_existing_check_run(self, check_run_name: str, head_sha: str) -> Optional[int]:
@@ -594,7 +602,7 @@ class GithubProvider(GitProvider):
                     store.add(body_fp)
                     store.add(code_fp)
         except Exception as e:
-            get_logger().info(f"Initially failed to publish inline comments as committable")
+            get_logger().info("Initially failed to publish inline comments as committable")
 
             if (getattr(e, "status", None) == 422 and not disable_fallback):
                 pass  # continue to try _publish_inline_comments_fallback_with_verification
@@ -638,7 +646,7 @@ class GithubProvider(GitProvider):
             return thread_comments
                 
         except Exception as e:
-            get_logger().exception(f"Failed to get review comments for an inline ask command", artifact={"comment_id": comment_id, "error": e})
+            get_logger().exception("Failed to get review comments for an inline ask command", artifact={"comment_id": comment_id, "error": e})
             return []
 
     def supports_thread_resolution(self) -> bool:
@@ -926,7 +934,7 @@ class GithubProvider(GitProvider):
                     "Failed to edit github comment due to permission restrictions",
                     artifact={"error": e})
             else:
-                get_logger().exception(f"Failed to edit github comment", artifact={"error": e})
+                get_logger().exception("Failed to edit github comment", artifact={"error": e})
 
     def edit_comment_from_comment_id(self, comment_id: int, body: str):
         try:

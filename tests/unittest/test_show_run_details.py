@@ -4,8 +4,7 @@ from decimal import Decimal
 import pytest
 
 from pr_agent.algo import run_details
-from pr_agent.algo.run_details import (get_run_details, init_run_details,
-                                       record_ai_call, record_model_used)
+from pr_agent.algo.run_details import get_run_details, init_run_details, record_ai_call, record_model_used
 from pr_agent.algo.utils import show_run_details
 from pr_agent.config_loader import get_settings
 

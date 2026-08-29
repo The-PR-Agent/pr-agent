@@ -10,9 +10,13 @@ from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 
 from ..algo.file_filter import filter_ignored
 from ..algo.language_handler import is_valid_file
-from ..algo.utils import (PRDescriptionHeader, comment_matches_any_identity,
-                          find_line_number_of_relevant_line_in_file,
-                          get_pr_review_comment_identifiers, load_large_diff)
+from ..algo.utils import (
+    PRDescriptionHeader,
+    comment_matches_any_identity,
+    find_line_number_of_relevant_line_in_file,
+    get_pr_review_comment_identifiers,
+    load_large_diff,
+)
 from ..config_loader import get_settings
 from ..log import get_logger
 from .git_provider import GitProvider, IncrementalPR
@@ -35,9 +39,19 @@ def _is_not_found_error(error: Exception) -> bool:
 try:
     # noinspection PyUnresolvedReferences
     from azure.devops.connection import Connection
+
     # noinspection PyUnresolvedReferences
-    from azure.devops.released.git import (Comment, CommentThread, GitPullRequest, GitVersionDescriptor, GitClient, CommentThreadContext, CommentPosition)
+    from azure.devops.released.git import (
+        Comment,
+        CommentPosition,
+        CommentThread,
+        CommentThreadContext,
+        GitClient,
+        GitPullRequest,
+        GitVersionDescriptor,
+    )
     from azure.devops.released.work_item_tracking import WorkItemTrackingClient
+
     # noinspection PyUnresolvedReferences
     from azure.identity import DefaultAzureCredential
     from msrest.authentication import BasicAuthentication
@@ -627,7 +641,7 @@ class AzureDevopsProvider(GitProvider):
             diffs = filter_ignored(diffs_original, "azure")
             if diffs_original != diffs:
                 try:
-                    get_logger().info(f"Filtered out [ignore] files for pull request:", extra=
+                    get_logger().info("Filtered out [ignore] files for pull request:", extra=
                     {"files": diffs_original,  # diffs is just a list of names
                      "filtered_files": diffs})
                 except Exception:

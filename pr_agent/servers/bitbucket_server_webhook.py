@@ -103,8 +103,7 @@ def should_process_pr_logic(data) -> bool:
         # Allow_only_specific_folders
         allowed_folders = get_settings().config.get("allow_only_specific_folders", [])
         if allowed_folders and pr_id and project_key and repo_slug:
-            from pr_agent.git_providers.bitbucket_server_provider import \
-                BitbucketServerProvider
+            from pr_agent.git_providers.bitbucket_server_provider import BitbucketServerProvider
             bitbucket_server_url = get_settings().get("BITBUCKET_SERVER.URL", "")
             pr_url = f"{bitbucket_server_url}/projects/{project_key}/repos/{repo_slug}/pull-requests/{pr_id}"
             provider = BitbucketServerProvider(pr_url=pr_url)

@@ -6,8 +6,7 @@ from gitlab import Gitlab
 from gitlab.exceptions import GitlabGetError
 from gitlab.v4.objects import ProjectFile, ProjectMergeRequest, ProjectMergeRequestManager
 
-from pr_agent.algo.utils import (PRCodeSuggestionsIdentity, PRReviewHeader,
-                                 PRReviewIdentity)
+from pr_agent.algo.utils import PRCodeSuggestionsIdentity, PRReviewHeader, PRReviewIdentity
 from pr_agent.git_providers.git_provider import IncrementalPR
 from pr_agent.git_providers.gitlab_provider import (
     GitLabProvider,

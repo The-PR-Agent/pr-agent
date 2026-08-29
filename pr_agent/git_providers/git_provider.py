@@ -7,8 +7,7 @@ from abc import ABC, abstractmethod
 from typing import Optional, Tuple
 
 from pr_agent.algo.types import FilePatchInfo
-from pr_agent.algo.utils import (Range, add_pr_review_identity,
-                                 comment_matches_identity, process_description)
+from pr_agent.algo.utils import Range, add_pr_review_identity, comment_matches_identity, process_description
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
