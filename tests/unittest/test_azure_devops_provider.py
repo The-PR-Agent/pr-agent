@@ -430,6 +430,22 @@ class TestAzureDevopsProviderSuggestionAnchoring:
 
         assert provider.publish_code_suggestions([_suggestion("/src/Api/Controllers/SomeController.cs")]) is False
 
+    def test_braced_publish_error_does_not_stop_the_batch(self):
+        provider = _provider_with_diff("/src/first.py", "/src/second.py")
+        provider.azure_devops_client.create_thread.side_effect = [
+            RuntimeError("request {'reason': 'failed'}"),
+            MagicMock(),
+            MagicMock(),
+        ]
+
+        result = provider.publish_code_suggestions([
+            _suggestion("/src/first.py"),
+            _suggestion("/src/second.py"),
+        ])
+
+        assert result is True
+        assert provider.azure_devops_client.create_thread.call_count == 3
+
     def test_disabled_fallback_does_not_retry_a_failed_suggestion(self):
         provider = _provider_with_diff("/src/Api/Controllers/SomeController.cs")
         provider.azure_devops_client.create_thread.side_effect = RuntimeError("request failed")

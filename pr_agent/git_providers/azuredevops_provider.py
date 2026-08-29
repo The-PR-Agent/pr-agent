@@ -257,7 +257,11 @@ class AzureDevopsProvider(GitProvider):
                     pull_request_id=self.pr_num
                 )
             except Exception as e:
-                get_logger().exception(f"Azure failed to publish code suggestion, error: {e}", suggestion=suggestion)
+                get_logger().exception(
+                    "Azure failed to publish code suggestion, error: {error}",
+                    error=e,
+                    suggestion=suggestion,
+                )
                 if fallback_to_pr_comment:
                     fallback_suggestions.append((suggestion, "could not be published as an inline comment"))
             else:
@@ -660,7 +664,7 @@ class AzureDevopsProvider(GitProvider):
                     new_file_content_str = new_file_content_str.content
                 except Exception as error:
                     get_logger().error(
-                        "Failed to retrieve new file content",
+                        "Failed to retrieve new file content of {file}",
                         file=file,
                         version=str(version),
                         error=error,
@@ -712,7 +716,7 @@ class AzureDevopsProvider(GitProvider):
                         original_file_content_str = base_original.content
                     except Exception as error:
                         get_logger().error(
-                            "Failed to retrieve original file content",
+                            "Failed to retrieve original file content of {file}",
                             file=file,
                             version=str(base_version),
                             error=error,
