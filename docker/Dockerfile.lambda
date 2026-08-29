@@ -5,8 +5,8 @@ RUN dnf update -y && \
     dnf install -y gcc python3-devel git && \
     dnf clean all
 
-# uv builds the locked environment at /opt/venv; PYTHONPATH puts its
-# site-packages on the Lambda runtime's import path alongside the task root.
+# Build the locked environment at /opt/venv with uv; put its site-packages
+# on the Lambda runtime's import path alongside the task root via PYTHONPATH.
 ENV UV_COMPILE_BYTECODE=1 UV_PROJECT_ENVIRONMENT=/opt/venv
 ADD pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-install-project --no-dev --extra lambda --python /var/lang/bin/python3.12

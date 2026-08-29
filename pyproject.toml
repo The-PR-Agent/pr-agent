@@ -89,13 +89,6 @@ include = [
 [project.optional-dependencies]
 # AWS Lambda deployment (docker/Dockerfile.lambda).
 lambda = ["mangum==0.17.0"]
-# 'similar issue' tool. Install with: uv sync --extra similar-issue
-similar-issue = [
-  "pinecone-client",
-  "pinecone-datasets",
-  "lancedb==0.5.1",
-  "qdrant-client==1.15.1",
-]
 # LangChainOpenAIHandler. Install with: uv sync --extra langchain
 langchain = [
   "langchain",
@@ -103,15 +96,20 @@ langchain = [
   "langchain-openai",
 ]
 
-[tool.uv.sources]
-# pinecone-datasets is consumed from a fork; kept in [tool.uv.sources] so it
-# stays out of published wheel metadata (PyPI rejects direct URL deps).
-pinecone-datasets = { git = "https://github.com/mrT23/pinecone-datasets.git", branch = "main" }
-
 [project.scripts]
 pr-agent = "pr_agent.cli:run"
 
 [dependency-groups]
+# 'similar issue' tool. Install with: uv sync --group similar-issue.
+# Keep this a dependency group rather than a published extra: pinecone-datasets
+# resolves from a git fork, which wheel metadata cannot reference (PyPI rejects
+# direct URL deps), so a pip-installed extra would silently pull the wrong package.
+similar-issue = [
+  "pinecone-client",
+  "pinecone-datasets @ git+https://github.com/mrT23/pinecone-datasets.git@main",
+  "lancedb==0.5.1",
+  "qdrant-client==1.15.1",
+]
 dev = [
   "pytest==9.0.3",
   "pytest-asyncio>=1.3.0",
