@@ -664,7 +664,7 @@ class AzureDevopsProvider(GitProvider):
                     new_file_content_str = new_file_content_str.content
                 except Exception as error:
                     get_logger().error(
-                        "Failed to retrieve new file content of {file}",
+                        "Failed to retrieve new file content of {file} at version {version}",
                         file=file,
                         version=str(version),
                         error=error,
@@ -716,7 +716,7 @@ class AzureDevopsProvider(GitProvider):
                         original_file_content_str = base_original.content
                     except Exception as error:
                         get_logger().error(
-                            "Failed to retrieve original file content of {file}",
+                            "Failed to retrieve original file content of {file} at version {version}",
                             file=file,
                             version=str(base_version),
                             error=error,

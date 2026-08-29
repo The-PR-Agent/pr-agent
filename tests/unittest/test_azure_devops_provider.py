@@ -5,6 +5,7 @@ import pytest
 
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
+from pr_agent.log import get_logger
 
 
 class TestAzureDevopsProviderRepoContext:
@@ -154,12 +155,18 @@ class TestAzureDevopsProviderFiles:
             SimpleNamespace(content="old content\n"),
         )
 
-        diff_files = provider.get_diff_files()
+        captured = []
+        sink_id = get_logger().add(lambda message: captured.append(str(message)), format="{message}")
+        try:
+            diff_files = provider.get_diff_files()
+        finally:
+            get_logger().remove(sink_id)
 
         assert len(diff_files) == 1
         assert diff_files[0].filename == "/src/app.py"
         assert diff_files[0].head_file == ""
         assert diff_files[0].base_file == "old content\n"
+        assert any("/src/app.py" in message and "head-sha" in message for message in captured)
 
     def test_get_diff_files_keeps_file_when_original_content_fetch_fails(self):
         provider = self._provider_with_pull_request_diff(
@@ -167,12 +174,18 @@ class TestAzureDevopsProviderFiles:
             Exception("base fetch failed"),
         )
 
-        diff_files = provider.get_diff_files()
+        captured = []
+        sink_id = get_logger().add(lambda message: captured.append(str(message)), format="{message}")
+        try:
+            diff_files = provider.get_diff_files()
+        finally:
+            get_logger().remove(sink_id)
 
         assert len(diff_files) == 1
         assert diff_files[0].filename == "/src/app.py"
         assert diff_files[0].head_file == "new content\n"
         assert diff_files[0].base_file == ""
+        assert any("/src/app.py" in message and "base-sha" in message for message in captured)
 
 
 def _provider_with_diff(*filenames):
