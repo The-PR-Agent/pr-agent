@@ -161,6 +161,24 @@ async def is_valid_notification(notification, headers, handled_ids, session, use
         return False, handled_ids
 
 
+def _start_queued_processes(task_queue, max_allowed_parallel_tasks):
+    """Start at most max_allowed_parallel_tasks queued jobs and clear the queue.
+
+    Do not join the started processes; let the polling loop move on to the next
+    iteration without waiting for them to complete.
+    """
+    processes = []
+    for i, (func, args) in enumerate(task_queue):
+        if i >= max_allowed_parallel_tasks:
+            get_logger().error(
+                f"Dropping {len(task_queue) - max_allowed_parallel_tasks} tasks from polling session")
+            break
+        process = multiprocessing.Process(target=func, args=args)
+        processes.append(process)
+        process.start()
+    task_queue.clear()
+    return processes
+
 
 async def polling_loop():
     """
@@ -235,20 +253,7 @@ async def polling_loop():
 
                         max_allowed_parallel_tasks = 10
                         if task_queue:
-                            processes = []
-                            for i, (func, args) in enumerate(task_queue):  # Create  parallel tasks
-                                p = multiprocessing.Process(target=func, args=args)
-                                processes.append(p)
-                                p.start()
-                                if i > max_allowed_parallel_tasks:
-                                    get_logger().error(
-                                        f"Dropping {len(task_queue) - max_allowed_parallel_tasks} tasks from polling session")
-                                    break
-                            task_queue.clear()
-
-                            # Don't wait for all processes to complete. Move on to the next iteration
-                            # for p in processes:
-                            #     p.join()
+                            _start_queued_processes(task_queue, max_allowed_parallel_tasks)
 
                     elif response.status != 304:
                         print(f"Failed to fetch notifications. Status code: {response.status}")
