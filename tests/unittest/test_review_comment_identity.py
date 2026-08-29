@@ -3,17 +3,19 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from pr_agent.algo.utils import (PRReviewIdentity, add_pr_review_identity,
-                                 comment_matches_identity,
-                                 convert_to_markdown_v2,
-                                 format_pr_review_header,
-                                 get_pr_review_comment_identifiers)
+from pr_agent.algo.utils import (
+    PRReviewIdentity,
+    add_pr_review_identity,
+    comment_matches_identity,
+    convert_to_markdown_v2,
+    format_pr_review_header,
+    get_pr_review_comment_identifiers,
+)
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
 from pr_agent.git_providers.gitea_provider import GiteaProvider
 from pr_agent.git_providers.github_provider import GithubProvider
-from tests.unittest._settings_helpers import (restore_settings,
-                                              snapshot_settings)
+from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 
 def _review_data():

@@ -1,7 +1,6 @@
 from unittest.mock import MagicMock, patch
 
-from pr_agent.config_loader import (apply_secrets_manager_config,
-                                    apply_secrets_to_config)
+from pr_agent.config_loader import apply_secrets_manager_config, apply_secrets_to_config
 
 
 class TestConfigLoaderSecrets:

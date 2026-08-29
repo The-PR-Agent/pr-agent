@@ -1,16 +1,12 @@
-import argparse
 import asyncio
 import copy
 import os
-from pathlib import Path
 
 from starlette_context import context, request_cycle_context
 
-from pr_agent.agent.pr_agent import PRAgent, commands
-from pr_agent.cli import run_command
+from pr_agent.agent.pr_agent import PRAgent
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.log import get_logger, setup_logger
-from tests.e2e_tests import e2e_utils
 
 log_level = os.environ.get("LOG_LEVEL", "INFO")
 setup_logger(log_level)
@@ -26,7 +22,7 @@ async def run_async() -> None:
     agent = PRAgent()
     try:
         # Run the 'describe' command
-        get_logger().info(f"\nSanity check for the 'describe' command...")
+        get_logger().info("\nSanity check for the 'describe' command...")
         original_settings = copy.deepcopy(get_settings())
         await agent.handle_request(pr_url, ['describe'])
         pr_header_body = dict(get_settings().data)['artifact']
@@ -37,7 +33,7 @@ async def run_async() -> None:
         get_logger().info("PR description generated successfully\n")
 
         # Run the 'review' command
-        get_logger().info(f"\nSanity check for the 'review' command...")
+        get_logger().info("\nSanity check for the 'review' command...")
         original_settings = copy.deepcopy(get_settings())
         await agent.handle_request(pr_url, ['review'])
         pr_review_body = dict(get_settings().data)['artifact']
@@ -48,7 +44,7 @@ async def run_async() -> None:
         get_logger().info("PR review generated successfully\n")
 
         # Run the 'improve' command
-        get_logger().info(f"\nSanity check for the 'improve' command...")
+        get_logger().info("\nSanity check for the 'improve' command...")
         original_settings = copy.deepcopy(get_settings())
         await agent.handle_request(pr_url, ['improve'])
         pr_improve_body = dict(get_settings().data)['artifact']
@@ -58,10 +54,10 @@ async def run_async() -> None:
         context['settings'] = copy.deepcopy(original_settings)  # Restore settings state after each test to prevent test interference
         get_logger().info("PR improvements generated successfully\n")
 
-        get_logger().info(f"\n\n========\nHealth test passed successfully\n========")
+        get_logger().info("\n\n========\nHealth test passed successfully\n========")
 
     except Exception as e:
-        get_logger().exception(f"\n\n========\nHealth test failed\n========")
+        get_logger().exception("\n\n========\nHealth test failed\n========")
         raise e
 
 

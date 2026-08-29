@@ -1,4 +1,5 @@
 import git
+import pytest
 
 from pr_agent.algo.language_handler import sort_files_by_main_languages
 from pr_agent.algo.types import EDIT_TYPE
@@ -32,6 +33,46 @@ def test_get_diff_files_preserves_deleted_filename(tmp_path):
     deleted = [file for file in diff_files if file.edit_type == EDIT_TYPE.DELETED]
     assert len(deleted) == 1
     assert deleted[0].filename == "gone.py"
+
+
+@pytest.mark.parametrize("change_type", ["added", "modified", "deleted"])
+def test_get_diff_files_skips_non_utf8_file_and_keeps_utf8_sibling(tmp_path, change_type):
+    repo = git.Repo.init(tmp_path)
+    good_file = tmp_path / "good.py"
+    non_utf8_file = tmp_path / "non_utf8.py"
+    good_file.write_text("before\n", encoding="utf-8")
+    files_to_add = ["good.py"]
+    if change_type in {"modified", "deleted"}:
+        non_utf8_file.write_bytes(b"\xffbefore\n")
+        files_to_add.append("non_utf8.py")
+    repo.index.add(files_to_add)
+    repo.index.commit("base")
+
+    good_file.write_text("after\n", encoding="utf-8")
+    repo.index.add(["good.py"])
+    if change_type == "added":
+        non_utf8_file.write_bytes(b"\xffafter\n")
+        repo.index.add(["non_utf8.py"])
+    elif change_type == "modified":
+        non_utf8_file.write_bytes(b"\xfeafter\n")
+        repo.index.add(["non_utf8.py"])
+    else:
+        non_utf8_file.unlink()
+        repo.index.remove(["non_utf8.py"])
+    repo.index.commit(f"{change_type} non-UTF-8 file")
+
+    provider = object.__new__(GerritProvider)
+    provider.repo = repo
+
+    diff_files = provider.get_diff_files()
+
+    assert [file.filename for file in diff_files] == ["good.py"]
+    assert diff_files[0].base_file == "before\n"
+    assert diff_files[0].head_file == "after\n"
+    assert "-before" in diff_files[0].patch
+    assert "+after" in diff_files[0].patch
+    assert diff_files[0].edit_type == EDIT_TYPE.MODIFIED
+    assert provider.diff_files is diff_files
 
 
 def test_get_languages_returns_names_used_for_hunk_prioritization(tmp_path):

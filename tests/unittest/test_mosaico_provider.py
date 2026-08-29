@@ -7,8 +7,7 @@ import pytest
 
 from pr_agent.algo.types import EDIT_TYPE
 from pr_agent.config_loader import get_settings, global_settings
-from pr_agent.mosaico.diff_provider import (DiffInputProvider,
-                                            parse_unified_diff)
+from pr_agent.mosaico.diff_provider import DiffInputProvider, parse_unified_diff
 
 TWO_FILE_DIFF = """diff --git a/added.py b/added.py
 new file mode 100644

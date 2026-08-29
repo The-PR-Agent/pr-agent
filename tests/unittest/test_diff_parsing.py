@@ -1,6 +1,5 @@
 from pr_agent.algo.types import EDIT_TYPE
-from pr_agent.git_providers.diff_parsing import (parse_unified_diff,
-                                                 reconstruct_base_file)
+from pr_agent.git_providers.diff_parsing import parse_unified_diff, reconstruct_base_file
 
 MODIFY_DIFF = """diff --git a/foo.py b/foo.py
 index 1111111..2222222 100644

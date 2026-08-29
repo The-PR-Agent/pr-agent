@@ -4,8 +4,10 @@ from unittest.mock import MagicMock, patch
 
 from pr_agent.algo.utils import PRReviewIdentity
 from pr_agent.git_providers import AzureDevopsProvider
-from pr_agent.git_providers.azuredevops_provider import (_AzureCommitAdapter,
-                                                         _to_naive_utc)
+from pr_agent.git_providers.azuredevops_provider import (
+    _AzureCommitAdapter,
+    _to_naive_utc,
+)
 from pr_agent.git_providers.git_provider import IncrementalPR
 
 

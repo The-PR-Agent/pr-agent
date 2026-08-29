@@ -22,8 +22,7 @@ from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.identity_providers import get_identity_provider
 from pr_agent.identity_providers.identity_provider import Eligibility
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
-from pr_agent.secret_providers import (get_secret_provider,
-                                       validate_secret_provider_setting)
+from pr_agent.secret_providers import get_secret_provider, validate_secret_provider_setting
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
 router = APIRouter()
@@ -142,10 +141,10 @@ async def _validate_time_from_last_commit_to_pr_update(data: dict) -> bool:
         if diff > 0 and diff < max_delta_seconds:
             is_valid_push = True
         else:
-            get_logger().debug(f"Too much time passed since last commit",
+            get_logger().debug("Too much time passed since last commit",
                                artifact={'updated': time_pr_updated, 'last_commit': time_last_commit})
     except Exception as e:
-        get_logger().exception(f"Failed to validate time difference between last commit and PR update",
+        get_logger().exception("Failed to validate time difference between last commit and PR update",
                                artifact={'error': e, 'data': data})
     return is_valid_push
 
@@ -167,7 +166,7 @@ async def _perform_commands_bitbucket(commands_conf: str, agent: PRAgent, api_ur
     if commands_conf == "push_commands":
         is_valid_push = await _validate_time_from_last_commit_to_pr_update(data)
         if not is_valid_push:
-            get_logger().info(f"Bitbucket skipping 'pullrequest:updated' for push commands")
+            get_logger().info("Bitbucket skipping 'pullrequest:updated' for push commands")
             return
     for command in commands:
         try:

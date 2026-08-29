@@ -9,9 +9,11 @@ import pytest
 from pr_agent.cli import set_parser
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import utils as git_utils
-from pr_agent.git_providers.utils import (_apply_settings_from_file,
-                                          _resolve_extra_config_to_file,
-                                          apply_repo_settings)
+from pr_agent.git_providers.utils import (
+    _apply_settings_from_file,
+    _resolve_extra_config_to_file,
+    apply_repo_settings,
+)
 
 SAMPLE_TOML = b'[config]\nmodel = "claude-sonnet-4-6"\n'
 

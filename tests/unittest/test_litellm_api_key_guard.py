@@ -14,8 +14,7 @@ import litellm
 import pytest
 
 import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_handler
-from pr_agent.algo.ai_handlers.litellm_ai_handler import (
-    DUMMY_LITELLM_API_KEY, LiteLLMAIHandler)
+from pr_agent.algo.ai_handlers.litellm_ai_handler import DUMMY_LITELLM_API_KEY, LiteLLMAIHandler
 
 
 def _make_settings():

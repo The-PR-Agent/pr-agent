@@ -35,9 +35,7 @@ class PRSimilarIssue:
 
         if get_settings().pr_similar_issue.vectordb == "pinecone":
             try:
-                import pandas as pd
                 import pinecone
-                from pinecone_datasets import Dataset, DatasetMetadata
             except:
                 raise Exception("Please install 'pinecone' and 'pinecone_datasets' to use pinecone as vectordb")
             # assuming pinecone api key and environment are set in secrets file
@@ -178,9 +176,7 @@ class PRSimilarIssue:
         elif get_settings().pr_similar_issue.vectordb == "qdrant":
             try:
                 import qdrant_client
-                from qdrant_client.models import (Distance, FieldCondition,
-                                                  Filter, MatchValue,
-                                                  PointStruct, VectorParams)
+                from qdrant_client.models import Distance, FieldCondition, Filter, MatchValue, VectorParams
             except Exception:
                 raise Exception("Please install qdrant-client to use qdrant as vectordb")
 
@@ -262,8 +258,7 @@ class PRSimilarIssue:
             message = "The /similar_issue tool is currently supported only for GitHub."
             if get_settings().config.publish_output:
                 try:
-                    from pr_agent.git_providers import \
-                        get_git_provider_with_context
+                    from pr_agent.git_providers import get_git_provider_with_context
 
                     provider = get_git_provider_with_context(self.issue_url)
                     provider.publish_comment(message)

@@ -4,11 +4,13 @@ import pytest
 import yaml
 
 from pr_agent.algo.types import FilePatchInfo
-from pr_agent.tools.pr_description import (PRDescription,
-                                           _longest_diagram_chain,
-                                           _parse_diagram_edges,
-                                           apply_diagram_direction,
-                                           sanitize_diagram)
+from pr_agent.tools.pr_description import (
+    PRDescription,
+    _longest_diagram_chain,
+    _parse_diagram_edges,
+    apply_diagram_direction,
+    sanitize_diagram,
+)
 
 KEYS_FIX = ["filename:", "language:", "changes_summary:", "changes_title:", "description:", "title:"]
 

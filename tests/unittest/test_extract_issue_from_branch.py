@@ -1,8 +1,8 @@
-import pytest
 
 from pr_agent.tools.ticket_pr_compliance_check import (
     extract_ticket_links_from_branch_name,
-    extract_ticket_links_from_pr_description)
+    extract_ticket_links_from_pr_description,
+)
 
 # The PR-description extractor caps results at 3 (hardcoded in the function).
 MAX_TICKETS = 3

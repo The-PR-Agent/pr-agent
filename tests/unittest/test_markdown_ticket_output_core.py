@@ -20,14 +20,22 @@ from unittest.mock import Mock
 
 import pytest
 
-from pr_agent.algo.utils import (convert_to_markdown_v2, emphasize_header,
-                                 format_todo_item, format_todo_items,
-                                 is_value_no, parse_code_suggestion,
-                                 process_can_be_split, ticket_markdown_logic)
+from pr_agent.algo.utils import (
+    convert_to_markdown_v2,
+    emphasize_header,
+    format_todo_item,
+    format_todo_items,
+    is_value_no,
+    parse_code_suggestion,
+    process_can_be_split,
+    ticket_markdown_logic,
+)
 from pr_agent.config_loader import get_settings
 from pr_agent.tools.pr_description import insert_br_after_x_chars
 from pr_agent.tools.ticket_pr_compliance_check import (
-    extract_ticket_links_from_pr_description, find_jira_tickets)
+    extract_ticket_links_from_pr_description,
+    find_jira_tickets,
+)
 
 # ---------------------------------------------------------------------------
 # is_value_no / emphasize_header
@@ -285,8 +293,10 @@ class TestTicketMarkdownLogic:
         ``compliance_level`` state into other tests sharing the settings
         singleton.
         """
-        from tests.unittest._settings_helpers import (restore_settings,
-                                                      snapshot_settings)
+        from tests.unittest._settings_helpers import (
+            restore_settings,
+            snapshot_settings,
+        )
 
         snapshot = snapshot_settings(["config.extra_statistics"])
         try:

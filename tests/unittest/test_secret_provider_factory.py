@@ -2,9 +2,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from pr_agent.secret_providers import (SUPPORTED_SECRET_PROVIDERS,
-                                       get_secret_provider,
-                                       validate_secret_provider_setting)
+from pr_agent.secret_providers import SUPPORTED_SECRET_PROVIDERS, get_secret_provider, validate_secret_provider_setting
 
 
 class TestValidateSecretProviderSetting:

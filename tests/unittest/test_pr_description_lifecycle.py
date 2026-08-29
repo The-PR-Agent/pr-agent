@@ -6,8 +6,10 @@ import pytest
 from pr_agent.config_loader import get_settings
 from pr_agent.tools import pr_description as pr_description_module
 from pr_agent.tools.pr_description import PRDescription
-from tests.unittest._settings_helpers import (restore_settings,
-                                              snapshot_settings)
+from tests.unittest._settings_helpers import (
+    restore_settings,
+    snapshot_settings,
+)
 
 _TRACKED_SETTINGS = (
     "config.publish_output",

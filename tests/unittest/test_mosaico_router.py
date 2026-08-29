@@ -10,10 +10,16 @@ import pytest
 
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.mosaico import dispatch
-from pr_agent.mosaico.dispatch import (_detect_verb, _diff_prose,
-                                       _empty_fallback, _error_fallback,
-                                       _explicit_verb, _split_turns,
-                                       route_and_run, route_and_run_result)
+from pr_agent.mosaico.dispatch import (
+    _detect_verb,
+    _diff_prose,
+    _empty_fallback,
+    _error_fallback,
+    _explicit_verb,
+    _split_turns,
+    route_and_run,
+    route_and_run_result,
+)
 
 PR_URL = "https://github.com/org/repo/pull/123"
 DEAD_PR_URL = "https://github.com/org/repo/pull/999999999"
@@ -777,7 +783,6 @@ class TestPublishOutputForced:
         monkeypatch.setattr("pr_agent.tools.pr_questions.PRQuestions", CapturingPRQuestions)
 
         from pr_agent.mosaico.dispatch import _run_ask
-
         # Force global default to True (production default) so the test would fail
         # if _run_ask does NOT explicitly override it.
         global_settings.set("CONFIG.PUBLISH_OUTPUT", True)

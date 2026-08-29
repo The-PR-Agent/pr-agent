@@ -2,8 +2,7 @@ import asyncio
 import os
 import time
 
-from pr_agent.algo.ai_handlers.langchain_ai_handler import \
-    LangChainOpenAIHandler
+from pr_agent.algo.ai_handlers.langchain_ai_handler import LangChainOpenAIHandler
 from pr_agent.config_loader import get_settings
 
 
@@ -44,7 +43,7 @@ async def measure_performance(handler, num_requests=3):
     total_time = end_time - start_time
     avg_time = total_time / num_requests
 
-    print(f'Performance results:')
+    print('Performance results:')
     print(f'Total time: {total_time:.2f} seconds')
     print(f'Average time per request: {avg_time:.2f} seconds')
     print(f'Requests per second: {num_requests/total_time:.2f}')

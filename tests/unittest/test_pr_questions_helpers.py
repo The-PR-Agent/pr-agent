@@ -15,12 +15,10 @@ import pr_agent.tools.pr_line_questions as plq
 from pr_agent.algo.utils import format_pr_questions_header
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.codecommit_provider import CodeCommitProvider
-from pr_agent.git_providers.gerrit_provider import (GerritProvider,
-                                                    adopt_to_gerrit_message)
+from pr_agent.git_providers.gerrit_provider import GerritProvider, adopt_to_gerrit_message
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
 from pr_agent.tools.pr_questions import PRQuestions
-from tests.unittest._settings_helpers import (SENTINEL, restore_settings,
-                                              snapshot_settings)
+from tests.unittest._settings_helpers import SENTINEL, restore_settings, snapshot_settings
 
 
 def _render_jinja_template(template: str, variables: dict) -> str:

@@ -7,9 +7,7 @@ from unidiff.errors import UnidiffParseError
 
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import _find_repository_root, get_settings
-from pr_agent.git_providers.diff_parsing import (parse_unified_diff,
-                                                 reconstruct_base_file,
-                                                 to_hunk_only_patch)
+from pr_agent.git_providers.diff_parsing import parse_unified_diff, reconstruct_base_file, to_hunk_only_patch
 from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.log import get_logger
 
