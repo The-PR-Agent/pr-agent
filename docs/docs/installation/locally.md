@@ -166,6 +166,8 @@ uv run pr-agent --issue_url <issue_url> similar_issue
 ...
 ```
 
+*Note: the `similar_issue` tool needs extra dependencies that a bare `uv sync` does not install. Install them with `uv sync --group similar-issue` before running it.*
+
 [Optional] Add the pr_agent folder to your PYTHONPATH
 
 ```bash
