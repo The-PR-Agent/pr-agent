@@ -355,6 +355,7 @@ pr_commands = [
     "/improve --pr_code_suggestions.commitable_code_suggestions=true",
 ]
 avoid_full_files = false
+request_timeout = 30 # positive seconds for connection and response-read inactivity timeouts
 
 [local]
 # LocalGitProvider settings - uncomment to use paths other than default

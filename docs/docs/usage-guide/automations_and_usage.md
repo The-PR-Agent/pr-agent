@@ -305,6 +305,11 @@ Note that among other limitations, BitBucket provides relatively low rate-limits
 If you experience a lack of responses from PR-Agent, you might want to set: `bitbucket_app.avoid_full_files=true` in your configuration file.
 This will prevent PR-Agent from acquiring the full file content, and will only use the diff content. This will reduce the number of requests made to BitBucket, at the cost of small decrease in accuracy, as dynamic context will not be applicable.
 
+For self-hosted BitBucket App deployments, `bitbucket_app.request_timeout` sets both the connection timeout and
+response-read inactivity timeout, in positive seconds, for offloaded BitBucket HTTP requests. It defaults to `30` and
+is read from host-level configuration or the `BITBUCKET_APP__REQUEST_TIMEOUT` environment variable; repository
+`.pr_agent.toml` overrides do not apply to this host resource limit.
+
 #### BitBucket Self-Hosted App automatic tools
 
 To control which commands will run automatically when a new PR is opened, you can set the `pr_commands` parameter in the configuration file:

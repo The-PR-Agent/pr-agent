@@ -1,7 +1,9 @@
+import asyncio
 import base64
 import copy
 import hashlib
 import json
+import math
 import os
 import re
 import time
@@ -34,6 +36,20 @@ validate_secret_provider_setting()
 _secret_provider_state = {}
 
 
+def _get_request_timeout():
+    """Return the host-controlled timeout for offloaded Bitbucket App requests."""
+    timeout = global_settings.get("bitbucket_app.request_timeout")
+    if isinstance(timeout, bool):
+        raise ValueError("bitbucket_app.request_timeout must be a positive finite number")
+    try:
+        timeout = float(timeout)
+    except (OverflowError, TypeError, ValueError):
+        raise ValueError("bitbucket_app.request_timeout must be a positive finite number") from None
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("bitbucket_app.request_timeout must be a positive finite number")
+    return timeout
+
+
 def get_fork_safe_secret_provider():
     """Return this process's secret provider, building it on first use after a fork."""
     pid = os.getpid()
@@ -64,7 +80,14 @@ async def get_bearer_token(shared_secret: str, client_key: str):
             'Authorization': f'JWT {token}',
             'Content-Type': 'application/x-www-form-urlencoded'
         }
-        response = requests.request("POST", url, headers=headers, data=payload)
+        response = await asyncio.to_thread(
+            requests.request,
+            "POST",
+            url,
+            headers=headers,
+            data=payload,
+            timeout=_get_request_timeout(),
+        )
         bearer_token = response.json()["access_token"]
         return bearer_token
     except Exception as e:
@@ -114,7 +137,12 @@ async def _validate_time_from_last_commit_to_pr_update(data: dict) -> bool:
             'Authorization': f'Bearer {bearer_token}',
             'Accept': 'application/json'
         }
-        response = requests.get(commits_api, headers=headers)
+        response = await asyncio.to_thread(
+            requests.get,
+            commits_api,
+            headers=headers,
+            timeout=_get_request_timeout(),
+        )
         if response.status_code != 200:
             get_logger().warning(f"Bitbucket commits API returned {response.status_code} for {commits_api}")
             return False
