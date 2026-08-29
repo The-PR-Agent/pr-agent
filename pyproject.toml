@@ -25,18 +25,22 @@ classifiers = [
   "Intended Audience :: Developers",
   "Programming Language :: Python :: 3",
 ]
+# Exact versions for this repo's own builds (Docker, CI, uv sync) come from
+# uv.lock. Security-sensitive packages below declare >=patched,<next-major
+# ranges instead of == pins so pip consumers can pull security patches on
+# their own cadence (#2523); the floor is the last vetted patched release.
 dependencies = [
-  "aiohttp==3.14.3",
+  "aiohttp>=3.14.3,<4",
   "anthropic>=0.69.0",
   "atlassian-python-api==3.41.4",
   "azure-devops==7.1.0b4",
   "azure-identity==1.25.0",
   "boto3==1.43.78",
   "certifi==2024.8.30",
-  "dynaconf==3.2.13",
-  "fastapi==0.141.1",
-  "GitPython==3.1.59",
-  "starlette==1.6.0",
+  "dynaconf>=3.2.13,<4",
+  "fastapi>=0.141.1,<1",
+  "GitPython>=3.1.59,<4",
+  "starlette>=1.6.0,<2",
   "google-cloud-aiplatform==1.154.0",
   # google-cloud-aiplatform==1.154.0 requires storage <4,>=1.32.0 on py<3.13 and <4,>=3.10.0 on py>=3.13.
   # Pin per-Python (exact, like the rest of this list) so existing installs are unchanged and py3.13 resolves. See #2480.
@@ -49,13 +53,13 @@ dependencies = [
   "msrest==0.7.1",
   "openai>=1.55.3",
   "PyGithub==1.59.*",
-  "PyJWT==2.13.0",
+  "PyJWT>=2.13.0,<3",
   "PyYAML==6.0.1",
   "python-gitlab==8.3.0",
   "retry==0.9.2",
   "starlette-context==0.3.6",
   "tiktoken==0.12.0",
-  "ujson==5.13.0",
+  "ujson>=5.13.0,<6",
   "unidiff==0.7.5",
   "uvicorn==0.22.0",
   "tenacity==8.2.3",
