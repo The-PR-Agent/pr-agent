@@ -2,6 +2,7 @@
 # The server listens for incoming webhooks from Azure DevOps Server and forwards them to the PR Agent.
 # ADO webhook documentation: https://learn.microsoft.com/en-us/azure/devops/service-hooks/services/webhooks?view=azure-devops
 
+import copy
 import json
 import os
 import re
@@ -17,11 +18,11 @@ from starlette.background import BackgroundTasks
 from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+from starlette_context import context
 from starlette_context.middleware import RawContextMiddleware
 
-from pr_agent.agent.pr_agent import PRAgent, command2class
-from pr_agent.algo.utils import update_settings_from_args
-from pr_agent.config_loader import get_settings
+from pr_agent.agent.pr_agent import PRAgent, command2class, prepare_command
+from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
 from pr_agent.git_providers.utils import apply_repo_settings
@@ -58,7 +59,7 @@ def handle_line_comment(body: str, thread_id: int, provider: AzureDevopsProvider
     thread_context = provider.get_thread_context(thread_id)
     if not thread_context:
         return body
-    
+
     path = thread_context.file_path
     if thread_context.left_file_end or thread_context.left_file_start:
         start_line = thread_context.left_file_start.line
@@ -71,7 +72,7 @@ def handle_line_comment(body: str, thread_id: int, provider: AzureDevopsProvider
     else:
         get_logger().info("No line range found in thread context", artifact={"thread_context": thread_context})
         return body
-    
+
     question = body[5:].lstrip() # remove 4 chars: '/ask '
     return f"/ask_line --line_start={start_line} --line_end={end_line} --side={side} --file_name={path} --comment_id={thread_id} {question}"
 
@@ -80,7 +81,14 @@ def handle_line_comment(body: str, thread_id: int, provider: AzureDevopsProvider
 def authorize(credentials: HTTPBasicCredentials = Depends(security)):
     if WEBHOOK_USERNAME is None or WEBHOOK_PASSWORD is None:
         return
-    
+
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing credentials.",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+
     is_user_ok = secrets.compare_digest(credentials.username, WEBHOOK_USERNAME)
     is_pass_ok = secrets.compare_digest(credentials.password, WEBHOOK_PASSWORD)
     if not (is_user_ok and is_pass_ok):
@@ -103,11 +111,7 @@ async def _perform_commands_azure(commands_conf: str, agent: PRAgent, api_url: s
     get_settings().set("config.is_auto_command", True)
     for command in commands:
         try:
-            split_command = command.split(" ")
-            command = split_command[0]
-            args = split_command[1:]
-            other_args = update_settings_from_args(args)
-            new_command = ' '.join([command] + other_args)
+            new_command = prepare_command(command)
             get_logger().info(f"Performing command: {new_command}")
             with get_logger().contextualize(**log_context):
                 await agent.handle_request(api_url, new_command)
@@ -172,6 +176,7 @@ async def handle_request_azure(data, log_context):
 async def handle_webhook(background_tasks: BackgroundTasks, request: Request):
     log_context = {"server_type": "azure_devops_server"}
     data = await request.json()
+    context["settings"] = copy.deepcopy(global_settings)
     # get_logger().info(json.dumps(data))
 
     background_tasks.add_task(handle_request_azure, data, log_context)

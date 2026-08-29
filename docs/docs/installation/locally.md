@@ -1,6 +1,8 @@
 To run PR-Agent locally, you first need to acquire two keys:
 
-1. An OpenAI key from [here](https://platform.openai.com/api-keys){:target="_blank"}, with access to GPT-5.5 and gpt-5.4-mini (or a key for other [language models](../usage-guide/changing_a_model.md), if you prefer).
+Local execution has two distinct cases: use the hosted-provider examples below for an existing PR/MR URL, or use the [Local Git Provider guide](../usage-guide/local_git_provider.md) for branch comparisons without a hosted PR/MR.
+
+1. An OpenAI key from [here](https://platform.openai.com/api-keys){:target="_blank"}, with access to GPT-5.6 and gpt-5.6-terra (or a key for other [language models](../usage-guide/changing_a_model.md), if you prefer).
 2. A personal access token from your Git platform (GitHub, GitLab, BitBucket, Gitea) with repo scope. GitHub token, for example, can be issued from [here](https://github.com/settings/tokens){:target="_blank"}
 
 ## Using Docker image
@@ -163,6 +165,8 @@ uv run pr-agent --pr_url <pr_url> generate_labels
 uv run pr-agent --issue_url <issue_url> similar_issue
 ...
 ```
+
+*Note: the `similar_issue` tool needs extra dependencies that a bare `uv sync` does not install. Install them with `uv sync --group similar-issue` before running it.*
 
 [Optional] Add the pr_agent folder to your PYTHONPATH
 

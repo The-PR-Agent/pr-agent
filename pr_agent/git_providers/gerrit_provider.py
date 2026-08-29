@@ -1,7 +1,9 @@
 import json
 import os
 import pathlib
+import re
 import shutil
+import string
 import subprocess
 import uuid
 from collections import Counter, namedtuple
@@ -12,6 +14,8 @@ import requests
 import urllib3.util
 from git import Repo
 
+from pr_agent.algo.file_filter import filter_ignored
+from pr_agent.algo.language_handler import build_language_file_matcher
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import GitProvider
@@ -109,10 +113,35 @@ def prepare_repo(url: urllib3.util.Url, project, refspec):
     return directory
 
 
+_ASK_HEADING_PREFIX = "### **"
+_ASK_HEADING_SUFFIX = "** ❓"
+_ESCAPED_MARKDOWN_PUNCTUATION = re.compile(
+    r"\\([" + re.escape(string.punctuation) + r"])"
+)
+
+
+def _convert_gerrit_ask_heading(line: str) -> str | None:
+    """Convert only the generated /ask heading to Gerrit's plain-text form."""
+    if not line.startswith(_ASK_HEADING_PREFIX) or not line.endswith(_ASK_HEADING_SUFFIX):
+        return None
+    escaped_heading = line[len(_ASK_HEADING_PREFIX):-len(_ASK_HEADING_SUFFIX)]
+    heading = _ESCAPED_MARKDOWN_PUNCTUATION.sub(
+        lambda match: match.group(1),
+        escaped_heading,
+    )
+    return f"{heading}❓"
+
+
 def adopt_to_gerrit_message(message):
     lines = message.splitlines()
     buf = []
-    for line in lines:
+    for line_number, line in enumerate(lines):
+        if line_number == 0:
+            ask_heading = _convert_gerrit_ask_heading(line.strip())
+            if ask_heading is not None:
+                buf.append(f"\n{ask_heading}:")
+                continue
+
         # remove markdown formatting
         line = (line.replace("*", "")
                 .replace("``", "`")
@@ -232,25 +261,31 @@ class GerritProvider(GitProvider):
             return b""
 
     def get_diff_files(self) -> list[FilePatchInfo]:
-        diffs = self.repo.head.commit.diff(
-            self.repo.head.commit.parents[0],  # previous commit
-            create_patch=True,
-            R=True
+        diffs = list(
+            self.repo.head.commit.diff(
+                self.repo.head.commit.parents[0],  # previous commit
+                create_patch=True,
+                R=True
+            )
         )
+        diffs = filter_ignored(diffs, "gerrit")
 
         diff_files = []
         for diff_item in diffs:
-            if diff_item.a_blob is not None:
-                original_file_content_str = (
-                    diff_item.a_blob.data_stream.read().decode('utf-8')
-                )
-            else:
-                original_file_content_str = ""  # empty file
-            if diff_item.b_blob is not None:
-                new_file_content_str = diff_item.b_blob.data_stream.read(). \
-                    decode('utf-8')
-            else:
-                new_file_content_str = ""  # empty file
+            filename = diff_item.b_path or diff_item.a_path
+            try:
+                if diff_item.a_blob is not None:
+                    original_file_content_str = diff_item.a_blob.data_stream.read().decode("utf-8")
+                else:
+                    original_file_content_str = ""  # empty file
+                if diff_item.b_blob is not None:
+                    new_file_content_str = diff_item.b_blob.data_stream.read().decode("utf-8")
+                else:
+                    new_file_content_str = ""  # empty file
+                patch = diff_item.diff.decode("utf-8")
+            except UnicodeDecodeError as e:
+                get_logger().warning(f"Skipping non-UTF-8 file in Gerrit diff: {filename!r} ({e})")
+                continue
             edit_type = EDIT_TYPE.MODIFIED
             if diff_item.new_file:
                 edit_type = EDIT_TYPE.ADDED
@@ -262,8 +297,8 @@ class GerritProvider(GitProvider):
                 FilePatchInfo(
                     original_file_content_str,
                     new_file_content_str,
-                    diff_item.diff.decode('utf-8'),
-                    diff_item.b_path,
+                    patch,
+                    filename,
                     edit_type=edit_type,
                     old_filename=None
                     if diff_item.a_path == diff_item.b_path
@@ -287,18 +322,21 @@ class GerritProvider(GitProvider):
         Calculate percentage of languages in repository. Used for hunk
         prioritisation.
         """
+        lang_map = get_settings().get("language_extension_map_org", {}) or {}
+        get_language = build_language_file_matcher(lang_map)
+
         # Get all files in repository
         filepaths = [Path(item.path) for item in
                      self.repo.tree().traverse() if item.type == 'blob']
-        # Identify language by file extension and count
-        lang_count = Counter(
-            ext.lstrip('.') for filepath in filepaths for ext in
-            [filepath.suffix.lower()])
+        # Identify language by filename and count
+        lang_count = Counter()
+        for filepath in filepaths:
+            language = get_language(filepath.name)
+            if language:
+                lang_count[language] += 1
         # Convert counts to percentages
-        total_files = len(filepaths)
-        lang_percentage = {lang: count / total_files * 100 for lang, count
-                           in lang_count.items()}
-        return lang_percentage
+        total = sum(lang_count.values()) or 1
+        return {lang: count / total * 100 for lang, count in lang_count.items()}
 
     def get_pr_description_full(self):
         return self.repo.head.commit.message
@@ -342,10 +380,22 @@ class GerritProvider(GitProvider):
 
     def publish_code_suggestions(self, code_suggestions: list):
         msg = []
+        repo_root = pathlib.Path(self.repo_path).resolve()
         for suggestion in code_suggestions:
+            # Validate suggestion structure before accessing keys
+            if not isinstance(suggestion, dict) or not isinstance(suggestion.get("relevant_file"), str):
+                get_logger().warning("Skipping malformed suggestion: missing or invalid 'relevant_file'")
+                continue
+            # Sanitize file path to prevent directory traversal
+            try:
+                target_path = (repo_root / suggestion["relevant_file"]).resolve()
+                target_path.relative_to(repo_root)
+            except ValueError:
+                get_logger().warning(f"Skipping suggestion with path traversal: {suggestion['relevant_file']}")
+                continue
             description, code = self.split_suggestion(suggestion['body'])
             add_suggestion(
-                pathlib.Path(self.repo_path) / suggestion["relevant_file"],
+                target_path,
                 code,
                 suggestion["relevant_lines_start"],
                 suggestion["relevant_lines_end"],

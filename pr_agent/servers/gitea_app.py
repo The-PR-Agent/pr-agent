@@ -9,8 +9,7 @@ from starlette.middleware import Middleware
 from starlette_context import context
 from starlette_context.middleware import RawContextMiddleware
 
-from pr_agent.agent.pr_agent import PRAgent
-from pr_agent.algo.utils import update_settings_from_args
+from pr_agent.agent.pr_agent import PRAgent, prepare_command
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
@@ -140,13 +139,12 @@ async def _perform_commands_gitea(commands_conf: str, agent: PRAgent, body: dict
         return
     get_settings().set("config.is_auto_command", True)
     for command in commands:
-        split_command = command.split(" ")
-        command = split_command[0]
-        args = split_command[1:]
-        other_args = update_settings_from_args(args)
-        new_command = ' '.join([command] + other_args)
-        get_logger().info(f"{commands_conf}. Performing auto command '{new_command}', for {api_url=}")
-        await agent.handle_request(api_url, new_command)
+        try:
+            new_command = prepare_command(command)
+            get_logger().info(f"{commands_conf}. Performing auto command '{new_command}', for {api_url=}")
+            await agent.handle_request(api_url, new_command)
+        except Exception as e:
+            get_logger().error(f"Failed to perform command {command}: {e}")
 
 def should_process_pr_logic(body) -> bool:
     try:

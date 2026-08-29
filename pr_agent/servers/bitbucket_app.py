@@ -16,18 +16,31 @@ from starlette.responses import JSONResponse
 from starlette_context import context
 from starlette_context.middleware import RawContextMiddleware
 
-from pr_agent.agent.pr_agent import PRAgent
-from pr_agent.algo.utils import update_settings_from_args
+from pr_agent.agent.pr_agent import PRAgent, prepare_command
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.identity_providers import get_identity_provider
 from pr_agent.identity_providers.identity_provider import Eligibility
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
-from pr_agent.secret_providers import get_secret_provider
+from pr_agent.secret_providers import (get_secret_provider,
+                                       validate_secret_provider_setting)
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
 router = APIRouter()
-secret_provider = get_secret_provider() if get_settings().get("CONFIG.SECRET_PROVIDER") else None
+
+
+validate_secret_provider_setting()
+
+_secret_provider_state = {}
+
+
+def get_fork_safe_secret_provider():
+    """Return this process's secret provider, building it on first use after a fork."""
+    pid = os.getpid()
+    if _secret_provider_state.get("pid") != pid:
+        _secret_provider_state["provider"] = get_secret_provider()
+        _secret_provider_state["pid"] = pid
+    return _secret_provider_state["provider"]
 
 
 async def get_bearer_token(shared_secret: str, client_key: str):
@@ -158,11 +171,7 @@ async def _perform_commands_bitbucket(commands_conf: str, agent: PRAgent, api_ur
             return
     for command in commands:
         try:
-            split_command = command.split(" ")
-            command = split_command[0]
-            args = split_command[1:]
-            other_args = update_settings_from_args(args)
-            new_command = ' '.join([command] + other_args)
+            new_command = prepare_command(command)
             get_logger().info(f"Performing command: {new_command}")
             with get_logger().contextualize(**log_context):
                 await agent.handle_request(api_url, new_command)
@@ -264,7 +273,7 @@ async def handle_github_webhooks(background_tasks: BackgroundTasks, request: Req
             decoded_claims = base64.urlsafe_b64decode(claim_part)
             claims = json.loads(decoded_claims)
             client_key = claims["iss"]
-            secrets = json.loads(secret_provider.get_secret(client_key))
+            secrets = json.loads(get_fork_safe_secret_provider().get_secret(client_key))
             shared_secret = secrets["shared_secret"]
             jwt.decode(input_jwt, shared_secret, audience=client_key, algorithms=["HS256"])
             bearer_token = await get_bearer_token(shared_secret, client_key)
@@ -325,7 +334,7 @@ async def handle_installed_webhooks(request: Request, response: Response):
             "shared_secret": shared_secret,
             "client_key": client_key
         }
-        secret_provider.store_secret(username, json.dumps(secrets))
+        get_fork_safe_secret_provider().store_secret(username, json.dumps(secrets))
     except Exception as e:
         get_logger().error(f"Failed to register user: {e}")
         return JSONResponse({"error": "Unable to register user"}, status_code=500)

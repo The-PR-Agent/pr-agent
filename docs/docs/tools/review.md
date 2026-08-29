@@ -32,7 +32,7 @@ If you want to edit [configurations](#configuration-options), add the relevant o
 
 ### Automatic triggering
 
-To run the `review` automatically when a PR is opened, define in a [configuration file](../usage-guide/configuration_options.md#wiki-configuration-file):
+To run the `review` automatically when a PR is opened, define in a [configuration file](../usage-guide/configuration_options.md#local-configuration-file):
 
 ```
 [github_app]
@@ -59,6 +59,18 @@ extra_instructions = "..."
         <td>If set to true, the review comment will be persistent, meaning that every new review request will edit the previous one. Default is true.</td>
       </tr>
       <tr>
+        <td><b>review_heading</b></td>
+        <td>
+          Visible base heading for review comments, without the Markdown prefix or incremental label.
+          For example, <code>review_heading = "Guideline Compliance Check"</code> renders
+          <code>## Guideline Compliance Check 🔍</code> for a full review and
+          <code>## Incremental Guideline Compliance Check 🔍</code> for an incremental review.
+          On GitHub, GitLab, Azure DevOps, and Bitbucket Cloud, changing this value updates the same
+          persistent review comment; it does not create a separate review channel.
+          Default is <code>PR Reviewer Guide</code>.
+        </td>
+      </tr>
+      <tr>
       <td><b>final_update_message</b></td>
       <td>When set to true, updating a persistent review comment during online commenting will automatically add a short comment with a link to the updated review in the pull request .Default is true.</td>
       </tr>
@@ -71,8 +83,16 @@ extra_instructions = "..."
         <td>If set to true, the tool will display a help text in the comment. Default is false.</td>
       </tr>
       <tr>
+        <td><b>enable_review_coverage_footer</b></td>
+        <td>If set to true, the tool will display a review coverage footer when the token budget leaves files out of the review. Default is true.</td>
+      </tr>
+      <tr>
         <td><b>num_max_findings</b></td>
         <td>Number of maximum returned findings. Default is 3.</td>
+      </tr>
+      <tr>
+        <td><b>inline_key_issues</b></td>
+        <td>Azure DevOps only. If set to true, each key issue is published as an inline thread. A finding leaves the review summary when a matching thread exists or Azure accepts the new thread. Findings that cannot be anchored or published stay in the summary. Default is false.</td>
       </tr>
     </table>
 
@@ -176,7 +196,7 @@ extra_instructions = "..."
 
 ### Extra instructions
 
-!!! tip "" 
+!!! tip ""
 
     Extra instructions are important.
     The `review` tool can be configured with extra instructions, which can be used to guide the model to a feedback tailored to the needs of your project.

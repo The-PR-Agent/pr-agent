@@ -5,6 +5,8 @@ from typing import List
 from git import Repo
 
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
+from pr_agent.algo.utils import (format_pr_code_suggestions_header,
+                                 show_run_details)
 from pr_agent.config_loader import _find_repository_root, get_settings
 from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.log import get_logger
@@ -26,7 +28,8 @@ class LocalGitProvider(GitProvider):
     It mimics the PR functionality of the GitProvider interface,
     but does not require a hosted git repository.
     Instead of providing a PR url, the user provides a local branch path to generate a diff-patch.
-    For the MVP it only supports the /review and /describe capabilities.
+    It supports the /review, /describe and /improve capabilities; each writes its output to a
+    file (review.md, description.md, improve.md) since there is no hosted PR to comment on.
     """
 
     def __init__(self, target_branch_name, incremental=False):
@@ -34,7 +37,10 @@ class LocalGitProvider(GitProvider):
         if self.repo_path is None:
             raise ValueError('Could not find repository root')
         self.repo = Repo(self.repo_path)
-        self.head_branch_name = self.repo.head.ref.name
+        if self.repo.head.is_detached:
+            self.head_branch_name = self.repo.head.commit.hexsha[:7]
+        else:
+            self.head_branch_name = self.repo.head.ref.name
         self.target_branch_name = target_branch_name
         self._prepare_repo()
         self.diff_files = None
@@ -43,6 +49,8 @@ class LocalGitProvider(GitProvider):
             if get_settings().get('local.description_path') is not None else self.repo_path / 'description.md'
         self.review_path = get_settings().get('local.review_path') \
             if get_settings().get('local.review_path') is not None else self.repo_path / 'review.md'
+        self.improve_path = get_settings().get('local.improve_path') \
+            if get_settings().get('local.improve_path') is not None else self.repo_path / 'improve.md'
         # inline code comments are not supported for local git repositories
         get_settings().pr_reviewer.inline_code_comments = False
 
@@ -62,6 +70,9 @@ class LocalGitProvider(GitProvider):
             return False
         return True
 
+    def supports_code_suggestions_artifact(self) -> bool:
+        return True
+
     def get_diff_files(self) -> list[FilePatchInfo]:
         diffs = self.repo.head.commit.diff(
             self.repo.merge_base(self.repo.head, self.repo.branches[self.target_branch_name]),
@@ -70,14 +81,20 @@ class LocalGitProvider(GitProvider):
         )
         diff_files = []
         for diff_item in diffs:
-            if diff_item.a_blob is not None:
-                original_file_content_str = diff_item.a_blob.data_stream.read().decode('utf-8')
-            else:
-                original_file_content_str = ""  # empty file
-            if diff_item.b_blob is not None:
-                new_file_content_str = diff_item.b_blob.data_stream.read().decode('utf-8')
-            else:
-                new_file_content_str = ""  # empty file
+            filename = diff_item.b_path or diff_item.a_path
+            try:
+                if diff_item.a_blob is not None:
+                    original_file_content_str = diff_item.a_blob.data_stream.read().decode("utf-8")
+                else:
+                    original_file_content_str = ""  # empty file
+                if diff_item.b_blob is not None:
+                    new_file_content_str = diff_item.b_blob.data_stream.read().decode("utf-8")
+                else:
+                    new_file_content_str = ""  # empty file
+                patch = diff_item.diff.decode("utf-8")
+            except UnicodeDecodeError as e:
+                get_logger().warning(f"Skipping non-UTF-8 file in local diff: {filename!r} ({e})")
+                continue
             edit_type = EDIT_TYPE.MODIFIED
             if diff_item.new_file:
                 edit_type = EDIT_TYPE.ADDED
@@ -88,8 +105,8 @@ class LocalGitProvider(GitProvider):
             diff_files.append(
                 FilePatchInfo(original_file_content_str,
                               new_file_content_str,
-                              diff_item.diff.decode('utf-8'),
-                              diff_item.b_path,
+                              patch,
+                              filename,
                               edit_type=edit_type,
                               old_filename=None if diff_item.a_path == diff_item.b_path else diff_item.a_path
                               )
@@ -115,7 +132,11 @@ class LocalGitProvider(GitProvider):
             file.write(title + '\n' + pr_body)
 
     def publish_comment(self, pr_comment: str, is_temporary: bool = False):
-        with open(self.review_path, "w") as file:
+        # Temporary comments (e.g. "Preparing suggestions...") have no place to live
+        # locally and would otherwise clobber the persisted review.md; skip them.
+        if is_temporary:
+            return
+        with open(self.review_path, "w", encoding="utf-8") as file:
             # Write the string to the file
             file.write(pr_comment)
 
@@ -130,7 +151,40 @@ class LocalGitProvider(GitProvider):
         raise NotImplementedError('Publishing code suggestions is not implemented for the local git provider')
 
     def publish_code_suggestions(self, code_suggestions: list) -> bool:
-        raise NotImplementedError('Publishing code suggestions is not implemented for the local git provider')
+        return self.publish_code_suggestions_artifact(code_suggestions)
+
+    def publish_code_suggestions_artifact(
+            self, code_suggestions: list, artifact_footer: str = "",
+            no_suggestions_message: str = "No code suggestions found for the PR.") -> bool:
+        """
+        Write /improve output to a file (improve.md by default).
+
+        There is no hosted PR to attach inline suggestions to, so the suggestions the
+        tool built for inline publishing are rendered as a single markdown document,
+        mirroring how /review and /describe persist their output locally. Each entry
+        carries a rendered 'body' plus its file and line range; format them into a
+        readable section per suggestion. Returns True so the caller does not fall back
+        to publishing suggestions one by one.
+        """
+        sections = []
+        for suggestion in code_suggestions:
+            relevant_file = suggestion.get('relevant_file', '').strip()
+            start = suggestion.get('relevant_lines_start')
+            end = suggestion.get('relevant_lines_end')
+            location = relevant_file
+            if start is not None:
+                location += f" [{start}-{end}]" if end is not None and end != start else f" [{start}]"
+            header = f"### {location}" if location else "### Suggestion"
+            sections.append(f"{header}\n\n{suggestion.get('body', '').strip()}")
+        header = format_pr_code_suggestions_header(markdown_level=1)
+        pr_body = f"{header}\n\n" + "\n\n".join(sections) if sections \
+            else f"{header}\n\n{no_suggestions_message}"
+        pr_body += artifact_footer
+        if not sections and get_settings().get("config.output_run_details", False):
+            pr_body += show_run_details(False)
+        with open(self.improve_path, "w", encoding="utf-8") as file:
+            file.write(pr_body)
+        return True
 
     def publish_labels(self, labels):
         pass  # Not applicable to the local git provider, but required by the interface
@@ -156,15 +210,48 @@ class LocalGitProvider(GitProvider):
     def get_languages(self):
         """
         Calculate percentage of languages in repository. Used for hunk prioritisation.
+
+        Keys are language NAMES (e.g. "Python"), not raw extensions: the consumer
+        sort_files_by_main_languages() maps each name back to its extensions, so
+        returning extensions ("py") silently drops every file into the "Other"
+        bucket and defeats the prioritisation this method exists for. Invert the
+        settings map (name -> [extensions]) into an extension -> name lookup;
+        files with unknown extensions are left out and fall through to "Other".
         """
+        # Invert to a filename-token -> language lookup. Map entries are mostly
+        # ".ext", but also include multi-part extensions (".cmake.in") and full
+        # filenames ("Dockerfile", "Makefile"); normalize the glob form ("*.bsl").
+        ext_to_lang = {}
+        lang_map = get_settings().get("language_extension_map_org", {}) or {}
+        for language, extensions in lang_map.items():
+            for ext in extensions:
+                ext_to_lang.setdefault(ext.lower().lstrip("*"), language)
+
+        def _match_language(name: str):
+            # Full-filename rules (Dockerfile, Makefile) carry no extension.
+            language = ext_to_lang.get(name.lower())
+            if language:
+                return language
+            # Try progressively shorter dotted suffixes so multi-part extensions
+            # (".cmake.in") win over their simple tail (".in") when both exist.
+            parts = name.split(".")
+            for i in range(1, len(parts)):
+                language = ext_to_lang.get("." + ".".join(parts[i:]).lower())
+                if language:
+                    return language
+            return None
+
         # Get all files in repository
         filepaths = [Path(item.path) for item in self.repo.tree().traverse() if item.type == 'blob']
-        # Identify language by file extension and count
-        lang_count = Counter(ext.lstrip('.') for filepath in filepaths for ext in [filepath.suffix.lower()])
+        # Identify language by filename (mapped to its language name) and count
+        lang_count = Counter()
+        for filepath in filepaths:
+            language = _match_language(filepath.name)
+            if language:
+                lang_count[language] += 1
         # Convert counts to percentages
-        total_files = len(filepaths)
-        lang_percentage = {lang: count / total_files * 100 for lang, count in lang_count.items()}
-        return lang_percentage
+        total = sum(lang_count.values()) or 1
+        return {lang: count / total * 100 for lang, count in lang_count.items()}
 
     def get_pr_branch(self):
         return self.repo.head

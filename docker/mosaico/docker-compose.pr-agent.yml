@@ -1,4 +1,5 @@
-# PR-Agent MOSAICO solution-agent overlay (canonical source; versioned with the agent).
+# PR-Agent MOSAICO solution-agent overlay. Canonical source is docker/mosaico/ in
+# github.com/The-PR-Agent/pr-agent - edit it there, never in a copy.
 # Copy into the demonstrator's `compose/` dir, next to `base-definitions.yml`, so the
 # `extends:` refs resolve; see ./README.md for the full wiring steps.
 #
@@ -9,27 +10,32 @@ services:
     extends:
       file: base-definitions.yml
       service: agent
-    # Build: docker build --target mosaico_agent -t pr-agent-solution-agent:local -f docker/Dockerfile .
-    image: pr-agent-solution-agent:local
+    image: pragent/pr-agent:0.41.0-mosaico_agent
     ports:
-      - ${PR_AGENT_PORT:-22000}:9000
+      - ${PR_AGENT_PORT:-23000}:9000
     environment:
       AGENT_CARD_HOST: ${PR_AGENT_HOST:-${DEFAULT_TASK_AGENT_HOST}}
-      AGENT_CARD_PORT: ${PR_AGENT_PORT:-22000}
+      AGENT_CARD_PORT: ${PR_AGENT_PORT:-23000}
       MODEL_NAME: ${PR_AGENT_MODEL}
-    # Gate registration on card/HTTP readiness, not /health (a live LLM probe).
+    # Mirrors the peer agents' probe. /health is a live LLM check, so no LLM means no
+    # registration - intended: a registered card with a dead LLM is worse.
+    # PORT comes from base-definitions.yml's `agent` service; the :-9000 fallback keeps
+    # the probe correct even if this overlay is composed without it.
+    # timeout=25 sits between /health's own 10s LLM timeout and Docker's 30s default
+    # healthcheck timeout, so a stalled probe fails as unhealthy rather than being killed.
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:9000/.well-known/agent-card.json')\""]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:$${PORT:-9000}/health', timeout=25)\""]
 
   pr-agent-solution-agent-registration:
     extends:
       file: base-definitions.yml
       service: agent-registration
     environment:
-      AGENT_NAME: PR-Agent Solution Agent
+      AGENT_NAME: pr-agent-solution-agent
       AGENT_JSON: /app/pr-agent-solution-agent.json
-      # Fetched container-to-container: use the service name and in-container port 9000.
-      AGENT_CARD_URL: http://pr-agent-solution-agent:9000/.well-known/agent-card.json
+      # Stored in the repository and fetched by out-of-Docker clients, so it must be
+      # host-reachable, not a compose service name.
+      AGENT_CARD_URL: http://${PR_AGENT_HOST:-${DEFAULT_TASK_AGENT_HOST}}:${PR_AGENT_PORT:-23000}/.well-known/agent-card.json
     depends_on:
       pr-agent-solution-agent:
         condition: service_healthy

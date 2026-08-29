@@ -59,7 +59,7 @@ class PRConfig:
                      'APP_NAME', 'PERSONAL_ACCESS_TOKEN', 'shared_secret', 'key', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'user_token',
                      'private_key', 'private_key_id', 'client_id', 'client_secret', 'token', 'bearer_token', 'jira_api_token','webhook_secret']
         partial_skip_keys = ['key', 'secret', 'token', 'private']
-        extra_skip_keys = get_settings().config.get('config.skip_keys', [])
+        extra_skip_keys = get_settings().config.get("skip_keys", [])
         if extra_skip_keys:
             skip_keys.extend(extra_skip_keys)
         skip_keys_lower = [key.lower() for key in skip_keys]

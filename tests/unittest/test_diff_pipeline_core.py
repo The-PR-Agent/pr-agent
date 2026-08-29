@@ -12,11 +12,14 @@ rather than on full golden strings, so they remain robust to minor
 formatting tweaks.
 """
 
+from unittest.mock import patch
+
+import pytest
+
 import pr_agent.algo.pr_processing as pr_processing
 from pr_agent.algo.git_patch_processing import (
     decouple_and_convert_to_hunks_with_lines_numbers,
-    extract_hunk_lines_from_patch,
-)
+    extract_hunk_lines_from_patch)
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 
 # ---------------------------------------------------------------------------
@@ -182,10 +185,7 @@ class TestExtractHunkLinesFromPatch:
             MULTI_HUNK_PATCH, "src/sample.py", line_start=2, line_end=2, side="left"
         )
         assert "@@ -1,3 +1,4 @@" in full
-        # Current production behavior includes adjacent context/paired new
-        # lines around the deleted line; assert exactly so this test documents
-        # the full selected payload rather than only a partial match.
-        assert selected == " line1\n-line2\n+line2_new"
+        assert selected == "-line2"
 
     def test_targets_second_hunk_when_line_in_its_range(self):
         # Second hunk new-file range: start2=11, size2=3 -> lines 11..14.
@@ -205,15 +205,13 @@ class TestExtractHunkLinesFromPatch:
         assert "## File: 'src/sample.py'" in full
         assert selected == ""
 
-    def test_malformed_patch_returns_empty_tuple(self):
-        # An '@@' line that does not match RE_HUNK_HEADER causes the
-        # implementation to raise inside extract_hunk_headers; the function
-        # catches it and returns ("", "").
+    def test_malformed_patch_yields_no_hunk_content(self):
         bad_patch = "@@ not a real header @@\n+something\n"
         full, selected = extract_hunk_lines_from_patch(
             bad_patch, "src/sample.py", line_start=1, line_end=1, side="right"
         )
-        assert full == ""
+        assert "@@" not in full
+        assert "+something" not in full
         assert selected == ""
 
     def test_remove_trailing_chars_false_preserves_trailing_newlines(self):
@@ -228,6 +226,28 @@ class TestExtractHunkLinesFromPatch:
         # Trimmed variants are strict suffixes (no trailing whitespace).
         assert full_stripped == full_raw.rstrip()
         assert sel_stripped == sel_raw.rstrip()
+
+    @pytest.mark.parametrize("line_start, line_end", [
+        ("", ""),
+        (None, None),
+        ("None", "None"),
+    ])
+    def test_non_numeric_line_params_do_not_crash(self, line_start, line_end):
+        full, selected = extract_hunk_lines_from_patch(
+            MULTI_HUNK_PATCH, "src/sample.py", line_start=line_start, line_end=line_end, side="right"
+        )
+        assert "## File: 'src/sample.py'" in full
+        assert selected == ""
+
+    def test_string_line_params_are_coerced_to_int(self):
+        full_str, sel_str = extract_hunk_lines_from_patch(
+            MULTI_HUNK_PATCH, "src/sample.py", line_start="2", line_end="2", side="right"
+        )
+        full_int, sel_int = extract_hunk_lines_from_patch(
+            MULTI_HUNK_PATCH, "src/sample.py", line_start=2, line_end=2, side="right"
+        )
+        assert full_str == full_int
+        assert sel_str == sel_int
 
 
 # ---------------------------------------------------------------------------
@@ -403,6 +423,73 @@ class TestPrGenerateCompressedDiff:
         finally:
             settings.pr_description.max_ai_calls = original_max_ai_calls
 
+    def test_large_pr_handling_retries_file_after_hard_stop(self, monkeypatch):
+        """A hard-stopped file remains eligible for the next large-PR iteration."""
+
+        prompt_tokens = 100
+        max_tokens = 3_000
+        monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: max_tokens)
+
+        class HardStopAcrossIterationsTokenHandler(FakeTokenHandler):
+            def __init__(self):
+                super().__init__(prompt_tokens=prompt_tokens)
+                self.first_marker_calls = 0
+
+            def count_tokens(self, patch):
+                if "FIRST_MARKER" in patch:
+                    self.first_marker_calls += 1
+                    # The compressed file entry fits, and its final rendered
+                    # patch count crosses the hard-stop threshold after the
+                    # first file is included.
+                    return {1: 100, 2: 2_500}[self.first_marker_calls]
+                return super().count_tokens(patch)
+
+        token_handler = HardStopAcrossIterationsTokenHandler()
+        settings = self._settings()
+        original_max_ai_calls = settings.pr_description.max_ai_calls
+        settings.pr_description.max_ai_calls = 3
+
+        try:
+            files = [
+                _make_file(
+                    filename="first.py",
+                    patch="@@ -1 +1 @@\n+FIRST_MARKER\n",
+                    tokens=10,
+                ),
+                _make_file(
+                    filename="hard_stop.py",
+                    patch="@@ -1 +1 @@\n+SECOND_MARKER\n",
+                    tokens=5,
+                ),
+            ]
+
+            with patch.object(pr_processing, "get_logger") as logger:
+                (patches_list, _, deleted_files_list, remaining_files_list,
+                 file_dict, files_in_patches_list) = \
+                    pr_processing.pr_generate_compressed_diff(
+                        top_langs=[{"files": files}],
+                        token_handler=token_handler,
+                        model="some-model",
+                        convert_hunks_to_line_numbers=False,
+                        large_pr_handling=True,
+                    )
+
+            assert token_handler.first_marker_calls == 2
+            assert prompt_tokens + 2_500 > max_tokens - pr_processing.OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD
+            logger.return_value.warning.assert_any_call(
+                "File was fully skipped, no more tokens: hard_stop.py."
+            )
+            assert file_dict["first.py"]["tokens"] == 100
+            assert len(patches_list) == 2
+            assert files_in_patches_list == [["first.py"], ["hard_stop.py"]]
+            assert remaining_files_list == []
+            assert deleted_files_list == []
+            processed_files = [filename for batch in files_in_patches_list for filename in batch]
+            assert processed_files == ["first.py", "hard_stop.py"]
+            assert len(processed_files) == len(set(processed_files))
+        finally:
+            settings.pr_description.max_ai_calls = original_max_ai_calls
+
     def test_files_with_empty_patch_are_skipped(self, monkeypatch):
         monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: 10_000)
 
@@ -473,3 +560,53 @@ class TestPrGenerateCompressedDiff:
             assert len(files_in_patches_list) == 1
         finally:
             settings.pr_description.max_ai_calls = original_max_ai_calls
+
+
+class TestLeftSideSelection:
+    PATCH = "@@ -1,3 +1,3 @@\n ctx1\n-old2\n+new2\n ctx3"
+
+    def test_select_only_lines_that_exist_on_the_old_side(self):
+        """Exclude an inserted line from a left-side payload: it has no old-file number, so
+        it would otherwise borrow the number of the old line that follows it."""
+        _, selected = extract_hunk_lines_from_patch(
+            self.PATCH, "f.py", line_start=3, line_end=3, side="left")
+
+        assert selected == " ctx3"
+
+    def test_keep_the_paired_removed_line_on_the_right_side(self):
+        """Preserve the existing right-side payload, which includes the removed line that
+        precedes the targeted inserted line."""
+        _, selected = extract_hunk_lines_from_patch(
+            self.PATCH, "f.py", line_start=2, line_end=2, side="right")
+
+        assert selected == "-old2\n+new2"
+
+    def test_select_nothing_for_an_unrecognised_side(self):
+        """Select nothing when side is neither left nor right, rather than silently
+        falling through to right-side numbering."""
+        _, selected = extract_hunk_lines_from_patch(
+            self.PATCH, "f.py", line_start=2, line_end=2, side="sideways")
+
+        assert selected == ""
+
+class TestTrailingDeletionOnlyHunk:
+    """Render a hunk containing only deleted lines whether or not another hunk follows
+    it. A PR that empties a file produces exactly this shape."""
+
+    def _file(self):
+        return FilePatchInfo(base_file="a\nb\nc\n", head_file="", patch="",
+                             filename="emptied.py", edit_type=EDIT_TYPE.MODIFIED)
+
+    def test_deletion_only_hunk_is_rendered_when_it_is_the_last_hunk(self):
+        out = decouple_and_convert_to_hunks_with_lines_numbers(
+            "@@ -1,3 +0,0 @@\n-a\n-b\n-c", self._file())
+        assert "__old hunk__" in out
+        for line in ("-a", "-b", "-c"):
+            assert line in out
+
+    def test_deletion_only_hunk_is_rendered_when_another_hunk_follows(self):
+        out = decouple_and_convert_to_hunks_with_lines_numbers(
+            "@@ -1,3 +0,0 @@\n-a\n-b\n-c\n@@ -10,2 +7,3 @@\n ctx\n+added", self._file())
+        assert "__old hunk__" in out
+        for line in ("-a", "-b", "-c", "+added"):
+            assert line in out

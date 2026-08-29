@@ -1,23 +1,36 @@
 import copy
 import datetime
+import re
 from functools import partial
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from jinja2 import Environment, StrictUndefined
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
+from pr_agent.algo.inline_comment_dedup import (
+    InlineCommentStore,
+    can_verify_inline_comment_publication,
+    get_inline_comment_store,
+    key_issue_body_with_markers,
+    key_issue_fingerprint,
+    key_issue_location_fingerprint,
+)
 from pr_agent.algo.pr_processing import add_ai_metadata_to_diff_files, get_pr_diff, retry_with_fallback_models
 from pr_agent.algo.repo_context import build_repo_context
+from pr_agent.algo.run_details import get_run_details, init_run_details
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (
     ModelType,
     PRReviewHeader,
+    PRReviewIdentity,
+    add_pr_review_identity,
     convert_to_markdown_v2,
     github_action_output,
     load_yaml,
     show_relevant_configurations,
+    show_run_details,
 )
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider_with_context
@@ -25,6 +38,9 @@ from pr_agent.git_providers.git_provider import IncrementalPR, get_main_pr_langu
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
 from pr_agent.tools.ticket_pr_compliance_check import extract_and_cache_pr_tickets
+
+MAX_REVIEW_COVERAGE_FILES = 50
+_SUGGESTION_FENCE_RE = re.compile(r"```[ \t]*suggestion\b", re.IGNORECASE)
 
 
 class PRReviewer:
@@ -62,6 +78,7 @@ class PRReviewer:
         self.ai_handler = ai_handler()
         self.ai_handler.main_pr_language = self.main_language
         self.patches_diff = None
+        self.remaining_files_list = []
         self.prediction = None
         question_str, answer_str = self._get_user_answers()
         self.pr_description, self.pr_description_files = (
@@ -69,10 +86,10 @@ class PRReviewer:
         if (self.pr_description_files and get_settings().get("config.is_auto_command", False) and
                 get_settings().get("config.enable_ai_metadata", False)):
             add_ai_metadata_to_diff_files(self.git_provider, self.pr_description_files)
-            get_logger().debug("AI metadata added to the this command")
+            get_logger().debug(f"AI metadata added to the this command")
         else:
             get_settings().set("config.enable_ai_metadata", False)
-            get_logger().debug("AI metadata is disabled for this command")
+            get_logger().debug(f"AI metadata is disabled for this command")
 
         self.vars = {
             "title": self.git_provider.pr.title,
@@ -120,6 +137,9 @@ class PRReviewer:
         return incremental
 
     async def run(self) -> None:
+        init_run_details()
+        progress_response = None
+        review_failed = False
         try:
             if not self.git_provider.get_files():
                 get_logger().info(f"PR has no files: {self.pr_url}, skipping review")
@@ -159,15 +179,14 @@ class PRReviewer:
                 return None
 
             if get_settings().config.publish_output and not get_settings().config.get('is_auto_command', False):
-                self.git_provider.publish_comment("Preparing review...", is_temporary=True)
+                progress_response = self.git_provider.publish_comment("Preparing review...", is_temporary=True)
 
             await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.REGULAR)
             if not self.prediction:
-                self.git_provider.remove_initial_comment()
                 return None
 
             pr_review = self._prepare_pr_review()
-            get_logger().debug("PR output", artifact=pr_review)
+            get_logger().debug(f"PR output", artifact=pr_review)
 
             should_publish = get_settings().config.publish_output and self._should_publish_review_no_suggestions(pr_review)
             if not should_publish:
@@ -179,31 +198,65 @@ class PRReviewer:
                 return
 
             # publish the review
+            # Providers that support it (GitLab) can post the review's final comment as a resolvable thread.
+            # This intent applies to the review only - never to status comments or the output of other tools.
+            review_thread_kwargs = {"as_thread": True} if self.git_provider.should_publish_review_as_thread() else {}
             if get_settings().pr_reviewer.persistent_comment and not self.incremental.is_incremental:
                 final_update_message = get_settings().pr_reviewer.final_update_message
-                self.git_provider.publish_persistent_comment(pr_review,
-                                                            initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
-                                                            update_header=True,
-                                                            final_update_message=final_update_message, )
+                self.git_provider.publish_persistent_comment(
+                    pr_review,
+                    initial_header=pr_review.split("\n", 1)[0],
+                    update_header=True,
+                    final_update_message=final_update_message,
+                    identity_marker=PRReviewIdentity.REGULAR.value,
+                    legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
+                    **review_thread_kwargs,
+                )
             else:
-                self.git_provider.publish_comment(pr_review)
-
-            self.git_provider.remove_initial_comment()
+                if self.git_provider.supports_review_comment_identity() is True:
+                    identity_marker = (
+                        PRReviewIdentity.INCREMENTAL.value
+                        if self.incremental.is_incremental
+                        else PRReviewIdentity.REGULAR.value
+                    )
+                    pr_review = add_pr_review_identity(pr_review, identity_marker)
+                self.git_provider.publish_comment(pr_review, **review_thread_kwargs)
         except Exception as e:
+            review_failed = True
             get_logger().error(f"Failed to review PR: {e}")
+            if get_settings().config.get("propagate_tool_errors", False):
+                raise
+        finally:
+            if progress_response is not None:
+                try:
+                    self.git_provider.remove_comment(progress_response)
+                except Exception as e:
+                    get_logger().exception(f"Failed to remove review progress comment, error: {e}")
+            if (review_failed and get_settings().config.publish_output and
+                    not get_settings().config.get("is_auto_command", False)):
+                try:
+                    self.git_provider.publish_comment("Failed to review PR")
+                except Exception as e:
+                    get_logger().exception(f"Failed to publish review failure result, error: {e}")
 
     def _should_publish_review_no_suggestions(self, pr_review: str) -> bool:
         return get_settings().pr_reviewer.get('publish_output_no_suggestions', True) or "No major issues detected" not in pr_review
 
     async def _prepare_prediction(self, model: str) -> None:
-        self.patches_diff = get_pr_diff(self.git_provider,
-                                        self.token_handler,
-                                        model,
-                                        add_line_numbers_to_hunks=True,
-                                        disable_extra_lines=False,)
+        output = get_pr_diff(self.git_provider,
+                             self.token_handler,
+                             model,
+                             add_line_numbers_to_hunks=True,
+                             disable_extra_lines=False,
+                             return_remaining_files=True,)
+        if isinstance(output, tuple):
+            self.patches_diff, self.remaining_files_list = output
+        else:
+            self.patches_diff = output
+            self.remaining_files_list = []
 
         if self.patches_diff:
-            get_logger().debug("PR diff", diff=self.patches_diff)
+            get_logger().debug(f"PR diff", diff=self.patches_diff)
             self.prediction = await self._get_prediction(model)
         else:
             get_logger().warning(f"Empty diff for PR: {self.pr_url}")
@@ -252,10 +305,31 @@ class PRReviewer:
             get_logger().exception("Failed to parse review data", artifact={"data": data})
             return ""
 
+        structured_publisher = getattr(self.git_provider, "publish_structured_review", None)
+        if callable(structured_publisher):
+            # Deep-copy the data: dict(data) is shallow, so structured_data["review"]
+            # would alias data["review"], which is mutated right below (key reordering).
+            # Hand implementers an isolated snapshot, since the hook is provider-neutral
+            # and a provider that defers serialization would observe the mutation.
+            structured_data = copy.deepcopy(data)
+            details = get_run_details()
+            usage = {}
+            if details is not None and details.has_token_usage:
+                usage = {
+                    "prompt_tokens": details.prompt_tokens,
+                    "completion_tokens": details.completion_tokens,
+                    "total_tokens": details.total_tokens,
+                }
+            structured_data["usage"] = usage
+            structured_publisher(structured_data)
+
         # move data['review'] 'key_issues_to_review' key to the end of the dictionary
         if 'key_issues_to_review' in data['review']:
             key_issues_to_review = data['review'].pop('key_issues_to_review')
             data['review']['key_issues_to_review'] = key_issues_to_review
+
+        if get_settings().config.publish_output and get_settings().pr_reviewer.get('inline_key_issues', False):
+            data = self._publish_key_issues_as_inline_comments(data)
 
         incremental_review_markdown_text = None
         # Add incremental review section
@@ -269,6 +343,18 @@ class PRReviewer:
                                                git_provider=self.git_provider,
                                                files=self.git_provider.get_diff_files())
 
+        if self.remaining_files_list and get_settings().pr_reviewer.enable_review_coverage_footer:
+            displayed_files = self.remaining_files_list[:MAX_REVIEW_COVERAGE_FILES]
+            markdown_text += (
+                "\n\n<hr>\n\n"
+                "⚠️ **Review coverage:** The following files were not included in this review "
+                "because of the token budget:\n"
+                + "\n".join(f"- `{file}`" for file in displayed_files)
+            )
+            remaining_count = len(self.remaining_files_list) - len(displayed_files)
+            if remaining_count:
+                markdown_text += f"\n... and {remaining_count} more"
+
         # Add help text if gfm_markdown is supported
         if self.git_provider.is_supported("gfm_markdown") and get_settings().pr_reviewer.enable_help_text:
             markdown_text += "<hr>\n\n<details> <summary><strong>💡 Tool usage guide:</strong></summary><hr> \n\n"
@@ -279,6 +365,10 @@ class PRReviewer:
         if get_settings().get('config', {}).get('output_relevant_configurations', False):
             markdown_text += show_relevant_configurations(relevant_section='pr_reviewer')
 
+        # Output the agent run details (model, tokens, time cost) if enabled
+        if get_settings().get('config', {}).get('output_run_details', False):
+            markdown_text += show_run_details(self.git_provider.is_supported("gfm_markdown"))
+
         # Add custom labels from the review prediction (effort, security)
         self.set_review_labels(data)
 
@@ -286,6 +376,150 @@ class PRReviewer:
             markdown_text = ""
 
         return markdown_text
+
+    def _build_key_issue_comment(self, issue, diff_files: dict) -> Optional[dict]:
+        if not isinstance(issue, dict):
+            return None
+        relevant_file = (issue.get("relevant_file") or "").strip()
+        issue_content = _SUGGESTION_FENCE_RE.sub("```text", (issue.get("issue_content") or "").strip())
+        issue_header = (issue.get("issue_header") or "").strip()
+        if issue_header.lower() == "possible bug":
+            issue_header = "Possible Issue"
+        try:
+            start_line = int(str(issue.get("start_line", 0)).strip())
+            end_line = int(str(issue.get("end_line", 0)).strip())
+        except ValueError:
+            start_line, end_line = 0, 0
+
+        if not relevant_file or not issue_content or start_line < 1 or end_line < start_line:
+            get_logger().warning("Review finding has no usable location, keeping it in the summary",
+                                 artifact={"relevant_file": relevant_file, "start_line": start_line,
+                                           "end_line": end_line})
+            return None
+
+        file = diff_files.get(relevant_file) or diff_files.get(relevant_file.lstrip("/"))
+        if file is None:
+            get_logger().warning("Review finding points at a file that is not in the diff, "
+                                 "keeping it in the summary", artifact={"relevant_file": relevant_file})
+            return None
+        if not file.head_file or end_line > len(file.head_file.splitlines()):
+            get_logger().warning("Review finding points past the end of the file, keeping it in the summary",
+                                 artifact={"relevant_file": relevant_file, "start_line": start_line,
+                                           "end_line": end_line})
+            return None
+
+        relevant_file = file.filename.strip()
+        body = f"**{issue_header}**\n\n{issue_content}" if issue_header else issue_content
+        return {"body": body,
+                "relevant_file": relevant_file,
+                "relevant_lines_start": start_line,
+                "relevant_lines_end": end_line,
+                "fallback_to_pr_comment": False}
+
+    def _can_verify_inline_key_issue_publication(self) -> bool:
+        return can_verify_inline_comment_publication(self.git_provider)
+
+    def _published_inline_key_issue_fingerprints(self, store: InlineCommentStore,
+                                                 fingerprints: set[str]) -> set[str]:
+        try:
+            for body in self.git_provider.get_recent_inline_comment_bodies():
+                store.add_body(body)
+        except Exception as e:
+            get_logger().warning(
+                f"Inline key-issue publishing cannot verify new Azure DevOps threads, error: {e}; "
+                "keeping findings in the review summary")
+            return set()
+        return {fingerprint for fingerprint in fingerprints if store.seen(fingerprint)}
+
+    def _publish_key_issues_as_inline_comments(self, data: dict) -> dict:
+        issues = (data.get("review") or {}).get("key_issues_to_review")
+        if not isinstance(issues, list) or not issues:
+            return data
+        if not self._can_verify_inline_key_issue_publication():
+            get_logger().info("Inline key-issue publishing is not verifiable for this provider; "
+                              "keeping findings in the review summary")
+            return data
+
+        diff_files = {}
+        for file in self.git_provider.get_diff_files() or []:
+            if not file.filename:
+                continue
+            path = file.filename.strip()
+            diff_files[path] = file
+            diff_files.setdefault(path.lstrip("/"), file)
+        store = get_inline_comment_store(self.git_provider)
+        store.load()
+        if store.load_failed:
+            get_logger().warning("Inline key-issue publishing cannot verify existing Azure DevOps threads; "
+                                 "keeping findings in the review summary")
+            return data
+        remaining_issues = []
+        candidate_comments = {}
+        candidate_issues = {}
+        candidate_fingerprints = {}
+        published = 0
+        for issue in issues:
+            try:
+                comment = self._build_key_issue_comment(issue, diff_files)
+                if comment is None:
+                    remaining_issues.append(issue)
+                    continue
+                fingerprint = key_issue_fingerprint(comment["relevant_file"], comment["body"])
+                if store.seen(fingerprint):
+                    published += 1
+                    continue
+                location_fingerprint = key_issue_location_fingerprint(
+                    fingerprint, comment["relevant_lines_start"], comment["relevant_lines_end"])
+                if location_fingerprint in candidate_comments:
+                    candidate_issues[location_fingerprint].append(issue)
+                    continue
+                comment["body"] = key_issue_body_with_markers(
+                    comment["body"], fingerprint, location_fingerprint,
+                    getattr(self.git_provider, "max_comment_chars", None))
+                candidate_comments[location_fingerprint] = comment
+                candidate_issues[location_fingerprint] = [issue]
+                candidate_fingerprints[location_fingerprint] = fingerprint
+            except Exception as e:
+                get_logger().warning(f"Failed to prepare a review finding for inline publication, error: {e}",
+                                     artifact={"issue": issue})
+                remaining_issues.append(issue)
+
+        if candidate_comments:
+            try:
+                self.git_provider.publish_code_suggestions(list(candidate_comments.values()))
+            except Exception as e:
+                locations = [{"relevant_file": comment["relevant_file"],
+                              "start_line": comment["relevant_lines_start"],
+                              "end_line": comment["relevant_lines_end"]}
+                             for comment in candidate_comments.values()]
+                get_logger().warning(
+                    f"Failed to publish review findings as Azure DevOps threads, error: {e}",
+                    artifact={"locations": locations})
+            verified_locations = self._published_inline_key_issue_fingerprints(store, set(candidate_comments))
+            for location_fingerprint, comment in candidate_comments.items():
+                issues_for_location = candidate_issues[location_fingerprint]
+                if location_fingerprint in verified_locations:
+                    store.add(candidate_fingerprints[location_fingerprint])
+                    store.add(location_fingerprint)
+                    published += len(issues_for_location)
+                    continue
+                get_logger().warning("Failed to publish a review finding as an Azure DevOps inline comment, "
+                                     "keeping it in the summary",
+                                     artifact={"relevant_file": comment["relevant_file"],
+                                               "start_line": comment["relevant_lines_start"],
+                                               "end_line": comment["relevant_lines_end"]})
+                remaining_issues.extend(issues_for_location)
+
+        if not published:
+            return data
+        get_logger().info(f"Published {published} review finding(s) as inline comments")
+
+        data = copy.deepcopy(data)
+        if remaining_issues:
+            data["review"]["key_issues_to_review"] = remaining_issues
+        else:
+            data["review"].pop("key_issues_to_review", None)
+        return data
 
     def _get_user_answers(self) -> Tuple[str, str]:
         """
@@ -300,7 +534,13 @@ class PRReviewer:
         if self.is_answer:
             discussion_messages = self.git_provider.get_issue_comments()
 
-            for message in discussion_messages.reversed:
+            # providers return the comments oldest-first. PyGithub's PaginatedList reverses lazily,
+            # so prefer it and only materialise the plain lists other providers return.
+            newest_first = getattr(discussion_messages, "reversed", None)
+            if newest_first is None:
+                newest_first = reversed(list(discussion_messages))
+
+            for message in newest_first:
                 if "Questions to better understand the PR:" in message.body:
                     question_str = message.body
                 elif '/answer' in message.body:
@@ -393,7 +633,7 @@ class PRReviewer:
                 review_labels = []
                 if get_settings().pr_reviewer.enable_review_labels_effort:
                     estimated_effort = data['review']['estimated_effort_to_review_[1-5]']
-                    estimated_effort_number = 0
+                    estimated_effort_number = None
                     if isinstance(estimated_effort, str):
                         try:
                             estimated_effort_number = int(estimated_effort.split(',')[0])
@@ -403,7 +643,8 @@ class PRReviewer:
                         estimated_effort_number = estimated_effort
                     else:
                         get_logger().warning(f"Unexpected type for estimated_effort: {type(estimated_effort)}")
-                    if 1 <= estimated_effort_number <= 5:  # 1, because ...
+                    if estimated_effort_number is not None:
+                        estimated_effort_number = max(1, min(5, int(estimated_effort_number)))
                         review_labels.append(f'Review effort {estimated_effort_number}/5')
                 if get_settings().pr_reviewer.enable_review_labels_security and get_settings().pr_reviewer.require_security_review:
                     security_concerns = data['review']['security_concerns']  # yes, because ...
