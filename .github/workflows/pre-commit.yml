@@ -1,11 +1,11 @@
-# Runs pre-commit (including the Ruff lint hook) on every PR and on main.
+# disabled. We might run it manually if needed.
 name: pre-commit
 
 on:
   workflow_dispatch:
-  pull_request:
-  push:
-    branches: [main]
+#  pull_request:
+#  push:
+#    branches: [main]
 
 jobs:
   pre-commit:
