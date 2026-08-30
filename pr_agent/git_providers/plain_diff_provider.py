@@ -5,6 +5,7 @@ from typing import List, Optional
 
 from unidiff.errors import UnidiffParseError
 
+from pr_agent.algo.language_handler import build_language_file_matcher
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import _find_repository_root, get_settings
 from pr_agent.git_providers.diff_parsing import parse_unified_diff, reconstruct_base_file, to_hunk_only_patch
@@ -145,20 +146,16 @@ class PlainDiffGitProvider(GitProvider):
         # sort_files_by_main_languages() keys on language NAMES (it maps each
         # name back to its extensions), so returning raw extensions here would
         # drop every file into the "Other" bucket and disable language-based
-        # hunk prioritization. Invert the settings map (name -> [extensions])
-        # into an extension -> name lookup; files with unknown extensions are
-        # left out and fall through to "Other" downstream.
-        ext_to_lang = {}
+        # hunk prioritization. Use the shared filename matcher so full names,
+        # multipart suffixes, and case-sensitive extensions behave consistently.
         lang_map = get_settings().get("language_extension_map_org", {}) or {}
-        for language, extensions in lang_map.items():
-            for ext in extensions:
-                ext_to_lang.setdefault(ext.lower().lstrip("*"), language)
+        get_language = build_language_file_matcher(lang_map)
 
         lang_count = Counter()
         for f in self.get_diff_files():
             if not f.filename:
                 continue
-            language = ext_to_lang.get(os.path.splitext(f.filename)[1].lower())
+            language = get_language(f.filename)
             if language:
                 lang_count[language] += 1
 
