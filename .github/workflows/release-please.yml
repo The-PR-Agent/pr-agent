@@ -8,19 +8,36 @@ on:
 permissions:
   contents: read
 
+# Two merges inside one run's window would both compute and force
+# `release-please--branches--main` and both try to create the release PR.
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
 jobs:
   release-please:
     runs-on: ubuntu-latest
-    # RELEASE_TOKEN is an environment secret on `release`, the same one publish.yml
-    # uses. It matters here: a release created with GITHUB_TOKEN does not trigger
-    # other workflows, so Publish would never fire and the tag would ship nothing.
+    # RELEASE_TOKEN is an environment secret on `release`, the same one publish.yml uses.
     environment: release
     permissions:
       contents: write
       pull-requests: write
     steps:
+      # No GITHUB_TOKEN fallback, deliberately. A release created with GITHUB_TOKEN does
+      # not trigger other workflows, so Publish would never fire: the tag and the GitHub
+      # release would exist while PyPI and Docker Hub had nothing, and every check would
+      # still be green. Fail loudly here instead of shipping that silently.
+      - name: Require RELEASE_TOKEN
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          if [ -z "$RELEASE_TOKEN" ]; then
+            echo "::error::RELEASE_TOKEN is unset. release-please must create the release with a token that triggers publish.yml; GITHUB_TOKEN does not."
+            exit 1
+          fi
+
       - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7  # v5.0.0
         with:
-          token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.RELEASE_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
