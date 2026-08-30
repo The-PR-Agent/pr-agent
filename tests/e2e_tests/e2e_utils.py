@@ -1,8 +1,12 @@
 FILE_PATH: str = "pr_agent/cli_pip.py"
 
 PR_HEADER_START_WITH = '### **User description**\nupdate cli_pip.py\n\n\n___\n\n### **PR Type**'
-REVIEW_START_WITH = '## PR Reviewer Guide 🔍\n\n<table>\n<tr><td>⏱️&nbsp;<strong>Estimated effort to review</strong>:'
-IMPROVE_START_WITH_REGEX_PATTERN = r'^## PR Code Suggestions ✨\n\n<!-- [a-z0-9]+ -->\n\n<table><thead><tr><td>Category</td>'
+REVIEW_START_WITH = '## PR Reviewer Guide 🔍\n\n<!-- pr-agent:review:full -->\n\n<table>\n<tr><td>⏱️&nbsp;<strong>Estimated effort to review</strong>:'
+IMPROVE_START_WITH_REGEX_PATTERN = (
+    r"^## PR Code Suggestions ✨\n\n"
+    r"<!-- pr-agent:improve:summary -->\n\n"
+    r"<!-- [a-z0-9]+ -->\n\n<table><thead><tr><td>Category</td>"
+)
 
 NUM_MINUTES: int = 5
 

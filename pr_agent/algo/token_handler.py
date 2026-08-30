@@ -1,6 +1,6 @@
-from threading import Lock
-from math import ceil
 import re
+from math import ceil
+from threading import Lock
 
 from jinja2 import Environment, StrictUndefined
 from tiktoken import encoding_for_model, get_encoding
@@ -13,7 +13,7 @@ class ModelTypeValidator:
     @staticmethod
     def is_openai_model(model_name: str) -> bool:
         return 'gpt' in model_name or re.match(r"^o[1-9](-mini|-preview)?$", model_name)
-    
+
     @staticmethod
     def is_anthropic_model(model_name: str) -> bool:
         return 'claude' in model_name
@@ -25,18 +25,28 @@ class TokenEncoder:
     _lock = Lock()  # Create a lock object
 
     @classmethod
-    def get_token_encoder(cls):
-        model = get_settings().config.model
+    def get_token_encoder(cls, model=None):
+        configured_model = get_settings().config.model
+        model = model or configured_model
+
+        # Use a fresh tokenizer for explicit fallback models without replacing
+        # the cached tokenizer for the configured primary model.
+        if model != configured_model:
+            return cls._create_encoder(model)
+
         if cls._encoder_instance is None or model != cls._model:  # Check without acquiring the lock for performance
             with cls._lock:  # Lock acquisition to ensure thread safety
                 if cls._encoder_instance is None or model != cls._model:
                     cls._model = model
-                    try:
-                        cls._encoder_instance = encoding_for_model(cls._model) if "gpt" in cls._model else get_encoding(
-                            "o200k_base")
-                    except:
-                        cls._encoder_instance = get_encoding("o200k_base")
+                    cls._encoder_instance = cls._create_encoder(cls._model)
         return cls._encoder_instance
+
+    @staticmethod
+    def _create_encoder(model):
+        try:
+            return encoding_for_model(model) if "gpt" in model else get_encoding("o200k_base")
+        except Exception:
+            return get_encoding("o200k_base")
 
 
 class TokenHandler:
@@ -67,7 +77,7 @@ class TokenHandler:
         - user: The user string.
         """
         self.encoder = TokenEncoder.get_token_encoder()
-        
+
         if pr is not None:
             self.prompt_tokens = self._get_system_user_tokens(pr, self.encoder, vars, system, user)
 
@@ -99,16 +109,14 @@ class TokenHandler:
     def _calc_claude_tokens(self, patch: str) -> int:
         try:
             import anthropic
-            from pr_agent.algo import MAX_TOKENS
-            
+
             client = anthropic.Anthropic(api_key=get_settings(use_context=False).get('anthropic.key'))
-            max_tokens = MAX_TOKENS[get_settings().config.model]
 
             if len(patch.encode('utf-8')) > self.CLAUDE_MAX_CONTENT_SIZE:
                 get_logger().warning(
                     "Content too large for Anthropic token counting API, falling back to local tokenizer"
                 )
-                return max_tokens
+                return 0
 
             response = client.messages.count_tokens(
                 model=self.CLAUDE_MODEL,
@@ -122,13 +130,26 @@ class TokenHandler:
 
         except Exception as e:
             get_logger().error(f"Error in Anthropic token counting: {e}")
-            return max_tokens
+            return 0
 
     def _apply_estimation_factor(self, model_name: str, default_estimate: int) -> int:
-        factor = 1 + get_settings().get('config.model_token_count_estimate_factor', 0)
+        raw_factor = get_settings().get("config.model_token_count_estimate_factor", 0)
+        try:
+            factor = 1 + float(raw_factor)
+        except (TypeError, ValueError, OverflowError):
+            factor = None
+        if factor is None or isinstance(raw_factor, bool) or not factor > 0:
+            get_logger().warning(
+                f"model_token_count_estimate_factor is not a usable number ({raw_factor!r}), using 1")
+            factor = 1
         get_logger().warning(f"{model_name}'s token count cannot be accurately estimated. Using factor of {factor}")
-        
-        return ceil(factor * default_estimate)
+
+        try:
+            return ceil(factor * default_estimate)
+        except (OverflowError, ValueError):
+            get_logger().warning(
+                f"model_token_count_estimate_factor is too large ({raw_factor!r}), using the estimate as is")
+            return default_estimate
 
     def _get_token_count_by_model_type(self, patch: str, default_estimate: int) -> int:
         """
@@ -142,15 +163,18 @@ class TokenHandler:
             int: The calculated token count.
         """
         model_name = get_settings().config.model.lower()
-        
+
         if ModelTypeValidator.is_openai_model(model_name) and get_settings(use_context=False).get('openai.key'):
             return default_estimate
 
         if ModelTypeValidator.is_anthropic_model(model_name) and get_settings(use_context=False).get('anthropic.key'):
-            return self._calc_claude_tokens(patch)
-        
+            claude_count = self._calc_claude_tokens(patch)
+            if claude_count > 0:
+                return claude_count
+            return self._apply_estimation_factor(model_name, default_estimate)
+
         return self._apply_estimation_factor(model_name, default_estimate)
-    
+
     def count_tokens(self, patch: str, force_accurate: bool = False) -> int:
         """
         Counts the number of tokens in a given patch string.

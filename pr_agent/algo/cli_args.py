@@ -1,5 +1,5 @@
-from base64 import b64decode, encode, b64encode
-import hashlib
+from base64 import b64decode
+
 
 class CliArgs:
     @staticmethod
@@ -39,6 +39,7 @@ class CliArgs:
                     forbidden_cli_args[i] = '.' + forbidden_cli_args[i]
 
             for arg in args:
+                arg = arg.strip()
                 if arg.startswith('--'):
                     arg_word = arg.lower()
                     arg_word = arg_word.replace('__', '.')  # replace double underscore with dot, e.g. --openai__key -> --openai.key
@@ -48,5 +49,3 @@ class CliArgs:
             return True, ""
         except Exception as e:
             return False, str(e)
-
-

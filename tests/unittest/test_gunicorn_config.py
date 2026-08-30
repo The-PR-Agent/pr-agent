@@ -5,9 +5,10 @@ from pr_agent.servers import gunicorn_config
 
 @pytest.fixture(autouse=True)
 def isolated_env(monkeypatch, tmp_path):
-    """Detach every test from the host's env vars and real cgroup files."""
+    """Detach every test from the host's env vars, CPU affinity, and real cgroup files."""
     monkeypatch.delenv("GUNICORN_WORKERS", raising=False)
     monkeypatch.delenv("GUNICORN_MAX_WORKERS", raising=False)
+    monkeypatch.setattr(gunicorn_config.os, "sched_getaffinity", lambda pid: set(range(64)), raising=False)
     for attr in ("CGROUP_V2_CPU_MAX", "CGROUP_V1_CPU_QUOTA", "CGROUP_V1_CPU_PERIOD"):
         monkeypatch.setattr(gunicorn_config, attr, str(tmp_path / "missing"))
 
@@ -56,6 +57,7 @@ class TestCgroupCpuLimit:
 class TestAvailableCpus:
     def test_prefers_cgroup_limit_over_host_cores(self, monkeypatch, tmp_path):
         write_cgroup_v2(monkeypatch, tmp_path, "400000 100000\n")
+        monkeypatch.delattr(gunicorn_config.os, "sched_getaffinity", raising=False)
         monkeypatch.setattr(gunicorn_config.os, "cpu_count", lambda: 64)
         assert gunicorn_config.available_cpus() == 4
 

@@ -74,6 +74,8 @@ MAX_TOKENS = {
     'deepseek/deepseek-reasoner': 64000,  # 64K, but may be limited by config.max_model_tokens
     'deepseek/deepseek-v4-pro': 1000000,  # 1M, but may be limited by config.max_model_tokens
     'deepseek/deepseek-v4-flash': 1000000,  # 1M, but may be limited by config.max_model_tokens
+    'zai/glm-5.2': 200000,  # 200K, matching the Z.AI GLM-5/5.1 lineage, but may be limited by config.max_model_tokens
+    'moonshot/kimi-k3': 262144,  # 256K, matching the Moonshot Kimi-k2.5/k2.6 lineage, but may be limited by config.max_model_tokens
     'openai/qwq-plus': 131072,  # 131K context length, but may be limited by config.max_model_tokens
     'replicate/llama-2-70b-chat:2c1608e18606fad2812020dc541930f2d0495ce32eee50074220b87300bc16e1': 4096,
     'meta-llama/Llama-2-7b-chat-hf': 4096,
@@ -119,6 +121,7 @@ MAX_TOKENS = {
     'vertex_ai/gemini-3.5-flash-lite': 1048576,
     'vertex_ai/gemini-3.5-pro': 1048576,
     'vertex_ai/gemini-3.6-flash': 1048576,
+    'vertex_ai/gemini-3.7-flash': 1048576,
     'vertex_ai/gemma2': 8200,
     'gemini/gemini-1.5-pro': 1048576,
     'gemini/gemini-1.5-flash': 1048576,
@@ -140,6 +143,7 @@ MAX_TOKENS = {
     'gemini/gemini-3.5-flash-lite': 1048576,
     'gemini/gemini-3.5-pro': 1048576,
     'gemini/gemini-3.6-flash': 1048576,
+    'gemini/gemini-3.7-flash': 1048576,
     'codechat-bison': 6144,
     'codechat-bison-32k': 32000,
     'anthropic.claude-instant-v1': 100000,
@@ -263,9 +267,11 @@ MAX_TOKENS = {
     'claude-3-5-sonnet': 100000,
     'bedrock/us.meta.llama4-scout-17b-instruct-v1:0': 128000,
     'bedrock/us.meta.llama4-maverick-17b-instruct-v1:0': 128000,
+    "bedrock_mantle/xai.grok-4.3": 1000000,  # 1M context, but may be limited by config.max_model_tokens
     'groq/openai/gpt-oss-120b': 131072,
     'groq/openai/gpt-oss-20b': 131072,
     'groq/qwen/qwen3-32b': 131000,
+    'dashscope/qwen3.8-max': 1000000,  # 1M, qwen3.8-max is the actual DashScope model id (context_window 1M per QwenCode metadata), but may be limited by config.max_model_tokens
     'groq/moonshotai/kimi-k2-instruct': 131072,
     'groq/deepseek-r1-distill-llama-70b': 128000,
     'groq/meta-llama/llama-4-maverick-17b-128e-instruct': 131072,
@@ -289,6 +295,12 @@ MAX_TOKENS = {
     'xai/grok-3-mini-beta': 131072,
     'xai/grok-3-mini-fast': 131072,
     'xai/grok-3-mini-fast-beta': 131072,
+    "xai/grok-4.5": 500000,  # 500K context, but may be limited by config.max_model_tokens
+    "xai/grok-4.5-latest": 500000,
+    "xai/grok-build-latest": 500000,
+    "xai/grok-4.6": 500000,  # 500K context, but may be limited by config.max_model_tokens
+    "openrouter/x-ai/grok-4.5": 500000,
+    "openrouter/x-ai/grok-4.6": 500000,
     'ollama/llama3': 4096,
     'watsonx/meta-llama/llama-3-8b-instruct': 4096,
     "watsonx/meta-llama/llama-3-70b-instruct": 4096,
@@ -313,6 +325,8 @@ MAX_TOKENS = {
     "mistral/codestral-mamba-latest": 256000,
     "codestral/codestral-latest": 8191,
     "codestral/codestral-2405": 8191,
+    'xiaomi_mimo/mimo-v2.5': 1048576,  # 1M, matching the LiteLLM registry for mimo-v2.5, xiaomi_mimo/ is the native LiteLLM Xiaomi provider, but may be limited by config.max_model_tokens
+    'xiaomi_mimo/mimo-v2.5-pro': 1048576,  # 1M, matching the LiteLLM registry for mimo-v2.5-pro, but may be limited by config.max_model_tokens
 }
 
 USER_MESSAGE_ONLY_MODELS = [
@@ -386,15 +400,28 @@ SUPPORT_REASONING_EFFORT_MODELS = [
     "o3-2025-04-16",
     "o4-mini",
     "o4-mini-2025-04-16",
-    # Gemini 2.5 exposes a thinking budget that LiteLLM maps from reasoning_effort
-    # (low/medium/high -> thinkingConfig.thinkingBudget). Without these entries a
-    # configured reasoning_effort is silently dropped for Gemini, so a runaway
-    # thinking trace can consume the whole output budget and return an empty
-    # completion. Matched provider-prefix-insensitively in litellm_ai_handler so
-    # prefixed forms (e.g. "openrouter/google/gemini-2.5-pro") are covered too.
+    # Gemini 2.5 exposes a thinking budget controlled by reasoning_effort. Without
+    # these entries a configured effort is silently dropped, so a runaway thinking
+    # trace can consume the whole output budget and return an empty completion.
+    # LiteLLM maps native provider paths to thinkingConfig.thinkingBudget, while
+    # LiteLLMAIHandler routes OpenRouter-prefixed forms through extra_body.reasoning.
     "gemini-2.5-pro",
     "gemini-2.5-flash",
+    # Register each published Grok id separately so provider-prefixed forms match
+    # and the allowlist below can clamp model-specific reasoning levels.
+    "grok-4.5",
+    "grok-4.5-latest",
+    "grok-build-latest",
+    "grok-4.6",
 ]
+
+# Clamp OpenAI-only levels for always-on Grok reasoning; allow xhigh on 4.6+.
+GROK_REASONING_EFFORT_LEVELS = {
+    "grok-4.5": {"low", "medium", "high"},
+    "grok-4.5-latest": {"low", "medium", "high"},
+    "grok-build-latest": {"low", "medium", "high"},
+    "grok-4.6": {"low", "medium", "high", "xhigh"},
+}
 
 # Claude models that support "extended thinking" through the manual
 # thinking={"type": "enabled", "budget_tokens": ...} request built by

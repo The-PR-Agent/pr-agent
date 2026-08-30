@@ -457,3 +457,35 @@ async def test_workflow_run_skips_when_pull_requests_empty(monkeypatch, tmp_path
     await github_action_runner.run_action()
 
     assert runs == []
+
+
+def _write_issue_comment_event_with_body(tmp_path, body):
+    event_path = tmp_path / "event.json"
+    event_path.write_text(json.dumps({
+        "action": "created",
+        "comment": {"body": body, "id": 123},
+        "issue": {
+            "pull_request": {"url": "https://api.github.com/repos/org/repo/pulls/1"},
+            "url": "https://api.github.com/repos/org/repo/issues/1",
+        },
+        "sender": {"type": "User"},
+    }))
+    return event_path
+
+
+@pytest.mark.asyncio
+async def test_issue_comment_body_reaches_the_agent_with_its_case_preserved(
+        monkeypatch, tmp_path, restore_github_settings):
+    """Pass the comment body to the agent unchanged, as the webhook server does, so
+    identifiers in an /ask question survive to the model."""
+    body = "/ask Why does the JWTValidator reject RS256 tokens from Auth0?"
+    handled = []
+    _patch_issue_comment_deps(monkeypatch, handled)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "issue_comment")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_issue_comment_event_with_body(tmp_path, body)))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    await github_action_runner.run_action()
+
+    assert handled, "comment was not handled"
+    assert handled[0][1] == body

@@ -30,6 +30,7 @@ from pr_agent.algo.utils import (
     process_can_be_split,
     ticket_markdown_logic,
 )
+from pr_agent.config_loader import get_settings
 from pr_agent.tools.pr_description import insert_br_after_x_chars
 from pr_agent.tools.ticket_pr_compliance_check import (
     extract_ticket_links_from_pr_description,
@@ -381,9 +382,31 @@ class TestTicketMarkdownLogic:
         # All tickets verified ⇒ green check.
         assert "Ticket compliance analysis ✅" in out
 
+    @pytest.mark.parametrize("gfm_supported", [True, False])
+    def test_human_verification_only_ticket_is_rendered(self, gfm_supported):
+        tickets = [
+            self._ticket(
+                requires_further_human_verification="- verify UI behavior\n",
+            )
+        ]
+
+        out = ticket_markdown_logic("🎫", "", tickets, gfm_supported)
+
+        assert "[42](https://example.com/ticket/42)" in out, (
+            "human-verification-only ticket should be rendered"
+        )
+        assert "[42](https://example.com/ticket/42) - PR Code Verified" in out
+        assert "Requires further human verification:" in out
+        assert "- verify UI behavior" in out
+        assert "Ticket compliance analysis ✅" in out
+        compliance_level = get_settings().get(
+            "config.extra_statistics.compliance_level"
+        )
+        assert compliance_level == "PR Code Verified"
+
     def test_ticket_with_no_requirements_renders_header_only(self):
-        # Tickets that have neither compliant nor non-compliant requirements
-        # are skipped in the per-ticket loop, but the gfm branch still
+        # Tickets with no classified requirements are skipped in the
+        # per-ticket loop, but the gfm branch still
         # emits an (empty-body) header row. This documents that current
         # behavior — no compliance level or per-ticket detail is shown.
         tickets = [self._ticket()]

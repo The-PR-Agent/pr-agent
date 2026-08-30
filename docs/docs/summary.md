@@ -41,6 +41,5 @@
 * [Compression strategy](core-abilities/compression_strategy.md)
 * [Dynamic context](core-abilities/dynamic_context.md)
 * [Fetching ticket context](core-abilities/fetching_ticket_context.md)
-* [Interactivity](core-abilities/interactivity.md)
 * [Local and global metadata](core-abilities/metadata.md)
 * [Self-reflection](core-abilities/self_reflection.md)

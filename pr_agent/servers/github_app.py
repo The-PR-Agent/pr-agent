@@ -12,12 +12,9 @@ from starlette.middleware import Middleware
 from starlette_context import context
 from starlette_context.middleware import RawContextMiddleware
 
-from pr_agent.agent.pr_agent import PRAgent
-from pr_agent.algo.utils import update_settings_from_args
+from pr_agent.agent.pr_agent import PRAgent, prepare_command
 from pr_agent.config_loader import get_settings, global_settings
-from pr_agent.git_providers import (get_git_provider,
-                                    get_git_provider_with_context)
-from pr_agent.git_providers.git_provider import IncrementalPR
+from pr_agent.git_providers import get_git_provider, get_git_provider_with_context
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.identity_providers import get_identity_provider
 from pr_agent.identity_providers.identity_provider import Eligibility
@@ -95,7 +92,7 @@ async def get_body(request):
     return body
 
 
-_duplicate_push_triggers = DefaultDictWithTimeout(ttl=get_settings().github_app.push_trigger_pending_tasks_ttl)
+_duplicate_push_triggers = DefaultDictWithTimeout(int, ttl=get_settings().github_app.push_trigger_pending_tasks_ttl)
 _pending_task_duplicate_push_conditions = DefaultDictWithTimeout(asyncio.locks.Condition, ttl=get_settings().github_app.push_trigger_pending_tasks_ttl)
 
 async def handle_comments_on_pr(body: Dict[str, Any],
@@ -206,16 +203,16 @@ async def handle_push_trigger_for_new_commits(body: Dict[str, Any],
             f"Skipping push trigger for {api_url=} because another event already triggered the same processing"
         )
         return {}
-    async with _pending_task_duplicate_push_conditions[api_url]:
-        if current_active_tasks == 1:
-            # second task waits
-            get_logger().info(
-                f"Waiting to process push trigger for {api_url=} because the first task is still in progress"
-            )
-            await _pending_task_duplicate_push_conditions[api_url].wait()
-            get_logger().info(f"Finished waiting to process push trigger for {api_url=} - continue with flow")
-
     try:
+        async with _pending_task_duplicate_push_conditions[api_url]:
+            if current_active_tasks == 1:
+                # second task waits
+                get_logger().info(
+                    f"Waiting to process push trigger for {api_url=} because the first task is still in progress"
+                )
+                await _pending_task_duplicate_push_conditions[api_url].wait()
+                get_logger().info(f"Finished waiting to process push trigger for {api_url=} - continue with flow")
+
         if get_identity_provider().verify_eligibility("github", sender_id, api_url) is not Eligibility.NOT_ELIGIBLE:
             get_logger().info(f"Performing incremental review for {api_url=} because of {event=} and {action=}")
             await _perform_auto_commands_github("push_commands", agent, body, api_url, log_context)
@@ -224,7 +221,7 @@ async def handle_push_trigger_for_new_commits(body: Dict[str, Any],
         # release the waiting task block
         async with _pending_task_duplicate_push_conditions[api_url]:
             _pending_task_duplicate_push_conditions[api_url].notify(1)
-            _duplicate_push_triggers[api_url] -= 1
+            _duplicate_push_triggers[api_url] = max(0, _duplicate_push_triggers[api_url] - 1)
 
 
 def handle_closed_pr(body, event, action, log_context):
@@ -254,7 +251,7 @@ def get_log_context(body, event, action, build_number):
                        "request_id": uuid.uuid4().hex, "build_number": build_number, "app_name": app_name,
                         "repo": repo, "git_org": git_org, "installation_id": installation_id}
     except Exception as e:
-        get_logger().error(f"Failed to get log context", artifact={'error': e})
+        get_logger().error("Failed to get log context", artifact={'error': e})
         log_context = {}
     return log_context, sender, sender_id, sender_type
 
@@ -341,18 +338,18 @@ async def handle_request(body: Dict[str, Any], event: str):
     action = body.get("action")  # "created", "opened", "reopened", "ready_for_review", "review_requested", "synchronize"
     get_logger().debug(f"Handling request with event: {event}, action: {action}")
     if not action:
-        get_logger().debug(f"No action found in request body, exiting handle_request")
+        get_logger().debug("No action found in request body, exiting handle_request")
         return {}
     agent = PRAgent()
     log_context, sender, sender_id, sender_type = get_log_context(body, event, action, build_number)
 
     # logic to ignore PRs opened by bot, PRs with specific titles, labels, source branches, or target branches
     if is_bot_user(sender, sender_type) and 'check_run' not in body:
-        get_logger().debug(f"Request ignored: bot user detected")
+        get_logger().debug("Request ignored: bot user detected")
         return {}
     if action != 'created' and 'check_run' not in body:
         if not should_process_pr_logic(body):
-            get_logger().debug(f"Request ignored: PR logic filtering")
+            get_logger().debug("Request ignored: PR logic filtering")
             return {}
 
     if 'check_run' in body:  # handle failed checks
@@ -360,11 +357,11 @@ async def handle_request(body: Dict[str, Any], event: str):
         pass
     # handle comments on PRs
     elif action == 'created':
-        get_logger().debug(f'Request body', artifact=body, event=event)
+        get_logger().debug('Request body', artifact=body, event=event)
         await handle_comments_on_pr(body, event, sender, sender_id, action, log_context, agent)
     # handle new PRs
     elif event == 'pull_request' and action != 'synchronize' and action != 'closed':
-        get_logger().debug(f'Request body', artifact=body, event=event)
+        get_logger().debug('Request body', artifact=body, event=event)
         await handle_new_pr_opened(body, event, sender, sender_id, action, log_context, agent)
     elif event == "issue_comment" and 'edited' in action:
         pass # handle_checkbox_clicked
@@ -382,8 +379,8 @@ async def handle_request(body: Dict[str, Any], event: str):
 def handle_line_comments(body: Dict, comment_body: [str, Any]):
     if not comment_body:
         return ""
-    start_line = body["comment"]["start_line"]
-    end_line = body["comment"]["line"]
+    start_line = body["comment"]["start_line"] or body["comment"].get("original_start_line")
+    end_line = body["comment"]["line"] or body["comment"].get("original_line")
     start_line = end_line if not start_line else start_line
     question = comment_body.replace('/ask', '').strip()
     diff_hunk = body["comment"]["diff_hunk"]
@@ -421,7 +418,7 @@ def _check_pull_request_event(action: str, body: dict, log_context: dict) -> Tup
     if not api_url:
         return invalid_result
     log_context["api_url"] = api_url
-    if pull_request.get("draft", True) or pull_request.get("state") != "open":
+    if pull_request.get("state") != "open":
         return invalid_result
     if action in ("review_requested", "synchronize") and pull_request.get("created_at") == pull_request.get("updated_at"):
         # avoid double reviews when opening a PR for the first time
@@ -431,7 +428,14 @@ def _check_pull_request_event(action: str, body: dict, log_context: dict) -> Tup
 
 async def _perform_auto_commands_github(commands_conf: str, agent: PRAgent, body: dict, api_url: str,
                                         log_context: dict):
-    apply_repo_settings(api_url)
+    feedback_on_draft = get_settings().github_app.feedback_on_draft_pr
+    if commands_conf == "pr_commands" and body.get("action") == "ready_for_review" and feedback_on_draft:
+        get_logger().info(f"Skipping draft-ready commands because draft feedback is enabled: {api_url}")
+        return
+    is_draft = body.get("pull_request", {}).get("draft", True)
+    if is_draft and not feedback_on_draft:
+        get_logger().info(f"Skipping draft PR {api_url=}")
+        return
     if commands_conf == "pr_commands" and get_settings().config.disable_auto_feedback:  # auto commands for PR, and auto feedback is disabled
         get_logger().info(f"Auto feedback is disabled, skipping auto commands for PR {api_url=}")
         return
@@ -439,17 +443,16 @@ async def _perform_auto_commands_github(commands_conf: str, agent: PRAgent, body
         return {}
     commands = get_settings().get(f"github_app.{commands_conf}")
     if not commands:
-        get_logger().info(f"New PR, but no auto commands configured")
+        get_logger().info("New PR, but no auto commands configured")
         return
     get_settings().set("config.is_auto_command", True)
     for command in commands:
-        split_command = command.split(" ")
-        command = split_command[0]
-        args = split_command[1:]
-        other_args = update_settings_from_args(args)
-        new_command = ' '.join([command] + other_args)
-        get_logger().info(f"{commands_conf}. Performing auto command '{new_command}', for {api_url=}")
-        await agent.handle_request(api_url, new_command)
+        try:
+            new_command = prepare_command(command)
+            get_logger().info(f"{commands_conf}. Performing auto command '{new_command}', for {api_url=}")
+            await agent.handle_request(api_url, new_command)
+        except Exception as e:
+            get_logger().error(f"Failed to perform command {command}: {e}")
 
 
 @router.get("/")

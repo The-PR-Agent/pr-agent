@@ -72,5 +72,16 @@ A question about the selected lines:
 {{ question|trim }}
 ======
 
+{%- if resolve_threads %}
+
+After answering the question, determine whether the discussion thread is now fully resolved based on the conversation history and the current question. A thread is resolved when:
+- The developer confirms they have addressed the feedback (e.g. "fixed", "done", "updated")
+- The question has been fully answered with no remaining open issues
+- The concern raised in the thread is no longer applicable
+
+If the thread is resolved, end your response with the exact marker: [THREAD_RESOLVED]
+Do not include this marker if there are unresolved concerns, open questions, or the developer is still seeking clarification.
+{%- endif %}
+
 Response to the question:
 """

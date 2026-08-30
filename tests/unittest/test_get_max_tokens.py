@@ -173,8 +173,10 @@ class TestGetMaxTokens:
         "vertex_ai/gemini-3.5-pro",
         "gemini/gemini-3.6-flash",
         "vertex_ai/gemini-3.6-flash",
+        "gemini/gemini-3.7-flash",
+        "vertex_ai/gemini-3.7-flash",
     ])
-    def test_gemini_3_3_1_3_5_and_3_6_models_max_tokens(self, monkeypatch, model):
+    def test_gemini_3_x_models_max_tokens(self, monkeypatch, model):
         fake_settings = type("", (), {
             "config": type("", (), {
                 "custom_model_max_tokens": 0,
@@ -183,6 +185,38 @@ class TestGetMaxTokens:
         })()
         monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
         assert get_max_tokens(model) == 1048576
+
+    def test_bedrock_mantle_grok_4_3_model_max_tokens(self, monkeypatch):
+        fake_settings = type("", (), {
+            "config": type("", (), {
+                "custom_model_max_tokens": 0,
+                "max_model_tokens": 0,
+            })()
+        })()
+
+        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+
+        assert get_max_tokens("bedrock_mantle/xai.grok-4.3") == 1000000
+
+    @pytest.mark.parametrize("model", [
+        "xai/grok-4.5",
+        "xai/grok-4.5-latest",
+        "xai/grok-build-latest",
+        "xai/grok-4.6",
+        "openrouter/x-ai/grok-4.5",
+        "openrouter/x-ai/grok-4.6",
+    ])
+    def test_xai_and_openrouter_grok_4_5_and_4_6_models_max_tokens(self, monkeypatch, model):
+        fake_settings = type("", (), {
+            "config": type("", (), {
+                "custom_model_max_tokens": 0,
+                "max_model_tokens": 0,
+            })()
+        })()
+
+        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+
+        assert get_max_tokens(model) == 500000
 
     @pytest.mark.parametrize(
         "model",
@@ -333,3 +367,95 @@ class TestGetMaxTokens:
         monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
 
         assert get_max_tokens(model) == 200000
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "zai/glm-5.2",
+        ],
+    )
+    def test_zai_glm_5_2_model_max_tokens(self, monkeypatch, model):
+        fake_settings = type("", (), {
+            "config": type("", (), {
+                "custom_model_max_tokens": 0,
+                "max_model_tokens": 0
+            })()
+        })()
+
+        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+
+        assert get_max_tokens(model) == 200000
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "moonshot/kimi-k3",
+        ],
+    )
+    def test_moonshot_kimi_k3_model_max_tokens(self, monkeypatch, model):
+        fake_settings = type("", (), {
+            "config": type("", (), {
+                "custom_model_max_tokens": 0,
+                "max_model_tokens": 0
+            })()
+        })()
+
+        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+
+        assert get_max_tokens(model) == 262144
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "dashscope/qwen3.8-max",
+        ],
+    )
+    def test_qwen_3_8_model_max_tokens(self, monkeypatch, model):
+        fake_settings = type("", (), {
+            "config": type("", (), {
+                "custom_model_max_tokens": 0,
+                "max_model_tokens": 0
+            })()
+        })()
+
+        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+
+        assert get_max_tokens(model) == 1000000
+
+
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "xiaomi_mimo/mimo-v2.5",
+        ],
+    )
+    def test_xiaomi_mimo_v2_5_model_max_tokens(self, monkeypatch, model):
+        fake_settings = type("", (), {
+            "config": type("", (), {
+                "custom_model_max_tokens": 0,
+                "max_model_tokens": 0
+            })()
+        })()
+
+        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+
+        assert get_max_tokens(model) == 1048576
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "xiaomi_mimo/mimo-v2.5-pro",
+        ],
+    )
+    def test_xiaomi_mimo_v2_5_pro_model_max_tokens(self, monkeypatch, model):
+        fake_settings = type("", (), {
+            "config": type("", (), {
+                "custom_model_max_tokens": 0,
+                "max_model_tokens": 0
+            })()
+        })()
+
+        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+
+        assert get_max_tokens(model) == 1048576

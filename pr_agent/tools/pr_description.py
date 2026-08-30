@@ -3,6 +3,7 @@ import copy
 import re
 import traceback
 from functools import partial
+from graphlib import TopologicalSorter
 from typing import List, Tuple
 
 import yaml
@@ -10,26 +11,35 @@ from jinja2 import Environment, StrictUndefined
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
-from pr_agent.algo.pr_processing import (OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
-                                         get_pr_diff,
-                                         get_pr_diff_multiple_patchs,
-                                         retry_with_fallback_models)
-from pr_agent.algo.skills_loader import get_skills_context
+from pr_agent.algo.pr_processing import (
+    OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
+    get_pr_diff,
+    get_pr_diff_multiple_patchs,
+    retry_with_fallback_models,
+)
 from pr_agent.algo.repo_context import build_repo_context
+from pr_agent.algo.run_details import init_run_details
+from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_handler import TokenHandler
-from pr_agent.algo.utils import (ModelType, PRDescriptionHeader, clip_tokens,
-                                 get_max_tokens, get_user_labels, load_yaml,
-                                 set_custom_labels,
-                                 show_relevant_configurations)
+from pr_agent.algo.utils import (
+    ModelType,
+    PRDescriptionHeader,
+    clip_tokens,
+    get_max_tokens,
+    get_user_labels,
+    load_yaml,
+    set_custom_labels,
+    show_relevant_configurations,
+    show_run_details,
+)
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers import (GithubProvider, get_git_provider,
-                                    get_git_provider_with_context)
+from pr_agent.git_providers import GithubProvider, get_git_provider_with_context
 from pr_agent.git_providers.git_provider import get_main_pr_language
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
 from pr_agent.tools.ticket_pr_compliance_check import (
-    extract_and_cache_pr_tickets, extract_ticket_links_from_pr_description,
-    extract_tickets)
+    extract_and_cache_pr_tickets,
+)
 
 
 class PRDescription:
@@ -79,6 +89,7 @@ class PRDescription:
             "include_file_summary_changes": len(self.git_provider.get_diff_files()) <= self.COLLAPSIBLE_FILE_LIST_THRESHOLD,
             "duplicate_prompt_examples": get_settings().config.get("duplicate_prompt_examples", False),
             "enable_pr_diagram": enable_pr_diagram,
+            "enable_pr_description": get_settings().pr_description.get("enable_pr_description", True),
         }
 
         self.user_description = self.git_provider.get_user_description()
@@ -97,13 +108,16 @@ class PRDescription:
         self.file_label_dict = None
 
     async def run(self):
+        init_run_details()
+        progress_response = None
         try:
             get_logger().info(f"Generating a PR description for pr_id: {self.pr_id}")
             relevant_configs = {'pr_description': dict(get_settings().pr_description),
                                 'config': dict(get_settings().config)}
             get_logger().debug("Relevant configs", artifact=relevant_configs)
             if get_settings().config.publish_output and not get_settings().config.get('is_auto_command', False):
-                self.git_provider.publish_comment("Preparing PR description...", is_temporary=True)
+                progress_response = self.git_provider.publish_comment(
+                    "Preparing PR description...", is_temporary=True)
 
             # ticket extraction if exists
             await extract_and_cache_pr_tickets(self.git_provider, self.vars)
@@ -114,7 +128,6 @@ class PRDescription:
                 self._prepare_data()
             else:
                 get_logger().warning(f"Empty prediction, PR: {self.pr_id}")
-                self.git_provider.remove_initial_comment()
                 return None
 
             if get_settings().pr_description.enable_semantic_files_types:
@@ -124,7 +137,7 @@ class PRDescription:
             if get_settings().pr_description.publish_labels:
                 pr_labels = self._prepare_labels()
             else:
-                get_logger().debug(f"Publishing labels disabled")
+                get_logger().debug("Publishing labels disabled")
 
             if get_settings().pr_description.use_description_markers:
                 pr_title, pr_body, changes_walkthrough, pr_file_changes = self._prepare_pr_answer_with_markers()
@@ -157,20 +170,24 @@ class PRDescription:
             if get_settings().get('config', {}).get('output_relevant_configurations', False):
                 pr_body += show_relevant_configurations(relevant_section='pr_description')
 
+            # Output the agent run details (model, tokens, time cost) if enabled
+            if get_settings().get('config', {}).get('output_run_details', False):
+                pr_body += show_run_details(self.git_provider.is_supported("gfm_markdown"))
+
             if get_settings().config.publish_output:
 
                 # publish labels
                 if get_settings().pr_description.publish_labels and pr_labels and self.git_provider.is_supported("get_labels"):
                     original_labels = self.git_provider.get_pr_labels(update=True)
-                    get_logger().debug(f"original labels", artifact=original_labels)
+                    get_logger().debug("original labels", artifact=original_labels)
                     user_labels = get_user_labels(original_labels)
                     new_labels = pr_labels + user_labels
-                    get_logger().debug(f"published labels", artifact=new_labels)
+                    get_logger().debug("published labels", artifact=new_labels)
                     if set(new_labels) != set(original_labels):
                         get_logger().info(f"Setting describe labels:\n{new_labels}")
                         self.git_provider.publish_labels(new_labels)
                     else:
-                        get_logger().debug(f"Labels are the same, not updating")
+                        get_logger().debug("Labels are the same, not updating")
 
                 # publish description
                 if get_settings().pr_description.publish_description_as_comment:
@@ -187,6 +204,10 @@ class PRDescription:
                     # Pass None when the title is not AI-generated so the provider
                     # leaves it untouched, avoiding reverting a manual edit (#2474).
                     title_to_publish = pr_title.strip() if get_settings().pr_description.generate_ai_title else None
+                    # Prepend a hidden HTML comment so recognition can match it
+                    # anywhere in the body without depending on visible section
+                    # headers that a human might quote.
+                    pr_body = '<!-- pr-agent-generated -->\n' + pr_body
                     self.git_provider.publish_description(title_to_publish, pr_body)
 
                     # publish final update message
@@ -196,7 +217,6 @@ class PRDescription:
                             pr_url = self.git_provider.get_pr_url()
                             update_comment = f"**[PR Description]({pr_url})** updated to latest commit ({latest_commit_url})"
                             self.git_provider.publish_comment(update_comment)
-                self.git_provider.remove_initial_comment()
             else:
                 get_logger().info('PR description, but not published since publish_output is False.')
                 get_settings().data = {"artifact": pr_body}
@@ -206,6 +226,20 @@ class PRDescription:
                                artifact={"traceback": traceback.format_exc()})
             if get_settings().config.get("propagate_tool_errors", False):
                 raise
+        finally:
+            if progress_response is not None:
+                try:
+                    self.git_provider.edit_comment(
+                        progress_response, "PR description generation finished.")
+                except Exception as e:
+                    get_logger().exception(
+                        f"Failed to update PR description progress comment, "
+                        f"error: {e}")
+                try:
+                    self.git_provider.remove_comment(progress_response)
+                except Exception as e:
+                    get_logger().exception(
+                        f"Failed to remove PR description progress comment, error: {e}")
 
         return ""
 
@@ -226,7 +260,7 @@ class PRDescription:
             self.patches_diff = patches_diff
             if patches_diff:
                 # generate the prediction
-                get_logger().debug(f"PR diff", artifact=self.patches_diff)
+                get_logger().debug("PR diff", artifact=self.patches_diff)
                 self.prediction = await self._get_prediction(model, patches_diff, prompt="pr_description_prompt")
 
                 # extend the prediction with additional files not shown
@@ -314,7 +348,7 @@ class PRDescription:
                                                        num_input_tokens=tokens_files_walkthrough)
 
             # PR header inference
-            get_logger().debug(f"PR diff only description", artifact=files_walkthrough_prompt)
+            get_logger().debug("PR diff only description", artifact=files_walkthrough_prompt)
             prediction_headers = await self._get_prediction(model, patches_diff=files_walkthrough_prompt,
                                                             prompt="pr_description_only_description_prompts")
             prediction_headers = prediction_headers.strip().removeprefix('```yaml').strip('`').strip()
@@ -358,7 +392,7 @@ class PRDescription:
                 # add up to MAX_EXTRA_FILES_TO_OUTPUT files
                 counter_extra_files += 1
                 if counter_extra_files > MAX_EXTRA_FILES_TO_OUTPUT:
-                    extra_file_yaml = f"""\
+                    extra_file_yaml = """\
 - filename: |
     Additional files not shown
   changes_title: |
@@ -472,7 +506,12 @@ class PRDescription:
         if 'changes_diagram' in self.data:
             sanitized = sanitize_diagram(self.data.pop('changes_diagram'))
             if sanitized:
-                self.data['changes_diagram'] = sanitized
+                description_settings = get_settings().pr_description
+                self.data['changes_diagram'] = apply_diagram_direction(
+                    sanitized,
+                    description_settings.pr_diagram_direction,
+                    description_settings.pr_diagram_direction_threshold,
+                )
         if 'pr_files' in self.data:
             self.data['pr_files'] = self.data.pop('pr_files')
 
@@ -530,10 +569,17 @@ class PRDescription:
             pr_type = f"{ai_header}{pr_type}"
             body = body.replace('pr_agent:type', pr_type)
 
+        enable_pr_description = get_settings().pr_description.get("enable_pr_description", True)
+        if not enable_pr_description:
+            self.data.pop('description', None)
+
         ai_summary = self.data.get('description')
         if ai_summary and not re.search(r'<!--\s*pr_agent:summary\s*-->', body):
             summary = f"{ai_header}{ai_summary}"
             body = body.replace('pr_agent:summary', summary)
+        elif not enable_pr_description:
+            # AI summary disabled by config - remove the marker instead of leaving it unreplaced
+            body = re.sub(r'<!--\s*pr_agent:summary\s*-->|pr_agent:summary', '', body)
 
         ai_walkthrough = self.data.get('pr_files')
         walkthrough_gfm = ""
@@ -569,6 +615,8 @@ class PRDescription:
             self.data.pop('labels')
         if not get_settings().pr_description.enable_pr_type:
             self.data.pop('type', None)
+        if not get_settings().pr_description.get("enable_pr_description", True):
+            self.data.pop('description', None)
 
         # Remove the 'PR Title' key from the dictionary
         ai_title = self.data.pop('title', self.vars["title"])
@@ -650,7 +698,7 @@ class PRDescription:
                 filename = file['filename'].replace("'", "`").replace('"', '`')
                 changes_summary = file.get('changes_summary', "")
                 if not changes_summary and self.vars.get('include_file_summary_changes', True):
-                    get_logger().warning(f"Empty changes summary in file label dict, skipping file",
+                    get_logger().warning("Empty changes summary in file label dict, skipping file",
                                          artifact={"file": file})
                     continue
                 changes_summary = changes_summary.strip()
@@ -679,7 +727,7 @@ class PRDescription:
             return pr_body, pr_comments
         try:
             pr_body += "<table>"
-            header = f"Relevant files"
+            header = "Relevant files"
             delta = 75
             # header += "&nbsp; " * delta
             pr_body += f"""<thead><tr><th></th><th align="left">{header}</th></tr></thead>"""
@@ -692,7 +740,7 @@ class PRDescription:
                 if use_collapsible_file_list:
                     pr_body += f"""<td><details><summary>{len(list_tuples)} files</summary><table>"""
                 else:
-                    pr_body += f"""<td><table>"""
+                    pr_body += """<td><table>"""
                 for filename, file_changes_title, file_change_description in list_tuples:
                     filename = filename.replace("'", "`").rstrip()
                     filename_publish = filename.split("/")[-1]
@@ -802,6 +850,109 @@ def sanitize_diagram(diagram_raw: str) -> str:
         )
         result.append(line)
     return '\n' + '\n'.join(result)
+
+
+DIAGRAM_HEADER_PATTERN = re.compile(r'^(\s*(?:flowchart|graph)\s+)(?:TB|TD|BT|RL|LR)\b(.*)$')
+DIAGRAM_CONNECTOR_PATTERN = re.compile(r'(<?[-=.~]{2,}[->ox]?)')
+DIAGRAM_NODE_ID_PATTERN = re.compile(r'[A-Za-z0-9_]+')
+DIAGRAM_QUOTED_LABEL_PATTERN = re.compile(r'"[^"]*"')
+DIAGRAM_PIPE_LABEL_PATTERN = re.compile(r'\|[^|]*\|')  # pipe-form edge labels: -->|text|
+DIAGRAM_SHAPE_PATTERN = re.compile(r'\[[^\[\]]*\]|\([^()]*\)|\{[^{}]*\}')
+# A two-character connector opens a middle label (`A -- text --> B`); a longer one is a real link,
+# so `A --- B --> C` still reads as a three-node chain.
+DIAGRAM_LABEL_OPENERS = ('--', '==', '-.')
+
+
+def _strip_diagram_labels(line: str) -> str:
+    """Remove label text, so that arrows written inside a label are not read as edges."""
+    line = DIAGRAM_QUOTED_LABEL_PATTERN.sub('', line)
+    line = DIAGRAM_PIPE_LABEL_PATTERN.sub('', line)
+    previous = None
+    while previous != line:  # nested shapes such as [[...]] need more than one pass
+        previous = line
+        line = DIAGRAM_SHAPE_PATTERN.sub('', line)
+    return line
+
+
+def _parse_diagram_edges(lines: List[str]) -> List[Tuple[str, str]]:
+    """Extract the directed edges of a mermaid flowchart body, tolerating its syntax variants."""
+    edges = []
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith('%%'):  # a comment can still hold arrow-looking text
+            continue
+
+        cleaned = _strip_diagram_labels(line)
+        # No connector left also means no edge, which is how subgraph/style/classDef/direction
+        # statements drop out without needing a keyword list to keep in sync with mermaid.
+        if not DIAGRAM_CONNECTOR_PATTERN.search(cleaned):
+            continue
+
+        # The capturing split yields chunk, connector, chunk, connector, ... Each chunk holds one
+        # or more node ids joined by '&', unless the connector before it opened a middle label.
+        parts = DIAGRAM_CONNECTOR_PATTERN.split(cleaned)
+        node_groups = []
+        for index, chunk in enumerate(parts[::2]):
+            if index and parts[index * 2 - 1] in DIAGRAM_LABEL_OPENERS:
+                continue  # `A -- text --> B`: this chunk is the edge label, not a node
+            node_ids = []
+            for token in chunk.split('&'):
+                match = DIAGRAM_NODE_ID_PATTERN.search(token)
+                if match:
+                    node_ids.append(match.group(0))
+            if node_ids:
+                node_groups.append(node_ids)
+
+        for left, right in zip(node_groups, node_groups[1:], strict=False):
+            edges.extend((source, target) for source in left for target in right)
+    return edges
+
+
+def _longest_diagram_chain(edges: List[Tuple[str, str]]) -> int:
+    """Length, in nodes, of the longest path through the graph. Raises ValueError on a cycle."""
+    predecessors = {}
+    for source, target in edges:
+        predecessors.setdefault(source, set())
+        predecessors.setdefault(target, set()).add(source)
+
+    longest = {}
+    for node in TopologicalSorter(predecessors).static_order():  # CycleError is a ValueError
+        longest[node] = 1 + max((longest[p] for p in predecessors[node]), default=0)
+    return max(longest.values(), default=0)
+
+
+def apply_diagram_direction(diagram: str, direction: str, threshold: int) -> str:
+    """Set the flowchart direction, adapting it to the shape of the graph unless one is pinned.
+
+    Width in an LR flowchart is set by the longest path rather than by the node count, so the
+    longest chain is what decides. 'LR' or 'TD' pins the result; any other value is treated as
+    'adaptive'. Anything unexpected - no flowchart header, no edges, a cycle, an unusable
+    threshold - returns the diagram untouched.
+    """
+    try:
+        lines = diagram.split('\n')
+        header = next(((index, match) for index, line in enumerate(lines)
+                       if (match := DIAGRAM_HEADER_PATTERN.match(line))), None)
+        if header is None:
+            return diagram
+        header_index, header_match = header
+
+        requested = str(direction).strip().upper()
+        if requested in ('LR', 'TD'):
+            chosen = requested
+        else:
+            if requested != 'ADAPTIVE':
+                get_logger().warning(f"Unknown pr_diagram_direction '{direction}', using adaptive")
+            edges = _parse_diagram_edges(lines[header_index + 1:])
+            if not edges:
+                return diagram
+            chosen = 'LR' if _longest_diagram_chain(edges) <= int(threshold) else 'TD'
+
+        lines[header_index] = f"{header_match.group(1)}{chosen}{header_match.group(2)}"
+        return '\n'.join(lines)
+    except Exception as e:
+        get_logger().debug(f"Failed to adapt the diagram direction: {e}")
+        return diagram
 
 
 def count_chars_without_html(string):

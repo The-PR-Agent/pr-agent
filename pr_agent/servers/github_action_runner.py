@@ -5,8 +5,10 @@ from typing import Union
 
 from pr_agent.agent.pr_agent import PRAgent
 from pr_agent.algo.ai_handlers.litellm_helpers import (
-    DEFAULT_CALLBACK_TIMEOUT_SECONDS, drain_litellm_callbacks,
-    litellm_callbacks_registered)
+    DEFAULT_CALLBACK_TIMEOUT_SECONDS,
+    drain_litellm_callbacks,
+    litellm_callbacks_registered,
+)
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.utils import apply_repo_settings

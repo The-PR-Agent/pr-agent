@@ -5,6 +5,7 @@ from typing import List
 from git import Repo
 
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
+from pr_agent.algo.utils import format_pr_code_suggestions_header, show_run_details
 from pr_agent.config_loader import _find_repository_root, get_settings
 from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.log import get_logger
@@ -35,7 +36,10 @@ class LocalGitProvider(GitProvider):
         if self.repo_path is None:
             raise ValueError('Could not find repository root')
         self.repo = Repo(self.repo_path)
-        self.head_branch_name = self.repo.head.ref.name
+        if self.repo.head.is_detached:
+            self.head_branch_name = self.repo.head.commit.hexsha[:7]
+        else:
+            self.head_branch_name = self.repo.head.ref.name
         self.target_branch_name = target_branch_name
         self._prepare_repo()
         self.diff_files = None
@@ -65,6 +69,9 @@ class LocalGitProvider(GitProvider):
             return False
         return True
 
+    def supports_code_suggestions_artifact(self) -> bool:
+        return True
+
     def get_diff_files(self) -> list[FilePatchInfo]:
         diffs = self.repo.head.commit.diff(
             self.repo.merge_base(self.repo.head, self.repo.branches[self.target_branch_name]),
@@ -73,14 +80,20 @@ class LocalGitProvider(GitProvider):
         )
         diff_files = []
         for diff_item in diffs:
-            if diff_item.a_blob is not None:
-                original_file_content_str = diff_item.a_blob.data_stream.read().decode('utf-8')
-            else:
-                original_file_content_str = ""  # empty file
-            if diff_item.b_blob is not None:
-                new_file_content_str = diff_item.b_blob.data_stream.read().decode('utf-8')
-            else:
-                new_file_content_str = ""  # empty file
+            filename = diff_item.b_path or diff_item.a_path
+            try:
+                if diff_item.a_blob is not None:
+                    original_file_content_str = diff_item.a_blob.data_stream.read().decode("utf-8")
+                else:
+                    original_file_content_str = ""  # empty file
+                if diff_item.b_blob is not None:
+                    new_file_content_str = diff_item.b_blob.data_stream.read().decode("utf-8")
+                else:
+                    new_file_content_str = ""  # empty file
+                patch = diff_item.diff.decode("utf-8")
+            except UnicodeDecodeError as e:
+                get_logger().warning(f"Skipping non-UTF-8 file in local diff: {filename!r} ({e})")
+                continue
             edit_type = EDIT_TYPE.MODIFIED
             if diff_item.new_file:
                 edit_type = EDIT_TYPE.ADDED
@@ -91,8 +104,8 @@ class LocalGitProvider(GitProvider):
             diff_files.append(
                 FilePatchInfo(original_file_content_str,
                               new_file_content_str,
-                              diff_item.diff.decode('utf-8'),
-                              diff_item.b_path or diff_item.a_path,
+                              patch,
+                              filename,
                               edit_type=edit_type,
                               old_filename=None if diff_item.a_path == diff_item.b_path else diff_item.a_path
                               )
@@ -137,6 +150,11 @@ class LocalGitProvider(GitProvider):
         raise NotImplementedError('Publishing code suggestions is not implemented for the local git provider')
 
     def publish_code_suggestions(self, code_suggestions: list) -> bool:
+        return self.publish_code_suggestions_artifact(code_suggestions)
+
+    def publish_code_suggestions_artifact(
+            self, code_suggestions: list, artifact_footer: str = "",
+            no_suggestions_message: str = "No code suggestions found for the PR.") -> bool:
         """
         Write /improve output to a file (improve.md by default).
 
@@ -157,8 +175,12 @@ class LocalGitProvider(GitProvider):
                 location += f" [{start}-{end}]" if end is not None and end != start else f" [{start}]"
             header = f"### {location}" if location else "### Suggestion"
             sections.append(f"{header}\n\n{suggestion.get('body', '').strip()}")
-        pr_body = "# PR Code Suggestions ✨\n\n" + "\n\n".join(sections) if sections \
-            else "# PR Code Suggestions ✨\n\nNo code suggestions found for the PR."
+        header = format_pr_code_suggestions_header(markdown_level=1)
+        pr_body = f"{header}\n\n" + "\n\n".join(sections) if sections \
+            else f"{header}\n\n{no_suggestions_message}"
+        pr_body += artifact_footer
+        if not sections and get_settings().get("config.output_run_details", False):
+            pr_body += show_run_details(False)
         with open(self.improve_path, "w", encoding="utf-8") as file:
             file.write(pr_body)
         return True

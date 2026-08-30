@@ -1,18 +1,18 @@
 import copy
-from functools import partial
-
-from jinja2 import Environment, StrictUndefined
 import math
 import os
 import re
+from functools import partial
 from tempfile import TemporaryDirectory
+
+from jinja2 import Environment, StrictUndefined
 
 from pr_agent.algo import MAX_TOKENS
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.pr_processing import retry_with_fallback_models
 from pr_agent.algo.token_handler import TokenHandler
-from pr_agent.algo.utils import clip_tokens, get_max_tokens, load_yaml, ModelType
+from pr_agent.algo.utils import ModelType, clip_tokens, get_max_tokens, load_yaml
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.log import get_logger
@@ -113,7 +113,7 @@ def return_document_headings(text: str, ext: str) -> str:
 
         return '\n'.join(headings)
     except Exception as e:
-        get_logger().exception(f"Unexpected exception thrown. Returning empty result.")
+        get_logger().exception("Unexpected exception thrown. Returning empty result.")
         return ""
 
 # Load documentation files to memory: full file path (as will be given as prompt) -> doc contents
@@ -139,7 +139,7 @@ def map_documentation_files_to_contents(base_path: str, doc_files: list[str], ma
             get_logger().error("Couldn't find any usable documentation files. Returning empty dict.")
         return returned_dict
     except Exception as e:
-        get_logger().exception(f"Unexpected exception thrown. Returning empty dict.")
+        get_logger().exception("Unexpected exception thrown. Returning empty dict.")
         return {}
 
 # Goes over files' contents, generating payload for prompt while decorating them with a header to mark where each file begins,
@@ -163,7 +163,7 @@ def aggregate_documentation_files_for_prompt_contents(file_path_to_contents: dic
                 docs_prompt += f"\n==file name==\n\n{file_path}\n\n==file content==\n\n{file_contents}\n=========\n\n"
         return docs_prompt
     except Exception as e:
-        get_logger().exception(f"Unexpected exception thrown. Returning empty result.")
+        get_logger().exception("Unexpected exception thrown. Returning empty result.")
         return ""
 
 def format_markdown_q_and_a_response(question_str: str, response_str: str, relevant_sections: list[dict[str, str]],
@@ -173,7 +173,7 @@ def format_markdown_q_and_a_response(question_str: str, response_str: str, relev
         answer_str = ""
         answer_str += f"### Question: \n{question_str}\n\n"
         answer_str += f"### Answer:\n{response_str.strip()}\n\n"
-        answer_str += f"#### Relevant Sources:\n\n"
+        answer_str += "#### Relevant Sources:\n\n"
         for section in relevant_sections:
             file = section.get('file_name').lstrip('/').strip() #Remove any '/' in the beginning, since some models do it anyway
             ext = [suffix for suffix in supported_suffixes if file.endswith(suffix)]
@@ -188,7 +188,7 @@ def format_markdown_q_and_a_response(question_str: str, response_str: str, relev
                 answer_str += f"> - {base_url_prefix}/{file}{base_url_suffix}\n"
         return answer_str
     except Exception as e:
-        get_logger().exception(f"Unexpected exception thrown. Returning empty result.")
+        get_logger().exception("Unexpected exception thrown. Returning empty result.")
         return ""
 
 def format_markdown_header(header: str) -> str:
@@ -215,7 +215,7 @@ def format_markdown_header(header: str) -> str:
         # Perform replacements in a single pass and convert to lowercase
         return pattern.sub(lambda m: replacements[m.group()], cleaned).lower()
     except Exception:
-        get_logger().exception(f"Error while formatting markdown header", artifacts={'header': header})
+        get_logger().exception("Error while formatting markdown header", artifacts={'header': header})
         return ""
 
 def clean_markdown_content(content: str) -> str:
@@ -253,7 +253,7 @@ def clean_markdown_content(content: str) -> str:
                          r'\2', content, flags=re.DOTALL)
         return content.strip()
     except Exception as e:
-        get_logger().exception(f"Unexpected exception thrown. Returning empty result.")
+        get_logger().exception("Unexpected exception thrown. Returning empty result.")
         return ""
 
 class PredictionPreparator:
@@ -265,7 +265,7 @@ class PredictionPreparator:
             self.system_prompt = environment.from_string(system_prompt).render(variables)
             self.user_prompt = environment.from_string(user_prompt).render(variables)
         except Exception as e:
-            get_logger().exception(f"Caught exception during init. Setting ai_handler to None to prevent __call__.")
+            get_logger().exception("Caught exception during init. Setting ai_handler to None to prevent __call__.")
             self.ai_handler = None
 
     #Called by retry_with_fallback_models and therefore, on any failure must throw an exception:
@@ -323,7 +323,7 @@ class PRHelpDocs(object):
                                                   get_settings().pr_help_docs_prompts.system,
                                                   get_settings().pr_help_docs_prompts.user)
         except Exception as e:
-            get_logger().exception(f"Caught exception during init. Setting self.question to None to prevent run() to do anything.")
+            get_logger().exception("Caught exception during init. Setting self.question to None to prevent run() to do anything.")
             self.question = None
 
     async def run(self):
@@ -338,7 +338,7 @@ class PRHelpDocs(object):
             #Generate prompt for the AI model. This will be the full text of all the documentation files combined.
             docs_prompt = aggregate_documentation_files_for_prompt_contents(docs_filepath_to_contents)
             if not docs_filepath_to_contents or not docs_prompt:
-                get_logger().warning(f"Could not find any usable documentation. Returning with no result...")
+                get_logger().warning("Could not find any usable documentation. Returning with no result...")
                 return None
             docs_prompt_to_send_to_model = docs_prompt
 
@@ -376,7 +376,7 @@ class PRHelpDocs(object):
                                        artifacts={'raw_response': response, 'response_str': response_str, 'relevant_sections': relevant_sections})
                 return
             if int(response_yaml.get('question_is_relevant', '1')) == 0:
-                get_logger().warning(f"Question is not relevant. Returning without an answer...",
+                get_logger().warning("Question is not relevant. Returning without an answer...",
                                          artifacts={'raw_response': response})
                 return
 
@@ -415,7 +415,7 @@ class PRHelpDocs(object):
                             return matching_files
             return matching_files
         except Exception as e:
-            get_logger().exception(f"Unexpected exception thrown. Returning empty list.")
+            get_logger().exception("Unexpected exception thrown. Returning empty list.")
             return []
 
     def _gen_filenames_to_contents_map_from_repo(self) -> dict[str, str]:
@@ -426,7 +426,7 @@ class PRHelpDocs(object):
                 if not returned_cloned_repo_root:
                     raise Exception(f"Failed to clone {self.repo_url} to {tmp_dir}")
 
-                get_logger().debug(f"About to gather relevant documentation files...")
+                get_logger().debug("About to gather relevant documentation files...")
                 doc_files = []
                 if self.include_root_readme_file:
                     for root, _, files in os.walk(returned_cloned_repo_root.path):
@@ -451,7 +451,7 @@ class PRHelpDocs(object):
 
                 return map_documentation_files_to_contents(returned_cloned_repo_root.path, doc_files)
         except Exception as e:
-            get_logger().exception(f"Unexpected exception thrown. Returning empty dict.")
+            get_logger().exception("Unexpected exception thrown. Returning empty dict.")
             return {}
 
     def _trim_docs_input(self, docs_input: str, max_allowed_txt_input: int, only_return_if_trim_needed=False) -> bool|str:
@@ -488,7 +488,7 @@ class PRHelpDocs(object):
             # Unexpected exception. Rethrowing it since:
             # 1. This is an internal function.
             # 2. An empty str/False result is a valid one - would require now checking also for None.
-            get_logger().exception(f"Unexpected exception thrown. Rethrowing it...")
+            get_logger().exception("Unexpected exception thrown. Rethrowing it...")
             raise e
 
     async def _rank_docs_and_return_them_as_prompt(self, docs_filepath_to_contents: dict[str, str], max_allowed_txt_input: int) -> str:
@@ -530,7 +530,7 @@ class PRHelpDocs(object):
                 return ""
             return docs_prompt_to_send_to_model
         except Exception as e:
-            get_logger().exception(f"Unexpected exception thrown. Returning empty result.")
+            get_logger().exception("Unexpected exception thrown. Returning empty result.")
             return ""
 
     def _format_model_answer(self, response_str: str, relevant_sections: list[dict[str, str]]) -> str:
@@ -545,10 +545,10 @@ class PRHelpDocs(object):
                 answer_str = modify_answer_section(answer_str)
             #In case the response should not be published and returned as string, stop here:
             if answer_str and self.return_as_string:
-                get_logger().info(f"Chat help docs answer", artifacts={'answer_str': answer_str})
+                get_logger().info("Chat help docs answer", artifacts={'answer_str': answer_str})
                 return answer_str
             if not answer_str:
-                get_logger().info(f"No answer found")
+                get_logger().info("No answer found")
                 return ""
             if self.git_provider.is_supported("gfm_markdown") and get_settings().pr_help_docs.enable_help_text:
                 answer_str += "<hr>\n\n<details> <summary><strong>💡 Tool usage guide:</strong></summary><hr> \n\n"
@@ -556,5 +556,5 @@ class PRHelpDocs(object):
                 answer_str += "\n</details>\n"
             return answer_str
         except Exception as e:
-            get_logger().exception(f"Unexpected exception thrown. Returning empty result.")
+            get_logger().exception("Unexpected exception thrown. Returning empty result.")
             return ""
