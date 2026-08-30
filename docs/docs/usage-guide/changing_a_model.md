@@ -184,14 +184,20 @@ To use xAI's models with PR-Agent, set:
 
 ```toml
 [config] # in configuration.toml
-model = "xai/grok-2-latest"
-fallback_models = ["xai/grok-2-latest"] # or any other model as fallback
+model = "xai/grok-4.6"
+fallback_models = ["xai/grok-4.6"] # or any other model as fallback
 
 [xai] # in .secrets.toml
 key = "..." # your xAI API key
 ```
 
 You can obtain an xAI API key from [xAI's console](https://console.x.ai/) by creating an account and navigating to the developer settings page.
+
+Grok 4.5 and Grok 4.6 are registered with a 500K token context window (`xai/grok-4.5`, `xai/grok-4.5-latest`, `xai/grok-build-latest`, `xai/grok-4.6`, `openrouter/x-ai/grok-4.5`, `openrouter/x-ai/grok-4.6`). xAI publishes `grok-4.5-latest` and `grok-build-latest` aliases for Grok 4.5; Grok 4.6 currently has no published alias.
+
+Grok 4.5 and Grok 4.6 are always-on reasoning models and honor `config.reasoning_effort` (`low`, `medium`, `high`; `"xhigh"` is supported on Grok 4.6 and later). PR-Agent sends `medium` by default; set `"high"` to restore xAI's native default. This setting is global, so changing it also affects other registered reasoning models. Unsupported values are clamped to the closest accepted level (`none`/`minimal` → `"low"`; `"max"`/`"xhigh"` on Grok 4.5 → `"high"`; `"max"` on Grok 4.6 → `"xhigh"`).
+
+OpenRouter routes (`openrouter/x-ai/grok-4.5`, `openrouter/x-ai/grok-4.6`) apply the same clamping after the OpenRouter effort value is resolved but before the none-versus-budget decision. An explicit `openrouter.reasoning_effort` overrides the global effort; a positive `openrouter.reasoning_max_tokens` remains budget-only and suppresses effort, including a clamped `"none"` value. Routing suffixes such as `:nitro` require `custom_model_max_tokens` because token lookup currently uses exact model IDs.
 
 ### Vertex AI
 
@@ -528,11 +534,11 @@ For `openrouter/...` models you can optionally restrict which upstream providers
 # provider_order = ["z-ai", "novita"]  # preferred order instead of an allowlist; ignored when provider_only is set
 # allow_fallbacks = true               # when provider_order is set, allow routing beyond the list
 # reasoning_effort = "low"             # override global effort: "none", "minimal", "low", "medium", "high", "xhigh" or "max"
-# reasoning_max_tokens = 2048          # explicit budget; takes precedence over effort unless effort is "none"
+# reasoning_max_tokens = 2048          # explicit budget; ignored only when final effort remains "none"
 # max_tokens = 16000                   # hard cap on completion tokens for the request
 ```
 
-`provider_only` and `reasoning_effort = "none"` are useful to pin a specific provider and to bound the cost of reasoning models. Because Openrouter treats effort and token budgets as mutually exclusive, an explicit Openrouter-specific `"none"` keeps reasoning disabled; otherwise a positive `reasoning_max_tokens` value takes precedence over the global effort and other Openrouter-specific values. Invalid Openrouter-specific effort values are warned about and treated as unset, so registered reasoning models fall back to `config.reasoning_effort`. Openrouter normalizes `"max"` to `"xhigh"` in this path to match LiteLLM 1.98.0. Supported effort values vary by model, and models whose metadata marks reasoning as mandatory reject `"none"`. For Anthropic models using a reasoning budget, set the effective output `max_tokens` higher than `reasoning_max_tokens` so the final answer has output headroom. See the Openrouter [provider routing](https://openrouter.ai/docs/guides/routing/provider-selection) and [reasoning tokens](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens) docs.
+`provider_only` and `reasoning_effort = "none"` are useful to pin a specific provider and to bound the cost of reasoning models. Because Openrouter treats effort and token budgets as mutually exclusive, an explicit Openrouter-specific `"none"` keeps reasoning disabled when the model supports disabling it. Grok 4.5/4.6 clamp `"none"` before precedence is applied, so a positive budget wins there; otherwise a positive `reasoning_max_tokens` value takes precedence over the global effort and other Openrouter-specific values. Invalid Openrouter-specific effort values are warned about and treated as unset, so registered reasoning models fall back to `config.reasoning_effort`. Openrouter normalizes `"max"` to `"xhigh"` in this path to match LiteLLM 1.98.0. Supported effort values vary by model, and models whose metadata marks reasoning as mandatory reject `"none"`. For Anthropic models using a reasoning budget, set the effective output `max_tokens` higher than `reasoning_max_tokens` so the final answer has output headroom. See the Openrouter [provider routing](https://openrouter.ai/docs/guides/routing/provider-selection) and [reasoning tokens](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens) docs.
 
 ### OrcaRouter
 
