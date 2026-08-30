@@ -113,6 +113,45 @@ async def test_run_does_not_remove_final_summary_when_cancelled_during_dual_publ
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("persistent_comment", [False, True])
+async def test_run_does_not_publish_failure_after_successful_summary(monkeypatch, persistent_comment):
+    settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
+    try:
+        provider = MagicMock()
+        progress_comment = MagicMock(name="progress_comment")
+        provider.get_files.return_value = [object()]
+        provider.is_supported.return_value = True
+        provider.publish_comment.return_value = progress_comment
+        provider.get_latest_commit_url.return_value = "https://example.invalid/commit/abcdef1234567890"
+        tool = _make_tool(provider)
+        tool.progress = "progress body"
+        tool.generate_summarized_suggestions = MagicMock(return_value="final summary")
+
+        monkeypatch.setattr(
+            pr_code_suggestions_module,
+            "retry_with_fallback_models",
+            AsyncMock(return_value={"code_suggestions": [{"score": 1}]}),
+        )
+        _configure_published_run()
+        settings = get_settings()
+        settings.pr_code_suggestions.commitable_code_suggestions = False
+        settings.pr_code_suggestions.dual_publishing_score_threshold = "invalid"
+        settings.pr_code_suggestions.persistent_comment = persistent_comment
+
+        await tool.run()
+
+        provider.edit_comment.assert_called_once()
+        if "body" in provider.edit_comment.call_args.kwargs:
+            published_body = provider.edit_comment.call_args.kwargs["body"]
+        else:
+            published_body = provider.edit_comment.call_args.args[1]
+        assert "final summary" in published_body
+        provider.publish_comment.assert_called_once_with("progress body")
+    finally:
+        restore_settings(settings_snapshot)
+
+
+@pytest.mark.asyncio
 async def test_run_does_not_remove_persistent_summary_when_cancelled_during_dual_publishing(monkeypatch):
     settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
     try:

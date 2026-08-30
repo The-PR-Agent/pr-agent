@@ -162,6 +162,7 @@ class PRCodeSuggestions:
 
     async def run(self):
         init_run_details()
+        output_published = False
         try:
             if getattr(self, "_incremental_empty_scope", False):
                 # Set by `__init__` when incremental anchored cleanly but no files changed
@@ -258,6 +259,7 @@ class PRCodeSuggestions:
                         )
                         if published_comment is not None:
                             self.progress_response = None
+                        output_published = True
                     else:
                         pr_body = add_comment_identity(
                             pr_body,
@@ -268,6 +270,7 @@ class PRCodeSuggestions:
                             self.progress_response = None
                         else:
                             self.git_provider.publish_comment(pr_body)
+                        output_published = True
 
                     # dual publishing mode
                     if int(get_settings().pr_code_suggestions.dual_publishing_score_threshold) > 0:
@@ -308,7 +311,7 @@ class PRCodeSuggestions:
             if get_settings().config.publish_output:
                 if self.progress_response:
                     self.git_provider.remove_comment(self.progress_response)
-                else:
+                elif not output_published:
                     try:
                         self.git_provider.remove_initial_comment()
                         self.git_provider.publish_comment("Failed to generate code suggestions for PR")
