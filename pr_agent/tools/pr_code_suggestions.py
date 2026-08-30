@@ -162,7 +162,7 @@ class PRCodeSuggestions:
 
     async def run(self):
         init_run_details()
-        output_published = False
+        self._output_published = False
         try:
             if getattr(self, "_incremental_empty_scope", False):
                 # Set by `__init__` when incremental anchored cleanly but no files changed
@@ -259,7 +259,7 @@ class PRCodeSuggestions:
                         )
                         if published_comment is not None:
                             self.progress_response = None
-                        output_published = True
+                        self._output_published = True
                     else:
                         pr_body = add_comment_identity(
                             pr_body,
@@ -270,7 +270,7 @@ class PRCodeSuggestions:
                             self.progress_response = None
                         else:
                             self.git_provider.publish_comment(pr_body)
-                        output_published = True
+                        self._output_published = True
 
                     # dual publishing mode
                     if int(get_settings().pr_code_suggestions.dual_publishing_score_threshold) > 0:
@@ -311,7 +311,7 @@ class PRCodeSuggestions:
             if get_settings().config.publish_output:
                 if self.progress_response:
                     self.git_provider.remove_comment(self.progress_response)
-                elif not output_published:
+                elif not self._output_published:
                     try:
                         self.git_provider.remove_initial_comment()
                         self.git_provider.publish_comment("Failed to generate code suggestions for PR")
@@ -864,14 +864,18 @@ class PRCodeSuggestions:
                     code_suggestions, artifact_footer=coverage_footer)
             else:
                 is_successful = self.git_provider.publish_code_suggestions(code_suggestions)
+            if is_successful:
+                self._output_published = True
             if not is_successful:
                 get_logger().info("Failed to publish code suggestions, trying to publish each suggestion separately")
                 for code_suggestion in code_suggestions:
-                    self.git_provider.publish_code_suggestions([code_suggestion])
+                    if self.git_provider.publish_code_suggestions([code_suggestion]):
+                        self._output_published = True
         if coverage_footer and not supports_suggestions_artifact:
             fallback_comments.append(coverage_footer.strip())
         if fallback_comments:
             self.git_provider.publish_comment("\n\n---\n\n".join(fallback_comments))
+            self._output_published = True
 
     def _get_diff_file(self, relevant_file):
         diff_files = getattr(self.git_provider, "diff_files", None)

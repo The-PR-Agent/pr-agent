@@ -152,6 +152,98 @@ async def test_run_does_not_publish_failure_after_successful_summary(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_run_does_not_publish_failure_after_successful_inline_suggestions(monkeypatch):
+    settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
+    try:
+        provider = MagicMock()
+        provider.get_files.return_value = [object()]
+        provider.supports_code_suggestions_artifact.return_value = False
+        provider.publish_code_suggestions.return_value = True
+
+        def publish_comment(body, **_kwargs):
+            if body == "Failed to generate code suggestions for PR":
+                return MagicMock()
+            raise RuntimeError("fallback comment rejected")
+
+        provider.publish_comment.side_effect = publish_comment
+        tool = _make_tool(provider)
+        tool._validate_suggestion = MagicMock(
+            side_effect=[
+                (True, "", True),
+                (False, "the target range is outside the diff", False),
+            ]
+        )
+        tool.dedent_code = MagicMock(side_effect=lambda _file, _line, code: code)
+        fallback_suggestion = {
+            "relevant_file": "src/missing.py",
+            "relevant_lines_start": 5,
+            "relevant_lines_end": 5,
+            "suggestion_content": "Keep the fallback visible.",
+            "existing_code": "old_value",
+            "improved_code": "new_value",
+            "label": "bug",
+        }
+        suggestions = [
+            {
+                **fallback_suggestion,
+                "relevant_file": "src/example.py",
+                "relevant_lines_start": 1,
+                "relevant_lines_end": 1,
+            },
+            fallback_suggestion,
+        ]
+        monkeypatch.setattr(
+            pr_code_suggestions_module,
+            "retry_with_fallback_models",
+            AsyncMock(return_value={"code_suggestions": suggestions}),
+        )
+        _configure_published_run()
+        settings = get_settings()
+        settings.config.is_auto_command = True
+        settings.pr_code_suggestions.commitable_code_suggestions = True
+        settings.pr_code_suggestions.dual_publishing_score_threshold = 0
+
+        await tool.run()
+
+        provider.publish_code_suggestions.assert_called_once()
+        published_comments = [call.args[0] for call in provider.publish_comment.call_args_list]
+        assert published_comments == [
+            "**Suggestion:** Keep the fallback visible. [bug]\n\n"
+            "Proposed code (not offered as a committable change because the target range is outside the diff):\n"
+            "```\nnew_value\n```\n\nLocation: `src/missing.py:5-5`"
+        ]
+        provider.remove_initial_comment.assert_called_once()
+    finally:
+        restore_settings(settings_snapshot)
+
+
+@pytest.mark.asyncio
+async def test_run_publishes_failure_when_inline_suggestions_never_publish(monkeypatch):
+    settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
+    try:
+        provider = MagicMock()
+        provider.get_files.return_value = [object()]
+        tool = _make_tool(provider)
+        tool.push_inline_code_suggestions = AsyncMock(side_effect=RuntimeError("inline publish failed"))
+        monkeypatch.setattr(
+            pr_code_suggestions_module,
+            "retry_with_fallback_models",
+            AsyncMock(return_value={"code_suggestions": [{"score": 1}]}),
+        )
+        _configure_published_run()
+        settings = get_settings()
+        settings.config.is_auto_command = True
+        settings.pr_code_suggestions.commitable_code_suggestions = True
+
+        await tool.run()
+
+        provider.publish_comment.assert_called_once_with("Failed to generate code suggestions for PR")
+        assert provider.remove_initial_comment.call_count == 2
+    finally:
+        restore_settings(settings_snapshot)
+
+
+@pytest.mark.asyncio
 async def test_run_does_not_remove_persistent_summary_when_cancelled_during_dual_publishing(monkeypatch):
     settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
     try:
