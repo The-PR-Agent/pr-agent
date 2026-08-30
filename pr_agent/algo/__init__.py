@@ -299,6 +299,7 @@ MAX_TOKENS = {
     "xai/grok-4.5-latest": 500000,
     "xai/grok-build-latest": 500000,
     "xai/grok-4.6": 500000,  # 500K context, but may be limited by config.max_model_tokens
+    "xai/grok-4.20-multi-agent": 500000,  # 500K context; the only Grok family accepting xhigh effort
     "openrouter/x-ai/grok-4.5": 500000,
     "openrouter/x-ai/grok-4.6": 500000,
     'ollama/llama3': 4096,

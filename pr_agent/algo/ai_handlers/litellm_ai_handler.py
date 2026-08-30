@@ -752,8 +752,9 @@ class LiteLLMAIHandler(BaseAiHandler):
                     else:
                         provider_prefix = 'openai/'
                     model = provider_prefix + model_base.replace('_thinking', '')  # remove _thinking suffix
-                elif grok_model.startswith('grok-') and get_settings().config.get(
-                        "enable_grok_reasoning_effort", False):
+                elif (grok_model.startswith('grok-') and not is_openrouter
+                        and not self._grok_reasoning_levels_for(model)
+                        and get_settings().config.get("enable_grok_reasoning_effort", False)):
                     config_effort = get_settings().config.reasoning_effort
                     valid_grok_efforts = ("low", "medium", "high")
                     if grok_model.startswith("grok-4.20-multi-agent"):
@@ -767,10 +768,23 @@ class LiteLLMAIHandler(BaseAiHandler):
                                 f"Invalid reasoning_effort '{config_effort}' in config. "
                                 f"Using default '{effort}'. Valid Grok values: {list(valid_grok_efforts)}"
                             )
-                    reasoning_kwargs = {
-                        "reasoning_effort": effort,
-                        "allowed_openai_params": ["reasoning_effort"],
-                    }
+                    reasoning_kwargs = {"reasoning_effort": effort}
+                    # Only push the field past litellm's own capability check for models it does
+                    # not already mark as reasoning-capable. Applying the allowlist unconditionally
+                    # also forced reasoning_effort onto grok-2/grok-3, which litellm deliberately
+                    # drops. (Reported by @IsmaelMartinez on #2530.)
+                    try:
+                        grok_llm_provider = str(
+                            getattr(get_settings().litellm, "custom_llm_provider", "") or ""
+                        ).strip().lower()
+                        supported_params = litellm.get_supported_openai_params(
+                            model=model,
+                            custom_llm_provider=grok_llm_provider or None,
+                        ) or []
+                    except Exception:
+                        supported_params = []
+                    if "reasoning_effort" not in supported_params:
+                        reasoning_kwargs["allowed_openai_params"] = ["reasoning_effort"]
                     get_logger().info(f"Using reasoning_effort='{effort}' for Grok model")
 
 
