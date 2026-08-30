@@ -669,7 +669,7 @@ Allowing you to automate the review process on your private or public repositori
    > only when your team is comfortable with AI-driven thread resolution.
    > The feature is opt-in and defaults to off.
 
-2) Generate a random secret for your app, and save it for later. For example, you can use:
+2) Generate a random secret for your app, and save it for later. The webhook secret is required: if `GITHUB.WEBHOOK_SECRET` is not configured, the server rejects every incoming webhook with HTTP 403. For example, you can use:
 
 ```bash
 WEBHOOK_SECRET=$(python -c "import secrets; print(secrets.token_hex(10))")
@@ -696,7 +696,7 @@ cp pr_agent/settings/.secrets_template.toml pr_agent/settings/.secrets.toml
 - Your OpenAI key.
 - Copy your app's private key to the private_key field.
 - Copy your app's ID to the app_id field.
-- Copy your app's webhook secret to the webhook_secret field.
+- Copy your app's webhook secret to the webhook_secret field (required).
 - Set deployment_type to 'app' in [configuration.toml](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml)
 
     > The .secrets.toml file is not copied to the Docker image by default, and is only used for local development.
