@@ -120,7 +120,7 @@ dev = [
   "pytest-cov==7.0.0",
   "httpx==0.28.1",
   "pre-commit>=4,<5",
-  "ruff==0.15.20",
+  "ruff==0.16.5",
 ]
 
 [tool.ruff]

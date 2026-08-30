@@ -32,11 +32,15 @@ repos:
   #   hooks:
   #     - id: actionlint
   # ruff handles linting and import sorting (config in pyproject.toml).
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.20
+  - repo: local
     hooks:
-      - id: ruff
-        args: [--fix]
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check
+        language: system
+        types_or: [python, pyi]
+        args: [--fix, --show-fixes]
+
   # - repo: https://github.com/PyCQA/bandit
   #   rev: 1.7.10
   #   hooks:
