@@ -32,6 +32,27 @@ def _embed(texts: List[str]) -> List[List[float]]:
     return [record.embedding for record in response.data]
 
 
+def _embed_with_fallback(texts: List[str]) -> List[List[float]]:
+    """Embed a list, falling back to one by one, and refuse to return an all-zero set."""
+    try:
+        return _embed(texts)
+    except Exception as e:
+        get_logger().error("Failed to embed entire list, embedding one by one...",
+                           artifact={"error": str(e)})
+        embeds = []
+        failures = 0
+        for text in texts:
+            try:
+                embeds.append(_embed([text])[0])
+            except Exception:
+                failures += 1
+                embeds.append([0] * 1536)
+        if failures == len(texts):
+            raise RuntimeError(
+                "Failed to embed any issue text; refusing to index all-zero vectors") from e
+        return embeds
+
+
 class PRSimilarIssue:
     def __init__(self, issue_url: str, ai_handler, args: list = None):
         self.issue_url = issue_url
@@ -473,22 +494,7 @@ class PRSimilarIssue:
 
         get_logger().info('Embedding...')
         list_to_encode = list(df["text"].values)
-        try:
-            embeds = _embed(list_to_encode)
-        except Exception as e:
-            get_logger().error("Failed to embed entire list, embedding one by one...",
-                               artifact={"error": str(e)})
-            embeds = []
-            failures = 0
-            for text in list_to_encode:
-                try:
-                    embeds.append(_embed([text])[0])
-                except Exception:
-                    failures += 1
-                    embeds.append([0] * 1536)
-            if failures == len(list_to_encode):
-                raise RuntimeError(
-                    "Failed to embed any issue text; refusing to index all-zero vectors") from e
+        embeds = _embed_with_fallback(list_to_encode)
         df["values"] = embeds
         meta = DatasetMetadata.empty()
         meta.dense_model.dimension = len(embeds[0])
@@ -572,22 +578,7 @@ class PRSimilarIssue:
 
         get_logger().info('Embedding...')
         list_to_encode = list(df["text"].values)
-        try:
-            embeds = _embed(list_to_encode)
-        except Exception as e:
-            get_logger().error("Failed to embed entire list, embedding one by one...",
-                               artifact={"error": str(e)})
-            embeds = []
-            failures = 0
-            for text in list_to_encode:
-                try:
-                    embeds.append(_embed([text])[0])
-                except Exception:
-                    failures += 1
-                    embeds.append([0] * 1536)
-            if failures == len(list_to_encode):
-                raise RuntimeError(
-                    "Failed to embed any issue text; refusing to index all-zero vectors") from e
+        embeds = _embed_with_fallback(list_to_encode)
         df["vector"] = embeds
         get_logger().info('Done')
 
@@ -674,22 +665,7 @@ class PRSimilarIssue:
 
         get_logger().info('Embedding...')
         list_to_encode = list(df["text"].values)
-        try:
-            embeds = _embed(list_to_encode)
-        except Exception as e:
-            get_logger().error("Failed to embed entire list, embedding one by one...",
-                               artifact={"error": str(e)})
-            embeds = []
-            failures = 0
-            for text in list_to_encode:
-                try:
-                    embeds.append(_embed([text])[0])
-                except Exception:
-                    failures += 1
-                    embeds.append([0] * 1536)
-            if failures == len(list_to_encode):
-                raise RuntimeError(
-                    "Failed to embed any issue text; refusing to index all-zero vectors") from e
+        embeds = _embed_with_fallback(list_to_encode)
         df["vector"] = embeds
         get_logger().info('Done')
 

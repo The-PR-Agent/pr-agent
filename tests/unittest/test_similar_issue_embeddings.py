@@ -57,14 +57,25 @@ def test_embed_uses_the_v1_client(monkeypatch):
 
 def test_a_total_embedding_failure_raises_instead_of_indexing_zero_vectors(monkeypatch):
     """Raise on a total embedding failure instead of indexing an all-zero vector set."""
-    class FakeClient:
-        def __init__(self, api_key=None):
+    def always_fails(texts):
+        raise RuntimeError("embedding backend down")
+
+    monkeypatch.setattr(psi, "_embed", always_fails)
+
+    with pytest.raises(RuntimeError, match="refusing to index all-zero vectors"):
+        psi._embed_with_fallback(["a", "b"])
+
+
+def test_a_partial_embedding_failure_zeroes_only_the_failing_item(monkeypatch):
+    """Zero only the item that fails, keeping the vectors that were embedded."""
+    def fails_for_b(texts):
+        if texts != ["a"]:
             raise RuntimeError("embedding backend down")
+        return [[0.5]]
 
-    monkeypatch.setattr(psi.openai, "OpenAI", FakeClient)
+    monkeypatch.setattr(psi, "_embed", fails_for_b)
 
-    with pytest.raises(RuntimeError):
-        psi._embed(["a"])
+    assert psi._embed_with_fallback(["a", "b"]) == [[0.5], [0] * 1536]
 
 
 def test_the_client_is_reused_across_calls(monkeypatch):
