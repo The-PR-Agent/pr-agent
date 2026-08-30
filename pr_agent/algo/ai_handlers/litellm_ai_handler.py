@@ -872,7 +872,13 @@ class LiteLLMAIHandler(BaseAiHandler):
                     model in self.claude_extended_thinking_models
                     and get_settings().config.get("enable_claude_extended_thinking", False)
                 ):
-                    kwargs = self._configure_claude_extended_thinking(model, kwargs)
+                    if self._is_claude_adaptive_thinking_model(model):
+                        get_logger().warning(
+                            f"Skipping extended thinking for {model}: adaptive-only models reject "
+                            f"budget_tokens. Enable config.enable_claude_adaptive_thinking instead."
+                        )
+                    else:
+                        kwargs = self._configure_claude_extended_thinking(model, kwargs)
 
                 # Optional output token limit; 0 = unset. Without max_tokens some
                 # providers apply a low service-side default (Bedrock Converse: 4096,
