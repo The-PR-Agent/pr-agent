@@ -18,6 +18,7 @@ from pr_agent.algo import (
     STREAMING_REQUIRED_MODELS,
     SUPPORT_REASONING_EFFORT_MODELS,
     USER_MESSAGE_ONLY_MODELS,
+    normalize_litellm_model,
 )
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_helpers import (
@@ -1162,6 +1163,9 @@ class LiteLLMAIHandler(BaseAiHandler):
         """
         model = kwargs["model"]
         custom_llm_provider = str(kwargs.get("custom_llm_provider") or "").strip().lower()
+        # Double the prefix so LiteLLM strips its provider prefix but preserves
+        # OpenRouter's native router ID; leave other explicit providers unchanged.
+        kwargs["model"] = normalize_litellm_model(model, custom_llm_provider)
         api_base_value = kwargs.get("api_base")
         api_base = api_base_value.strip().lower() if isinstance(api_base_value, str) else ""
         force_streaming = (

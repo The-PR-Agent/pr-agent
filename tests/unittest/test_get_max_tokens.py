@@ -87,6 +87,27 @@ class TestGetMaxTokens:
 
         assert get_max_tokens(model) == 1050000
 
+    @pytest.mark.parametrize(
+        ("model", "expected"),
+        [
+            ("openrouter/auto", 2000000),
+            ("openrouter/free", 200000),
+            ("openrouter/fusion", 1000000),
+            ("openrouter/pareto-code", 2000000),
+        ],
+    )
+    def test_openrouter_router_model_max_tokens(self, monkeypatch, model, expected):
+        fake_settings = type("", (), {
+            "config": type("", (), {
+                "custom_model_max_tokens": 0,
+                "max_model_tokens": 0,
+            })()
+        })()
+
+        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+
+        assert get_max_tokens(model) == expected
+
     # Test situations where the model is not registered and exists as a custom model
     def test_model_has_custom(self, monkeypatch):
         fake_settings = type('', (), {

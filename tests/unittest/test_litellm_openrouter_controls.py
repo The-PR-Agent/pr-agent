@@ -14,7 +14,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import litellm
 import openai
 import pytest
-from litellm.utils import get_optional_params
+from litellm.llms.openrouter.chat.transformation import OpenrouterConfig
+from litellm.utils import get_llm_provider, get_optional_params
 
 import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_handler
 
@@ -59,7 +60,7 @@ def _restore_litellm_globals():
                 os.environ[name] = value
 
 
-def _make_settings(openrouter=None, reasoning_effort="medium"):
+def _make_settings(openrouter=None, reasoning_effort="medium", custom_llm_provider=""):
     """Minimal settings whose `.get("openrouter", ...)` returns the given dict."""
     openrouter = openrouter or {}
     return type("Settings", (), {
@@ -73,6 +74,7 @@ def _make_settings(openrouter=None, reasoning_effort="medium"):
             "get": lambda self, key, default=None: default,
         })(),
         "litellm": type("LiteLLM", (), {
+            "custom_llm_provider": custom_llm_provider,
             "get": lambda self, key, default=None: default,
         })(),
         "get": lambda self, key, default=None: (openrouter if key == "openrouter" else default),
@@ -87,11 +89,11 @@ def _mock_response():
     return mock
 
 
-async def _run(monkeypatch, model, openrouter, reasoning_effort="medium"):
+async def _run(monkeypatch, model, openrouter, reasoning_effort="medium", custom_llm_provider=""):
     monkeypatch.setattr(
         litellm_handler,
         "get_settings",
-        lambda: _make_settings(openrouter, reasoning_effort),
+        lambda: _make_settings(openrouter, reasoning_effort, custom_llm_provider),
     )
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion",
                new_callable=AsyncMock) as mock_call:
@@ -148,6 +150,69 @@ class TestOpenRouterControls:
         kwargs = await _run(monkeypatch, "openrouter/z-ai/glm-5.2", {})
         assert "extra_body" not in kwargs
         assert "max_tokens" not in kwargs
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("model", "routed_model"),
+        [
+            ("openrouter/auto", "openrouter/openrouter/auto"),
+            ("openrouter/free", "openrouter/openrouter/free"),
+            ("openrouter/fusion", "openrouter/openrouter/fusion"),
+            ("openrouter/pareto-code", "openrouter/openrouter/pareto-code"),
+        ],
+    )
+    async def test_router_model_uses_openrouter_defaults(self, monkeypatch, model, routed_model):
+        kwargs = await _run(monkeypatch, model, {})
+        assert kwargs["model"] == routed_model
+        assert "extra_body" not in kwargs
+        assert "max_tokens" not in kwargs
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("custom_llm_provider", "expected_model", "expected_provider"),
+        [
+            (" OpenRouter ", "openrouter/openrouter/auto", "openrouter"),
+            (" OpenAI ", "openrouter/auto", "openai"),
+        ],
+    )
+    async def test_router_model_respects_custom_llm_provider(
+        self,
+        monkeypatch,
+        custom_llm_provider,
+        expected_model,
+        expected_provider,
+    ):
+        kwargs = await _run(monkeypatch, "openrouter/auto", {}, custom_llm_provider=custom_llm_provider)
+        assert kwargs["model"] == expected_model
+        assert kwargs["custom_llm_provider"] == expected_provider
+
+    @pytest.mark.parametrize(
+        ("model", "routed_model"),
+        [
+            ("openrouter/auto", "openrouter/openrouter/auto"),
+            ("openrouter/free", "openrouter/openrouter/free"),
+            ("openrouter/fusion", "openrouter/openrouter/fusion"),
+            ("openrouter/pareto-code", "openrouter/openrouter/pareto-code"),
+        ],
+    )
+    def test_router_model_preserves_openrouter_slug(self, model, routed_model):
+        resolved_model, provider, _, _ = get_llm_provider(routed_model)
+        assert resolved_model == model
+        assert provider == "openrouter"
+        explicit_model, explicit_provider, _, _ = get_llm_provider(
+            routed_model,
+            custom_llm_provider="openrouter",
+        )
+        assert explicit_model == model
+        assert explicit_provider == "openrouter"
+        request = OpenrouterConfig().transform_request(
+            model=resolved_model,
+            messages=[{"role": "user", "content": "test"}],
+            optional_params={},
+            litellm_params={},
+            headers={},
+        )
+        assert request["model"] == model
 
     @pytest.mark.asyncio
     async def test_non_openrouter_model_unaffected(self, monkeypatch):

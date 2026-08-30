@@ -523,6 +523,21 @@ key = "..." # your openrouter api key
 
 (you can obtain an Openrouter API key from [here](https://openrouter.ai/settings/keys))
 
+OpenRouter's router models can be selected directly without setting `custom_model_max_tokens`:
+
+```toml
+[config]
+model = "openrouter/auto"
+fallback_models = ["openrouter/free"]
+```
+
+PR-Agent also registers `openrouter/fusion` and `openrouter/pareto-code`. Provider routing, reasoning, and output-cap
+settings are optional for all four router models; omit them to use OpenRouter's defaults. See OpenRouter's documentation
+for the [Auto](https://openrouter.ai/docs/guides/routing/routers/auto-router),
+[Free](https://openrouter.ai/docs/guides/routing/routers/free-router),
+[Fusion](https://openrouter.ai/docs/guides/routing/routers/fusion-router), and
+[Pareto](https://openrouter.ai/docs/guides/routing/routers/pareto-router) routers.
+
 #### Openrouter provider routing, reasoning and output cap
 
 For `openrouter/...` models you can optionally restrict which upstream providers Openrouter uses, control reasoning, and cap the completion length. All keys live in the `[openrouter]` section of `configuration.toml`. Models listed in [`SUPPORT_REASONING_EFFORT_MODELS`](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py) inherit `config.reasoning_effort` unless an Openrouter-specific effort or token budget is set.
