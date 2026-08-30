@@ -76,7 +76,10 @@ class GithubProvider(GitProvider):
         if pr_url and 'pull' in pr_url:
             self.set_pr(pr_url)
             self.pr_commits = list(self.pr.get_commits())
-            self.last_commit_id = self.pr_commits[-1]
+            if self.pr_commits:
+                self.last_commit_id = self.pr_commits[-1]
+            else:
+                self.last_commit_id = self._get_repo().get_commit(self.pr.head.sha)
             self.pr_url = self.get_pr_url() # pr_url for github actions can be as api.github.com, so we need to get the url from the pr object
         elif pr_url and 'issue' in pr_url: #url is an issue
             self.issue_main = self._get_issue_handle(pr_url)
