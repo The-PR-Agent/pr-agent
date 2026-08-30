@@ -358,8 +358,8 @@ def _inject_ci_conclusion(conclusion):
         "=====\n"
         f"The workflow run that triggered this review concluded: {conclusion}.\n"
         "=====\n"
-        "If the conclusion is not 'success', the change has not passed CI. "
-        "Say so in your output rather than implying the change is clean."
+        "Treat any conclusion other than 'success' as CI not having passed cleanly, "
+        "and mention it rather than implying the change is clean."
     )
     separator = "\n======\n\n"
     default_target_tools = ["pr_reviewer", "pr_description", "pr_code_suggestions"]
