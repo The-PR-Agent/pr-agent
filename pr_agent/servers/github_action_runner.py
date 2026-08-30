@@ -282,7 +282,7 @@ async def run_action():
                     # payload is a string, otherwise the argv list would be
                     # passed through .strip().lower() and raise AttributeError.
                     if isinstance(comment_body, str):
-                        body = comment_body.strip().lower()
+                        body = comment_body.strip()
                     else:
                         body = comment_body
                     comment_id = event_payload.get("comment", {}).get("id")
