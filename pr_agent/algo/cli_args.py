@@ -1,5 +1,5 @@
-from base64 import b64decode, encode, b64encode
-import hashlib
+from base64 import b64decode
+
 
 class CliArgs:
     @staticmethod
@@ -33,5 +33,3 @@ class CliArgs:
             return True, ""
         except Exception as e:
             return False, str(e)
-
-

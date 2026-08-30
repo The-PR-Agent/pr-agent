@@ -295,6 +295,12 @@ MAX_TOKENS = {
     'xai/grok-3-mini-beta': 131072,
     'xai/grok-3-mini-fast': 131072,
     'xai/grok-3-mini-fast-beta': 131072,
+    "xai/grok-4.5": 500000,  # 500K context, but may be limited by config.max_model_tokens
+    "xai/grok-4.5-latest": 500000,
+    "xai/grok-build-latest": 500000,
+    "xai/grok-4.6": 500000,  # 500K context, but may be limited by config.max_model_tokens
+    "openrouter/x-ai/grok-4.5": 500000,
+    "openrouter/x-ai/grok-4.6": 500000,
     'ollama/llama3': 4096,
     'watsonx/meta-llama/llama-3-8b-instruct': 4096,
     "watsonx/meta-llama/llama-3-70b-instruct": 4096,
@@ -401,7 +407,21 @@ SUPPORT_REASONING_EFFORT_MODELS = [
     # LiteLLMAIHandler routes OpenRouter-prefixed forms through extra_body.reasoning.
     "gemini-2.5-pro",
     "gemini-2.5-flash",
+    # Register each published Grok id separately so provider-prefixed forms match
+    # and the allowlist below can clamp model-specific reasoning levels.
+    "grok-4.5",
+    "grok-4.5-latest",
+    "grok-build-latest",
+    "grok-4.6",
 ]
+
+# Clamp OpenAI-only levels for always-on Grok reasoning; allow xhigh on 4.6+.
+GROK_REASONING_EFFORT_LEVELS = {
+    "grok-4.5": {"low", "medium", "high"},
+    "grok-4.5-latest": {"low", "medium", "high"},
+    "grok-build-latest": {"low", "medium", "high"},
+    "grok-4.6": {"low", "medium", "high", "xhigh"},
+}
 
 # Claude models that support "extended thinking" through the manual
 # thinking={"type": "enabled", "budget_tokens": ...} request built by

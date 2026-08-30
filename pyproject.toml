@@ -25,11 +25,55 @@ classifiers = [
   "Intended Audience :: Developers",
   "Programming Language :: Python :: 3",
 ]
-dynamic = ["dependencies"]
-
-
-[tool.setuptools.dynamic]
-dependencies = { file = ["requirements.txt"] }
+# Exact versions for this repo's own builds (Docker, CI, uv sync) come from
+# uv.lock. Security-sensitive packages below declare >=patched,<next-major
+# ranges instead of == pins so pip consumers can pull security patches on
+# their own cadence (#2523); the floor is the last vetted patched release.
+dependencies = [
+  "aiohttp>=3.14.3,<4",
+  "anthropic>=0.69.0",
+  "atlassian-python-api==3.41.4",
+  "azure-devops==7.1.0b4",
+  "azure-identity==1.25.0",
+  "boto3==1.43.78",
+  "certifi==2024.8.30",
+  "dynaconf>=3.2.13,<4",
+  "fastapi>=0.141.1,<1",
+  "GitPython>=3.1.59,<4",
+  "starlette>=1.6.0,<2",
+  "google-cloud-aiplatform==1.154.0",
+  # google-cloud-aiplatform==1.154.0 requires storage <4,>=1.32.0 on py<3.13 and <4,>=3.10.0 on py>=3.13.
+  # Pin per-Python (exact, like the rest of this list) so existing installs are unchanged and py3.13 resolves. See #2480.
+  "google-cloud-storage==2.10.0; python_version < '3.13'",
+  "google-cloud-storage==3.12.0; python_version >= '3.13'",
+  "protobuf==6.33.6",  # grpcio-status 1.80.0 forces >=6.31.1,<7; pinned to lock the resolved transitive version
+  "Jinja2==3.1.6",
+  "litellm==1.98.0",
+  "loguru==0.7.2",
+  "msrest==0.7.1",
+  "openai>=1.55.3",
+  "PyGithub==1.59.*",
+  "PyJWT>=2.13.0,<3",
+  "PyYAML==6.0.1",
+  "python-gitlab==8.3.0",
+  "retry==0.9.2",
+  "starlette-context==0.3.6",
+  "tiktoken==0.12.0",
+  "ujson>=5.13.0,<6",
+  "unidiff==0.7.5",
+  "uvicorn==0.22.0",
+  "tenacity==8.2.3",
+  "a2a-sdk[http-server]==1.0.3",
+  "langfuse==3.14.5",
+  "gunicorn==23.0.0",
+  "pydantic==2.13.3",
+  # litellm 1.98.0 declares pydantic-settings as a base dependency and imports it unconditionally from
+  # litellm/integrations/otel/model/config.py. Keep the exact pin to lock the resolved transitive version.
+  # Version matches litellm's own constraint (>=2.14.1,<3.0); the existing observability guard covers the callback import.
+  "pydantic-settings==2.14.2",
+  "html2text==2024.2.26",
+  "giteapy==1.0.8",
+]
 
 [project.urls]
 "Homepage" = "https://github.com/the-pr-agent/pr-agent"
@@ -46,8 +90,38 @@ include = [
   "pr_agent*",
 ] # include pr_agent and any sub-packages it finds under it.
 
+[project.optional-dependencies]
+# AWS Lambda deployment (docker/Dockerfile.lambda).
+lambda = ["mangum==0.17.0"]
+# LangChainOpenAIHandler. Install with: uv sync --extra langchain
+langchain = [
+  "langchain",
+  "langchain-core",
+  "langchain-openai",
+]
+
 [project.scripts]
 pr-agent = "pr_agent.cli:run"
+
+[dependency-groups]
+# 'similar issue' tool. Install with: uv sync --group similar-issue.
+# Keep this a dependency group rather than a published extra: pinecone-datasets
+# resolves from a git fork, which wheel metadata cannot reference (PyPI rejects
+# direct URL deps), so a pip-installed extra would silently pull the wrong package.
+similar-issue = [
+  "pinecone-client",
+  "pinecone-datasets @ git+https://github.com/mrT23/pinecone-datasets.git@main",
+  "lancedb==0.5.1",
+  "qdrant-client==1.15.1",
+]
+dev = [
+  "pytest==9.0.3",
+  "pytest-asyncio>=1.3.0",
+  "pytest-cov==7.0.0",
+  "httpx==0.28.1",
+  "pre-commit>=4,<5",
+  "ruff==0.15.20",
+]
 
 [tool.ruff]
 line-length = 120
@@ -60,9 +134,10 @@ lint.select = [
   "I002", # isort missing-required-import
 ]
 
-# First commit - only fixing isort
 lint.fixable = [
-  "I001", # isort basic checks
+  "I001", # import sorting
+  "F401", # unused imports
+  "F541", # f-string without placeholders
 ]
 
 lint.unfixable = [
@@ -71,12 +146,39 @@ lint.unfixable = [
 
 lint.exclude = ["api/code_completions"]
 
-lint.ignore = ["E999", "B008"]
+# B008 is a long-standing ignore. Everything below it is a pre-existing
+# violation deferred so ruff runs green on adoption — fix the code and drop
+# the entry. TODO: burn this list down.
+lint.ignore = [
+  "B008", # function call in argument defaults
+  "E402", # import not at top of file
+  "E501", # line too long
+  "E711", # comparison to None
+  "E713", # test for membership with `not ... in`
+  "E714", # test for object identity with `not ... is`
+  "E721", # type comparison with `==`
+  "E722", # bare `except`
+  "F811", # redefinition of unused name
+  "F841", # unused local variable
+  "B005", # strip() with multi-character string
+  "B006", # mutable argument default
+  "B007", # unused loop control variable
+  "B009", # getattr with constant attribute
+  "B011", # `assert False`
+  "B012", # break/continue/return inside finally
+  "B017", # assertRaises(Exception)
+  "B023", # function definition uses loop variable
+  "B027", # empty method without @abstractmethod
+  "B904", # raise without `from` inside `except`
+  "B905", # zip() without explicit strict=
+]
 
 [tool.ruff.lint.per-file-ignores]
-"__init__.py" = [
-  "E402",
-] # Ignore `E402` (import violations) in all `__init__.py` files, and in `path/to/file.py`.
+# Ignore import-position and unused-import in __init__.py (re-export modules).
+"__init__.py" = ["E402", "F401"]
+# The 'similar issue' tool imports its optional deps (pinecone, pandas,
+# pinecone-datasets) lazily at runtime; ruff can't see them at module scope.
+"pr_agent/tools/pr_similar_issue.py" = ["F821"]
 
 [tool.bandit]
 exclude_dirs = ["tests"]

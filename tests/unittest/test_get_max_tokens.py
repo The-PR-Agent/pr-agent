@@ -198,6 +198,26 @@ class TestGetMaxTokens:
 
         assert get_max_tokens("bedrock_mantle/xai.grok-4.3") == 1000000
 
+    @pytest.mark.parametrize("model", [
+        "xai/grok-4.5",
+        "xai/grok-4.5-latest",
+        "xai/grok-build-latest",
+        "xai/grok-4.6",
+        "openrouter/x-ai/grok-4.5",
+        "openrouter/x-ai/grok-4.6",
+    ])
+    def test_xai_and_openrouter_grok_4_5_and_4_6_models_max_tokens(self, monkeypatch, model):
+        fake_settings = type("", (), {
+            "config": type("", (), {
+                "custom_model_max_tokens": 0,
+                "max_model_tokens": 0,
+            })()
+        })()
+
+        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+
+        assert get_max_tokens(model) == 500000
+
     @pytest.mark.parametrize(
         "model",
         [

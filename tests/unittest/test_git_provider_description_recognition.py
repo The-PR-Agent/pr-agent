@@ -6,6 +6,7 @@ get_user_description can extract the original user text without growing
 the description without bound.
 """
 import types
+
 from pr_agent.git_providers.git_provider import GitProvider
 
 

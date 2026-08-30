@@ -10,9 +10,13 @@ from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 
 from ..algo.file_filter import filter_ignored
 from ..algo.language_handler import is_valid_file
-from ..algo.utils import (PRDescriptionHeader, comment_matches_any_identity,
-                          find_line_number_of_relevant_line_in_file,
-                          get_pr_review_comment_identifiers, load_large_diff)
+from ..algo.utils import (
+    PRDescriptionHeader,
+    comment_matches_any_identity,
+    find_line_number_of_relevant_line_in_file,
+    get_pr_review_comment_identifiers,
+    load_large_diff,
+)
 from ..config_loader import get_settings
 from ..log import get_logger
 from .git_provider import GitProvider, IncrementalPR
@@ -35,9 +39,19 @@ def _is_not_found_error(error: Exception) -> bool:
 try:
     # noinspection PyUnresolvedReferences
     from azure.devops.connection import Connection
+
     # noinspection PyUnresolvedReferences
-    from azure.devops.released.git import (Comment, CommentThread, GitPullRequest, GitVersionDescriptor, GitClient, CommentThreadContext, CommentPosition)
+    from azure.devops.released.git import (
+        Comment,
+        CommentPosition,
+        CommentThread,
+        CommentThreadContext,
+        GitClient,
+        GitPullRequest,
+        GitVersionDescriptor,
+    )
     from azure.devops.released.work_item_tracking import WorkItemTrackingClient
+
     # noinspection PyUnresolvedReferences
     from azure.identity import DefaultAzureCredential
     from msrest.authentication import BasicAuthentication
@@ -257,7 +271,11 @@ class AzureDevopsProvider(GitProvider):
                     pull_request_id=self.pr_num
                 )
             except Exception as e:
-                get_logger().exception(f"Azure failed to publish code suggestion, error: {e}", suggestion=suggestion)
+                get_logger().exception(
+                    "Azure failed to publish code suggestion, error: {error}",
+                    error=e,
+                    suggestion=suggestion,
+                )
                 if fallback_to_pr_comment:
                     fallback_suggestions.append((suggestion, "could not be published as an inline comment"))
             else:
@@ -623,7 +641,7 @@ class AzureDevopsProvider(GitProvider):
             diffs = filter_ignored(diffs_original, "azure")
             if diffs_original != diffs:
                 try:
-                    get_logger().info(f"Filtered out [ignore] files for pull request:", extra=
+                    get_logger().info("Filtered out [ignore] files for pull request:", extra=
                     {"files": diffs_original,  # diffs is just a list of names
                      "filtered_files": diffs})
                 except Exception:
@@ -659,13 +677,12 @@ class AzureDevopsProvider(GitProvider):
 
                     new_file_content_str = new_file_content_str.content
                 except Exception as error:
-                    get_logger().error(f"Failed to retrieve new file content of {file} at version {version}", error=error)
-                    # get_logger().error(
-                    #     "Failed to retrieve new file content of %s at version %s. Error: %s",
-                    #     file,
-                    #     version,
-                    #     str(error),
-                    # )
+                    get_logger().error(
+                        "Failed to retrieve new file content of {file} at version {version}",
+                        file=file,
+                        version=str(version),
+                        error=error,
+                    )
                     new_file_content_str = ""
 
                 edit_type = EDIT_TYPE.MODIFIED
@@ -713,7 +730,9 @@ class AzureDevopsProvider(GitProvider):
                         original_file_content_str = base_original.content
                     except Exception as error:
                         get_logger().error(
-                            f"Failed to retrieve original file content of {file} at version {base_version}",
+                            "Failed to retrieve original file content of {file} at version {version}",
+                            file=file,
+                            version=str(base_version),
                             error=error,
                         )
                         original_file_content_str = ""
@@ -985,13 +1004,13 @@ class AzureDevopsProvider(GitProvider):
             self.azure_devops_client.create_like(self.repo_slug, self.pr_num, thread_id, comment_id, project=self.workspace_slug)
         else:
             self.azure_devops_client.delete_like(self.repo_slug, self.pr_num, thread_id, comment_id, project=self.workspace_slug)
-            
+
     def set_thread_status(self, thread_id: int, status: str):
         try:
             self.azure_devops_client.update_thread(CommentThread(status=status), self.repo_slug, self.pr_num, thread_id, self.workspace_slug)
         except Exception as e:
             get_logger().exception(f"Failed to set thread status, error: {e}")
-            
+
     def reply_to_thread(self, thread_id: int, body: str, is_temporary: bool = False) -> Comment:
         try:
             comment = Comment(content=body)
@@ -1002,14 +1021,14 @@ class AzureDevopsProvider(GitProvider):
             return response
         except Exception as e:
             get_logger().exception(f"Failed to reply to thread, error: {e}")
-    
+
     def get_thread_context(self, thread_id: int) -> CommentThreadContext:
         try:
             thread = self.azure_devops_client.get_pull_request_thread(self.repo_slug, self.pr_num, thread_id, self.workspace_slug)
             return thread.thread_context
         except Exception as e:
             get_logger().exception(f"Failed to set thread status, error: {e}")
-    
+
     @staticmethod
     def _parse_pr_url(pr_url: str) -> Tuple[str, str, int]:
         parsed_url = urlparse(pr_url)
@@ -1017,7 +1036,7 @@ class AzureDevopsProvider(GitProvider):
         num_parts = len(path_parts)
         if num_parts < 5:
             raise ValueError("The provided URL has insufficient path components for an Azure DevOps PR URL")
-        
+
         # Verify that the second-to-last path component is "pullrequest"
         if path_parts[num_parts - 2] != "pullrequest":
             raise ValueError("The provided URL does not follow the expected Azure DevOps PR URL format")

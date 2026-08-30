@@ -119,7 +119,7 @@ class PRAddDocs:
                     new_code_snippet = self.dedent_code(relevant_file, relevant_line, documentation, doc_placement,
                                                         add_original_line=True)
 
-                    body = f"**Suggestion:** Proposed documentation\n```suggestion\n" + new_code_snippet + "\n```"
+                    body = "**Suggestion:** Proposed documentation\n```suggestion\n" + new_code_snippet + "\n```"
                     docs.append({'body': body, 'relevant_file': relevant_file,
                                              'relevant_lines_start': relevant_line,
                                              'relevant_lines_end': relevant_line})
