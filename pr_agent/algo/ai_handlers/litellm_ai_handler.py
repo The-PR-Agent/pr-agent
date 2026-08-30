@@ -534,10 +534,14 @@ class LiteLLMAIHandler(BaseAiHandler):
             f"Using adaptive thinking for model {model}"
             + (f" with output_config effort '{effort}'" if "output_config" in kwargs else "")
         )
-        # Adaptive-thinking Claude models have sampling parameters removed
-        # (NO_SUPPORT_TEMPERATURE_MODELS covers them after #2400/#2449), so
-        # never send temperature here — strip one if an earlier code path
-        # added it.
+        # Adaptive-thinking Claude models have sampling parameters removed, so
+        # never send temperature here. This pop is load-bearing rather than
+        # defensive: NO_SUPPORT_TEMPERATURE_MODELS covers most of these ids
+        # after #2400/#2449, but not all of them. It carries
+        # bedrock/anthropic.claude-opus-4-7-v1:0 and
+        # bedrock/us.anthropic.claude-opus-4-7 without the two combined, so for
+        # bedrock/us.anthropic.claude-opus-4-7-v1:0 this line is the only thing
+        # stopping a temperature reaching the model.
         kwargs.pop("temperature", None)
         return kwargs
 
