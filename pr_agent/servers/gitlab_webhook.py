@@ -399,7 +399,7 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                                         content=jsonable_encoder({"message": "success"}))
 
                 apply_repo_settings(url)
-                handle_assignment = get_settings().gitlab.get("handle_reviewer_assignment", False)
+                handle_assignment = get_settings().get("gitlab.handle_reviewer_assignment", False)
                 if isinstance(handle_assignment, str):
                     handle_assignment = handle_assignment.lower() in ("true", "1", "yes")
                 if not handle_assignment:
@@ -415,7 +415,7 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                     return JSONResponse(status_code=status.HTTP_200_OK,
                                         content=jsonable_encoder({"message": "success"}))
                 if await is_bot_assigned_as_reviewer(data):
-                    reviewer_commands = get_settings().gitlab.get("reviewer_commands", [])
+                    reviewer_commands = get_settings().get("gitlab.reviewer_commands", [])
                     if not isinstance(reviewer_commands, list) or not all(isinstance(c, str) for c in reviewer_commands):
                         get_logger().warning("gitlab.reviewer_commands is not a list of strings, skipping")
                         return JSONResponse(status_code=status.HTTP_200_OK,
