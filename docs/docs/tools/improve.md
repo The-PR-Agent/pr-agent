@@ -120,13 +120,13 @@ Use triple quotes to write multi-line instructions. Use bullet points or numbers
     repo_context_files = ["AGENTS.md", "best_practices.md"]
     ```
 
-    Repository context files are read from the default branch by default and are limited by
+    This fallback supports GitHub, GitLab, Gitea, Bitbucket, and Azure DevOps. Repository context files are read
+    from the default branch by default and are limited by
     `config.repo_context_max_lines` (500 lines by default). Set `config.repo_context_from_default_branch = false`
     to read them from the pull request's target branch instead. Providers without repository file fetching log a
     warning and skip this context.
 
-Qodo Merge supports both simple and hierarchical best practices configurations to provide guidance to the AI model
-for generating relevant code suggestions.
+Qodo Merge supports both simple and hierarchical best practices configurations to provide guidance to the AI model for generating relevant code suggestions.
 
 ???- tip "Writing effective best practices files"
 
