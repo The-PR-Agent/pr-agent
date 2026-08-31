@@ -932,6 +932,43 @@ def test_set_review_labels_replaces_stale_review_labels_and_keeps_user_labels():
         settings.pr_reviewer.enable_review_labels_security = original["enable_review_labels_security"]
 
 
+def test_set_review_labels_skips_providers_without_label_support():
+    settings = get_settings()
+    original = {
+        "publish_output": settings.config.publish_output,
+        "require_estimate_effort_to_review": settings.pr_reviewer.require_estimate_effort_to_review,
+        "require_security_review": settings.pr_reviewer.require_security_review,
+        "enable_review_labels_effort": settings.pr_reviewer.enable_review_labels_effort,
+        "enable_review_labels_security": settings.pr_reviewer.enable_review_labels_security,
+    }
+    settings.config.publish_output = True
+    settings.pr_reviewer.require_estimate_effort_to_review = True
+    settings.pr_reviewer.require_security_review = True
+    settings.pr_reviewer.enable_review_labels_effort = True
+    settings.pr_reviewer.enable_review_labels_security = True
+    git_provider = MagicMock()
+    git_provider.is_supported.return_value = False
+    reviewer = _make_reviewer(git_provider)
+    data = {
+        "review": {
+            "estimated_effort_to_review_[1-5]": "3, moderate",
+            "security_concerns": "yes",
+        }
+    }
+
+    try:
+        reviewer.set_review_labels(data)
+
+        git_provider.get_pr_labels.assert_not_called()
+        git_provider.publish_labels.assert_not_called()
+    finally:
+        settings.config.publish_output = original["publish_output"]
+        settings.pr_reviewer.require_estimate_effort_to_review = original["require_estimate_effort_to_review"]
+        settings.pr_reviewer.require_security_review = original["require_security_review"]
+        settings.pr_reviewer.enable_review_labels_effort = original["enable_review_labels_effort"]
+        settings.pr_reviewer.enable_review_labels_security = original["enable_review_labels_security"]
+
+
 def test_get_user_answers_collects_question_and_answer_from_issue_comments():
     git_provider = MagicMock()
     git_provider.get_issue_comments.return_value = [

@@ -627,8 +627,9 @@ class PRReviewer:
         if not get_settings().pr_reviewer.require_security_review:
             get_settings().pr_reviewer.enable_review_labels_security = False # we did not generate this output
 
-        if (get_settings().pr_reviewer.enable_review_labels_security or
-                get_settings().pr_reviewer.enable_review_labels_effort):
+        if ((get_settings().pr_reviewer.enable_review_labels_security or
+                get_settings().pr_reviewer.enable_review_labels_effort) and
+                self.git_provider.is_supported("get_labels")):
             try:
                 review_labels = []
                 if get_settings().pr_reviewer.enable_review_labels_effort:
