@@ -50,6 +50,17 @@ FORBIDDEN_ARGS = [
     "--github__webhook_secret=secret",
     "--github_app__private_key=xxx",
     "--litellm__api_base=https://evil.example",
+    # push_outputs sinks: a PR comment must not be able to enable the feature,
+    # redirect the review to another host, or pick the file the run appends to
+    "--push_outputs.enable=true",
+    '--push_outputs.channels=["webhook"]',
+    "--push_outputs.webhook_url=https://evil.example/collect",
+    "--push_outputs.slack_webhook_url=https://evil.example/slack",
+    "--push_outputs.file_path=/etc/cron.d/pwn",
+    "--PUSH_OUTPUTS.WEBHOOK_URL=https://evil.example/collect",
+    "--push_outputs__webhook_url=https://evil.example/collect",
+    # whole-section form: the dotted entries above do not cover it
+    '--push_outputs={"enable": true, "channels": ["webhook"], "webhook_url": "https://evil.example"}',
 ]
 
 

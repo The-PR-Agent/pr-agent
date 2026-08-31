@@ -112,3 +112,37 @@ class TestPushOutputs:
 
         # Must not raise.
         push_outputs("review", payload={"a": 1}, markdown="hi")
+
+    @pytest.mark.parametrize("bad_url", [
+        "http://example.test/hook",       # plaintext
+        "ftp://example.test/hook",        # non-HTTP scheme
+        "example.test/hook",              # scheme-less, urlparse gives no host
+        "https:///hook",                  # no host
+        "file:///etc/passwd",
+    ])
+    def test_non_https_sink_urls_are_ignored(self, monkeypatch, bad_url):
+        get_settings().set('PUSH_OUTPUTS.ENABLE', True)
+        get_settings().set('PUSH_OUTPUTS.CHANNELS', ['webhook', 'slack'])
+        get_settings().set('PUSH_OUTPUTS.WEBHOOK_URL', bad_url)
+        get_settings().set('PUSH_OUTPUTS.SLACK_WEBHOOK_URL', bad_url)
+
+        posts = []
+        monkeypatch.setattr(utils.requests, 'post',
+                            lambda url, **kwargs: posts.append(url))
+
+        push_outputs("review", payload={"a": 1}, markdown="hi")
+
+        assert posts == [], f"{bad_url} should not have been POSTed to"
+
+    def test_https_sink_url_is_accepted(self, monkeypatch):
+        get_settings().set('PUSH_OUTPUTS.ENABLE', True)
+        get_settings().set('PUSH_OUTPUTS.CHANNELS', ['webhook'])
+        get_settings().set('PUSH_OUTPUTS.WEBHOOK_URL', 'https://example.test/hook')
+
+        posts = []
+        monkeypatch.setattr(utils.requests, 'post',
+                            lambda url, **kwargs: posts.append(url))
+
+        push_outputs("review", payload={"a": 1}, markdown="hi")
+
+        assert posts == ['https://example.test/hook']

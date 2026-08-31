@@ -17,6 +17,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from enum import Enum
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Iterable, List, Tuple, TypedDict
+from urllib.parse import urlparse
 
 import html2text
 import requests
@@ -1537,6 +1538,24 @@ def github_action_output(output_data: dict, key_name: str):
     return
 
 
+def _push_outputs_sink_url(cfg: dict, key: str) -> str:
+    """Return cfg[key] if it is an absolute https URL with a host, else "" (with a warning).
+
+    Requiring https keeps the review text, which can quote private code, off plaintext
+    transports. The host is not restricted: self-hosted collectors and Slack-compatible
+    endpoints (Mattermost, Rocket.Chat) are legitimate targets.
+    """
+    url = cfg.get(key) or ''
+    if not url:
+        return ''
+    parsed = urlparse(url)
+    if parsed.scheme != 'https' or not parsed.hostname:
+        # Log the key, never the value: a webhook URL is itself the credential.
+        get_logger().warning(f"push_outputs: ignoring {key}, expected an absolute https:// URL")
+        return ''
+    return url
+
+
 def push_outputs(message_type: str, payload: dict | None = None, markdown: str | None = None) -> None:
     """Emit a tool's output to external sinks, without calling any git-provider API.
 
@@ -1574,13 +1593,17 @@ def push_outputs(message_type: str, payload: dict | None = None, markdown: str |
 
         # Local channels first, network last, so a failed POST can't lose a file write.
         # allow_redirects=False: never follow a redirect from a configured sink to another host.
-        if "webhook" in channels and cfg.get('webhook_url'):
-            requests.post(cfg['webhook_url'], json=record, timeout=5, allow_redirects=False)
+        if "webhook" in channels:
+            webhook_url = _push_outputs_sink_url(cfg, 'webhook_url')
+            if webhook_url:
+                requests.post(webhook_url, json=record, timeout=5, allow_redirects=False)
 
-        # Slack Incoming Webhooks accept {"text": ...} directly — no relay service needed.
-        if "slack" in channels and cfg.get('slack_webhook_url'):
-            text = markdown if markdown is not None else json.dumps(payload or {}, ensure_ascii=False)
-            requests.post(cfg['slack_webhook_url'], json={"text": text}, timeout=5, allow_redirects=False)
+        # Slack Incoming Webhooks accept {"text": ...} directly, no relay service needed.
+        if "slack" in channels:
+            slack_webhook_url = _push_outputs_sink_url(cfg, 'slack_webhook_url')
+            if slack_webhook_url:
+                text = markdown if markdown is not None else json.dumps(payload or {}, ensure_ascii=False)
+                requests.post(slack_webhook_url, json={"text": text}, timeout=5, allow_redirects=False)
     except Exception as e:
         # Log only the exception type: requests errors embed the (secret-bearing) URL in their text.
         get_logger().warning(f"push_outputs failed: {type(e).__name__}")

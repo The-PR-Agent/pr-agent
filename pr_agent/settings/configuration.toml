@@ -525,7 +525,7 @@ pr_commands = [
 
 [push_outputs] # push tool outputs to external sinks without calling git-provider APIs (disabled by default)
 enable = false
-channels = ["stdout"] # any of: "stdout", "file", "webhook", "slack"
+channels = [] # any of: "stdout", "file", "webhook", "slack". Nothing is emitted until a channel is listed here
 file_path = "pr-agent-outputs/reviews.jsonl" # used by the "file" channel
-webhook_url = "" # used by the "webhook" channel: generic JSON POST target
-slack_webhook_url = "" # used by the "slack" channel: a Slack Incoming Webhook URL
+webhook_url = "" # used by the "webhook" channel: generic JSON POST target. Must be an absolute https:// URL
+slack_webhook_url = "" # used by the "slack" channel: a Slack Incoming Webhook URL. Must be an absolute https:// URL

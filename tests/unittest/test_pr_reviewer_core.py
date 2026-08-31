@@ -1195,3 +1195,41 @@ def test_answer_mode_prefers_the_newest_question_and_answer(monkeypatch):
 
     assert reviewer.vars["question_str"] == "Questions to better understand the PR:\n- Current question?"
     assert reviewer.vars["answer_str"] == "/answer Current answer."
+
+
+def _render_review_capturing_push(reviewer, publish_output):
+    reviewer.prediction = "review: {}"
+    reviewer.remaining_files_list = []
+    reviewer.git_provider.get_diff_files.return_value = []
+    reviewer.git_provider.is_supported.return_value = False
+    reviewer.set_review_labels = MagicMock()
+
+    settings = get_settings()
+    original_publish_output = settings.config.publish_output
+    try:
+        settings.config.publish_output = publish_output
+        with (
+            patch("pr_agent.tools.pr_reviewer.load_yaml", return_value={"review": {"score": "1"}}),
+            patch("pr_agent.tools.pr_reviewer.github_action_output"),
+            patch("pr_agent.tools.pr_reviewer.convert_to_markdown_v2", return_value="original review"),
+            patch("pr_agent.tools.pr_reviewer.push_outputs") as push,
+        ):
+            reviewer._prepare_pr_review()
+        return push
+    finally:
+        settings.config.publish_output = original_publish_output
+
+
+def test_prepare_pr_review_does_not_push_outputs_on_a_dry_run():
+    # publish_output=false is used by the CLI and by mosaico's dispatch to render a review
+    # without touching the PR; it must not reach an external sink either.
+    push = _render_review_capturing_push(_make_prediction_reviewer(), publish_output=False)
+    push.assert_not_called()
+
+
+def test_prepare_pr_review_pushes_outputs_when_publishing():
+    push = _render_review_capturing_push(_make_prediction_reviewer(), publish_output=True)
+    push.assert_called_once()
+    assert push.call_args.args[0] == "review"
+    assert push.call_args.kwargs["payload"] == {"score": "1"}
+    assert push.call_args.kwargs["markdown"] == "original review"
