@@ -28,7 +28,7 @@ class FakeAgent:
 @pytest.fixture
 def client(monkeypatch):
     calls = []
-    monkeypatch.setattr(gerrit_server, "get_settings", lambda: SettingsStub())
+    monkeypatch.setattr(gerrit_server, "get_settings", SettingsStub)
     monkeypatch.setattr(gerrit_server, "PRAgent", lambda: FakeAgent(calls))
     app = FastAPI(middleware=[Middleware(RawContextMiddleware)])
     app.include_router(gerrit_server.router)
