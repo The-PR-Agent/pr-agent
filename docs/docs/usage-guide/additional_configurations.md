@@ -161,6 +161,17 @@ publish_review_as_thread = true
 - Enabling the flag does not convert a review that was already posted as a plain note: it keeps being updated in place, and GitLab cannot promote a note to a thread. Only MRs whose first review runs after the flag is set get a thread.
 - Set `pr_reviewer.persistent_comment=false` to open a new review thread on each run instead.
 
+## Post the /improve suggestions as a GitLab thread
+
+By default, PR-Agent posts the `/improve` suggestions as a plain note. To post them as a resolvable thread (GitLab discussion) instead, enable (default: `false`):
+
+```toml
+[gitlab]
+publish_improve_as_thread = true
+```
+
+- A run that finds no suggestions edits the thread in place and resolves it, so a status message does not leave an open thread behind.
+
 ## Resolve outdated GitLab inline threads
 
 Each inline suggestion is anchored to the MR head commit it was posted against. When a later push moves the head, GitLab marks that thread as belonging to an outdated diff version: it renders empty, loses its `Resolve` control, and can then only be closed through the API, so superseded suggestions pile up on a long-lived MR. To have PR-Agent resolve those threads before it publishes a fresh batch of inline suggestions, enable (default: `false`):
