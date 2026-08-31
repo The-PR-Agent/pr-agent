@@ -60,6 +60,15 @@ Constructing comments:
 - Keep each issue description concise. Write so the reader grasps the point immediately without close reading.
 - Use a matter-of-fact, helpful tone. Avoid accusatory language, excessive praise, or filler phrases like 'Great job', 'Thanks for'.
 
+{%- if skills_context %}
+
+
+Organizational standards and review skills (apply the ones relevant to this PR):
+======
+{{ skills_context }}
+======
+{%- endif %}
+
 {%- if extra_instructions %}
 
 
@@ -68,16 +77,16 @@ Extra instructions from the user:
 {{ extra_instructions }}
 ======
 {% endif %}
-{%- if review_rules %}
 
-Repository/team review rules:
+{%- if repo_context %}
+
+
+Repository context:
 ======
-{{ review_rules }}
+{{ repo_context }}
 ======
-- Apply these repository rules in addition to the general review criteria.
-- When a repository rule conflicts with a generic style preference, prioritize the repository rule.
-- Use the repository rules to decide what deserves extra attention, but do not invent violations that are not supported by the diff.
 {% endif %}
+
 
 The output must be a YAML object equivalent to type $PRReview, according to the following Pydantic definitions:
 =====
@@ -216,7 +225,7 @@ review:
 {%- if require_todo_scan %}
   todo_sections: |
     No
-{%- endif %} 
+{%- endif %}
 {%- if require_can_be_split_review %}
   can_be_split:
   - relevant_files:
@@ -248,7 +257,7 @@ Ticket URL: '{{ ticket.ticket_url }}'
 
 Ticket Title: '{{ ticket.title }}'
 
-{%- if ticket.labels %}
+{%- if ticket.labels is defined and ticket.labels %}
 
 Ticket Labels: {{ ticket.labels }}
 

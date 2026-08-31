@@ -3,6 +3,18 @@ description: 'Summarize, review and suggest improvements for pull requests'
 branding:
   icon: 'award'
   color: 'green'
+inputs:
+  artifact_path:
+    description: 'Path to a CI artifact file (relative to GITHUB_WORKSPACE or absolute) to include as extra context in PR analysis. Leave empty to disable artifact injection.'
+    required: false
+    default: ''
+  artifact_instructions:
+    description: 'Custom instructions telling the AI how to interpret the artifact. Leave empty for a sensible default.'
+    required: false
+    default: ''
 runs:
   using: 'docker'
   image: 'Dockerfile.github_action_dockerhub'
+  env:
+    ARTIFACT_PATH: ${{ inputs.artifact_path }}
+    ARTIFACT_INSTRUCTIONS: ${{ inputs.artifact_instructions }}

@@ -21,27 +21,29 @@ The Original Open-Source PR Reviewer
 
 ---
 
- This repository contains the open-source PR Agent Project. 
- It is not the Qodo free tier.
- 
-Try the free version on our website.
+ This repository contains the open-source PR Agent Project.
+ It is not the Qodo offering for open-source projects.
 
-👉[Get Started Now](https://www.qodo.ai/get-started/)
-
-PR-Agent is an open-source, AI-powered code review agent and a community-maintained legacy project of Qodo. It is distinct from Qodo’s primary AI code review offering, which provides a feature-rich, context-aware experience. Qodo now offers a free tier that integrates seamlessly with GitHub, GitLab, Bitbucket, and Azure DevOps for high-quality automated reviews.
+PR-Agent is an open-source, AI-powered code review agent and a community-maintained legacy project of Qodo. It is distinct from Qodo's primary AI code review offering, which provides a feature-rich, context-aware experience. Qodo offers a free version for open-source projects and integrates seamlessly with GitHub, GitLab, Bitbucket, and Azure DevOps for high-quality automated reviews.
 
 
-## Big News for PR-Agent
+## Sponsors
 
-PR-Agent has a new home!
+PR-Agent is a community-maintained open-source project, with its ongoing development supported by our sponsors. If you'd like to support the project, consider [becoming a sponsor](https://github.com/sponsors/naorpeled).
 
-After years of building this tool alongside the community, Qodo has donated PR-Agent to the open-source community - and we couldn't be more excited about what comes next.
+<p align="center">
+  <h3 align="center">🥇 Gold Sponsor</h3>
+</p>
 
-The project now lives in the PR-Agent org on GitHub, is fully community-owned, and is open for contributions and additional maintainers.
+<p align="center">
+  <a target="_blank" href="https://www.qodo.ai/">
+    <img alt="Qodo — Gold sponsor" src="https://www.qodo.ai/wp-content/uploads/2025/03/qodo-logo.svg" width="300">
+  </a>
+</p>
 
-What else changed: 
-- Docs moved to - www.pr-agent.ai
-- Qodo Merge (Qodo 1.0), the hosted URL, which was the enterprise version of PR-Agent, has been rebranded and evolved into Qodo (Qodo 2.0), a full AI code review platform.
+<p align="center">
+  <a target="_blank" href="https://www.qodo.ai/solutions/open-source/">Free version of Qodo for open-source projects</a>
+</p>
 
 
 ## Table of Contents
@@ -62,7 +64,9 @@ What else changed:
 ### 🚀 Quick Start for PR-Agent
 
 #### 1. GitHub Action (Recommended)
+
 Add automated PR reviews to your repository with a simple workflow file:
+
 ```yaml
 # .github/workflows/pr-agent.yml
 name: PR Agent
@@ -82,7 +86,9 @@ jobs:
 [Full GitHub Action setup guide](https://docs.pr-agent.ai/installation/github/#run-as-a-github-action)
 
 #### 2. CLI Usage (Local Development)
+
 Run PR-Agent locally on your repository:
+
 ```bash
 pip install pr-agent
 export OPENAI_KEY=your_key_here
@@ -91,44 +97,34 @@ pr-agent --pr_url https://github.com/owner/repo/pull/123 review
 [Complete CLI setup guide](https://docs.pr-agent.ai/usage-guide/automations_and_usage/#local-repo-cli)
 
 #### 3. Other Platforms
+
 - [GitLab webhook setup](https://docs.pr-agent.ai/installation/gitlab/)
 - [BitBucket app installation](https://docs.pr-agent.ai/installation/bitbucket/)
 - [Azure DevOps setup](https://docs.pr-agent.ai/installation/azure/)
 
-[//]: # (## News and Updates)
+## News and Updates
 
-[//]: # ()
-[//]: # (## Aug 8, 2025)
+Full notes for every release are on the [Releases page](https://github.com/the-pr-agent/pr-agent/releases).
 
-[//]: # ()
-[//]: # ()
-[//]: # ()
-[//]: # (## Jul 1, 2025)
+### Jul 26, 2026 — [v0.41.0](https://github.com/the-pr-agent/pr-agent/releases/tag/v0.41.0)
 
-[//]: # (You can now receive automatic feedback from Qodo Merge in your local IDE after each commit. Read more about it [here]&#40;https://github.com/qodo-ai/agents/tree/main/agents/qodo-merge-post-commit&#41;.)
+Claude Opus 5 support, and `docker/mosaico` became a self-contained deployment bundle.
 
-[//]: # ()
-[//]: # ()
-[//]: # (## Jun 21, 2025)
+### Jul 25, 2026 — [v0.40.0](https://github.com/the-pr-agent/pr-agent/releases/tag/v0.40.0)
 
-[//]: # ()
-[//]: # (v0.30 was [released]&#40;https://github.com/qodo-ai/pr-agent/releases&#41;)
+Default model moved to GPT-5.6, Gemini 3.6 support, persistent inline comments (no more duplicate
+suggestions across runs), an OpenRouter provider-routing/reasoning config, a tokenless
+[plain-diff provider](https://docs.pr-agent.ai/usage-guide/plain_diff_mode/), and CI artifact
+context injection.
 
-[//]: # ()
-[//]: # ()
-[//]: # (## Apr 30, 2025)
+### Jul 5, 2026 — [v0.39.0](https://github.com/the-pr-agent/pr-agent/releases/tag/v0.39.0)
 
-[//]: # ()
-[//]: # (A new feature is now available in the `/improve` tool for Qodo Merge 💎 - Chat on code suggestions.)
-
-[//]: # ()
-[//]: # (<img width="512" alt="image" src="https://codium.ai/images/pr_agent/improve_chat_on_code_suggestions_ask.png" />)
-
-[//]: # ()
-[//]: # (Read more about it [here]&#40;https://docs.pr-agent.ai/tools/improve/#chat-on-code-suggestions&#41;.)
-
-[//]: # ()
-[//]: # ()
+`AGENTS.md` and friends are now fed to `/review`, `/describe` and `/improve` **by default**, so the
+model picks up your project's conventions out of the box. Also:
+[Agent Skills (`SKILL.md`)](https://docs.pr-agent.ai/core-abilities/agent_skills/),
+[organization-level settings](https://docs.pr-agent.ai/usage-guide/configuration_options/),
+[restricted mode](https://docs.pr-agent.ai/usage-guide/additional_configurations/#restricted-mode)
+for reduced GitHub permissions, GitHub Checks as an output target, and Claude Sonnet 5 support.
 
 ## Why Use PR-Agent?
 
@@ -140,10 +136,10 @@ pr-agent --pr_url https://github.com/owner/repo/pull/123 review
 
 **Highly Customizable**: JSON-based prompting allows easy customization of review categories and behavior via [configuration files](pr_agent/settings/configuration.toml)
 
-**Platform Agnostic**: 
+**Platform Agnostic**:
 - **Git Providers**: GitHub, GitLab, BitBucket, Azure DevOps, Gitea
 - **Deployment**: CLI, GitHub Actions, Docker, self-hosted, webhooks
-- **AI Models**: OpenAI GPT, Claude, Deepseek, and more
+- **AI Models**: OpenAI GPT, Anthropic Claude, Google Gemini, DeepSeek, Mistral, and any other model reachable through LiteLLM (Azure OpenAI, AWS Bedrock, Vertex AI, Databricks, OpenRouter, Ollama, and more) — see [Changing a model](https://docs.pr-agent.ai/usage-guide/changing_a_model/)
 
 **Open Source Benefits**:
 - Full control over your data and infrastructure
@@ -164,7 +160,7 @@ PR-Agent offers comprehensive pull request functionalities integrated with vario
 |                                                         | [Improve](https://docs.pr-agent.ai/tools/improve/)                              |   ✅   |   ✅   |    ✅     |      ✅      |  ✅   |
 |                                                         | [Ask](https://docs.pr-agent.ai/tools/ask/)                                      |   ✅   |   ✅   |    ✅     |      ✅      |       |
 |                                                         | ⮑ [Ask on code lines](https://docs.pr-agent.ai/tools/ask/#ask-lines)            |   ✅   |   ✅   |           |              |       |
-|                                                         | [Help Docs](https://docs.pr-agent.ai/tools/help_docs/?h=auto#auto-approval)     |   ✅   |   ✅   |    ✅     |              |       |
+|                                                         | [Help Docs](https://docs.pr-agent.ai/tools/help_docs/) ⚠️                       |   —    |   —    |    —      |              |       |
 |                                                         | [Update CHANGELOG](https://docs.pr-agent.ai/tools/update_changelog/)            |   ✅   |   ✅   |    ✅     |      ✅      |       |
 |                                                         |                                                                                                                     |        |        |           |              |       |
 | [USAGE](https://docs.pr-agent.ai/usage-guide/)   | [CLI](https://docs.pr-agent.ai/usage-guide/automations_and_usage/#local-repo-cli)                            |   ✅   |   ✅   |    ✅     |      ✅      |  ✅   |
@@ -173,13 +169,16 @@ PR-Agent offers comprehensive pull request functionalities integrated with vario
 |                                                         | [Actions](https://docs.pr-agent.ai/installation/github/#run-as-a-github-action)                              |   ✅   |   ✅   |    ✅     |      ✅      |       |
 |                                                         |                                                                                                                     |        |        |           |              |       |
 | [CORE](https://docs.pr-agent.ai/core-abilities/) | [Adaptive and token-aware file patch fitting](https://docs.pr-agent.ai/core-abilities/compression_strategy/) |   ✅   |   ✅   |    ✅     |      ✅      |       |
+|                                                         | [Agent skills (`SKILL.md`)](https://docs.pr-agent.ai/core-abilities/agent_skills/)                           |   ✅   |   ✅   |    ✅     |      ✅      |  ✅   |
+|                                                         | [Repo context files (`AGENTS.md`)](https://docs.pr-agent.ai/usage-guide/additional_configurations/#bringing-per-repo-context-files-to-pr-agent) |   ✅   |   ✅   |    ✅     |      ✅      |  ✅   |
 |                                                         | [Dynamic context](https://docs.pr-agent.ai/core-abilities/dynamic_context/)                                  |   ✅   |   ✅   |    ✅     |      ✅      |       |
 |                                                         | [Fetching ticket context](https://docs.pr-agent.ai/core-abilities/fetching_ticket_context/)                  |   ✅    |  ✅    |     ✅     |              |       |
-|                                                         | [Interactivity](https://docs.pr-agent.ai/core-abilities/interactivity/)                                      |   ✅   |  ✅   |           |              |       |
 |                                                         | [Local and global metadata](https://docs.pr-agent.ai/core-abilities/metadata/)                               |   ✅   |   ✅   |    ✅     |      ✅      |       |
 |                                                         | [Multiple models support](https://docs.pr-agent.ai/usage-guide/changing_a_model/)                            |   ✅   |   ✅   |    ✅     |      ✅      |       |
 |                                                         | [PR compression](https://docs.pr-agent.ai/core-abilities/compression_strategy/)                              |   ✅   |   ✅   |    ✅     |      ✅      |       |
 |                                                         | [Self reflection](https://docs.pr-agent.ai/core-abilities/self_reflection/)                                  |   ✅   |   ✅   |    ✅     |      ✅      |       |
+
+⚠️ `/help_docs` is temporarily disabled since `v0.36.1` pending a fix for a credential-exposure issue ([#2445](https://github.com/the-pr-agent/pr-agent/issues/2445)).
 
 [//]: # (- Support for additional git providers is described in [here]&#40;./docs/Full_environments.md&#41;)
 ___
@@ -216,6 +215,25 @@ ___
 
 <hr>
 
+### Usage Examples
+
+PR-Agent tools run as a comment on a PR or from the CLI. A few common ones:
+
+```bash
+# Comment on a PR (GitHub/GitLab/Bitbucket/…):
+/describe                        # generate title, summary, walkthrough and labels
+/review                          # findings, security, review effort and tests
+/improve                         # actionable code-improvement suggestions
+/ask "What does this PR change?" # free-text Q&A about the PR
+
+# Or locally via the CLI:
+pr-agent --pr_url <PR_URL> review
+```
+
+See the [Tools docs](https://docs.pr-agent.ai/tools/#usage-examples) for the full list of tools with example commands, and each tool's page for screenshots and options.
+
+<hr>
+
 ## How It Works
 
 The following diagram illustrates PR-Agent tools and their flow:
@@ -231,8 +249,20 @@ https://openai.com/enterprise-privacy
 
 ## Contributing
 
-To contribute to the project, get started by reading our [Contributing Guide](https://github.com/qodo-ai/pr-agent/blob/b09eec265ef7d36c232063f76553efb6b53979ff/CONTRIBUTING.md).
+To contribute to the project, get started by reading our [Contributing Guide](https://github.com/the-pr-agent/pr-agent/blob/main/CONTRIBUTING.md).
 
+
+## Big News for PR-Agent
+
+PR-Agent has a new home!
+
+After years of building this tool alongside the community, Qodo has donated PR-Agent to the open-source community - and we couldn't be more excited about what comes next.
+
+The project now lives in the PR-Agent org on GitHub, is fully community-owned, and is open for contributions and additional maintainers.
+
+What else changed:
+- Docs moved to - [docs.pr-agent.ai](https://docs.pr-agent.ai/)
+- Qodo Merge (Qodo 1.0), the hosted URL, which was the enterprise version of PR-Agent, has been rebranded and evolved into Qodo (Qodo 2.0), a full AI code review platform.
 
 ## ❤️ Community
 

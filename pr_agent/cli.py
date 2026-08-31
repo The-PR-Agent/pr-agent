@@ -1,8 +1,14 @@
 import argparse
 import asyncio
 import os
+import sys
 
 from pr_agent.agent.pr_agent import PRAgent, commands
+from pr_agent.algo.ai_handlers.litellm_helpers import (
+    DEFAULT_CALLBACK_TIMEOUT_SECONDS,
+    drain_litellm_callbacks,
+    litellm_callbacks_registered,
+)
 from pr_agent.algo.utils import get_version
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger, setup_logger
@@ -41,7 +47,7 @@ def set_parser():
     - add_docs
 
     - generate_labels
-    
+
     - help_docs - Ask a question, from either an issue or PR context, on a given repo (current context or a different one)
 
 
@@ -52,6 +58,27 @@ def set_parser():
     parser.add_argument('--version', action='version', version=f'pr-agent {get_version()}')
     parser.add_argument('--pr_url', type=str, help='The URL of the PR to review', default=None)
     parser.add_argument('--issue_url', type=str, help='The URL of the Issue to review', default=None)
+    parser.add_argument('--config-branch', type=str, help='Git branch to load .pr_agent.toml from', default=None)
+    parser.add_argument(
+        "--extra_config_url",
+        type=str,
+        default=os.environ.get("PR_AGENT_EXTRA_CONFIG_URL"),
+        help=(
+            "URL or local path of an additional .pr_agent.toml to merge before the "
+            "repo-local config (e.g. shared/org defaults). Accepts http(s):// URLs or "
+            "a filesystem path. For private endpoints, set PR_AGENT_EXTRA_CONFIG_AUTH_HEADER "
+            "(e.g. 'PRIVATE-TOKEN: <token>' or 'JOB-TOKEN: $CI_JOB_TOKEN'). "
+            "Repo-local .pr_agent.toml overrides values set here."
+        ),
+    )
+    parser.add_argument("--diff-file", dest="diff_file", type=str, default=None,
+                        help="Path to a unified diff file to review (plain-diff local mode)")
+    parser.add_argument("--stdin", action="store_true", default=False,
+                        help="Read a unified diff from stdin (plain-diff local mode)")
+    parser.add_argument("--output", dest="output", type=str, default=None,
+                        help="Write the result to this file (in addition to stdout)")
+    parser.add_argument("--json-output", dest="json_output", type=str, default=None,
+                        help="Write the parsed review and token usage to this JSON file")
     parser.add_argument('command', type=str, help='The', choices=commands, default='review')
     parser.add_argument('rest', nargs=argparse.REMAINDER, default=[])
     return parser
@@ -70,29 +97,65 @@ def run(inargs=None, args=None):
     parser = set_parser()
     if not args:
         args = parser.parse_args(inargs)
-    if not args.pr_url and not args.issue_url:
+    diff_mode = getattr(args, "stdin", False) or getattr(args, "diff_file", None)
+    if getattr(args, "json_output", None) and not diff_mode:
+        parser.error("--json-output is only supported in plain-diff mode (--stdin or --diff-file)")
+    if diff_mode:
+        if args.stdin and args.diff_file:
+            parser.error("--stdin and --diff-file are mutually exclusive")
+        if args.diff_file:
+            try:
+                with open(args.diff_file, "r", encoding="utf-8") as fh:
+                    diff_content = fh.read()
+            except OSError as e:
+                parser.error(f"Could not read --diff-file '{args.diff_file}': {e}")
+            except UnicodeDecodeError as e:
+                parser.error(f"--diff-file '{args.diff_file}' is not valid UTF-8 text: {e}")
+        else:
+            diff_content = sys.stdin.read()
+        if not diff_content.strip():
+            parser.error("No diff content received (empty stdin/file)")
+        get_settings().set("config.git_provider", "plain-diff")
+        get_settings().set("plain_diff.content", diff_content)
+        get_settings().set("plain_diff.output_path", getattr(args, "output", None))
+        get_settings().set("plain_diff.json_output_path", getattr(args, "json_output", None))
+        # Plain-diff mode's whole purpose is to emit the result to stdout/--output, so
+        # force publishing on even if a config/env set publish_output=false.
+        get_settings().set("config.publish_output", True)
+    elif not args.pr_url and not args.issue_url:
         parser.print_help()
         return
 
     command = args.command.lower()
     get_settings().set("CONFIG.CLI_MODE", True)
+    # Strip each candidate independently so a whitespace-only CLI value doesn't
+    # short-circuit the PR_AGENT_CONFIG_BRANCH env fallback before precedence.
+    cli_branch = (getattr(args, "config_branch", None) or "").strip()
+    env_branch = (os.environ.get("PR_AGENT_CONFIG_BRANCH") or "").strip()
+    # Always reconcile CONFIG.CONFIG_BRANCH with the current invocation so a value
+    # set by an earlier run() call in the same process can't leak into a later one
+    # (get_settings() is a process-wide singleton).
+    get_settings().set("CONFIG.CONFIG_BRANCH", cli_branch or env_branch or None)
+    # Always reconcile CONFIG.EXTRA_CONFIG_URL with the current invocation so a
+    # previously-set value from an earlier run() call in the same process can't
+    # leak into a later one (get_settings() is a process-wide singleton).
+    get_settings().set("CONFIG.EXTRA_CONFIG_URL", getattr(args, "extra_config_url", None))
 
     async def inner():
         if args.issue_url:
             result = await asyncio.create_task(PRAgent().handle_request(args.issue_url, [command] + args.rest))
         else:
-            result = await asyncio.create_task(PRAgent().handle_request(args.pr_url, [command] + args.rest))
+            target = args.pr_url if args.pr_url else "local_diff"
+            result = await asyncio.create_task(PRAgent().handle_request(target, [command] + args.rest))
 
-        if get_settings().litellm.get("enable_callbacks", False):
-            # There may be additional events on the event queue from the run above. If there are give them time to complete.
+        # litellm defers its success/failure callbacks onto the event loop, which
+        # asyncio.run() below tears down the moment this coroutine returns. Give
+        # them a chance to run first, or they are silently dropped.
+        if litellm_callbacks_registered():
             get_logger().debug("Waiting for event queue to complete")
-            tasks = [task for task in asyncio.all_tasks() if task is not asyncio.current_task()]
-            if tasks:
-                _, pending = await asyncio.wait(tasks, timeout=30)
-                if pending:
-                    get_logger().warning(
-                        f"{len(pending)} callback tasks({[task.get_coro() for task in pending]}) did not complete within timeout"
-                    )
+            await drain_litellm_callbacks(
+                get_settings().litellm.get("callback_timeout_seconds", DEFAULT_CALLBACK_TIMEOUT_SECONDS)
+            )
 
         return result
 

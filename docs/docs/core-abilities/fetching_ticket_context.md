@@ -14,6 +14,7 @@ This integration enriches the review process by automatically surfacing relevant
 
 - [GitHub/Gitlab Issues](#githubgitlab-issues-integration)
 - [Jira](#jira-integration)
+- [Asana](#asana-integration)
 
 **Ticket data fetched:**
 
@@ -30,6 +31,7 @@ Ticket Recognition Requirements:
 
 - The PR description should contain a link to the ticket or if the branch name starts with the ticket id / number.
 - For Jira tickets, you should follow the instructions in [Jira Integration](#jira-integration) in order to authenticate with Jira.
+- For Asana tickets, see [Asana Integration](#asana-integration).
 
 ### Describe tool
 
@@ -92,6 +94,57 @@ This branch-name detection applies **only when the git provider is GitHub**. Sup
 
 Since PR-Agent is integrated with GitHub, it doesn't require any additional configuration to fetch GitHub issues.
 
+## Asana Integration
+
+PR-Agent can detect Asana task references in PR descriptions, fetch the referenced tasks through the
+[Asana API](https://developers.asana.com/reference/gettask), and include their titles, descriptions, and tags in the
+ticket compliance check.
+
+**Supported reference formats:**
+
+- Legacy links: `https://app.asana.com/0/{project_gid}/{task_gid}`
+- Current permalinks: `https://app.asana.com/1/{workspace_gid}/task/{task_gid}`
+- Current project links: `https://app.asana.com/1/{workspace_gid}/project/{project_gid}/task/{task_gid}`
+- Current Home links: `https://app.asana.com/1/{workspace_gid}/home/task/{task_gid}`
+- Task comment links ending in `/comment/{comment_gid}` (the parent task is fetched)
+
+**How to link a PR to an Asana task:**
+
+Include an Asana task URL in your PR description. PR-Agent will detect it automatically and include it in the related
+tickets list.
+
+### Authentication
+
+Create an [Asana personal access token](https://developers.asana.com/docs/personal-access-token) with access to the
+tasks that PR-Agent should read. Configure it in `.secrets.toml`:
+
+```toml
+[asana]
+api_token = "YOUR_PERSONAL_ACCESS_TOKEN"
+```
+
+For environment-based deployments, set the equivalent Dynaconf environment variable:
+
+```bash
+ASANA__API_TOKEN="YOUR_PERSONAL_ACCESS_TOKEN"
+```
+
+The token is sent only to Asana's fixed task API endpoint as a Bearer token. When no token is configured or a task is
+not accessible to that token, PR-Agent skips that Asana task instead of evaluating compliance against placeholder
+content. API request timeout can be adjusted with `asana.request_timeout` (10 seconds by default, capped at 60 seconds).
+
+### Ticket limits
+
+PR-Agent fetches the first three detected Asana tasks at most, preserving their description order. This is an
+additive, provider-specific limit, with native tickets listed before Asana tasks:
+
+- On GitHub, the existing limit of three GitHub issues is preserved, plus up to three Asana tasks.
+- On Azure DevOps, all linked work items are preserved, plus up to three Asana tasks.
+- On other providers, up to three detected Asana tasks can supply ticket context.
+
+Keeping these limits separate prevents Asana references from silently displacing native tickets and avoids changing
+the established ticket-extraction behavior of existing providers.
+
 ## Jira Integration
 
 We support both Jira Cloud and Jira Server/Data Center.
@@ -148,8 +201,8 @@ This following steps will help you check if the basic auth is working correctly,
 
     ```python
     from jira import JIRA
-    
-    
+
+
     if __name__ == "__main__":
         try:
             # Jira server URL
@@ -159,7 +212,7 @@ This following steps will help you check if the basic auth is working correctly,
             password = "..."
             # Jira ticket code (e.g. "PROJ-123")
             ticket_id = "..."
-    
+
             print("Initializing JiraServerTicketProvider with JIRA server")
             # Initialize JIRA client
             jira = JIRA(
@@ -171,11 +224,11 @@ This following steps will help you check if the basic auth is working correctly,
                 print(f"JIRA client initialized successfully")
             else:
                 print("Error initializing JIRA client")
-    
+
             # Fetch ticket details
             ticket = jira.issue(ticket_id)
             print(f"Ticket title: {ticket.fields.summary}")
-    
+
         except Exception as e:
             print(f"Error fetching JIRA ticket details: {e}")
     ```
@@ -204,8 +257,8 @@ This following steps will help you check if the token is working correctly, and 
 
     ```python
     from jira import JIRA
-    
-    
+
+
     if __name__ == "__main__":
         try:
             # Jira server URL
@@ -214,7 +267,7 @@ This following steps will help you check if the token is working correctly, and 
             token_auth = "..."
             # Jira ticket code (e.g. "PROJ-123")
             ticket_id = "..."
-    
+
             print("Initializing JiraServerTicketProvider with JIRA server")
             # Initialize JIRA client
             jira = JIRA(
@@ -226,11 +279,11 @@ This following steps will help you check if the token is working correctly, and 
                 print(f"JIRA client initialized successfully")
             else:
                 print("Error initializing JIRA client")
-    
+
             # Fetch ticket details
             ticket = jira.issue(ticket_id)
             print(f"Ticket title: {ticket.fields.summary}")
-    
+
         except Exception as e:
             print(f"Error fetching JIRA ticket details: {e}")
     ```

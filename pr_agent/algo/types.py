@@ -24,3 +24,4 @@ class FilePatchInfo:
     num_minus_lines: int = -1
     language: Optional[str] = None
     ai_file_summary: str = None
+    head_file_is_complete: bool = True
