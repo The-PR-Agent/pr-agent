@@ -15,6 +15,22 @@ from pr_agent.git_providers.git_provider import get_main_pr_language
 from pr_agent.log import get_logger
 
 
+def _label_name(label) -> str:
+    """Read one label entry, tolerating the mapping form a model may return.
+
+    The prompt asks for a list of strings, but a schema presented as a class invites entries
+    such as ``- name: bug fix``. An entry with no readable name is dropped.
+    """
+    if isinstance(label, dict):
+        for key in ("name", "label", "title", "value"):
+            if isinstance(label.get(key), str) and label[key].strip():
+                return label[key].strip()
+        return ""
+    if label is None:
+        return ""
+    return str(label).strip()
+
+
 class PRGenerateLabels:
     def __init__(self, pr_url: str, args: list = None,
                  ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
@@ -164,7 +180,7 @@ class PRGenerateLabels:
                 pr_types = self.data['labels']
             elif type(self.data['labels']) == str:
                 pr_types = self.data['labels'].split(',')
-        pr_types = [label.strip() for label in pr_types]
+        pr_types = [name for name in (_label_name(label) for label in pr_types) if name]
 
         # convert lowercase labels to original case
         try:
