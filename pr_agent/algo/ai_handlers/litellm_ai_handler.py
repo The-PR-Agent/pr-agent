@@ -9,24 +9,19 @@ import litellm
 import openai
 import requests
 from litellm import acompletion
-from tenacity import retry, retry_if_exception_type, retry_if_not_exception_type, stop_after_attempt
+from tenacity import (retry, retry_if_exception_type,
+                      retry_if_not_exception_type, stop_after_attempt)
 
-from pr_agent.algo import (
-    CLAUDE_EXTENDED_THINKING_MODELS,
-    GROK_REASONING_EFFORT_LEVELS,
-    NO_SUPPORT_TEMPERATURE_MODELS,
-    STREAMING_REQUIRED_MODELS,
-    SUPPORT_REASONING_EFFORT_MODELS,
-    USER_MESSAGE_ONLY_MODELS,
-    normalize_litellm_model,
-)
+from pr_agent.algo import (CLAUDE_EXTENDED_THINKING_MODELS,
+                           GROK_REASONING_EFFORT_LEVELS,
+                           NO_SUPPORT_TEMPERATURE_MODELS,
+                           STREAMING_REQUIRED_MODELS,
+                           SUPPORT_REASONING_EFFORT_MODELS,
+                           USER_MESSAGE_ONLY_MODELS, normalize_litellm_model)
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_helpers import (
-    _get_azure_ad_token,
-    _handle_streaming_response,
-    _process_litellm_extra_body,
-    _response_field,
-)
+    _get_azure_ad_token, _handle_streaming_response,
+    _process_litellm_extra_body, _response_field, get_repetition_penalty)
 from pr_agent.algo.run_details import _as_decimal_cost, record_ai_call
 from pr_agent.algo.utils import ReasoningEffort, get_version
 from pr_agent.config_loader import get_settings
@@ -197,8 +192,9 @@ class LiteLLMAIHandler(BaseAiHandler):
             self.api_base = get_settings().ollama.api_base
         if get_settings().get("OLLAMA.API_KEY", None):
             litellm.api_key = get_settings().ollama.api_key
-        if get_settings().get("HUGGINGFACE.REPETITION_PENALTY", None):
-            self.repetition_penalty = float(get_settings().huggingface.repetition_penalty)
+        repetition_penalty = get_repetition_penalty()
+        if repetition_penalty is not None:
+            self.repetition_penalty = repetition_penalty
         if get_settings().get("VERTEXAI.VERTEX_PROJECT", None):
             litellm.vertex_project = get_settings().vertexai.vertex_project
             litellm.vertex_location = get_settings().get(
