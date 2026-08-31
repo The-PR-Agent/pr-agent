@@ -4,10 +4,10 @@
 
 [config]
 # models
-model="gpt-5.5-2026-04-23"
-fallback_models=["gpt-5.4-mini"]
-#model_reasoning="gpt-5.4-mini" # dedicated reasoning model for self-reflection
-#model_weak="gpt-5.4-nano" # optional, a weaker model to use for some easier tasks
+model="gpt-5.6"
+fallback_models=["gpt-5.6-terra"]
+#model_reasoning="gpt-5.6-terra" # dedicated reasoning model for self-reflection
+#model_weak="gpt-5.6-luna" # optional, a weaker model to use for some easier tasks
 # CLI
 git_provider="github"
 publish_output=true
@@ -19,7 +19,6 @@ use_extra_bad_extensions=false
 # Log
 log_level="DEBUG"
 # Configurations
-use_wiki_settings_file=true
 use_repo_settings_file=true
 use_global_settings_file=true
 extra_config_url="" # optional URL or path to an additional .pr_agent.toml merged before the repo-local config; also settable via --extra_config_url or PR_AGENT_EXTRA_CONFIG_URL. See docs/docs/usage-guide/configuration_options.md#external-configuration-url.
@@ -36,6 +35,7 @@ max_description_tokens = 500
 max_commits_tokens = 500
 max_model_tokens = 32000 # Limits the maximum number of tokens that can be used by any model, regardless of the model's default capabilities.
 custom_model_max_tokens=-1 # for models not in the default list
+max_output_tokens = 0 # Output token limit sent as max_tokens on model calls; 0 = unset (the provider's own default applies)
 model_token_count_estimate_factor=0.3 # factor to increase the token count estimate, in order to reduce likelihood of model failure due to too many tokens - applicable only when requesting an accurate estimate.
 # patch extension logic
 patch_extension_skip_types =[".md",".txt"]
@@ -46,8 +46,14 @@ patch_extra_lines_after = 1 # Number of extra lines (+3 default ones) to include
 secret_provider="" # "" (disabled), "google_cloud_storage", or "aws_secrets_manager" for secure secret management
 cli_mode=false
 output_relevant_configurations=false
+output_run_details=false # if true, append an agent run details section (model, tokens, time cost, AI calls) to generated PR comments
+output_run_cost=false # if true, collect estimated LiteLLM API cost and include it inside the enabled run details section
 large_patch_policy = "clip" # "clip", "skip"
 duplicate_prompt_examples = false
+# Persistent inline comments (issue #2037): when true, the GitHub and GitLab providers
+# fingerprint each inline comment, embed the fingerprint as an HTML marker, and skip
+# re-posting suggestions already present on the PR/MR across runs.
+persistent_inline_comments = false
 # seed
 seed=-1 # set positive value to fix the seed (and ensure temperature=0)
 temperature=0.2
@@ -59,15 +65,28 @@ ignore_pr_labels = [] # labels to ignore from PR agent when an PR is created
 ignore_pr_authors = [] # authors to ignore from PR agent when an PR is created
 ignore_repositories = [] # a list of regular expressions of repository full names (e.g. "org/repo") to ignore from PR agent processing
 ignore_language_framework = [] # a list of code-generation languages or frameworks (e.g. 'protobuf', 'go_gen') whose auto-generated source files will be excluded from analysis
+# Substring indicators used to skip bot users on webhook events. Currently consumed by
+# the GitLab webhook (`is_bot_user`); other providers may adopt this list in future.
+# The match is case-insensitive against the sender's display name. Overriding this
+# setting REPLACES the default list — include the entries below in your override if
+# you want to keep them (e.g. `["codium", "bot_", "bot-", "_bot", "-bot", "renovate"]`).
+bot_user_indicators = ["codium", "bot_", "bot-", "_bot", "-bot"]
 #
 restricted_mode = false # when true, skip operations that require elevated permissions (e.g. pushing code to the repository)
 is_auto_command = false # will be auto-set to true if the command is triggered by an automation
+propagate_tool_errors = false # when true, a tool re-raises instead of swallowing an internal error, so a caller can tell a failed run from an empty one
 enable_ai_metadata = false # will enable adding ai metadata
-reasoning_effort = "medium" # "none", "minimal", "low", "medium", "high", "xhigh"
+add_user_to_requests = false # send the current command and PR URL in the OpenAI-compatible "user" request field, for provider-side attribution of requests (e.g. OpenRouter "external_user")
+reasoning_effort = "medium" # "none", "minimal", "low", "medium", "high", "xhigh", "max"
 # extended thinking for Claude reasoning models
 enable_claude_extended_thinking = false # Set to true to enable extended thinking feature
 extended_thinking_budget_tokens = 2048
 extended_thinking_max_output_tokens = 4096
+# Adaptive thinking for Claude Opus 4.7/4.8 and Claude 5 models. When enabled,
+# these models receive thinking={"type": "adaptive"} and an output_config effort.
+# Do not add adaptive-only models to claude_extended_thinking_models_override;
+# when both features are enabled, adaptive thinking takes precedence.
+enable_claude_adaptive_thinking = false
 # Optional: override the built-in list of Claude models that receive the extended-thinking payload.
 # When non-empty, this list fully replaces the built-in defaults (see CLAUDE_EXTENDED_THINKING_MODELS
 # in pr_agent/algo/__init__.py). Leave empty to use the defaults.
@@ -95,6 +114,9 @@ require_ticket_analysis_review=true
 # general options
 publish_output_no_suggestions=true # Set to "false" if you only need the reviewer's remarks (not labels, not "security audit", etc.) and want to avoid noisy "No major issues detected" comments.
 persistent_comment=true
+# Visible base heading for full and incremental review comments. Identity is tracked separately.
+review_heading = "PR Reviewer Guide"
+inline_key_issues=false
 extra_instructions = ""
 num_max_findings = 3
 final_update_message = true
@@ -107,6 +129,7 @@ minimal_commits_for_incremental_review=0
 minimal_minutes_for_incremental_review=0
 enable_intro_text=true
 enable_help_text=false # Determines whether to include help text in the PR review. Enabled by default.
+enable_review_coverage_footer=true
 
 [pr_description] # /describe #
 publish_labels=false
@@ -115,10 +138,13 @@ generate_ai_title=false
 use_bullet_points=true
 extra_instructions = ""
 enable_pr_type=true
+enable_pr_description=true # adds a section with an AI-generated summary of the PR changes
 final_update_message = true
 enable_help_text=false
 enable_help_comment=false
 enable_pr_diagram=true # adds a section with a diagram of the PR changes
+pr_diagram_direction='adaptive' # 'adaptive', 'LR', 'TD'. 'adaptive' picks the direction from the shape of the diagram
+pr_diagram_direction_threshold=5 # with 'adaptive', a chain longer than this many nodes is drawn top-down
 # describe as comment
 publish_description_as_comment=false
 publish_description_as_comment_persistent=true
@@ -137,6 +163,11 @@ async_ai_calls=true
 [pr_questions] # /ask #
 enable_help_text=false
 use_conversation_history=true
+# Set the plain-text heading for top-level /ask answers; provider-specific presentation is added automatically.
+ask_heading = "Ask"
+# Enable to let /ask_line resolve the review thread when the LLM judges the
+# issue addressed. Note: also resolves threads started by human reviewers.
+resolve_threads=false
 extra_instructions = ""
 
 
@@ -146,11 +177,14 @@ dual_publishing_score_threshold=-1 # -1 to disable, [0-10] to set the threshold 
 focus_only_on_problems=true
 #
 extra_instructions = ""
+# Visible base heading for summary-table /improve comments. Identity is tracked separately.
+suggestions_heading = "PR Code Suggestions"
 enable_help_text=false
 enable_chat_text=false
 persistent_comment=true
 max_history_len=4
 publish_output_no_suggestions=true
+enable_suggestions_coverage_footer=true # show when failed analysis chunks make the suggestions incomplete
 # suggestions scoring
 suggestions_score_threshold=0 # [0-10]| recommend not to set this value above 8, since above it may clip highly relevant suggestions
 new_score_mechanism=true
@@ -254,6 +288,7 @@ bot_user = "github-actions[bot]"
 override_deployment_type = true
 # settings for "pull_request" event
 handle_pr_actions = ['opened', 'reopened', 'ready_for_review']
+feedback_on_draft_pr = false
 pr_commands = [
     "/describe --pr_description.final_update_message=false",
     "/review",
@@ -274,6 +309,17 @@ push_commands = [
 [gitlab]
 url = "https://gitlab.com"
 expand_submodule_diffs = false
+feedback_on_draft_pr = false
+# Post the /review summary as a resolvable thread (discussion) instead of a plain note.
+publish_review_as_thread = false
+# Post the /improve suggestions comment as a resolvable thread (discussion) instead of a plain note.
+publish_improve_as_thread = false
+# When pr_code_suggestions.commitable_code_suggestions is true, queue each suggestion as a GitLab draft
+# note and publish them all together in one batch (like GitLab's own "start a review" flow) instead of
+# posting each as its own live discussion - and its own notification - as soon as it's created.
+publish_code_suggestions_as_review = false
+# Resolve the bot's own inline threads that a later push left on an outdated diff version.
+resolve_outdated_inline_threads = false
 pr_commands = [
     "/describe --pr_description.final_update_message=false",
     "/review",
@@ -286,9 +332,23 @@ push_commands = [
 ]
 # Configure SSL validation for GitLab. Can be either set to the path of a custom CA or disabled entirely.
 # ssl_verify = true
+# Auto-trigger commands when the bot is assigned as a reviewer on an MR
+handle_reviewer_assignment = false
+reviewer_commands = [
+    "/review",
+]
 
 [gitea]
 url = "https://gitea.com"
+# Optional user-facing base URL used to build links published in comments, for
+# self-hosted instances where the API is reached via an internal address but
+# users browse a different external URL, or where the server's own ROOT_URL is
+# misconfigured. Defaults to `url` when it differs from the shipped default
+# above, else derived from the PR's html_url.
+# Like `url`, this is read when the provider is constructed, before repo-level
+# .pr_agent.toml settings are merged, so a per-repo override does not apply to
+# /describe, /review and /improve - set it globally or via GITEA__WEB_URL.
+# web_url = ""
 handle_push_trigger = false
 pr_commands = [
     "/describe",
@@ -307,13 +367,18 @@ pr_commands = [
     "/improve --pr_code_suggestions.commitable_code_suggestions=true",
 ]
 avoid_full_files = false
+request_timeout = 30 # positive seconds for connection and response-read inactivity timeouts
 
 [local]
 # LocalGitProvider settings - uncomment to use paths other than default
 # description_path= "path/to/description.md"
 # review_path= "path/to/review.md"
+# improve_path= "path/to/improve.md"
 
 [gerrit]
+# set both to require basic auth on the gerrit webhook endpoint; leave both empty to keep it open
+webhook_username = ""
+webhook_password = ""
 # endpoint to the gerrit service
 # url = "ssh://gerrit.example.com:29418"
 # user for gerrit authentication
@@ -340,7 +405,43 @@ enable_callbacks = false
 success_callback = []
 failure_callback = []
 service_callback = []
-# model_id = "" # Optional: Custom inference profile ID for Amazon Bedrock
+# Optional: forward a fixed custom_llm_provider to LiteLLM, so a raw hosted model id
+# (e.g. "claude-sonnet-4-5") reaches the provider unchanged instead of being rewritten
+# by LiteLLM's prefix inference. Empty = let LiteLLM infer the provider from the model name.
+custom_llm_provider = ""
+# Force streaming when the request matches this provider AND its api_base contains one of the
+# substrings below. Some OpenAI-compatible endpoints return a response that LiteLLM cannot
+# normalize in non-streaming mode. Both must be set for the workaround to apply.
+force_streaming_custom_llm_provider = ""
+force_streaming_api_base_substrings = []
+callback_timeout_seconds = 30 # max seconds to wait for pending litellm callbacks to flush before exiting
+# Application inference profile ARN for classic `bedrock/` calls through the `bedrock-runtime` APIs.
+# Not used by `bedrock_mantle/`, which uses Projects for cost allocation.
+# model_id = ""
+cache_control_injection_points = [] # Optional: enable Anthropic prompt caching via LiteLLM, e.g. [{location = "message", role = "system"}] (https://docs.litellm.ai/docs/tutorials/prompt_caching)
+
+[openrouter]
+# OpenRouter provider routing, reasoning control and output cap. These apply only
+# to models addressed as "openrouter/...". The API key and api_base live in
+# .secrets.toml (or the openrouter__key env var); the keys below are non-secret.
+# Refs: https://openrouter.ai/docs/guides/routing/provider-selection
+#       https://openrouter.ai/docs/guides/best-practices/reasoning-tokens
+provider_only = [] # restrict routing to these upstream providers only, a hard allowlist (e.g. ["z-ai"]); empty = OpenRouter default routing
+provider_order = [] # preferred provider order; ignored when provider_only is set; empty = unset
+allow_fallbacks = true # when provider_order is set, allow routing beyond the listed providers
+# Invalid reasoning_effort values are warned about and treated as unset.
+# Empty inherits config.reasoning_effort for models in SUPPORT_REASONING_EFFORT_MODELS.
+# Valid values: "none", "minimal", "low", "medium", "high", "xhigh", "max".
+# OpenRouter normalizes "max" to "xhigh" to match LiteLLM 1.98.0.
+# Model-specific support varies; mandatory reasoning models reject "none".
+reasoning_effort = ""
+# A positive value overrides global effort and non-none OpenRouter-specific efforts.
+# Explicit openrouter.reasoning_effort = "none" keeps reasoning disabled, except on
+# Grok 4.5/4.6: there "none" is clamped to the lowest supported
+# effort first, so a positive budget wins over it.
+# Some providers require max_tokens to be greater than the reasoning budget.
+reasoning_max_tokens = 0
+max_tokens = 0 # hard cap on completion tokens for the request; 0 = unset
 
 [pr_similar_issue]
 skip_comments = false
@@ -394,6 +495,23 @@ utilize_auto_best_practices = true # public - disable usage of auto best practic
 extra_instructions = "" # public - extra instructions to the auto best practices generation prompt
 content = ""
 max_patterns = 5 # max number of patterns to be detected
+
+[artifacts]
+# Enable artifact injection into tool prompts (off by default; auto-enabled when artifact_path input is set)
+enable = false
+# File path to the artifact (relative to GITHUB_WORKSPACE, or absolute)
+artifact_path = ""
+# Custom instructions appended after the artifact content (leave empty for a sensible default)
+artifact_instructions = ""
+# Label shown to the AI — defaults to the filename when empty
+artifact_label = ""
+# Which tools receive artifact context
+target_tools = ["pr_reviewer", "pr_description", "pr_code_suggestions"]
+# Max artifact size in characters (content is truncated if exceeded)
+max_artifact_size = 50000
+
+[asana]
+request_timeout = 10 # seconds allowed for each Asana task API request
 
 [azure_devops]
 default_comment_status = "closed"

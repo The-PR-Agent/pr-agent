@@ -109,11 +109,13 @@ pr_commands = [
 ]
 ```
 
-This means that when a new PR is opened/reopened or marked as ready for review, PR-Agent will run the `describe`, `review` and `improve` tools.  
+This means that when a new PR is opened/reopened or marked as ready for review, PR-Agent will run the `describe`, `review` and `improve` tools.
 
-**Draft PRs:** 
+**Draft PRs:**
 
 By default, draft PRs are not considered for automatic tools, but you can change this by setting the `feedback_on_draft_pr` parameter to `true` in the configuration file.
+When enabled, marking the PR as ready does not run `pr_commands` a second time.
+Because this setting can be overridden per repository, draft PR events, including each `synchronize` event caused by a push, still fetch the repository configuration before being skipped.
 
 ```toml
 [github_app]
@@ -122,7 +124,7 @@ feedback_on_draft_pr = true
 
 **Changing default tool parameters:**
 
-You can override the default tool parameters by using one the three options for a [configuration file](./configuration_options.md): **wiki**, **local**, or **global**.
+You can override the default tool parameters by using one the three options for a [configuration file](./configuration_options.md): **local**, **global**, or **external URL**.
 For example, if your configuration file contains:
 
 ```toml
@@ -238,7 +240,7 @@ For detailed step-by-step examples of configuring different models (Gemini, Clau
 
 **Common Model Configuration Patterns:**
 
-- **OpenAI**: Set `config.model: "gpt-5.4"` and `OPENAI_KEY`
+- **OpenAI**: Set `config.model: "gpt-5.6"` and `OPENAI_KEY`
 - **Gemini**: Set `config.model: "gemini/gemini-1.5-flash"` and `GOOGLE_AI_STUDIO.GEMINI_API_KEY` (no `OPENAI_KEY` needed)
 - **Claude**: Set `config.model: "anthropic/claude-3-opus-20240229"` and `ANTHROPIC.KEY` (no `OPENAI_KEY` needed)
 - **Azure OpenAI**: Set `OPENAI.API_TYPE: "azure"`, `OPENAI.API_BASE`, and `OPENAI.DEPLOYMENT_ID`
@@ -264,6 +266,11 @@ pr_commands = [
 ]
 ```
 
+Draft MRs are skipped by default. Set `feedback_on_draft_pr = true` under `[gitlab]` to enable automatic feedback.
+When enabled, marking the MR as ready does not run `pr_commands` a second time.
+Because this setting can be overridden per repository, draft MR events still fetch the repository configuration before being skipped.
+For environment-based deployments, set `GITLAB__FEEDBACK_ON_DRAFT_PR=true`.
+
 the GitLab webhook can also respond to new code that is pushed to an open MR.
 The configuration toggle `handle_push_trigger` can be used to enable this feature.
 The configuration parameter `push_commands` defines the list of tools that will be **run automatically** when new code is pushed to the MR.
@@ -278,6 +285,22 @@ push_commands = [
 ```
 
 Note that to use the 'handle_push_trigger' feature, you need to give the gitlab webhook also the "Push events" scope.
+
+The GitLab webhook can also respond to the bot being assigned as a reviewer on an open MR.
+The configuration toggle `handle_reviewer_assignment` can be used to enable this feature.
+The configuration parameter `reviewer_commands` defines the list of tools that will be **run automatically** when the bot is added to the MR's reviewers.
+
+```toml
+[gitlab]
+handle_reviewer_assignment = true
+reviewer_commands = [
+    "/review",
+]
+```
+
+The commands run only when the bot is newly added to the reviewer list, so re-saving an MR without changing its reviewers does not run them again.
+The bot is identified by the user behind `gitlab.personal_access_token`, which must therefore be set for this feature to work.
+Draft MRs and MRs matching the [ignore settings](additional_configurations.md#ignoring-automatic-commands-in-prs) are skipped.
 
 ### BitBucket App
 
@@ -297,6 +320,11 @@ Each time you invoke a `/review` tool, it will use the extra instructions you se
 Note that among other limitations, BitBucket provides relatively low rate-limits for applications (up to 1000 requests per hour), and does not provide an API to track the actual rate-limit usage.
 If you experience a lack of responses from PR-Agent, you might want to set: `bitbucket_app.avoid_full_files=true` in your configuration file.
 This will prevent PR-Agent from acquiring the full file content, and will only use the diff content. This will reduce the number of requests made to BitBucket, at the cost of small decrease in accuracy, as dynamic context will not be applicable.
+
+For self-hosted BitBucket App deployments, `bitbucket_app.request_timeout` sets both the connection timeout and
+response-read inactivity timeout, in positive seconds, for offloaded BitBucket HTTP requests. It defaults to `30` and
+is read from host-level configuration or the `BITBUCKET_APP__REQUEST_TIMEOUT` environment variable; repository
+`.pr_agent.toml` overrides do not apply to this host resource limit.
 
 #### BitBucket Self-Hosted App automatic tools
 

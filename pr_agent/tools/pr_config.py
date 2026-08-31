@@ -59,14 +59,14 @@ class PRConfig:
                      'APP_NAME', 'PERSONAL_ACCESS_TOKEN', 'shared_secret', 'key', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'user_token',
                      'private_key', 'private_key_id', 'client_id', 'client_secret', 'token', 'bearer_token', 'jira_api_token','webhook_secret']
         partial_skip_keys = ['key', 'secret', 'token', 'private']
-        extra_skip_keys = get_settings().config.get('config.skip_keys', [])
+        extra_skip_keys = get_settings().config.get("skip_keys", [])
         if extra_skip_keys:
             skip_keys.extend(extra_skip_keys)
         skip_keys_lower = [key.lower() for key in skip_keys]
 
 
         markdown_text = "<details> <summary><strong>🛠️ PR-Agent Configurations:</strong></summary> \n\n"
-        markdown_text += f"\n\n```yaml\n\n"
+        markdown_text += "\n\n```yaml\n\n"
         for header, configs in relevant_configs.items():
             if configs:
                 markdown_text += "\n\n"
@@ -80,5 +80,5 @@ class PRConfig:
                 markdown_text += "  "
         markdown_text += "\n```"
         markdown_text += "\n</details>\n"
-        get_logger().info(f"Possible Configurations outputted to PR comment", artifact=markdown_text)
+        get_logger().info("Possible Configurations outputted to PR comment", artifact=markdown_text)
         return markdown_text

@@ -67,6 +67,15 @@ See a full video tutorial [here](https://codium.ai/images/pr_agent/ask_image_vid
 
     <table>
       <tr>
+        <td><b>ask_heading</b></td>
+        <td>
+          Plain-text heading for top-level <code>/ask</code> answers. The default is <code>Ask</code>.
+          Markdown renderers escape punctuation to keep the surrounding formatting and ❓ emoji fixed,
+          while plain-text converters publish the configured text without escape characters.
+          This does not affect <code>/ask_line</code> replies or the <code>Answer</code> section heading.
+        </td>
+      </tr>
+      <tr>
         <td><b>extra_instructions</b></td>
         <td>Optional extra instructions to the tool. For example: "Do not answer questions that ask to rate PR quality on a scale of 1 to 10. Instead, tell the user this type of question is not allowed."</td>
       </tr>
@@ -84,8 +93,11 @@ Example usage in a configuration file:
 
 ```toml
 [pr_questions]
+ask_heading = "Architecture Question"
 extra_instructions = "Do not answer questions that ask to rate PR quality on a scale of 1 to 10."
 ```
+
+The heading above renders as `### **Architecture Question** ❓`.
 
 Example usage in a PR comment:
 

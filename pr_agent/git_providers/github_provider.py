@@ -11,23 +11,42 @@ from datetime import datetime
 from typing import Optional, Tuple
 from urllib.parse import urlparse
 
-from github.Issue import Issue
 from github import AppAuthentication, Auth, Github, GithubException
+from github.Issue import Issue
 from retry.api import retry_call
 from starlette_context import context
 
 from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import extract_hunk_headers
+from ..algo.inline_comment_dedup import (
+    body_fingerprint,
+    body_with_markers,
+    code_fingerprint,
+    get_inline_comment_store,
+    has_marker,
+)
 from ..algo.language_handler import is_valid_file
 from ..algo.types import EDIT_TYPE
-from ..algo.utils import (PRReviewHeader, Range, clip_tokens,
-                          find_line_number_of_relevant_line_in_file,
-                          load_large_diff, set_file_languages)
+from ..algo.utils import (
+    Range,
+    clip_tokens,
+    comment_matches_any_identity,
+    find_line_number_of_relevant_line_in_file,
+    get_pr_review_comment_identifiers,
+    load_large_diff,
+    set_file_languages,
+)
 from ..config_loader import get_settings
 from ..log import get_logger
 from ..servers.utils import RateLimitExceeded
-from .git_provider import (MAX_FILES_ALLOWED_FULL, FilePatchInfo, GitProvider,
-                           IncrementalPR, get_cached_global_settings)
+from .git_provider import (
+    MAX_FILES_ALLOWED_FULL,
+    FilePatchInfo,
+    GitProvider,
+    IncrementalPR,
+    get_cached_global_settings,
+    redact_credentials,
+)
 
 
 def _next_page_url(headers: dict) -> str:
@@ -64,7 +83,10 @@ class GithubProvider(GitProvider):
         if pr_url and 'pull' in pr_url:
             self.set_pr(pr_url)
             self.pr_commits = list(self.pr.get_commits())
-            self.last_commit_id = self.pr_commits[-1]
+            if self.pr_commits:
+                self.last_commit_id = self.pr_commits[-1]
+            else:
+                self.last_commit_id = self._get_repo().get_commit(self.pr.head.sha)
             self.pr_url = self.get_pr_url() # pr_url for github actions can be as api.github.com, so we need to get the url from the pr object
         elif pr_url and 'issue' in pr_url: #url is an issue
             self.issue_main = self._get_issue_handle(pr_url)
@@ -150,7 +172,7 @@ class GithubProvider(GitProvider):
             scheme_and_netloc = self.base_url_html
             desired_branch = self.repo_obj.default_branch
         if not all([scheme_and_netloc, owner, repo]): #"else": Not invoked from a PR context,but no provided git url for context
-            get_logger().error(f"Unable to get canonical url parts since missing context (PR or explicit git url)")
+            get_logger().error("Unable to get canonical url parts since missing context (PR or explicit git url)")
             return ("", "")
 
         prefix = f"{scheme_and_netloc}/{owner}/{repo}/blob/{desired_branch}"
@@ -199,13 +221,9 @@ class GithubProvider(GitProvider):
             raise ValueError("At least one of full or incremental must be True")
         if not getattr(self, "comments", None):
             self.comments = list(self.pr.get_issue_comments())
-        prefixes = []
-        if full:
-            prefixes.append(PRReviewHeader.REGULAR.value)
-        if incremental:
-            prefixes.append(PRReviewHeader.INCREMENTAL.value)
+        identifiers = get_pr_review_comment_identifiers(full=full, incremental=incremental)
         for index in range(len(self.comments) - 1, -1, -1):
-            if any(self.comments[index].body.startswith(prefix) for prefix in prefixes):
+            if comment_matches_any_identity(self.comments[index].body, identifiers):
                 return self.comments[index]
         return None
 
@@ -266,7 +284,7 @@ class GithubProvider(GitProvider):
                 try:
                     names_original = [file.filename for file in files_original]
                     names_new = [file.filename for file in files]
-                    get_logger().info(f"Filtered out [ignore] files for pull request:", extra=
+                    get_logger().info("Filtered out [ignore] files for pull request:", extra=
                     {"files": names_original,
                      "filtered_files": names_new})
                 except Exception:
@@ -299,6 +317,8 @@ class GithubProvider(GitProvider):
                     continue
 
                 patch = file.patch
+                is_renamed = file.status == "renamed" and getattr(file, "previous_filename", None)
+                old_filename = file.previous_filename if is_renamed else None
                 if is_close_to_rate_limit:
                     new_file_content_str = ""
                     original_file_content_str = ""
@@ -309,7 +329,7 @@ class GithubProvider(GitProvider):
                     if counter_valid >= MAX_FILES_ALLOWED_FULL and patch and not self.incremental.is_incremental:
                         avoid_load = True
                         if counter_valid == MAX_FILES_ALLOWED_FULL:
-                            get_logger().info(f"Too many files in PR, will avoid loading full content for rest of files")
+                            get_logger().info("Too many files in PR, will avoid loading full content for rest of files")
 
                     if avoid_load:
                         new_file_content_str = ""
@@ -317,14 +337,15 @@ class GithubProvider(GitProvider):
                         new_file_content_str = self._get_pr_file_content(file, self.pr.head.sha)  # communication with GitHub
 
                     if self.incremental.is_incremental and self.unreviewed_files_map:
-                        original_file_content_str = self._get_pr_file_content(file, self.incremental.last_seen_commit_sha)
+                        original_file_content_str = self._get_pr_file_content(
+                            file, self.incremental.last_seen_commit_sha, path=old_filename)
                         patch = load_large_diff(file.filename, new_file_content_str, original_file_content_str)
                         self.unreviewed_files_map[file.filename] = patch
                     else:
                         if avoid_load:
                             original_file_content_str = ""
                         else:
-                            original_file_content_str = self._get_pr_file_content(file, merge_base_commit.sha)
+                            original_file_content_str = self._get_pr_file_content(file, merge_base_commit.sha, path=old_filename)
                             # original_file_content_str = self._get_pr_file_content(file, self.pr.base.sha)
                         if not patch:
                             patch = load_large_diff(file.filename, new_file_content_str, original_file_content_str)
@@ -353,6 +374,7 @@ class GithubProvider(GitProvider):
 
                 file_patch_canonical_structure = FilePatchInfo(original_file_content_str, new_file_content_str, patch,
                                                                file.filename, edit_type=edit_type,
+                                                               old_filename=old_filename,
                                                                num_plus_lines=num_plus_lines,
                                                                num_minus_lines=num_minus_lines,)
                 diff_files.append(file_patch_canonical_structure)
@@ -388,11 +410,24 @@ class GithubProvider(GitProvider):
                                    initial_header: str,
                                    update_header: bool = True,
                                    name='review',
-                                   final_update_message=True):
+                                   final_update_message=True,
+                                   identity_marker: str | None = None,
+                                   legacy_initial_header: str | None = None):
         if get_settings().github.publish_as_check_run:
             if self._publish_check_run(pr_comment, name):
                 return
-        self.publish_persistent_comment_full(pr_comment, initial_header, update_header, name, final_update_message)
+        self.publish_persistent_comment_full(
+            pr_comment,
+            initial_header,
+            update_header,
+            name,
+            final_update_message,
+            identity_marker=identity_marker,
+            legacy_initial_header=legacy_initial_header,
+        )
+
+    def supports_review_comment_identity(self) -> bool:
+        return True
 
     def _publish_check_run(self, text: str, name: str) -> bool:
         if not getattr(self, 'last_commit_id', None):
@@ -449,7 +484,7 @@ class GithubProvider(GitProvider):
             self._check_run_ids[name] = data["id"]
             return True
         except Exception:
-            get_logger().warning(f"Failed to create check run, falling back to comment")
+            get_logger().warning("Failed to create check run, falling back to comment")
             return False
 
     def _find_existing_check_run(self, check_run_name: str, head_sha: str) -> Optional[int]:
@@ -512,11 +547,72 @@ class GithubProvider(GitProvider):
         return dict(body=body, path=path, position=position) if subject_type == "LINE" else {}
 
     def publish_inline_comments(self, comments: list[dict], disable_fallback: bool = False):
+        store = None
+        pending_fingerprints = []
+        dedup_code_fp_key = "_dedup_code_fp"
+        if get_settings().get("config.persistent_inline_comments", False):
+            store = get_inline_comment_store(self)
+            local_seen = set()
+            deduped = []
+            skipped = 0
+            for comment in comments:
+                if not comment:
+                    deduped.append(comment)
+                    continue
+                path = comment.get("path", "")
+                body = comment.get("body", "")
+                # GitHub committable comments are anchored by diff position, which
+                # shifts as the PR gains commits; anchor the fingerprint on the file
+                # path and comment content instead so it stays stable across runs.
+                body_fp = body_fingerprint(path, None, body)
+                pre_transform_code_fp = comment.get(dedup_code_fp_key)
+                code_fp = pre_transform_code_fp or code_fingerprint(path, None, body)
+                # A fallback re-publish (disable_fallback=True) is for a comment
+                # that has not been posted yet, so do not filter it; only the
+                # top-level call drops duplicates. The fallback still gets marked
+                # and recorded below so it dedups on later runs.
+                if not disable_fallback and (
+                        store.seen(body_fp) or store.seen(code_fp)
+                        or body_fp in local_seen or (code_fp and code_fp in local_seen)):
+                    skipped += 1
+                    continue
+                marked = dict(comment)
+                marked.pop(dedup_code_fp_key, None)
+                if has_marker(body):
+                    pass  # already carries a marker from the first pass
+                else:
+                    marked["body"] = body_with_markers(
+                        body, body_fp, code_fp, getattr(self, "max_comment_chars", None))
+                deduped.append(marked)
+                local_seen.add(body_fp)
+                if code_fp:
+                    local_seen.add(code_fp)
+                pending_fingerprints.append((body_fp, code_fp))
+            if skipped and not any(deduped):
+                get_logger().info(
+                    f"Persistent inline comments: all {skipped} suggestion(s) "
+                    f"already posted; nothing to publish")
+                return
+            comments = deduped
+        else:
+            comments = [
+                {key: value for key, value in comment.items() if key != dedup_code_fp_key}
+                if comment else comment
+                for comment in comments
+            ]
         try:
             # publish all comments in a single message
             self.pr.create_review(commit=self.last_commit_id, comments=comments)
+            # The whole batch posted; record its fingerprints so the rest of this
+            # run dedups against them. Cross-run dedup relies on the markers in the
+            # posted bodies, so comments the fallback below drops stay unrecorded
+            # and can be retried on a later run.
+            if store is not None:
+                for body_fp, code_fp in pending_fingerprints:
+                    store.add(body_fp)
+                    store.add(code_fp)
         except Exception as e:
-            get_logger().info(f"Initially failed to publish inline comments as committable")
+            get_logger().info("Initially failed to publish inline comments as committable")
 
             if (getattr(e, "status", None) == 422 and not disable_fallback):
                 pass  # continue to try _publish_inline_comments_fallback_with_verification
@@ -527,27 +623,27 @@ class GithubProvider(GitProvider):
                 self._publish_inline_comments_fallback_with_verification(comments)
             except Exception as e:
                 get_logger().error(f"Failed to publish inline code comments fallback, error: {e}")
-                raise e    
-    
+                raise
+
     def get_review_thread_comments(self, comment_id: int) -> list[dict]:
         """
         Retrieves all comments in the same thread as the given comment.
-        
+
         Args:
             comment_id: Review comment ID
-                
+
         Returns:
             List of comments in the same thread
         """
         try:
             # Fetch all comments with a single API call
             all_comments = list(self.pr.get_comments())
-            
+
             # Find the target comment by ID
             target_comment = next((c for c in all_comments if c.id == comment_id), None)
             if not target_comment:
                 return []
-        
+
             # Get root comment id
             root_comment_id = target_comment.raw_data.get("in_reply_to_id", target_comment.id)
             # Build the thread - include the root comment and all replies to it
@@ -555,13 +651,133 @@ class GithubProvider(GitProvider):
                 c for c in all_comments if
                 c.id == root_comment_id or c.raw_data.get("in_reply_to_id") == root_comment_id
             ]
-        
-        
+
+
             return thread_comments
-                
+
         except Exception as e:
-            get_logger().exception(f"Failed to get review comments for an inline ask command", artifact={"comment_id": comment_id, "error": e})
+            get_logger().exception("Failed to get review comments for an inline ask command", artifact={"comment_id": comment_id, "error": e})
             return []
+
+    def supports_thread_resolution(self) -> bool:
+        return True
+
+    def resolve_comment_thread(self, comment_id: int) -> bool:
+        """Resolve the review thread containing the given comment via GitHub GraphQL API."""
+        try:
+            owner, repo_name = self.repo.split("/")
+
+            # Get the comment's node_id via REST
+            headers, data = self.pr._requester.requestJsonAndCheck(
+                "GET", f"{self.base_url}/repos/{self.repo}/pulls/comments/{comment_id}"
+            )
+            comment_node_id = data.get("node_id", "")
+            if not comment_node_id:
+                get_logger().warning(f"No node_id found for comment {comment_id}")
+                return False
+
+            # Find the review thread containing this comment (paginated)
+            thread_id = None
+            is_already_resolved = False
+            cursor = None
+            while True:
+                after_clause = f', after: "{cursor}"' if cursor else ""
+                query = f"""
+                query {{
+                    repository(owner: "{owner}", name: "{repo_name}") {{
+                        pullRequest(number: {self.pr_num}) {{
+                            reviewThreads(first: 100{after_clause}) {{
+                                pageInfo {{ hasNextPage endCursor }}
+                                nodes {{
+                                    id
+                                    isResolved
+                                    comments(first: 100) {{
+                                        nodes {{
+                                            id
+                                        }}
+                                    }}
+                                }}
+                            }}
+                        }}
+                    }}
+                }}
+                """
+                response_tuple = self.github_client._Github__requester.requestJson(
+                    "POST", "/graphql", input={"query": query}
+                )
+                if not (isinstance(response_tuple, tuple) and len(response_tuple) == 3):
+                    get_logger().error("Unexpected GraphQL response format")
+                    return False
+
+                response_json = json.loads(response_tuple[2])
+                errors = response_json.get("errors")
+                if errors:
+                    get_logger().error(
+                        f"GraphQL errors querying review threads: {errors}"
+                    )
+                    return False
+                review_threads = (response_json.get("data", {}).get("repository", {})
+                                  .get("pullRequest", {}).get("reviewThreads", {}))
+                threads = review_threads.get("nodes", [])
+
+                for thread in threads:
+                    comment_ids = [c["id"] for c in thread.get("comments", {}).get("nodes", [])]
+                    if comment_node_id in comment_ids:
+                        if thread.get("isResolved"):
+                            is_already_resolved = True
+                        else:
+                            thread_id = thread["id"]
+                        break
+
+                if thread_id or is_already_resolved:
+                    break
+                page_info = review_threads.get("pageInfo", {})
+                if not page_info.get("hasNextPage"):
+                    break
+                cursor = page_info.get("endCursor")
+
+            if is_already_resolved:
+                get_logger().info(f"Thread for comment {comment_id} is already resolved")
+                return True
+
+            if not thread_id:
+                get_logger().warning(f"No thread found for comment {comment_id}")
+                return False
+
+            # Resolve the thread
+            mutation = f"""
+            mutation {{
+                resolveReviewThread(input: {{threadId: "{thread_id}"}}) {{
+                    thread {{
+                        isResolved
+                    }}
+                }}
+            }}
+            """
+            resolve_tuple = self.github_client._Github__requester.requestJson(
+                "POST", "/graphql", input={"query": mutation}
+            )
+            if not isinstance(resolve_tuple, tuple) or len(resolve_tuple) != 3:
+                get_logger().error(f"Unexpected mutation response format for thread {thread_id}: {type(resolve_tuple)}")
+                return False
+            resolve_json = json.loads(resolve_tuple[2])
+            errors = resolve_json.get("errors")
+            if errors:
+                get_logger().error(f"GraphQL errors resolving thread {thread_id}: {errors}")
+                return False
+            is_resolved = (resolve_json.get("data", {}).get("resolveReviewThread", {})
+                           .get("thread", {}).get("isResolved", False))
+            if not is_resolved:
+                get_logger().warning(
+                    f"Resolve mutation returned isResolved=false for thread "
+                    f"{thread_id} — possible permission issue"
+                )
+                return False
+            get_logger().info(f"Resolved review thread {thread_id}")
+            return True
+        except Exception as e:
+            get_logger().exception(f"Failed to resolve comment thread: {e}")
+            return False
 
     def _publish_inline_comments_fallback_with_verification(self, comments: list[dict]):
         """
@@ -573,21 +789,35 @@ class GithubProvider(GitProvider):
 
         # publish as a group the verified comments
         if verified_comments:
-            try:
-                self.pr.create_review(commit=self.last_commit_id, comments=verified_comments)
-            except:
-                pass
+            self.pr.create_review(commit=self.last_commit_id, comments=verified_comments)
 
         # try to publish one by one the invalid comments as a one-line code comment
         if invalid_comments and get_settings().github.try_fix_invalid_inline_comments:
-            fixed_comments_as_one_liner = self._try_fix_invalid_inline_comments(
-                [comment for comment, _ in invalid_comments])
+            invalid_comments_list = [comment for comment, _ in invalid_comments]
+            fixed_comments_as_one_liner = self._try_fix_invalid_inline_comments(invalid_comments_list)
             for comment in fixed_comments_as_one_liner:
                 try:
                     self.publish_inline_comments([comment], disable_fallback=True)
                     get_logger().info(f"Published invalid comment as a single line comment: {comment}")
                 except:
                     get_logger().error(f"Failed to publish invalid comment as a single line comment: {comment}")
+
+            dropped_count = len(invalid_comments) - len(fixed_comments_as_one_liner)
+            if dropped_count > 0:
+                dropped_paths = [c.get("path") for c, _ in invalid_comments]
+                for fixed_c in fixed_comments_as_one_liner:
+                    fixed_path = fixed_c.get("path")
+                    if fixed_path in dropped_paths:
+                        dropped_paths.remove(fixed_path)
+                get_logger().warning(
+                    f"Dropped {dropped_count} invalid comments that could not be fixed. Paths: {dropped_paths}"
+                )
+        elif invalid_comments:
+            dropped_paths = [c.get("path") for c, _ in invalid_comments]
+            get_logger().warning(
+                f"Dropped {len(invalid_comments)} invalid comments "
+                f"(try_fix_invalid_inline_comments is off). Paths: {dropped_paths}"
+            )
 
     def _verify_code_comment(self, comment: dict):
         is_verified = False
@@ -654,7 +884,11 @@ class GithubProvider(GitProvider):
         """
         post_parameters_list = []
 
-        code_suggestions_validated = self.validate_comments_inside_hunks(code_suggestions)
+        code_suggestions_with_fingerprints = copy.deepcopy(code_suggestions)
+        for suggestion in code_suggestions_with_fingerprints:
+            suggestion["_dedup_code_fp"] = code_fingerprint(
+                suggestion.get("relevant_file", ""), None, suggestion.get("body", ""))
+        code_suggestions_validated = self.validate_comments_inside_hunks(code_suggestions_with_fingerprints)
 
         for suggestion in code_suggestions_validated:
             body = suggestion['body']
@@ -680,6 +914,7 @@ class GithubProvider(GitProvider):
                     "line": relevant_lines_end,
                     "start_line": relevant_lines_start,
                     "start_side": "RIGHT",
+                    "_dedup_code_fp": suggestion.get("_dedup_code_fp"),
                 }
             else:  # API is different for single line comments
                 post_parameters = {
@@ -687,6 +922,7 @@ class GithubProvider(GitProvider):
                     "path": relevant_file,
                     "line": relevant_lines_start,
                     "side": "RIGHT",
+                    "_dedup_code_fp": suggestion.get("_dedup_code_fp"),
                 }
             post_parameters_list.append(post_parameters)
 
@@ -708,7 +944,7 @@ class GithubProvider(GitProvider):
                     "Failed to edit github comment due to permission restrictions",
                     artifact={"error": e})
             else:
-                get_logger().exception(f"Failed to edit github comment", artifact={"error": e})
+                get_logger().exception("Failed to edit github comment", artifact={"error": e})
 
     def edit_comment_from_comment_id(self, comment_id: int, body: str):
         try:
@@ -893,7 +1129,8 @@ class GithubProvider(GitProvider):
         # Cache per org: global settings change rarely, so avoid a lookup (and repeated 403/404
         # fallbacks) on every webhook event.
         return get_cached_global_settings(
-            f"github:{repo_owner}", lambda: self._fetch_global_repo_settings(repo_owner))
+            f"github:{getattr(self, 'base_url', '')}:{repo_owner}",
+            lambda: self._fetch_global_repo_settings(repo_owner))
 
     def _fetch_global_repo_settings(self, repo_owner):
         try:
@@ -1086,8 +1323,8 @@ class GithubProvider(GitProvider):
             branch=branch,
         )
 
-    def _get_pr_file_content(self, file: FilePatchInfo, sha: str) -> str:
-        return self.get_pr_file_content(file.filename, sha)
+    def _get_pr_file_content(self, file: FilePatchInfo, sha: str, path: str = None) -> str:
+        return self.get_pr_file_content(path or file.filename, sha)
 
     def publish_labels(self, pr_types):
         try:
@@ -1166,6 +1403,12 @@ class GithubProvider(GitProvider):
 
     def get_line_link(self, relevant_file: str, relevant_line_start: int, relevant_line_end: int = None) -> str:
         sha_file = hashlib.sha256(relevant_file.encode('utf-8')).hexdigest()
+        if relevant_line_end is not None and relevant_line_start is not None:
+            try:
+                if int(relevant_line_end) < int(relevant_line_start):
+                    relevant_line_end = relevant_line_start
+            except (TypeError, ValueError):
+                relevant_line_end = None
         if relevant_line_start == -1:
             link = f"{self.base_url_html}/{self.repo}/pull/{self.pr_num}/files#diff-{sha_file}"
         elif relevant_line_end:
@@ -1240,7 +1483,9 @@ class GithubProvider(GitProvider):
                 return sub_issues
 
 
-            issue_id = response_json.get("data", {}).get("repository", {}).get("issue", {}).get("id")
+            issue_id = (((response_json.get("data") or {})
+                        .get("repository") or {})
+                        .get("issue") or {}).get("id")
 
             if not issue_id:
                 get_logger().warning(f"Issue ID not found for {issue_url}")
@@ -1270,14 +1515,19 @@ class GithubProvider(GitProvider):
                 get_logger().error("Unexpected sub-issues response format", artifact={"response": sub_issues_response_tuple})
                 return sub_issues
 
-            if not sub_issues_response_json.get("data", {}).get("node", {}).get("subIssues"):
+            sub_issues_data = (((sub_issues_response_json.get("data") or {})
+                                .get("node") or {})
+                                .get("subIssues") or {})
+            if not sub_issues_data:
                 get_logger().error("Invalid sub-issues response structure")
                 return sub_issues
-    
-            nodes = sub_issues_response_json.get("data", {}).get("node", {}).get("subIssues", {}).get("nodes", [])
+
+            nodes = sub_issues_data.get("nodes") or []
             get_logger().info(f"Github Sub-issues fetched: {len(nodes)}", artifact={"nodes": nodes})
 
             for sub_issue in nodes:
+                if not sub_issue:
+                    continue
                 if "url" in sub_issue:
                     sub_issues.add(sub_issue["url"])
 
@@ -1399,18 +1649,19 @@ class GithubProvider(GitProvider):
             get_logger().error("Either missing auth token or missing base url")
             return None
         if scheme not in github_base_url:
-            get_logger().error(f"Base url: {github_base_url} is missing prefix: {scheme}")
+            get_logger().error(f"Base url: {redact_credentials(github_base_url)} is missing prefix: {scheme}")
             return None
         github_com = github_base_url.split(scheme)[1]  # e.g. 'github.com' or github.<org>.com
         if not github_com:
-            get_logger().error(f"Base url: {github_base_url} has an empty base url")
+            get_logger().error(f"Base url: {redact_credentials(github_base_url)} has an empty base url")
             return None
         if github_com not in repo_url_to_clone:
-            get_logger().error(f"url to clone: {repo_url_to_clone} does not contain {github_com}")
+            get_logger().error(f"url to clone: {redact_credentials(repo_url_to_clone)} "
+                               f"does not contain {redact_credentials(github_base_url)}")
             return None
         repo_full_name = repo_url_to_clone.split(github_com)[-1]
         if not repo_full_name:
-            get_logger().error(f"url to clone: {repo_url_to_clone} is malformed")
+            get_logger().error(f"url to clone: {redact_credentials(repo_url_to_clone)} is malformed")
             return None
 
         clone_url = scheme
