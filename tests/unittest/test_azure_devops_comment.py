@@ -62,6 +62,20 @@ class TestAzureDevopsProviderPublishComment(unittest.TestCase):
 
 
 class TestAzureDevopsProviderCommitUrl(unittest.TestCase):
+    def test_get_latest_commit_url_returns_empty_string_without_commits(self):
+        with patch.object(AzureDevopsProvider, "_get_azure_devops_client", return_value=(MagicMock(), MagicMock())):
+            provider = AzureDevopsProvider()
+            provider.workspace_slug = "Dev Project"
+            provider.repo_slug = "repo name"
+            provider.pr_num = 1234
+
+            client = provider.azure_devops_client
+            client.get_pull_request_commits.return_value = []
+
+            url = provider.get_latest_commit_url()
+
+            assert url == ""
+
     def test_get_latest_commit_url_reencodes_spaces(self):
         # workspace/repo slugs are stored decoded for the REST API; the web URL must
         # re-encode them so project/repo names with spaces don't emit raw spaces
