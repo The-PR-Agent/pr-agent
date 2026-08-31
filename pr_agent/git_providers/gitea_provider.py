@@ -609,6 +609,9 @@ class GiteaProvider(GitProvider):
 
     def get_line_link(self, relevant_file, relevant_line_start, relevant_line_end = None) -> str:
         link = f"{self.base_url_html}/{self.owner}/{self.repo}/src/branch/{self.get_pr_branch()}/{relevant_file}"
+        relevant_line_start, relevant_line_end = self._normalize_line_range(
+            relevant_line_start, relevant_line_end
+        )
         if relevant_line_start == -1:
             pass
         elif relevant_line_end:

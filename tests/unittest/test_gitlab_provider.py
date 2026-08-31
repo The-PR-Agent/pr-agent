@@ -339,6 +339,12 @@ class TestGitLabProvider:
         assert gitlab_provider.get_line_link("src/app.py", 10, 12) == (
             "https://gitlab.com/group/repo/-/blob/feature/cache/src/app.py?ref_type=heads#L10-12"
         )
+        assert gitlab_provider.get_line_link("src/app.py", 10, 5) == (
+            "https://gitlab.com/group/repo/-/blob/feature/cache/src/app.py?ref_type=heads#L10-10"
+        )
+        assert gitlab_provider.get_line_link("src/app.py", 10, "not-a-number") == (
+            "https://gitlab.com/group/repo/-/blob/feature/cache/src/app.py?ref_type=heads#L10"
+        )
 
     def test_publish_description_with_none_title_leaves_title_unchanged(self, gitlab_provider):
         gitlab_provider.mr = MagicMock()

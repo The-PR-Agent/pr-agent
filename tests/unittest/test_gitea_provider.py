@@ -744,6 +744,8 @@ class TestGiteaProviderUserFacingLinks:
         prefix = "https://git.example.com/forgejo/owner/repo/src/branch/feat/retry/app/storage.py"
         assert provider.get_line_link("app/storage.py", 24) == f"{prefix}#L24"
         assert provider.get_line_link("app/storage.py", 24, 30) == f"{prefix}#L24-L30"
+        assert provider.get_line_link("app/storage.py", 24, 20) == f"{prefix}#L24-L24"
+        assert provider.get_line_link("app/storage.py", 24, "not-a-number") == f"{prefix}#L24"
         assert provider.get_line_link("app/storage.py", -1) == prefix
 
     @patch("pr_agent.git_providers.gitea_provider.get_settings")
