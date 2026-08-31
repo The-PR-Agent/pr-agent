@@ -9,8 +9,7 @@ from starlette.middleware import Middleware
 from starlette_context import context
 from starlette_context.middleware import RawContextMiddleware
 
-from pr_agent.agent.pr_agent import PRAgent
-from pr_agent.algo.utils import update_settings_from_args
+from pr_agent.agent.pr_agent import PRAgent, prepare_command
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
@@ -73,7 +72,7 @@ async def handle_request(body: Dict[str, Any], event: str):
     # Handle different event types
     if event == "pull_request":
         if not should_process_pr_logic(body):
-            get_logger().debug(f"Request ignored: PR logic filtering")
+            get_logger().debug("Request ignored: PR logic filtering")
             return {}
         if action in ["opened", "reopened", "synchronized"]:
             await handle_pr_event(body, event, action, agent)
@@ -101,8 +100,8 @@ async def handle_pr_event(body: Dict[str, Any], event: str, action: str, agent: 
         #     await agent.handle_request(api_url, command)
     elif action == "synchronized":
         # Handle push to PR
-        commands_on_push = get_settings().get(f"gitea.push_commands", {})
-        handle_push_trigger = get_settings().get(f"gitea.handle_push_trigger", False)
+        commands_on_push = get_settings().get("gitea.push_commands", {})
+        handle_push_trigger = get_settings().get("gitea.handle_push_trigger", False)
         if not commands_on_push or not handle_push_trigger:
             get_logger().info("Push event, but no push commands found or push trigger is disabled")
             return
@@ -136,17 +135,16 @@ async def _perform_commands_gitea(commands_conf: str, agent: PRAgent, body: dict
         return {}
     commands = get_settings().get(f"gitea.{commands_conf}")
     if not commands:
-        get_logger().info(f"New PR, but no auto commands configured")
+        get_logger().info("New PR, but no auto commands configured")
         return
     get_settings().set("config.is_auto_command", True)
     for command in commands:
-        split_command = command.split(" ")
-        command = split_command[0]
-        args = split_command[1:]
-        other_args = update_settings_from_args(args)
-        new_command = ' '.join([command] + other_args)
-        get_logger().info(f"{commands_conf}. Performing auto command '{new_command}', for {api_url=}")
-        await agent.handle_request(api_url, new_command)
+        try:
+            new_command = prepare_command(command)
+            get_logger().info(f"{commands_conf}. Performing auto command '{new_command}', for {api_url=}")
+            await agent.handle_request(api_url, new_command)
+        except Exception as e:
+            get_logger().error(f"Failed to perform command {command}: {e}")
 
 def should_process_pr_logic(body) -> bool:
     try:

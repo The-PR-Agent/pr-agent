@@ -119,7 +119,7 @@ class PRAddDocs:
                     new_code_snippet = self.dedent_code(relevant_file, relevant_line, documentation, doc_placement,
                                                         add_original_line=True)
 
-                    body = f"**Suggestion:** Proposed documentation\n```suggestion\n" + new_code_snippet + "\n```"
+                    body = "**Suggestion:** Proposed documentation\n```suggestion\n" + new_code_snippet + "\n```"
                     docs.append({'body': body, 'relevant_file': relevant_file,
                                              'relevant_lines_start': relevant_line,
                                              'relevant_lines_end': relevant_line})
@@ -139,13 +139,22 @@ class PRAddDocs:
             self.diff_files = self.git_provider.diff_files if self.git_provider.diff_files \
                 else self.git_provider.get_diff_files()
             original_initial_line = None
+            file_lines = []
             for file in self.diff_files:
                 if file.filename.strip() == relevant_file:
-                    original_initial_line = file.head_file.splitlines()[relevant_lines_start - 1]
+                    file_lines = file.head_file.splitlines() if file.head_file else []
+                    if not 1 <= relevant_lines_start <= len(file_lines):
+                        get_logger().warning(
+                            "Could not dedent code snippet, relevant_lines_start is out of range",
+                            artifact={'filename': file.filename,
+                                      'relevant_lines_start': relevant_lines_start,
+                                      'num_lines': len(file_lines)})
+                        return new_code_snippet
+                    original_initial_line = file_lines[relevant_lines_start - 1]
                     break
             if original_initial_line:
-                if doc_placement == 'after':
-                    line = file.head_file.splitlines()[relevant_lines_start]
+                if doc_placement == 'after' and relevant_lines_start < len(file_lines):
+                    line = file_lines[relevant_lines_start]
                 else:
                     line = original_initial_line
                 suggested_initial_line = new_code_snippet.splitlines()[0]

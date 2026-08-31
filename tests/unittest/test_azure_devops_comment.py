@@ -58,4 +58,26 @@ class TestAzureDevopsProviderPublishComment(unittest.TestCase):
         # Import get_settings directly to read from configuration.toml
         status = get_settings().azure_devops.default_comment_status
         # The expected value should match what's in your configuration.toml
-        self.assertEqual(status, "closed")        
+        self.assertEqual(status, "closed")
+
+
+class TestAzureDevopsProviderCommitUrl(unittest.TestCase):
+    def test_get_latest_commit_url_reencodes_spaces(self):
+        # workspace/repo slugs are stored decoded for the REST API; the web URL must
+        # re-encode them so project/repo names with spaces don't emit raw spaces
+        with patch.object(AzureDevopsProvider, "_get_azure_devops_client", return_value=(MagicMock(), MagicMock())):
+            provider = AzureDevopsProvider()
+            provider.workspace_slug = "Dev Project"
+            provider.repo_slug = "repo name"
+            provider.pr_num = 1234
+
+            client = provider.azure_devops_client
+            client.normalized_url = "https://dev.azure.com/org"
+            commit = MagicMock()
+            commit.commit_id = "abc123"
+            client.get_pull_request_commits.return_value = [commit]
+
+            url = provider.get_latest_commit_url()
+
+            assert url == "https://dev.azure.com/org/Dev%20Project/_git/repo%20name/commit/abc123"
+            assert " " not in url

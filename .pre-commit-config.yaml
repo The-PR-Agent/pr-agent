@@ -6,22 +6,41 @@ default_language_version:
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
+    rev: v6.0.0
     hooks:
       - id: check-added-large-files
+        exclude: ^uv\.lock$ # lock file, 686 KB and generated
+      - id: check-ast
+      - id: check-case-conflict
+      - id: check-json
+      - id: check-merge-conflict
       - id: check-toml
       - id: check-yaml
+        args: [--unsafe]
+      - id: check-illegal-windows-names
+      - id: check-symlinks
+      - id: debug-statements
+      - id: destroyed-symlinks
       - id: end-of-file-fixer
+      - id: mixed-line-ending
+        args: ["--fix=lf"]
       - id: trailing-whitespace
+        exclude: ^tests/unittest/test_extend_patch\.py$ # trailing space; stripping it breaks the test.
+
   # - repo: https://github.com/rhysd/actionlint
   #   rev: v1.7.3
   #   hooks:
   #     - id: actionlint
-  - repo: https://github.com/pycqa/isort
-    # rev must match what's in dev-requirements.txt
-    rev: 5.13.2
+  # ruff handles linting and import sorting (config in pyproject.toml).
+  - repo: local
     hooks:
-      - id: isort
+      - id: ruff-check
+        name: ruff check
+        entry: uv run --frozen ruff check
+        language: system
+        types_or: [python, pyi]
+        args: [--fix, --show-fixes]
+
   # - repo: https://github.com/PyCQA/bandit
   #   rev: 1.7.10
   #   hooks:
@@ -29,18 +48,3 @@ repos:
   #       args: [
   #         "-c", "pyproject.toml",
   #       ]
-  # - repo: https://github.com/astral-sh/ruff-pre-commit
-  #   rev: v0.7.1
-  #   hooks:
-  #     - id: ruff
-  #       args:
-  #         - --fix
-  #     - id: ruff-format
-  # -   repo: https://github.com/PyCQA/autoflake
-  #     rev: v2.3.1
-  #     hooks:
-  #     -   id: autoflake
-  #         args:
-  #           - --in-place
-  #           - --remove-all-unused-imports
-  #           - --remove-unused-variables

@@ -6,7 +6,6 @@ from datetime import datetime
 import gitlab
 
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers import get_git_provider
 from pr_agent.log import get_logger, setup_logger
 from tests.e2e_tests.e2e_utils import (
     FILE_PATH,
@@ -26,7 +25,7 @@ def test_e2e_run_github_app():
     GITLAB_URL = "https://gitlab.com"
     GITLAB_TOKEN = get_settings().gitlab.PERSONAL_ACCESS_TOKEN
     gl = gitlab.Gitlab(GITLAB_URL, private_token=GITLAB_TOKEN)
-    repo_url = 'codiumai/pr-agent-tests'
+    repo_url = 'pragent/pr-agent-tests'
     project = gl.projects.get(repo_url)
 
     base_branch = "main"  # or any base branch you want
@@ -59,7 +58,7 @@ def test_e2e_run_github_app():
 
         # check every 1 minute, for 5, minutes if the PR has all the tool results
         for i in range(NUM_MINUTES):
-            logger.info(f"Waiting for the MR to get all the tool results...")
+            logger.info("Waiting for the MR to get all the tool results...")
             time.sleep(60)
             logger.info(f"Checking the MR {mr.web_url} after {i + 1} minute(s)")
             mr = project.mergerequests.get(mr.iid)

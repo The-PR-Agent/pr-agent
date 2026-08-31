@@ -10,7 +10,7 @@ from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.pr_processing import retry_with_fallback_models
 from pr_agent.algo.token_handler import TokenHandler
-from pr_agent.algo.utils import ModelType, clip_tokens, load_yaml, get_max_tokens
+from pr_agent.algo.utils import ModelType, clip_tokens, get_max_tokens, load_yaml
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import BitbucketServerProvider, GithubProvider, get_git_provider_with_context
 from pr_agent.log import get_logger
@@ -89,7 +89,7 @@ class PRHelpMessage:
             # Perform replacements in a single pass and convert to lowercase
             return pattern.sub(lambda m: replacements[m.group()], cleaned).lower()
         except Exception:
-            get_logger().exception(f"Error while formatting markdown header", artifacts={'header': header})
+            get_logger().exception("Error while formatting markdown header", artifacts={'header': header})
             return ""
 
 
@@ -151,7 +151,7 @@ class PRHelpMessage:
                     get_logger().warning(f"failing to parse response: {response_yaml}, publishing the response as is")
                     if get_settings().config.publish_output:
                         answer_str = f"### Question: \n{self.question_str}\n\n"
-                        answer_str += f"### Answer:\n\n"
+                        answer_str += "### Answer:\n\n"
                         answer_str += response_yaml
                         self.git_provider.publish_comment(answer_str)
                     return ""
@@ -162,8 +162,8 @@ class PRHelpMessage:
                     get_logger().info(f"Could not find relevant answer for the question: {self.question_str}")
                     if get_settings().config.publish_output:
                         answer_str = f"### Question: \n{self.question_str}\n\n"
-                        answer_str += f"### Answer:\n\n"
-                        answer_str += f"Could not find relevant information to answer the question. Please provide more details and try again."
+                        answer_str += "### Answer:\n\n"
+                        answer_str += "Could not find relevant information to answer the question. Please provide more details and try again."
                         self.git_provider.publish_comment(answer_str)
                     return ""
 
@@ -172,7 +172,7 @@ class PRHelpMessage:
                 if response_str:
                     answer_str += f"### Question: \n{self.question_str}\n\n"
                     answer_str += f"### Answer:\n{response_str.strip()}\n\n"
-                    answer_str += f"#### Relevant Sources:\n\n"
+                    answer_str += "#### Relevant Sources:\n\n"
                     base_path = "https://qodo-merge-docs.qodo.ai/"
                     for section in relevant_sections:
                         file = section.get('file_name').strip().removesuffix('.md')
@@ -247,21 +247,21 @@ class PRHelpMessage:
                 checkbox_list.append("[*]")
 
                 if isinstance(self.git_provider, GithubProvider) and not get_settings().config.get('disable_checkboxes', False):
-                    pr_comment += f"<table><tr align='left'><th align='left'>Tool</th><th align='left'>Description</th><th align='left'>Trigger Interactively :gem:</th></tr>"
+                    pr_comment += "<table><tr align='left'><th align='left'>Tool</th><th align='left'>Description</th><th align='left'>Trigger Interactively :gem:</th></tr>"
                     for i in range(len(tool_names)):
                         pr_comment += f"\n<tr><td align='left'>\n\n<strong>{tool_names[i]}</strong></td>\n<td>{descriptions[i]}</td>\n<td>\n\n{checkbox_list[i]}\n</td></tr>"
                     pr_comment += "</table>\n\n"
-                    pr_comment += f"""\n\n(1) Note that each tool can be [triggered automatically](https://pr-agent-docs.codium.ai/usage-guide/automations_and_usage/#github-app-automatic-tools-when-a-new-pr-is-opened) when a new PR is opened, or called manually by [commenting on a PR](https://pr-agent-docs.codium.ai/usage-guide/automations_and_usage/#online-usage)."""
-                    pr_comment += f"""\n\n(2) Tools marked with [*] require additional parameters to be passed. For example, to invoke the `/ask` tool, you need to comment on a PR: `/ask "<question content>"`. See the relevant documentation for each tool for more details."""
+                    pr_comment += """\n\n(1) Note that each tool can be [triggered automatically](https://pr-agent-docs.codium.ai/usage-guide/automations_and_usage/#github-app-automatic-tools-when-a-new-pr-is-opened) when a new PR is opened, or called manually by [commenting on a PR](https://pr-agent-docs.codium.ai/usage-guide/automations_and_usage/#online-usage)."""
+                    pr_comment += """\n\n(2) Tools marked with [*] require additional parameters to be passed. For example, to invoke the `/ask` tool, you need to comment on a PR: `/ask "<question content>"`. See the relevant documentation for each tool for more details."""
                 elif isinstance(self.git_provider, BitbucketServerProvider):
                     # only support basic commands in BBDC
                     pr_comment = generate_bbdc_table(tool_names[:4], descriptions[:4])
                 else:
-                    pr_comment += f"<table><tr align='left'><th align='left'>Tool</th><th align='left'>Command</th><th align='left'>Description</th></tr>"
+                    pr_comment += "<table><tr align='left'><th align='left'>Tool</th><th align='left'>Command</th><th align='left'>Description</th></tr>"
                     for i in range(len(tool_names)):
                         pr_comment += f"\n<tr><td align='left'>\n\n<strong>{tool_names[i]}</strong></td><td>{commands[i]}</td><td>{descriptions[i]}</td></tr>"
                     pr_comment += "</table>\n\n"
-                    pr_comment += f"""\n\nNote that each tool can be [invoked automatically](https://pr-agent-docs.codium.ai/usage-guide/automations_and_usage/) when a new PR is opened, or called manually by [commenting on a PR](https://pr-agent-docs.codium.ai/usage-guide/automations_and_usage/#online-usage)."""
+                    pr_comment += """\n\nNote that each tool can be [invoked automatically](https://pr-agent-docs.codium.ai/usage-guide/automations_and_usage/) when a new PR is opened, or called manually by [commenting on a PR](https://pr-agent-docs.codium.ai/usage-guide/automations_and_usage/#online-usage)."""
 
                 if get_settings().config.publish_output:
                     self.git_provider.publish_comment(pr_comment)

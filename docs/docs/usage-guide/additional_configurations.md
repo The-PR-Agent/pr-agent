@@ -1,6 +1,6 @@
 ## Show possible configurations
 
-The possible configurations of PR-Agent are stored in [here](https://github.com/qodo-ai/pr-agent/blob/main/pr_agent/settings/configuration.toml){:target="_blank"}.
+The possible configurations of PR-Agent are stored in [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml){:target="_blank"}.
 In the [tools](../tools/index.md) page you can find explanations on how to use these configurations for each tool.
 
 To print all the available configurations as a comment on your PR, you can use the following command:
@@ -21,6 +21,46 @@ For example:
 Will output an additional field showing the actual configurations used for the `improve` tool.
 
 ![possible_config2](https://codium.ai/images/pr_agent/possible_config2.png){width=512}
+
+### Showing the agent run details
+
+To see which model actually answered, how many tokens the run consumed, and how long the AI processing phase took, enable `config.output_run_details`:
+
+```
+/review --config.output_run_details=true
+```
+
+API-cost collection is a separate, default-off option controlled by `config.output_run_cost`. Enable both flags to collect it and add it inside the run-details section:
+
+```
+/review --config.output_run_details=true --config.output_run_cost=true
+```
+
+`config.output_run_details` remains the public-output gate: setting only `config.output_run_cost=true` collects run-level cost data but never adds it to a PR comment.
+
+On providers that support GitHub-Flavored Markdown this appends a collapsible section to the generated comment; elsewhere `/review` and `/describe` append the same information as plain text:
+
+```
+⚙️ Agent run details
+- Model: gpt-5.6-terra (fallback)
+- Tokens: 12,340 in / 1,205 out / 13,545 total
+- Time cost: 8.2s
+- AI calls: 1
+- Estimated API cost: $0.08 USD
+  - anthropic/claude-opus-5: $0.07 USD
+  - anthropic/claude-sonnet-5: $0.01 USD
+```
+
+`Model` shows the model that produced the answer, marked `(fallback)` when the primary model failed and a fallback took over. The `Tokens` line appears only when the model provider reports usage. `AI calls` counts the successful LLM invocations made during the run. The flag is disabled by default.
+
+`Estimated API cost` is derived synchronously from each completed LiteLLM response and its finalized usage. LiteLLM can account for cache reads, cache writes, reasoning tokens, and provider-specific usage categories when the response and its pricing data include them. Multi-model runs show a compact breakdown of the known costs. Exact `Decimal` values are retained for aggregation, while public currency output is rounded to two decimal places; a tiny positive value that would round to zero is shown as `<$0.01` instead of `$0.00`. If only some successful calls can be priced, the total is marked `partial` with the priced-call count; if none can be priced, the line reports `unavailable`. Missing pricing is never rendered as `$0`.
+
+The amount is an estimate based on LiteLLM's pricing data, not provider-invoice-authoritative billing. Reconcile it with the provider's billing records before using it for accounting or chargeback. Streaming responses are priced only after finalized usage is available; asynchronous callbacks and transient `response_cost` callback metadata are not treated as the sole source of truth. The public section contains only aggregate costs and configured model names, never prompts, response bodies, API keys, or provider request IDs.
+
+Notes:
+
+- `/improve` appends the section only when it publishes a summary comment. If the provider lacks GFM support or `pr_code_suggestions.commitable_code_suggestions` is enabled, `/improve` posts inline comments instead, so no run details section appears.
+- With `pr_description.use_description_markers=true`, repeated `/describe` runs accumulate one run details block per run because the existing PR description is preserved and only the markers are replaced.
 
 ## Ignoring files from analysis
 
@@ -109,6 +149,49 @@ expand_submodule_diffs = true
 
 When enabled, PR-Agent will fetch and attach diffs from the submodule repositories. The default is `false` to avoid extra GitLab API calls.
 
+## Post the review as a GitLab thread
+
+By default, PR-Agent posts the `/review` summary as a plain note. To post it as a resolvable thread (GitLab discussion) instead, enable (default: `false`):
+
+```toml
+[gitlab]
+publish_review_as_thread = true
+```
+- With `pr_reviewer.persistent_comment=true` (the default), each run updates the existing review thread and reopens it if it was resolved, so the refreshed review gets another look.
+- Enabling the flag does not convert a review that was already posted as a plain note: it keeps being updated in place, and GitLab cannot promote a note to a thread. Only MRs whose first review runs after the flag is set get a thread.
+- Set `pr_reviewer.persistent_comment=false` to open a new review thread on each run instead.
+
+## Post the /improve suggestions as a GitLab thread
+
+By default, PR-Agent posts the `/improve` suggestions as a plain note. To post them as a resolvable thread (GitLab discussion) instead, enable (default: `false`):
+
+```toml
+[gitlab]
+publish_improve_as_thread = true
+```
+
+- A run that finds no suggestions edits the thread in place and resolves it, so a status message does not leave an open thread behind.
+
+## Resolve outdated GitLab inline threads
+
+Each inline suggestion is anchored to the MR head commit it was posted against. When a later push moves the head, GitLab marks that thread as belonging to an outdated diff version: it renders empty, loses its `Resolve` control, and can then only be closed through the API, so superseded suggestions pile up on a long-lived MR. To have PR-Agent resolve those threads before it publishes a fresh batch of inline suggestions, enable (default: `false`):
+
+```toml
+[gitlab]
+resolve_outdated_inline_threads = true
+```
+
+A thread is only resolved when all of the following hold, so a thread with any human reply is never closed:
+
+- the thread was opened by PR-Agent itself, judged from the body: it carries a dedup marker (proof, and present on every inline review finding), or it opens with the `**Suggestion:**` lead that inline suggestions are published with (a strong hint rather than proof, since a person could type it). This is what keeps the cleanup off hand-written comments made from the same account, which matters because the GitLab token often belongs to a person rather than a dedicated bot user;
+- every non-system note in it was written by that same user, so a single human reply leaves the thread alone. GitLab system notes are ignored, because the "changed this line in version N of the diff" note that marks a thread outdated is authored by whoever pushed;
+- the thread is unresolved and anchored to a line of the diff;
+- the head SHA recorded in that anchor differs from the MR's current diff head SHA.
+
+Anything that cannot be confirmed (an unreadable position, an unknown current head SHA, an unresolvable bot identity) is skipped rather than resolved.
+
+Note that the anchor's recorded head SHA never changes after the thread is created, so any PR-Agent thread older than the latest push qualifies, including ones GitLab still renders on unchanged lines. With `config.persistent_inline_comments` enabled the next run re-posts a suggestion that still applies, so the effect is resolve-and-repost rather than removal.
+
 ## Log Level
 
 PR-Agent allows you to control the verbosity of logging by using the `log_level` configuration parameter. This is particularly useful for troubleshooting and debugging issues with your PR workflows.
@@ -119,6 +202,28 @@ log_level = "DEBUG"  # Options: "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"
 ```
 
 The default log level is "DEBUG", which provides detailed output of all operations. If you prefer less verbose logs, you can set higher log levels like "INFO" or "WARNING".
+
+## Attributing requests to a PR on the provider side
+
+When `add_user_to_requests` is enabled, PR-Agent sends the current command and PR URL in the
+OpenAI-compatible `user` request field, as a compact JSON string:
+
+```
+{"command":"improve","pr_url":"https://gitlab.example.com/group/project/-/merge_requests/171"}
+```
+
+Providers that record this field per request (for example OpenRouter, which shows it as
+`external_user` in the generation details and includes it in the activity export) can then
+attribute every request, its cost and its outcome to a specific PR and command, without
+timestamp correlation.
+
+```
+[config]
+add_user_to_requests = true
+```
+
+The setting is disabled by default, since it shares request-attribution data with the model
+provider: enabling it is an explicit operator choice.
 
 ## Integrating with Logging Observability Platforms
 
@@ -142,25 +247,68 @@ LANGSMITH_PROJECT=<project>
 LANGSMITH_BASE_URL=<url>
 ```
 
-## Bringing additional repository metadata to PR-Agent
+### Custom callbacks
 
-To provide PR-Agent tools with additional context about your project, you can enable automatic repository metadata detection. 
+If you embed PR-Agent in your own code, you can also register callbacks programmatically — for example a
+`litellm.CustomLogger` that records per-call token usage and cost:
 
-If you set:
+```python
+import litellm
+from pr_agent import cli
 
-```toml
-[config]
-add_repo_metadata = true
+class UsageLogger(litellm.integrations.custom_logger.CustomLogger):
+    async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
+        record_usage(kwargs.get("model"), response_obj)
+
+litellm.callbacks = [UsageLogger()]
+cli.run_command("<pr_url>", "/review")
 ```
 
-PR-Agent automatically searches for repository metadata files in your PR's head branch root directory. By default, it looks for:
-[AGENTS.MD](https://agents.md/), [QODO.MD](https://docs.codium.ai/qodo-documentation/qodo-command/getting-started/setup-and-quickstart), [CLAUDE.MD](https://www.anthropic.com/engineering/claude-code-best-practices).
+LiteLLM dispatches these callbacks asynchronously, after the completion call has already returned. PR-Agent
+flushes any pending callbacks before the CLI (and the GitHub Action runner) exits, so they are not lost when
+the event loop is torn down — no configuration required. Use `callback_timeout_seconds` to bound how long
+that flush may take:
 
-You can also specify custom filenames to search for:
+```
+[litellm]
+callback_timeout_seconds = 30 # default
+```
+
+## Bringing per-repo context files to PR-Agent
+
+`Platforms supported: GitHub, GitLab, Gitea, Bitbucket, Azure DevOps`
+
+To give PR-Agent's tools additional project context, you can have it include repository instruction files — such as [AGENTS.md](https://agents.md/) or [CLAUDE.md](https://www.anthropic.com/engineering/claude-code-best-practices) — in the prompts for the `/review`, `/describe` and `/improve` tools.
+
+By default, PR-Agent looks for an `AGENTS.md` file at the repository root:
 
 ```toml
 [config]
-add_repo_metadata_file_list= ["file1.md", "file2.md", ...]
+repo_context_files = ["AGENTS.md"]
+```
+
+You can list any repository-relative paths. By default the files are read from the repository's **default branch**, so only trusted, already-merged content is used and a PR cannot influence the guidance used to review it. A file that is missing is silently skipped. Set the option to an empty list to disable the feature entirely:
+
+```toml
+[config]
+repo_context_files = ["AGENTS.md", "CLAUDE.md", "docs/conventions.md"]
+```
+
+!!! note "Which branch the files are read from"
+    By default (`repo_context_from_default_branch = true`), instruction files are read from the repository's **default branch** — a single trusted source — so neither the PR nor its target branch can alter the guidance used to review it. This matches how Qodo Merge reads these files.
+
+    Set `repo_context_from_default_branch = false` to instead read from the PR's **target (base) branch**. This respects branch-specific instructions (for example a release branch, or a stacked PR that carries its own `AGENTS.md`), at the cost of trusting whoever can write to that target branch. Even then, files are never read from the PR's own head.
+
+    ```toml
+    [config]
+    repo_context_from_default_branch = false
+    ```
+
+To bound how much of this context is sent to the model, `repo_context_max_lines` (default `500`) caps the total number of rendered lines, including the wrapper tags. Content beyond the budget is truncated safely:
+
+```toml
+[config]
+repo_context_max_lines = 500
 ```
 
 ## Ignoring automatic commands in PRs
@@ -265,7 +413,7 @@ To automatically exclude files generated by specific languages or frameworks, yo
 ignore_language_framework = ['protobuf', ...]
 ```
 
-You can view the list of auto-generated file patterns in [`generated_code_ignore.toml`](https://github.com/qodo-ai/pr-agent/blob/main/pr_agent/settings/generated_code_ignore.toml).
+You can view the list of auto-generated file patterns in [`generated_code_ignore.toml`](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/generated_code_ignore.toml).
 Files matching these glob patterns will be automatically excluded from PR Agent analysis.
 
 ### Ignoring Tickets with Specific Labels
@@ -280,3 +428,24 @@ ignore_ticket_labels = ["ignore-compliance", "skip-review", "wont-fix"]
 ```
 
 Where `ignore_ticket_labels` is a list of label names that should be ignored during ticket analysis.
+
+### Restricted Mode
+
+When running PR-Agent with limited GitHub/GitLab permissions, set `restricted_mode` to `true` to gracefully skip operations that require elevated access (e.g., pushing changelog changes):
+
+```toml
+[config]
+restricted_mode = true
+```
+
+With restricted mode, the minimum workflow permissions are:
+
+```yaml
+permissions:
+  issues: write
+  pull-requests: write
+```
+
+Within an explicit `permissions:` block, any scope you do not list (such as `contents`) is set to `none`, so you do not need to grant `contents` — restricted mode skips every operation that would require `contents: write`. All tools (`/review`, `/describe`, `/improve`, etc.) continue to work normally with just `pull-requests: write`.
+
+> **Note:** this only holds when a `permissions:` block is present (as above). If you omit the `permissions:` block entirely, the effective defaults are governed by your repository/organization GitHub Actions settings and may grant broader access.

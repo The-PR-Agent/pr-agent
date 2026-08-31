@@ -78,7 +78,7 @@ class TestIgnoreFilter:
 
         filtered_files = filter_ignored(files)
         assert filtered_files == expected, f"Expected {[file.filename for file in expected]}, but got {[file.filename for file in filtered_files]}."
-    
+
     def test_language_framework_ignores(self, monkeypatch):
         """
         Test files are ignored based on language/framework mapping (e.g., protobuf).
