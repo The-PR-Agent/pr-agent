@@ -67,3 +67,17 @@ def test_a_non_list_code_suggestions_value_is_rejected(payload):
     tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
 
     assert tool._prepare_pr_code_suggestions(payload) == {"code_suggestions": []}
+
+
+def test_an_unparseable_chunk_is_recorded_so_the_coverage_footer_still_reports_it():
+    """The empty result must not read as a successful chunk (#2867 counts failed chunks)."""
+    from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
+
+    tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
+
+    assert tool._prepare_pr_code_suggestions(UNPARSEABLE) == {"code_suggestions": []}
+    assert tool.parse_failure_count == 1
+
+    tool.failed_chunk_count = tool.parse_failure_count
+    tool.total_chunk_count = 2
+    assert "1 of 2 analysis chunks failed" in tool._get_suggestions_coverage_footer()

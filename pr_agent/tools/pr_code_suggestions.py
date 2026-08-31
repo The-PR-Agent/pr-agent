@@ -769,6 +769,7 @@ class PRCodeSuggestions:
         if not isinstance(data, dict) or not isinstance(data.get("code_suggestions"), list):
             get_logger().error("Failed to parse code suggestions from the AI prediction",
                                artifact={"predictions": predictions})
+            self.parse_failure_count = getattr(self, "parse_failure_count", 0) + 1
             return {"code_suggestions": []}
 
         # remove or edit invalid suggestions
@@ -1206,6 +1207,7 @@ class PRCodeSuggestions:
     async def prepare_prediction_main(self, model: str) -> dict:
         self.failed_chunk_count = 0
         self.total_chunk_count = 0
+        self.parse_failure_count = 0
         # get PR diff
         if get_settings().pr_code_suggestions.decouple_hunks:
             self.patches_diff_list = get_pr_multi_diffs(self.git_provider,
@@ -1274,7 +1276,7 @@ class PRCodeSuggestions:
                     else:
                         prediction_list.append(prediction)
 
-            self.failed_chunk_count = len(chunk_errors)
+            self.failed_chunk_count = len(chunk_errors) + self.parse_failure_count
             if chunk_errors and not prediction_list:
                 raise chunk_errors[0]
             self.prediction_list = prediction_list
