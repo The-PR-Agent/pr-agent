@@ -171,6 +171,8 @@ def test_deployment_id_is_restored_when_retry_is_cancelled():
         get_settings().set("openai.fallback_deployments", ["deployment-fallback"])
 
         async def fake_f(model):
+            if model == "primary-model":
+                raise RuntimeError("primary failed")
             raise asyncio.CancelledError
 
         with pytest.raises(asyncio.CancelledError):
