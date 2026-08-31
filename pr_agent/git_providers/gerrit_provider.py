@@ -442,7 +442,7 @@ class GerritProvider(GitProvider):
         """Remove the temporary cloned repository from disk."""
         if self.repo_path and pathlib.Path(self.repo_path).exists():
             try:
-                shutil.rmtree(self.repo_path, ignore_errors=True)
+                shutil.rmtree(self.repo_path)
                 get_logger().info("Cleaned up temp repo at {}", self.repo_path)
             except (OSError, PermissionError) as e:
                 get_logger().warning(
@@ -460,8 +460,8 @@ class GerritProvider(GitProvider):
         """
         try:
             self.cleanup()
-        except Exception:
-            pass
+        except Exception as e:
+            get_logger().debug("Temp repo cleanup failed during __del__: {}", e)
 
     def remove_initial_comment(self):
         # Do NOT call cleanup() here — this method is invoked during the

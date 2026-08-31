@@ -71,7 +71,7 @@ async def handle_gerrit_request(action: Action, item: Item):
     # For the "ask" action, the question must come from item.msg.
     # For all other actions, use the action path parameter as the command.
     if action == Action.ask:
-        if not item.msg:
+        if not (item.msg or "").strip():
             raise HTTPException(
                 status_code=400,
                 detail="msg is required for ask command"

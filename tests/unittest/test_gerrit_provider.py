@@ -215,3 +215,58 @@ def test_get_diff_files_filters_each_gitpython_path_shape(tmp_path):
     renamed = next(file for file in diff_files if file.filename == "src/rename_out.py")
     assert renamed.edit_type == EDIT_TYPE.RENAMED
     assert renamed.old_filename == "generated/rename_out.py"
+
+
+def _capture_logs():
+    from loguru import logger as loguru_logger
+
+    captured = []
+    sink_id = loguru_logger.add(lambda msg: captured.append(str(msg)), level="DEBUG")
+    return captured, sink_id
+
+
+def test_cleanup_removes_the_temp_repo_and_names_it_in_the_log(tmp_path):
+    from loguru import logger as loguru_logger
+
+    repo_path = tmp_path / "clone"
+    repo_path.mkdir()
+    provider = object.__new__(GerritProvider)
+    provider.repo_path = str(repo_path)
+
+    captured, sink_id = _capture_logs()
+    try:
+        provider.cleanup()
+    finally:
+        loguru_logger.remove(sink_id)
+
+    assert not repo_path.exists()
+    assert str(repo_path) in "\n".join(captured)
+
+
+def test_cleanup_reports_a_failed_removal_instead_of_claiming_success(tmp_path, monkeypatch):
+    """ignore_errors=True would swallow the error, leaving a 'Cleaned up' line for a repo still on disk."""
+    from loguru import logger as loguru_logger
+
+    def failing_rmtree(path, ignore_errors=False, **kwargs):
+        if ignore_errors:
+            return
+        raise OSError("device busy")
+
+    repo_path = tmp_path / "clone"
+    repo_path.mkdir()
+    provider = object.__new__(GerritProvider)
+    provider.repo_path = str(repo_path)
+    monkeypatch.setattr("pr_agent.git_providers.gerrit_provider.shutil.rmtree", failing_rmtree)
+
+    captured, sink_id = _capture_logs()
+    try:
+        provider.cleanup()
+    finally:
+        loguru_logger.remove(sink_id)
+
+    combined = "\n".join(captured)
+    assert repo_path.exists()
+    assert "Cleaned up temp repo" not in combined
+    assert "Failed to clean up temp repo" in combined
+    assert str(repo_path) in combined
+    assert "device busy" in combined
