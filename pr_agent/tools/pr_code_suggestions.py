@@ -52,6 +52,24 @@ from pr_agent.tools.pr_description import insert_br_after_x_chars
 from pr_agent.tools.progress_comment import build_progress_comment
 
 
+def _as_threshold(setting_name: str, default: int, minimum: int) -> int:
+    """Read a score threshold as an int, so a quoted or unusable value cannot fail the run."""
+    value = get_settings().get(setting_name, default)
+    try:
+        return max(minimum, int(value))
+    except (TypeError, ValueError, OverflowError):
+        get_logger().warning(f"{setting_name} is not a number ({value!r}), using {default}")
+        return default
+
+
+def get_suggestions_score_threshold() -> int:
+    return _as_threshold("pr_code_suggestions.suggestions_score_threshold", 1, 1)
+
+
+def get_dual_publishing_score_threshold() -> int:
+    return _as_threshold("pr_code_suggestions.dual_publishing_score_threshold", 0, 0)
+
+
 class PRCodeSuggestions:
     def __init__(self, pr_url: str, cli_mode=False, args: list = None,
                  ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
@@ -273,7 +291,7 @@ class PRCodeSuggestions:
                         self._output_published = True
 
                     # dual publishing mode
-                    if int(get_settings().pr_code_suggestions.dual_publishing_score_threshold) > 0:
+                    if get_dual_publishing_score_threshold() > 0:
                         await self.dual_publishing(data)
                 else:
                     await self.push_inline_code_suggestions(data)
@@ -1263,7 +1281,7 @@ class PRCodeSuggestions:
             data = {"code_suggestions": []}
             for j, predictions in enumerate(prediction_list):  # each call adds an element to the list
                 if "code_suggestions" in predictions:
-                    score_threshold = max(1, int(get_settings().pr_code_suggestions.suggestions_score_threshold))
+                    score_threshold = get_suggestions_score_threshold()
                     for i, prediction in enumerate(predictions["code_suggestions"]):
                         try:
                             score = int(prediction.get("score", 1))
