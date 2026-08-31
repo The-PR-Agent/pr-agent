@@ -40,7 +40,7 @@ from pr_agent.algo.utils import (
     show_relevant_configurations,
     show_run_details,
 )
-from pr_agent.config_loader import get_settings
+from pr_agent.config_loader import get_settings, get_verbosity_level
 from pr_agent.git_providers import (
     GithubProvider,
     get_git_provider_with_context,
@@ -817,7 +817,7 @@ class PRCodeSuggestions:
 
         for d in data['code_suggestions']:
             try:
-                if get_settings().config.verbosity_level >= 2:
+                if get_verbosity_level() >= 2:
                     get_logger().info(f"suggestion: {d}")
                 relevant_file = d['relevant_file'].strip()
                 relevant_lines_start = int(d['relevant_lines_start'])  # absolute position

@@ -13,7 +13,7 @@ from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from ..algo.file_filter import filter_ignored
 from ..algo.language_handler import is_valid_file
 from ..algo.utils import add_pr_review_identity, comment_matches_identity, find_line_number_of_relevant_line_in_file
-from ..config_loader import get_settings
+from ..config_loader import get_settings, get_verbosity_level
 from ..log import get_logger
 from .git_provider import MAX_FILES_ALLOWED_FULL, GitProvider, get_cached_global_settings
 
@@ -494,7 +494,7 @@ class BitbucketProvider(GitProvider):
                                                                                 relevant_line_in_file,
                                                                                 absolute_position)
         if position == -1:
-            if get_settings().config.verbosity_level >= 2:
+            if get_verbosity_level() >= 2:
                 get_logger().info(f"Could not find position for {relevant_file} {relevant_line_in_file}")
             subject_type = "FILE"
         else:
@@ -540,7 +540,7 @@ class BitbucketProvider(GitProvider):
                 link = f"{self.pr_url}/#L{relevant_file}T{absolute_position}"
                 return link
         except Exception as e:
-            if get_settings().config.verbosity_level >= 2:
+            if get_verbosity_level() >= 2:
                 get_logger().info(f"Failed adding line link, error: {e}")
 
         return ""

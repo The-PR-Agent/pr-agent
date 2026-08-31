@@ -17,7 +17,7 @@ from ..algo.utils import (
     get_pr_review_comment_identifiers,
     load_large_diff,
 )
-from ..config_loader import get_settings
+from ..config_loader import get_settings, get_verbosity_level
 from ..log import get_logger
 from .git_provider import GitProvider, IncrementalPR
 
@@ -510,7 +510,7 @@ class AzureDevopsProvider(GitProvider):
             )
             return b"".join(list(contents))
         except Exception as e:
-            if get_settings().config.verbosity_level >= 2:
+            if get_verbosity_level() >= 2:
                 get_logger().error(f"Failed to get repo settings, error: {e}")
             return ""
 
@@ -534,7 +534,7 @@ class AzureDevopsProvider(GitProvider):
             )
             return item.content or ""
         except Exception as e:
-            if get_settings().config.verbosity_level >= 2:
+            if get_verbosity_level() >= 2:
                 get_logger().warning(f"Failed to load repo file: {file_path}, error: {e}")
             if _is_not_found_error(e):
                 return ""
@@ -861,7 +861,7 @@ class AzureDevopsProvider(GitProvider):
                                                                                 relevant_line_in_file,
                                                                                 absolute_position)
         if position == -1:
-            if get_settings().config.verbosity_level >= 2:
+            if get_verbosity_level() >= 2:
                 get_logger().info(f"Could not find position for {relevant_file} {relevant_line_in_file}")
             subject_type = "FILE"
         else:
@@ -904,12 +904,12 @@ class AzureDevopsProvider(GitProvider):
                         body = (f"`{relevant_file}` - could not be anchored to a file in the PR diff\n\n"
                                 f"{comment_body}")
                     self.publish_comment(body, thread_context=thread_context)
-                    if get_settings().config.verbosity_level >= 2:
+                    if get_verbosity_level() >= 2:
                         get_logger().info(
                             f"Published code suggestion on {self.pr_num} at {relevant_file}"
                         )
                 except Exception as e:
-                    if get_settings().config.verbosity_level >= 2:
+                    if get_verbosity_level() >= 2:
                         get_logger().error(f"Failed to publish code suggestion, error: {e}")
                     overall_success = False
             return overall_success
@@ -1103,7 +1103,7 @@ class AzureDevopsProvider(GitProvider):
             pr_id = f"{self.workspace_slug}/{self.repo_slug}/{self.pr_num}"
             return pr_id
         except Exception as e:
-            if get_settings().config.verbosity_level >= 2:
+            if get_verbosity_level() >= 2:
                 get_logger().info(f"Failed to get PR id, error: {e}")
             return ""
 

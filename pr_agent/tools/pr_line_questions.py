@@ -10,7 +10,7 @@ from pr_agent.algo.git_patch_processing import extract_hunk_lines_from_patch
 from pr_agent.algo.pr_processing import OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD, retry_with_fallback_models
 from pr_agent.algo.token_handler import TokenEncoder, TokenHandler
 from pr_agent.algo.utils import ModelType, get_max_tokens
-from pr_agent.config_loader import get_settings
+from pr_agent.config_loader import get_settings, get_verbosity_level
 from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.git_provider import get_main_pr_language
 from pr_agent.git_providers.github_provider import GithubProvider
@@ -191,7 +191,7 @@ class PR_LineQuestions:
         variables["selected_lines"] = self.selected_lines
         variables["conversation_history"] = self._fit_conversation_history(variables, model)
         system_prompt, user_prompt = self._render_prompts(variables)
-        if get_settings().config.verbosity_level >= 2:
+        if get_verbosity_level() >= 2:
             # get_logger().info(f"\nSystem prompt:\n{system_prompt}")
             # get_logger().info(f"\nUser prompt:\n{user_prompt}")
             print(f"\nSystem prompt:\n{system_prompt}")
