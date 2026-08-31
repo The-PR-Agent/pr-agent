@@ -193,6 +193,22 @@ def get_setting(key: str) -> Any:
         return global_settings.get(key, None)
 
 
+def as_review_text(value) -> str:
+    """Flatten a review field the model returned as a list or mapping into readable text.
+
+    The prompt asks for a single string, but a model enumerating several findings commonly
+    answers with a list or a mapping. Rendering those is preferable to losing the review.
+    """
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        value = [f"{key}: {item}" for key, item in value.items()]
+    if isinstance(value, (list, tuple, set)):
+        entries = [as_review_text(item) for item in value]
+        return "\n".join(f"- {entry}" for entry in entries if entry)
+    return str(value).strip()
+
+
 def emphasize_header(text: str, only_markdown=False, reference_link=None) -> str:
     try:
         # Finding the position of the first occurrence of ": "
@@ -355,7 +371,7 @@ def convert_to_markdown_v2(output_data: dict,
                     markdown_text += f"{emoji}&nbsp;<strong>No security concerns identified</strong>"
                 else:
                     markdown_text += f"{emoji}&nbsp;<strong>Security concerns</strong><br><br>\n\n"
-                    value = emphasize_header(value.strip())
+                    value = emphasize_header(as_review_text(value))
                     markdown_text += f"{value}"
                 markdown_text += "</td></tr>\n"
             else:
@@ -363,7 +379,7 @@ def convert_to_markdown_v2(output_data: dict,
                     markdown_text += f'### {emoji} No security concerns identified\n\n'
                 else:
                     markdown_text += f"### {emoji} Security concerns\n\n"
-                    value = emphasize_header(value.strip(), only_markdown=True)
+                    value = emphasize_header(as_review_text(value), only_markdown=True)
                     markdown_text += f"{value}\n\n"
         elif 'todo sections' in key_nice.lower():
             if gfm_supported:
