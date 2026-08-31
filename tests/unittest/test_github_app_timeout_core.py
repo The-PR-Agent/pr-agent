@@ -234,17 +234,22 @@ class TestHandleLineComments:
     def test_converts_ask_to_ask_line_with_metadata(self):
         body = self._payload()
         result = github_app.handle_line_comments(body, "/ask Why this change?")
-        assert result.startswith("/ask_line ")
+        # handle_line_comments returns an argv list (not a shell-style string)
+        # so attacker-controlled fields cannot inject extra CLI arguments via
+        # shlex.quote() being defeated downstream.
+        assert isinstance(result, list)
+        assert result[0] == "/ask_line"
         assert "--line_start=10" in result
         assert "--line_end=14" in result
         assert "--side=RIGHT" in result
         assert "--file_name=src/file.py" in result
         assert "--comment_id=987654" in result
-        assert result.endswith("Why this change?")
+        assert result[-1] == "Why this change?"
 
     def test_missing_start_line_falls_back_to_line(self):
         body = self._payload(start_line=None)
         result = github_app.handle_line_comments(body, "/ask anything")
+        assert isinstance(result, list)
         assert "--line_start=14" in result
         assert "--line_end=14" in result
 

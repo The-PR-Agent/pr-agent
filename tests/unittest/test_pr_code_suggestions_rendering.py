@@ -5,8 +5,7 @@ import pytest
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import get_settings
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
-from tests.unittest._settings_helpers import (restore_settings,
-                                              snapshot_settings)
+from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 TRUNCATION_SETTINGS = (
     "pr_code_suggestions.max_code_suggestion_length",

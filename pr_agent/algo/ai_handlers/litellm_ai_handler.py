@@ -2,24 +2,31 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 
 import httpx
 import litellm
 import openai
 import requests
 from litellm import acompletion
-from tenacity import (retry, retry_if_exception_type,
-                      retry_if_not_exception_type, stop_after_attempt)
+from tenacity import retry, retry_if_exception_type, retry_if_not_exception_type, stop_after_attempt
 
-from pr_agent.algo import (CLAUDE_EXTENDED_THINKING_MODELS,
-                           NO_SUPPORT_TEMPERATURE_MODELS,
-                           STREAMING_REQUIRED_MODELS,
-                           SUPPORT_REASONING_EFFORT_MODELS,
-                           USER_MESSAGE_ONLY_MODELS)
+from pr_agent.algo import (
+    CLAUDE_EXTENDED_THINKING_MODELS,
+    GROK_REASONING_EFFORT_LEVELS,
+    NO_SUPPORT_TEMPERATURE_MODELS,
+    STREAMING_REQUIRED_MODELS,
+    SUPPORT_REASONING_EFFORT_MODELS,
+    USER_MESSAGE_ONLY_MODELS,
+    normalize_litellm_model,
+)
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_helpers import (
-    _get_azure_ad_token, _handle_streaming_response,
-    _process_litellm_extra_body, _response_field)
+    _get_azure_ad_token,
+    _handle_streaming_response,
+    _process_litellm_extra_body,
+    _response_field,
+)
 from pr_agent.algo.run_details import _as_decimal_cost, record_ai_call
 from pr_agent.algo.utils import ReasoningEffort, get_version
 from pr_agent.config_loader import get_settings
@@ -445,6 +452,33 @@ class LiteLLMAIHandler(BaseAiHandler):
             )
         )
 
+    @staticmethod
+    def _grok_reasoning_levels_for(model: str) -> set[str] | None:
+        """Return the reasoning-effort levels accepted by a registered Grok model."""
+        normalized_model = model.rsplit(":", 1)[0] if model.startswith("openrouter/") else model
+        return next(
+            (
+                levels
+                for grok_id, levels in GROK_REASONING_EFFORT_LEVELS.items()
+                if normalized_model == grok_id or normalized_model.endswith("/" + grok_id)
+            ),
+            None,
+        )
+
+    @classmethod
+    def _clamp_grok_reasoning_effort(cls, model: str, reasoning_effort: str) -> str:
+        """Clamp a configured reasoning effort to the closest supported Grok level."""
+        grok_levels = cls._grok_reasoning_levels_for(model)
+        if not grok_levels or reasoning_effort in grok_levels:
+            return reasoning_effort
+        try:
+            ReasoningEffort(reasoning_effort)
+        except (ValueError, TypeError):
+            return reasoning_effort
+        if reasoning_effort in ("max", "xhigh"):
+            return "xhigh" if "xhigh" in grok_levels else "high"
+        return "low"
+
     def _configure_claude_extended_thinking(self, model: str, kwargs: dict) -> dict:
         """
         Configure Claude extended thinking parameters if applicable.
@@ -480,6 +514,36 @@ class LiteLLMAIHandler(BaseAiHandler):
             get_logger().info("Temperature may only be set to 1 when thinking is enabled with claude models.")
         kwargs["temperature"] = 1
 
+        return kwargs
+
+    @staticmethod
+    def _is_claude_adaptive_thinking_model(model: str) -> bool:
+        """Return whether a Claude model requires the adaptive thinking API."""
+        normalized_model = model.lower().replace("_", "-").replace(".", "-")
+        return re.search(
+            r"claude-(?:opus-4-(?:7|8)|(?:opus|sonnet|fable)-5)(?:[^0-9]|$)",
+            normalized_model,
+        ) is not None
+
+    def _configure_claude_adaptive_thinking(self, model: str, kwargs: dict) -> dict:
+        """Configure thinking for Claude models that reject token budgets."""
+        kwargs["thinking"] = {"type": "adaptive"}
+        effort = get_settings().config.reasoning_effort
+        if effort in ("low", "medium", "high", "xhigh", "max"):
+            kwargs["output_config"] = {"effort": effort}
+        get_logger().info(
+            f"Using adaptive thinking for model {model}"
+            + (f" with output_config effort '{effort}'" if "output_config" in kwargs else "")
+        )
+        # Adaptive-thinking Claude models have sampling parameters removed, so
+        # never send temperature here. This pop is load-bearing rather than
+        # defensive: NO_SUPPORT_TEMPERATURE_MODELS covers most of these ids
+        # after #2400/#2449, but not all of them. It carries
+        # bedrock/anthropic.claude-opus-4-7-v1:0 and
+        # bedrock/us.anthropic.claude-opus-4-7 without the two combined, so for
+        # bedrock/us.anthropic.claude-opus-4-7-v1:0 this line is the only thing
+        # stopping a temperature reaching the model.
+        kwargs.pop("temperature", None)
         return kwargs
 
     def add_litellm_callbacks(self, kwargs) -> dict:
@@ -668,7 +732,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                         # check if the image link is alive
                         r = requests.head(img_path, allow_redirects=True)
                         if r.status_code == 404:
-                            error_msg = f"The image link is not [alive](img_path).\nPlease repost the original image as a comment, and send the question again with 'quote reply' (see [instructions](https://pr-agent-docs.codium.ai/tools/ask/#ask-on-images-using-the-pr-code-as-context))."
+                            error_msg = "The image link is not [alive](img_path).\nPlease repost the original image as a comment, and send the question again with 'quote reply' (see [instructions](https://pr-agent-docs.codium.ai/tools/ask/#ask-on-images-using-the-pr-code-as-context))."
                             get_logger().error(error_msg)
                             return f"{error_msg}", "error"
                     except Exception as e:
@@ -749,6 +813,9 @@ class LiteLLMAIHandler(BaseAiHandler):
                     if 'temperature' in kwargs:
                         del kwargs['temperature']
 
+                custom_llm_provider = str(
+                    getattr(get_settings().litellm, "custom_llm_provider", "") or ""
+                ).strip().lower()
                 openrouter_reasoning_effort = None
                 reasoning_model = model.rsplit(":", 1)[0] if model.startswith("openrouter/") else model
                 # Add reasoning_effort if model supports it. Match the bare model
@@ -773,6 +840,14 @@ class LiteLLMAIHandler(BaseAiHandler):
                                 f"Using default '{reasoning_effort}'. Valid values: {[e.value for e in ReasoningEffort]}"
                             )
 
+                    clamped_effort = self._clamp_grok_reasoning_effort(model, reasoning_effort)
+                    if clamped_effort != reasoning_effort:
+                        get_logger().info(
+                            f"Grok model {model} does not support reasoning_effort='{reasoning_effort}'; "
+                            f"using '{clamped_effort}' instead."
+                        )
+                        reasoning_effort = clamped_effort
+
                     if model.startswith("openrouter/"):
                         # LiteLLM 1.98.0 rejects top-level reasoning_effort for some
                         # OpenRouter model IDs it does not mark as reasoning-capable;
@@ -781,10 +856,34 @@ class LiteLLMAIHandler(BaseAiHandler):
                     else:
                         get_logger().info(f"Adding reasoning_effort with value {reasoning_effort} to model {model}.")
                         kwargs["reasoning_effort"] = reasoning_effort
+                        if self._grok_reasoning_levels_for(model):
+                            try:
+                                supported_params = litellm.get_supported_openai_params(
+                                    model=model,
+                                    custom_llm_provider=custom_llm_provider or None,
+                                ) or []
+                            except Exception:
+                                supported_params = []
+                            # LiteLLM 1.98.0 omits reasoning_effort for grok-build-latest
+                            # and OpenAI-compatible gateway-prefixed Grok IDs.
+                            if "reasoning_effort" not in supported_params:
+                                kwargs["allowed_openai_params"] = ["reasoning_effort"]
 
                 # https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking
-                if (model in self.claude_extended_thinking_models) and get_settings().config.get("enable_claude_extended_thinking", False):
-                    kwargs = self._configure_claude_extended_thinking(model, kwargs)
+                if self._is_claude_adaptive_thinking_model(model) and get_settings().config.get(
+                        "enable_claude_adaptive_thinking", False):
+                    kwargs = self._configure_claude_adaptive_thinking(model, kwargs)
+                elif (
+                    model in self.claude_extended_thinking_models
+                    and get_settings().config.get("enable_claude_extended_thinking", False)
+                ):
+                    if self._is_claude_adaptive_thinking_model(model):
+                        get_logger().warning(
+                            f"Skipping extended thinking for {model}: adaptive-only models reject "
+                            f"budget_tokens. Enable config.enable_claude_adaptive_thinking instead."
+                        )
+                    else:
+                        kwargs = self._configure_claude_extended_thinking(model, kwargs)
 
                 # Optional output token limit; 0 = unset. Without max_tokens some
                 # providers apply a low service-side default (Bedrock Converse: 4096,
@@ -942,6 +1041,15 @@ class LiteLLMAIHandler(BaseAiHandler):
                         elif reasoning_max_tokens <= 0:
                             effective_reasoning_effort = openrouter_reasoning_effort or ""
 
+                    if effective_reasoning_effort:
+                        clamped_effort = self._clamp_grok_reasoning_effort(model, effective_reasoning_effort)
+                        if clamped_effort != effective_reasoning_effort:
+                            get_logger().info(
+                                f"Grok model {model} does not support reasoning_effort="
+                                f"'{effective_reasoning_effort}'; using '{clamped_effort}' instead."
+                            )
+                            effective_reasoning_effort = clamped_effort
+
                     # Preserve explicit disablement; otherwise keep effort and
                     # max_tokens mutually exclusive by preferring the token budget.
                     if effective_reasoning_effort == "none":
@@ -1003,9 +1111,6 @@ class LiteLLMAIHandler(BaseAiHandler):
 
                 # Optional fixed provider override, so a raw hosted model id reaches the
                 # provider unchanged instead of being rewritten by LiteLLM's prefix inference.
-                custom_llm_provider = str(
-                    getattr(get_settings().litellm, "custom_llm_provider", "") or ""
-                ).strip().lower()
                 if custom_llm_provider:
                     kwargs["custom_llm_provider"] = custom_llm_provider
 
@@ -1058,6 +1163,9 @@ class LiteLLMAIHandler(BaseAiHandler):
         """
         model = kwargs["model"]
         custom_llm_provider = str(kwargs.get("custom_llm_provider") or "").strip().lower()
+        # Double the prefix so LiteLLM strips its provider prefix but preserves
+        # OpenRouter's native router ID; leave other explicit providers unchanged.
+        kwargs["model"] = normalize_litellm_model(model, custom_llm_provider)
         api_base_value = kwargs.get("api_base")
         api_base = api_base_value.strip().lower() if isinstance(api_base_value, str) else ""
         force_streaming = (

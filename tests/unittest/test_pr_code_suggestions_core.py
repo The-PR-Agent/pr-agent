@@ -6,13 +6,11 @@ import pytest
 import pr_agent.tools.pr_code_suggestions as pr_code_suggestions_module
 from pr_agent.algo.pr_processing import retry_with_fallback_models
 from pr_agent.algo.types import FilePatchInfo
-from pr_agent.algo.utils import (PRCodeSuggestionsHeader,
-                                 PRCodeSuggestionsIdentity)
+from pr_agent.algo.utils import PRCodeSuggestionsHeader, PRCodeSuggestionsIdentity
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import GitProvider, IncrementalPR
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
-from tests.unittest._settings_helpers import (restore_settings,
-                                              snapshot_settings)
+from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 
 def _make_tool(git_provider=None):

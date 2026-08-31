@@ -82,6 +82,11 @@ reasoning_effort = "medium" # "none", "minimal", "low", "medium", "high", "xhigh
 enable_claude_extended_thinking = false # Set to true to enable extended thinking feature
 extended_thinking_budget_tokens = 2048
 extended_thinking_max_output_tokens = 4096
+# Adaptive thinking for Claude Opus 4.7/4.8 and Claude 5 models. When enabled,
+# these models receive thinking={"type": "adaptive"} and an output_config effort.
+# Do not add adaptive-only models to claude_extended_thinking_models_override;
+# when both features are enabled, adaptive thinking takes precedence.
+enable_claude_adaptive_thinking = false
 # Optional: override the built-in list of Claude models that receive the extended-thinking payload.
 # When non-empty, this list fully replaces the built-in defaults (see CLAUDE_EXTENDED_THINKING_MODELS
 # in pr_agent/algo/__init__.py). Leave empty to use the defaults.
@@ -325,6 +330,11 @@ push_commands = [
 ]
 # Configure SSL validation for GitLab. Can be either set to the path of a custom CA or disabled entirely.
 # ssl_verify = true
+# Auto-trigger commands when the bot is assigned as a reviewer on an MR
+handle_reviewer_assignment = false
+reviewer_commands = [
+    "/review",
+]
 
 [gitea]
 url = "https://gitea.com"
@@ -355,6 +365,7 @@ pr_commands = [
     "/improve --pr_code_suggestions.commitable_code_suggestions=true",
 ]
 avoid_full_files = false
+request_timeout = 30 # positive seconds for connection and response-read inactivity timeouts
 
 [local]
 # LocalGitProvider settings - uncomment to use paths other than default
@@ -363,6 +374,9 @@ avoid_full_files = false
 # improve_path= "path/to/improve.md"
 
 [gerrit]
+# set both to require basic auth on the gerrit webhook endpoint; leave both empty to keep it open
+webhook_username = ""
+webhook_password = ""
 # endpoint to the gerrit service
 # url = "ssh://gerrit.example.com:29418"
 # user for gerrit authentication
@@ -420,7 +434,9 @@ allow_fallbacks = true # when provider_order is set, allow routing beyond the li
 # Model-specific support varies; mandatory reasoning models reject "none".
 reasoning_effort = ""
 # A positive value overrides global effort and non-none OpenRouter-specific efforts.
-# Explicit openrouter.reasoning_effort = "none" keeps reasoning disabled.
+# Explicit openrouter.reasoning_effort = "none" keeps reasoning disabled, except on
+# Grok 4.5/4.6: there "none" is clamped to the lowest supported
+# effort first, so a positive budget wins over it.
 # Some providers require max_tokens to be greater than the reasoning budget.
 reasoning_max_tokens = 0
 max_tokens = 0 # hard cap on completion tokens for the request; 0 = unset

@@ -7,8 +7,7 @@ from litellm import token_counter
 
 import pr_agent.tools.pr_line_questions as plq
 from pr_agent.config_loader import get_settings
-from tests.unittest._settings_helpers import (restore_settings,
-                                              snapshot_settings)
+from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 
 class _FakeGithubProvider:

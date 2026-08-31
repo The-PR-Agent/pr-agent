@@ -142,7 +142,7 @@ class TestImdsInit:
         LiteLLMAIHandler()
 
         assert os.environ["AWS_BEDROCK_RUNTIME_ENDPOINT"] == "https://env-configured.example.com"
-      
+
     def test_imds_creds_written_to_env(self, monkeypatch):
         """When AWS_USE_IMDS=true, boto3 creds are placed in os.environ."""
         monkeypatch.setenv("AWS_USE_IMDS", "true")
