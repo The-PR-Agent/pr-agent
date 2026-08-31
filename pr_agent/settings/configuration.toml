@@ -448,6 +448,12 @@ skip_comments = false
 force_update_dataset = false
 max_issues_to_scan = 500
 vectordb = "pinecone" # options: "pinecone", "lancedb", "qdrant"
+# qdrant only: suffix appended to the collection name ("codium-ai-pr-agent-issues-<suffix>").
+# Point ids were re-seeded with the repository name in #2323, and points written before that are
+# never rewritten or deleted. The suffix keeps the new index in its own collection so those stale
+# points can no longer surface in results; the old collection is left intact and can be dropped
+# manually. Set to "" to keep writing to the original, un-suffixed collection.
+qdrant_collection_suffix = "v2"
 
 [pr_find_similar_component]
 class_name = ""
