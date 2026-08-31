@@ -857,6 +857,25 @@ class TestGiteaProviderInlineCommentStatus:
 
         assert provider.publish_code_suggestions(suggestions) is False
 
+    def test_publish_code_suggestions_reports_success_on_partial_failure(self):
+        # A partial failure must not report failure overall: the caller
+        # (PRCodeSuggestions.push_inline_code_suggestions) republishes the whole
+        # list on any falsy result, which would post the two already-accepted
+        # suggestions a second time. Exactly one create_inline_comment call per
+        # suggestion, no retries.
+        provider = self._provider()
+        provider.repo_api.create_inline_comment.side_effect = [MagicMock(), None, MagicMock()]
+        suggestions = [
+            {"body": "**Suggestion:** one", "relevant_file": "a.py", "relevant_lines_start": 1},
+            {"body": "**Suggestion:** two", "relevant_file": "a.py", "relevant_lines_start": 2},
+            {"body": "**Suggestion:** three", "relevant_file": "a.py", "relevant_lines_start": 3},
+        ]
+
+        result = provider.publish_code_suggestions(suggestions)
+
+        assert result is True
+        assert provider.repo_api.create_inline_comment.call_count == 3
+
     @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
     def test_create_inline_comment_submits_as_comment_not_pending(self, mock_api_client_cls):
         from pr_agent.git_providers.gitea_provider import RepoApi
