@@ -207,6 +207,12 @@ def test_gitlab_should_process_pr_logic_ignores_labels_and_branches(gitlab_webho
         assert gitlab_webhook_module.should_process_pr_logic(
             _gitlab_payload(target_branch="legacy")
         ) is False
+
+        settings.set("CONFIG.IGNORE_PR_TITLE", ["^Auto:"])
+        for nullable_field in ("source_branch", "target_branch", "labels"):
+            assert gitlab_webhook_module.should_process_pr_logic(
+                _gitlab_payload(title="Auto: bump deps", **{nullable_field: None})
+            ) is False
     finally:
         settings.set("CONFIG.IGNORE_REPOSITORIES", original["ignore_repositories"])
         settings.set("CONFIG.IGNORE_PR_AUTHORS", original["ignore_pr_authors"])

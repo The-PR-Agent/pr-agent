@@ -271,7 +271,7 @@ def should_process_pr_logic(data) -> bool:
                 return False
 
         if ignore_mr_labels:
-            labels = [label['title'] for label in data['object_attributes'].get('labels', [])]
+            labels = [label['title'] for label in data['object_attributes'].get('labels') or []]
             if any(label in ignore_mr_labels for label in labels):
                 labels_str = ", ".join(labels)
                 get_logger().info(f"Ignoring MR with labels '{labels_str}' due to gitlab.ignore_mr_labels settings")
