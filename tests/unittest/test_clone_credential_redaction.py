@@ -18,11 +18,11 @@ def test_url_userinfo_is_stripped(url, expected):
     # scheme longer than the bounded quantifier in _URL_USERINFO_RE
     ("git+ssh+a-very-long-custom-scheme-name://oauth2:glpat-SECRET@host.example/t/p.git",
      "git+ssh+a-very-long-custom-scheme-name://host.example/t/p.git"),
-    # token longer than any real credential, still inside the bounded userinfo run
-    ("https://x-access-token:ghs_" + "A" * 400 + "@github.com/acme/repo.git",
-     "https://github.com/acme/repo.git"),
+    # Bitbucket builds x-token-auth:<bearer>@, and a JWT runs past any bound worth writing.
+    ("https://x-token-auth:" + "A" * 4000 + "@bitbucket.org/acme/repo.git",
+     "https://bitbucket.org/acme/repo.git"),
 ])
-def test_bounded_quantifiers_do_not_leave_a_redaction_gap(url, expected):
+def test_a_long_scheme_or_credential_does_not_leave_a_redaction_gap(url, expected):
     assert redact_credentials(url) == expected
 
 
