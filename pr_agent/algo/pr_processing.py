@@ -334,25 +334,29 @@ def generate_full_patch(convert_hunks_to_line_numbers, file_dict, max_tokens_mod
 async def retry_with_fallback_models(f: Callable, model_type: ModelType = ModelType.REGULAR):
     all_models = _get_all_models(model_type)
     all_deployments = _get_all_deployments(all_models)
-    # try each (model, deployment_id) pair until one is successful, otherwise raise exception
-    for i, (model, deployment_id) in enumerate(zip(all_models, all_deployments)):
-        try:
-            get_logger().debug(
-                f"Generating prediction with {model}"
-                f"{(' from deployment ' + deployment_id) if deployment_id else ''}"
-            )
-            get_settings().set("openai.deployment_id", deployment_id)
-            result = await f(model)
-        except Exception as e:
-            get_logger().warning(
-                f"Failed to generate prediction with {model}",
-                artifact={"error": e},
-            )
-            if i == len(all_models) - 1:  # If it's the last iteration
-                raise Exception(f"Failed to generate prediction with any model of {all_models}") from e
-        else:
-            record_model_used(model, is_fallback=i > 0)
-            return result
+    original_deployment_id = get_settings().get("openai.deployment_id", None)
+    try:
+        # try each (model, deployment_id) pair until one is successful, otherwise raise exception
+        for i, (model, deployment_id) in enumerate(zip(all_models, all_deployments)):
+            try:
+                get_logger().debug(
+                    f"Generating prediction with {model}"
+                    f"{(' from deployment ' + deployment_id) if deployment_id else ''}"
+                )
+                get_settings().set("openai.deployment_id", deployment_id)
+                result = await f(model)
+            except Exception as e:
+                get_logger().warning(
+                    f"Failed to generate prediction with {model}",
+                    artifact={"error": e},
+                )
+                if i == len(all_models) - 1:  # If it's the last iteration
+                    raise Exception(f"Failed to generate prediction with any model of {all_models}") from e
+            else:
+                record_model_used(model, is_fallback=i > 0)
+                return result
+    finally:
+        get_settings().set("openai.deployment_id", original_deployment_id)
 
 
 def _get_all_models(model_type: ModelType = ModelType.REGULAR) -> List[str]:
