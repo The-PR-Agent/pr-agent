@@ -1421,18 +1421,26 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
                     relevant_line_in_file = matches_difflib[0]
 
 
-                for i, line in enumerate(patch_lines):
-                    if line.startswith('@@'):
-                        delta = 0
-                        match = re_hunk_header.match(line)
-                        section_header, size1, size2, start1, start2 = extract_hunk_headers(match)
-                    elif not line.startswith('-'):
-                        delta += 1
+                def scan_patch_lines(is_match):
+                    scan_delta = 0
+                    scan_start2 = 0
+                    for i, line in enumerate(patch_lines):
+                        if line.startswith('@@'):
+                            scan_delta = 0
+                            header_match = re_hunk_header.match(line)
+                            *_, scan_start2 = extract_hunk_headers(header_match)
+                        elif not line.startswith('-'):
+                            scan_delta += 1
 
-                    if relevant_line_in_file in line and line[0] != '-':
-                        position = i
-                        absolute_position = start2 + delta - 1
-                        break
+                        if not line.startswith('-') and is_match(line):
+                            return i, scan_start2 + scan_delta - 1
+                    return -1, absolute_position
+
+                position, absolute_position = scan_patch_lines(
+                    lambda line: line == relevant_line_in_file or line[1:] == relevant_line_in_file)
+                if position == -1:
+                    position, absolute_position = scan_patch_lines(
+                        lambda line: relevant_line_in_file in line)
 
                 if position == -1 and relevant_line_in_file[0] == '+':
                     no_plus_line = relevant_line_in_file[1:].lstrip()
