@@ -1572,7 +1572,7 @@ def push_outputs(message_type: str, payload: dict | None = None, markdown: str |
             with open(file_path, 'a', encoding='utf-8') as fh:
                 fh.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-        # ponytail: local channels first, network last, so a failed POST can't lose a file write.
+        # Local channels first, network last, so a failed POST can't lose a file write.
         # allow_redirects=False: never follow a redirect from a configured sink to another host.
         if "webhook" in channels and cfg.get('webhook_url'):
             requests.post(cfg['webhook_url'], json=record, timeout=5, allow_redirects=False)
