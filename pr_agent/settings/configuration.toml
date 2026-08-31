@@ -111,6 +111,10 @@ require_security_review=true
 require_estimate_contribution_time_cost=false
 require_todo_scan=false
 require_ticket_analysis_review=true
+# Opt-in structured assessment fields. Each adds one field to the review output and to the model's output schema.
+require_risk_assessment=false # ask the model for an overall risk level (low/medium/high)
+require_merge_recommendation=false # ask the model for a merge recommendation (safe_to_merge/merge_with_caution/changes_required)
+require_priority_files=false # ask the model which files a human should inspect first
 # general options
 publish_output_no_suggestions=true # Set to "false" if you only need the reviewer's remarks (not labels, not "security audit", etc.) and want to avoid noisy "No major issues detected" comments.
 persistent_comment=true

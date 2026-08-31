@@ -132,6 +132,18 @@ extra_instructions = "..."
         <td><b>require_ticket_analysis_review</b></td>
         <td>If set to true, and the PR contains a GitHub or Jira ticket link, the tool will add a section that checks if the PR in fact fulfilled the ticket requirements. Default is true.</td>
       </tr>
+      <tr>
+        <td><b>require_risk_assessment</b></td>
+        <td>If set to true, the tool will add a section that rates the overall risk of the PR as low, medium or high. Default is false.</td>
+      </tr>
+      <tr>
+        <td><b>require_merge_recommendation</b></td>
+        <td>If set to true, the tool will add a section with a merge recommendation of safe_to_merge, merge_with_caution or changes_required. Default is false.</td>
+      </tr>
+      <tr>
+        <td><b>require_priority_files</b></td>
+        <td>If set to true, the tool will add a section listing the files a human reviewer should inspect first. Default is false.</td>
+      </tr>
     </table>
 
 ???+ example "Adding PR labels"
