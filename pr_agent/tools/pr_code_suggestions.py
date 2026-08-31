@@ -1215,14 +1215,6 @@ class PRCodeSuggestions:
                                                             add_line_numbers=True)  # decouple hunk with line numbers
                 self.patches_diff_list_no_line_numbers = self.remove_line_numbers(self.patches_diff_list)
 
-        if len(self.patches_diff_list or []) != len(self.patches_diff_list_no_line_numbers or []):
-            get_logger().warning(
-                "Numbered and unnumbered PR chunks are misaligned; deriving both views from numbered chunks"
-            )
-            self.patches_diff_list_no_line_numbers = self.remove_line_numbers(self.patches_diff_list)
-            if len(self.patches_diff_list or []) != len(self.patches_diff_list_no_line_numbers or []):
-                raise ValueError("Failed to align numbered and unnumbered PR chunks")
-
         if self.patches_diff_list:
             get_logger().info(f"Number of PR chunk calls: {len(self.patches_diff_list)}")
             get_logger().debug("PR diff:", artifact=self.patches_diff_list)
