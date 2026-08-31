@@ -751,6 +751,11 @@ class PRCodeSuggestions:
                          first_key="code_suggestions", last_key="label")
         if isinstance(data, list):
             data = {'code_suggestions': data}
+        if not isinstance(data, dict) or not isinstance(data.get('code_suggestions'), list):
+            get_logger().warning("The model did not return a code_suggestions list; "
+                                 "reporting no suggestions for this call",
+                                 artifact={'predictions': predictions})
+            return {'code_suggestions': []}
 
         # remove or edit invalid suggestions
         suggestion_list = []
