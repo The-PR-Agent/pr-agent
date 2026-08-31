@@ -2566,6 +2566,7 @@ dev = [
 ]
 similar-issue = [
     { name = "lancedb" },
+    { name = "pandas" },
     { name = "pinecone-client" },
     { name = "pinecone-datasets" },
     { name = "qdrant-client" },
@@ -2629,6 +2630,7 @@ dev = [
 ]
 similar-issue = [
     { name = "lancedb", specifier = "==0.5.1" },
+    { name = "pandas" },
     { name = "pinecone-client" },
     { name = "pinecone-datasets", git = "https://github.com/mrT23/pinecone-datasets.git?rev=main" },
     { name = "qdrant-client", specifier = "==1.15.1" },
