@@ -59,6 +59,18 @@ extra_instructions = "..."
         <td>If set to true, the review comment will be persistent, meaning that every new review request will edit the previous one. Default is true.</td>
       </tr>
       <tr>
+        <td><b>review_heading</b></td>
+        <td>
+          Visible base heading for review comments, without the Markdown prefix or incremental label.
+          For example, <code>review_heading = "Guideline Compliance Check"</code> renders
+          <code>## Guideline Compliance Check 🔍</code> for a full review and
+          <code>## Incremental Guideline Compliance Check 🔍</code> for an incremental review.
+          On GitHub, GitLab, Azure DevOps, and Bitbucket Cloud, changing this value updates the same
+          persistent review comment; it does not create a separate review channel.
+          Default is <code>PR Reviewer Guide</code>.
+        </td>
+      </tr>
+      <tr>
       <td><b>final_update_message</b></td>
       <td>When set to true, updating a persistent review comment during online commenting will automatically add a short comment with a link to the updated review in the pull request .Default is true.</td>
       </tr>

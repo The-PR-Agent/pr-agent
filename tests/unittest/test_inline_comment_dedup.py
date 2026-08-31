@@ -242,6 +242,7 @@ def _gl_provider(existing_bodies):
         discs.append(disc)
     p.mr.discussions.list.return_value = discs
     p.mr.notes.list.return_value = []
+    p.mr.draft_notes.list.return_value = []
     p.get_relevant_diff = MagicMock(return_value=_FakeDiff())
     return p
 
@@ -459,6 +460,28 @@ def test_gitlab_skips_when_fallback_note_has_marker():
         gs.stop()
 
 
+def test_gitlab_skips_when_pending_draft_note_has_marker():
+    # gitlab.publish_code_suggestions_as_review queues suggestions as draft notes,
+    # which are invisible via discussions/notes listings until published. A pending
+    # draft's marker must still be found, so a suggestion isn't re-queued as a
+    # duplicate while an earlier draft of it is still waiting to be published.
+    body = "**Suggestion:** still pending [possible issue, importance: 7]"
+    seen_fp = d.body_fingerprint("a.py", 10, body)
+    p = _gl_provider([])
+    draft = MagicMock()
+    draft.note = f"still pending\n\n<!-- pr-agent-dedup: {seen_fp} -->"
+    p.mr.draft_notes.list.return_value = [draft]
+    gs = patch("pr_agent.git_providers.gitlab_provider.get_settings")
+    m = gs.start()
+    m.return_value.get.side_effect = _flag_side_effect(True)
+    try:
+        _send(p, body)
+        p.mr.discussions.create.assert_not_called()
+        p.mr.draft_notes.create.assert_not_called()
+    finally:
+        gs.stop()
+
+
 def _flag_on_gitlab():
     gs = patch("pr_agent.git_providers.gitlab_provider.get_settings")
     m = gs.start()
@@ -532,3 +555,56 @@ def test_has_marker_requires_wellformed_marker():
     assert d.has_marker("body\n\n<!-- pr-agent-dedup: a1b2c3d4e5f6 -->")
     assert not d.has_marker("a comment that merely mentions <!-- pr-agent-dedup: in prose")
     assert not d.has_marker("no marker at all")
+
+
+def test_is_agent_inline_comment_accepts_the_agents_own_bodies():
+    assert d.is_agent_inline_comment(
+        "**Suggestion:** Rename this [best practice, importance: 5]\n```suggestion\nx = 1\n```")
+    assert d.is_agent_inline_comment("\n  **suggestion:** case and leading whitespace are ignored")
+    assert d.is_agent_inline_comment("**Possible Issue**\n\nx\n\n<!-- pr-agent-dedup: a1b2c3d4e5f6 -->")
+
+
+def test_is_agent_inline_comment_rejects_hand_written_bodies():
+    assert not d.is_agent_inline_comment("Please rename this variable before we merge.")
+    assert not d.is_agent_inline_comment("Here is my **Suggestion:** rename it")
+    assert not d.is_agent_inline_comment("")
+    assert not d.is_agent_inline_comment(None)
+
+
+def test_marker_fingerprints_collects_every_marker():
+    body = ("x\n\n<!-- pr-agent-dedup: a1b2c3d4e5f6 -->"
+            "\n<!-- pr-agent-dedup-code: b1b2c3d4e5f6 -->"
+            "\n<!-- pr-agent-key-issue-location: c1b2c3d4e5f6 -->")
+    assert d.marker_fingerprints(body) == {
+        "a1b2c3d4e5f6", "b1b2c3d4e5f6", "c1b2c3d4e5f6"}
+    assert d.marker_fingerprints("") == set()
+    assert d.marker_fingerprints(None) == set()
+
+
+def test_release_frees_a_fingerprint_the_store_had_already_loaded():
+    store = d.InlineCommentStore(MagicMock())
+    with patch.object(d, "iter_existing_inline_comment_bodies",
+                      return_value=["x\n\n<!-- pr-agent-dedup: a1b2c3d4e5f6 -->"]):
+        assert store.seen("a1b2c3d4e5f6")
+        store.release({"a1b2c3d4e5f6"})
+        assert not store.seen("a1b2c3d4e5f6")
+
+
+def test_release_before_the_load_survives_it():
+    # The sweep can run before anything reads the store; the scan must not
+    # re-suppress a fingerprint whose thread it just resolved.
+    store = d.InlineCommentStore(MagicMock())
+    store.release({"a1b2c3d4e5f6"})
+    with patch.object(d, "iter_existing_inline_comment_bodies",
+                      return_value=["x\n\n<!-- pr-agent-dedup: a1b2c3d4e5f6 -->"]):
+        assert not store.seen("a1b2c3d4e5f6")
+
+
+def test_release_leaves_every_other_thread_suppressive():
+    store = d.InlineCommentStore(MagicMock())
+    with patch.object(d, "iter_existing_inline_comment_bodies", return_value=[
+            "x\n\n<!-- pr-agent-dedup: a1b2c3d4e5f6 -->",
+            "y\n\n<!-- pr-agent-dedup: d1b2c3d4e5f6 -->"]):
+        store.release({"a1b2c3d4e5f6"})
+        assert not store.seen("a1b2c3d4e5f6")
+        assert store.seen("d1b2c3d4e5f6")

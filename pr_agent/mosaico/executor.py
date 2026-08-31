@@ -24,12 +24,11 @@ from a2a.server.tasks import TaskUpdater
 from a2a.types import Part
 from starlette_context import context as sctx
 
+from pr_agent.algo import normalize_litellm_model
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.log import get_logger
 from pr_agent.mosaico.dispatch import route_and_run_result
-from pr_agent.mosaico.observability import (langfuse_span,
-                                            mosaico_log_context,
-                                            parse_observability_metadata)
+from pr_agent.mosaico.observability import langfuse_span, mosaico_log_context, parse_observability_metadata
 
 
 class PRAgentExecutor(AgentExecutor):
@@ -95,20 +94,24 @@ async def health_check() -> str:
         # Construct the handler purely for its side effect of applying pr-agent's LLM
         # config (api_base/key/callbacks/etc.) onto the litellm module — do NOT call its
         # retry-wrapped chat_completion.
-        from pr_agent.algo.ai_handlers.litellm_ai_handler import \
-            LiteLLMAIHandler
+        from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
         handler = LiteLLMAIHandler()
 
         model = get_settings().get("CONFIG.MODEL", None)
         if not model:
             return "Unhealthy: no model configured"
 
+        custom_llm_provider = str(
+            getattr(get_settings().litellm, "custom_llm_provider", "") or ""
+        ).strip().lower()
         kwargs = {
-            "model": model,
+            "model": normalize_litellm_model(model, custom_llm_provider),
             "messages": [{"role": "system", "content": "Say ping"}],
             "max_tokens": 10,
             "timeout": 10,
         }
+        if custom_llm_provider:
+            kwargs["custom_llm_provider"] = custom_llm_provider
         if getattr(handler, "api_base", None):
             kwargs["api_base"] = handler.api_base
 

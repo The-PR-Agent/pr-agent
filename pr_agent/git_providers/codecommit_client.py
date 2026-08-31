@@ -212,9 +212,9 @@ class CodeCommitClient:
                 raise ValueError(f"Invalid description for PR number: {pr_number}") from e
             if e.response["Error"]["Code"] == 'PullRequestAlreadyClosedException':
                 raise ValueError(f"PR is already closed: PR number: {pr_number}") from e
-            raise ValueError(f"Boto3 client error calling publish_description") from e
+            raise ValueError("Boto3 client error calling publish_description") from e
         except Exception as e:
-            raise ValueError(f"Error calling publish_description") from e
+            raise ValueError("Error calling publish_description") from e
 
     def publish_comment(self, repo_name: str, pr_number: int, destination_commit: str, source_commit: str, comment: str, annotation_file: str = None, annotation_line: int = None):
         """
@@ -273,6 +273,6 @@ class CodeCommitClient:
                 raise ValueError(f"Repository does not exist: {repo_name}") from e
             if e.response["Error"]["Code"] == 'PullRequestDoesNotExistException':
                 raise ValueError(f"PR number does not exist: {pr_number}") from e
-            raise ValueError(f"Boto3 client error calling post_comment_for_pull_request") from e
+            raise ValueError("Boto3 client error calling post_comment_for_pull_request") from e
         except Exception as e:
-            raise ValueError(f"Error calling post_comment_for_pull_request") from e
+            raise ValueError("Error calling post_comment_for_pull_request") from e

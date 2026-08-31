@@ -30,3 +30,20 @@ def test_hide_the_keys_listed_in_config_skip_keys(restore_config):
 
     assert "model" not in keys
     assert "temperature" not in keys
+
+
+@pytest.mark.parametrize("key", ["analytics_folder", "app_name"])
+def test_match_the_default_skip_keys_case_insensitively(restore_config, key):
+    """Match the default skip list case-insensitively: it spells some entries in upper case
+    while Dynaconf yields section keys lower-cased."""
+    restore_config.set(f"config.{key}", "should-not-be-rendered")
+
+    assert key not in _rendered_keys("pr_reviewer")
+
+
+def test_tolerate_a_non_string_entry_in_config_skip_keys(restore_config):
+    """Tolerate a non-string entry in the user-supplied skip list rather than raising
+    AttributeError while lower-casing it."""
+    restore_config.set("config.skip_keys", ["model", 123, None])
+
+    assert "model" not in _rendered_keys("pr_reviewer")

@@ -5,6 +5,7 @@ import pytest
 
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
+from pr_agent.log import get_logger
 
 
 class TestAzureDevopsProviderRepoContext:
@@ -43,16 +44,148 @@ class TestAzureDevopsProviderRepoContext:
         _, kwargs = provider.azure_devops_client.get_item.call_args
         assert kwargs["version_descriptor"] is None  # no version -> default branch
 
-    def test_get_repo_file_content_treats_failure_as_empty(self):
+    def test_get_repo_file_content_treats_missing_file_as_empty(self):
         provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
         provider.repo_slug = "my-repo"
         provider.workspace_slug = "my-project"
         provider.pr = MagicMock()
         provider.pr.last_merge_target_commit.commit_id = "base-sha"
         provider.azure_devops_client = MagicMock()
-        provider.azure_devops_client.get_item.side_effect = Exception("not found")
+        provider.azure_devops_client.get_item.side_effect = Exception("Operation returned a 404 status code.")
 
         assert provider.get_repo_file_content("MISSING.md") == ""
+
+    def test_get_repo_file_content_propagates_non_404_errors(self):
+        provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+        provider.repo_slug = "my-repo"
+        provider.workspace_slug = "my-project"
+        provider.pr = MagicMock()
+        provider.pr.last_merge_target_commit.commit_id = "base-sha"
+        provider.azure_devops_client = MagicMock()
+        provider.azure_devops_client.get_item.side_effect = Exception("Operation returned a 500 status code.")
+
+        with pytest.raises(Exception, match="500 status code"):
+            provider.get_repo_file_content("AGENTS.md")
+
+
+class TestAzureDevopsProviderFiles:
+    @staticmethod
+    def _provider():
+        provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+        provider.repo_slug = "my-repo"
+        provider.workspace_slug = "my-project"
+        provider.pr_num = 1
+        provider.azure_devops_client = MagicMock()
+        provider.azure_devops_client.get_pull_request_commits.return_value = [SimpleNamespace(commit_id="m1")]
+        return provider
+
+    def test_get_files_full_skips_commits_without_changes(self):
+        provider = self._provider()
+        provider.azure_devops_client.get_pull_request_commits.return_value = [
+            SimpleNamespace(commit_id="m1"),
+            SimpleNamespace(commit_id="m2"),
+        ]
+        provider.azure_devops_client.get_changes.side_effect = [
+            SimpleNamespace(changes=None),
+            SimpleNamespace(changes=[{"item": {"path": "/src/app.py"}}]),
+        ]
+
+        assert provider._get_files_full() == ["/src/app.py"]
+
+    def test_get_files_full_skips_changes_without_paths(self):
+        provider = self._provider()
+        provider.azure_devops_client.get_changes.return_value = SimpleNamespace(changes=[
+            {},
+            {"item": None},
+            {"item": {"path": ""}},
+            {"item": {"path": "/src/app.py"}},
+        ])
+
+        assert provider._get_files_full() == ["/src/app.py"]
+
+    def test_get_files_full_supports_sdk_change_objects(self):
+        provider = self._provider()
+        provider.azure_devops_client.get_changes.return_value = SimpleNamespace(changes=[
+            SimpleNamespace(item=SimpleNamespace(path="/src/sdk.py")),
+        ])
+
+        assert provider._get_files_full() == ["/src/sdk.py"]
+
+    def test_get_files_full_skips_tree_entries(self):
+        provider = self._provider()
+        provider.azure_devops_client.get_changes.return_value = SimpleNamespace(changes=[
+            {"item": {"path": "/src", "gitObjectType": "tree"}},
+            {"item": {"path": "/src/app.py", "gitObjectType": "blob"}},
+        ])
+
+        assert provider._get_files_full() == ["/src/app.py"]
+
+    @staticmethod
+    def _provider_with_pull_request_diff(*get_item_results):
+        provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+        provider.repo_slug = "my-repo"
+        provider.workspace_slug = "my-project"
+        provider.pr_num = 1
+        provider.pr = SimpleNamespace(
+            last_merge_target_commit=SimpleNamespace(commit_id="base-sha"),
+            last_merge_commit=SimpleNamespace(commit_id="head-sha"),
+        )
+        provider.azure_devops_client = MagicMock()
+        client = provider.azure_devops_client
+        client.get_pull_request_iterations.return_value = [SimpleNamespace(id=1)]
+        client.get_pull_request_iteration_changes.return_value = SimpleNamespace(
+            change_entries=[
+                SimpleNamespace(
+                    additional_properties={
+                        "item": {"path": "/src/app.py"},
+                        "changeType": "edit",
+                    }
+                )
+            ]
+        )
+        client.get_item.side_effect = get_item_results
+        provider.diff_files = None
+        provider.incremental = None
+        provider.unreviewed_files_map = {}
+        return provider
+
+    def test_get_diff_files_keeps_file_when_new_content_fetch_fails(self):
+        provider = self._provider_with_pull_request_diff(
+            Exception("head fetch failed"),
+            SimpleNamespace(content="old content\n"),
+        )
+
+        captured = []
+        sink_id = get_logger().add(lambda message: captured.append(str(message)), format="{message}")
+        try:
+            diff_files = provider.get_diff_files()
+        finally:
+            get_logger().remove(sink_id)
+
+        assert len(diff_files) == 1
+        assert diff_files[0].filename == "/src/app.py"
+        assert diff_files[0].head_file == ""
+        assert diff_files[0].base_file == "old content\n"
+        assert any("/src/app.py" in message and "head-sha" in message for message in captured)
+
+    def test_get_diff_files_keeps_file_when_original_content_fetch_fails(self):
+        provider = self._provider_with_pull_request_diff(
+            SimpleNamespace(content="new content\n"),
+            Exception("base fetch failed"),
+        )
+
+        captured = []
+        sink_id = get_logger().add(lambda message: captured.append(str(message)), format="{message}")
+        try:
+            diff_files = provider.get_diff_files()
+        finally:
+            get_logger().remove(sink_id)
+
+        assert len(diff_files) == 1
+        assert diff_files[0].filename == "/src/app.py"
+        assert diff_files[0].head_file == "new content\n"
+        assert diff_files[0].base_file == ""
+        assert any("/src/app.py" in message and "base-sha" in message for message in captured)
 
 
 def _provider_with_diff(*filenames):
@@ -63,7 +196,13 @@ def _provider_with_diff(*filenames):
     provider.temp_comments = []
     provider.azure_devops_client = MagicMock()
     provider.diff_files = [
-        FilePatchInfo(base_file="", head_file="", patch="", filename=filename) for filename in filenames
+        FilePatchInfo(
+            base_file="",
+            head_file="\n".join(f"line {line}" for line in range(1, 13)),
+            patch="",
+            filename=filename,
+        )
+        for filename in filenames
     ]
     return provider
 
@@ -90,8 +229,81 @@ class TestAzureDevopsProviderSuggestionAnchoring:
         threads = _created_threads(provider)
         assert len(threads) == 1
         assert threads[0].thread_context.file_path == "/src/Api/Controllers/SomeController.cs"
+        assert threads[0].comments[0].content == _suggestion("/src/Api/Controllers/SomeController.cs")["body"]
         assert threads[0].thread_context.right_file_start.line == 10
         assert threads[0].thread_context.right_file_end.line == 12
+
+    def test_suggestion_span_covers_the_complete_final_line(self):
+        provider = _provider_with_diff("/src/app.py")
+        provider.diff_files[0].head_file = "\n".join([
+            *(f"line {line}" for line in range(1, 10)),
+            "    if ready:",
+            "        run()",
+            "    }",
+        ])
+
+        provider.publish_code_suggestions([_suggestion("/src/app.py")])
+
+        context = _created_threads(provider)[0].thread_context
+        assert context.right_file_start.offset == 1
+        assert context.right_file_end.offset == 6
+
+    def test_suggestion_end_offset_uses_utf16_code_units(self):
+        provider = _provider_with_diff("/src/app.py")
+        provider.diff_files[0].head_file = "\n".join([
+            *(f"line {line}" for line in range(1, 12)),
+            "return '😀'",
+        ])
+
+        provider.publish_code_suggestions([_suggestion("/src/app.py")])
+
+        context = _created_threads(provider)[0].thread_context
+        assert context.right_file_end.offset == 12
+
+    def test_suggestion_with_unavailable_final_line_becomes_a_pr_level_comment(self):
+        provider = _provider_with_diff("/src/app.py")
+        provider.diff_files[0].head_file = "line 1"
+
+        provider.publish_code_suggestions([_suggestion("/src/app.py")])
+
+        threads = _created_threads(provider)
+        assert len(threads) == 1
+        assert threads[0].thread_context is None
+        assert "could not resolve the complete line range" in threads[0].comments[0].content
+
+    def test_unavailable_final_line_does_not_stop_the_batch(self):
+        provider = _provider_with_diff("/src/short.py", "/src/complete.py")
+        provider.diff_files[0].head_file = "line 1"
+
+        provider.publish_code_suggestions([
+            _suggestion("/src/short.py"),
+            _suggestion("/src/complete.py"),
+        ])
+
+        threads = _created_threads(provider)
+        anchored = [thread for thread in threads if thread.thread_context is not None]
+        assert len(anchored) == 1
+        assert anchored[0].thread_context.file_path == "/src/complete.py"
+
+    def test_unavailable_final_line_respects_disabled_fallback(self):
+        provider = _provider_with_diff("/src/app.py")
+        provider.diff_files[0].head_file = "line 1"
+        suggestion = _suggestion("/src/app.py")
+        suggestion["fallback_to_pr_comment"] = False
+
+        assert provider.publish_code_suggestions([suggestion]) is False
+        provider.azure_devops_client.create_thread.assert_not_called()
+
+    def test_regular_inline_finding_keeps_its_existing_character_anchor(self):
+        provider = _provider_with_diff("/src/app.py")
+        finding = _suggestion("/src/app.py")
+        finding["body"] = "Review finding"
+
+        provider.publish_code_suggestions([finding])
+
+        context = _created_threads(provider)[0].thread_context
+        assert context.right_file_start.offset == 1
+        assert context.right_file_end.offset == 1
 
     def test_suggestion_with_matching_path_is_published_unchanged(self):
         provider = _provider_with_diff("/src/Api/Controllers/SomeController.cs")
@@ -230,6 +442,22 @@ class TestAzureDevopsProviderSuggestionAnchoring:
         provider.azure_devops_client.create_thread.side_effect = RuntimeError("request failed")
 
         assert provider.publish_code_suggestions([_suggestion("/src/Api/Controllers/SomeController.cs")]) is False
+
+    def test_braced_publish_error_does_not_stop_the_batch(self):
+        provider = _provider_with_diff("/src/first.py", "/src/second.py")
+        provider.azure_devops_client.create_thread.side_effect = [
+            RuntimeError("request {'reason': 'failed'}"),
+            MagicMock(),
+            MagicMock(),
+        ]
+
+        result = provider.publish_code_suggestions([
+            _suggestion("/src/first.py"),
+            _suggestion("/src/second.py"),
+        ])
+
+        assert result is True
+        assert provider.azure_devops_client.create_thread.call_count == 3
 
     def test_disabled_fallback_does_not_retry_a_failed_suggestion(self):
         provider = _provider_with_diff("/src/Api/Controllers/SomeController.cs")

@@ -2,13 +2,19 @@
 import os
 import textwrap
 from pathlib import Path
+from types import SimpleNamespace
 
 from jinja2 import Environment, StrictUndefined
+from starlette_context import request_cycle_context
 
-from pr_agent.algo.skills_loader import (Skill, _parse_skill_file,
-                                         discover_skills,
-                                         format_skills_context,
-                                         get_skills_context)
+from pr_agent.algo import skills_loader
+from pr_agent.algo.skills_loader import (
+    Skill,
+    _parse_skill_file,
+    discover_skills,
+    format_skills_context,
+    get_skills_context,
+)
 
 
 def _write_skill(directory: Path, name: str, body: str = "Body content."):
@@ -186,6 +192,79 @@ class TestGetSkillsContext:
         # Should not raise; should still produce skills_context using the default budget.
         out = get_skills_context()
         assert "Skill: demo" in out
+
+    def test_request_cache_respects_effective_settings_changes(self, monkeypatch):
+        settings = SimpleNamespace(
+            skills=SimpleNamespace(
+                enabled=True,
+                paths=["/host/skills"],
+                max_skills_tokens=8000,
+            )
+        )
+        discover_calls = []
+
+        def fake_discover(paths):
+            discover_calls.append(list(paths))
+            return [Skill(name="demo", description="Use for tests", body="test guidance")]
+
+        monkeypatch.setattr(skills_loader, "get_settings", lambda: settings)
+        monkeypatch.setattr(skills_loader, "discover_skills", fake_discover)
+        monkeypatch.setattr(
+            skills_loader,
+            "format_skills_context",
+            lambda skills, max_tokens: f"budget={max_tokens}",
+        )
+
+        with request_cycle_context({}):
+            assert get_skills_context() == "budget=8000"
+            assert get_skills_context() == "budget=8000"
+
+            settings.skills.max_skills_tokens = 1000
+            assert get_skills_context() == "budget=1000"
+
+            settings.skills.paths = ["/other/skills"]
+            assert get_skills_context() == "budget=1000"
+
+            settings.skills.enabled = False
+            assert get_skills_context() == ""
+
+            settings.skills.enabled = True
+            settings.skills.max_skills_tokens = 200
+            assert get_skills_context() == "budget=200"
+
+        assert discover_calls == [
+            ["/host/skills"],
+            ["/host/skills"],
+            ["/other/skills"],
+            ["/other/skills"],
+        ]
+
+    def test_request_cache_respects_expanded_path_changes(self, tmp_path, monkeypatch):
+        first_dir = tmp_path / "first"
+        second_dir = tmp_path / "second"
+        _write_skill(first_dir, "first-skill")
+        _write_skill(second_dir, "second-skill")
+        settings = SimpleNamespace(
+            skills=SimpleNamespace(
+                enabled=True,
+                paths=["$SKILLS_TEST_DIR"],
+                max_skills_tokens=8000,
+            )
+        )
+
+        monkeypatch.setenv("SKILLS_TEST_DIR", str(first_dir))
+        monkeypatch.setattr(skills_loader, "get_settings", lambda: settings)
+        monkeypatch.setattr(
+            skills_loader,
+            "format_skills_context",
+            lambda skills, max_tokens: ",".join(skill.name for skill in skills),
+        )
+
+        with request_cycle_context({}):
+            assert get_skills_context() == "first-skill"
+
+            monkeypatch.setenv("SKILLS_TEST_DIR", str(second_dir))
+            assert get_skills_context() == "second-skill"
 
 
 class TestJinjaSafety:

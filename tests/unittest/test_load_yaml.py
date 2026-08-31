@@ -6,6 +6,7 @@ import yaml
 from yaml.scanner import ScannerError
 
 from pr_agent.algo.utils import load_yaml
+from pr_agent.log import get_logger
 
 
 class TestLoadYaml:
@@ -47,3 +48,98 @@ PR Feedback:
 
         expected_output = [{'relevant file': 'src/app.py:\n', 'suggestion content': 'The print statement is outside inside the if __name__ ==:'}]
         assert load_yaml(yaml_str) == expected_output
+
+    def test_load_yaml_with_illegal_control_character(self):
+        # A stray C0 control character (e.g. BACKSPACE, 0x08) can end up in an LLM response - commonly when an
+        # upstream diff-pruning step truncates the prompt mid multi-byte character. PyYAML's reader rejects such
+        # characters outright with a ReaderError, even though the rest of the document is well-formed YAML.
+        yaml_str = 'name: John\x08 Smith\nage: 35'
+        expected_output = {'name': 'John Smith', 'age': 35}
+        with pytest.raises(yaml.reader.ReaderError):
+            yaml.safe_load(yaml_str)
+        assert load_yaml(yaml_str) == expected_output
+
+    def test_load_yaml_with_illegal_control_character_and_broken_structure(self):
+        # Same as above, but combined with a structural issue that requires the try_fix_yaml fallbacks to run,
+        # to make sure the sanitized text is what actually reaches those fallbacks.
+        yaml_str = 'relevant line: value\x08: 3\n'
+        expected_output = {'relevant line': 'value: 3'}
+        assert load_yaml(yaml_str) == expected_output
+
+    def test_load_yaml_does_not_strip_mojibake_repair_range(self):
+        # Text that was correctly produced as UTF-8 but got wrongly decoded as latin-1 somewhere upstream turns
+        # into "mojibake": multi-byte characters (e.g. Chinese) get split into several bytes that mostly land in
+        # the \x7f-\x9f C1 control range. The ninth fallback in try_fix_yaml repairs this by re-encoding as
+        # latin-1 and decoding as utf-8. If load_yaml's control-character sanitizer strips \x7f-\x9f, it deletes
+        # the very bytes that fallback needs, so this must keep working after the illegal-character fix.
+        original = {'suggestion content': '修复空指针异常'}
+        mojibake = yaml.safe_dump(original, allow_unicode=True).encode('utf-8').decode('latin-1')
+        assert load_yaml(mojibake) == original
+
+    def test_load_yaml_sanitized_to_empty_does_not_return_none_silently(self):
+        # When the input consists entirely of illegal control characters, sanitize_yaml_control_chars()
+        # strips them all and yaml.safe_load('') returns None without raising — which would skip all
+        # fallback/logging and return None to callers that assume a dict. The fix raises ValueError to
+        # route through the existing failure path, so at minimum a parse-failure log is emitted.
+        captured = []
+        sink_id = get_logger().add(lambda msg: captured.append(msg), level="WARNING")
+        try:
+            result = load_yaml('\x08\x08\x08')
+            assert result is None
+            assert any("Initial failure to parse AI prediction" in m for m in captured)
+        finally:
+            get_logger().remove(sink_id)
+
+    def test_load_yaml_genuinely_empty_input_unaffected(self):
+        # Genuinely empty/whitespace input should not trigger the new pre-sanitization emptiness
+        # check — it must behave exactly as before, producing no extra warnings.
+        captured = []
+        sink_id = get_logger().add(lambda msg: captured.append(msg), level="WARNING")
+        try:
+            result = load_yaml('')
+            assert result is None
+            assert not any("Preprocessing/sanitization removed all content" in m for m in captured)
+        finally:
+            get_logger().remove(sink_id)
+
+    # Tests that a fenced block whose info string is separated by a space
+    # (CommonMark allows whitespace after the opening fence) parses the same
+    # as the flush form.
+    def test_space_before_yaml_info_string(self):
+        expected = {"name": "John"}
+
+        assert load_yaml("```yaml\nname: John\n```") == expected
+        assert load_yaml("``` yaml\nname: John\n```") == expected
+        assert load_yaml("``` yml\nname: John\n```") == expected
+
+    @pytest.mark.parametrize("label", ["YAML", "YML", "Yaml", "yMl"])
+    def test_yaml_info_string_is_case_insensitive(self, label):
+        assert load_yaml(f"```\t{label}\t\nname: John\n```") == {"name": "John"}
+
+    # A fence labeled with a non-YAML info string (e.g. ```text or ```python)
+    # must not be extracted and parsed as a YAML snippet. The old pattern's
+    # optional (yaml|yml) group let any info string through, so the body
+    # started with the stray label and a plain-scalar body came back as a
+    # folded string instead of None.
+    def test_non_yaml_info_string_not_parsed_as_yaml_snippet(self):
+        assert load_yaml("```text\nhello world\n```") is None
+        assert load_yaml("```python\nname: John\n```") is None
+
+    # A fenced block that only becomes reachable through the snippet fallback
+    # (the initial parse fails because of surrounding text) must be extracted
+    # and parsed, not crash on a stale group index.
+    def test_snippet_fallback_with_surrounding_text(self):
+        expected = {"name": "John"}
+        assert load_yaml("prefix text\n```yaml\nname: John\n```") == expected
+        assert load_yaml("prefix text\n``` yaml\nname: John\n```") == expected
+
+
+class TestFenceLabelIsNotStrippedByPrefix:
+    def test_key_starting_with_yml_is_not_truncated(self):
+        assert load_yaml("yml_config:\n  a: 1") == {"yml_config": {"a": 1}}
+
+    def test_plain_yml_key_survives(self):
+        assert load_yaml("yml: true") == {"yml": True}
+
+    def test_list_key_starting_with_yml_survives(self):
+        assert load_yaml("ymls:\n  - a") == {"ymls": ["a"]}

@@ -52,7 +52,7 @@ class TestFindLineNumberOfRelevantLineInFile:
         ]
         relevant_file = 'file1'
         relevant_line_in_file = ''
-        expected = (0, 0)
+        expected = (-1, -1)
         assert find_line_number_of_relevant_line_in_file(diff_files, relevant_file, relevant_line_in_file) == expected
 
     # Tests that the function returns (-1, -1) when the relevant_line_in_file is found in the patch but it is a deleted line

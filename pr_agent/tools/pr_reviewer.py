@@ -18,12 +18,14 @@ from pr_agent.algo.inline_comment_dedup import (
 )
 from pr_agent.algo.pr_processing import add_ai_metadata_to_diff_files, get_pr_diff, retry_with_fallback_models
 from pr_agent.algo.repo_context import build_repo_context
-from pr_agent.algo.run_details import init_run_details
+from pr_agent.algo.run_details import get_run_details, init_run_details
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (
     ModelType,
     PRReviewHeader,
+    PRReviewIdentity,
+    add_pr_review_identity,
     convert_to_markdown_v2,
     github_action_output,
     load_yaml,
@@ -84,10 +86,10 @@ class PRReviewer:
         if (self.pr_description_files and get_settings().get("config.is_auto_command", False) and
                 get_settings().get("config.enable_ai_metadata", False)):
             add_ai_metadata_to_diff_files(self.git_provider, self.pr_description_files)
-            get_logger().debug(f"AI metadata added to the this command")
+            get_logger().debug("AI metadata added to the this command")
         else:
             get_settings().set("config.enable_ai_metadata", False)
-            get_logger().debug(f"AI metadata is disabled for this command")
+            get_logger().debug("AI metadata is disabled for this command")
 
         self.vars = {
             "title": self.git_provider.pr.title,
@@ -136,6 +138,8 @@ class PRReviewer:
 
     async def run(self) -> None:
         init_run_details()
+        progress_response = None
+        review_failed = False
         try:
             if not self.git_provider.get_files():
                 get_logger().info(f"PR has no files: {self.pr_url}, skipping review")
@@ -175,15 +179,14 @@ class PRReviewer:
                 return None
 
             if get_settings().config.publish_output and not get_settings().config.get('is_auto_command', False):
-                self.git_provider.publish_comment("Preparing review...", is_temporary=True)
+                progress_response = self.git_provider.publish_comment("Preparing review...", is_temporary=True)
 
             await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.REGULAR)
             if not self.prediction:
-                self.git_provider.remove_initial_comment()
                 return None
 
             pr_review = self._prepare_pr_review()
-            get_logger().debug(f"PR output", artifact=pr_review)
+            get_logger().debug("PR output", artifact=pr_review)
 
             should_publish = get_settings().config.publish_output and self._should_publish_review_no_suggestions(pr_review)
             if not should_publish:
@@ -200,19 +203,41 @@ class PRReviewer:
             review_thread_kwargs = {"as_thread": True} if self.git_provider.should_publish_review_as_thread() else {}
             if get_settings().pr_reviewer.persistent_comment and not self.incremental.is_incremental:
                 final_update_message = get_settings().pr_reviewer.final_update_message
-                self.git_provider.publish_persistent_comment(pr_review,
-                                                            initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
-                                                            update_header=True,
-                                                            final_update_message=final_update_message,
-                                                            **review_thread_kwargs)
+                self.git_provider.publish_persistent_comment(
+                    pr_review,
+                    initial_header=pr_review.split("\n", 1)[0],
+                    update_header=True,
+                    final_update_message=final_update_message,
+                    identity_marker=PRReviewIdentity.REGULAR.value,
+                    legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
+                    **review_thread_kwargs,
+                )
             else:
+                if self.git_provider.supports_review_comment_identity() is True:
+                    identity_marker = (
+                        PRReviewIdentity.INCREMENTAL.value
+                        if self.incremental.is_incremental
+                        else PRReviewIdentity.REGULAR.value
+                    )
+                    pr_review = add_pr_review_identity(pr_review, identity_marker)
                 self.git_provider.publish_comment(pr_review, **review_thread_kwargs)
-
-            self.git_provider.remove_initial_comment()
         except Exception as e:
+            review_failed = True
             get_logger().error(f"Failed to review PR: {e}")
             if get_settings().config.get("propagate_tool_errors", False):
                 raise
+        finally:
+            if progress_response is not None:
+                try:
+                    self.git_provider.remove_comment(progress_response)
+                except Exception as e:
+                    get_logger().exception(f"Failed to remove review progress comment, error: {e}")
+            if (review_failed and get_settings().config.publish_output and
+                    not get_settings().config.get("is_auto_command", False)):
+                try:
+                    self.git_provider.publish_comment("Failed to review PR")
+                except Exception as e:
+                    get_logger().exception(f"Failed to publish review failure result, error: {e}")
 
     def _should_publish_review_no_suggestions(self, pr_review: str) -> bool:
         return get_settings().pr_reviewer.get('publish_output_no_suggestions', True) or "No major issues detected" not in pr_review
@@ -231,7 +256,7 @@ class PRReviewer:
             self.remaining_files_list = []
 
         if self.patches_diff:
-            get_logger().debug(f"PR diff", diff=self.patches_diff)
+            get_logger().debug("PR diff", diff=self.patches_diff)
             self.prediction = await self._get_prediction(model)
         else:
             get_logger().warning(f"Empty diff for PR: {self.pr_url}")
@@ -279,6 +304,24 @@ class PRReviewer:
         if 'review' not in data:
             get_logger().exception("Failed to parse review data", artifact={"data": data})
             return ""
+
+        structured_publisher = getattr(self.git_provider, "publish_structured_review", None)
+        if callable(structured_publisher):
+            # Deep-copy the data: dict(data) is shallow, so structured_data["review"]
+            # would alias data["review"], which is mutated right below (key reordering).
+            # Hand implementers an isolated snapshot, since the hook is provider-neutral
+            # and a provider that defers serialization would observe the mutation.
+            structured_data = copy.deepcopy(data)
+            details = get_run_details()
+            usage = {}
+            if details is not None and details.has_token_usage:
+                usage = {
+                    "prompt_tokens": details.prompt_tokens,
+                    "completion_tokens": details.completion_tokens,
+                    "total_tokens": details.total_tokens,
+                }
+            structured_data["usage"] = usage
+            structured_publisher(structured_data)
 
         # move data['review'] 'key_issues_to_review' key to the end of the dictionary
         if 'key_issues_to_review' in data['review']:
@@ -590,7 +633,7 @@ class PRReviewer:
                 review_labels = []
                 if get_settings().pr_reviewer.enable_review_labels_effort:
                     estimated_effort = data['review']['estimated_effort_to_review_[1-5]']
-                    estimated_effort_number = 0
+                    estimated_effort_number = None
                     if isinstance(estimated_effort, str):
                         try:
                             estimated_effort_number = int(estimated_effort.split(',')[0])
@@ -600,7 +643,8 @@ class PRReviewer:
                         estimated_effort_number = estimated_effort
                     else:
                         get_logger().warning(f"Unexpected type for estimated_effort: {type(estimated_effort)}")
-                    if 1 <= estimated_effort_number <= 5:  # 1, because ...
+                    if estimated_effort_number is not None:
+                        estimated_effort_number = max(1, min(5, int(estimated_effort_number)))
                         review_labels.append(f'Review effort {estimated_effort_number}/5')
                 if get_settings().pr_reviewer.enable_review_labels_security and get_settings().pr_reviewer.require_security_review:
                     security_concerns = data['review']['security_concerns']  # yes, because ...

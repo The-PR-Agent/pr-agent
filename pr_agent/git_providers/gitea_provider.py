@@ -9,13 +9,15 @@ from pr_agent.algo.file_filter import filter_ignored
 from pr_agent.algo.git_patch_processing import decode_if_bytes
 from pr_agent.algo.language_handler import is_valid_file
 from pr_agent.algo.types import EDIT_TYPE
-from pr_agent.algo.utils import (clip_tokens,
-                                 find_line_number_of_relevant_line_in_file)
+from pr_agent.algo.utils import clip_tokens, find_line_number_of_relevant_line_in_file
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers.git_provider import (MAX_FILES_ALLOWED_FULL,
-                                                 FilePatchInfo, GitProvider,
-                                                 IncrementalPR,
-                                                 redact_credentials)
+from pr_agent.git_providers.git_provider import (
+    MAX_FILES_ALLOWED_FULL,
+    FilePatchInfo,
+    GitProvider,
+    IncrementalPR,
+    redact_credentials,
+)
 from pr_agent.log import get_logger
 
 # Shipped default for the [gitea] url setting in configuration.toml. A value
@@ -80,7 +82,7 @@ class GiteaProvider(GitProvider):
         self.sha = None
         self.base_sha = ""
         self.base_ref = ""
-        self.diff_files = []
+        self.diff_files = None
         self.incremental = IncrementalPR(False)
         self.comments_list = []
         self.unreviewed_files_map = dict()
@@ -225,8 +227,8 @@ class GiteaProvider(GitProvider):
     def _parse_pr_url(self, pr_url: str) -> Tuple[str, str, int]:
         parsed_url = urlparse(pr_url)
 
-        if parsed_url.path.startswith('/api/v1'):
-            parsed_url = urlparse(pr_url.replace("/api/v1", ""))
+        if parsed_url.path.startswith("/api/v1/repos"):
+            parsed_url = urlparse(pr_url.replace("/api/v1/repos", ""))
 
         path_parts = parsed_url.path.strip('/').split('/')
         if len(path_parts) < 4 or path_parts[2] != 'pulls':
@@ -245,8 +247,8 @@ class GiteaProvider(GitProvider):
     def _parse_issue_url(self, issue_url: str) -> Tuple[str, str, int]:
         parsed_url = urlparse(issue_url)
 
-        if parsed_url.path.startswith('/api/v1'):
-            parsed_url = urlparse(issue_url.replace("/api/v1", ""))
+        if parsed_url.path.startswith("/api/v1/repos"):
+            parsed_url = urlparse(issue_url.replace("/api/v1/repos", ""))
 
         path_parts = parsed_url.path.strip('/').split('/')
         if len(path_parts) < 4 or path_parts[2] != 'issues':
@@ -312,8 +314,17 @@ class GiteaProvider(GitProvider):
                                    initial_header: str,
                                    update_header: bool = True,
                                    name='review',
-                                   final_update_message=True):
-        self.publish_persistent_comment_full(pr_comment, initial_header, update_header, name, final_update_message)
+                                   final_update_message=True,
+                                   identity_marker: str | None = None,
+                                   legacy_initial_header: str | None = None):
+        # Keep the legacy updater path until Gitea normalizes its dictionary-shaped comment payloads.
+        self.publish_persistent_comment_full(
+            pr_comment,
+            initial_header,
+            update_header,
+            name,
+            final_update_message,
+        )
 
     def publish_comment(self, comment: str,is_temporary: bool = False) -> None:
         """Publish a comment to the pull request"""
