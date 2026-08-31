@@ -298,6 +298,22 @@ class TestConvertToMarkdown:
 
         assert "Priority files: None" in markdown
 
+    def test_structured_review_fields_render_gfm(self):
+        input_data = {
+            "review": {
+                "risk_level": "medium",
+                "merge_recommendation": "changes_required",
+                "review_priority_files": ["gui_app.py"],
+            }
+        }
+
+        markdown = convert_to_markdown_v2(input_data, gfm_supported=True)
+
+        assert "<strong>Risk level</strong>: Medium" in markdown
+        assert "<strong>Merge recommendation</strong>: Changes required" in markdown
+        assert "<strong>Priority files</strong>" in markdown
+        assert "- gui_app.py" in markdown
+        assert markdown.count("<tr><td>") == markdown.count("</td></tr>") == 3
 
     # Tests that the function works correctly with an empty dictionary input
     def test_empty_dictionary_input(self):

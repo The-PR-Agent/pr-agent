@@ -368,37 +368,45 @@ def convert_to_markdown_v2(output_data: dict,
                     markdown_text += f"### {emoji} Security concerns\n\n"
                     value = emphasize_header(value.strip(), only_markdown=True)
                     markdown_text += f"{value}\n\n"
-        elif "risk level" in key_nice.lower():
+        elif 'risk level' in key_nice.lower():
             risk_value = str(value).strip().lower().replace("_", " ")
             risk_display = risk_value.capitalize() if risk_value else "Unknown"
-            markdown_text += f"### {emoji} Risk level: {risk_display}\n\n"
-
-        elif "merge recommendation" in key_nice.lower():
+            if gfm_supported:
+                markdown_text += "<tr><td>"
+                markdown_text += f"{emoji}&nbsp;<strong>Risk level</strong>: {risk_display}"
+                markdown_text += "</td></tr>\n"
+            else:
+                markdown_text += f"### {emoji} Risk level: {risk_display}\n\n"
+        elif 'merge recommendation' in key_nice.lower():
             recommendation = str(value).strip().replace("_", " ")
-            recommendation_display = (
-                recommendation.capitalize() if recommendation else "Unknown"
-            )
-            markdown_text += (
-                f"### {emoji} Merge recommendation: {recommendation_display}\n\n"
-            )
-
-        elif "review priority files" in key_nice.lower():
+            recommendation_display = recommendation.capitalize() if recommendation else "Unknown"
+            if gfm_supported:
+                markdown_text += "<tr><td>"
+                markdown_text += f"{emoji}&nbsp;<strong>Merge recommendation</strong>: {recommendation_display}"
+                markdown_text += "</td></tr>\n"
+            else:
+                markdown_text += f"### {emoji} Merge recommendation: {recommendation_display}\n\n"
+        elif 'review priority files' in key_nice.lower():
             priority_files = []
             if isinstance(value, list):
-                priority_files = [
-                    str(priority_file).strip()
-                    for priority_file in value
-                    if str(priority_file).strip()
-                ]
-
-            if not priority_files:
-                markdown_text += f"### {emoji} Priority files: None\n\n"
+                priority_files = [str(priority_file).strip() for priority_file in value if str(priority_file).strip()]
+            if gfm_supported:
+                markdown_text += "<tr><td>"
+                if not priority_files:
+                    markdown_text += f"{emoji}&nbsp;<strong>Priority files</strong>: None"
+                else:
+                    markdown_text += f"{emoji}&nbsp;<strong>Priority files</strong>\n<br><br>\n"
+                    for priority_file in priority_files:
+                        markdown_text += f"- {priority_file}\n"
+                markdown_text += "</td></tr>\n"
             else:
-                markdown_text += f"### {emoji} Priority files\n\n"
-                for priority_file in priority_files:
-                    markdown_text += f"- {priority_file}\n"
-                markdown_text += "\n"
-
+                if not priority_files:
+                    markdown_text += f"### {emoji} Priority files: None\n\n"
+                else:
+                    markdown_text += f"### {emoji} Priority files\n\n"
+                    for priority_file in priority_files:
+                        markdown_text += f"- {priority_file}\n"
+                    markdown_text += "\n"
         elif 'todo sections' in key_nice.lower():
             if gfm_supported:
                 markdown_text += "<tr><td>"
