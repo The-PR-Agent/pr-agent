@@ -8,7 +8,6 @@ try:
 except:  # we don't enforce langchain as a dependency, so if it's not installed, just move on
     pass
 
-import functools
 
 import openai
 from tenacity import retry, retry_if_exception_type, retry_if_not_exception_type, stop_after_attempt
@@ -27,7 +26,7 @@ class LangChainOpenAIHandler(BaseAiHandler):
             error_msg = "LangChain is not installed. Please install it with `pip install langchain`."
             get_logger().error(error_msg)
             raise ImportError(error_msg)
-        
+
         super().__init__()
         self.azure = get_settings().get("OPENAI.API_TYPE", "").lower() == "azure"
 
@@ -55,7 +54,7 @@ class LangChainOpenAIHandler(BaseAiHandler):
                     return ChatOpenAI(openai_api_key=get_settings().openai.key)
                 else:
                     return ChatOpenAI(
-                        openai_api_key=get_settings().openai.key, 
+                        openai_api_key=get_settings().openai.key,
                         openai_api_base=openai_api_base
                     )
         except AttributeError as e:
@@ -74,7 +73,7 @@ class LangChainOpenAIHandler(BaseAiHandler):
         try:
             messages = [SystemMessage(content=system), HumanMessage(content=user)]
             llm = await self._create_chat_async(deployment_id=self.deployment_id)
-            
+
             if not isinstance(llm, Runnable):
                 error_message = (
                     f"The Langchain LLM object ({type(llm)}) does not implement the Runnable interface. "
@@ -102,7 +101,7 @@ class LangChainOpenAIHandler(BaseAiHandler):
             # Count the call but not its tokens. Langchain reports usage under key names of its
             # own (input_tokens/output_tokens) rather than the ones the collector reads, so
             # forwarding it unmapped would render zeros. Mapping them is not worth it while this
-            # path stays cold: langchain is commented out in requirements.txt and no setting
+            # path stays cold: langchain is an optional extra (not installed by default) and no setting
             # selects this handler, so it is reachable only by injecting it into a tool
             # programmatically.
             record_ai_call()

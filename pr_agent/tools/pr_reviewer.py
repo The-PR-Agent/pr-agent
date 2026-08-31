@@ -86,10 +86,10 @@ class PRReviewer:
         if (self.pr_description_files and get_settings().get("config.is_auto_command", False) and
                 get_settings().get("config.enable_ai_metadata", False)):
             add_ai_metadata_to_diff_files(self.git_provider, self.pr_description_files)
-            get_logger().debug(f"AI metadata added to the this command")
+            get_logger().debug("AI metadata added to the this command")
         else:
             get_settings().set("config.enable_ai_metadata", False)
-            get_logger().debug(f"AI metadata is disabled for this command")
+            get_logger().debug("AI metadata is disabled for this command")
 
         self.vars = {
             "title": self.git_provider.pr.title,
@@ -186,7 +186,7 @@ class PRReviewer:
                 return None
 
             pr_review = self._prepare_pr_review()
-            get_logger().debug(f"PR output", artifact=pr_review)
+            get_logger().debug("PR output", artifact=pr_review)
 
             should_publish = get_settings().config.publish_output and self._should_publish_review_no_suggestions(pr_review)
             if not should_publish:
@@ -256,7 +256,7 @@ class PRReviewer:
             self.remaining_files_list = []
 
         if self.patches_diff:
-            get_logger().debug(f"PR diff", diff=self.patches_diff)
+            get_logger().debug("PR diff", diff=self.patches_diff)
             self.prediction = await self._get_prediction(model)
         else:
             get_logger().warning(f"Empty diff for PR: {self.pr_url}")

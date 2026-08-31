@@ -5,6 +5,7 @@ import pytest
 
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
+from pr_agent.log import get_logger
 
 
 class TestAzureDevopsProviderRepoContext:
@@ -118,6 +119,73 @@ class TestAzureDevopsProviderFiles:
         ])
 
         assert provider._get_files_full() == ["/src/app.py"]
+
+    @staticmethod
+    def _provider_with_pull_request_diff(*get_item_results):
+        provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+        provider.repo_slug = "my-repo"
+        provider.workspace_slug = "my-project"
+        provider.pr_num = 1
+        provider.pr = SimpleNamespace(
+            last_merge_target_commit=SimpleNamespace(commit_id="base-sha"),
+            last_merge_commit=SimpleNamespace(commit_id="head-sha"),
+        )
+        provider.azure_devops_client = MagicMock()
+        client = provider.azure_devops_client
+        client.get_pull_request_iterations.return_value = [SimpleNamespace(id=1)]
+        client.get_pull_request_iteration_changes.return_value = SimpleNamespace(
+            change_entries=[
+                SimpleNamespace(
+                    additional_properties={
+                        "item": {"path": "/src/app.py"},
+                        "changeType": "edit",
+                    }
+                )
+            ]
+        )
+        client.get_item.side_effect = get_item_results
+        provider.diff_files = None
+        provider.incremental = None
+        provider.unreviewed_files_map = {}
+        return provider
+
+    def test_get_diff_files_keeps_file_when_new_content_fetch_fails(self):
+        provider = self._provider_with_pull_request_diff(
+            Exception("head fetch failed"),
+            SimpleNamespace(content="old content\n"),
+        )
+
+        captured = []
+        sink_id = get_logger().add(lambda message: captured.append(str(message)), format="{message}")
+        try:
+            diff_files = provider.get_diff_files()
+        finally:
+            get_logger().remove(sink_id)
+
+        assert len(diff_files) == 1
+        assert diff_files[0].filename == "/src/app.py"
+        assert diff_files[0].head_file == ""
+        assert diff_files[0].base_file == "old content\n"
+        assert any("/src/app.py" in message and "head-sha" in message for message in captured)
+
+    def test_get_diff_files_keeps_file_when_original_content_fetch_fails(self):
+        provider = self._provider_with_pull_request_diff(
+            SimpleNamespace(content="new content\n"),
+            Exception("base fetch failed"),
+        )
+
+        captured = []
+        sink_id = get_logger().add(lambda message: captured.append(str(message)), format="{message}")
+        try:
+            diff_files = provider.get_diff_files()
+        finally:
+            get_logger().remove(sink_id)
+
+        assert len(diff_files) == 1
+        assert diff_files[0].filename == "/src/app.py"
+        assert diff_files[0].head_file == "new content\n"
+        assert diff_files[0].base_file == ""
+        assert any("/src/app.py" in message and "base-sha" in message for message in captured)
 
 
 def _provider_with_diff(*filenames):
@@ -374,6 +442,22 @@ class TestAzureDevopsProviderSuggestionAnchoring:
         provider.azure_devops_client.create_thread.side_effect = RuntimeError("request failed")
 
         assert provider.publish_code_suggestions([_suggestion("/src/Api/Controllers/SomeController.cs")]) is False
+
+    def test_braced_publish_error_does_not_stop_the_batch(self):
+        provider = _provider_with_diff("/src/first.py", "/src/second.py")
+        provider.azure_devops_client.create_thread.side_effect = [
+            RuntimeError("request {'reason': 'failed'}"),
+            MagicMock(),
+            MagicMock(),
+        ]
+
+        result = provider.publish_code_suggestions([
+            _suggestion("/src/first.py"),
+            _suggestion("/src/second.py"),
+        ])
+
+        assert result is True
+        assert provider.azure_devops_client.create_thread.call_count == 3
 
     def test_disabled_fallback_does_not_retry_a_failed_suggestion(self):
         provider = _provider_with_diff("/src/Api/Controllers/SomeController.cs")

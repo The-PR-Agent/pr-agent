@@ -7,12 +7,15 @@ by the method under test are populated. No live providers and no AI calls.
 """
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 import pr_agent.tools.pr_line_questions as plq
+from pr_agent.algo.utils import format_pr_questions_header
 from pr_agent.config_loader import get_settings
+from pr_agent.git_providers.codecommit_provider import CodeCommitProvider
+from pr_agent.git_providers.gerrit_provider import GerritProvider, adopt_to_gerrit_message
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
 from pr_agent.tools.pr_questions import PRQuestions
 from tests.unittest._settings_helpers import SENTINEL, restore_settings, snapshot_settings
@@ -119,10 +122,137 @@ class TestPreparePrAnswer:
             git_provider=MagicMock(),  # not GitLab
         )
         out = pr._prepare_pr_answer()
-        assert "### **Ask**❓" in out
-        assert "why?" in out
-        assert "### **Answer:**" in out
-        assert "because reasons" in out
+        assert out == "### **Ask** ❓\nwhy?\n\n### **Answer:**\nbecause reasons\n\n"
+
+    def test_custom_heading_changes_only_the_ask_header(self):
+        settings = get_settings()
+        saved = snapshot_settings(("pr_questions.ask_heading",))
+        pr = _make_pr_questions(question_str="why?", prediction="because reasons")
+        try:
+            settings.set("pr_questions.ask_heading", "  Architecture Question  ")
+            out = pr._prepare_pr_answer()
+        finally:
+            restore_settings(saved)
+
+        assert out == "### **Architecture Question** ❓\nwhy?\n\n### **Answer:**\nbecause reasons\n\n"
+
+    @pytest.mark.parametrize(
+        "invalid_heading",
+        [
+            None,
+            "",
+            "   ",
+            "Ask\nNow",
+            "Ask\rNow",
+            "Ask\vNow",
+            "Ask\fNow",
+            "Ask\x1cNow",
+            "Ask\x1dNow",
+            "Ask\x1eNow",
+            "Ask\x85Now",
+            "Ask\u2028Now",
+            "Ask\u2029Now",
+            "Ask\u2028",
+            42,
+        ],
+    )
+    def test_invalid_heading_falls_back_to_ask(self, invalid_heading):
+        settings = get_settings()
+        saved = snapshot_settings(("pr_questions.ask_heading",))
+        try:
+            settings.set("pr_questions.ask_heading", invalid_heading)
+            header = format_pr_questions_header()
+        finally:
+            restore_settings(saved)
+
+        assert header == "### **Ask** ❓"
+
+    @pytest.mark.parametrize(
+        ("heading", "expected"),
+        [
+            ("Architecture **Question**", r"### **Architecture \*\*Question\*\*** ❓"),
+            (
+                r"Use [SDK](docs/v2) `now` \\ safely",
+                r"### **Use \[SDK\]\(docs\/v2\) \`now\` \\\\ safely** ❓",
+            ),
+            ("Architecture Ω", "### **Architecture Ω** ❓"),
+        ],
+    )
+    def test_heading_is_rendered_as_literal_text(self, heading, expected):
+        settings = get_settings()
+        saved = snapshot_settings(("pr_questions.ask_heading",))
+        try:
+            settings.set("pr_questions.ask_heading", heading)
+            header = format_pr_questions_header()
+        finally:
+            restore_settings(saved)
+
+        assert header == expected
+
+    def test_codecommit_does_not_receive_markdown_escapes(self):
+        settings = get_settings()
+        saved = snapshot_settings(("pr_questions.ask_heading",))
+        provider = CodeCommitProvider.__new__(CodeCommitProvider)
+        pr = _make_pr_questions(
+            question_str="why?",
+            prediction="because reasons",
+            git_provider=provider,
+        )
+        try:
+            settings.set("pr_questions.ask_heading", "Q&A / Security")
+            out = pr._prepare_pr_answer()
+        finally:
+            restore_settings(saved)
+
+        assert out.startswith("### **Q&A / Security** ❓\n")
+        assert "\\" not in out.splitlines()[0]
+
+    def test_gerrit_preserves_literal_heading_punctuation(self):
+        settings = get_settings()
+        saved = snapshot_settings(("pr_questions.ask_heading",))
+        provider = GerritProvider.__new__(GerritProvider)
+        pr = _make_pr_questions(
+            question_str="why?",
+            prediction="because reasons",
+            git_provider=provider,
+        )
+        heading = r"Hash #, star *, [docs](v2), /, `tick`, |, \ path"
+        try:
+            settings.set("pr_questions.ask_heading", heading)
+            answer = pr._prepare_pr_answer()
+            out = adopt_to_gerrit_message(answer)
+        finally:
+            restore_settings(saved)
+
+        raw_heading = answer.splitlines()[0]
+        assert r"\#" in raw_heading
+        assert r"\*" in raw_heading
+        assert r"\\" in raw_heading
+        assert out.splitlines()[0] == f"{heading}❓:"
+
+    def test_gerrit_falls_back_for_a_unicode_line_separator(self):
+        settings = get_settings()
+        saved = snapshot_settings(("pr_questions.ask_heading",))
+        provider = GerritProvider.__new__(GerritProvider)
+        pr = _make_pr_questions(
+            question_str="why?",
+            prediction="because reasons",
+            git_provider=provider,
+        )
+        try:
+            settings.set("pr_questions.ask_heading", "Architecture\u2028Question")
+            answer = pr._prepare_pr_answer()
+            out = adopt_to_gerrit_message(answer)
+        finally:
+            restore_settings(saved)
+
+        assert answer.startswith("### **Ask** ❓\n")
+        assert out.splitlines()[0] == "Ask❓:"
+
+    def test_gerrit_keeps_existing_conversion_for_other_markdown_headings(self):
+        message = "### **Answer:**\n- item\n### **Model # Heading:**"
+
+        assert adopt_to_gerrit_message(message) == "Answer:\nitem\n\nModel  Heading:"
 
     def test_sanitizes_leading_slash(self):
         pr = _make_pr_questions(
@@ -609,3 +739,164 @@ class TestRunResolvesThread:
 
         lq.git_provider.reply_to_comment_from_comment_id.assert_called_once()
         lq.git_provider.resolve_comment_thread.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# PR_LineQuestions.run - model call gating (no hunk lines selected)
+# ---------------------------------------------------------------------------
+
+class TestPRLineQuestionsRunSkipsEmptySelection:
+    """Skip the model call when no hunk lines are selected.
+
+    ``extract_hunk_lines_from_patch`` returns a truthy header-only string as
+    ``patch_with_lines`` whenever the requested range misses every hunk or the
+    patch is unparseable, so the model call has to be gated on
+    ``selected_lines`` rather than on ``patch_with_lines``.
+    """
+
+    _PATCH = (
+        "@@ -5,7 +5,8 @@ def main():\n"
+        "     a = 1\n"
+        "     b = 2\n"
+        "+    c = 3\n"
+        "     return a\n"
+    )
+
+    def _provider(self):
+        obj = plq.PR_LineQuestions.__new__(plq.PR_LineQuestions)
+        obj.vars = {}
+        obj.git_provider = MagicMock()
+        obj.token_handler = MagicMock()
+        obj.git_provider.get_diff_files.return_value = [SimpleNamespace(
+            filename="x.py", patch=self._PATCH)]
+        return obj
+
+    def _set_ask_settings(self, line_start, line_end):
+        keys = ("ask_diff_hunk", "line_start", "line_end", "side", "file_name", "comment_id")
+        saved = snapshot_settings(keys)
+        settings = get_settings()
+        settings.unset("ask_diff_hunk", force=True)
+        settings.set("line_start", line_start)
+        settings.set("line_end", line_end)
+        settings.set("side", "RIGHT")
+        settings.set("file_name", "x.py")
+        settings.unset("comment_id", force=True)
+        return saved
+
+    @pytest.mark.asyncio
+    async def test_skips_model_call_when_range_misses_hunks(self):
+        obj = self._provider()
+        saved = self._set_ask_settings("100", "200")
+        try:
+            with patch("pr_agent.tools.pr_line_questions.retry_with_fallback_models",
+                       new=AsyncMock()) as mock_retry, \
+                 patch.object(plq.PR_LineQuestions, "_get_prediction", new=AsyncMock()) as mock_pred:
+                await obj.run()
+            mock_retry.assert_not_awaited()
+            mock_pred.assert_not_awaited()
+        finally:
+            restore_settings(saved)
+
+    @pytest.mark.asyncio
+    async def test_skips_model_call_when_patch_is_unparseable(self):
+        obj = self._provider()
+        obj.git_provider.get_diff_files.return_value = [SimpleNamespace(
+            filename="x.py", patch="this is not a diff")]
+        saved = self._set_ask_settings("1", "2")
+        try:
+            with patch("pr_agent.tools.pr_line_questions.retry_with_fallback_models",
+                       new=AsyncMock()) as mock_retry, \
+                 patch.object(plq.PR_LineQuestions, "_get_prediction", new=AsyncMock()) as mock_pred:
+                await obj.run()
+            mock_retry.assert_not_awaited()
+            mock_pred.assert_not_awaited()
+        finally:
+            restore_settings(saved)
+
+    @pytest.mark.asyncio
+    async def test_calls_model_when_lines_are_selected(self):
+        obj = self._provider()
+        saved = self._set_ask_settings("6", "8")
+        try:
+            with patch("pr_agent.tools.pr_line_questions.retry_with_fallback_models",
+                       new=AsyncMock(return_value="an answer")) as mock_retry:
+                await obj.run()
+            mock_retry.assert_awaited_once()
+            obj.git_provider.publish_comment.assert_called_once_with("an answer")
+        finally:
+            restore_settings(saved)
+
+    @pytest.mark.asyncio
+    async def test_skips_model_call_when_ask_diff_misses_hunks(self):
+        obj = self._provider()
+        saved = self._set_ask_settings("100", "200")
+        try:
+            get_settings().set("ask_diff_hunk", self._PATCH)
+            with patch("pr_agent.tools.pr_line_questions.retry_with_fallback_models",
+                       new=AsyncMock()) as mock_retry:
+                await obj.run()
+            mock_retry.assert_not_awaited()
+        finally:
+            restore_settings(saved)
+
+    @pytest.mark.asyncio
+    async def test_skips_model_call_when_no_file_matches(self):
+        obj = self._provider()
+        obj.git_provider.get_diff_files.return_value = [SimpleNamespace(
+            filename="other.py", patch=self._PATCH)]
+        saved = self._set_ask_settings("6", "8")
+        try:
+            with patch("pr_agent.tools.pr_line_questions.retry_with_fallback_models",
+                       new=AsyncMock()) as mock_retry:
+                await obj.run()
+            mock_retry.assert_not_awaited()
+        finally:
+            restore_settings(saved)
+
+    @pytest.mark.asyncio
+    async def test_calls_model_when_ask_diff_selects_lines(self):
+        obj = self._provider()
+        saved = self._set_ask_settings("6", "8")
+        try:
+            get_settings().set("ask_diff_hunk", self._PATCH)
+            with patch("pr_agent.tools.pr_line_questions.retry_with_fallback_models",
+                       new=AsyncMock(return_value="an answer")) as mock_retry:
+                await obj.run()
+            mock_retry.assert_awaited_once()
+            obj.git_provider.publish_comment.assert_called_once_with("an answer")
+        finally:
+            restore_settings(saved)
+
+
+    @pytest.mark.asyncio
+    async def test_answers_when_github_truncated_the_hunk_body(self):
+        # GitHub truncates diff_hunk from the front on long hunks but keeps the original
+        # @@ header, so the requested line sits outside the shortened body and no line is
+        # selected. The hunk is real, so the question is still answerable.
+        obj = self._provider()
+        obj.git_provider.get_diff_files.return_value = [SimpleNamespace(
+            filename="x.py",
+            patch="@@ -5,400 +5,400 @@ def main():\n     tail = 1\n     tail = 2\n")]
+        saved = self._set_ask_settings("300", "300")
+        try:
+            with patch("pr_agent.tools.pr_line_questions.retry_with_fallback_models",
+                       new=AsyncMock(return_value="an answer")) as mock_retry:
+                await obj.run()
+            mock_retry.assert_awaited_once()
+            obj.git_provider.publish_comment.assert_called_once_with("an answer")
+        finally:
+            restore_settings(saved)
+
+    @pytest.mark.asyncio
+    async def test_tells_the_asker_when_no_hunk_matched(self):
+        obj = self._provider()
+        saved = self._set_ask_settings("100", "200")
+        try:
+            with patch("pr_agent.tools.pr_line_questions.retry_with_fallback_models",
+                       new=AsyncMock()) as mock_retry:
+                await obj.run()
+            mock_retry.assert_not_awaited()
+            obj.git_provider.publish_comment.assert_called_once()
+            assert "nothing to answer about" in obj.git_provider.publish_comment.call_args[0][0]
+        finally:
+            restore_settings(saved)

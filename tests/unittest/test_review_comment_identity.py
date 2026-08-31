@@ -3,17 +3,19 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from pr_agent.algo.utils import (PRReviewIdentity, add_pr_review_identity,
-                                 comment_matches_identity,
-                                 convert_to_markdown_v2,
-                                 format_pr_review_header,
-                                 get_pr_review_comment_identifiers)
+from pr_agent.algo.utils import (
+    PRReviewIdentity,
+    add_pr_review_identity,
+    comment_matches_identity,
+    convert_to_markdown_v2,
+    format_pr_review_header,
+    get_pr_review_comment_identifiers,
+)
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
 from pr_agent.git_providers.gitea_provider import GiteaProvider
 from pr_agent.git_providers.github_provider import GithubProvider
-from tests.unittest._settings_helpers import (restore_settings,
-                                              snapshot_settings)
+from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 
 def _review_data():
@@ -39,7 +41,10 @@ def test_custom_review_heading_changes_presentation_only():
     assert "<!-- pr-agent:review" not in incremental
 
 
-@pytest.mark.parametrize("invalid_heading", [None, "", "  ", "first\nsecond", 42])
+@pytest.mark.parametrize(
+    "invalid_heading",
+    [None, "", "  ", "first\nsecond", "first\u2028second", 42],
+)
 def test_invalid_review_heading_falls_back_to_default(invalid_heading):
     snapshot = snapshot_settings(["pr_reviewer.review_heading"])
     try:

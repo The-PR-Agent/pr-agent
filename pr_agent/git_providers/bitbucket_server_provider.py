@@ -1,22 +1,20 @@
 import difflib
 import re
-
-from packaging.version import parse as parse_version
+import shlex
+import subprocess
 from typing import Optional, Tuple
 from urllib.parse import quote_plus, urlparse
 
 from atlassian.bitbucket import Bitbucket
+from packaging.version import parse as parse_version
 from requests.exceptions import HTTPError
-import shlex
-import subprocess
 
 from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import decode_if_bytes
 from ..algo.language_handler import is_valid_file
 from ..algo.types import EDIT_TYPE, FilePatchInfo
-from ..algo.utils import (find_line_number_of_relevant_line_in_file,
-                          load_large_diff)
-from ..config_loader import get_settings
+from ..algo.utils import find_line_number_of_relevant_line_in_file, load_large_diff
+from ..config_loader import get_settings, get_verbosity_level
 from ..log import get_logger
 from .git_provider import GitProvider, get_git_ssl_env
 
@@ -48,7 +46,7 @@ class BitbucketServerProvider(GitProvider):
             self.bitbucket_server_url = self._parse_bitbucket_server(pr_url)
             if not self.bitbucket_server_url:
                 raise ValueError("Invalid or missing Bitbucket Server URL parsed from PR URL.")
-            
+
             if self.bearer_token:  # if bearer token is provided, use it
                 self.bitbucket_client = Bitbucket(
                     url=self.bitbucket_server_url,
@@ -195,7 +193,7 @@ class BitbucketServerProvider(GitProvider):
             self.publish_inline_comments(post_parameters_list)
             return True
         except Exception as e:
-            if get_settings().config.verbosity_level >= 2:
+            if get_verbosity_level() >= 2:
                 get_logger().error(f"Failed to publish code suggestion, error: {e}")
             return False
 
@@ -356,7 +354,7 @@ class BitbucketServerProvider(GitProvider):
             absolute_position
         )
         if position == -1:
-            if get_settings().config.verbosity_level >= 2:
+            if get_verbosity_level() >= 2:
                 get_logger().info(f"Could not find position for {relevant_file} {relevant_line_in_file}")
             subject_type = "FILE"
         else:
@@ -406,17 +404,17 @@ class BitbucketServerProvider(GitProvider):
                     link = f"{self.pr_url}/diff#{quote_plus(relevant_file)}?t={absolute_position}"
                     return link
                 else:
-                    if get_settings().config.verbosity_level >= 2:
+                    if get_verbosity_level() >= 2:
                         get_logger().info(f"Failed adding line link to '{relevant_file}' since PR not set")
             else:
-                if get_settings().config.verbosity_level >= 2:
+                if get_verbosity_level() >= 2:
                     get_logger().info(f"Failed adding line link to '{relevant_file}' since position not found")
 
             if absolute_position != -1 and self.pr_url:
                 link = f"{self.pr_url}/diff#{quote_plus(relevant_file)}?t={absolute_position}"
                 return link
         except Exception as e:
-            if get_settings().config.verbosity_level >= 2:
+            if get_verbosity_level() >= 2:
                 get_logger().info(f"Failed adding line link to '{relevant_file}', error: {e}")
 
         return ""
@@ -587,7 +585,7 @@ class BitbucketServerProvider(GitProvider):
         bearer_token = self.bearer_token
         if not bearer_token:
             #Shouldn't happen since this is checked in _prepare_clone, therefore - throwing an exception.
-            raise RuntimeError(f"Bearer token is required!")
+            raise RuntimeError("Bearer token is required!")
 
         cli_args = shlex.split(f"git clone -c http.extraHeader='Authorization: Bearer {bearer_token}' "
                                f"--filter=blob:none --depth 1 {repo_url} {dest_folder}")

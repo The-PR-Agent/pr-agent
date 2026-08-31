@@ -12,11 +12,10 @@ from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 
 from ..algo.file_filter import filter_ignored
 from ..algo.language_handler import is_valid_file
-from ..algo.utils import (add_pr_review_identity, comment_matches_identity,
-                          find_line_number_of_relevant_line_in_file)
-from ..config_loader import get_settings
+from ..algo.utils import add_pr_review_identity, comment_matches_identity, find_line_number_of_relevant_line_in_file
+from ..config_loader import get_settings, get_verbosity_level
 from ..log import get_logger
-from .git_provider import MAX_FILES_ALLOWED_FULL, GitProvider, get_cached_global_settings
+from .git_provider import MAX_FILES_ALLOWED_FULL, GitProvider, get_cached_global_settings, redact_credentials
 
 
 def _gef_filename(diff):
@@ -265,7 +264,7 @@ class BitbucketProvider(GitProvider):
                 names_original = [d.new.path for d in diffs_original]
                 names_kept = [d.new.path for d in diffs]
                 names_filtered = list(set(names_original) - set(names_kept))
-                get_logger().info(f"Filtered out [ignore] files for PR", extra={
+                get_logger().info("Filtered out [ignore] files for PR", extra={
                     'original_files': names_original,
                     'names_kept': names_kept,
                     'names_filtered': names_filtered
@@ -355,7 +354,7 @@ class BitbucketProvider(GitProvider):
                 else:
                     if counter_valid == MAX_FILES_ALLOWED_FULL // 2:
                         get_logger().info(
-                            f"Bitbucket too many files in PR, will avoid loading full content for rest of files")
+                            "Bitbucket too many files in PR, will avoid loading full content for rest of files")
                     original_file_content_str = ""
                     new_file_content_str = ""
             except Exception as e:
@@ -495,7 +494,7 @@ class BitbucketProvider(GitProvider):
                                                                                 relevant_line_in_file,
                                                                                 absolute_position)
         if position == -1:
-            if get_settings().config.verbosity_level >= 2:
+            if get_verbosity_level() >= 2:
                 get_logger().info(f"Could not find position for {relevant_file} {relevant_line_in_file}")
             subject_type = "FILE"
         else:
@@ -541,7 +540,7 @@ class BitbucketProvider(GitProvider):
                 link = f"{self.pr_url}/#L{relevant_file}T{absolute_position}"
                 return link
         except Exception as e:
-            if get_settings().config.verbosity_level >= 2:
+            if get_verbosity_level() >= 2:
                 get_logger().info(f"Failed adding line link, error: {e}")
 
         return ""
@@ -714,7 +713,8 @@ class BitbucketProvider(GitProvider):
 
         (scheme, base_url) = repo_url_to_clone.split("bitbucket.org")
         if not all([scheme, base_url]):
-            get_logger().error(f"repo_url_to_clone: {repo_url_to_clone} is not a valid bitbucket URL.")
+            get_logger().error(
+                f"repo_url_to_clone: {redact_credentials(repo_url_to_clone)} is not a valid bitbucket URL.")
             return None
 
         if self.auth_type == "basic":

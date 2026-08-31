@@ -2,7 +2,7 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
+from pr_agent.algo.types import EDIT_TYPE
 from pr_agent.git_providers.codecommit_provider import CodeCommitFile, CodeCommitProvider, PullRequestCCMimic
 
 
@@ -27,6 +27,18 @@ class TestCodeCommitFile:
 
 
 class TestCodeCommitProvider:
+    @staticmethod
+    def _make_diff_provider(git_files):
+        provider = object.__new__(CodeCommitProvider)
+        provider.repo_name = "my_test_repo"
+        provider.pr = PullRequestCCMimic("Encoding test", [])
+        provider.pr.destination_commit = "destination-commit"
+        provider.pr.source_commit = "source-commit"
+        provider.diff_files = None
+        provider.git_files = git_files
+        provider.codecommit_client = MagicMock()
+        return provider
+
     def test_get_diff_files_includes_deleted_file(self):
         provider = object.__new__(CodeCommitProvider)
         provider.repo_name = "my_test_repo"
@@ -50,6 +62,78 @@ class TestCodeCommitProvider:
         assert provider.codecommit_client.get_file.call_args_list == [
             call("my_test_repo", "deleted.py", "destination-commit")
         ]
+
+    @pytest.mark.parametrize(
+        ("non_utf8_file", "invalid_path", "invalid_commit"),
+        [
+            (CodeCommitFile("", "", "added.py", "after-id", EDIT_TYPE.ADDED), "added.py", "source-commit"),
+            (CodeCommitFile("deleted.py", "before-id", "", "", EDIT_TYPE.DELETED), "deleted.py", "destination-commit"),
+            (
+                CodeCommitFile("modified.py", "before-id", "modified.py", "after-id", EDIT_TYPE.MODIFIED),
+                "modified.py",
+                "destination-commit",
+            ),
+            (
+                CodeCommitFile("modified.py", "before-id", "modified.py", "after-id", EDIT_TYPE.MODIFIED),
+                "modified.py",
+                "source-commit",
+            ),
+            (
+                CodeCommitFile("old.py", "before-id", "new.py", "after-id", EDIT_TYPE.RENAMED),
+                "old.py",
+                "destination-commit",
+            ),
+        ],
+    )
+    def test_get_diff_files_skips_non_utf8_file_and_keeps_utf8_sibling(
+        self,
+        non_utf8_file,
+        invalid_path,
+        invalid_commit,
+    ):
+        valid_file = CodeCommitFile("good.py", "before-id", "good.py", "after-id", EDIT_TYPE.MODIFIED)
+        provider = self._make_diff_provider([non_utf8_file, valid_file])
+
+        def get_file(_repo_name, path, commit):
+            if path == invalid_path and commit == invalid_commit:
+                return b"\xffinvalid\n"
+            return b"before\n" if commit == "destination-commit" else b"after\n"
+
+        provider.codecommit_client.get_file.side_effect = get_file
+
+        diff_files = provider.get_diff_files()
+
+        assert [diff_file.filename for diff_file in diff_files] == ["good.py"]
+        assert diff_files[0].base_file == "before\n"
+        assert diff_files[0].head_file == "after\n"
+        assert "-before" in diff_files[0].patch
+        assert "+after" in diff_files[0].patch
+        assert diff_files[0].edit_type == EDIT_TYPE.MODIFIED
+        assert provider.diff_files is diff_files
+
+    def test_get_diff_files_filters_invalid_extension_before_fetching_content(self):
+        ignored_file = CodeCommitFile("image.png", "before-id", "image.png", "after-id", EDIT_TYPE.MODIFIED)
+        valid_file = CodeCommitFile("good.py", "before-id", "good.py", "after-id", EDIT_TYPE.MODIFIED)
+        provider = self._make_diff_provider([ignored_file, valid_file])
+        provider.codecommit_client.get_file.side_effect = (
+            lambda _repo_name, _path, commit: b"before\n" if commit == "destination-commit" else b"after\n"
+        )
+
+        diff_files = provider.get_diff_files()
+
+        assert [diff_file.filename for diff_file in diff_files] == ["good.py"]
+        assert provider.codecommit_client.get_file.call_args_list == [
+            call("my_test_repo", "good.py", "destination-commit"),
+            call("my_test_repo", "good.py", "source-commit"),
+        ]
+
+    def test_get_diff_files_does_not_swallow_client_errors(self):
+        file = CodeCommitFile("file.py", "before-id", "file.py", "after-id", EDIT_TYPE.MODIFIED)
+        provider = self._make_diff_provider([file])
+        provider.codecommit_client.get_file.side_effect = ValueError("AWS request failed")
+
+        with pytest.raises(ValueError, match="AWS request failed"):
+            provider.get_diff_files()
 
     def test_get_title(self):
         # Test that the get_title() function returns the PR title

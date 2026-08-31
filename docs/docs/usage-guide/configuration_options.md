@@ -96,7 +96,7 @@ For example, in the GitHub organization `qodo-ai`:
 
 `Platforms supported: GitLab, Bitbucket Data Center`
 
-Create a repository named `pr-agent-settings` within a specific project (Bitbucket) or a group/subgroup (Gitlab). 
+Create a repository named `pr-agent-settings` within a specific project (Bitbucket) or a group/subgroup (Gitlab).
 The configuration file in this repository will apply to all repositories directly under the same project/group/subgroup.
 
 !!! note "Note"

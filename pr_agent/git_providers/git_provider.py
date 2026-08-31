@@ -1,9 +1,10 @@
-from abc import ABC, abstractmethod
 # enum EDIT_TYPE (ADDED, DELETED, MODIFIED, RENAMED)
 import os
+import re
 import shutil
 import subprocess
 import time
+from abc import ABC, abstractmethod
 from typing import Optional, Tuple
 
 from pr_agent.algo.types import FilePatchInfo
@@ -12,6 +13,16 @@ from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
 MAX_FILES_ALLOWED_FULL = 50
+
+_URL_USERINFO_RE = re.compile(r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.\-]{0,30}://)[^/@\s]+@")
+_AUTH_HEADER_RE = re.compile(r"(?i)(authorization\s*:\s*(?:bearer|basic|token)\s+)\S+")
+
+
+def redact_credentials(text) -> str:
+    if not text:
+        return ""
+    redacted = _URL_USERINFO_RE.sub(lambda m: m.group("scheme"), str(text))
+    return _AUTH_HEADER_RE.sub(lambda m: m.group(1) + "<redacted>", redacted)
 
 _GLOBAL_SETTINGS_CACHE: dict = {}
 _GLOBAL_SETTINGS_CACHE_TTL_SECONDS = 15 * 60
@@ -72,12 +83,12 @@ def get_git_ssl_env() -> dict[str, str]:
         if os.path.exists(ssl_cert_file):
             if ((requests_ca_bundle and requests_ca_bundle != ssl_cert_file)
                     or (git_ssl_ca_info and git_ssl_ca_info != ssl_cert_file)):
-                get_logger().warning(f"Found mismatch among: SSL_CERT_FILE, REQUESTS_CA_BUNDLE, GIT_SSL_CAINFO. "
-                                     f"Using the SSL_CERT_FILE to resolve ambiguity.",
+                get_logger().warning("Found mismatch among: SSL_CERT_FILE, REQUESTS_CA_BUNDLE, GIT_SSL_CAINFO. "
+                                     "Using the SSL_CERT_FILE to resolve ambiguity.",
                                   artifact={"ssl_cert_file": ssl_cert_file, "requests_ca_bundle": requests_ca_bundle,
                                             'git_ssl_ca_info': git_ssl_ca_info})
             else:
-                get_logger().info(f"Using SSL certificate bundle for git operations", artifact={"ssl_cert_file": ssl_cert_file})
+                get_logger().info("Using SSL certificate bundle for git operations", artifact={"ssl_cert_file": ssl_cert_file})
             chosen_cert_file = ssl_cert_file
         else:
             get_logger().warning("SSL certificate bundle not found for git operations", artifact={"ssl_cert_file": ssl_cert_file})
@@ -86,8 +97,8 @@ def get_git_ssl_env() -> dict[str, str]:
     elif requests_ca_bundle:
         if os.path.exists(requests_ca_bundle):
             if (git_ssl_ca_info and git_ssl_ca_info != requests_ca_bundle):
-                get_logger().warning(f"Found mismatch between: REQUESTS_CA_BUNDLE, GIT_SSL_CAINFO. "
-                                     f"Using the REQUESTS_CA_BUNDLE to resolve ambiguity.",
+                get_logger().warning("Found mismatch between: REQUESTS_CA_BUNDLE, GIT_SSL_CAINFO. "
+                                     "Using the REQUESTS_CA_BUNDLE to resolve ambiguity.",
                 artifact = {"requests_ca_bundle": requests_ca_bundle, 'git_ssl_ca_info': git_ssl_ca_info})
             else:
                 get_logger().info("Using SSL certificate bundle from REQUESTS_CA_BUNDLE for git operations",
@@ -125,6 +136,21 @@ class GitProvider(ABC):
         incremental anchoring override this; the default is no support, so tools
         fall back to a full run."""
         return False
+
+    def supports_code_suggestions_artifact(self) -> bool:
+        """Return whether `publish_code_suggestions()` writes a standalone output artifact."""
+        return False
+
+    def publish_code_suggestions_artifact(
+            self, code_suggestions: list, artifact_footer: str = "",
+            no_suggestions_message: str = "No code suggestions found for the PR.") -> bool:
+        """Publish suggestions to a standalone artifact, optionally with additional context.
+
+        Providers that return True from `supports_code_suggestions_artifact()` should override
+        this method when they can preserve the footer in the same artifact. The default keeps
+        backward compatibility for providers that only implement `publish_code_suggestions()`.
+        """
+        return self.publish_code_suggestions(code_suggestions)
 
     #Given a url (issues or PR/MR) - get the .git repo url to which they belong. Needs to be implemented by the provider.
     def get_git_repo_url(self, issues_or_pr_url: str) -> str:
@@ -199,8 +225,9 @@ class GitProvider(ABC):
             self._clone_inner(clone_url, dest_folder, operation_timeout_in_seconds)
             returned_obj = GitProvider.ScopedClonedRepo(dest_folder)
         except Exception as e:
-            get_logger().exception(f"Clone failed: Could not clone url.",
-                artifact={"error": str(e), "url": clone_url, "dest_folder": dest_folder})
+            get_logger().error("Clone failed: Could not clone url.",
+                artifact={"error": redact_credentials(e), "url": redact_credentials(clone_url),
+                          "dest_folder": dest_folder})
         finally:
             return returned_obj
 
@@ -275,11 +302,11 @@ class GitProvider(ABC):
 
         description = (self.get_pr_description_full() or "").strip()
         description_lowercase = description.lower()
-        get_logger().debug(f"Existing description", description=description_lowercase)
+        get_logger().debug("Existing description", description=description_lowercase)
 
         # if the existing description wasn't generated by the pr-agent, just return it as-is
         if not self._is_generated_by_pr_agent(description_lowercase):
-            get_logger().info(f"Existing description was not generated by the pr-agent")
+            get_logger().info("Existing description was not generated by the pr-agent")
             self.user_description = description
             return description
 
@@ -287,7 +314,7 @@ class GitProvider(ABC):
         # return nothing (empty string) because it means there is no user description
         user_description_header = "### **user description**"
         if user_description_header not in description_lowercase:
-            get_logger().info(f"Existing description was generated by the pr-agent, but it doesn't contain a user description")
+            get_logger().info("Existing description was generated by the pr-agent, but it doesn't contain a user description")
             return ""
 
         # otherwise, extract the original user description from the existing pr-agent description and return it
@@ -310,7 +337,7 @@ class GitProvider(ABC):
             if original_user_description.lower().startswith(user_description_header):
                 original_user_description = original_user_description[len(user_description_header):].strip()
 
-        get_logger().info(f"Extracted user description from existing description",
+        get_logger().info("Extracted user description from existing description",
                           description=original_user_description)
         self.user_description = original_user_description
         return original_user_description
@@ -374,6 +401,9 @@ class GitProvider(ABC):
         pass
 
     def should_publish_review_as_thread(self) -> bool:
+        return False
+
+    def should_publish_improve_as_thread(self) -> bool:
         return False
 
     def supports_review_comment_identity(self) -> bool:

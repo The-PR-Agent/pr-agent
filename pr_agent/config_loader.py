@@ -60,6 +60,21 @@ def get_settings(use_context=False):
         return global_settings
 
 
+def get_verbosity_level() -> int:
+    """Return config.verbosity_level as an int, falling back to the quietest level.
+
+    The value is compared with >= at many call sites, so a quoted number in a settings file
+    would otherwise raise in the middle of a command.
+    """
+    value = get_settings().config.get("verbosity_level", 0)
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        from pr_agent.log import get_logger
+        get_logger().warning(f"verbosity_level is not a number ({value!r}), using 0")
+        return 0
+
+
 # Add local configuration from pyproject.toml of the project being reviewed
 def _find_repository_root() -> Optional[Path]:
     """
@@ -97,8 +112,8 @@ def apply_secrets_manager_config():
     """
     try:
         # Dynamic imports to avoid circular dependency (secret_providers imports config_loader)
-        from pr_agent.secret_providers import get_secret_provider
         from pr_agent.log import get_logger
+        from pr_agent.secret_providers import get_secret_provider
 
         secret_provider = get_secret_provider()
         if not secret_provider:

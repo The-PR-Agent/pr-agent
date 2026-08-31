@@ -77,6 +77,10 @@ MAX_TOKENS = {
     'zai/glm-5.2': 200000,  # 200K, matching the Z.AI GLM-5/5.1 lineage, but may be limited by config.max_model_tokens
     'moonshot/kimi-k3': 262144,  # 256K, matching the Moonshot Kimi-k2.5/k2.6 lineage, but may be limited by config.max_model_tokens
     'openai/qwq-plus': 131072,  # 131K context length, but may be limited by config.max_model_tokens
+    "openrouter/auto": 2000000,  # 2M context length, but may be limited by config.max_model_tokens
+    "openrouter/free": 200000,  # 200K context length, but may be limited by config.max_model_tokens
+    "openrouter/fusion": 1000000,  # 1M context length, but may be limited by config.max_model_tokens
+    "openrouter/pareto-code": 2000000,  # 2M context length, but may be limited by config.max_model_tokens
     'replicate/llama-2-70b-chat:2c1608e18606fad2812020dc541930f2d0495ce32eee50074220b87300bc16e1': 4096,
     'meta-llama/Llama-2-7b-chat-hf': 4096,
     'vertex_ai/codechat-bison': 6144,
@@ -295,6 +299,12 @@ MAX_TOKENS = {
     'xai/grok-3-mini-beta': 131072,
     'xai/grok-3-mini-fast': 131072,
     'xai/grok-3-mini-fast-beta': 131072,
+    "xai/grok-4.5": 500000,  # 500K context, but may be limited by config.max_model_tokens
+    "xai/grok-4.5-latest": 500000,
+    "xai/grok-build-latest": 500000,
+    "xai/grok-4.6": 500000,  # 500K context, but may be limited by config.max_model_tokens
+    "openrouter/x-ai/grok-4.5": 500000,
+    "openrouter/x-ai/grok-4.6": 500000,
     'ollama/llama3': 4096,
     'watsonx/meta-llama/llama-3-8b-instruct': 4096,
     "watsonx/meta-llama/llama-3-70b-instruct": 4096,
@@ -322,6 +332,20 @@ MAX_TOKENS = {
     'xiaomi_mimo/mimo-v2.5': 1048576,  # 1M, matching the LiteLLM registry for mimo-v2.5, xiaomi_mimo/ is the native LiteLLM Xiaomi provider, but may be limited by config.max_model_tokens
     'xiaomi_mimo/mimo-v2.5-pro': 1048576,  # 1M, matching the LiteLLM registry for mimo-v2.5-pro, but may be limited by config.max_model_tokens
 }
+
+OPENROUTER_ROUTER_MODEL_ALIASES = {
+    "openrouter/auto": "openrouter/openrouter/auto",
+    "openrouter/free": "openrouter/openrouter/free",
+    "openrouter/fusion": "openrouter/openrouter/fusion",
+    "openrouter/pareto-code": "openrouter/openrouter/pareto-code",
+}
+
+
+def normalize_litellm_model(model: str, custom_llm_provider: str = "") -> str:
+    if custom_llm_provider.strip().lower() not in ("", "openrouter"):
+        return model
+    return OPENROUTER_ROUTER_MODEL_ALIASES.get(model, model)
+
 
 USER_MESSAGE_ONLY_MODELS = [
     "deepseek/deepseek-reasoner",
@@ -394,15 +418,28 @@ SUPPORT_REASONING_EFFORT_MODELS = [
     "o3-2025-04-16",
     "o4-mini",
     "o4-mini-2025-04-16",
-    # Gemini 2.5 exposes a thinking budget that LiteLLM maps from reasoning_effort
-    # (low/medium/high -> thinkingConfig.thinkingBudget). Without these entries a
-    # configured reasoning_effort is silently dropped for Gemini, so a runaway
-    # thinking trace can consume the whole output budget and return an empty
-    # completion. Matched provider-prefix-insensitively in litellm_ai_handler so
-    # prefixed forms (e.g. "openrouter/google/gemini-2.5-pro") are covered too.
+    # Gemini 2.5 exposes a thinking budget controlled by reasoning_effort. Without
+    # these entries a configured effort is silently dropped, so a runaway thinking
+    # trace can consume the whole output budget and return an empty completion.
+    # LiteLLM maps native provider paths to thinkingConfig.thinkingBudget, while
+    # LiteLLMAIHandler routes OpenRouter-prefixed forms through extra_body.reasoning.
     "gemini-2.5-pro",
     "gemini-2.5-flash",
+    # Register each published Grok id separately so provider-prefixed forms match
+    # and the allowlist below can clamp model-specific reasoning levels.
+    "grok-4.5",
+    "grok-4.5-latest",
+    "grok-build-latest",
+    "grok-4.6",
 ]
+
+# Clamp OpenAI-only levels for always-on Grok reasoning; allow xhigh on 4.6+.
+GROK_REASONING_EFFORT_LEVELS = {
+    "grok-4.5": {"low", "medium", "high"},
+    "grok-4.5-latest": {"low", "medium", "high"},
+    "grok-build-latest": {"low", "medium", "high"},
+    "grok-4.6": {"low", "medium", "high", "xhigh"},
+}
 
 # Claude models that support "extended thinking" through the manual
 # thinking={"type": "enabled", "budget_tokens": ...} request built by

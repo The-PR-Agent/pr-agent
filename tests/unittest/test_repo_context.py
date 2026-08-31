@@ -151,6 +151,23 @@ def test_build_repo_context_reuses_provider_cache_for_same_config(repo_context_s
     assert provider.requested_paths == ["AGENTS.md", "CONTRIBUTING.md"]
 
 
+def test_build_repo_context_provider_cache_separates_default_and_target_branch(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["AGENTS.md"])
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 500)
+    provider = FakeProvider({"AGENTS.md": "default-branch rules"})
+
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FROM_DEFAULT_BRANCH", True)
+    default_context = build_repo_context(provider)
+
+    provider.files["AGENTS.md"] = "target-branch rules"
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FROM_DEFAULT_BRANCH", False)
+    target_context = build_repo_context(provider)
+
+    assert "default-branch rules" in default_context
+    assert "target-branch rules" in target_context
+    assert provider.from_default_branch_calls == [True, False]
+
+
 def test_build_repo_context_reuses_process_cache_for_same_pr_url(repo_context_settings):
     repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["AGENTS.md"])
     repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 500)
@@ -165,6 +182,25 @@ def test_build_repo_context_reuses_process_cache_for_same_pr_url(repo_context_se
     assert "Changed repo purpose" not in second_context
     assert first_provider.requested_paths == ["AGENTS.md"]
     assert second_provider.requested_paths == []
+
+
+def test_build_repo_context_process_cache_separates_default_and_target_branch(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["AGENTS.md"])
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 500)
+    pr_url = "https://example.com/org/repo/pull/1"
+    default_provider = FakeProvider({"AGENTS.md": "default-branch rules"}, pr_url=pr_url)
+    target_provider = FakeProvider({"AGENTS.md": "target-branch rules"}, pr_url=pr_url)
+
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FROM_DEFAULT_BRANCH", True)
+    default_context = build_repo_context(default_provider)
+
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FROM_DEFAULT_BRANCH", False)
+    target_context = build_repo_context(target_provider)
+
+    assert "default-branch rules" in default_context
+    assert "target-branch rules" in target_context
+    assert default_provider.from_default_branch_calls == [True]
+    assert target_provider.from_default_branch_calls == [False]
 
 
 def test_build_repo_context_refreshes_process_cache_after_ttl(repo_context_settings):

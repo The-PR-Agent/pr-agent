@@ -1,7 +1,8 @@
 """Parse a patch without crashing on a '@@' line that is not a unified hunk header."""
 from pr_agent.algo.git_patch_processing import (
     decouple_and_convert_to_hunks_with_lines_numbers,
-    extract_hunk_lines_from_patch)
+    extract_hunk_lines_from_patch,
+)
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 
 COMBINED = "@@@ -1,2 -1,2 +1,2 @@@\n- a\n +b\n  c"

@@ -84,6 +84,20 @@ diff --git a/weird.zzz b/weird.zzz
 +q
 """
 
+_FILENAME_MATCHING_DIFF = """diff --git a/upper.C b/upper.C
+--- a/upper.C
++++ b/upper.C
+@@ -1 +1,2 @@
+ a
++b
+diff --git a/Dockerfile b/Dockerfile
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -1 +1,2 @@
+ x
++y
+"""
+
 
 def test_get_languages_returns_language_names(cfg):
     # get_languages() must key on language NAMES (e.g. "Python"), not raw
@@ -103,6 +117,14 @@ def test_get_languages_returns_language_names(cfg):
     assert buckets["Python"] == {"foo.py"}
     assert buckets["JavaScript"] == {"app.js"}
     assert buckets["Other"] == {"weird.zzz"}  # unknown extension falls through
+
+
+def test_get_languages_matches_case_sensitive_and_full_filenames(cfg):
+    cfg("plain_diff.content", _FILENAME_MATCHING_DIFF)
+    cfg("plain_diff.output_path", None)
+    provider = PlainDiffGitProvider(None)
+
+    assert provider.get_languages() == {"C++": 50.0, "Dockerfile": 50.0}
 
 
 def test_get_diff_files_patch_is_hunk_only(cfg):
