@@ -12,7 +12,7 @@ from pr_agent.algo.pr_processing import get_pr_diff, retry_with_fallback_models
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import ModelType, show_relevant_configurations
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers import GithubProvider, get_git_provider
+from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.git_provider import get_main_pr_language
 from pr_agent.log import get_logger
 
@@ -91,7 +91,7 @@ class PRUpdateChangelog:
         if get_settings().get('config', {}).get('output_relevant_configurations', False):
             answer += show_relevant_configurations(relevant_section='pr_update_changelog')
 
-        get_logger().debug(f"PR output", artifact=answer)
+        get_logger().debug("PR output", artifact=answer)
 
         if get_settings().config.publish_output:
             self.git_provider.remove_initial_comment()
@@ -109,10 +109,10 @@ class PRUpdateChangelog:
     async def _prepare_prediction(self, model: str):
         self.patches_diff = get_pr_diff(self.git_provider, self.token_handler, model)
         if self.patches_diff:
-            get_logger().debug(f"PR diff", artifact=self.patches_diff)
+            get_logger().debug("PR diff", artifact=self.patches_diff)
             self.prediction = await self._get_prediction(model)
         else:
-            get_logger().error(f"Error getting PR diff")
+            get_logger().error("Error getting PR diff")
             self.prediction = ""
 
     async def _get_prediction(self, model: str):
@@ -143,7 +143,7 @@ class PRUpdateChangelog:
             existing_content = self.changelog_file
         else:
             existing_content = ""
-        
+
         if existing_content:
             new_file_content = answer + "\n\n" + self.changelog_file
         else:
@@ -202,10 +202,10 @@ Example:
             self.changelog_file = self.git_provider.get_pr_file_content(
                 "CHANGELOG.md", self.git_provider.get_pr_branch()
             )
-            
+
             if isinstance(self.changelog_file, bytes):
                 self.changelog_file = self.changelog_file.decode('utf-8')
-            
+
             changelog_file_lines = self.changelog_file.splitlines()
             changelog_file_lines = changelog_file_lines[:CHANGELOG_LINES]
             self.changelog_file_str = "\n".join(changelog_file_lines)

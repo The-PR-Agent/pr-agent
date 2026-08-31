@@ -62,8 +62,11 @@ You can get a free managed Qdrant instance from [Qdrant Cloud](https://cloud.qdr
 
 ## How to use
 
+- Install the tool's extra dependencies (vector databases and datasets), which a bare `uv sync` does not include:
+`uv sync --group similar-issue`
+
 - To invoke the 'similar issue' tool from **CLI**, run:
-`python3 cli.py --issue_url=... similar_issue`
+`uv run pr-agent --issue_url=... similar_issue`
 
 - To invoke the 'similar' issue tool via online usage, [comment](https://github.com/the-pr-agent/pr-agent/issues/178#issuecomment-1716934893) on a PR:
 `/similar_issue`

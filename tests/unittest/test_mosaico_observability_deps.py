@@ -68,8 +68,7 @@ class TestLangfuseOtelCallbackDeps:
     def test_langfuse_otel_callback_constructs(self, restore_in_memory_loggers):
         """The behaviour MOSAICO actually depends on: env_bridge registers this callback name,
         and litellm must be able to build a logger for it or every trace is dropped."""
-        from litellm.litellm_core_utils.litellm_logging import \
-            _init_custom_logger_compatible_class
+        from litellm.litellm_core_utils.litellm_logging import _init_custom_logger_compatible_class
 
         logger = _init_custom_logger_compatible_class(
             CALLBACK_NAME, internal_usage_cache=None, llm_router=None)

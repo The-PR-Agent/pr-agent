@@ -234,17 +234,22 @@ class TestHandleLineComments:
     def test_converts_ask_to_ask_line_with_metadata(self):
         body = self._payload()
         result = github_app.handle_line_comments(body, "/ask Why this change?")
-        assert result.startswith("/ask_line ")
+        # handle_line_comments returns an argv list (not a shell-style string)
+        # so attacker-controlled fields cannot inject extra CLI arguments via
+        # shlex.quote() being defeated downstream.
+        assert isinstance(result, list)
+        assert result[0] == "/ask_line"
         assert "--line_start=10" in result
         assert "--line_end=14" in result
         assert "--side=RIGHT" in result
         assert "--file_name=src/file.py" in result
         assert "--comment_id=987654" in result
-        assert result.endswith("Why this change?")
+        assert result[-1] == "Why this change?"
 
     def test_missing_start_line_falls_back_to_line(self):
         body = self._payload(start_line=None)
         result = github_app.handle_line_comments(body, "/ask anything")
+        assert isinstance(result, list)
         assert "--line_start=14" in result
         assert "--line_end=14" in result
 
@@ -327,6 +332,18 @@ class TestHandleLineComments:
             assert settings.get("ask_diff_hunk") is None
         finally:
             _restore_ask_diff_hunk(settings, outer_original, outer_sentinel)
+
+    def test_outdated_comment_falls_back_to_original_line(self):
+        body = self._payload(start_line=None, line=None, original_start_line=5, original_line=7)
+        result = github_app.handle_line_comments(body, "/ask Is this still relevant?")
+        assert "--line_start=5" in result
+        assert "--line_end=7" in result
+
+    def test_outdated_comment_single_line_falls_back_to_original(self):
+        body = self._payload(start_line=None, line=None, original_start_line=None, original_line=7)
+        result = github_app.handle_line_comments(body, "/ask question")
+        assert "--line_start=7" in result
+        assert "--line_end=7" in result
 
     def test_non_ask_comment_returned_unchanged(self):
         body = self._payload()
@@ -520,6 +537,63 @@ class TestPushTriggerDedupe:
         # Third path: counter is left untouched, perform never runs.
         assert push_trigger_env["count"] == 0
         assert github_app._duplicate_push_triggers[api_url] == 1
+
+    def test_cancelled_backlog_waiter_releases_dedupe_slot(self, push_trigger_env, monkeypatch):
+        settings = github_app.get_settings()
+        settings.github_app.push_trigger_pending_tasks_backlog = True
+        first_started = asyncio.Event()
+        release_first = asyncio.Event()
+
+        async def fake_perform(*args, **kwargs):
+            push_trigger_env["count"] += 1
+            if push_trigger_env["count"] == 1:
+                first_started.set()
+                await release_first.wait()
+
+        monkeypatch.setattr(github_app, "_perform_auto_commands_github", fake_perform)
+
+        async def exercise_cancelled_waiter():
+            body = _push_body()
+            api_url = body["pull_request"]["url"]
+            first = asyncio.create_task(
+                github_app.handle_push_trigger_for_new_commits(
+                    body, "push", "alice", "1", "synchronize", {}, agent=None
+                )
+            )
+            await asyncio.wait_for(first_started.wait(), timeout=1)
+
+            second = asyncio.create_task(
+                github_app.handle_push_trigger_for_new_commits(
+                    body, "push", "alice", "1", "synchronize", {}, agent=None
+                )
+            )
+            for _ in range(10):
+                if github_app._duplicate_push_triggers[api_url] == 2:
+                    break
+                await asyncio.sleep(0)
+            assert github_app._duplicate_push_triggers[api_url] == 2
+
+            second.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await second
+
+            try:
+                # Cancelling the waiting task must return its reserved slot.
+                assert github_app._duplicate_push_triggers[api_url] == 1
+            finally:
+                release_first.set()
+                await first
+
+            assert github_app._duplicate_push_triggers[api_url] == 0
+            await asyncio.wait_for(
+                github_app.handle_push_trigger_for_new_commits(
+                    body, "push", "alice", "1", "synchronize", {}, agent=None
+                ),
+                timeout=1,
+            )
+            assert push_trigger_env["count"] == 2
+
+        asyncio.run(exercise_cancelled_waiter())
 
     def test_invalid_pr_event_short_circuits(self, push_trigger_env):
         body = _push_body()

@@ -8,6 +8,17 @@ from pr_agent.git_providers.gitea_provider import GiteaProvider
 
 
 class TestGiteaProvider:
+    @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_diff_cache_starts_unloaded(self, mock_get_settings, _):
+        mock_get_settings.return_value.get.side_effect = lambda key, default=None: {
+            "GITEA.PERSONAL_ACCESS_TOKEN": "token",
+        }.get(key, default)
+
+        provider = GiteaProvider("https://gitea.example.com/repository")
+
+        assert provider.diff_files is None
+
     @patch('pr_agent.git_providers.gitea_provider.get_settings')
     @patch('pr_agent.git_providers.gitea_provider.giteapy.ApiClient')
     def test_gitea_provider_auth_header(self, mock_api_client_cls, mock_get_settings):
@@ -760,3 +771,28 @@ class TestGiteaProviderUserFacingLinks:
         provider.base_url_html = provider._resolve_base_url_html()
 
         assert provider.get_pr_url() == "http://forgejo:3000/owner/repo/pulls/4"
+
+
+class TestGiteaProviderUrlParsing:
+    """Cover both URL forms: Gitea sets ``pull_request.url`` to the web page,
+    Forgejo sets it to ``/api/v1/repos/{owner}/{repo}/pulls/{n}``.
+
+    ``__init__`` performs network calls, so build the provider with ``__new__``
+    and exercise the pure helper only.
+    """
+
+    @staticmethod
+    def _provider():
+        return GiteaProvider.__new__(GiteaProvider)
+
+    def test_parse_pr_url_accepts_web_and_api_forms(self):
+        provider = self._provider()
+        assert provider._parse_pr_url("https://gitea.example.com/owner/repo/pulls/1") == ("owner", "repo", 1)
+        assert provider._parse_pr_url(
+            "https://gitea.example.com/api/v1/repos/owner/repo/pulls/1") == ("owner", "repo", 1)
+
+    def test_parse_issue_url_accepts_web_and_api_forms(self):
+        provider = self._provider()
+        assert provider._parse_issue_url("https://gitea.example.com/owner/repo/issues/5") == ("owner", "repo", 5)
+        assert provider._parse_issue_url(
+            "https://gitea.example.com/api/v1/repos/owner/repo/issues/5") == ("owner", "repo", 5)

@@ -15,6 +15,44 @@ from pr_agent.log import get_logger
 MODEL = "text-embedding-ada-002"
 
 
+_EMBEDDING_CLIENTS = {}
+
+
+def _get_embedding_client(api_key: str):
+    """Return the openai client for this key, reusing its connection pool."""
+    if api_key not in _EMBEDDING_CLIENTS:
+        _EMBEDDING_CLIENTS[api_key] = openai.OpenAI(api_key=api_key)
+    return _EMBEDDING_CLIENTS[api_key]
+
+
+def _embed(texts: List[str]) -> List[List[float]]:
+    """Embed texts with the openai>=1.0 client that requirements.txt pins."""
+    client = _get_embedding_client(get_settings().openai.key)
+    response = client.embeddings.create(input=texts, model=MODEL)
+    return [record.embedding for record in response.data]
+
+
+def _embed_with_fallback(texts: List[str]) -> List[List[float]]:
+    """Embed a list, falling back to one by one, and refuse to return an all-zero set."""
+    try:
+        return _embed(texts)
+    except Exception as e:
+        get_logger().error("Failed to embed entire list, embedding one by one...",
+                           artifact={"error": str(e)})
+        embeds = []
+        failures = 0
+        for text in texts:
+            try:
+                embeds.append(_embed([text])[0])
+            except Exception:
+                failures += 1
+                embeds.append([0] * 1536)
+        if failures == len(texts):
+            raise RuntimeError(
+                "Failed to embed any issue text; refusing to index all-zero vectors") from e
+        return embeds
+
+
 class PRSimilarIssue:
     def __init__(self, issue_url: str, ai_handler, args: list = None):
         self.issue_url = issue_url
@@ -35,9 +73,7 @@ class PRSimilarIssue:
 
         if get_settings().pr_similar_issue.vectordb == "pinecone":
             try:
-                import pandas as pd
                 import pinecone
-                from pinecone_datasets import Dataset, DatasetMetadata
             except:
                 raise Exception("Please install 'pinecone' and 'pinecone_datasets' to use pinecone as vectordb")
             # assuming pinecone api key and environment are set in secrets file
@@ -178,9 +214,7 @@ class PRSimilarIssue:
         elif get_settings().pr_similar_issue.vectordb == "qdrant":
             try:
                 import qdrant_client
-                from qdrant_client.models import (Distance, FieldCondition,
-                                                  Filter, MatchValue,
-                                                  PointStruct, VectorParams)
+                from qdrant_client.models import Distance, FieldCondition, Filter, MatchValue, VectorParams
             except Exception:
                 raise Exception("Please install qdrant-client to use qdrant as vectordb")
 
@@ -276,12 +310,10 @@ class PRSimilarIssue:
         repo_name, original_issue_number = self.git_provider._parse_issue_url(self.issue_url.split('=')[-1])
         issue_main = self.git_provider.repo_obj.get_issue(original_issue_number)
         issue_str, comments, number = self._process_issue(issue_main)
-        openai.api_key = get_settings().openai.key
         get_logger().info('Done')
 
         get_logger().info('Querying...')
-        res = openai.Embedding.create(input=[issue_str], engine=MODEL)
-        embeds = [record['embedding'] for record in res['data']]
+        embeds = _embed([issue_str])
 
         relevant_issues_number_list = []
         relevant_comment_number_list = []
@@ -457,20 +489,8 @@ class PRSimilarIssue:
         get_logger().info('Done')
 
         get_logger().info('Embedding...')
-        openai.api_key = get_settings().openai.key
         list_to_encode = list(df["text"].values)
-        try:
-            res = openai.Embedding.create(input=list_to_encode, engine=MODEL)
-            embeds = [record['embedding'] for record in res['data']]
-        except:
-            embeds = []
-            get_logger().error('Failed to embed entire list, embedding one by one...')
-            for i, text in enumerate(list_to_encode):
-                try:
-                    res = openai.Embedding.create(input=[text], engine=MODEL)
-                    embeds.append(res['data'][0]['embedding'])
-                except:
-                    embeds.append([0] * 1536)
+        embeds = _embed_with_fallback(list_to_encode)
         df["values"] = embeds
         meta = DatasetMetadata.empty()
         meta.dense_model.dimension = len(embeds[0])
@@ -553,20 +573,8 @@ class PRSimilarIssue:
         get_logger().info('Done')
 
         get_logger().info('Embedding...')
-        openai.api_key = get_settings().openai.key
         list_to_encode = list(df["text"].values)
-        try:
-            res = openai.Embedding.create(input=list_to_encode, engine=MODEL)
-            embeds = [record['embedding'] for record in res['data']]
-        except:
-            embeds = []
-            get_logger().error('Failed to embed entire list, embedding one by one...')
-            for i, text in enumerate(list_to_encode):
-                try:
-                    res = openai.Embedding.create(input=[text], engine=MODEL)
-                    embeds.append(res['data'][0]['embedding'])
-                except:
-                    embeds.append([0] * 1536)
+        embeds = _embed_with_fallback(list_to_encode)
         df["vector"] = embeds
         get_logger().info('Done')
 
@@ -652,20 +660,8 @@ class PRSimilarIssue:
         get_logger().info('Done')
 
         get_logger().info('Embedding...')
-        openai.api_key = get_settings().openai.key
         list_to_encode = list(df["text"].values)
-        try:
-            res = openai.Embedding.create(input=list_to_encode, engine=MODEL)
-            embeds = [record['embedding'] for record in res['data']]
-        except Exception:
-            embeds = []
-            get_logger().error('Failed to embed entire list, embedding one by one...')
-            for i, text in enumerate(list_to_encode):
-                try:
-                    res = openai.Embedding.create(input=[text], engine=MODEL)
-                    embeds.append(res['data'][0]['embedding'])
-                except Exception:
-                    embeds.append([0] * 1536)
+        embeds = _embed_with_fallback(list_to_encode)
         df["vector"] = embeds
         get_logger().info('Done')
 

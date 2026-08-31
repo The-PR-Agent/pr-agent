@@ -11,28 +11,35 @@ from jinja2 import Environment, StrictUndefined
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
-from pr_agent.algo.pr_processing import (OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
-                                         get_pr_diff,
-                                         get_pr_diff_multiple_patchs,
-                                         retry_with_fallback_models)
+from pr_agent.algo.pr_processing import (
+    OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
+    get_pr_diff,
+    get_pr_diff_multiple_patchs,
+    retry_with_fallback_models,
+)
+from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.run_details import init_run_details
 from pr_agent.algo.skills_loader import get_skills_context
-from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.token_handler import TokenHandler
-from pr_agent.algo.utils import (ModelType, PRDescriptionHeader, clip_tokens,
-                                 get_max_tokens, get_user_labels, load_yaml,
-                                 set_custom_labels,
-                                 show_relevant_configurations,
-                                 show_run_details)
+from pr_agent.algo.utils import (
+    ModelType,
+    PRDescriptionHeader,
+    clip_tokens,
+    get_max_tokens,
+    get_user_labels,
+    load_yaml,
+    set_custom_labels,
+    show_relevant_configurations,
+    show_run_details,
+)
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers import (GithubProvider, get_git_provider,
-                                    get_git_provider_with_context)
+from pr_agent.git_providers import GithubProvider, get_git_provider_with_context
 from pr_agent.git_providers.git_provider import get_main_pr_language
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
 from pr_agent.tools.ticket_pr_compliance_check import (
-    extract_and_cache_pr_tickets, extract_ticket_links_from_pr_description,
-    extract_tickets)
+    extract_and_cache_pr_tickets,
+)
 
 
 class PRDescription:
@@ -102,13 +109,15 @@ class PRDescription:
 
     async def run(self):
         init_run_details()
+        progress_response = None
         try:
             get_logger().info(f"Generating a PR description for pr_id: {self.pr_id}")
             relevant_configs = {'pr_description': dict(get_settings().pr_description),
                                 'config': dict(get_settings().config)}
             get_logger().debug("Relevant configs", artifact=relevant_configs)
             if get_settings().config.publish_output and not get_settings().config.get('is_auto_command', False):
-                self.git_provider.publish_comment("Preparing PR description...", is_temporary=True)
+                progress_response = self.git_provider.publish_comment(
+                    "Preparing PR description...", is_temporary=True)
 
             # ticket extraction if exists
             await extract_and_cache_pr_tickets(self.git_provider, self.vars)
@@ -119,7 +128,6 @@ class PRDescription:
                 self._prepare_data()
             else:
                 get_logger().warning(f"Empty prediction, PR: {self.pr_id}")
-                self.git_provider.remove_initial_comment()
                 return None
 
             if get_settings().pr_description.enable_semantic_files_types:
@@ -129,7 +137,7 @@ class PRDescription:
             if get_settings().pr_description.publish_labels:
                 pr_labels = self._prepare_labels()
             else:
-                get_logger().debug(f"Publishing labels disabled")
+                get_logger().debug("Publishing labels disabled")
 
             if get_settings().pr_description.use_description_markers:
                 pr_title, pr_body, changes_walkthrough, pr_file_changes = self._prepare_pr_answer_with_markers()
@@ -171,15 +179,15 @@ class PRDescription:
                 # publish labels
                 if get_settings().pr_description.publish_labels and pr_labels and self.git_provider.is_supported("get_labels"):
                     original_labels = self.git_provider.get_pr_labels(update=True)
-                    get_logger().debug(f"original labels", artifact=original_labels)
+                    get_logger().debug("original labels", artifact=original_labels)
                     user_labels = get_user_labels(original_labels)
                     new_labels = pr_labels + user_labels
-                    get_logger().debug(f"published labels", artifact=new_labels)
+                    get_logger().debug("published labels", artifact=new_labels)
                     if set(new_labels) != set(original_labels):
                         get_logger().info(f"Setting describe labels:\n{new_labels}")
                         self.git_provider.publish_labels(new_labels)
                     else:
-                        get_logger().debug(f"Labels are the same, not updating")
+                        get_logger().debug("Labels are the same, not updating")
 
                 # publish description
                 if get_settings().pr_description.publish_description_as_comment:
@@ -196,6 +204,10 @@ class PRDescription:
                     # Pass None when the title is not AI-generated so the provider
                     # leaves it untouched, avoiding reverting a manual edit (#2474).
                     title_to_publish = pr_title.strip() if get_settings().pr_description.generate_ai_title else None
+                    # Prepend a hidden HTML comment so recognition can match it
+                    # anywhere in the body without depending on visible section
+                    # headers that a human might quote.
+                    pr_body = '<!-- pr-agent-generated -->\n' + pr_body
                     self.git_provider.publish_description(title_to_publish, pr_body)
 
                     # publish final update message
@@ -205,7 +217,6 @@ class PRDescription:
                             pr_url = self.git_provider.get_pr_url()
                             update_comment = f"**[PR Description]({pr_url})** updated to latest commit ({latest_commit_url})"
                             self.git_provider.publish_comment(update_comment)
-                self.git_provider.remove_initial_comment()
             else:
                 get_logger().info('PR description, but not published since publish_output is False.')
                 get_settings().data = {"artifact": pr_body}
@@ -215,6 +226,20 @@ class PRDescription:
                                artifact={"traceback": traceback.format_exc()})
             if get_settings().config.get("propagate_tool_errors", False):
                 raise
+        finally:
+            if progress_response is not None:
+                try:
+                    self.git_provider.edit_comment(
+                        progress_response, "PR description generation finished.")
+                except Exception as e:
+                    get_logger().exception(
+                        f"Failed to update PR description progress comment, "
+                        f"error: {e}")
+                try:
+                    self.git_provider.remove_comment(progress_response)
+                except Exception as e:
+                    get_logger().exception(
+                        f"Failed to remove PR description progress comment, error: {e}")
 
         return ""
 
@@ -235,7 +260,7 @@ class PRDescription:
             self.patches_diff = patches_diff
             if patches_diff:
                 # generate the prediction
-                get_logger().debug(f"PR diff", artifact=self.patches_diff)
+                get_logger().debug("PR diff", artifact=self.patches_diff)
                 self.prediction = await self._get_prediction(model, patches_diff, prompt="pr_description_prompt")
 
                 # extend the prediction with additional files not shown
@@ -323,7 +348,7 @@ class PRDescription:
                                                        num_input_tokens=tokens_files_walkthrough)
 
             # PR header inference
-            get_logger().debug(f"PR diff only description", artifact=files_walkthrough_prompt)
+            get_logger().debug("PR diff only description", artifact=files_walkthrough_prompt)
             prediction_headers = await self._get_prediction(model, patches_diff=files_walkthrough_prompt,
                                                             prompt="pr_description_only_description_prompts")
             prediction_headers = prediction_headers.strip().removeprefix('```yaml').strip('`').strip()
@@ -367,7 +392,7 @@ class PRDescription:
                 # add up to MAX_EXTRA_FILES_TO_OUTPUT files
                 counter_extra_files += 1
                 if counter_extra_files > MAX_EXTRA_FILES_TO_OUTPUT:
-                    extra_file_yaml = f"""\
+                    extra_file_yaml = """\
 - filename: |
     Additional files not shown
   changes_title: |
@@ -673,7 +698,7 @@ class PRDescription:
                 filename = file['filename'].replace("'", "`").replace('"', '`')
                 changes_summary = file.get('changes_summary', "")
                 if not changes_summary and self.vars.get('include_file_summary_changes', True):
-                    get_logger().warning(f"Empty changes summary in file label dict, skipping file",
+                    get_logger().warning("Empty changes summary in file label dict, skipping file",
                                          artifact={"file": file})
                     continue
                 changes_summary = changes_summary.strip()
@@ -702,7 +727,7 @@ class PRDescription:
             return pr_body, pr_comments
         try:
             pr_body += "<table>"
-            header = f"Relevant files"
+            header = "Relevant files"
             delta = 75
             # header += "&nbsp; " * delta
             pr_body += f"""<thead><tr><th></th><th align="left">{header}</th></tr></thead>"""
@@ -715,7 +740,7 @@ class PRDescription:
                 if use_collapsible_file_list:
                     pr_body += f"""<td><details><summary>{len(list_tuples)} files</summary><table>"""
                 else:
-                    pr_body += f"""<td><table>"""
+                    pr_body += """<td><table>"""
                 for filename, file_changes_title, file_change_description in list_tuples:
                     filename = filename.replace("'", "`").rstrip()
                     filename_publish = filename.split("/")[-1]

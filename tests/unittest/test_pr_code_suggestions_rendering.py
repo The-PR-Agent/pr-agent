@@ -133,6 +133,31 @@ async def test_push_inline_renders_body_with_score_and_label():
 
 
 @pytest.mark.asyncio
+async def test_push_inline_publishes_partial_coverage_notice():
+    git_provider = MagicMock()
+    git_provider.diff_files = [
+        FilePatchInfo(
+            base_file="",
+            head_file="def f():\n    return old()\n",
+            patch="",
+            filename="app.py",
+        )
+    ]
+    git_provider.publish_code_suggestions.return_value = True
+    git_provider.supports_code_suggestions_artifact.return_value = False
+    tool = _make_tool(git_provider)
+    tool.failed_chunk_count = 1
+    tool.total_chunk_count = 2
+
+    await tool.push_inline_code_suggestions({"code_suggestions": [_suggestion()]})
+
+    git_provider.publish_code_suggestions.assert_called_once()
+    coverage_comment = git_provider.publish_comment.call_args.args[0]
+    assert "1 of 2 analysis chunks failed" in coverage_comment
+    assert "successful chunks only" in coverage_comment
+
+
+@pytest.mark.asyncio
 async def test_push_inline_renders_body_without_score_when_missing_or_zero():
     git_provider = MagicMock()
     git_provider.diff_files = [
@@ -169,6 +194,21 @@ async def test_push_inline_publishes_no_suggestions_comment_when_empty():
     git_provider.publish_code_suggestions.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_push_inline_qualifies_empty_partial_results():
+    git_provider = MagicMock()
+    tool = _make_tool(git_provider)
+    tool.failed_chunk_count = 1
+    tool.total_chunk_count = 3
+
+    await tool.push_inline_code_suggestions({"code_suggestions": []})
+
+    body = git_provider.publish_comment.call_args.args[0]
+    assert "successfully analyzed chunks" in body
+    assert "1 of 3 analysis chunks failed" in body
+    assert "could not be analyzed" in body
+
+
 # ---------------------------------------------------------------------------
 # publish_no_suggestions
 # ---------------------------------------------------------------------------
@@ -192,15 +232,16 @@ async def test_publish_no_suggestions_resolves_thread_instead_of_replacing_it():
 
         git_provider = MagicMock()
         git_provider.should_publish_improve_as_thread.return_value = True
+        progress_comment = MagicMock(id=7)
         tool = _make_tool(git_provider)
-        tool.progress_response = "progress-comment"
+        tool.progress_response = progress_comment
 
         await tool.publish_no_suggestions()
 
         git_provider.edit_comment.assert_called_once()
-        assert git_provider.edit_comment.call_args.args[0] == "progress-comment"
+        assert git_provider.edit_comment.call_args.args[0] is progress_comment
         git_provider.remove_comment.assert_not_called()
-        git_provider.resolve_comment_thread.assert_called_once_with("progress-comment")
+        git_provider.resolve_comment_thread.assert_called_once_with(7)
     finally:
         restore_settings(snapshot)
 
@@ -216,7 +257,7 @@ async def test_publish_no_suggestions_does_not_resolve_when_not_threaded():
         git_provider = MagicMock()
         git_provider.should_publish_improve_as_thread.return_value = False
         tool = _make_tool(git_provider)
-        tool.progress_response = "progress-comment"
+        tool.progress_response = MagicMock(id=7)
 
         await tool.publish_no_suggestions()
 
@@ -238,7 +279,7 @@ async def test_publish_no_suggestions_resolves_freshly_published_thread():
 
         git_provider = MagicMock()
         git_provider.should_publish_improve_as_thread.return_value = True
-        git_provider.publish_comment.return_value = "new-comment"
+        git_provider.publish_comment.return_value = MagicMock(id=11)
         tool = _make_tool(git_provider)
         tool.progress_response = None
 
@@ -246,7 +287,7 @@ async def test_publish_no_suggestions_resolves_freshly_published_thread():
 
         git_provider.publish_comment.assert_called_once()
         assert git_provider.publish_comment.call_args.kwargs.get("as_thread") is True
-        git_provider.resolve_comment_thread.assert_called_once_with("new-comment")
+        git_provider.resolve_comment_thread.assert_called_once_with(11)
     finally:
         restore_settings(snapshot)
 

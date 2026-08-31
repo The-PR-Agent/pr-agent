@@ -1,32 +1,39 @@
 import difflib
-import hashlib
 import re
 import urllib.parse
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from typing import Any, Optional, Tuple, Union
-from urllib.parse import parse_qs, urlparse
+from typing import Optional, Tuple
+from urllib.parse import urlparse
 
 import gitlab
-import requests
-from gitlab import (GitlabAuthenticationError, GitlabCreateError,
-                    GitlabGetError, GitlabUpdateError)
+from gitlab import GitlabAuthenticationError, GitlabCreateError, GitlabGetError, GitlabUpdateError
 
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 
 from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import decode_if_bytes
-from ..algo.inline_comment_dedup import (body_fingerprint, body_with_markers,
-                                         code_fingerprint,
-                                         get_inline_comment_store)
+from ..algo.inline_comment_dedup import (
+    body_fingerprint,
+    body_with_markers,
+    code_fingerprint,
+    get_inline_comment_store,
+    is_agent_inline_comment,
+    marker_fingerprints,
+)
 from ..algo.language_handler import is_valid_file
-from ..algo.utils import (PRReviewHeader, clip_tokens,
-                          find_line_number_of_relevant_line_in_file,
-                          load_large_diff)
+from ..algo.utils import (
+    PRCodeSuggestionsHeader,
+    PRCodeSuggestionsIdentity,
+    clip_tokens,
+    comment_matches_any_identity,
+    find_line_number_of_relevant_line_in_file,
+    get_pr_review_comment_identifiers,
+    load_large_diff,
+)
 from ..config_loader import get_settings
 from ..log import get_logger
-from .git_provider import (MAX_FILES_ALLOWED_FULL, GitProvider, IncrementalPR,
-                           get_cached_global_settings)
+from .git_provider import MAX_FILES_ALLOWED_FULL, GitProvider, IncrementalPR, get_cached_global_settings
 
 
 class DiffNotFoundError(Exception):
@@ -57,6 +64,35 @@ def _parse_gitlab_iso_datetime(value) -> Optional[datetime]:
         return dt
     except (ValueError, AttributeError):
         return None
+
+
+def _is_outdated_own_inline_thread(discussion, own_user_id: int, current_head_sha: str) -> bool:
+    notes = discussion.attributes.get('notes') or []
+    if not notes or not isinstance(notes[0], dict):
+        return False
+    opener = notes[0]
+    if opener.get('resolved') or opener.get('resolvable') is False:
+        return False
+    position = opener.get('position')
+    if not isinstance(position, dict) or position.get('position_type') != 'text':
+        return False
+    if position.get('new_line') is None and position.get('old_line') is None:
+        return False
+    recorded_head_sha = position.get('head_sha')
+    if not recorded_head_sha or recorded_head_sha == current_head_sha:
+        return False
+    if not is_agent_inline_comment(opener.get('body')):
+        return False
+    for note in notes:
+        if not isinstance(note, dict):
+            return False
+        if note.get('system'):
+            continue
+        author = note.get('author')
+        author_id = author.get('id') if isinstance(author, dict) else None
+        if author_id != own_user_id:
+            return False
+    return True
 
 
 class _GitLabIncrementalCommit:
@@ -361,6 +397,17 @@ class GitLabProvider(GitProvider):
                 })
         return out
 
+    def _get_merge_request_changes(self) -> dict:
+        """Retrieve the complete merge request change set when GitLab reports overflow."""
+        changes = self.mr.changes()
+        if isinstance(changes, dict) and changes.get("overflow"):
+            get_logger().warning(
+                f"GitLab returned an overflowed diff for merge request {self.id_mr}; "
+                "retrying with access_raw_diffs=True"
+            )
+            return self.mr.changes(access_raw_diffs=True)
+        return changes
+
     def is_supported(self, capability: str) -> bool:
         if capability in ['create_inline_comment', 'publish_inline_comments',
             'publish_file_comments']: # gfm_markdown is supported in gitlab !
@@ -401,15 +448,16 @@ class GitLabProvider(GitProvider):
             get_logger().error("Cannot get canonical URL parts: missing either context PR URL or a repo GIT URL")
             return ("", "")
         if not repo_git_url: #Use PR url as context
-            repo_path = self._get_project_path_from_pr_or_issue_url(self.pr_url)
             try:
                 desired_branch = self.gl.projects.get(self.id_project).default_branch
             except Exception as e:
                 get_logger().exception(f"Cannot get PR: {self.pr_url} default branch. Tried project ID: {self.id_project}")
                 return ("", "")
+            # numeric-alias URLs need the "projects/" segment, same as get_line_link
+            prefix = f"{self._get_project_web_url()}/-/blob/{desired_branch}"
         else: #Use repo git url
             repo_path = repo_git_url.split('.git')[0].split('.com/')[-1]
-        prefix = f"{self.gitlab_url}/{repo_path}/-/blob/{desired_branch}"
+            prefix = f"{self.gitlab_url}/{repo_path}/-/blob/{desired_branch}"
         suffix = "?ref_type=heads"  # gitlab cloud adds this suffix. gitlab server does not, but it is harmless.
         return (prefix, suffix)
 
@@ -428,17 +476,17 @@ class GitLabProvider(GitProvider):
             get_logger().error(f"Could not get diff for merge request {self.id_mr}")
             raise DiffNotFoundError(f"Could not get diff for merge request {self.id_mr}") from e
 
-    # Anchor-note prefixes per incremental "kind". An incremental run looks for the most recent
-    # prior note matching ANY of these prefixes and uses its timestamp as the timeline anchor.
+    # Match the most recent prior note for each incremental kind against any accepted identity,
+    # then use its timestamp as the timeline anchor.
+    _SUGGESTIONS_STABLE_ANCHORS = (
+        PRCodeSuggestionsIdentity.SUMMARY.value,
+        PRCodeSuggestionsIdentity.NO_SUGGESTIONS.value,
+        "**Suggestion:**",  # commitable-suggestions inline mode
+    )
+    _SUGGESTIONS_LEGACY_ANCHORS = (PRCodeSuggestionsHeader.SUMMARY.value,)
     _INCREMENTAL_ANCHOR_PREFIXES = {
-        "review": (
-            PRReviewHeader.REGULAR.value,         # "## PR Reviewer Guide"
-            PRReviewHeader.INCREMENTAL.value,     # "## Incremental PR Reviewer Guide"
-        ),
-        "suggestions": (
-            "## PR Code Suggestions ✨",           # summary-table mode
-            "**Suggestion:**",                     # commitable-suggestions inline mode
-        ),
+        "review": get_pr_review_comment_identifiers(full=True, incremental=True),
+        "suggestions": _SUGGESTIONS_STABLE_ANCHORS + _SUGGESTIONS_LEGACY_ANCHORS,
     }
 
     def get_incremental_commits(self, incremental: Optional[IncrementalPR] = None, kind: str = "review"):
@@ -469,7 +517,11 @@ class GitLabProvider(GitProvider):
 
         kind = getattr(self, '_incremental_kind', 'review')
         prefixes = self._INCREMENTAL_ANCHOR_PREFIXES.get(kind, ())
-        self.previous_review = self._find_anchor_note(prefixes) if prefixes else None
+        self.previous_review = (
+            self._find_anchor_note(prefixes, prefer_latest_activity=kind == "suggestions")
+            if prefixes
+            else None
+        )
         if not self.previous_review:
             get_logger().info(
                 f"No previous {kind} comment found, will fall back to a full run"
@@ -539,7 +591,7 @@ class GitLabProvider(GitProvider):
         try:
             mr_change_paths = {
                 c.get('new_path')
-                for c in self.mr.changes().get('changes', [])
+                for c in self._get_merge_request_changes().get('changes', [])
                 if c.get('new_path')
             }
         except Exception as e:
@@ -596,34 +648,30 @@ class GitLabProvider(GitProvider):
     def get_previous_review(self, *, full: bool, incremental: bool):
         if not (full or incremental):
             raise ValueError("At least one of full or incremental must be True")
-        prefixes = []
-        if full:
-            prefixes.append(PRReviewHeader.REGULAR.value)
-        if incremental:
-            prefixes.append(PRReviewHeader.INCREMENTAL.value)
-        return self._find_anchor_note(prefixes)
+        identifiers = get_pr_review_comment_identifiers(full=full, incremental=incremental)
+        return self._find_anchor_note(identifiers)
 
-    def _find_anchor_note(self, prefixes):
-        """Return the most recent MR note whose body starts with any of `prefixes`.
+    def _find_anchor_note(self, identities, *, prefer_latest_activity: bool = False):
+        """Return the most recent MR note whose body matches any supplied identity.
 
         Used by incremental flows (`/review -i`, `/improve -i`) to find the timestamp
         we anchor the commit timeline on. Returns a `_GitLabIncrementalNote` adapter
         with `.created_at` parsed to a naive UTC datetime (possibly `None` when the
         GitLab payload had an unexpected shape), or `None` if no match.
 
-        We rely on GitLab returning notes in `created_at DESC` order (the API default)
-        and take the first match — re-sorting locally with a `datetime.min` fallback
-        for unparseable timestamps would silently demote the newest match in favour
-        of an older parseable one, leading to commits being re-reviewed. If the chosen
-        anchor's timestamp doesn't parse, `_get_incremental_commits` falls back to a
-        full run via the existing `last_seen_commit is None` branch.
+        By default, rely on GitLab returning notes in `created_at DESC` order (the API
+        default) and take the first match. Suggestions can instead compare `anchor_time`
+        across every matching stable or legacy identity so an older persistent note that
+        was edited more recently wins. If the newest-created match has an unparseable
+        timestamp, retain it so `_get_incremental_commits` safely falls back to a full run
+        instead of silently demoting it in favour of an older parseable note.
 
         Notes authored by other users are skipped when the authenticated (bot) user is
         known: a human comment that merely starts with `**Suggestion:**` must not shift
         the anchor. When authorship can't be established (e.g. job-token auth), we keep
-        the prefix-only behaviour rather than disabling incremental runs.
+        identity-only matching rather than disabling incremental runs.
         """
-        if not prefixes:
+        if not identities:
             return None
         # Use hasattr (not truthy) so a legitimately empty notes list still counts as cached;
         # otherwise we'd re-fetch from GitLab on every call for MRs that have no notes.
@@ -635,11 +683,12 @@ class GitLabProvider(GitProvider):
                 return None
         mr_web_url = getattr(self.mr, 'web_url', None)
         own_user_id = self._get_own_user_id()
+        selected_note = None
         for note in self._incremental_notes_cache:
             body = getattr(note, 'body', None)
             if not isinstance(body, str):
                 continue
-            if not any(body.startswith(prefix) for prefix in prefixes):
+            if not comment_matches_any_identity(body, identities):
                 continue
             if own_user_id is not None:
                 author = getattr(note, 'author', None)
@@ -650,8 +699,16 @@ class GitLabProvider(GitProvider):
                         f"user (author {author_id}, bot {own_user_id})"
                     )
                     continue
-            return _GitLabIncrementalNote(note, mr_web_url=mr_web_url)
-        return None
+            candidate = _GitLabIncrementalNote(note, mr_web_url=mr_web_url)
+            if not prefer_latest_activity:
+                return candidate
+            if selected_note is None:
+                selected_note = candidate
+                if selected_note.anchor_time is None:
+                    return selected_note
+            elif candidate.anchor_time is not None and candidate.anchor_time > selected_note.anchor_time:
+                selected_note = candidate
+        return selected_note
 
     def _get_own_user_id(self) -> Optional[int]:
         """ID of the authenticated user (the one posting pr-agent notes), or None when
@@ -663,7 +720,7 @@ class GitLabProvider(GitProvider):
             except Exception as e:
                 get_logger().warning(
                     f"Could not resolve the authenticated GitLab user; "
-                    f"incremental anchor notes will not be filtered by author: {e}"
+                    f"author-based filtering is disabled for this run: {e}"
                 )
                 self._own_user_id = None
         return self._own_user_id
@@ -744,7 +801,7 @@ class GitLabProvider(GitProvider):
             if not head_sha_for_content:
                 head_sha_for_content = (self.mr.diff_refs or {}).get('head_sha')
         else:
-            raw_changes = self.mr.changes().get('changes', [])
+            raw_changes = self._get_merge_request_changes().get('changes', [])
             raw_changes = self._expand_submodule_changes(raw_changes)
             base_sha_for_content = self.mr.diff_refs['base_sha']
             head_sha_for_content = self.mr.diff_refs['head_sha']
@@ -776,7 +833,7 @@ class GitLabProvider(GitProvider):
                 new_file_content_str = self.get_pr_file_content(diff['new_path'], head_sha_for_content)
             else:
                 if counter_valid == MAX_FILES_ALLOWED_FULL:
-                    get_logger().info(f"Too many files in PR, will avoid loading full content for rest of files")
+                    get_logger().info("Too many files in PR, will avoid loading full content for rest of files")
                 original_file_content_str = ''
                 new_file_content_str = ''
 
@@ -822,7 +879,7 @@ class GitLabProvider(GitProvider):
                 and getattr(self, 'unreviewed_files_map', None)):
             return list(self.unreviewed_files_map.keys())
         if not self.git_files:
-            raw_changes = self.mr.changes().get('changes', [])
+            raw_changes = self._get_merge_request_changes().get('changes', [])
             raw_changes = self._expand_submodule_changes(raw_changes)
             self.git_files = [c.get('new_path') for c in raw_changes if c.get('new_path')]
         return self.git_files
@@ -854,14 +911,27 @@ class GitLabProvider(GitProvider):
     def should_publish_improve_as_thread(self) -> bool:
         return bool(get_settings().get("GITLAB.PUBLISH_IMPROVE_AS_THREAD", False))
 
+    def supports_review_comment_identity(self) -> bool:
+        return True
+
     def publish_persistent_comment(self, pr_comment: str,
                                    initial_header: str,
                                    update_header: bool = True,
                                    name='review',
                                    final_update_message=True,
-                                   as_thread: bool = False):
-        self.publish_persistent_comment_full(pr_comment, initial_header, update_header, name, final_update_message,
-                                             as_thread=as_thread)
+                                   as_thread: bool = False,
+                                   identity_marker: str | None = None,
+                                   legacy_initial_header: str | None = None):
+        self.publish_persistent_comment_full(
+            pr_comment,
+            initial_header,
+            update_header,
+            name,
+            final_update_message,
+            as_thread=as_thread,
+            identity_marker=identity_marker,
+            legacy_initial_header=legacy_initial_header,
+        )
 
     def publish_comment(self, mr_comment: str, is_temporary: bool = False, as_thread: bool = False):
         if is_temporary and not get_settings().config.publish_output_progress:
@@ -910,22 +980,62 @@ class GitLabProvider(GitProvider):
         except Exception as e:
             get_logger().warning(f"Failed to reopen resolved review thread: {e}")
 
-    def resolve_comment_thread(self, comment):
+    def resolve_comment_thread(self, comment_id) -> bool:
+        # Resolves by note id. /ask_line addresses threads by discussion id instead, so
+        # supports_thread_resolution() stays False and that path keeps skipping GitLab.
         try:
-            # Notes carry their own resolution state; skip the full discussions scan (the API offers no
-            # note -> discussion lookup) unless the note reports it is actually resolvable and open.
-            if getattr(comment, 'resolvable', None) is False or getattr(comment, 'resolved', None) is True:
-                return
             for discussion in self.mr.discussions.list(get_all=True):
                 notes = discussion.attributes.get('notes', [])
-                if not any(note.get('id') == comment.id for note in notes):
+                if not any(note.get('id') == comment_id for note in notes):
                     continue
                 if any(note.get('resolvable') and not note.get('resolved') for note in notes):
                     discussion.resolved = True
                     discussion.save()
-                return
+                    return True
+                return False
         except Exception as e:
             get_logger().warning(f"Failed to resolve comment thread: {e}")
+        return False
+
+    def resolve_outdated_inline_threads(self):
+        if not get_settings().get("GITLAB.RESOLVE_OUTDATED_INLINE_THREADS", False):
+            return
+        own_user_id = self._get_own_user_id()
+        try:
+            current_head_sha = self.mr.diff_refs['head_sha']
+        except (KeyError, TypeError, AttributeError):
+            current_head_sha = None
+        if own_user_id is None or not current_head_sha:
+            get_logger().warning(
+                f"Skipping outdated inline thread cleanup on merge request {self.id_mr} "
+                f"(bot user: {own_user_id}, current head sha: {current_head_sha})"
+            )
+            return
+        try:
+            discussions = self.mr.discussions.list(get_all=True)
+        except Exception as e:
+            get_logger().warning(f"Failed to list discussions of merge request {self.id_mr}: {e}")
+            return
+        resolved = 0
+        released_fps = set()
+        for discussion in discussions:
+            discussion_id = getattr(discussion, 'id', None)
+            try:
+                if not _is_outdated_own_inline_thread(discussion, own_user_id, current_head_sha):
+                    continue
+                discussion.resolved = True
+                discussion.save()
+                resolved += 1
+                for note in discussion.attributes.get('notes') or []:
+                    if isinstance(note, dict):
+                        released_fps |= marker_fingerprints(note.get('body'))
+            except Exception as e:
+                get_logger().warning(f"Failed to resolve outdated inline thread {discussion_id}: {e}")
+        if released_fps:
+            get_inline_comment_store(self).release(released_fps)
+        if resolved:
+            get_logger().info(
+                f"Resolved {resolved} outdated inline thread(s) on merge request {self.id_mr}")
 
     def edit_comment_from_comment_id(self, comment_id: int, body: str):
         body = self.limit_output_characters(body, self.max_comment_chars)
@@ -958,9 +1068,11 @@ class GitLabProvider(GitProvider):
     def send_inline_comment(self, body: str, edit_type: str, found: bool, relevant_file: str,
                             relevant_line_in_file: str,
                             source_line_no: int, target_file: str, target_line_no: int,
-                            original_suggestion=None) -> None:
+                            original_suggestion=None, as_draft: bool = False) -> bool:
+        """Returns True iff a comment (live or draft, primary or fallback) was created."""
         if not found:
             get_logger().info(f"Could not find position for {relevant_file} {relevant_line_in_file}")
+            return False
         else:
             store = None
             body_fp = code_fp = None
@@ -976,7 +1088,7 @@ class GitLabProvider(GitProvider):
                     get_logger().info(
                         f"Persistent inline comments: skipping duplicate inline "
                         f"comment on {relevant_file}:{anchor_line}")
-                    return
+                    return False
                 body = body_with_markers(
                     body, body_fp, code_fp, getattr(self, "max_comment_chars", None))
             # in order to have exact sha's we have to find correct diff for this change
@@ -996,76 +1108,100 @@ class GitLabProvider(GitProvider):
                 pos_obj['new_line'] = target_line_no - 1
                 pos_obj['old_line'] = source_line_no - 1
             get_logger().debug(f"Creating comment in MR {self.id_mr} with body {body} and position {pos_obj}")
-            try:
+            created = self._create_suggestion_note(as_draft, body, pos_obj, diff, target_file, relevant_file,
+                                                    original_suggestion, store, body_fp, code_fp)
+            if not created and as_draft:
+                # Draft notes are unavailable/erroring outright for this MR (unsupported GitLab
+                # version, insufficient permissions, ...) - degrade to a normal live comment rather
+                # than silently dropping the suggestion. It publishes immediately and falls outside
+                # the batch, which is an acceptable trade-off against losing it entirely.
+                get_logger().warning(
+                    f"Draft note creation failed for MR {self.id_mr}; retrying this suggestion as a "
+                    f"live comment instead of a draft")
+                created = self._create_suggestion_note(False, body, pos_obj, diff, target_file, relevant_file,
+                                                        original_suggestion, store, body_fp, code_fp)
+            return created
+
+    def _create_suggestion_note(self, as_draft: bool, body: str, pos_obj: dict, diff, target_file,
+                                relevant_file: str, original_suggestion, store, body_fp, code_fp) -> bool:
+        """Creates the anchored suggestion comment, falling back to a general file note if GitLab
+        rejects the position (e.g. the suggestion isn't on a '+' line). Returns True iff either
+        attempt succeeded."""
+        try:
+            if as_draft:
+                self.mr.draft_notes.create({'note': body, 'position': pos_obj})
+            else:
                 self.mr.discussions.create({'body': body, 'position': pos_obj})
+            if store is not None:
+                store.add(body_fp)
+                store.add(code_fp)
+            return True
+        except Exception as e:
+            try:
+                # fallback - create a general note on the file in the MR
+                if 'suggestion_orig_location' in original_suggestion:
+                    line_start = original_suggestion['suggestion_orig_location']['start_line']
+                    line_end = original_suggestion['suggestion_orig_location']['end_line']
+                    old_code_snippet = original_suggestion['prev_code_snippet']
+                    new_code_snippet = original_suggestion['new_code_snippet']
+                    content = original_suggestion['suggestion_summary']
+                    label = original_suggestion['category']
+                    if 'score' in original_suggestion:
+                        score = original_suggestion['score']
+                    else:
+                        score = 7
+                else:
+                    line_start = original_suggestion['relevant_lines_start']
+                    line_end = original_suggestion['relevant_lines_end']
+                    old_code_snippet = original_suggestion['existing_code']
+                    new_code_snippet = original_suggestion['improved_code']
+                    content = original_suggestion['suggestion_content']
+                    label = original_suggestion['label']
+                    score = original_suggestion.get('score', 7)
+
+                if hasattr(self, 'main_language'):
+                    language = self.main_language
+                else:
+                    language = ''
+                link = self.get_line_link(relevant_file, line_start, line_end)
+                body_fallback =f"**Suggestion:** {content} [{label}, importance: {score}]\n\n"
+                body_fallback +=f"\n\n<details><summary>[{target_file.filename} [{line_start}-{line_end}]]({link}):</summary>\n\n"
+                body_fallback += "\n\n___\n\n`(Cannot implement directly - GitLab API allows committable suggestions strictly on MR diff lines)`"
+                body_fallback+="</details>\n\n"
+                diff_patch = difflib.unified_diff(old_code_snippet.split('\n'),
+                                            new_code_snippet.split('\n'), n=999)
+                patch_orig = "\n".join(diff_patch)
+                patch = "\n".join(patch_orig.splitlines()[5:]).strip('\n')
+                diff_code = f"\n\n```diff\n{patch.rstrip()}\n```"
+                body_fallback += diff_code
+
+                if store is not None:
+                    body_fallback = body_with_markers(
+                        body_fallback, body_fp, code_fp, getattr(self, "max_comment_chars", None))
+                # Create a general note on the file in the MR
+                fallback_position = {
+                    'base_sha': diff.base_commit_sha,
+                    'start_sha': diff.start_commit_sha,
+                    'head_sha': diff.head_commit_sha,
+                    'position_type': 'text',
+                    'file_path': f'{target_file.filename}',
+                }
+                if as_draft:
+                    self.mr.draft_notes.create({'note': body_fallback, 'position': fallback_position})
+                else:
+                    self.mr.notes.create({'body': body_fallback, 'position': fallback_position})
+                get_logger().debug(f"Created fallback comment in MR {self.id_mr} with position {pos_obj}")
                 if store is not None:
                     store.add(body_fp)
                     store.add(code_fp)
+                return True
+
             except Exception as e:
-                try:
-                    # fallback - create a general note on the file in the MR
-                    if 'suggestion_orig_location' in original_suggestion:
-                        line_start = original_suggestion['suggestion_orig_location']['start_line']
-                        line_end = original_suggestion['suggestion_orig_location']['end_line']
-                        old_code_snippet = original_suggestion['prev_code_snippet']
-                        new_code_snippet = original_suggestion['new_code_snippet']
-                        content = original_suggestion['suggestion_summary']
-                        label = original_suggestion['category']
-                        if 'score' in original_suggestion:
-                            score = original_suggestion['score']
-                        else:
-                            score = 7
-                    else:
-                        line_start = original_suggestion['relevant_lines_start']
-                        line_end = original_suggestion['relevant_lines_end']
-                        old_code_snippet = original_suggestion['existing_code']
-                        new_code_snippet = original_suggestion['improved_code']
-                        content = original_suggestion['suggestion_content']
-                        label = original_suggestion['label']
-                        score = original_suggestion.get('score', 7)
-
-                    if hasattr(self, 'main_language'):
-                        language = self.main_language
-                    else:
-                        language = ''
-                    link = self.get_line_link(relevant_file, line_start, line_end)
-                    body_fallback =f"**Suggestion:** {content} [{label}, importance: {score}]\n\n"
-                    body_fallback +=f"\n\n<details><summary>[{target_file.filename} [{line_start}-{line_end}]]({link}):</summary>\n\n"
-                    body_fallback += f"\n\n___\n\n`(Cannot implement directly - GitLab API allows committable suggestions strictly on MR diff lines)`"
-                    body_fallback+="</details>\n\n"
-                    diff_patch = difflib.unified_diff(old_code_snippet.split('\n'),
-                                                new_code_snippet.split('\n'), n=999)
-                    patch_orig = "\n".join(diff_patch)
-                    patch = "\n".join(patch_orig.splitlines()[5:]).strip('\n')
-                    diff_code = f"\n\n```diff\n{patch.rstrip()}\n```"
-                    body_fallback += diff_code
-
-                    if store is not None:
-                        body_fallback = body_with_markers(
-                            body_fallback, body_fp, code_fp, getattr(self, "max_comment_chars", None))
-                    # Create a general note on the file in the MR
-                    self.mr.notes.create({
-                        'body': body_fallback,
-                        'position': {
-                            'base_sha': diff.base_commit_sha,
-                            'start_sha': diff.start_commit_sha,
-                            'head_sha': diff.head_commit_sha,
-                            'position_type': 'text',
-                            'file_path': f'{target_file.filename}',
-                        }
-                    })
-                    get_logger().debug(f"Created fallback comment in MR {self.id_mr} with position {pos_obj}")
-                    if store is not None:
-                        store.add(body_fp)
-                        store.add(code_fp)
-
-                    # get_logger().debug(
-                    #     f"Failed to create comment in MR {self.id_mr} with position {pos_obj} (probably not a '+' line)")
-                except Exception as e:
-                    get_logger().exception(f"Failed to create comment in MR {self.id_mr}")
+                get_logger().exception(f"Failed to create comment in MR {self.id_mr}")
+                return False
 
     def get_relevant_diff(self, relevant_file: str, relevant_line_in_file: str) -> Optional[dict]:
-        _changes = self.mr.changes()  # dict
+        _changes = self._get_merge_request_changes()
         _changes['changes'] = self._expand_submodule_changes(_changes.get('changes', []))
         changes = _changes
         if not changes:
@@ -1083,6 +1219,12 @@ class GitLabProvider(GitProvider):
         return self.last_diff  # fallback to the latest diff if no relevant diff is found
 
     def publish_code_suggestions(self, code_suggestions: list) -> bool:
+        # Runs first so the fingerprints it frees are in the store before any dedup lookup.
+        self.resolve_outdated_inline_threads()
+        # When true, suggestions are queued as GitLab draft notes and published together in a single
+        # batch at the end, instead of each one going out as its own live discussion (and its own
+        # notification/email) as soon as it's created.
+        as_review = get_settings().get("gitlab.publish_code_suggestions_as_review", False)
         for suggestion in code_suggestions:
             try:
                 if suggestion and 'original_suggestion' in suggestion:
@@ -1116,10 +1258,40 @@ class GitLabProvider(GitProvider):
                 found = True
                 edit_type = 'addition'
 
-                self.send_inline_comment(body, edit_type, found, relevant_file, relevant_line_in_file, source_line_no,
-                                         target_file, target_line_no, original_suggestion)
+                self.send_inline_comment(body, edit_type, found, relevant_file, relevant_line_in_file,
+                                         source_line_no, target_file, target_line_no, original_suggestion,
+                                         as_draft=as_review)
             except Exception as e:
                 get_logger().exception(f"Could not publish code suggestion:\nsuggestion: {suggestion}\nerror: {e}")
+
+        if as_review:
+            try:
+                # Check the MR's actual pending drafts rather than tracking creations from this call
+                # alone: this correctly skips bulk-publish when nothing is pending (e.g. an empty or
+                # all-failed suggestion list, which would otherwise publish unrelated drafts already on
+                # the MR from a previous run or a manual draft review in progress), while still
+                # retrying to publish drafts left over from an earlier run whose bulk_publish failed -
+                # even if every suggestion in this run was skipped as a dedup-detected duplicate of one
+                # of those still-pending drafts.
+                try:
+                    pending = self.mr.draft_notes.list(get_all=True)
+                except Exception as e:
+                    # Draft notes are unusable on this instance/token; send_inline_comment has
+                    # already degraded every suggestion to a live comment, so nothing is pending.
+                    get_logger().warning(f"Could not list draft notes for MR {self.id_mr}: {e}")
+                    pending = []
+                if pending:
+                    self.mr.draft_notes.bulk_publish()
+            except Exception as e:
+                # Draft notes are only visible to the posting user until published, so a failure here
+                # leaves the suggestions invisible to everyone else. They aren't lost: GitLab keeps
+                # pending drafts on the MR, so a manual publish from the GitLab UI, or the next
+                # successful run of this method (which also ends in a bulk_publish call), will surface
+                # them - but that won't happen automatically, so this needs to be visible in logs/alerts.
+                get_logger().exception(
+                    f"Failed to bulk-publish draft code-suggestion notes for MR {self.id_mr}; they remain "
+                    f"as pending drafts, visible only to the posting user, until published manually from "
+                    f"the GitLab UI or by a subsequent successful run: {e}")
 
         # note that we publish suggestions one-by-one. so, if one fails, the rest will still be published
         return True
@@ -1208,7 +1380,17 @@ class GitLabProvider(GitProvider):
         if not self.gitlab_url or 'gitlab.com' in self.gitlab_url:
             if not self.id_project:
                 return None
-            return self.id_project.split('/')[0]
+            project_id = str(self.id_project)
+            if project_id.isascii() and project_id.isdigit():
+                try:
+                    project_path = self.gl.projects.get(project_id).path_with_namespace
+                except Exception as e:
+                    get_logger().warning(f"Failed to resolve canonical GitLab project path, error: {e}")
+                    return None
+                if not project_path:
+                    return None
+                return project_path.split('/')[0]
+            return project_id.split('/')[0]
         # extract host name
         host = urlparse(self.gitlab_url).hostname
         return host
@@ -1272,8 +1454,12 @@ class GitLabProvider(GitProvider):
                 ref = getattr(self.mr, "target_branch", None) or project.default_branch
             contents = project.files.get(file_path=file_path, ref=ref).decode()
             return decode_if_bytes(contents)
-        except GitlabGetError:
-            return ""
+        except GitlabGetError as e:
+            # A missing optional file is expected, but transient/provider failures must reach
+            # repo_context so the failed result is not cached as a successful empty context.
+            if getattr(e, "response_code", None) == 404:
+                return ""
+            raise
 
     def get_workspace_name(self):
         return self.id_project.split('/')[0]
@@ -1330,6 +1516,18 @@ class GitLabProvider(GitProvider):
         parsed_url = urlparse(merge_request_url)
 
         path_parts = parsed_url.path.strip('/').split('/')
+
+        # Strip the deployment sub-path prefix (e.g. '/gitlab') from the URL path
+        # so projects hosted on a GitLab instance using a relative URL parse correctly.
+        # Only strip when the URL points at the configured GitLab host, so a prefix
+        # from another host is never rewritten into a project on this instance.
+        gitlab_base = urlparse(self.gitlab_url)
+        base_path_parts = [part for part in gitlab_base.path.split("/") if part]
+        same_host = (parsed_url.scheme.lower() == gitlab_base.scheme.lower()
+                     and parsed_url.netloc.lower() == gitlab_base.netloc.lower())
+        if same_host and base_path_parts and path_parts[:len(base_path_parts)] == base_path_parts:
+            path_parts = path_parts[len(base_path_parts):]
+
         if 'merge_requests' not in path_parts:
             raise ValueError("The provided URL does not appear to be a GitLab merge request URL")
 
@@ -1343,12 +1541,26 @@ class GitLabProvider(GitProvider):
         except ValueError as e:
             raise ValueError("Unable to convert merge request ID to integer") from e
 
-        # Handle special delimiter (-)
-        project_path = "/".join(path_parts[:mr_index])
-        if project_path.endswith('/-'):
-            project_path = project_path[:-2]
+        # Handle GitLab's numeric-ID alias /projects/<project-id> by using
+        # the numeric ID as the API project identifier. Restrict handling to
+        # the exact top-level form so namespace paths containing "projects"
+        # keep their existing behaviour.
+        project_parts = path_parts[:mr_index]
+        if (
+            len(project_parts) == 3
+            and project_parts[0] == "projects"
+            and project_parts[1].isascii()
+            and project_parts[1].isdigit()
+            and project_parts[-1] == "-"
+        ):
+            project_path = project_parts[1]
+        else:
+            # Handle the standard GitLab /-/ delimiter.
+            project_path = "/".join(project_parts)
+            if project_path.endswith('/-'):
+                project_path = project_path[:-2]
 
-        # Return the path before 'merge_requests' and the ID
+        # Return the project identifier and the MR IID.
         return project_path, mr_id
 
     def _get_merge_request(self):
@@ -1452,13 +1664,29 @@ class GitLabProvider(GitProvider):
         except:
             return ""
 
+    def _get_project_web_url(self) -> str:
+        mr_web_url = getattr(self.mr, 'web_url', '')
+        if '/-/merge_requests/' in mr_web_url:
+            return mr_web_url.split('/-/merge_requests/', 1)[0]
+        project_path = str(self.id_project)
+        if project_path.isascii() and project_path.isdigit():
+            project_path = f"projects/{project_path}"
+        return f"{self.gl.url}/{project_path}"
+
     def get_line_link(self, relevant_file: str, relevant_line_start: int, relevant_line_end: int = None) -> str:
+        project_web_url = self._get_project_web_url()
         if relevant_line_start == -1:
-            link = f"{self.gl.url}/{self.id_project}/-/blob/{self.mr.source_branch}/{relevant_file}?ref_type=heads"
+            link = f"{project_web_url}/-/blob/{self.mr.source_branch}/{relevant_file}?ref_type=heads"
         elif relevant_line_end:
-            link = f"{self.gl.url}/{self.id_project}/-/blob/{self.mr.source_branch}/{relevant_file}?ref_type=heads#L{relevant_line_start}-{relevant_line_end}"
+            link = (
+                f"{project_web_url}/-/blob/{self.mr.source_branch}/{relevant_file}?ref_type=heads"
+                f"#L{relevant_line_start}-{relevant_line_end}"
+            )
         else:
-            link = f"{self.gl.url}/{self.id_project}/-/blob/{self.mr.source_branch}/{relevant_file}?ref_type=heads#L{relevant_line_start}"
+            link = (
+                f"{project_web_url}/-/blob/{self.mr.source_branch}/{relevant_file}?ref_type=heads"
+                f"#L{relevant_line_start}"
+            )
         return link
 
 
@@ -1474,7 +1702,7 @@ class GitLabProvider(GitProvider):
 
             if absolute_position != -1:
                 # link to right file only
-                link = f"{self.gl.url}/{self.id_project}/-/blob/{self.mr.source_branch}/{relevant_file}?ref_type=heads#L{absolute_position}"
+                link = self.get_line_link(relevant_file, absolute_position)
 
                 # # link to diff
                 # sha_file = hashlib.sha1(relevant_file.encode('utf-8')).hexdigest()
