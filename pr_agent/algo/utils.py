@@ -396,8 +396,10 @@ def convert_to_markdown_v2(output_data: dict,
                     markdown_text += f"{emoji}&nbsp;<strong>Priority files</strong>: None"
                 else:
                     markdown_text += f"{emoji}&nbsp;<strong>Priority files</strong>\n<br><br>\n"
+                    markdown_text += "<ul>\n"
                     for priority_file in priority_files:
-                        markdown_text += f"- {priority_file}\n"
+                        markdown_text += f"<li>{priority_file}</li>\n"
+                    markdown_text += "</ul>\n"
                 markdown_text += "</td></tr>\n"
             else:
                 if not priority_files:

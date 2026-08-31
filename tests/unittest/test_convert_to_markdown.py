@@ -312,7 +312,8 @@ class TestConvertToMarkdown:
         assert "<strong>Risk level</strong>: Medium" in markdown
         assert "<strong>Merge recommendation</strong>: Changes required" in markdown
         assert "<strong>Priority files</strong>" in markdown
-        assert "- gui_app.py" in markdown
+        assert "<ul>\n<li>gui_app.py</li>\n</ul>" in markdown
+        assert "- gui_app.py" not in markdown
         assert markdown.count("<tr><td>") == markdown.count("</td></tr>") == 3
 
     # Tests that the function works correctly with an empty dictionary input
