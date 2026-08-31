@@ -116,6 +116,11 @@ class TestPRDescriptionDiagram:
     def test_mermaid_marker_that_is_not_a_fence_returns_empty(self, diagram):
         assert sanitize_diagram(diagram) == ''
 
+    def test_fence_info_string_after_mermaid_is_kept(self):
+        diagram = sanitize_diagram('```mermaid title="flow"\ngraph LR\nA --> B\n```')
+
+        assert diagram == '\n```mermaid title="flow"\ngraph LR\nA --> B\n```'
+
     def test_leading_and_trailing_prose_around_mermaid_fence_is_ignored(self):
         diagram = sanitize_diagram(
             'Here is the requested diagram:\n'

@@ -828,7 +828,7 @@ class PRDescription:
 
 
 DIAGRAM_OPENING_FENCE_PATTERN = re.compile(
-    r'^[ \t]*(?P<fence>```mermaid)(?=[ \t]*\r?$)',
+    r'^[ \t]*(?P<fence>```mermaid)(?![A-Za-z0-9_-])',
     re.MULTILINE,
 )
 DIAGRAM_CLOSING_FENCE_PATTERN = re.compile(
@@ -841,12 +841,13 @@ DIAGRAM_SQUARE_NODE_PATTERN = re.compile(
 )
 
 
-def _is_inside_diagram_label(line: str, position: int) -> bool:
-    """Return whether a match starts inside an existing label."""
+def _diagram_label_positions(line: str) -> List[bool]:
+    """For each position in the line, whether it sits inside an existing label."""
     square_depth = 0
     in_double_quotes = False
     escaped = False
-    for char in line[:position]:
+    inside = [False]
+    for char in line:
         if char == '"' and not escaped:
             in_double_quotes = not in_double_quotes
         elif not in_double_quotes:
@@ -860,7 +861,8 @@ def _is_inside_diagram_label(line: str, position: int) -> bool:
         else:
             escaped = False
 
-    return in_double_quotes or square_depth > 0
+        inside.append(in_double_quotes or square_depth > 0)
+    return inside
 
 
 def sanitize_diagram(diagram_raw: str) -> str:
@@ -888,10 +890,11 @@ def sanitize_diagram(diagram_raw: str) -> str:
 
     result = []
     for line in diagram.split('\n'):
+        inside_label = _diagram_label_positions(line)
         line = DIAGRAM_SQUARE_NODE_PATTERN.sub(
-            lambda match, current_line=line: (
+            lambda match, inside_label=inside_label: (
                 match.group(0)
-                if _is_inside_diagram_label(current_line, match.start())
+                if inside_label[match.start()]
                 else quote_node_label(match)
             ),
             line,
