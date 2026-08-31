@@ -173,6 +173,11 @@ class TestPRDescriptionDiagram:
 
         assert diagram == f"\n```mermaid\ngraph LR\n{node}\n```"
 
+    def test_escaped_quotes_inside_a_quoted_label_become_entities(self):
+        diagram = sanitize_diagram('```mermaid\ngraph LR\nA["say \\"hi\\""]\n```')
+
+        assert diagram == '\n```mermaid\ngraph LR\nA["say #quot;hi#quot;"]\n```'
+
 
 class TestPRDescriptionCore:
     def test_prepare_file_labels_groups_valid_files_and_skips_incomplete_entries(self):
