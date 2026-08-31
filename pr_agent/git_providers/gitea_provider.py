@@ -1,6 +1,6 @@
 import json
 from typing import Any, Dict, List, Optional, Set, Tuple
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import giteapy
 from giteapy.rest import ApiException
@@ -608,7 +608,7 @@ class GiteaProvider(GitProvider):
         return diff_files
 
     def get_line_link(self, relevant_file, relevant_line_start, relevant_line_end = None) -> str:
-        link = f"{self.base_url_html}/{self.owner}/{self.repo}/src/branch/{self.get_pr_branch()}/{relevant_file}"
+        link = f"{self.base_url_html}/{self.owner}/{self.repo}/src/branch/{quote(self.get_pr_branch())}/{relevant_file}"
         if relevant_line_start == -1:
             pass
         elif relevant_line_end:
