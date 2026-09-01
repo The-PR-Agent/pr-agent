@@ -9,8 +9,8 @@ Tool calls go through LiteLLM (`pr_agent/algo/ai_handlers/litellm_ai_handler.py`
 
 ```toml
 [config]
-model="gpt-5.6"
-fallback_models=["gpt-5.6-terra"]
+model="<model-name>"
+fallback_models=["<fallback-model-name>"]
 ```
 
 Set these under `[config]` in `pr_agent/settings/configuration.toml`.
@@ -41,10 +41,10 @@ Implement a `GitProvider` subclass and register it:
 
 ## Adding a tool
 
-1. Implement the tool class in `pr_agent/tools/<name>.py` with an `async def run(self)` entry point (see `pr_reviewer.py`).
+1. Implement the tool class in `pr_agent/tools/pr_<name>.py` with an `async def run(self)` entry point (see `pr_reviewer.py`).
 2. Add a `[pr_<tool>]` section in `pr_agent/settings/configuration.toml` for the option keys the tool reads (`[pr_reviewer]` is the pattern to follow).
 3. Add a prompt TOML under `pr_agent/settings/` and register it in the `settings_files=[...]` list in `pr_agent/config_loader.py` — it is not loaded otherwise.
 4. Match the TOML section name to the settings key the tool reads: `[pr_review_prompt]` in `pr_reviewer_prompts.toml` ↔ `get_settings().pr_review_prompt` in `pr_reviewer.py`.
-5. Register the tool in `command2class` in `pr_agent/agent/pr_agent.py` under a command name, e.g. `"my_tool": PRMyTool`.
+5. Register the tool in `command2class` in `pr_agent/agent/pr_agent.py` under a command name, e.g. `"my_tool": PRMyTool`. Then add it to the hardcoded help surfaces, or it will not show up in `/help`: `pr_agent/tools/pr_help_message.py`, `pr_agent/servers/help.py`, and the command list in `pr_agent/cli.py`.
 6. Add a row to the tool list in `docs/docs/tools/index.md`, a page `docs/docs/tools/<name>.md` (see [`review.md`](../tools/review.md)), and register the page under `Tools` in `docs/mkdocs.yml`.
 7. Add tests under `tests/unittest/` and verify with `PYTHONPATH=. uv run pytest tests/unittest`.

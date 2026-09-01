@@ -20,7 +20,7 @@ Thank you for your interest in contributing to the PR-Agent project!
    so the unit suite is the default local check.
 8. Lint your changed files, then run the pre-commit hooks on them:
    ```bash
-   uv run ruff check --fix <changed files>
+   uv run ruff check --fix <changed Python files>
    uv run pre-commit run --files <changed files>
    ```
 9. Commit your changes using conventional commit messages.
