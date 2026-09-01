@@ -580,3 +580,25 @@ class TestGetMaxTokens:
                             lambda model: {"max_input_tokens": 65536})
 
         assert get_max_tokens("fake-provider/fake-model-xyz") == 8000
+
+    def test_litellm_fallback_uses_real_registry(self, monkeypatch):
+        """Unknown model resolved against the real installed LiteLLM model registry."""
+        model = "cohere/command-r-plus"
+
+        assert model not in MAX_TOKENS
+
+        model_info = litellm.get_model_info(model)
+        expected_max_input_tokens = model_info["max_input_tokens"]
+
+        assert isinstance(expected_max_input_tokens, int)
+        assert expected_max_input_tokens > 0
+
+        fake_settings = type("", (), {
+            "config": type("", (), {
+                "custom_model_max_tokens": 0,
+                "max_model_tokens": 0,
+            })()
+        })()
+        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+
+        assert get_max_tokens(model) == expected_max_input_tokens
