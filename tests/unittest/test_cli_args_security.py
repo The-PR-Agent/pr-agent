@@ -83,6 +83,7 @@ HOST_ONLY_ARGS = [
     "--skills.paths=/etc",
     "--skills__paths=/etc",
     "--skills.unknown=value",
+    "--skills={paths:[/etc]}",
 ]
 
 
