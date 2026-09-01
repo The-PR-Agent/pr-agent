@@ -17,7 +17,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-from jinja2 import Environment, StrictUndefined, meta
+from jinja2 import Environment, StrictUndefined, meta, select_autoescape
 
 from pr_agent.config_loader import get_settings
 from pr_agent.tools.pr_reviewer import PRReviewer
@@ -46,8 +46,13 @@ def _build_reviewer(monkeypatch):
 def _referenced_variables(half):
     template = getattr(get_settings().pr_review_prompt, half)
     # Environment() here only needs to parse; production rendering happens in
-    # PRReviewer._get_prediction with the same StrictUndefined setting.
-    return meta.find_undeclared_variables(Environment(undefined=StrictUndefined).parse(template))
+    # PRReviewer._get_prediction with the same StrictUndefined setting. autoescape
+    # mirrors pr_line_questions._render_prompts and is irrelevant to parsing.
+    environment = Environment(
+        autoescape=select_autoescape(default_for_string=False),
+        undefined=StrictUndefined,
+    )
+    return meta.find_undeclared_variables(environment.parse(template))
 
 
 @pytest.mark.parametrize("half", ["system", "user"])
