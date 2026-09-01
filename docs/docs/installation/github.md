@@ -89,6 +89,35 @@ jobs:
 !!! warning "Security considerations"
     Using `pull_request_target` gives the workflow access to repository secrets. Unlike the `pull_request` event, the PR code is not automatically checked out, which is a security feature. Avoid adding an `actions/checkout` step unless you have a specific need for the local files — if you do add one, review the [GitHub security guide on pull_request_target](https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target).
 
+#### Using `workflow_run` after fork CI
+
+If a separate `pull_request` workflow must run first — for example, to produce test reports or Terraform plans — PR-Agent can optionally run after that workflow completes. GitHub may omit `workflow_run.pull_requests` for pull requests from forks, so enable the opt-in resolver to find the open base-repository PR by the triggering run's fork repository, branch, and head SHA:
+
+```yaml
+name: PR Agent after CI
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+jobs:
+  pr_agent_job:
+    if: ${{ github.event.workflow_run.event == 'pull_request' }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+      contents: read
+    steps:
+      - name: PR Agent action step
+        uses: the-pr-agent/pr-agent@main
+        env:
+          OPENAI_KEY: ${{ secrets.OPENAI_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          github_action_config.workflow_run_resolve_fork_prs: "true"
+```
+
+The setting is disabled by default. PR-Agent only accepts one matching open PR and verifies both the fork repository and exact head SHA; if the metadata is incomplete, no matching PR exists, or the match is ambiguous, the action skips the run. PR-Agent uses the GitHub API and does not check out or execute the fork's code. Because `workflow_run` workflows can access repository secrets and write permissions, do not add a checkout or execute untrusted fork code in this privileged workflow. `workflow_run` is intended for orchestration after another workflow; use `pull_request_target` when you do not need a separate CI workflow first.
+
 ### Configuration Examples
 
 This section provides detailed, step-by-step examples for configuring PR-Agent with different models and advanced options in GitHub Actions.

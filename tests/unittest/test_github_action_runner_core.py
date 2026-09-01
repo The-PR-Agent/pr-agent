@@ -375,7 +375,9 @@ async def test_issue_comment_from_user_is_processed(monkeypatch, tmp_path, resto
     assert handled == [("https://api.github.com/repos/org/repo/pulls/1", "/review")]
 
 
-def _write_workflow_run_event(tmp_path, originating_event="pull_request", pull_requests=None, conclusion="success"):
+def _write_workflow_run_event(
+        tmp_path, originating_event="pull_request", pull_requests=None, conclusion="success", workflow_run_fields=None
+):
     if pull_requests is None:
         pull_requests = [{"url": "https://api.github.com/repos/org/repo/pulls/42", "number": 42}]
     workflow_run = {
@@ -383,6 +385,8 @@ def _write_workflow_run_event(tmp_path, originating_event="pull_request", pull_r
         "event": originating_event,
         "pull_requests": pull_requests,
     }
+    if workflow_run_fields:
+        workflow_run.update(workflow_run_fields)
     if conclusion is not None:
         workflow_run["conclusion"] = conclusion
     event_path = tmp_path / "event.json"
@@ -470,6 +474,51 @@ async def test_workflow_run_skips_when_pull_requests_empty(monkeypatch, tmp_path
     await github_action_runner.run_action()
 
     assert runs == []
+
+
+@pytest.mark.asyncio
+async def test_workflow_run_resolves_fork_pr_when_opted_in(monkeypatch, tmp_path, restore_github_settings):
+    """An opted-in workflow_run can identify a fork PR when GitHub omits pull_requests."""
+    runs = []
+    _patch_workflow_run_deps(monkeypatch, runs)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_run")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_workflow_run_event(
+        tmp_path,
+        pull_requests=[],
+        workflow_run_fields={
+            "head_branch": "feature/fork-review",
+            "head_sha": "abc123",
+            "head_repository": {"full_name": "contributor/repo"},
+            "repository": {"full_name": "org/repo"},
+        },
+    )))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+    get_settings().set("GITHUB_ACTION_CONFIG.WORKFLOW_RUN_RESOLVE_FORK_PRS", True)
+    monkeypatch.setattr(
+        github_action_runner,
+        "_resolve_workflow_run_pull_request",
+        lambda workflow_run: "https://api.github.com/repos/org/repo/pulls/42",
+        raising=False,
+    )
+
+    def fake_get_setting_or_env(key, default=None):
+        values = {
+            "GITHUB_ACTION.AUTO_DESCRIBE": True,
+            "GITHUB_ACTION.AUTO_REVIEW": True,
+            "GITHUB_ACTION.AUTO_IMPROVE": False,
+            "GITHUB_ACTION_CONFIG.ENABLE_OUTPUT": True,
+            "GITHUB_ACTION_CONFIG.WORKFLOW_RUN_RESOLVE_FORK_PRS": True,
+        }
+        return values.get(key, default)
+
+    monkeypatch.setattr(github_action_runner, "get_setting_or_env", fake_get_setting_or_env)
+
+    await github_action_runner.run_action()
+
+    assert runs == [
+        ("describe", "https://api.github.com/repos/org/repo/pulls/42"),
+        ("review", "https://api.github.com/repos/org/repo/pulls/42"),
+    ]
 
 
 @pytest.mark.asyncio
