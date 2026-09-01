@@ -222,6 +222,31 @@ LANGFUSE_SECRET_KEY=<secret_key>
 
 Each LLM call is traced with the command name, git provider, PR URL, model, token counts, and version as tags — giving you full visibility into how pr-agent is being used across your repositories.
 
+### LLM telemetry via LiteLLM's OpenTelemetry integration
+
+To emit OpenTelemetry traces and metrics for the LLM calls themselves — cost in USD, call duration, time to first token, and the input/output token split, on standard `gen_ai.*` semantic-convention names — enable LiteLLM's built-in `otel` callback:
+
+```toml
+[litellm]
+success_callback = ["otel"]
+failure_callback = ["otel"]
+turn_off_message_logging = true
+```
+
+> **Set `turn_off_message_logging = true`.** LiteLLM attaches full prompt and response content to what its callbacks emit, which here means the entire PR diff. The default is `false` to preserve existing behavior for Langfuse and LangSmith users.
+
+The integration is configured through environment variables:
+
+```
+OTEL_EXPORTER=otlp_http            # or "console", "otlp_grpc"
+OTEL_EXPORTER_OTLP_ENDPOINT=https://collector:4318
+OTEL_EXPORTER_OTLP_HEADERS=...
+OTEL_SERVICE_NAME=pr-agent
+LITELLM_OTEL_INTEGRATION_ENABLE_METRICS=true   # metrics are off by default
+```
+
+Pending callbacks are flushed before the CLI and the GitHub Action runner exit, bounded by `callback_timeout_seconds` (see [Custom callbacks](#custom-callbacks)).
+
 ### Custom callbacks
 
 If you embed PR-Agent in your own code, you can also register callbacks programmatically — for example a
@@ -249,12 +274,16 @@ that flush may take:
 callback_timeout_seconds = 30 # default
 ```
 
-## Built-in OpenTelemetry usage telemetry
+## Built-in OpenTelemetry command telemetry
 
-PR-Agent can emit its own [OpenTelemetry](https://opentelemetry.io/) signals for utilization and adoption tracking, independent of any LiteLLM callback:
+PR-Agent can emit its own [OpenTelemetry](https://opentelemetry.io/) signals for utilization and adoption tracking. These cover the **command** layer — how often each tool runs, on which git provider, and whether it succeeded — which no LLM-level integration can report, because many failures happen before any model call:
 
-- **Traces**: a span per request (`pr_agent.request`, `pr_agent.handle_request`) and per command execution (`pr_agent.execute.<command>`), plus a span per LLM completion with the model, request parameters, response metadata, and token usage. Prompt and response content is never attached to spans.
-- **Metrics**: `pr_agent.commands.total` (a counter of executed commands, labeled by command and git provider) and `pr_agent.llm.tokens` (a histogram of token usage per completion, labeled by model).
+- **Traces**: one span per request, named `pr_agent <command>` (for example `pr_agent review`), carrying `pr_agent.command`, `pr_agent.args_count`, `vcs.provider.name`, a span status, and a bounded `error.type` on failure. Prompt and response content is never attached.
+- **Metrics**: `pr_agent.commands`, a counter of executed commands labeled by command and git provider.
+
+### Two independent layers
+
+Command telemetry (this section) and [LLM telemetry](#llm-telemetry-via-litellms-opentelemetry-integration) are separate toggles with separate configuration, so you can enable either alone and aggregate them independently. When both are on, the LLM spans are children of the command span in the same trace, so a single command's model calls stay attributable to it.
 
 Telemetry is disabled by default. To enable it, set in `configuration.toml`:
 
@@ -270,9 +299,11 @@ To export to an OpenTelemetry collector instead of the console, set `exporter_ty
 
 ```toml
 [otel]
-otlp_endpoint = "http://my-collector:4317"
+otlp_endpoint = "http://my-collector:4318"
 otlp_headers = "x-honeycomb-team=YOUR_API_KEY" # optional, "key1=value1,key2=value2"
 ```
+
+Export uses OTLP over HTTP; `otlp_endpoint` is the base URL, and the `/v1/traces` and `/v1/metrics` paths are appended automatically.
 
 This is the recommended topology for fleets: point every PR-Agent instance at the same collector and aggregate there. Each process creates its own exporter connection; use the `service_name` and `environment` resource attributes to slice instances apart on the backend.
 
