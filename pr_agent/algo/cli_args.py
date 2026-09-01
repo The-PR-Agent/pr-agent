@@ -1,7 +1,22 @@
 from base64 import b64decode
 
+from pr_agent.config_security import REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION
+
 
 class CliArgs:
+    @staticmethod
+    def _host_only_setting_arg(arg: str) -> str | None:
+        """Return a protected setting token when a CLI arg targets a host-only key."""
+        setting_name = arg.removeprefix('--').split('=', 1)[0].replace('__', '.')
+        section, separator, key = setting_name.partition('.')
+        if not separator:
+            return None
+
+        allowed_keys = REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION.get(section)
+        if allowed_keys is not None and key not in allowed_keys:
+            return f'.{section}.{key}'
+        return None
+
     @staticmethod
     def validate_user_args(args: list) -> (bool, str):
         try:
@@ -50,6 +65,9 @@ class CliArgs:
                 if arg.startswith('--'):
                     arg_word = arg.lower()
                     arg_word = arg_word.replace('__', '.')  # replace double underscore with dot, e.g. --openai__key -> --openai.key
+                    host_only_arg = CliArgs._host_only_setting_arg(arg_word)
+                    if host_only_arg:
+                        return False, host_only_arg
                     for forbidden_arg_word in forbidden_cli_args:
                         if forbidden_arg_word in arg_word:
                             return False, forbidden_arg_word
