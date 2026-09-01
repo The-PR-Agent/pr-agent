@@ -359,6 +359,7 @@ enable_callbacks = false
 success_callback = []
 failure_callback = []
 service_callback = []
+turn_off_message_logging = false # set true to keep prompt/response content (the whole PR diff) out of callback payloads; strongly recommended with the "otel" callback
 callback_timeout_seconds = 30 # max seconds to wait for pending litellm callbacks to flush before exiting
 # model_id = "" # Optional: Custom inference profile ID for Amazon Bedrock
 cache_control_injection_points = [] # Optional: enable Anthropic prompt caching via LiteLLM, e.g. [{location = "message", role = "system"}] (https://docs.litellm.ai/docs/tutorials/prompt_caching)
