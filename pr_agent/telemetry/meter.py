@@ -78,11 +78,3 @@ def get_commands_counter():
     return get_meter().create_counter(
         "pr_agent.commands.total", unit="1", description="Total PR-Agent commands executed"
     )
-
-
-@functools.lru_cache(maxsize=1)
-def get_tokens_histogram():
-    """Return the token usage histogram instrument (created once, cached)."""
-    return get_meter().create_histogram(
-        "pr_agent.llm.tokens", unit="token", description="LLM token usage per completion"
-    )

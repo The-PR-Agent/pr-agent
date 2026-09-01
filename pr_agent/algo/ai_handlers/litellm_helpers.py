@@ -63,7 +63,7 @@ class MockResponse:
     def __init__(self, resp, finish_reason, usage=None):
         if usage is not None:
             # Expose usage like a real ModelResponse so token accounting
-            # (run details, telemetry) treats streaming completions uniformly.
+            # (run details) treats streaming completions uniformly.
             self.usage = usage
         self._data = {
             "choices": [

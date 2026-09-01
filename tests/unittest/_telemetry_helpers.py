@@ -27,7 +27,6 @@ def clear_telemetry_caches():
     tracer.get_tracer.cache_clear()
     meter.get_meter.cache_clear()
     meter.get_commands_counter.cache_clear()
-    meter.get_tokens_histogram.cache_clear()
     shutdown.register_shutdown_handler.cache_clear()
     registry.provider_registry.reset()
 

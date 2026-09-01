@@ -257,7 +257,6 @@ async def test_get_completion_uses_streaming_for_required_models():
         mock_stream.return_value = ("streamed text", "stop", None)
 
         resp, finish_reason, response_obj = await handler._get_completion(
-            None,
             model="streaming-model",
             messages=[],
         )
@@ -288,7 +287,7 @@ async def test_get_completion_raises_on_empty_content_for_non_streaming_model():
         mock_call.return_value = _empty_content_response(finish_reason="stop")
 
         with pytest.raises(openai.APIError):
-            await handler._get_completion(None, model="anthropic/custom-reasoning-model", messages=[])
+            await handler._get_completion(model="anthropic/custom-reasoning-model", messages=[])
 
 
 @pytest.mark.asyncio
@@ -299,7 +298,7 @@ async def test_get_completion_returns_non_empty_content_for_non_streaming_model(
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
         mock_call.return_value = _mock_response()
 
-        resp, finish_reason, response_obj = await handler._get_completion(None, model="gpt-4o", messages=[])
+        resp, finish_reason, response_obj = await handler._get_completion(model="gpt-4o", messages=[])
 
     assert resp == "ok"
     assert finish_reason == "stop"

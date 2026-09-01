@@ -154,3 +154,11 @@ def test_metric_exporter_otlp_missing_package_degrades_with_warning(monkeypatch)
 
     assert exporter is None
     assert "opentelemetry-exporter-otlp-proto-http" in "\n".join(captured)
+
+
+def test_get_tracer_lru_cache_identity(monkeypatch):
+    """The tracer object is cached; repeated calls must not build new providers."""
+    monkeypatch.setattr(tracer_module, "get_otel_config", lambda: make_config(is_enabled=False))
+    tracer_module.get_tracer.cache_clear()
+
+    assert tracer_module.get_tracer() is tracer_module.get_tracer()

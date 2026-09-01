@@ -84,7 +84,7 @@ async def test_chat_completion_records_the_call_it_just_made(monkeypatch):
     """
     handler = _bare_handler()
 
-    async def fake_get_completion(_span, **_kwargs):
+    async def fake_get_completion(**_kwargs):
         return "resp", "stop", _Response(_Usage(100, 10, 110))
 
     monkeypatch.setattr(handler, "_get_completion", fake_get_completion)
@@ -105,7 +105,7 @@ async def test_chat_completion_does_not_record_when_the_call_fails(monkeypatch):
     """A failed model must not be counted, or fallback runs would inflate the totals."""
     handler = _bare_handler()
 
-    async def failing_get_completion(_span, **_kwargs):
+    async def failing_get_completion(**_kwargs):
         raise ValueError("provider exploded")
 
     monkeypatch.setattr(handler, "_get_completion", failing_get_completion)
@@ -124,7 +124,7 @@ async def test_concurrent_chat_completions_accumulate_into_one_collector(monkeyp
     """`/improve` fans out chunks with asyncio.gather; every chunk must be counted."""
     handler = _bare_handler()
 
-    async def fake_get_completion(_span, **_kwargs):
+    async def fake_get_completion(**_kwargs):
         await asyncio.sleep(0)
         return "resp", "stop", _Response(_Usage(10, 1, 11))
 

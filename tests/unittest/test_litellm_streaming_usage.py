@@ -1,10 +1,9 @@
-"""Streaming token-usage capture (telemetry for streaming-required models).
+"""Streaming token-usage capture for streaming-required models.
 
-Streaming completions used to return a MockResponse without `usage`, so the
-pr_agent.llm.tokens histogram, span usage attributes, and run-details token
-accounting all silently skipped every streaming model. Usage is now requested
-via stream_options (when the provider supports it), captured from the final
-streamed chunk, and threaded through MockResponse.
+Streaming completions used to return a MockResponse without `usage`, so
+run-details token accounting silently skipped every streaming model. Usage is
+now requested via stream_options (when the provider supports it), captured from
+the final streamed chunk, and threaded through MockResponse.
 """
 
 from types import SimpleNamespace
@@ -14,7 +13,6 @@ import pytest
 
 import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_handler
 from pr_agent.algo.ai_handlers.litellm_helpers import MockResponse, _handle_streaming_response
-from tests.unittest._telemetry_helpers import build_in_memory_tracer
 
 USAGE = SimpleNamespace(prompt_tokens=100, completion_tokens=40, total_tokens=140)
 
@@ -105,14 +103,13 @@ def test_request_streaming_usage_survives_probe_failure(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_get_completion_streaming_threads_usage_into_response_and_span(monkeypatch):
+async def test_get_completion_streaming_threads_usage_into_response(monkeypatch):
     handler = litellm_handler.LiteLLMAIHandler.__new__(litellm_handler.LiteLLMAIHandler)
     handler.streaming_required_models = ["streaming-model"]
     monkeypatch.setattr(
         litellm_handler.litellm, "get_supported_openai_params",
         lambda model: ["stream_options"],
     )
-    tracer, exporter = build_in_memory_tracer()
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
         mock_call.return_value = _stream([
@@ -120,17 +117,11 @@ async def test_get_completion_streaming_threads_usage_into_response_and_span(mon
             _usage_chunk(USAGE),
         ])
 
-        with tracer.start_as_current_span("completion") as span:
-            resp, finish_reason, response_obj = await handler._get_completion(
-                span, model="streaming-model", messages=[],
-            )
+        resp, finish_reason, response_obj = await handler._get_completion(
+            model="streaming-model", messages=[],
+        )
 
     assert mock_call.call_args.kwargs["stream_options"] == {"include_usage": True}
     assert (resp, finish_reason) == ("streamed text", "stop")
     assert response_obj.usage is USAGE, \
-        "usage must reach the response object so the tokens histogram and run details record it"
-
-    attrs = dict(exporter.get_finished_spans()[0].attributes)
-    assert attrs["litellm.usage.total_tokens"] == 140
-    assert attrs["litellm.usage.prompt_tokens"] == 100
-    assert attrs["litellm.response.streaming"] is True
+        "usage must reach the response object so run details record it"
