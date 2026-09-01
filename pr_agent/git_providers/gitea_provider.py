@@ -400,14 +400,21 @@ class GiteaProvider(GitProvider):
 
 
     def publish_inline_comments(self, comments: List[Dict[str, Any]],body : str = "Inline comment") -> bool:
-        response = self.repo_api.create_inline_comment(
-            owner=self.owner,
-            repo=self.repo,
-            pr_number=self.pr_number if self.enabled_pr else self.issue_number,
-            body=body,
-            commit_id=self.last_commit.sha if self.last_commit else "",
-            comments=comments
-        )
+        try:
+            response = self.repo_api.create_inline_comment(
+                owner=self.owner,
+                repo=self.repo,
+                pr_number=self.pr_number if self.enabled_pr else self.issue_number,
+                body=body,
+                commit_id=self.last_commit.sha if self.last_commit else "",
+                comments=comments
+            )
+        except ApiException as e:
+            self.logger.error(f"Error publishing inline comment: {e}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Unexpected error publishing inline comment: {e}")
+            return False
 
         if not response:
             self.logger.error("Failed to publish inline comment")

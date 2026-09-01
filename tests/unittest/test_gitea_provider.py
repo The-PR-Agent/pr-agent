@@ -839,6 +839,15 @@ class TestGiteaProviderInlineCommentStatus:
 
         assert provider.publish_inline_comments([{"path": "a.py", "body": "x"}]) is False
 
+    @pytest.mark.parametrize(
+        "error", [ApiException(reason="API rejected the comment"), RuntimeError("transport failed")]
+    )
+    def test_publish_inline_comments_reports_exception_as_failure(self, error):
+        provider = self._provider()
+        provider.repo_api.create_inline_comment.side_effect = error
+
+        assert provider.publish_inline_comments([{"path": "a.py", "body": "x"}]) is False
+
     def test_publish_code_suggestions_does_not_republish_on_success(self):
         # Before the fix, a truthy result here was still treated as failure by
         # PRCodeSuggestions.push_inline_code_suggestions, which republished
@@ -867,6 +876,22 @@ class TestGiteaProviderInlineCommentStatus:
         # suggestion, no retries.
         provider = self._provider()
         provider.repo_api.create_inline_comment.side_effect = [MagicMock(), None, MagicMock()]
+        suggestions = [
+            {"body": "**Suggestion:** one", "relevant_file": "a.py", "relevant_lines_start": 1},
+            {"body": "**Suggestion:** two", "relevant_file": "a.py", "relevant_lines_start": 2},
+            {"body": "**Suggestion:** three", "relevant_file": "a.py", "relevant_lines_start": 3},
+        ]
+
+        result = provider.publish_code_suggestions(suggestions)
+
+        assert result is True
+        assert provider.repo_api.create_inline_comment.call_count == 3
+
+    def test_publish_code_suggestions_reports_success_on_partial_exception(self):
+        provider = self._provider()
+        provider.repo_api.create_inline_comment.side_effect = [
+            MagicMock(), ApiException(reason="API rejected the comment"), MagicMock()
+        ]
         suggestions = [
             {"body": "**Suggestion:** one", "relevant_file": "a.py", "relevant_lines_start": 1},
             {"body": "**Suggestion:** two", "relevant_file": "a.py", "relevant_lines_start": 2},
