@@ -6,6 +6,7 @@ from jinja2 import Environment, StrictUndefined
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.pr_processing import get_pr_diff, retry_with_fallback_models
+from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import ModelType, format_pr_questions_header
 from pr_agent.config_loader import get_settings
@@ -27,6 +28,12 @@ class PRQuestions:
         self.ai_handler.main_pr_language = self.main_pr_language
 
         self.question_str = question_str
+        settings = get_settings()
+        skills_context = (
+            get_skills_context()
+            if settings.skills.get("enabled", False) and settings.skills.get("apply_to_ask", False)
+            else ""
+        )
         self.vars = {
             "title": self.git_provider.pr.title,
             "branch": self.git_provider.get_pr_branch(),
@@ -35,7 +42,8 @@ class PRQuestions:
             "diff": "",  # empty diff for initial calculation
             "questions": self.question_str,
             "commit_messages_str": self.git_provider.get_commit_messages(),
-            "extra_instructions": get_settings().pr_questions.extra_instructions,
+            "extra_instructions": settings.pr_questions.extra_instructions,
+            "skills_context": skills_context,
         }
         self.token_handler = TokenHandler(self.git_provider.pr,
                                           self.vars,

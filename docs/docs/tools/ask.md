@@ -80,6 +80,10 @@ See a full video tutorial [here](https://codium.ai/images/pr_agent/ask_image_vid
         <td>Optional extra instructions to the tool. For example: "Do not answer questions that ask to rate PR quality on a scale of 1 to 10. Instead, tell the user this type of question is not allowed."</td>
       </tr>
       <tr>
+        <td><b>skills.apply_to_ask</b></td>
+        <td>If set to true, the top-level <code>/ask</code> prompt receives the host-administered Agent Skills context. This also requires <code>skills.enabled=true</code>; the existing <code>skills.max_skills_tokens</code> budget applies. Default is false. This does not affect <code>/ask_line</code>.</td>
+      </tr>
+      <tr>
         <td><b>enable_help_text</b></td>
         <td>If set to true, the tool will display a help text in the comment. Default is false.</td>
       </tr>
@@ -95,6 +99,10 @@ Example usage in a configuration file:
 [pr_questions]
 ask_heading = "Architecture Question"
 extra_instructions = "Do not answer questions that ask to rate PR quality on a scale of 1 to 10."
+
+[skills]
+enabled = true
+apply_to_ask = true
 ```
 
 The heading above renders as `### **Architecture Question** ❓`.
