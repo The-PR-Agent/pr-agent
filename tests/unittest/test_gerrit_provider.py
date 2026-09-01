@@ -254,6 +254,45 @@ def test_prepare_repo_removes_temp_directory_when_setup_fails(tmp_path, monkeypa
     assert not repo_path.exists()
 
 
+def test_prepare_repo_reports_a_failed_cleanup_and_keeps_the_setup_error(tmp_path, monkeypatch):
+    """A cleanup that cannot remove the directory must not replace the original setup error."""
+    from loguru import logger as loguru_logger
+
+    repo_path = tmp_path / "clone"
+
+    def make_temp_directory():
+        repo_path.mkdir()
+        return str(repo_path)
+
+    def failing_checkout(*args, **kwargs):
+        raise RuntimeError("checkout failed")
+
+    def failing_rmtree(path, **kwargs):
+        raise OSError("device busy")
+
+    monkeypatch.setattr(gerrit_provider, "mkdtemp", make_temp_directory)
+    monkeypatch.setattr(gerrit_provider, "clone", lambda *args, **kwargs: None)
+    monkeypatch.setattr(gerrit_provider, "fetch", lambda *args, **kwargs: None)
+    monkeypatch.setattr(gerrit_provider, "checkout", failing_checkout)
+    monkeypatch.setattr("pr_agent.git_providers.gerrit_provider.shutil.rmtree", failing_rmtree)
+
+    captured, sink_id = _capture_logs()
+    try:
+        with pytest.raises(RuntimeError, match="checkout failed"):
+            gerrit_provider.prepare_repo(
+                urllib3.util.parse_url("https://user@example.com:443"),
+                "project",
+                "refs/changes/01/1/1",
+            )
+    finally:
+        loguru_logger.remove(sink_id)
+
+    combined = "\n".join(captured)
+    assert repo_path.exists()
+    assert "after setup failed" in combined
+    assert str(repo_path) in combined
+
+
 def test_cleanup_removes_the_temp_repo_and_names_it_in_the_log(tmp_path):
     from loguru import logger as loguru_logger
 
