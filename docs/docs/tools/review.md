@@ -59,6 +59,18 @@ extra_instructions = "..."
         <td>If set to true, the review comment will be persistent, meaning that every new review request will edit the previous one. Default is true.</td>
       </tr>
       <tr>
+        <td><b>review_heading</b></td>
+        <td>
+          Visible base heading for review comments, without the Markdown prefix or incremental label.
+          For example, <code>review_heading = "Guideline Compliance Check"</code> renders
+          <code>## Guideline Compliance Check 🔍</code> for a full review and
+          <code>## Incremental Guideline Compliance Check 🔍</code> for an incremental review.
+          On GitHub, GitLab, Azure DevOps, and Bitbucket Cloud, changing this value updates the same
+          persistent review comment; it does not create a separate review channel.
+          Default is <code>PR Reviewer Guide</code>.
+        </td>
+      </tr>
+      <tr>
       <td><b>final_update_message</b></td>
       <td>When set to true, updating a persistent review comment during online commenting will automatically add a short comment with a link to the updated review in the pull request .Default is true.</td>
       </tr>
@@ -77,6 +89,10 @@ extra_instructions = "..."
       <tr>
         <td><b>num_max_findings</b></td>
         <td>Number of maximum returned findings. Default is 3.</td>
+      </tr>
+      <tr>
+        <td><b>inline_key_issues</b></td>
+        <td>Azure DevOps only. If set to true, each key issue is published as an inline thread. A finding leaves the review summary when a matching thread exists or Azure accepts the new thread. Findings that cannot be anchored or published stay in the summary. Default is false.</td>
       </tr>
     </table>
 
@@ -115,6 +131,18 @@ extra_instructions = "..."
       <tr>
         <td><b>require_ticket_analysis_review</b></td>
         <td>If set to true, and the PR contains a GitHub or Jira ticket link, the tool will add a section that checks if the PR in fact fulfilled the ticket requirements. Default is true.</td>
+      </tr>
+      <tr>
+        <td><b>require_risk_assessment</b></td>
+        <td>If set to true, the tool will add a section that rates the overall risk of the PR as low, medium or high. Default is false.</td>
+      </tr>
+      <tr>
+        <td><b>require_merge_recommendation</b></td>
+        <td>If set to true, the tool will add a section with a merge recommendation of safe_to_merge, merge_with_caution or changes_required. Default is false.</td>
+      </tr>
+      <tr>
+        <td><b>require_priority_files</b></td>
+        <td>If set to true, the tool will add a section listing the files a human reviewer should inspect first. Default is false.</td>
       </tr>
     </table>
 

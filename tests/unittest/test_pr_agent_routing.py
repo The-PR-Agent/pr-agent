@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import Mock
 
 import pytest
@@ -81,6 +82,91 @@ async def test_handle_request_routes_list_request_without_string_parsing(monkeyp
     assert runs == [("https://example/pr/1", "fake-ai", ["don't split", "--flag=value"])]
 
 
+def test_prepare_command_preserves_spaces_in_quoted_config_values():
+    settings = get_settings()
+    setting_key = "PR_REVIEWER.EXTRA_INSTRUCTIONS"
+    original = settings.get(setting_key)
+
+    try:
+        command = pr_agent_module.prepare_command(
+            '/review --pr_reviewer.extra_instructions="Focus on authentication and authorization"'
+        )
+
+        assert command == ["/review"]
+        assert settings.get(setting_key) == "Focus on authentication and authorization"
+    finally:
+        settings.set(setting_key, original)
+
+
+def test_prepare_command_preserves_quoted_non_setting_arguments():
+    command = pr_agent_module.prepare_command('/ask "why is this change risky?"')
+
+    assert command == ["/ask", "why is this change risky?"]
+
+
+@pytest.mark.parametrize(
+    ("quoted_value", "expected_value"),
+    [
+        ('"Focus on # authentication"', "Focus on # authentication"),
+        ('"true"', "true"),
+        ('"null"', "null"),
+        ("'Focus on # authentication'", "Focus on # authentication"),
+    ],
+)
+def test_prepare_command_preserves_quoted_yaml_sensitive_values(quoted_value, expected_value):
+    settings = get_settings()
+    setting_key = "PR_REVIEWER.EXTRA_INSTRUCTIONS"
+    original = settings.get(setting_key)
+
+    try:
+        command = pr_agent_module.prepare_command(
+            f"/review --pr_reviewer.extra_instructions={quoted_value}"
+        )
+
+        assert command == ["/review"]
+        assert settings.get(setting_key) == expected_value
+    finally:
+        settings.set(setting_key, original)
+
+
+def test_prepare_command_accepts_apostrophes_in_unquoted_arguments_and_values():
+    settings = get_settings()
+    setting_key = "PR_REVIEWER.EXTRA_INSTRUCTIONS"
+    original = settings.get(setting_key)
+
+    try:
+        command = pr_agent_module.prepare_command(
+            "/review --pr_reviewer.extra_instructions=O'Reilly"
+        )
+
+        assert command == ["/review"]
+        assert settings.get(setting_key) == "O'Reilly"
+        assert pr_agent_module.prepare_command("/ask What's wrong?") == [
+            "/ask",
+            "What's",
+            "wrong?",
+        ]
+    finally:
+        settings.set(setting_key, original)
+
+
+def test_prepare_command_keeps_unquoted_value_type_when_key_is_quoted():
+    settings = get_settings()
+    setting_key = "PR_CODE_SUGGESTIONS.NUM_CODE_SUGGESTIONS"
+    original = settings.get(setting_key)
+
+    try:
+        command = pr_agent_module.prepare_command(
+            '/review --"pr_code_suggestions.num_code_suggestions"=3'
+        )
+
+        assert command == ["/review"]
+        assert settings.get(setting_key) == 3
+        assert isinstance(settings.get(setting_key), int)
+    finally:
+        settings.set(setting_key, original)
+
+
 @pytest.mark.asyncio
 async def test_handle_request_rejects_forbidden_cli_args(monkeypatch):
     class FakeTool:
@@ -105,6 +191,35 @@ async def test_handle_request_wrapper_returns_false_on_exception(monkeypatch):
     handled = await pr_agent_module.PRAgent().handle_request("https://example/pr/1", "/review")
 
     assert handled is False
+
+
+@pytest.mark.asyncio
+async def test_handle_request_propagates_cancellation(monkeypatch):
+    started = asyncio.Event()
+
+    class BlockingTool:
+        def __init__(self, pr_url, ai_handler, args):
+            pass
+
+        async def run(self):
+            started.set()
+            await asyncio.Event().wait()
+
+    _patch_request_dependencies(monkeypatch)
+    monkeypatch.setitem(
+        pr_agent_module.command2class, "blocking", BlockingTool
+    )
+
+    task = asyncio.create_task(
+        pr_agent_module.PRAgent(ai_handler="fake-ai").handle_request(
+            "https://example/pr/1", "/blocking"
+        )
+    )
+    await started.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
 
 
 @pytest.mark.asyncio

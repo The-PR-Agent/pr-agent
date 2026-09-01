@@ -1,6 +1,7 @@
 from unittest.mock import MagicMock, patch
 
 from pr_agent.algo import inline_comment_dedup as d
+from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
 
@@ -28,6 +29,33 @@ def test_body_fingerprint_strips_lead_and_tag():
 def test_body_fingerprint_varies_by_file_and_line():
     assert d.body_fingerprint("f.py", 10, "x") != d.body_fingerprint("g.py", 10, "x")
     assert d.body_fingerprint("f.py", 10, "x") != d.body_fingerprint("f.py", 11, "x")
+
+
+def test_key_issue_fingerprint_uses_path_and_full_body():
+    prefix = "x" * 100
+
+    assert d.key_issue_fingerprint("f.py", f"{prefix}a") != d.key_issue_fingerprint("f.py", f"{prefix}b")
+    assert d.key_issue_fingerprint("f.py", prefix) != d.key_issue_fingerprint("g.py", prefix)
+
+
+def test_key_issue_location_fingerprint_uses_the_full_range():
+    fingerprint = d.key_issue_fingerprint("f.py", "finding")
+
+    assert d.key_issue_location_fingerprint(fingerprint, 1, 2) != d.key_issue_location_fingerprint(
+        fingerprint, 1, 3)
+
+
+def test_key_issue_markers_survive_clipping_and_load_into_the_store():
+    body_fingerprint = d.key_issue_fingerprint("f.py", "x" * 300)
+    location_fingerprint = d.key_issue_location_fingerprint(body_fingerprint, 1, 2)
+    body = d.key_issue_body_with_markers("x" * 300, body_fingerprint, location_fingerprint, 200)
+    store = d.InlineCommentStore(_gh_provider([]))
+
+    store.add_body(body)
+
+    assert len(body) == 200
+    assert store.seen(body_fingerprint)
+    assert store.seen(location_fingerprint)
 
 
 def test_code_fingerprint_none_without_block():
@@ -89,7 +117,8 @@ def test_store_load_failure_degrades_to_empty():
     prov = _gh_provider([])
     prov.pr.get_comments.side_effect = RuntimeError("api down")
     store = d.InlineCommentStore(prov)
-    assert store.load() == set()  # must not raise
+    assert store.load() == set()
+    assert store.load_failed is True
 
 
 def test_iter_unsupported_provider_raises():
@@ -97,9 +126,30 @@ def test_iter_unsupported_provider_raises():
         pass
     try:
         list(d.iter_existing_inline_comment_bodies(FooProvider()))
-        assert False, "expected NotImplementedError"
+        raise AssertionError("expected NotImplementedError")
     except NotImplementedError:
         pass
+
+
+def _azure_provider(existing_threads=None):
+    provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+    provider.azure_devops_client = MagicMock()
+    provider.azure_devops_client.get_threads.return_value = existing_threads or []
+    provider.repo_slug = "repo"
+    provider.workspace_slug = "project"
+    provider.pr_num = 1
+    return provider
+
+
+def test_inline_publication_verification_is_limited_to_azure_devops():
+    assert d.can_verify_inline_comment_publication(_azure_provider()) is True
+    assert d.can_verify_inline_comment_publication(_gh_provider([])) is False
+    assert d.can_verify_inline_comment_publication(_gl_provider([])) is False
+
+    class FooProvider:
+        pass
+
+    assert d.can_verify_inline_comment_publication(FooProvider()) is False
 
 
 # --------------------------------------------------------------------------- #
@@ -192,6 +242,7 @@ def _gl_provider(existing_bodies):
         discs.append(disc)
     p.mr.discussions.list.return_value = discs
     p.mr.notes.list.return_value = []
+    p.mr.draft_notes.list.return_value = []
     p.get_relevant_diff = MagicMock(return_value=_FakeDiff())
     return p
 
@@ -409,6 +460,28 @@ def test_gitlab_skips_when_fallback_note_has_marker():
         gs.stop()
 
 
+def test_gitlab_skips_when_pending_draft_note_has_marker():
+    # gitlab.publish_code_suggestions_as_review queues suggestions as draft notes,
+    # which are invisible via discussions/notes listings until published. A pending
+    # draft's marker must still be found, so a suggestion isn't re-queued as a
+    # duplicate while an earlier draft of it is still waiting to be published.
+    body = "**Suggestion:** still pending [possible issue, importance: 7]"
+    seen_fp = d.body_fingerprint("a.py", 10, body)
+    p = _gl_provider([])
+    draft = MagicMock()
+    draft.note = f"still pending\n\n<!-- pr-agent-dedup: {seen_fp} -->"
+    p.mr.draft_notes.list.return_value = [draft]
+    gs = patch("pr_agent.git_providers.gitlab_provider.get_settings")
+    m = gs.start()
+    m.return_value.get.side_effect = _flag_side_effect(True)
+    try:
+        _send(p, body)
+        p.mr.discussions.create.assert_not_called()
+        p.mr.draft_notes.create.assert_not_called()
+    finally:
+        gs.stop()
+
+
 def _flag_on_gitlab():
     gs = patch("pr_agent.git_providers.gitlab_provider.get_settings")
     m = gs.start()
@@ -482,3 +555,56 @@ def test_has_marker_requires_wellformed_marker():
     assert d.has_marker("body\n\n<!-- pr-agent-dedup: a1b2c3d4e5f6 -->")
     assert not d.has_marker("a comment that merely mentions <!-- pr-agent-dedup: in prose")
     assert not d.has_marker("no marker at all")
+
+
+def test_is_agent_inline_comment_accepts_the_agents_own_bodies():
+    assert d.is_agent_inline_comment(
+        "**Suggestion:** Rename this [best practice, importance: 5]\n```suggestion\nx = 1\n```")
+    assert d.is_agent_inline_comment("\n  **suggestion:** case and leading whitespace are ignored")
+    assert d.is_agent_inline_comment("**Possible Issue**\n\nx\n\n<!-- pr-agent-dedup: a1b2c3d4e5f6 -->")
+
+
+def test_is_agent_inline_comment_rejects_hand_written_bodies():
+    assert not d.is_agent_inline_comment("Please rename this variable before we merge.")
+    assert not d.is_agent_inline_comment("Here is my **Suggestion:** rename it")
+    assert not d.is_agent_inline_comment("")
+    assert not d.is_agent_inline_comment(None)
+
+
+def test_marker_fingerprints_collects_every_marker():
+    body = ("x\n\n<!-- pr-agent-dedup: a1b2c3d4e5f6 -->"
+            "\n<!-- pr-agent-dedup-code: b1b2c3d4e5f6 -->"
+            "\n<!-- pr-agent-key-issue-location: c1b2c3d4e5f6 -->")
+    assert d.marker_fingerprints(body) == {
+        "a1b2c3d4e5f6", "b1b2c3d4e5f6", "c1b2c3d4e5f6"}
+    assert d.marker_fingerprints("") == set()
+    assert d.marker_fingerprints(None) == set()
+
+
+def test_release_frees_a_fingerprint_the_store_had_already_loaded():
+    store = d.InlineCommentStore(MagicMock())
+    with patch.object(d, "iter_existing_inline_comment_bodies",
+                      return_value=["x\n\n<!-- pr-agent-dedup: a1b2c3d4e5f6 -->"]):
+        assert store.seen("a1b2c3d4e5f6")
+        store.release({"a1b2c3d4e5f6"})
+        assert not store.seen("a1b2c3d4e5f6")
+
+
+def test_release_before_the_load_survives_it():
+    # The sweep can run before anything reads the store; the scan must not
+    # re-suppress a fingerprint whose thread it just resolved.
+    store = d.InlineCommentStore(MagicMock())
+    store.release({"a1b2c3d4e5f6"})
+    with patch.object(d, "iter_existing_inline_comment_bodies",
+                      return_value=["x\n\n<!-- pr-agent-dedup: a1b2c3d4e5f6 -->"]):
+        assert not store.seen("a1b2c3d4e5f6")
+
+
+def test_release_leaves_every_other_thread_suppressive():
+    store = d.InlineCommentStore(MagicMock())
+    with patch.object(d, "iter_existing_inline_comment_bodies", return_value=[
+            "x\n\n<!-- pr-agent-dedup: a1b2c3d4e5f6 -->",
+            "y\n\n<!-- pr-agent-dedup: d1b2c3d4e5f6 -->"]):
+        store.release({"a1b2c3d4e5f6"})
+        assert not store.seen("a1b2c3d4e5f6")
+        assert store.seen("d1b2c3d4e5f6")

@@ -1,5 +1,5 @@
 from os import environ
-from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
+
 import openai
 from openai import AsyncOpenAI
 from tenacity import retry, retry_if_exception_type, retry_if_not_exception_type, stop_after_attempt
@@ -61,6 +61,10 @@ class OpenAIHandler(BaseAiHandler):
             usage = chat_completion.usage
             get_logger().info("AI response", response=resp, messages=messages, finish_reason=finish_reason,
                               model=model, usage=usage)
+            # Count the call and its tokens but no cost: this handler has no pricing
+            # source wired up, so with output_run_cost enabled its calls render as
+            # unpriced. Left as-is while the path stays cold — no setting selects
+            # this handler, it is reachable only by injecting it programmatically.
             record_ai_call(usage)
             return resp, finish_reason
         except openai.RateLimitError as e:

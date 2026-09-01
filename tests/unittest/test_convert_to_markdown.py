@@ -2,7 +2,7 @@
 import textwrap
 from unittest.mock import Mock
 
-from pr_agent.algo.utils import PRReviewHeader, convert_to_markdown_v2
+from pr_agent.algo.utils import PRReviewHeader, _expand_minute_suffix, convert_to_markdown_v2
 from pr_agent.tools.pr_description import insert_br_after_x_chars
 
 """
@@ -255,6 +255,66 @@ class TestConvertToMarkdown:
         """)
         assert convert_to_markdown_v2(input_data, gfm_supported=False).strip() == expected_output_no_gfm.strip()
 
+    def test_structured_review_fields_render(self):
+        input_data = {
+            "review": {
+                "risk_level": "medium",
+                "merge_recommendation": "merge_with_caution",
+                "review_priority_files": ["gui_app.py", "app.py"],
+            }
+        }
+
+        markdown = convert_to_markdown_v2(input_data, gfm_supported=False)
+
+        assert "Risk level: Medium" in markdown
+        assert "Merge recommendation: Merge with caution" in markdown
+        assert "Priority files" in markdown
+        assert "- gui_app.py" in markdown
+        assert "- app.py" in markdown
+
+    def test_structured_review_fields_render_empty_priority_files(self):
+        input_data = {
+            "review": {
+                "risk_level": "low",
+                "merge_recommendation": "safe_to_merge",
+                "review_priority_files": [],
+            }
+        }
+
+        markdown = convert_to_markdown_v2(input_data, gfm_supported=False)
+
+        assert "Risk level: Low" in markdown
+        assert "Merge recommendation: Safe to merge" in markdown
+        assert "Priority files: None" in markdown
+
+    def test_structured_review_fields_ignore_invalid_priority_files_type(self):
+        input_data = {
+            "review": {
+                "review_priority_files": {"file": "gui_app.py"},
+            }
+        }
+
+        markdown = convert_to_markdown_v2(input_data, gfm_supported=False)
+
+        assert "Priority files: None" in markdown
+
+    def test_structured_review_fields_render_gfm(self):
+        input_data = {
+            "review": {
+                "risk_level": "medium",
+                "merge_recommendation": "changes_required",
+                "review_priority_files": ["gui_app.py"],
+            }
+        }
+
+        markdown = convert_to_markdown_v2(input_data, gfm_supported=True)
+
+        assert "<strong>Risk level</strong>: Medium" in markdown
+        assert "<strong>Merge recommendation</strong>: Changes required" in markdown
+        assert "<strong>Priority files</strong>" in markdown
+        assert "<ul>\n<li>gui_app.py</li>\n</ul>" in markdown
+        assert "- gui_app.py" not in markdown
+        assert markdown.count("<tr><td>") == markdown.count("</td></tr>") == 3
 
     # Tests that the function works correctly with an empty dictionary input
     def test_empty_dictionary_input(self):
@@ -303,3 +363,23 @@ class TestBR:
                                               '</code> and implements <br>aaa')
         # print("-----")
         # print(file_change_description_br)
+
+
+class TestExpandMinuteSuffix:
+    """Tests for _expand_minute_suffix regex replacement."""
+
+    def test_standalone_minute_suffix(self):
+        """'30m' at end of string becomes '30 minutes'."""
+        assert _expand_minute_suffix("30m") == "30 minutes"
+
+    def test_minute_suffix_not_replaced_when_part_of_longer_unit(self):
+        """'30ms' stays unchanged because 'm' is not at a word boundary."""
+        assert _expand_minute_suffix("30ms") == "30ms"
+
+    def test_minute_suffix_replaced_before_space(self):
+        """'30m implementation' replaces '30m' because 'm' is at a word boundary."""
+        assert _expand_minute_suffix("30m implementation") == "30 minutes implementation"
+
+    def test_minute_suffix_in_compound_estimate(self):
+        """'2h 30m' becomes '2h 30 minutes' (only the minute part is replaced)."""
+        assert _expand_minute_suffix("2h 30m") == "2h 30 minutes"

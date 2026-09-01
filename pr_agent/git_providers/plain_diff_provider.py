@@ -1,9 +1,11 @@
+import json
 import os
 from collections import Counter
 from typing import List, Optional
 
 from unidiff.errors import UnidiffParseError
 
+from pr_agent.algo.language_handler import build_language_file_matcher
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import _find_repository_root, get_settings
 from pr_agent.git_providers.diff_parsing import parse_unified_diff, reconstruct_base_file, to_hunk_only_patch
@@ -20,9 +22,9 @@ class PullRequestMimic:
 class PlainDiffGitProvider(GitProvider):
     """Provider that reviews a raw unified diff (stdin/file), no hosting platform.
 
-    The diff text and optional output path are read from global settings
-    (plain_diff.content, plain_diff.output_path). The pr_url arg is an ignored
-    sentinel.
+    Read the diff text and optional output paths from global settings
+    (plain_diff.content, plain_diff.output_path, plain_diff.json_output_path).
+    Treat the pr_url arg as an ignored sentinel.
     """
 
     def __init__(self, pr_url=None, incremental=False):
@@ -31,6 +33,7 @@ class PlainDiffGitProvider(GitProvider):
             raise ValueError("No diff content provided for the 'plain-diff' git provider")
         self.diff_text = diff_text
         self.output_path = get_settings().get("plain_diff.output_path", None)
+        self.json_output_path = get_settings().get("plain_diff.json_output_path", None)
         # cli.run() already forces config.publish_output=True, but apply_repo_settings()
         # runs afterwards and can overwrite it back to False from an extra/repo config
         # (tools gate all publishing on this flag). This provider is constructed after
@@ -117,6 +120,17 @@ class PlainDiffGitProvider(GitProvider):
             return  # don't emit "Preparing review..." placeholders to stdout
         self._write_output(pr_comment)
 
+    def publish_structured_review(self, review: dict):
+        if not self.json_output_path:
+            return
+        try:
+            with open(self.json_output_path, "w", encoding="utf-8") as fh:
+                json.dump(review, fh, indent=2)
+                fh.write("\n")
+        except (OSError, TypeError, ValueError) as e:
+            get_logger().error(f"Failed to write structured review to {self.json_output_path}: {e}")
+            raise
+
     def publish_description(self, pr_title: str, pr_body: str):
         self._write_output(f"{pr_title}\n\n{pr_body}")
 
@@ -132,20 +146,16 @@ class PlainDiffGitProvider(GitProvider):
         # sort_files_by_main_languages() keys on language NAMES (it maps each
         # name back to its extensions), so returning raw extensions here would
         # drop every file into the "Other" bucket and disable language-based
-        # hunk prioritization. Invert the settings map (name -> [extensions])
-        # into an extension -> name lookup; files with unknown extensions are
-        # left out and fall through to "Other" downstream.
-        ext_to_lang = {}
+        # hunk prioritization. Use the shared filename matcher so full names,
+        # multipart suffixes, and case-sensitive extensions behave consistently.
         lang_map = get_settings().get("language_extension_map_org", {}) or {}
-        for language, extensions in lang_map.items():
-            for ext in extensions:
-                ext_to_lang.setdefault(ext.lower().lstrip("*"), language)
+        get_language = build_language_file_matcher(lang_map)
 
         lang_count = Counter()
         for f in self.get_diff_files():
             if not f.filename:
                 continue
-            language = ext_to_lang.get(os.path.splitext(f.filename)[1].lower())
+            language = get_language(f.filename)
             if language:
                 lang_count[language] += 1
 

@@ -53,19 +53,24 @@ _MODEL_WITHOUT_STOP = "gpt-5.6"
 
 @pytest.fixture
 def restore_config_model():
-    """Snapshot/restore CONFIG.MODEL on the shared settings (no request scope here, so
+    """Snapshot/restore LLM settings on the shared settings (no request scope here, so
     get_settings() resolves to global_settings). Mirrors the snapshot/restore convention
     in test_mosaico_isolation.py."""
     settings = get_settings()
     sentinel = object()
-    before = settings.get("CONFIG.MODEL", sentinel)
+    model_before = settings.get("CONFIG.MODEL", sentinel)
+    provider_before = settings.get("LITELLM.CUSTOM_LLM_PROVIDER", sentinel)
     yield settings
-    if before is sentinel:
+    if model_before is sentinel:
         # Best-effort removal of a key we introduced; dynaconf has no public delete, so
         # blank it out rather than leak a fake model into sibling tests.
         settings.set("CONFIG.MODEL", "")
     else:
-        settings.set("CONFIG.MODEL", before)
+        settings.set("CONFIG.MODEL", model_before)
+    if provider_before is sentinel:
+        settings.set("LITELLM.CUSTOM_LLM_PROVIDER", "")
+    else:
+        settings.set("LITELLM.CUSTOM_LLM_PROVIDER", provider_before)
 
 
 class TestHealthCheckGate:
@@ -106,6 +111,38 @@ class TestHealthCheckGate:
         result = await health_check()
         assert result.startswith("Unhealthy:")
         assert "connection refused" in result
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("custom_llm_provider", "expected_model", "expected_provider"),
+        [
+            ("", "openrouter/openrouter/auto", ""),
+            (" OpenRouter ", "openrouter/openrouter/auto", "openrouter"),
+            (" OpenAI ", "openrouter/auto", "openai"),
+        ],
+    )
+    async def test_openrouter_router_model_preserves_provider_routing(
+        self, monkeypatch, restore_config_model, custom_llm_provider, expected_model, expected_provider
+    ):
+        restore_config_model.set("CONFIG.MODEL", "openrouter/auto")
+        restore_config_model.set("LITELLM.CUSTOM_LLM_PROVIDER", custom_llm_provider)
+
+        called = {}
+
+        async def fake_acompletion(**kwargs):
+            called.update(kwargs)
+            return {"choices": [{"message": {"content": "pong"}}]}
+
+        monkeypatch.setattr(litellm, "acompletion", fake_acompletion)
+
+        result = await health_check()
+
+        assert result == "OK"
+        assert called.get("model") == expected_model
+        if expected_provider:
+            assert called.get("custom_llm_provider") == expected_provider
+        else:
+            assert "custom_llm_provider" not in called
 
     @pytest.mark.asyncio
     async def test_no_model_configured_returns_unhealthy(

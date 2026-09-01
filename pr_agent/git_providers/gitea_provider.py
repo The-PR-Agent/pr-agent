@@ -9,13 +9,22 @@ from pr_agent.algo.file_filter import filter_ignored
 from pr_agent.algo.git_patch_processing import decode_if_bytes
 from pr_agent.algo.language_handler import is_valid_file
 from pr_agent.algo.types import EDIT_TYPE
-from pr_agent.algo.utils import (clip_tokens,
-                                 find_line_number_of_relevant_line_in_file)
+from pr_agent.algo.utils import clip_tokens, find_line_number_of_relevant_line_in_file
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers.git_provider import (MAX_FILES_ALLOWED_FULL,
-                                                 FilePatchInfo, GitProvider,
-                                                 IncrementalPR)
+from pr_agent.git_providers.git_provider import (
+    MAX_FILES_ALLOWED_FULL,
+    FilePatchInfo,
+    GitProvider,
+    IncrementalPR,
+    redact_credentials,
+)
 from pr_agent.log import get_logger
+
+# Shipped default for the [gitea] url setting in configuration.toml. A value
+# equal to this must be treated as "unset" when resolving the user-facing base
+# URL: the default is always present in production, so a bare truthiness check
+# on GITEA.URL would make the pr.html_url derivation unreachable.
+DEFAULT_GITEA_URL = "https://gitea.com"
 
 
 class _GiteaCommitAdapter:
@@ -36,7 +45,7 @@ class GiteaProvider(GitProvider):
             self.logger.error("PR URL not provided.")
             raise ValueError("PR URL not provided.")
 
-        self.base_url = get_settings().get("GITEA.URL", "https://gitea.com").rstrip("/")
+        self.base_url = get_settings().get("GITEA.URL", DEFAULT_GITEA_URL).rstrip("/")
         self.pr_url = ""
         self.issue_url = ""
 
@@ -73,7 +82,7 @@ class GiteaProvider(GitProvider):
         self.sha = None
         self.base_sha = ""
         self.base_ref = ""
-        self.diff_files = []
+        self.diff_files = None
         self.incremental = IncrementalPR(False)
         self.comments_list = []
         self.unreviewed_files_map = dict()
@@ -107,6 +116,38 @@ class GiteaProvider(GitProvider):
             self.enabled_issue = True
         else:
             self.pr_commits = None
+
+        self.base_url_html = self._resolve_base_url_html()
+
+    def _resolve_base_url_html(self) -> str:
+        """User-facing base URL interpolated into links published in comments.
+
+        ``base_url`` is where PR-Agent reaches the API, which may be an internal
+        address (Docker service name, cluster DNS) that users cannot browse, so
+        generated links must not be built from it. Resolution order:
+
+        1. The optional ``GITEA.WEB_URL`` setting.
+        2. An explicitly configured ``GITEA.URL``: an operator-set value wins
+           over the server's self-reported ``ROOT_URL``, which ``pr.html_url``
+           is built from and which may still be the default on some instances.
+           The shipped default (``DEFAULT_GITEA_URL``) does not count here -
+           configuration.toml always provides it, so a plain truthiness check
+           would leave the derivation below unreachable.
+        3. Derived from ``pr.html_url``, which Gitea/Forgejo builds from its
+           own external ``ROOT_URL``.
+        4. ``base_url``, so existing single-URL deployments are unaffected.
+        """
+        web_url = (get_settings().get("GITEA.WEB_URL", "") or "").rstrip("/")
+        if web_url:
+            return web_url
+        configured_url = (get_settings().get("GITEA.URL", "") or "").rstrip("/")
+        if configured_url and configured_url != DEFAULT_GITEA_URL:
+            return self.base_url
+        pr_html_url = getattr(self.pr, "html_url", "") if self.pr else ""
+        pr_url_suffix = f"/{self.owner}/{self.repo}/pulls/{self.pr_number}"
+        if pr_html_url and pr_html_url.endswith(pr_url_suffix):
+            return pr_html_url[: -len(pr_url_suffix)]
+        return self.base_url
 
     def _set_pr_commits(self):
         """Load the commits of the PR itself, not the commits of the repository's default branch."""
@@ -186,8 +227,8 @@ class GiteaProvider(GitProvider):
     def _parse_pr_url(self, pr_url: str) -> Tuple[str, str, int]:
         parsed_url = urlparse(pr_url)
 
-        if parsed_url.path.startswith('/api/v1'):
-            parsed_url = urlparse(pr_url.replace("/api/v1", ""))
+        if parsed_url.path.startswith("/api/v1/repos"):
+            parsed_url = urlparse(pr_url.replace("/api/v1/repos", ""))
 
         path_parts = parsed_url.path.strip('/').split('/')
         if len(path_parts) < 4 or path_parts[2] != 'pulls':
@@ -206,8 +247,8 @@ class GiteaProvider(GitProvider):
     def _parse_issue_url(self, issue_url: str) -> Tuple[str, str, int]:
         parsed_url = urlparse(issue_url)
 
-        if parsed_url.path.startswith('/api/v1'):
-            parsed_url = urlparse(issue_url.replace("/api/v1", ""))
+        if parsed_url.path.startswith("/api/v1/repos"):
+            parsed_url = urlparse(issue_url.replace("/api/v1/repos", ""))
 
         path_parts = parsed_url.path.strip('/').split('/')
         if len(path_parts) < 4 or path_parts[2] != 'issues':
@@ -250,6 +291,14 @@ class GiteaProvider(GitProvider):
             self.logger.error(f"Unexpected error: {str(e)}")
 
     def get_pr_url(self) -> str:
+        # Gitea sets url and html_url identically on the PR payload (the
+        # user-facing page), and self.pr_url comes from _parse_pr_url, which
+        # rejects the API form - so rebuild the page URL from base_url_html,
+        # letting a configured GITEA.WEB_URL reach the links built from here.
+        # Call sites are user-facing output only (pr_description, pr_reviewer,
+        # pr_update_changelog); API and clone paths use base_url directly.
+        if self.owner and self.repo and self.pr_number:
+            return f"{self.base_url_html}/{self.owner}/{self.repo}/pulls/{self.pr_number}"
         return self.pr_url
 
     def get_issue_url(self) -> str:
@@ -265,8 +314,17 @@ class GiteaProvider(GitProvider):
                                    initial_header: str,
                                    update_header: bool = True,
                                    name='review',
-                                   final_update_message=True):
-        self.publish_persistent_comment_full(pr_comment, initial_header, update_header, name, final_update_message)
+                                   final_update_message=True,
+                                   identity_marker: str | None = None,
+                                   legacy_initial_header: str | None = None):
+        # Keep the legacy updater path until Gitea normalizes its dictionary-shaped comment payloads.
+        self.publish_persistent_comment_full(
+            pr_comment,
+            initial_header,
+            update_header,
+            name,
+            final_update_message,
+        )
 
     def publish_comment(self, comment: str,is_temporary: bool = False) -> None:
         """Publish a comment to the pull request"""
@@ -550,12 +608,16 @@ class GiteaProvider(GitProvider):
         return diff_files
 
     def get_line_link(self, relevant_file, relevant_line_start, relevant_line_end = None) -> str:
+        link = f"{self.base_url_html}/{self.owner}/{self.repo}/src/branch/{self.get_pr_branch()}/{relevant_file}"
+        relevant_line_start, relevant_line_end = self._normalize_line_range(
+            relevant_line_start, relevant_line_end
+        )
         if relevant_line_start == -1:
-            link = f"{self.base_url}/{self.owner}/{self.repo}/src/branch/{self.get_pr_branch()}/{relevant_file}"
+            pass
         elif relevant_line_end:
-            link = f"{self.base_url}/{self.owner}/{self.repo}/src/branch/{self.get_pr_branch()}/{relevant_file}#L{relevant_line_start}-L{relevant_line_end}"
+            link += f"#L{relevant_line_start}-L{relevant_line_end}"
         else:
-            link = f"{self.base_url}/{self.owner}/{self.repo}/src/branch/{self.get_pr_branch()}/{relevant_file}#L{relevant_line_start}"
+            link += f"#L{relevant_line_start}"
 
         self.logger.info(f"Generated link: {link}")
         return link
@@ -762,14 +824,15 @@ class GiteaProvider(GitProvider):
             return None
         base_url = gitea_base_url.split(scheme)[1]
         if not base_url:
-            get_logger().error(f"Base url: {gitea_base_url} has an empty base url")
+            get_logger().error(f"Base url: {redact_credentials(gitea_base_url)} has an empty base url")
             return None
         if base_url not in repo_url_to_clone:
-            get_logger().error(f"url to clone: {repo_url_to_clone} does not contain {base_url}")
+            get_logger().error(f"url to clone: {redact_credentials(repo_url_to_clone)} "
+                               f"does not contain {redact_credentials(gitea_base_url)}")
             return None
         repo_full_name = repo_url_to_clone.split(base_url)[-1]
         if not repo_full_name:
-            get_logger().error(f"url to clone: {repo_url_to_clone} is malformed")
+            get_logger().error(f"url to clone: {redact_credentials(repo_url_to_clone)} is malformed")
             return None
 
         clone_url = scheme

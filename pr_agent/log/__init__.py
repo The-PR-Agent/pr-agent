@@ -1,4 +1,5 @@
 import os
+
 os.environ["AUTO_CAST_FOR_DYNACONF"] = "false"
 import json
 import logging
@@ -26,10 +27,6 @@ def inv_analytics_filter(record: dict) -> bool:
 
 
 def setup_logger(level: str = "INFO", fmt: LoggingFormat = LoggingFormat.CONSOLE):
-    # Dynamic import to avoid a circular import: config_loader's module-level
-    # Dynaconf setup runs custom_merge_loader, which imports this module.
-    from pr_agent.config_loader import get_settings
-
     level: int = logging.getLevelName(level.upper())
     if type(level) is not int:
         level = logging.INFO
@@ -47,6 +44,11 @@ def setup_logger(level: str = "INFO", fmt: LoggingFormat = LoggingFormat.CONSOLE
     elif fmt == LoggingFormat.CONSOLE: # does not print the 'extra' fields
         logger.remove(None)
         logger.add(sys.stdout, level=level, colorize=True, filter=inv_analytics_filter)
+
+    # Imported lazily so `from pr_agent.log import get_logger` does not pull
+    # in config_loader while this package is still initializing. config_loader
+    # loads settings via custom_merge_loader, which itself imports get_logger.
+    from pr_agent.config_loader import get_settings
 
     log_folder = get_settings().get("CONFIG.ANALYTICS_FOLDER", "")
     if log_folder:

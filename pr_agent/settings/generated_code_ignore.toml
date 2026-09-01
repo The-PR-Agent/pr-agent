@@ -29,7 +29,7 @@ graphql = [
   "**/*.graphql.js"
 ]
 
-# RPC / gRPC Generators 
+# RPC / gRPC Generators
 grpc_python      = ["**/*_grpc.py"]
 grpc_java        = ["**/*Grpc.java"]
 grpc_csharp      = ["**/*Grpc.cs"]

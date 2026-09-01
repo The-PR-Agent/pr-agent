@@ -96,11 +96,8 @@ Same goes for other providers, make sure to check the [documentation](../usage-g
 
 Install the package:
 
-PyPI publishing is temporarily behind: `pip install pr-agent` currently installs `0.39.0`.
-Until publishing resumes, install the current release (`v0.42.0`) reproducibly from its GitHub tag:
-
 ```bash
-pip install "pr-agent @ git+https://github.com/The-PR-Agent/pr-agent.git@v0.42.0"
+pip install pr-agent
 ```
 
 Then run the relevant tool with the script below.
@@ -140,10 +137,10 @@ if __name__ == '__main__':
 git clone https://github.com/the-pr-agent/pr-agent.git
 ```
 
-2. Navigate to the `/pr-agent` folder and install the requirements in your favorite virtual environment:
+2. Navigate to the `/pr-agent` folder and install dependencies with [uv](https://docs.astral.sh/uv/) (creates a `.venv` from `uv.lock`):
 
 ```bash
-pip install -e .
+uv sync
 ```
 
 *Note: If you get an error related to Rust in the dependency installation then make sure Rust is installed and in your `PATH`, instructions: https://rustup.rs*
@@ -159,15 +156,17 @@ chmod 600 pr_agent/settings/.secrets.toml
 4. Run the cli.py script:
 
 ```bash
-python3 -m pr_agent.cli --pr_url <pr_url> review
-python3 -m pr_agent.cli --pr_url <pr_url> ask <your question>
-python3 -m pr_agent.cli --pr_url <pr_url> describe
-python3 -m pr_agent.cli --pr_url <pr_url> improve
-python3 -m pr_agent.cli --pr_url <pr_url> add_docs
-python3 -m pr_agent.cli --pr_url <pr_url> generate_labels
-python3 -m pr_agent.cli --issue_url <issue_url> similar_issue
+uv run pr-agent --pr_url <pr_url> review
+uv run pr-agent --pr_url <pr_url> ask "<your question>"
+uv run pr-agent --pr_url <pr_url> describe
+uv run pr-agent --pr_url <pr_url> improve
+uv run pr-agent --pr_url <pr_url> add_docs
+uv run pr-agent --pr_url <pr_url> generate_labels
+uv run pr-agent --issue_url <issue_url> similar_issue
 ...
 ```
+
+*Note: the `similar_issue` tool needs extra dependencies that a bare `uv sync` does not install. Install them with `uv sync --group similar-issue` before running it.*
 
 [Optional] Add the pr_agent folder to your PYTHONPATH
 
