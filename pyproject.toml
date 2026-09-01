@@ -73,6 +73,11 @@ dependencies = [
   "pydantic-settings==2.14.2",
   "html2text==2024.2.26",
   "giteapy==1.0.8",
+  # pr_agent/telemetry imports these directly; already resolved transitively via
+  # langfuse and litellm, pinned here to lock the version the code is tested against.
+  "opentelemetry-api==1.43.0",
+  "opentelemetry-sdk==1.43.0",
+  "opentelemetry-exporter-otlp-proto-http==1.43.0",
 ]
 
 [project.urls]
@@ -93,6 +98,9 @@ include = [
 [project.optional-dependencies]
 # AWS Lambda deployment (docker/Dockerfile.lambda).
 lambda = ["mangum==0.17.0"]
+# OTLP/gRPC transport for pr-agent telemetry (OTEL.OTLP_PROTOCOL = "grpc").
+# The default OTLP/HTTP transport needs no extra: its exporter is a base dependency.
+otel-grpc = ["opentelemetry-exporter-otlp-proto-grpc==1.43.0"]
 # LangChainOpenAIHandler. Install with: uv sync --extra langchain
 langchain = [
   "langchain",

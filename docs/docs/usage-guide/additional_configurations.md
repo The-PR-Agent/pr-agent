@@ -247,6 +247,52 @@ LANGSMITH_PROJECT=<project>
 LANGSMITH_BASE_URL=<url>
 ```
 
+To use [Langfuse](https://langfuse.com) for utilization and adoption tracking (LLM cost, token usage, latency, and unique repo adoption), add the following to your configuration:
+
+```toml
+[litellm]
+enable_callbacks = true
+success_callback = ["langfuse_otel"]
+failure_callback = ["langfuse_otel"]
+```
+
+> Note: use `langfuse_otel` (the OpenTelemetry-based integration), not the legacy `langfuse` callback — the legacy callback is incompatible with the Langfuse 3.x SDK this project pins.
+
+Then set the following environment variables:
+
+```
+LANGFUSE_HOST=https://cloud.langfuse.com
+LANGFUSE_PUBLIC_KEY=<public_key>
+LANGFUSE_SECRET_KEY=<secret_key>
+```
+
+Each LLM call is traced with the command name, git provider, PR URL, model, token counts, and version as tags — giving you full visibility into how pr-agent is being used across your repositories.
+
+### LLM telemetry via LiteLLM's OpenTelemetry integration
+
+To emit OpenTelemetry traces and metrics for the LLM calls themselves — cost in USD, call duration, time to first token, and the input/output token split, on standard `gen_ai.*` semantic-convention names — enable LiteLLM's built-in `otel` callback:
+
+```toml
+[litellm]
+success_callback = ["otel"]
+failure_callback = ["otel"]
+turn_off_message_logging = true
+```
+
+> **Set `turn_off_message_logging = true`.** LiteLLM attaches full prompt and response content to what its callbacks emit, which here means the entire PR diff. The default is `false` to preserve existing behavior for Langfuse and LangSmith users.
+
+The integration is configured through environment variables:
+
+```
+OTEL_EXPORTER=otlp_http            # or "console", "otlp_grpc"
+OTEL_EXPORTER_OTLP_ENDPOINT=https://collector:4318
+OTEL_EXPORTER_OTLP_HEADERS=...
+OTEL_SERVICE_NAME=pr-agent
+LITELLM_OTEL_INTEGRATION_ENABLE_METRICS=true   # metrics are off by default
+```
+
+Pending callbacks are flushed before the CLI and the GitHub Action runner exit, bounded by `callback_timeout_seconds` (see [Custom callbacks](#custom-callbacks)).
+
 ### Custom callbacks
 
 If you embed PR-Agent in your own code, you can also register callbacks programmatically — for example a
@@ -273,6 +319,61 @@ that flush may take:
 [litellm]
 callback_timeout_seconds = 30 # default
 ```
+
+## Built-in OpenTelemetry command telemetry
+
+PR-Agent can emit its own [OpenTelemetry](https://opentelemetry.io/) signals for utilization and adoption tracking. These cover the **command** layer — how often each tool runs, on which git provider, and whether it succeeded — which no LLM-level integration can report, because many failures happen before any model call:
+
+- **Traces**: one span per request, named `pr_agent <command>` (for example `pr_agent review`), carrying `pr_agent.command`, `pr_agent.args_count`, `vcs.provider.name`, a span status, and a bounded `error.type` on failure. Prompt and response content is never attached.
+- **Metrics**: `pr_agent.commands`, a counter of executed commands labeled by command and git provider.
+
+### Two independent layers
+
+Command telemetry (this section) and [LLM telemetry](#llm-telemetry-via-litellms-opentelemetry-integration) are separate toggles with separate configuration, so you can enable either alone and aggregate them independently. When both are on, the LLM spans are children of the command span in the same trace, so a single command's model calls stay attributable to it.
+
+Telemetry is disabled by default. To enable it, set in `configuration.toml`:
+
+```toml
+[otel]
+is_enabled = true
+exporter_type = "console" # "console", "otlp", or "none"
+service_name = "pr-agent"
+environment = "development" # e.g. "development", "staging", "production"
+```
+
+To export to an OpenTelemetry collector instead of the console, set `exporter_type = "otlp"` and configure the endpoint and any authentication headers in `.secrets.toml` (they are secrets — keep them out of `configuration.toml`):
+
+```toml
+[otel]
+otlp_endpoint = "http://my-collector:4318"
+otlp_headers = "x-honeycomb-team=YOUR_API_KEY" # optional, "key1=value1,key2=value2"
+```
+
+Export uses OTLP over HTTP by default; `otlp_endpoint` is the base URL, and the `/v1/traces` and `/v1/metrics` paths are appended automatically. To use OTLP over gRPC instead, install the optional exporter and select the protocol — the endpoint is then used as-is (gRPC collectors typically listen on port 4317):
+
+```bash
+pip install pr-agent[otel-grpc]
+```
+
+```toml
+[otel]
+otlp_protocol = "grpc" # default: "http"
+```
+
+This is the recommended topology for fleets: point every PR-Agent instance at the same collector and aggregate there. Each process creates its own exporter connection; use the `service_name` and `environment` resource attributes to slice instances apart on the backend.
+
+Privacy controls (both off by default):
+
+- `include_pr_url = true` attaches PR URLs to spans. Off by default because URLs expose private repo names.
+- `include_error_details = true` attaches exception messages and rejected-command text to error spans. Off by default because that content can embed PR URLs, repo names, or other request-specific text. Bounded values (the exception class name and error category) are always attached.
+
+Notes:
+
+- Telemetry configuration is **process-level**: it is read once at startup from the global configuration or environment, and cannot be enabled or reconfigured per-repo via `.pr_agent.toml`. In a multi-tenant server, telemetry is a shared process resource — configure it where the process is deployed.
+- PR-Agent keeps its own OpenTelemetry providers and never registers the process-global one, so embedding PR-Agent in an application that already uses OpenTelemetry will not interfere with the host's telemetry. Pending spans and metrics are flushed automatically on process exit.
+- Each OTLP export call is bounded by `otlp_timeout` (default 3 seconds, retries included), so an unreachable collector cannot hang CLI exit or request completion. Raise it for slow collectors at the cost of longer worst-case stalls.
+- If `exporter_type = "otlp"` is set but no endpoint is configured, telemetry is disabled entirely (fail closed) — it never falls back to another exporter, so a missing secret cannot redirect telemetry into process logs.
+- **Serverless deployments** (e.g. the AWS Lambda webhooks) are supported: buffered spans and metrics are force-flushed at the end of every handled request, because frozen execution environments stop background export threads and are reaped without running exit handlers. No extra configuration is needed.
 
 ## Bringing per-repo context files to PR-Agent
 

@@ -164,6 +164,16 @@ class LiteLLMAIHandler(BaseAiHandler):
             litellm.failure_callback = get_settings().litellm.failure_callback
         if get_settings().get("LITELLM.SERVICE_CALLBACK", None):
             litellm.service_callback = get_settings().litellm.service_callback
+        # litellm's callbacks attach full prompt and response content — here, the whole
+        # PR diff — to whatever they emit, unless message logging is turned off.
+        if get_settings().get("LITELLM.TURN_OFF_MESSAGE_LOGGING", False):
+            litellm.turn_off_message_logging = True
+        # With pr-agent's own telemetry enabled, its command span is the active parent and
+        # litellm's "otel" callback would skip its own request span, writing gen_ai attributes
+        # onto the command span instead. Keep the two layers separately aggregatable;
+        # setdefault leaves an explicit operator override in effect.
+        if self._litellm_otel_callback_enabled() and get_settings().get("OTEL.IS_ENABLED", False):
+            os.environ.setdefault("USE_OTEL_LITELLM_REQUEST_SPAN", "true")
         if get_settings().get("OPENAI.ORG", None):
             litellm.organization = get_settings().openai.org
         if get_settings().get("OPENAI.API_TYPE", None):
@@ -328,6 +338,14 @@ class LiteLLMAIHandler(BaseAiHandler):
                     "Ignoring invalid value."
                 )
             self.force_streaming_api_base_substrings = []
+
+    @staticmethod
+    def _litellm_otel_callback_enabled() -> bool:
+        """True when litellm's built-in OpenTelemetry callback is registered."""
+        return any(
+            "otel" in (getattr(litellm, name, None) or [])
+            for name in ("callbacks", "success_callback", "failure_callback", "service_callback")
+        )
 
     @staticmethod
     def _write_frozen_aws_creds_to_env(frozen) -> None:

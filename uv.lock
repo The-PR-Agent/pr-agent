@@ -153,9 +153,9 @@ name = "aiologic"
 version = "0.17.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "sniffio" },
-    { name = "typing-extensions" },
-    { name = "wrapt" },
+    { name = "sniffio", marker = "python_full_version < '3.13'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
+    { name = "wrapt", marker = "python_full_version < '3.13'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/f1/7a/d51f2fde1e8ae8a83431f8e97b7a71e9358cdb1d4d2ce6be387fa44d68de/aiologic-0.17.1.tar.gz", hash = "sha256:2e1b93b9e88ced318c2a63ad7b382688f40cbfe40e3d42258d49dc9c5aea179d", size = 252354, upload-time = "2026-06-27T20:41:33.25Z" }
 wheels = [
@@ -618,8 +618,8 @@ name = "culsans"
 version = "0.11.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "aiologic" },
-    { name = "typing-extensions" },
+    { name = "aiologic", marker = "python_full_version < '3.13'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/d9/e3/49afa1bc180e0d28008ec6bcdf82a4072d1c7a41032b5b759b60814ca4b0/culsans-0.11.0.tar.gz", hash = "sha256:0b43d0d05dce6106293d114c86e3fb4bfc63088cfe8ff08ed3fe36891447fe33", size = 107546, upload-time = "2025-12-31T23:15:38.196Z" }
 wheels = [
@@ -891,14 +891,14 @@ resolution-markers = [
     "python_full_version < '3.13' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "aiohttp" },
-    { name = "decorator" },
-    { name = "fsspec", version = "2025.12.0", source = { registry = "https://pypi.org/simple" } },
-    { name = "google-auth" },
-    { name = "google-auth-oauthlib" },
-    { name = "google-cloud-storage", version = "2.10.0", source = { registry = "https://pypi.org/simple" } },
-    { name = "google-cloud-storage-control" },
-    { name = "requests" },
+    { name = "aiohttp", marker = "python_full_version < '3.13'" },
+    { name = "decorator", marker = "python_full_version < '3.13'" },
+    { name = "fsspec", version = "2025.12.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
+    { name = "google-auth", marker = "python_full_version < '3.13'" },
+    { name = "google-auth-oauthlib", marker = "python_full_version < '3.13'" },
+    { name = "google-cloud-storage", version = "2.10.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
+    { name = "google-cloud-storage-control", marker = "python_full_version < '3.13'" },
+    { name = "requests", marker = "python_full_version < '3.13'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/3e/3e/453b42bbcda2177daba97ebc5202faf5c57cc0c2bb4aac7081c12b0471da/gcsfs-2025.12.0.tar.gz", hash = "sha256:9a9c1c32b7899a3967ba30a7e9422cdfda596266f03476cdf5545402b8af4cd5", size = 95148, upload-time = "2025-12-03T15:44:59.703Z" }
 wheels = [
@@ -918,14 +918,14 @@ resolution-markers = [
     "python_full_version == '3.13.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "aiohttp" },
-    { name = "decorator" },
-    { name = "fsspec", version = "2026.6.0", source = { registry = "https://pypi.org/simple" } },
-    { name = "google-auth" },
-    { name = "google-auth-oauthlib" },
-    { name = "google-cloud-storage", version = "3.12.0", source = { registry = "https://pypi.org/simple" } },
-    { name = "google-cloud-storage-control" },
-    { name = "requests" },
+    { name = "aiohttp", marker = "python_full_version >= '3.13'" },
+    { name = "decorator", marker = "python_full_version >= '3.13'" },
+    { name = "fsspec", version = "2026.6.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.13'" },
+    { name = "google-auth", marker = "python_full_version >= '3.13'" },
+    { name = "google-auth-oauthlib", marker = "python_full_version >= '3.13'" },
+    { name = "google-cloud-storage", version = "3.12.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.13'" },
+    { name = "google-cloud-storage-control", marker = "python_full_version >= '3.13'" },
+    { name = "requests", marker = "python_full_version >= '3.13'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/d3/33/58e23c6f492e091c2f01ae1bffe331aa97e18a0b3d24ff90ef648335ddc8/gcsfs-2026.7.0.tar.gz", hash = "sha256:2df36ce1e9010e76dc4295774030495a97496838483c619e9f63bc0ab7bdc770", size = 1265874, upload-time = "2026-07-06T15:02:30.683Z" }
 wheels = [
@@ -1106,11 +1106,11 @@ resolution-markers = [
     "python_full_version < '3.13' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "google-api-core" },
-    { name = "google-auth" },
-    { name = "google-cloud-core" },
-    { name = "google-resumable-media" },
-    { name = "requests" },
+    { name = "google-api-core", marker = "python_full_version < '3.13'" },
+    { name = "google-auth", marker = "python_full_version < '3.13'" },
+    { name = "google-cloud-core", marker = "python_full_version < '3.13'" },
+    { name = "google-resumable-media", marker = "python_full_version < '3.13'" },
+    { name = "requests", marker = "python_full_version < '3.13'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/6b/20/51e9676cc112ec7344c0a8690361175dc1f41ed6edf618eae8af87d92a49/google-cloud-storage-2.10.0.tar.gz", hash = "sha256:934b31ead5f3994e5360f9ff5750982c5b6b11604dc072bc452c25965e076dc7", size = 5504936, upload-time = "2023-06-26T20:34:54.303Z" }
 wheels = [
@@ -1130,12 +1130,12 @@ resolution-markers = [
     "python_full_version == '3.13.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "google-api-core" },
-    { name = "google-auth" },
-    { name = "google-cloud-core" },
-    { name = "google-crc32c" },
-    { name = "google-resumable-media" },
-    { name = "requests" },
+    { name = "google-api-core", marker = "python_full_version >= '3.13'" },
+    { name = "google-auth", marker = "python_full_version >= '3.13'" },
+    { name = "google-cloud-core", marker = "python_full_version >= '3.13'" },
+    { name = "google-crc32c", marker = "python_full_version >= '3.13'" },
+    { name = "google-resumable-media", marker = "python_full_version >= '3.13'" },
+    { name = "requests", marker = "python_full_version >= '3.13'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/58/72/86f94e1639a8bcd9d33e8e01b49afcaa1c3a13bda7683c681717e0901e15/google_cloud_storage-3.12.0.tar.gz", hash = "sha256:03ae9847c6babb368f35f054126b8a08cbc0e3266efb990eb17b9926a45cf3be", size = 17338620, upload-time = "2026-06-12T18:03:29.215Z" }
 wheels = [
@@ -2210,6 +2210,24 @@ wheels = [
 ]
 
 [[package]]
+name = "opentelemetry-exporter-otlp-proto-grpc"
+version = "1.43.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "googleapis-common-protos" },
+    { name = "grpcio" },
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-exporter-otlp-proto-common" },
+    { name = "opentelemetry-proto" },
+    { name = "opentelemetry-sdk" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e2/1d/6336453716ca0a240d4417d19e6d5b77a5e7163e5670ec4f7ec4d3ede7bf/opentelemetry_exporter_otlp_proto_grpc-1.43.0.tar.gz", hash = "sha256:1b3e0627daa9bc21884d4a13946807c255eb558bfe5bdd543dffb6f4c9faee0d", size = 27213, upload-time = "2026-06-24T15:20:00.907Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6d/74/2700b5d5c946bf2dba87073fce3dfc198c46bc92ea3d5693f54bc51c90b1/opentelemetry_exporter_otlp_proto_grpc-1.43.0-py3-none-any.whl", hash = "sha256:6a10d1feacffffda19acacbf277b736094b1e2f4dbb98c90ccb2c6e1962e2ec6", size = 19626, upload-time = "2026-06-24T15:19:42.233Z" },
+]
+
+[[package]]
 name = "opentelemetry-exporter-otlp-proto-http"
 version = "1.43.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2528,6 +2546,9 @@ dependencies = [
     { name = "loguru" },
     { name = "msrest" },
     { name = "openai" },
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-exporter-otlp-proto-http" },
+    { name = "opentelemetry-sdk" },
     { name = "protobuf" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
@@ -2553,6 +2574,9 @@ langchain = [
     { name = "langchain" },
     { name = "langchain-core" },
     { name = "langchain-openai" },
+]
+otel-grpc = [
+    { name = "opentelemetry-exporter-otlp-proto-grpc" },
 ]
 
 [package.dev-dependencies]
@@ -2601,6 +2625,10 @@ requires-dist = [
     { name = "mangum", marker = "extra == 'lambda'", specifier = "==0.17.0" },
     { name = "msrest", specifier = "==0.7.1" },
     { name = "openai", specifier = ">=1.55.3" },
+    { name = "opentelemetry-api", specifier = "==1.43.0" },
+    { name = "opentelemetry-exporter-otlp-proto-grpc", marker = "extra == 'otel-grpc'", specifier = "==1.43.0" },
+    { name = "opentelemetry-exporter-otlp-proto-http", specifier = "==1.43.0" },
+    { name = "opentelemetry-sdk", specifier = "==1.43.0" },
     { name = "protobuf", specifier = "==6.33.6" },
     { name = "pydantic", specifier = "==2.13.3" },
     { name = "pydantic-settings", specifier = "==2.14.2" },
@@ -2617,7 +2645,7 @@ requires-dist = [
     { name = "unidiff", specifier = "==0.7.5" },
     { name = "uvicorn", specifier = "==0.22.0" },
 ]
-provides-extras = ["lambda", "langchain"]
+provides-extras = ["lambda", "otel-grpc", "langchain"]
 
 [package.metadata.requires-dev]
 dev = [
