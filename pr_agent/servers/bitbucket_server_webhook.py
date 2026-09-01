@@ -21,7 +21,7 @@ from pr_agent.agent.pr_agent import PRAgent, prepare_command
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
-from pr_agent.servers.utils import verify_signature
+from pr_agent.servers.utils import should_stop_auto_commands, verify_signature
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
 router = APIRouter()
@@ -213,6 +213,7 @@ async def _run_commands_sequentially(commands: List[str], url: str, log_context:
     if commands is None:
         return
 
+    stop_on_failure = should_stop_auto_commands()
     for command in commands:
         try:
             body = _process_command(command, url)
@@ -221,9 +222,15 @@ async def _run_commands_sequentially(commands: List[str], url: str, log_context:
             log_context["api_url"] = url
 
             with get_logger().contextualize(**log_context):
-                await PRAgent().handle_request(url, body)
+                handled = await PRAgent().handle_request(url, body)
+            if not handled and stop_on_failure:
+                get_logger().info(f"Stopping automatic commands after failed command for {url=}")
+                break
         except Exception as e:
             get_logger().error(f"Failed to handle command: {command} , error: {e}")
+            if stop_on_failure:
+                get_logger().info(f"Stopping automatic commands after failed command for {url=}")
+                break
 
 def _process_command(command: str, url) -> list[str]:
     # don't think we need this

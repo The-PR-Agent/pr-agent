@@ -22,6 +22,7 @@ from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.secret_providers import get_secret_provider, validate_secret_provider_setting
+from pr_agent.servers.utils import should_stop_auto_commands
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
 router = APIRouter()
@@ -73,14 +74,21 @@ async def _perform_commands_gitlab(commands_conf: str, agent: PRAgent, api_url: 
         return
     commands = get_settings().get(f"gitlab.{commands_conf}", {})
     get_settings().set("config.is_auto_command", True)
+    stop_on_failure = should_stop_auto_commands()
     for command in commands:
         try:
             new_command = prepare_command(command)
             get_logger().info(f"Performing command: {new_command}")
             with get_logger().contextualize(**log_context):
-                await agent.handle_request(api_url, new_command)
+                handled = await agent.handle_request(api_url, new_command)
+            if not handled and stop_on_failure:
+                get_logger().info(f"Stopping {commands_conf} after failed command for {api_url=}")
+                break
         except Exception as e:
             get_logger().error(f"Failed to perform command {command}: {e}")
+            if stop_on_failure:
+                get_logger().info(f"Stopping {commands_conf} after failed command for {api_url=}")
+                break
 
 
 def is_bot_user(data) -> bool:

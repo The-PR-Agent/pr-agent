@@ -14,6 +14,7 @@ from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import get_logger
 from pr_agent.servers.github_app import handle_line_comments
+from pr_agent.servers.utils import should_stop_auto_commands
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.tools.pr_description import PRDescription
 from pr_agent.tools.pr_reviewer import PRReviewer
@@ -211,8 +212,19 @@ async def run_action():
                 get_settings().config.is_auto_command = True
                 get_settings().pr_description.final_update_message = False
                 get_logger().info(f"Running push commands: {push_commands}")
+                stop_on_failure = should_stop_auto_commands()
                 for command in push_commands:
-                    await PRAgent().handle_request(pr_url, command)
+                    try:
+                        handled = await PRAgent().handle_request(pr_url, command)
+                        if not handled and stop_on_failure:
+                            get_logger().info(f"Stopping push commands after failed command for {pr_url=}")
+                            break
+                    except Exception as e:
+                        get_logger().error(f"Failed to perform push command {command}: {e}")
+                        if stop_on_failure:
+                            get_logger().info(f"Stopping push commands after failed command for {pr_url=}")
+                            break
+                        raise
                 return
         if action in pr_actions:
             pr_url = event_payload.get("pull_request", {}).get("url")

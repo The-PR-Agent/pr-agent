@@ -169,6 +169,17 @@ For GitHub Action, settings fall back from `github_action_config.*` to `github_a
 
 This means that when new code is pushed to the PR, PR-Agent will run the `describe` and `review` tools, with the specified parameters.
 
+#### Handling failures in automatic command sequences
+
+By default, PR-Agent continues with the remaining configured automatic commands when one command fails. To stop the sequence after the first failed command, enable the opt-in setting below:
+
+```toml
+[config]
+auto_command_stop_on_failure = true
+```
+
+This setting applies to configured `pr_commands`, `push_commands`, and `reviewer_commands` in the GitHub App, GitHub Action synchronize flow, GitLab, Bitbucket, Azure DevOps Server, Gitea, and Bitbucket Server integrations. A command is considered failed when its `PRAgent.handle_request` call returns `False` or raises an exception. Commands that already completed are not retried or rolled back.
+
 ### GitHub Action
 
 `GitHub Action` is a different way to trigger PR-Agent tools, and uses a different configuration mechanism than `GitHub App`.<br>

@@ -19,7 +19,7 @@ from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.identity_providers import get_identity_provider
 from pr_agent.identity_providers.identity_provider import Eligibility
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
-from pr_agent.servers.utils import DefaultDictWithTimeout, verify_signature
+from pr_agent.servers.utils import DefaultDictWithTimeout, should_stop_auto_commands, verify_signature
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
 base_path = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
@@ -446,13 +446,20 @@ async def _perform_auto_commands_github(commands_conf: str, agent: PRAgent, body
         get_logger().info("New PR, but no auto commands configured")
         return
     get_settings().set("config.is_auto_command", True)
+    stop_on_failure = should_stop_auto_commands()
     for command in commands:
         try:
             new_command = prepare_command(command)
             get_logger().info(f"{commands_conf}. Performing auto command '{new_command}', for {api_url=}")
-            await agent.handle_request(api_url, new_command)
+            handled = await agent.handle_request(api_url, new_command)
+            if not handled and stop_on_failure:
+                get_logger().info(f"Stopping {commands_conf} after failed command for {api_url=}")
+                break
         except Exception as e:
             get_logger().error(f"Failed to perform command {command}: {e}")
+            if stop_on_failure:
+                get_logger().info(f"Stopping {commands_conf} after failed command for {api_url=}")
+                break
 
 
 @router.get("/")
