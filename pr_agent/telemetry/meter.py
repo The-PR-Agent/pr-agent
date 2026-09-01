@@ -76,5 +76,5 @@ def _create_metric_exporter(config):
 def get_commands_counter():
     """Return the commands counter instrument (created once, cached)."""
     return get_meter().create_counter(
-        "pr_agent.commands.total", unit="1", description="Total PR-Agent commands executed"
+        "pr_agent.commands", unit="{command}", description="PR-Agent commands executed"
     )
