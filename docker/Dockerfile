@@ -53,4 +53,5 @@ ADD docker/mosaico docker/mosaico
 
 FROM base AS cli
 ADD pr_agent pr_agent
+RUN uv sync --frozen --no-dev && ln -s /app/.venv/bin/pr-agent /usr/local/bin/pr-agent
 ENTRYPOINT ["python", "pr_agent/cli.py"]

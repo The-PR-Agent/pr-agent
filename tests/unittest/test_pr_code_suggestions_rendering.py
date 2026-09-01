@@ -186,8 +186,9 @@ async def test_push_inline_publishes_no_suggestions_comment_when_empty():
     git_provider = MagicMock()
     tool = _make_tool(git_provider)
 
-    await tool.push_inline_code_suggestions({"code_suggestions": []})
+    result = await tool.push_inline_code_suggestions({"code_suggestions": []})
 
+    assert result is None
     git_provider.publish_comment.assert_called_once_with(
         "No suggestions found to improve this PR."
     )

@@ -320,6 +320,8 @@ class PRSimilarIssue:
         score_list = []
 
         if get_settings().pr_similar_issue.vectordb == "pinecone":
+            import pinecone
+
             pinecone_index = pinecone.Index(index_name=self.index_name)
             res = pinecone_index.query(embeds[0],
                                     top_k=5,
@@ -431,6 +433,10 @@ class PRSimilarIssue:
         return issue_str, comments, number
 
     def _update_index_with_issues(self, issues_list, repo_name_for_index, upsert=False):
+        import pandas as pd
+        import pinecone
+        from pinecone_datasets import Dataset, DatasetMetadata
+
         get_logger().info('Processing issues...')
         corpus = Corpus()
         example_issue_record = Record(
@@ -477,7 +483,7 @@ class PRSimilarIssue:
                         if len(comment_body) < 8000 or \
                                 self.token_handler.count_tokens(comment_body) < MAX_TOKENS[MODEL]:
                             comment_record = Record(
-                                id=issue_key + ".comment_" + str(j + 1),
+                                id=issue_key + ".comment_" + str(j),
                                 text=comment_body,
                                 metadata=Metadata(repo=repo_name_for_index,
                                                   username=username,  # use issue username for all comments
@@ -514,6 +520,8 @@ class PRSimilarIssue:
         get_logger().info('Done')
 
     def _update_table_with_issues(self, issues_list, repo_name_for_index, ingest=False):
+        import pandas as pd
+
         get_logger().info('Processing issues...')
 
         corpus = Corpus()
@@ -561,7 +569,7 @@ class PRSimilarIssue:
                         if len(comment_body) < 8000 or \
                                 self.token_handler.count_tokens(comment_body) < MAX_TOKENS[MODEL]:
                             comment_record = Record(
-                                id=issue_key + ".comment_" + str(j + 1),
+                                id=issue_key + ".comment_" + str(j),
                                 text=comment_body,
                                 metadata=Metadata(repo=repo_name_for_index,
                                                     username=username,  # use issue username for all comments
@@ -647,7 +655,7 @@ class PRSimilarIssue:
                         if len(comment_body) < 8000 or \
                                 self.token_handler.count_tokens(comment_body) < MAX_TOKENS[MODEL]:
                             comment_record = Record(
-                                id=issue_key + ".comment_" + str(j + 1),
+                                id=issue_key + ".comment_" + str(j),
                                 text=comment_body,
                                 metadata=Metadata(repo=repo_name_for_index,
                                                   username=username,
@@ -668,8 +676,20 @@ class PRSimilarIssue:
         get_logger().info('Upserting into Qdrant...')
         points = []
         for row in df.to_dict(orient="records"):
+            point_uuid = uuid.uuid5(
+                uuid.NAMESPACE_DNS,
+                f"{repo_name_for_index}:{row['id']}",
+            ).hex
             points.append(
-                PointStruct(id=uuid.uuid5(uuid.NAMESPACE_DNS, row["id"]).hex, vector=row["vector"], payload={"id": row["id"], "text": row["text"], "metadata": row["metadata"]})
+                PointStruct(
+                    id=point_uuid,
+                    vector=row["vector"],
+                    payload={
+                        "id": row["id"],
+                        "text": row["text"],
+                        "metadata": row["metadata"],
+                    },
+                )
             )
         self.qdrant.upsert(collection_name=self.index_name, points=points)
         get_logger().info('Done')

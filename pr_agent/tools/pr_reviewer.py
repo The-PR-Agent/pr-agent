@@ -29,6 +29,7 @@ from pr_agent.algo.utils import (
     convert_to_markdown_v2,
     github_action_output,
     load_yaml,
+    push_outputs,
     show_relevant_configurations,
     show_run_details,
 )
@@ -102,6 +103,9 @@ class PRReviewer:
             "require_score": get_settings().pr_reviewer.require_score_review,
             "require_tests": get_settings().pr_reviewer.require_tests_review,
             "require_estimate_effort_to_review": get_settings().pr_reviewer.require_estimate_effort_to_review,
+            "require_risk_assessment": get_settings().pr_reviewer.get("require_risk_assessment", False),
+            "require_merge_recommendation": get_settings().pr_reviewer.get("require_merge_recommendation", False),
+            "require_priority_files": get_settings().pr_reviewer.get("require_priority_files", False),
             "require_estimate_contribution_time_cost": get_settings().pr_reviewer.require_estimate_contribution_time_cost,
             'require_can_be_split_review': get_settings().pr_reviewer.require_can_be_split_review,
             'require_security_review': get_settings().pr_reviewer.require_security_review,
@@ -296,7 +300,8 @@ class PRReviewer:
         first_key = 'review'
         last_key = 'security_concerns'
         data = load_yaml(self.prediction.strip(),
-                         keys_fix_yaml=["ticket_compliance_check", "estimated_effort_to_review_[1-5]:", "security_concerns:", "key_issues_to_review:",
+                         keys_fix_yaml=["ticket_compliance_check", "estimated_effort_to_review_[1-5]:", "risk_level:",
+                                        "merge_recommendation:", "security_concerns:", "key_issues_to_review:",
                                         "relevant_file:", "relevant_line:", "suggestion:"],
                          first_key=first_key, last_key=last_key)
         github_action_output(data, 'review')
@@ -368,6 +373,12 @@ class PRReviewer:
         # Output the agent run details (model, tokens, time cost) if enabled
         if get_settings().get('config', {}).get('output_run_details', False):
             markdown_text += show_run_details(self.git_provider.is_supported("gfm_markdown"))
+
+        # Emit the review to optional external sinks (stdout/file/webhook/slack); no-op unless enabled.
+        # publish_output gates it so a dry run makes no external calls. The "no major issues"
+        # suppression deliberately does not: that only silences the PR comment.
+        if get_settings().config.publish_output:
+            push_outputs("review", payload=data.get('review', {}), markdown=markdown_text)
 
         # Add custom labels from the review prediction (effort, security)
         self.set_review_labels(data)
@@ -627,8 +638,9 @@ class PRReviewer:
         if not get_settings().pr_reviewer.require_security_review:
             get_settings().pr_reviewer.enable_review_labels_security = False # we did not generate this output
 
-        if (get_settings().pr_reviewer.enable_review_labels_security or
-                get_settings().pr_reviewer.enable_review_labels_effort):
+        if ((get_settings().pr_reviewer.enable_review_labels_security or
+                get_settings().pr_reviewer.enable_review_labels_effort) and
+                self.git_provider.is_supported("get_labels")):
             try:
                 review_labels = []
                 if get_settings().pr_reviewer.enable_review_labels_effort:

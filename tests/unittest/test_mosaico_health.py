@@ -1,42 +1,50 @@
 """HTTP /health route tests.
 
-Uses Starlette TestClient against build_app(); monkeypatches health_check (the no-retry
-behavior itself was proven in 2c). Verifies the route + 200/503 response shape.
+Exercise build_app() directly through an in-process ASGI transport and monkeypatch
+health_check (the no-retry behavior itself was proven in 2c). Verify the route and
+200/503 response shape without relying on Starlette's thread-backed TestClient.
 
 Also exercises the REAL health_check() (no stub) to lock in Fix A: the removed
 'stop'-param gate must NOT short-circuit /health for models that lack 'stop' (e.g. the
 shipped gpt-5.x defaults), since PR-Agent's LiteLLMAIHandler never sends 'stop'."""
+import httpx
 import litellm
 import pytest
-from starlette.testclient import TestClient
 
 import pr_agent.mosaico.server as server_mod
 from pr_agent.config_loader import get_settings
 from pr_agent.mosaico.executor import health_check
 from pr_agent.mosaico.server import build_app
+from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 
-def _client(monkeypatch, health_value):
+def _app(monkeypatch, health_value):
     async def fake_health_check():
         return health_value
 
     # health_check is imported into server_mod's namespace and called by _HealthApp._health.
     monkeypatch.setattr(server_mod, "health_check", fake_health_check)
-    return TestClient(build_app())
+    return build_app()
+
+
+async def _get_health(app):
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        return await client.get("/health")
 
 
 class TestHealthRoute:
-    def test_healthy_returns_200(self, monkeypatch):
-        client = _client(monkeypatch, "OK")
-        resp = client.get("/health")
+    @pytest.mark.asyncio
+    async def test_healthy_returns_200(self, monkeypatch):
+        resp = await _get_health(_app(monkeypatch, "OK"))
         assert resp.status_code == 200
         body = resp.json()
         assert body["is_healthy"] is True
         assert body["status"] == "OK"
 
-    def test_unhealthy_returns_503(self, monkeypatch):
-        client = _client(monkeypatch, "Unhealthy: connection refused")
-        resp = client.get("/health")
+    @pytest.mark.asyncio
+    async def test_unhealthy_returns_503(self, monkeypatch):
+        resp = await _get_health(_app(monkeypatch, "Unhealthy: connection refused"))
         assert resp.status_code == 503
         body = resp.json()
         assert body["is_healthy"] is False
@@ -53,24 +61,12 @@ _MODEL_WITHOUT_STOP = "gpt-5.6"
 
 @pytest.fixture
 def restore_config_model():
-    """Snapshot/restore LLM settings on the shared settings (no request scope here, so
-    get_settings() resolves to global_settings). Mirrors the snapshot/restore convention
-    in test_mosaico_isolation.py."""
-    settings = get_settings()
-    sentinel = object()
-    model_before = settings.get("CONFIG.MODEL", sentinel)
-    provider_before = settings.get("LITELLM.CUSTOM_LLM_PROVIDER", sentinel)
-    yield settings
-    if model_before is sentinel:
-        # Best-effort removal of a key we introduced; dynaconf has no public delete, so
-        # blank it out rather than leak a fake model into sibling tests.
-        settings.set("CONFIG.MODEL", "")
-    else:
-        settings.set("CONFIG.MODEL", model_before)
-    if provider_before is sentinel:
-        settings.set("LITELLM.CUSTOM_LLM_PROVIDER", "")
-    else:
-        settings.set("LITELLM.CUSTOM_LLM_PROVIDER", provider_before)
+    """Restore LLM settings exactly, including originally-absent state."""
+    snapshot = snapshot_settings(
+        ["CONFIG.MODEL", "LITELLM.CUSTOM_LLM_PROVIDER"]
+    )
+    yield get_settings()
+    restore_settings(snapshot)
 
 
 class TestHealthCheckGate:

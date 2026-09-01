@@ -1,8 +1,6 @@
 import os
 import tempfile
-import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import urlparse
+from urllib.error import HTTPError
 
 import pytest
 
@@ -22,60 +20,80 @@ SAMPLE_TOML = b'[config]\nmodel = "claude-sonnet-4-6"\n'
 # Helpers
 # ---------------------------------------------------------------------------
 
-class _CapturingHandler(BaseHTTPRequestHandler):
-    """Tiny HTTP handler that serves a configurable body and records request headers."""
+class _FakeResponse:
+    """Provide a minimal urlopen response context manager for resolver unit tests."""
 
-    body = SAMPLE_TOML
-    expected_path = "/shared.pr_agent.toml"
-    require_header = None  # (name, value) tuple if auth must be present
-    captured_headers = {}
+    def __init__(self, body):
+        self.body = body
+        self.closed = False
+        self.offset = 0
+        self.read_sizes = []
 
-    def do_GET(self):  # noqa: N802 - http.server API
-        if urlparse(self.path).path != self.expected_path:
-            self.send_response(404)
-            self.end_headers()
-            return
-        if self.require_header:
-            name, value = self.require_header
-            if self.headers.get(name) != value:
-                self.send_response(401)
-                self.end_headers()
-                return
-        type(self).captured_headers = {k: v for k, v in self.headers.items()}
-        self.send_response(200)
-        self.send_header("Content-Type", "application/toml")
-        self.send_header("Content-Length", str(len(self.body)))
-        self.end_headers()
-        self.wfile.write(self.body)
+    def __enter__(self):
+        return self
 
-    def log_message(self, *_args, **_kwargs):  # silence test output
-        return
+    def __exit__(self, *_args):
+        self.close()
+        return False
+
+    def close(self):
+        self.closed = True
+
+    def read(self, size=-1):
+        self.read_sizes.append(size)
+        if size < 0:
+            chunk = self.body[self.offset:]
+            self.offset = len(self.body)
+            return chunk
+
+        chunk = self.body[self.offset:self.offset + size]
+        self.offset += len(chunk)
+        return chunk
+
+
+class _UrlopenStub:
+    """Capture urllib requests without requiring a loopback TCP listener."""
+
+    def __init__(self):
+        self.body = SAMPLE_TOML
+        self.status_code = None
+        self.required_header = None
+        self.calls = []
+        self.response = None
+
+    def __call__(self, request, timeout):
+        self.calls.append((request, timeout))
+        if self.status_code is not None:
+            raise HTTPError(
+                request.full_url,
+                self.status_code,
+                "stubbed HTTP error",
+                hdrs=None,
+                fp=None,
+            )
+        if self.required_header is not None:
+            name, value = self.required_header
+            headers = {
+                header_name.lower(): header_value
+                for header_name, header_value in request.header_items()
+            }
+            if headers.get(name.lower()) != value:
+                raise HTTPError(
+                    request.full_url,
+                    401,
+                    "stubbed HTTP error",
+                    hdrs=None,
+                    fp=None,
+                )
+        self.response = _FakeResponse(self.body)
+        return self.response
 
 
 @pytest.fixture
-def http_server():
-    """Spin up _CapturingHandler on a free port for the duration of one test.
-
-    Bind directly to port 0 and read the assigned port from the server. This
-    avoids the race in "find a free port, close socket, bind HTTPServer to it"
-    where another process can claim the port in the gap.
-    """
-    # Reset handler-level state so tests don't pollute each other.
-    _CapturingHandler.body = SAMPLE_TOML
-    _CapturingHandler.expected_path = "/shared.pr_agent.toml"
-    _CapturingHandler.require_header = None
-    _CapturingHandler.captured_headers = {}
-
-    server = HTTPServer(("127.0.0.1", 0), _CapturingHandler)
-    port = server.server_address[1]
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        yield f"http://127.0.0.1:{port}"
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
+def urlopen_stub(monkeypatch):
+    stub = _UrlopenStub()
+    monkeypatch.setattr(git_utils, "urlopen", stub)
+    return stub
 
 
 @pytest.fixture
@@ -141,8 +159,8 @@ def test_resolve_rejects_unsupported_scheme():
     assert is_temp is False
 
 
-def test_resolve_fetches_http_url_into_tempfile(http_server):
-    url = f"{http_server}/shared.pr_agent.toml"
+def test_resolve_fetches_http_url_into_tempfile(urlopen_stub):
+    url = "https://config.example.test/shared.pr_agent.toml"
     path, is_temp = _resolve_extra_config_to_file(url)
     try:
         assert is_temp is True
@@ -151,63 +169,88 @@ def test_resolve_fetches_http_url_into_tempfile(http_server):
             assert f.read() == SAMPLE_TOML
         # The fetched tempfile should be a .toml so the downstream loader accepts it
         assert path.endswith(".toml")
+        assert len(urlopen_stub.calls) == 1
+        request, timeout = urlopen_stub.calls[0]
+        assert request.full_url == url
+        assert request.get_method() == "GET"
+        assert timeout == git_utils._FETCH_TIMEOUT_SECONDS
+        assert urlopen_stub.response.closed is True
     finally:
         if path and os.path.exists(path):
             os.remove(path)
 
 
-def test_resolve_injects_auth_header_from_env(http_server, monkeypatch):
+def test_resolve_injects_auth_header_from_env(urlopen_stub, monkeypatch):
     fake_token = "TEST-AUTH-TOKEN-NOT-REAL"
-    _CapturingHandler.require_header = ("Private-Token", fake_token)
+    urlopen_stub.required_header = ("Private-Token", fake_token)
     monkeypatch.setenv("PR_AGENT_EXTRA_CONFIG_AUTH_HEADER", f"PRIVATE-TOKEN: {fake_token}")
 
-    url = f"{http_server}/shared.pr_agent.toml"
+    url = "https://config.example.test/shared.pr_agent.toml"
     path, is_temp = _resolve_extra_config_to_file(url)
     try:
         assert path is not None, "fetch should succeed when auth header is provided"
         assert is_temp is True
-        # http.server normalizes header names to title-case
-        assert _CapturingHandler.captured_headers.get("Private-Token") == fake_token
+        request, _ = urlopen_stub.calls[0]
+        headers = {name.lower(): value for name, value in request.header_items()}
+        assert headers.get("private-token") == fake_token
+        assert headers.get("accept") == "text/plain, application/toml, */*"
     finally:
         if path and os.path.exists(path):
             os.remove(path)
 
 
-def test_resolve_returns_none_when_auth_header_missing(http_server, monkeypatch):
-    _CapturingHandler.require_header = ("Private-Token", "TEST-AUTH-TOKEN-NOT-REAL")
+def test_resolve_returns_none_when_auth_header_missing(urlopen_stub, monkeypatch):
     monkeypatch.delenv("PR_AGENT_EXTRA_CONFIG_AUTH_HEADER", raising=False)
+    urlopen_stub.required_header = ("Private-Token", "TEST-AUTH-TOKEN-NOT-REAL")
 
-    url = f"{http_server}/shared.pr_agent.toml"
-    path, is_temp = _resolve_extra_config_to_file(url)
-    # 401 from the server should be swallowed and return (None, False)
+    path, is_temp = _resolve_extra_config_to_file("https://config.example.test/shared.pr_agent.toml")
+    # Verify the opener swallows 401 and returns (None, False).
     assert path is None
     assert is_temp is False
+    request, _ = urlopen_stub.calls[0]
+    assert "private-token" not in {
+        name.lower() for name, _ in request.header_items()
+    }
 
 
-def test_resolve_returns_none_on_http_error(http_server):
-    # Path mismatch -> 404 from our handler
-    url = f"{http_server}/wrong-path.toml"
-    path, is_temp = _resolve_extra_config_to_file(url)
+def test_resolve_returns_none_on_http_error(urlopen_stub):
+    urlopen_stub.status_code = 404
+    path, is_temp = _resolve_extra_config_to_file("https://config.example.test/missing.toml")
     assert path is None
     assert is_temp is False
+    assert len(urlopen_stub.calls) == 1
 
 
-def test_resolve_rejects_oversized_response(http_server):
-    # The resolver caps at 1 MB. Serve 2 MB and confirm it's rejected.
-    _CapturingHandler.body = b"x" * (2 * 1024 * 1024)
-    url = f"{http_server}/shared.pr_agent.toml"
-    path, is_temp = _resolve_extra_config_to_file(url)
+def test_resolve_accepts_response_at_size_limit(urlopen_stub):
+    urlopen_stub.body = b"x" * git_utils._MAX_EXTRA_CONFIG_BYTES
+    path, is_temp = _resolve_extra_config_to_file("https://config.example.test/shared.pr_agent.toml")
+    try:
+        assert path is not None
+        assert is_temp is True
+        assert os.path.getsize(path) == git_utils._MAX_EXTRA_CONFIG_BYTES
+        assert urlopen_stub.response.closed is True
+    finally:
+        if path and os.path.exists(path):
+            os.remove(path)
+
+
+def test_resolve_rejects_oversized_response(urlopen_stub):
+    urlopen_stub.body = b"x" * (git_utils._MAX_EXTRA_CONFIG_BYTES + 1)
+    path, is_temp = _resolve_extra_config_to_file("https://config.example.test/shared.pr_agent.toml")
     assert path is None
     assert is_temp is False
+    assert urlopen_stub.response.closed is True
+    assert urlopen_stub.response.read_sizes
+    assert all(size >= 0 for size in urlopen_stub.response.read_sizes)
+    assert sum(urlopen_stub.response.read_sizes) <= git_utils._MAX_EXTRA_CONFIG_BYTES + 1
 
 
-def test_resolve_malformed_auth_header_warns_and_drops(http_server, monkeypatch):
+def test_resolve_malformed_auth_header_warns_and_drops(urlopen_stub, monkeypatch):
     """Header without ':' is dropped, but the misconfiguration MUST be surfaced
     via a warning — silent fallthrough makes it impossible to diagnose why a
     private endpoint kept returning 401."""
     from loguru import logger as loguru_logger
 
-    _CapturingHandler.require_header = None
     monkeypatch.setenv("PR_AGENT_EXTRA_CONFIG_AUTH_HEADER", "no-colon-here")
 
     captured_lines = []
@@ -216,9 +259,10 @@ def test_resolve_malformed_auth_header_warns_and_drops(http_server, monkeypatch)
         level="DEBUG",
     )
 
-    url = f"{http_server}/shared.pr_agent.toml"
     try:
-        path, is_temp = _resolve_extra_config_to_file(url)
+        path, is_temp = _resolve_extra_config_to_file(
+            "https://config.example.test/shared.pr_agent.toml"
+        )
     finally:
         loguru_logger.remove(sink_id)
 
@@ -766,18 +810,14 @@ def test_safe_url_for_log_strips_credentials():
     assert safe == "https://config.example.com:8443/pr-agent/shared.toml"
 
 
-def test_resolve_does_not_log_url_credentials(http_server, monkeypatch):
+def test_resolve_does_not_log_url_credentials(urlopen_stub):
     """Regression: even when the URL embeds userinfo, the log lines emitted by
     _resolve_extra_config_to_file must not contain those credentials."""
     from loguru import logger as loguru_logger
 
     secret_in_url = "userinfo-secret-xyz"
-    # http.server doesn't honor userinfo for auth, so we wire the path so the
-    # request 404s and triggers the failure-path log line — that's the one we
-    # want to assert never contains the secret.
-    base = http_server  # http://127.0.0.1:<port>
-    netloc = base.split("//", 1)[1]
-    url = f"http://baduser:{secret_in_url}@{netloc}/does-not-exist.toml"
+    url = f"http://baduser:{secret_in_url}@config.example.test/does-not-exist.toml"
+    urlopen_stub.status_code = 404
 
     captured = []
     sink_id = loguru_logger.add(lambda msg: captured.append(str(msg)), level="DEBUG")
@@ -787,6 +827,7 @@ def test_resolve_does_not_log_url_credentials(http_server, monkeypatch):
         loguru_logger.remove(sink_id)
 
     assert path is None
+    assert len(urlopen_stub.calls) == 1
     combined = "\n".join(captured)
     assert secret_in_url not in combined, "URL userinfo leaked into log output"
     assert "baduser" not in combined, "URL username leaked into log output"

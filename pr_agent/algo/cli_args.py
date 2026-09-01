@@ -14,6 +14,10 @@ class CliArgs:
             # are added to block CLI injection of arbitrary filesystem write
             # targets in LocalGitProvider (where the bot writes PR-Agent output)
             # and remote-config fetchers.
+            # NOTE: push_outputs is host-only config: it POSTs the full review to an
+            # operator-chosen sink. Both the dotted form (--push_outputs.webhook_url=...)
+            # and the whole-section form (--push_outputs={...}) are blocked, so a PR
+            # comment cannot redirect review output to an attacker-controlled host.
             _encoded_args = (
                 'c2hhcmVkX3NlY3JldA==:dXNlcg==:c3lzdGVt'
                 ':ZW5hYmxlX2NvbW1lbnRfYXBwcm92YWw=:ZW5hYmxlX21hbnVhbF9hcHByb3ZhbA=='
@@ -26,6 +30,7 @@ class CliArgs:
                 ':amlyYV9iYXNlX3VybA==:YXBpX2Jhc2U=:YXBpX3R5cGU=:YXBpX3ZlcnNpb24='
                 ':c2tpcF9rZXlz:ZXh0cmFfY29uZmlnX3VybA==:ZGVzY3JpcHRpb25fcGF0aA=='
                 ':cmV2aWV3X3BhdGg=:aW1wcm92ZV9wYXRo'
+                ':cHVzaF9vdXRwdXRzLg==:cHVzaF9vdXRwdXRzPQ=='
             )
 
             forbidden_cli_args = []
@@ -35,7 +40,9 @@ class CliArgs:
             # lowercase all forbidden args
             for i, _ in enumerate(forbidden_cli_args):
                 forbidden_cli_args[i] = forbidden_cli_args[i].lower()
-                if '.' not in forbidden_cli_args[i]:
+                # A bare word is only meaningful as a section-qualified key, so anchor it with a
+                # dot. A word that already carries a '.' or a '=' is a literal to match as-is.
+                if '.' not in forbidden_cli_args[i] and '=' not in forbidden_cli_args[i]:
                     forbidden_cli_args[i] = '.' + forbidden_cli_args[i]
 
             for arg in args:

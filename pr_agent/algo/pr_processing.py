@@ -15,7 +15,7 @@ from pr_agent.algo.run_details import record_model_used
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.types import EDIT_TYPE
 from pr_agent.algo.utils import ModelType, clip_tokens, get_max_tokens, get_model
-from pr_agent.config_loader import get_settings
+from pr_agent.config_loader import get_settings, get_verbosity_level
 from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.log import get_logger
 
@@ -313,7 +313,7 @@ def generate_full_patch(convert_hunks_to_line_numbers, file_dict, max_tokens_mod
             # Current logic is to skip the patch if it's too large
             # TODO: Option for alternative logic to remove hunks from the patch to reduce the number of tokens
             #  until we meet the requirements
-            if get_settings().config.verbosity_level >= 2:
+            if get_verbosity_level() >= 2:
                 get_logger().warning(f"Patch too large, skipping it: '{filename}'")
             remaining_files_list_new.append(filename)
             continue
@@ -326,7 +326,7 @@ def generate_full_patch(convert_hunks_to_line_numbers, file_dict, max_tokens_mod
             patches.append(patch_final)
             total_tokens += token_handler.count_tokens(patch_final)
             files_in_patch_list.append(filename)
-            if get_settings().config.verbosity_level >= 2:
+            if get_verbosity_level() >= 2:
                 get_logger().info(f"Tokens: {total_tokens}, last filename: {filename}")
     return total_tokens, patches, remaining_files_list_new, files_in_patch_list
 
@@ -334,25 +334,29 @@ def generate_full_patch(convert_hunks_to_line_numbers, file_dict, max_tokens_mod
 async def retry_with_fallback_models(f: Callable, model_type: ModelType = ModelType.REGULAR):
     all_models = _get_all_models(model_type)
     all_deployments = _get_all_deployments(all_models)
-    # try each (model, deployment_id) pair until one is successful, otherwise raise exception
-    for i, (model, deployment_id) in enumerate(zip(all_models, all_deployments)):
-        try:
-            get_logger().debug(
-                f"Generating prediction with {model}"
-                f"{(' from deployment ' + deployment_id) if deployment_id else ''}"
-            )
-            get_settings().set("openai.deployment_id", deployment_id)
-            result = await f(model)
-        except Exception as e:
-            get_logger().warning(
-                f"Failed to generate prediction with {model}",
-                artifact={"error": e},
-            )
-            if i == len(all_models) - 1:  # If it's the last iteration
-                raise Exception(f"Failed to generate prediction with any model of {all_models}") from e
-        else:
-            record_model_used(model, is_fallback=i > 0)
-            return result
+    original_deployment_id = get_settings().get("openai.deployment_id", None)
+    try:
+        # try each (model, deployment_id) pair until one is successful, otherwise raise exception
+        for i, (model, deployment_id) in enumerate(zip(all_models, all_deployments)):
+            try:
+                get_logger().debug(
+                    f"Generating prediction with {model}"
+                    f"{(' from deployment ' + deployment_id) if deployment_id else ''}"
+                )
+                get_settings().set("openai.deployment_id", deployment_id)
+                result = await f(model)
+            except Exception as e:
+                get_logger().warning(
+                    f"Failed to generate prediction with {model}",
+                    artifact={"error": e},
+                )
+                if i == len(all_models) - 1:  # If it's the last iteration
+                    raise Exception(f"Failed to generate prediction with any model of {all_models}") from e
+            else:
+                record_model_used(model, is_fallback=i > 0)
+                return result
+    finally:
+        get_settings().set("openai.deployment_id", original_deployment_id)
 
 
 def _get_all_models(model_type: ModelType = ModelType.REGULAR) -> List[str]:
@@ -444,7 +448,7 @@ def get_pr_multi_diffs(git_provider: GitProvider,
     call_number = 1
     for file in sorted_files:
         if call_number > max_calls:
-            if get_settings().config.verbosity_level >= 2:
+            if get_verbosity_level() >= 2:
                 get_logger().info(f"Reached max calls ({max_calls})")
             break
 
@@ -497,16 +501,16 @@ def get_pr_multi_diffs(git_provider: GitProvider,
             total_tokens = token_handler.prompt_tokens
             call_number += 1
             if call_number > max_calls: # avoid creating new patches
-                if get_settings().config.verbosity_level >= 2:
+                if get_verbosity_level() >= 2:
                     get_logger().info(f"Reached max calls ({max_calls})")
                 break
-            if get_settings().config.verbosity_level >= 2:
+            if get_verbosity_level() >= 2:
                 get_logger().info(f"Call number: {call_number}")
 
         if patch:
             patches.append(patch)
             total_tokens += new_patch_tokens
-            if get_settings().config.verbosity_level >= 2:
+            if get_verbosity_level() >= 2:
                 get_logger().info(f"Tokens: {total_tokens}, last filename: {file.filename}")
 
     # Add the last chunk

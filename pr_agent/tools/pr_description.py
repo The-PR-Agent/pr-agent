@@ -827,25 +827,76 @@ class PRDescription:
         return pr_body
 
 
+DIAGRAM_OPENING_FENCE_PATTERN = re.compile(
+    r'^[ \t]*(?P<fence>```mermaid)(?![A-Za-z0-9_-])',
+    re.MULTILINE,
+)
+DIAGRAM_CLOSING_FENCE_PATTERN = re.compile(
+    r'^[ \t]*(?P<fence>`{3,})(?=[ \t]*\r?$)',
+    re.MULTILINE,
+)
+DIAGRAM_SQUARE_NODE_PATTERN = re.compile(
+    r'(?<![\w-])(?P<node_id>[A-Za-z0-9_][A-Za-z0-9_-]*\s*)'
+    r'\[(?![\[(\\/])(?P<label>"(?:\\.|[^"\\])*"|[^\[\]\n]*)\]'
+)
+
+
+def _diagram_label_positions(line: str) -> List[bool]:
+    """For each position in the line, whether it sits inside an existing label."""
+    square_depth = 0
+    in_double_quotes = False
+    escaped = False
+    inside = [False]
+    for char in line:
+        if char == '"' and not escaped:
+            in_double_quotes = not in_double_quotes
+        elif not in_double_quotes:
+            if char == '[':
+                square_depth += 1
+            elif char == ']' and square_depth:
+                square_depth -= 1
+
+        if char == '\\':
+            escaped = not escaped
+        else:
+            escaped = False
+
+        inside.append(in_double_quotes or square_depth > 0)
+    return inside
+
+
 def sanitize_diagram(diagram_raw: str) -> str:
-    """Sanitize a diagram string: fix missing closing fence and remove backticks."""
+    """Extract and sanitize a Mermaid diagram."""
     if not isinstance(diagram_raw, str):
         return ''
     diagram = diagram_raw.strip()
-    if not diagram.startswith('```mermaid'):
+    opening_fence = DIAGRAM_OPENING_FENCE_PATTERN.search(diagram)
+    if opening_fence is None:
         return ''
+    diagram = diagram[opening_fence.start('fence'):]
 
-    # fallback missing closing
-    if not diagram.endswith('```'):
+    closing_fence = DIAGRAM_CLOSING_FENCE_PATTERN.search(diagram, len('```mermaid'))
+    if closing_fence is None:
         diagram += '\n```'
+    else:
+        diagram = diagram[:closing_fence.end('fence')]
 
+    def quote_node_label(match: re.Match) -> str:
+        label = match.group('label').strip()
+        if len(label) >= 2 and label.startswith('"') and label.endswith('"'):
+            label = label[1:-1]
+        label = label.replace('`', '').replace('\\"', '#quot;').replace('"', '#quot;')
+        return f'{match.group("node_id")}["{label}"]'
 
-    # remove backticks inside node labels: ["`label`"] -> ["label"]
     result = []
     for line in diagram.split('\n'):
-        line = re.sub(
-            r'\["([^"]*?)"\]',
-            lambda m: '["' + m.group(1).replace('`', '') + '"]',
+        inside_label = _diagram_label_positions(line)
+        line = DIAGRAM_SQUARE_NODE_PATTERN.sub(
+            lambda match, inside_label=inside_label: (
+                match.group(0)
+                if inside_label[match.start()]
+                else quote_node_label(match)
+            ),
             line,
         )
         result.append(line)

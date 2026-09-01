@@ -1,3 +1,4 @@
+import litellm
 import pytest
 
 import pr_agent.algo.utils as utils
@@ -480,3 +481,124 @@ class TestGetMaxTokens:
         monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
 
         assert get_max_tokens(model) == 1048576
+
+    # --- LiteLLM fallback tests (issue #2957) ---
+
+    def test_max_tokens_takes_precedence_over_litellm(self, monkeypatch):
+        """MAX_TOKENS lookup must not consult LiteLLM."""
+        fake_settings = type('', (), {
+            'config': type('', (), {
+                'custom_model_max_tokens': 0,
+                'max_model_tokens': 0
+            })()
+        })()
+        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+
+        def fail_if_called(*args, **kwargs):
+            raise AssertionError("litellm.get_model_info should not be called")
+
+        monkeypatch.setattr(litellm, "get_model_info", fail_if_called)
+
+        model = "gpt-3.5-turbo"
+        assert get_max_tokens(model) == MAX_TOKENS[model]
+
+    def test_custom_model_max_tokens_takes_precedence_over_litellm(self, monkeypatch):
+        """Positive custom_model_max_tokens must not consult LiteLLM."""
+        fake_settings = type('', (), {
+            'config': type('', (), {
+                'custom_model_max_tokens': 7000,
+                'max_model_tokens': 0
+            })()
+        })()
+        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+
+        def fail_if_called(*args, **kwargs):
+            raise AssertionError("litellm.get_model_info should not be called")
+
+        monkeypatch.setattr(litellm, "get_model_info", fail_if_called)
+
+        assert get_max_tokens("fake-provider/fake-model-xyz") == 7000
+
+    def test_litellm_fallback_returns_max_input_tokens(self, monkeypatch):
+        """Unknown model resolved via litellm.get_model_info max_input_tokens."""
+        fake_settings = type('', (), {
+            'config': type('', (), {
+                'custom_model_max_tokens': 0,
+                'max_model_tokens': 0
+            })()
+        })()
+        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(litellm, "get_model_info",
+                            lambda model: {"max_input_tokens": 65536})
+
+        assert get_max_tokens("fake-provider/fake-model-xyz") == 65536
+
+    def test_litellm_fallback_uses_max_input_tokens_not_max_tokens(self, monkeypatch):
+        """Must use max_input_tokens, not max_tokens from litellm metadata."""
+        fake_settings = type('', (), {
+            'config': type('', (), {
+                'custom_model_max_tokens': 0,
+                'max_model_tokens': 0
+            })()
+        })()
+        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(litellm, "get_model_info", lambda model: {
+            "max_input_tokens": 32000,
+            "max_tokens": 99999,
+        })
+
+        assert get_max_tokens("fake-provider/fake-model-xyz") == 32000
+
+    def test_litellm_fallback_failure_preserves_existing_error(self, monkeypatch):
+        """When litellm also cannot resolve, the existing error path fires."""
+        fake_settings = type('', (), {
+            'config': type('', (), {
+                'custom_model_max_tokens': 0,
+                'max_model_tokens': 0
+            })()
+        })()
+        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+
+        def raise_for_unknown(model):
+            raise Exception("This model isn't mapped yet")
+
+        monkeypatch.setattr(litellm, "get_model_info", raise_for_unknown)
+
+        with pytest.raises(Exception, match="Ensure .* is defined in MAX_TOKENS"):
+            get_max_tokens("fake-provider/fake-unknown-model")
+
+    def test_litellm_fallback_respects_max_model_tokens_cap(self, monkeypatch):
+        """max_model_tokens cap applies to LiteLLM-resolved values."""
+        fake_settings = type('', (), {
+            'config': type('', (), {
+                'custom_model_max_tokens': 0,
+                'max_model_tokens': 8000
+            })()
+        })()
+        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(litellm, "get_model_info",
+                            lambda model: {"max_input_tokens": 65536})
+
+        assert get_max_tokens("fake-provider/fake-model-xyz") == 8000
+
+    def test_litellm_fallback_uses_real_registry(self, monkeypatch):
+        """Unknown model resolved against the real installed LiteLLM model registry."""
+        model = "cohere/command-r-plus"
+
+        assert model not in MAX_TOKENS
+
+        model_info = litellm.get_model_info(model)
+        expected_max_input_tokens = model_info["max_input_tokens"]
+
+        assert isinstance(expected_max_input_tokens, int)
+        assert expected_max_input_tokens > 0
+
+        fake_settings = type("", (), {
+            "config": type("", (), {
+                "custom_model_max_tokens": 0,
+                "max_model_tokens": 0,
+            })()
+        })()
+        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+
+        assert get_max_tokens(model) == expected_max_input_tokens

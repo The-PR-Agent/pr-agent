@@ -399,7 +399,7 @@ class GiteaProvider(GitProvider):
         self.publish_inline_comments([payload])
 
 
-    def publish_inline_comments(self, comments: List[Dict[str, Any]],body : str = "Inline comment") -> None:
+    def publish_inline_comments(self, comments: List[Dict[str, Any]],body : str = "Inline comment") -> bool:
         response = self.repo_api.create_inline_comment(
             owner=self.owner,
             repo=self.repo,
@@ -411,12 +411,15 @@ class GiteaProvider(GitProvider):
 
         if not response:
             self.logger.error("Failed to publish inline comment")
-            return
+            return False
 
         self.logger.info("Inline comment published")
+        return True
 
-    def publish_code_suggestions(self, suggestions: List[Dict[str, Any]]):
+    def publish_code_suggestions(self, suggestions: List[Dict[str, Any]]) -> bool:
         """Publish code suggestions"""
+        publishable_count = 0
+        published_count = 0
         for suggestion in suggestions:
             body = suggestion.get("body","")
             if not body:
@@ -428,11 +431,19 @@ class GiteaProvider(GitProvider):
             old_position = suggestion.get("relevant_lines_start",0) if "original_suggestion" not in suggestion else suggestion["original_suggestion"].get("relevant_lines_start",0)
             title_body = suggestion["original_suggestion"].get("suggestion_content","") if "original_suggestion" in suggestion else ""
             payload = dict(body=body, path=path, old_position=old_position,new_position = new_position)
+            publishable_count += 1
             if title_body:
                 title_body = f"**Suggestion:** {title_body}"
-                self.publish_inline_comments([payload],title_body)
+                published = self.publish_inline_comments([payload],title_body)
             else:
-                self.publish_inline_comments([payload])
+                published = self.publish_inline_comments([payload])
+            if published:
+                published_count += 1
+
+        # A partial failure must not report failure: the caller republishes the whole
+        # list, which would post the already-accepted suggestions a second time.
+        return published_count > 0 or publishable_count == 0
+
 
     def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
         """Add eyes reaction to a comment"""
@@ -609,6 +620,9 @@ class GiteaProvider(GitProvider):
 
     def get_line_link(self, relevant_file, relevant_line_start, relevant_line_end = None) -> str:
         link = f"{self.base_url_html}/{self.owner}/{self.repo}/src/branch/{quote(self.get_pr_branch())}/{relevant_file}"
+        relevant_line_start, relevant_line_end = self._normalize_line_range(
+            relevant_line_start, relevant_line_end
+        )
         if relevant_line_start == -1:
             pass
         elif relevant_line_end:
@@ -885,6 +899,12 @@ class RepoApi(giteapy.RepositoryApi):
             "body": body,
             "comments": comments,
             "commit_id": commit_id,
+            # Gitea/Forgejo defaults an event-less review to a draft (state
+            # PENDING), invisible to everyone but the review's author until
+            # someone manually submits it from the web UI. There is no such
+            # "submit" step in this flow, so the review must be submitted as
+            # a real event up front.
+            "event": "COMMENT",
         }
         return self.api_client.call_api(
             '/repos/{owner}/{repo}/pulls/{pr_number}/reviews',

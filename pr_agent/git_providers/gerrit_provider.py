@@ -107,9 +107,19 @@ def prepare_repo(url: urllib3.util.Url, project, refspec):
     repo_url = (f"{url.scheme}://{url.auth}@{url.host}:{url.port}/{project}")
 
     directory = pathlib.Path(mkdtemp())
-    clone(repo_url, directory)
-    fetch(repo_url, refspec, cwd=directory)
-    checkout(cwd=directory)
+    try:
+        clone(repo_url, directory)
+        fetch(repo_url, refspec, cwd=directory)
+        checkout(cwd=directory)
+    except BaseException:
+        try:
+            shutil.rmtree(directory)
+        except OSError as cleanup_error:
+            get_logger().warning(
+                "Failed to clean up temp repo at {} after setup failed: {}",
+                directory, cleanup_error
+            )
+        raise
     return directory
 
 

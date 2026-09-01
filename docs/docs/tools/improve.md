@@ -110,7 +110,23 @@ Use triple quotes to write multi-line instructions. Use bullet points or numbers
 
 `Platforms supported: GitHub, GitLab, Bitbucket`
 
-PR-Agent supports both simple and hierarchical best practices configurations to provide guidance to the AI model for generating relevant code suggestions.
+!!! warning "Open-source PR-Agent"
+
+    Automatic loading of `best_practices.md` is a Qodo Merge feature and is not available in the open-source
+    PR-Agent package. In the open-source package, add the file to `config.repo_context_files` instead:
+
+    ```toml
+    [config]
+    repo_context_files = ["AGENTS.md", "best_practices.md"]
+    ```
+
+    This fallback supports GitHub, GitLab, Gitea, Bitbucket, and Azure DevOps. Repository context files are read
+    from the default branch by default and are limited by
+    `config.repo_context_max_lines` (500 lines by default). Set `config.repo_context_from_default_branch = false`
+    to read them from the pull request's target branch instead. Providers without repository file fetching log a
+    warning and skip this context.
+
+Qodo Merge supports both simple and hierarchical best practices configurations to provide guidance to the AI model for generating relevant code suggestions.
 
 ???- tip "Writing effective best practices files"
 
@@ -168,7 +184,7 @@ PR-Agent supports both simple and hierarchical best practices configurations to 
         return ""
     ```
 
-#### Local best practices
+#### Local best practices in Qodo Merge
 
 For basic usage, create a `best_practices.md` file in your repository's root directory containing a list of best practices, coding standards, and guidelines specific to your repository.
 

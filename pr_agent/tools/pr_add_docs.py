@@ -10,7 +10,7 @@ from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.pr_processing import get_pr_diff, retry_with_fallback_models
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import load_yaml
-from pr_agent.config_loader import get_settings
+from pr_agent.config_loader import get_settings, get_verbosity_level
 from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.git_provider import get_main_pr_language
 from pr_agent.log import get_logger
@@ -86,7 +86,7 @@ class PRAddDocs:
         environment = Environment(undefined=StrictUndefined)
         system_prompt = environment.from_string(get_settings().pr_add_docs_prompt.system).render(variables)
         user_prompt = environment.from_string(get_settings().pr_add_docs_prompt.user).render(variables)
-        if get_settings().config.verbosity_level >= 2:
+        if get_verbosity_level() >= 2:
             get_logger().info(f"\nSystem prompt:\n{system_prompt}")
             get_logger().info(f"\nUser prompt:\n{user_prompt}")
         response, finish_reason = await self.ai_handler.chat_completion(
@@ -109,7 +109,7 @@ class PRAddDocs:
 
         for d in data['Code Documentation']:
             try:
-                if get_settings().config.verbosity_level >= 2:
+                if get_verbosity_level() >= 2:
                     get_logger().info(f"add_docs: {d}")
                 relevant_file = d['relevant file'].strip()
                 relevant_line = int(d['relevant line'])  # absolute position
@@ -124,7 +124,7 @@ class PRAddDocs:
                                              'relevant_lines_start': relevant_line,
                                              'relevant_lines_end': relevant_line})
             except Exception:
-                if get_settings().config.verbosity_level >= 2:
+                if get_verbosity_level() >= 2:
                     get_logger().info(f"Could not parse code docs: {d}")
 
         is_successful = self.git_provider.publish_code_suggestions(docs)
@@ -169,7 +169,7 @@ class PRAddDocs:
                     else:
                         new_code_snippet = new_code_snippet.rstrip() + "\n" + original_initial_line
         except Exception as e:
-            if get_settings().config.verbosity_level >= 2:
+            if get_verbosity_level() >= 2:
                 get_logger().info(f"Could not dedent code snippet for file {relevant_file}, error: {e}")
 
         return new_code_snippet

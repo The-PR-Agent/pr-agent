@@ -40,7 +40,7 @@ from pr_agent.algo.utils import (
     show_relevant_configurations,
     show_run_details,
 )
-from pr_agent.config_loader import get_settings
+from pr_agent.config_loader import get_settings, get_verbosity_level
 from pr_agent.git_providers import (
     GithubProvider,
     get_git_provider_with_context,
@@ -766,6 +766,11 @@ class PRCodeSuggestions:
                          first_key="code_suggestions", last_key="label")
         if isinstance(data, list):
             data = {'code_suggestions': data}
+        if not isinstance(data, dict) or not isinstance(data.get("code_suggestions"), list):
+            get_logger().error("Failed to parse code suggestions from the AI prediction",
+                               artifact={"predictions": predictions})
+            self.parse_failure_count = getattr(self, "parse_failure_count", 0) + 1
+            return {"code_suggestions": []}
 
         # remove or edit invalid suggestions
         suggestion_list = []
@@ -811,7 +816,7 @@ class PRCodeSuggestions:
 
         return data
 
-    async def push_inline_code_suggestions(self, data, include_coverage_footer: bool = True):
+    async def push_inline_code_suggestions(self, data, include_coverage_footer: bool = True) -> None:
         code_suggestions = []
         fallback_comments = []
         coverage_footer = self._get_suggestions_coverage_footer() if include_coverage_footer else ""
@@ -825,14 +830,14 @@ class PRCodeSuggestions:
                                       if empty_coverage_footer else "No suggestions found to improve this PR.")
             pr_body = no_suggestions_message + empty_coverage_footer
             if self.progress_response:
-                return self.git_provider.edit_comment(self.progress_response,
-                                                      body=pr_body)
+                self.git_provider.edit_comment(self.progress_response, body=pr_body)
             else:
-                return self.git_provider.publish_comment(pr_body)
+                self.git_provider.publish_comment(pr_body)
+            return
 
         for d in data['code_suggestions']:
             try:
-                if get_settings().config.verbosity_level >= 2:
+                if get_verbosity_level() >= 2:
                     get_logger().info(f"suggestion: {d}")
                 relevant_file = d['relevant_file'].strip()
                 relevant_lines_start = int(d['relevant_lines_start'])  # absolute position
@@ -891,6 +896,7 @@ class PRCodeSuggestions:
         if fallback_comments:
             self.git_provider.publish_comment("\n\n---\n\n".join(fallback_comments))
             self._output_published = True
+        return
 
     def _get_diff_file(self, relevant_file):
         diff_files = getattr(self.git_provider, "diff_files", None)
@@ -1202,6 +1208,7 @@ class PRCodeSuggestions:
     async def prepare_prediction_main(self, model: str) -> dict:
         self.failed_chunk_count = 0
         self.total_chunk_count = 0
+        self.parse_failure_count = 0
         # get PR diff
         if get_settings().pr_code_suggestions.decouple_hunks:
             self.patches_diff_list = get_pr_multi_diffs(self.git_provider,
@@ -1227,6 +1234,7 @@ class PRCodeSuggestions:
                                                             model,
                                                             max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
                                                             add_line_numbers=True)  # decouple hunk with line numbers
+                self.patches_diff_list_no_line_numbers = self.remove_line_numbers(self.patches_diff_list)
 
         if self.patches_diff_list:
             get_logger().info(f"Number of PR chunk calls: {len(self.patches_diff_list)}")
@@ -1270,7 +1278,7 @@ class PRCodeSuggestions:
                     else:
                         prediction_list.append(prediction)
 
-            self.failed_chunk_count = len(chunk_errors)
+            self.failed_chunk_count = len(chunk_errors) + self.parse_failure_count
             if chunk_errors and not prediction_list:
                 raise chunk_errors[0]
             self.prediction_list = prediction_list

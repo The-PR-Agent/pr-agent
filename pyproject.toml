@@ -109,6 +109,7 @@ pr-agent = "pr_agent.cli:run"
 # resolves from a git fork, which wheel metadata cannot reference (PyPI rejects
 # direct URL deps), so a pip-installed extra would silently pull the wrong package.
 similar-issue = [
+  "pandas",  # imported directly by the qdrant indexing path
   "pinecone-client",
   "pinecone-datasets @ git+https://github.com/mrT23/pinecone-datasets.git@main",
   "lancedb==0.5.1",
@@ -176,10 +177,6 @@ lint.ignore = [
 [tool.ruff.lint.per-file-ignores]
 # Ignore import-position and unused-import in __init__.py (re-export modules).
 "__init__.py" = ["E402", "F401"]
-# The 'similar issue' tool imports its optional deps (pinecone, pandas,
-# pinecone-datasets) lazily at runtime; ruff can't see them at module scope.
-"pr_agent/tools/pr_similar_issue.py" = ["F821"]
-
 [tool.bandit]
 exclude_dirs = ["tests"]
 skips = ["B101"]

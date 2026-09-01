@@ -273,6 +273,42 @@ async def test_prepare_prediction_main_keeps_outer_fallback_when_all_chunks_fail
     assert tool.total_chunk_count == 2
 
 
+@pytest.mark.asyncio
+async def test_prepare_prediction_main_rebuilds_unnumbered_chunks_after_conversion_fallback():
+    settings = get_settings()
+    original_decouple_hunks = settings.pr_code_suggestions.decouple_hunks
+    original_parallel_calls = settings.pr_code_suggestions.parallel_calls
+    settings.pr_code_suggestions.decouple_hunks = False
+    settings.pr_code_suggestions.parallel_calls = False
+    tool = _make_tool()
+    tool.token_handler = MagicMock()
+    tool.convert_to_decoupled_with_line_numbers = AsyncMock(return_value=[])
+    chunk_pairs = []
+
+    async def fake_get_prediction(model, patches_diff, patches_diff_no_line_numbers):
+        chunk_pairs.append((patches_diff, patches_diff_no_line_numbers))
+        return {"code_suggestions": [_valid_suggestion(relevant_file=f"chunk-{len(chunk_pairs)}.py")]}
+
+    try:
+        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", side_effect=[
+            ["stale unnumbered chunk"],
+            ["1 fallback-a", "2 fallback-b"],
+        ]):
+            tool._get_prediction = fake_get_prediction
+
+            data = await tool.prepare_prediction_main("primary-model")
+    finally:
+        settings.pr_code_suggestions.decouple_hunks = original_decouple_hunks
+        settings.pr_code_suggestions.parallel_calls = original_parallel_calls
+
+    assert chunk_pairs == [
+        ("1 fallback-a", "fallback-a"),
+        ("2 fallback-b", "fallback-b"),
+    ]
+    assert tool.total_chunk_count == 2
+    assert len(data["code_suggestions"]) == 2
+
+
 def test_suggestions_coverage_footer_reports_partial_runs_and_respects_flag():
     settings = get_settings()
     snapshot = snapshot_settings(["pr_code_suggestions.enable_suggestions_coverage_footer"])

@@ -31,7 +31,7 @@ from ..algo.utils import (
     get_pr_review_comment_identifiers,
     load_large_diff,
 )
-from ..config_loader import get_settings
+from ..config_loader import get_settings, get_verbosity_level
 from ..log import get_logger
 from .git_provider import (
     MAX_FILES_ALLOWED_FULL,
@@ -1681,6 +1681,9 @@ class GitLabProvider(GitProvider):
 
     def get_line_link(self, relevant_file: str, relevant_line_start: int, relevant_line_end: int = None) -> str:
         project_web_url = self._get_project_web_url()
+        relevant_line_start, relevant_line_end = self._normalize_line_range(
+            relevant_line_start, relevant_line_end
+        )
         if relevant_line_start == -1:
             link = f"{project_web_url}/-/blob/{self.mr.source_branch}/{relevant_file}?ref_type=heads"
         elif relevant_line_end:
@@ -1715,7 +1718,7 @@ class GitLabProvider(GitProvider):
                 # link = f"{self.pr.web_url}/diffs#{sha_file}_{absolute_position}_{absolute_position}"
                 return link
         except Exception as e:
-            if get_settings().config.verbosity_level >= 2:
+            if get_verbosity_level() >= 2:
                 get_logger().info(f"Failed adding line link, error: {e}")
 
         return ""

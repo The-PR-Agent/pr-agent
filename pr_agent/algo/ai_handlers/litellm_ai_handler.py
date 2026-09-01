@@ -29,7 +29,7 @@ from pr_agent.algo.ai_handlers.litellm_helpers import (
 )
 from pr_agent.algo.run_details import _as_decimal_cost, record_ai_call
 from pr_agent.algo.utils import ReasoningEffort, get_version
-from pr_agent.config_loader import get_settings
+from pr_agent.config_loader import get_settings, get_verbosity_level
 from pr_agent.log import get_logger
 
 MODEL_RETRIES = 2
@@ -505,12 +505,12 @@ class LiteLLMAIHandler(BaseAiHandler):
             "type": "enabled",
             "budget_tokens": extended_thinking_budget_tokens
         }
-        if get_settings().config.verbosity_level >= 2:
+        if get_verbosity_level() >= 2:
             get_logger().info(f"Adding max output tokens {extended_thinking_max_output_tokens} to model {model}, extended thinking budget tokens: {extended_thinking_budget_tokens}")
         kwargs["max_tokens"] = extended_thinking_max_output_tokens
 
         # temperature may only be set to 1 when thinking is enabled
-        if get_settings().config.verbosity_level >= 2:
+        if get_verbosity_level() >= 2:
             get_logger().info("Temperature may only be set to 1 when thinking is enabled with claude models.")
         kwargs["temperature"] = 1
 
@@ -1097,7 +1097,7 @@ class LiteLLMAIHandler(BaseAiHandler):
 
                 get_logger().debug("Prompts", artifact={"system": system, "user": user})
 
-                if get_settings().config.verbosity_level >= 2:
+                if get_verbosity_level() >= 2:
                     get_logger().info(f"\nSystem prompt:\n{system}")
                     get_logger().info(f"\nUser prompt:\n{user}")
 
@@ -1150,7 +1150,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         get_logger().debug("Full_response", artifact=response_log)
 
         # for CLI debugging
-        if get_settings().config.verbosity_level >= 2:
+        if get_verbosity_level() >= 2:
             get_logger().info(f"\nAI response:\n{resp}")
 
         self._record_completion_metadata(response_obj, model=model, display_model=user_model)

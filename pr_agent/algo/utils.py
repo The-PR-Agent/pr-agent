@@ -12,11 +12,12 @@ import sys
 import textwrap
 import time
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from enum import Enum
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Iterable, List, Tuple, TypedDict
+from urllib.parse import urlparse
 
 import html2text
 import requests
@@ -29,7 +30,7 @@ from pr_agent.algo.git_patch_processing import extract_hunk_headers, extract_hun
 from pr_agent.algo.run_details import get_run_details
 from pr_agent.algo.token_handler import TokenEncoder
 from pr_agent.algo.types import FilePatchInfo
-from pr_agent.config_loader import get_settings, global_settings
+from pr_agent.config_loader import get_settings, get_verbosity_level, global_settings
 from pr_agent.log import get_logger
 
 
@@ -271,6 +272,9 @@ def convert_to_markdown_v2(output_data: dict,
         "Estimated effort to review [1-5]": "⏱️",
         "Contribution time cost estimate": "⏳",
         "Ticket compliance check": "🎫",
+        "Risk level": "⚠️",
+        "Merge recommendation": "✅",
+        "Review priority files": "📂",
     }
     markdown_text = ""
     markdown_text += f"{format_pr_review_header(incremental=bool(incremental_review))}\n\n"
@@ -288,7 +292,7 @@ def convert_to_markdown_v2(output_data: dict,
     review_data = {k: v for k, v in output_data["review"].items() if k != "todo_summary"}
     for key, value in review_data.items():
         if value is None or value == '' or value == {} or value == []:
-            if key.lower() not in ['can_be_split', 'key_issues_to_review']:
+            if key.lower() not in ['can_be_split', 'key_issues_to_review', 'review_priority_files']:
                 continue
         key_nice = key.replace('_', ' ').capitalize()
         emoji = emojis.get(key_nice, "")
@@ -365,6 +369,47 @@ def convert_to_markdown_v2(output_data: dict,
                     markdown_text += f"### {emoji} Security concerns\n\n"
                     value = emphasize_header(value.strip(), only_markdown=True)
                     markdown_text += f"{value}\n\n"
+        elif 'risk level' in key_nice.lower():
+            risk_value = str(value).strip().lower().replace("_", " ")
+            risk_display = risk_value.capitalize() if risk_value else "Unknown"
+            if gfm_supported:
+                markdown_text += "<tr><td>"
+                markdown_text += f"{emoji}&nbsp;<strong>Risk level</strong>: {risk_display}"
+                markdown_text += "</td></tr>\n"
+            else:
+                markdown_text += f"### {emoji} Risk level: {risk_display}\n\n"
+        elif 'merge recommendation' in key_nice.lower():
+            recommendation = str(value).strip().replace("_", " ")
+            recommendation_display = recommendation.capitalize() if recommendation else "Unknown"
+            if gfm_supported:
+                markdown_text += "<tr><td>"
+                markdown_text += f"{emoji}&nbsp;<strong>Merge recommendation</strong>: {recommendation_display}"
+                markdown_text += "</td></tr>\n"
+            else:
+                markdown_text += f"### {emoji} Merge recommendation: {recommendation_display}\n\n"
+        elif 'review priority files' in key_nice.lower():
+            priority_files = []
+            if isinstance(value, list):
+                priority_files = [str(priority_file).strip() for priority_file in value if str(priority_file).strip()]
+            if gfm_supported:
+                markdown_text += "<tr><td>"
+                if not priority_files:
+                    markdown_text += f"{emoji}&nbsp;<strong>Priority files</strong>: None"
+                else:
+                    markdown_text += f"{emoji}&nbsp;<strong>Priority files</strong>\n<br><br>\n"
+                    markdown_text += "<ul>\n"
+                    for priority_file in priority_files:
+                        markdown_text += f"<li>{priority_file}</li>\n"
+                    markdown_text += "</ul>\n"
+                markdown_text += "</td></tr>\n"
+            else:
+                if not priority_files:
+                    markdown_text += f"### {emoji} Priority files: None\n\n"
+                else:
+                    markdown_text += f"### {emoji} Priority files\n\n"
+                    for priority_file in priority_files:
+                        markdown_text += f"- {priority_file}\n"
+                    markdown_text += "\n"
         elif 'todo sections' in key_nice.lower():
             if gfm_supported:
                 markdown_text += "<tr><td>"
@@ -827,7 +872,7 @@ def load_large_diff(filename, new_file_content_str: str, original_file_content_s
         new_file_content_str = (new_file_content_str or "").rstrip() + "\n"
         diff = difflib.unified_diff(original_file_content_str.splitlines(keepends=True),
                                     new_file_content_str.splitlines(keepends=True))
-        if get_settings().config.verbosity_level >= 2 and show_warning:
+        if get_verbosity_level() >= 2 and show_warning:
             get_logger().info(f"File was modified, but no patch was found. Manually creating patch: {filename}.")
         patch = ''.join(diff)
         return patch
@@ -940,6 +985,8 @@ def load_yaml(response_text: str, keys_fix_yaml: List[str] = [], first_key="", l
         else:
             get_logger().info("Successfully parsed AI prediction after fallbacks",
                               artifact={'response_text': response_text})
+    if data is None:
+        return {}
     return data
 
 
@@ -1236,9 +1283,11 @@ def get_max_tokens(model):
     Get the maximum number of tokens allowed for a model.
     logic:
     (1) If the model is in './pr_agent/algo/__init__.py', use the value from there.
-    (2) else, the user needs to define explicitly 'config.custom_model_max_tokens'
+    (2) else if 'config.custom_model_max_tokens' is set to a positive value, use it.
+    (3) else, fall back to litellm.get_model_info(model)["max_input_tokens"].
+    (4) else, raise an error.
 
-    For both cases, we further limit the number of tokens to 'config.max_model_tokens' if it is set.
+    For all cases, we further limit the number of tokens to 'config.max_model_tokens' if it is set.
     This aims to improve the algorithmic quality, as the AI model degrades in performance when the input is too long.
     """
     settings = get_settings()
@@ -1248,8 +1297,29 @@ def get_max_tokens(model):
     elif custom_max_tokens > 0:
         max_tokens_model = custom_max_tokens
     else:
-        get_logger().error(f"Model {model} is not defined in MAX_TOKENS in ./pr_agent/algo/__init__.py and no custom_model_max_tokens is set")
-        raise Exception(f"Ensure {model} is defined in MAX_TOKENS in ./pr_agent/algo/__init__.py or set a positive value for it in config.custom_model_max_tokens")
+        # Fallback: ask LiteLLM for the model's metadata before giving up.
+        max_tokens_model = 0
+        import litellm
+        try:
+            model_info = litellm.get_model_info(model)
+        except Exception:
+            get_logger().debug(f"litellm.get_model_info could not resolve model '{model}'")
+            model_info = None
+        if model_info:
+            litellm_max = model_info.get("max_input_tokens")
+            if litellm_max and int(litellm_max) > 0:
+                max_tokens_model = int(litellm_max)
+                get_logger().debug(f"Resolved max_input_tokens for '{model}' from litellm: {max_tokens_model}")
+
+        if max_tokens_model <= 0:
+            get_logger().error(
+                f"Model {model} is not defined in MAX_TOKENS in ./pr_agent/algo/__init__.py"
+                f" and no custom_model_max_tokens is set"
+            )
+            raise Exception(
+                f"Ensure {model} is defined in MAX_TOKENS in ./pr_agent/algo/__init__.py"
+                f" or set a positive value for it in config.custom_model_max_tokens"
+            )
 
     max_model_tokens = _as_int(settings.config.max_model_tokens) if settings.config.max_model_tokens else 0
     if max_model_tokens > 0:
@@ -1421,18 +1491,26 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
                     relevant_line_in_file = matches_difflib[0]
 
 
-                for i, line in enumerate(patch_lines):
-                    if line.startswith('@@'):
-                        delta = 0
-                        match = re_hunk_header.match(line)
-                        section_header, size1, size2, start1, start2 = extract_hunk_headers(match)
-                    elif not line.startswith('-'):
-                        delta += 1
+                def scan_patch_lines(is_match):
+                    scan_delta = 0
+                    scan_start2 = 0
+                    for i, line in enumerate(patch_lines):
+                        if line.startswith('@@'):
+                            scan_delta = 0
+                            header_match = re_hunk_header.match(line)
+                            *_, scan_start2 = extract_hunk_headers(header_match)
+                        elif not line.startswith('-'):
+                            scan_delta += 1
 
-                    if relevant_line_in_file in line and line[0] != '-':
-                        position = i
-                        absolute_position = start2 + delta - 1
-                        break
+                        if not line.startswith('-') and is_match(line):
+                            return i, scan_start2 + scan_delta - 1
+                    return -1, absolute_position
+
+                position, absolute_position = scan_patch_lines(
+                    lambda line: line == relevant_line_in_file or line[1:] == relevant_line_in_file)
+                if position == -1:
+                    position, absolute_position = scan_patch_lines(
+                        lambda line: relevant_line_in_file in line)
 
                 if position == -1 and relevant_line_in_file[0] == '+':
                     no_plus_line = relevant_line_in_file[1:].lstrip()
@@ -1525,6 +1603,77 @@ def github_action_output(output_data: dict, key_name: str):
     except Exception as e:
         get_logger().error(f"Failed to write to GitHub Action output: {e}")
     return
+
+
+def _push_outputs_sink_url(cfg: dict, key: str) -> str:
+    """Return cfg[key] if it is an absolute https URL with a host, else "" (with a warning).
+
+    Requiring https keeps the review text, which can quote private code, off plaintext
+    transports. The host is not restricted: self-hosted collectors and Slack-compatible
+    endpoints (Mattermost, Rocket.Chat) are legitimate targets.
+    """
+    url = cfg.get(key) or ''
+    if not url:
+        return ''
+    parsed = urlparse(url)
+    if parsed.scheme != 'https' or not parsed.hostname:
+        # Log the key, never the value: a webhook URL is itself the credential.
+        get_logger().warning(f"push_outputs: ignoring {key}, expected an absolute https:// URL")
+        return ''
+    return url
+
+
+def push_outputs(message_type: str, payload: dict | None = None, markdown: str | None = None) -> None:
+    """Emit a tool's output to external sinks, without calling any git-provider API.
+
+    Controlled by the [push_outputs] config section (disabled by default). Supported channels:
+    "stdout" (one JSON line), "file" (append JSONL), "webhook" (POST the generic record),
+    "slack" (POST {"text": ...} to a Slack Incoming Webhook). Non-fatal: never raises.
+    """
+    try:
+        cfg = get_settings().get('push_outputs', {}) or {}
+        enable = cfg.get('enable', False)
+        if isinstance(enable, str):  # env vars arrive as strings; treat "false"/"0"/"no"/"" as off
+            enable = enable.lower().strip() not in ("false", "0", "no", "")
+        if not enable:
+            return
+
+        channels = cfg.get('channels', []) or []
+        record = {
+            "type": message_type,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "payload": payload or {},
+        }
+        if markdown is not None:
+            record["markdown"] = markdown
+
+        if "stdout" in channels:
+            print(json.dumps(record, ensure_ascii=False))
+
+        if "file" in channels:
+            file_path = cfg.get('file_path', 'pr-agent-outputs/reviews.jsonl')
+            folder = os.path.dirname(file_path)
+            if folder:
+                os.makedirs(folder, exist_ok=True)
+            with open(file_path, 'a', encoding='utf-8') as fh:
+                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+        # Local channels first, network last, so a failed POST can't lose a file write.
+        # allow_redirects=False: never follow a redirect from a configured sink to another host.
+        if "webhook" in channels:
+            webhook_url = _push_outputs_sink_url(cfg, 'webhook_url')
+            if webhook_url:
+                requests.post(webhook_url, json=record, timeout=5, allow_redirects=False)
+
+        # Slack Incoming Webhooks accept {"text": ...} directly, no relay service needed.
+        if "slack" in channels:
+            slack_webhook_url = _push_outputs_sink_url(cfg, 'slack_webhook_url')
+            if slack_webhook_url:
+                text = markdown if markdown is not None else json.dumps(payload or {}, ensure_ascii=False)
+                requests.post(slack_webhook_url, json={"text": text}, timeout=5, allow_redirects=False)
+    except Exception as e:
+        # Log only the exception type: requests errors embed the (secret-bearing) URL in their text.
+        get_logger().warning(f"push_outputs failed: {type(e).__name__}")
 
 
 def _render_setting_value(value) -> str:

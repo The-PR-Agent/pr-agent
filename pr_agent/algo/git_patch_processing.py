@@ -4,7 +4,7 @@ import re
 import traceback
 
 from pr_agent.algo.types import EDIT_TYPE
-from pr_agent.config_loader import get_settings
+from pr_agent.config_loader import get_settings, get_verbosity_level
 from pr_agent.log import get_logger
 
 # Optimized: Pre-compile the hunk header regex at the module level to avoid redundant compilation
@@ -284,14 +284,14 @@ def handle_patch_deletions(patch: str, original_file_content_str: str,
     """
     if not new_file_content_str and (edit_type == EDIT_TYPE.DELETED or edit_type == EDIT_TYPE.UNKNOWN):
         # logic for handling deleted files - don't show patch, just show that the file was deleted
-        if get_settings().config.verbosity_level > 0:
+        if get_verbosity_level() > 0:
             get_logger().info(f"Processing file: {file_name}, minimizing deletion file")
         patch = None # file was deleted
     else:
         patch_lines = patch.splitlines()
         patch_new = omit_deletion_hunks(patch_lines)
         if patch != patch_new:
-            if get_settings().config.verbosity_level > 0:
+            if get_verbosity_level() > 0:
                 get_logger().info(f"Processing file: {file_name}, hunks were deleted")
             patch = patch_new
     return patch

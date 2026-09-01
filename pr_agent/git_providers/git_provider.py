@@ -389,6 +389,17 @@ class GitProvider(ABC):
     def get_pr_id(self):
         return ""
 
+    @staticmethod
+    def _normalize_line_range(relevant_line_start: int, relevant_line_end: int = None) -> tuple[int, int | None]:
+        """Clamp inverted ranges and discard malformed end lines before building an anchor."""
+        if relevant_line_end is not None and relevant_line_start is not None:
+            try:
+                if int(relevant_line_end) < int(relevant_line_start):
+                    relevant_line_end = relevant_line_start
+            except (TypeError, ValueError):
+                relevant_line_end = None
+        return relevant_line_start, relevant_line_end
+
     def get_line_link(self, relevant_file: str, relevant_line_start: int, relevant_line_end: int = None) -> str:
         return ""
 
