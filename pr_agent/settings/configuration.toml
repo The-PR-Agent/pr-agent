@@ -3,7 +3,6 @@
 # Your repository configuration should only include options you wish to override from the defaults.
 
 [config]
-enable_auto_approval = false
 # models
 model="gpt-5.6"
 fallback_models=["gpt-5.6-terra"]
@@ -24,6 +23,7 @@ use_repo_settings_file=true
 use_global_settings_file=true
 extra_config_url="" # optional URL or path to an additional .pr_agent.toml merged before the repo-local config; also settable via --extra_config_url or PR_AGENT_EXTRA_CONFIG_URL. See docs/docs/usage-guide/configuration_options.md#external-configuration-url.
 disable_auto_feedback = false
+enable_auto_approval = false # when true, /review may auto-approve a PR via auto_approve_logic(); that caller is currently commented out
 ai_timeout=120 # 2 minutes
 skip_keys = []
 custom_reasoning_model = false # when true, disables system messages and temperature controls for models that don't support chat-style inputs
