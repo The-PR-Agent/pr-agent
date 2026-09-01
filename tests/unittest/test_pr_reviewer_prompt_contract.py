@@ -62,7 +62,9 @@ def test_pr_review_prompt_variables_are_all_supplied(monkeypatch, half):
 
     # Subset, not equality: vars legitimately carries keys the review prompts do
     # not use (e.g. language, commit_messages_str, custom_labels).
-    missing = _referenced_variables(half) - provided
+    referenced = _referenced_variables(half)
+    assert referenced, f"expected the '{half}' prompt to reference variables; it references none"
+    missing = referenced - provided
     assert not missing, (
         f"pr_reviewer_prompts.toml '{half}' prompt references {sorted(missing)}, "
         f"but PRReviewer.vars does not supply them; /review would raise UndefinedError "
