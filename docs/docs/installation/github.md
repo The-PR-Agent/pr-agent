@@ -805,7 +805,7 @@ CONFIG__SECRET_PROVIDER=aws_secrets_manager
 
 ### AWS CodeCommit Setup
 
-Not all features have been added to CodeCommit yet.  As of right now, CodeCommit has been implemented to run the PR-Agent CLI on the command line, using AWS credentials stored in environment variables.  (More features will be added in the future.)  The following is a set of instructions to have PR-Agent do a review of your CodeCommit pull request from the command line:
+Not all features have been added to CodeCommit yet.  As of right now, CodeCommit has been implemented to run the PR-Agent CLI on the command line, using AWS credentials stored in environment variables.  CodeCommit pull requests with multiple targets are reviewed across every target repository and commit comparison; single-target pull requests keep the same behavior.  The following is a set of instructions to have PR-Agent do a review of your CodeCommit pull request from the command line:
 
 1. Create an IAM user that you will use to read CodeCommit pull requests and post comments
     - Note: That user should have CLI access only, not Console access
