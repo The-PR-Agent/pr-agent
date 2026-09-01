@@ -1282,9 +1282,11 @@ def get_max_tokens(model):
     Get the maximum number of tokens allowed for a model.
     logic:
     (1) If the model is in './pr_agent/algo/__init__.py', use the value from there.
-    (2) else, the user needs to define explicitly 'config.custom_model_max_tokens'
+    (2) else if 'config.custom_model_max_tokens' is set to a positive value, use it.
+    (3) else, fall back to litellm.get_model_info(model)["max_input_tokens"].
+    (4) else, raise an error.
 
-    For both cases, we further limit the number of tokens to 'config.max_model_tokens' if it is set.
+    For all cases, we further limit the number of tokens to 'config.max_model_tokens' if it is set.
     This aims to improve the algorithmic quality, as the AI model degrades in performance when the input is too long.
     """
     settings = get_settings()
@@ -1294,8 +1296,29 @@ def get_max_tokens(model):
     elif custom_max_tokens > 0:
         max_tokens_model = custom_max_tokens
     else:
-        get_logger().error(f"Model {model} is not defined in MAX_TOKENS in ./pr_agent/algo/__init__.py and no custom_model_max_tokens is set")
-        raise Exception(f"Ensure {model} is defined in MAX_TOKENS in ./pr_agent/algo/__init__.py or set a positive value for it in config.custom_model_max_tokens")
+        # Fallback: ask LiteLLM for the model's metadata before giving up.
+        max_tokens_model = 0
+        import litellm
+        try:
+            model_info = litellm.get_model_info(model)
+        except Exception:
+            get_logger().debug(f"litellm.get_model_info could not resolve model '{model}'")
+            model_info = None
+        if model_info:
+            litellm_max = model_info.get("max_input_tokens")
+            if litellm_max and int(litellm_max) > 0:
+                max_tokens_model = int(litellm_max)
+                get_logger().debug(f"Resolved max_input_tokens for '{model}' from litellm: {max_tokens_model}")
+
+        if max_tokens_model <= 0:
+            get_logger().error(
+                f"Model {model} is not defined in MAX_TOKENS in ./pr_agent/algo/__init__.py"
+                f" and no custom_model_max_tokens is set"
+            )
+            raise Exception(
+                f"Ensure {model} is defined in MAX_TOKENS in ./pr_agent/algo/__init__.py"
+                f" or set a positive value for it in config.custom_model_max_tokens"
+            )
 
     max_model_tokens = _as_int(settings.config.max_model_tokens) if settings.config.max_model_tokens else 0
     if max_model_tokens > 0:
