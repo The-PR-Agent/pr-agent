@@ -112,7 +112,7 @@ similar-issue = [
   "pandas",  # imported directly by the qdrant indexing path
   "pinecone-client",
   "pinecone-datasets @ git+https://github.com/mrT23/pinecone-datasets.git@main",
-  "lancedb==0.5.1",
+  "lancedb==0.21.0",
   "qdrant-client==1.15.1",
 ]
 dev = [
