@@ -1262,7 +1262,9 @@ class GithubProvider(GitProvider):
         if self.deployment_type == 'app':
             try:
                 private_key = get_settings().github.private_key
-                app_id = get_settings().github.app_id
+                # The app id is an integer in the settings toml, but PyJWT >=2.11 requires a
+                # string `iss` claim, and PyGithub 1.59 passes it through raw (#2955).
+                app_id = str(get_settings().github.app_id)
             except AttributeError as e:
                 raise ValueError("GitHub app ID and private key are required when using GitHub app deployment") from e
             if not self.installation_id:
