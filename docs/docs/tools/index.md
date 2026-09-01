@@ -20,7 +20,7 @@ Here is a list of PR-Agent tools, each with a dedicated page that explains how t
 Each tool can be triggered in two ways:
 
 - **As a comment** — write the command (e.g. `/review`) as a comment, and PR-Agent replies. Most tools are commented on a PR; issue-scoped tools such as `similar_issue` are commented on an issue.
-- **From the [CLI](../usage-guide/automations_and_usage.md#local-repo-cli)** — run `python -m pr_agent.cli --pr_url=<PR_URL> <tool>`. Issue-scoped tools take `--issue_url=<ISSUE_URL>` instead of `--pr_url`.
+- **From the [CLI](../usage-guide/automations_and_usage.md#local-repo-cli)** — run `python -m pr_agent.cli --pr_url=<PR_URL> <tool>`. Issue-scoped tools take `--issue_url=<ISSUE_URL>` instead of `--pr_url`. The module form works only inside an environment with PR-Agent installed (for example the project venv created by `uv sync`); alternatively run `pr-agent` directly if available on your `PATH`.
 
 Both accept the same tool arguments and [configuration overrides](../usage-guide/configuration_options.md).
 
