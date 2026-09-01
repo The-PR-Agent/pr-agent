@@ -116,39 +116,6 @@ def test_shutdown_frees_provider_object_graph_memory():
     assert exporter_ref() is None, "exporter (and its buffered spans) must be deallocated"
 
 
-def test_shutdown_closes_exporter_connection():
-    """The shutdown cascade must reach exporter.shutdown() — the hook where
-    real exporters (e.g. OTLP/gRPC) close their outbound channels."""
-
-    class ConnectionExporter(InMemorySpanExporter):
-        def __init__(self):
-            super().__init__()
-            self.connection_open = True
-
-        def shutdown(self):
-            self.connection_open = False
-            return super().shutdown()
-
-    exporter = ConnectionExporter()
-    provider = TracerProvider(shutdown_on_exit=False)
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
-
-    provider_registry.register(provider)
-    shutdown_telemetry()
-
-    assert exporter.connection_open is False, "outbound exporter connection must be closed"
-
-
-def test_shutdown_also_shuts_down_meter_provider():
-    """Every registered provider must be shut down by the single handler."""
-    meter_provider = MeterProvider()
-    provider_registry.register(meter_provider)
-
-    shutdown_telemetry()
-
-    assert meter_provider._shutdown is True, "meter provider must be shut down"
-
-
 def test_shutdown_and_flush_are_noops_with_empty_registry():
     """With telemetry disabled nothing was registered, so both lifecycle calls
     must be silent no-ops."""

@@ -80,19 +80,16 @@ def test_enabled_with_valid_console_settings(monkeypatch):
     assert config.service_version == get_version()
 
 
-def test_invalid_exporter_type_raises_value_error(monkeypatch):
-    _use_settings(monkeypatch, {**VALID_ENABLED_SETTINGS, "OTEL.EXPORTER_TYPE": "bogus"})
+@pytest.mark.parametrize("settings", [
+    {**VALID_ENABLED_SETTINGS, "OTEL.EXPORTER_TYPE": "bogus"},
+    # Validation order guarantee: the bad type must surface even when the config
+    # would anyway fall back for missing fields.
+    {"OTEL.IS_ENABLED": True, "OTEL.EXPORTER_TYPE": "bogus"},
+])
+def test_invalid_exporter_type_raises_value_error(monkeypatch, settings):
+    _use_settings(monkeypatch, settings)
 
     with pytest.raises(ValueError, match="Invalid OTEL.EXPORTER_TYPE 'bogus'"):
-        get_otel_config()
-
-
-def test_invalid_exporter_type_raises_even_when_other_fields_missing(monkeypatch):
-    """Validation order guarantee: a bad exporter type must surface as an error
-    even when the config would anyway fall back for missing fields."""
-    _use_settings(monkeypatch, {"OTEL.IS_ENABLED": True, "OTEL.EXPORTER_TYPE": "bogus"})
-
-    with pytest.raises(ValueError, match="Invalid OTEL.EXPORTER_TYPE"):
         get_otel_config()
 
 
