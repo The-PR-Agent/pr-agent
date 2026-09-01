@@ -56,6 +56,8 @@ FORBIDDEN_ARGS = [
 ALLOWED_ARGS_SINGLE = [
     "--pr_reviewer.num_code_suggestions=3",
     "--pr_reviewer.require_tests_review=true",
+    "--skills.enabled=true",
+    "--skills.max_skills_tokens=1000",
     "--config.response_language=zh-tw",
     "--pr_description.publish_labels=false",
     # non-flag arguments are not validated against the forbidden list
@@ -66,6 +68,13 @@ ALLOWED_ARGS_SINGLE = [
 ]
 
 
+HOST_ONLY_ARGS = [
+    "--skills.paths=/etc",
+    "--skills__paths=/etc",
+    "--skills.unknown=value",
+]
+
+
 @pytest.mark.parametrize("forbidden", FORBIDDEN_ARGS)
 def test_validate_user_args_rejects_forbidden(forbidden):
     ok, offending = CliArgs.validate_user_args([forbidden])
@@ -73,6 +82,13 @@ def test_validate_user_args_rejects_forbidden(forbidden):
     assert isinstance(offending, str) and offending, (
         f"Expected an offending-token string for {forbidden!r}, got {offending!r}"
     )
+
+
+@pytest.mark.parametrize("host_only", HOST_ONLY_ARGS)
+def test_validate_user_args_rejects_keys_not_in_repo_allowlist(host_only):
+    ok, offending = CliArgs.validate_user_args([host_only])
+    assert ok is False
+    assert offending.lstrip('.') in host_only.lower().replace('__', '.')
 
 
 @pytest.mark.parametrize("allowed", ALLOWED_ARGS_SINGLE)

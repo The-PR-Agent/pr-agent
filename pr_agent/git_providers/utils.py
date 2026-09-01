@@ -12,23 +12,10 @@ from dynaconf.loaders import env_loader
 from starlette_context import context
 
 from pr_agent.config_loader import get_settings
+from pr_agent.config_security import REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION
 from pr_agent.custom_merge_loader import MAX_TOML_SIZE_IN_BYTES, validate_file_security
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.log import get_logger
-
-# Sections that touch host-level capabilities and so cannot be fully configured
-# from a repo's .pr_agent.toml. For each section listed here, only the keys in
-# its allowlist may be overridden by repo settings; every other key is dropped
-# with a warning.
-#
-# skills: `enabled` and `max_skills_tokens` are safe per-repo preferences (a repo
-# can opt in to, or size, the host's admin-curated skill library). `paths` is NOT
-# overridable: it points at the PR-Agent host's filesystem, so letting a repo set
-# it would allow a malicious repo to read sensitive host files (e.g. ~/.ssh/*)
-# into the LLM prompt. `paths` therefore stays host-only.
-_REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION = {
-    "skills": frozenset({"enabled", "max_skills_tokens"}),
-}
 
 _MAX_EXTRA_CONFIG_BYTES = 1 * 1024 * 1024  # 1 MB cap for a remote .toml
 _FETCH_TIMEOUT_SECONDS = 10
@@ -351,7 +338,7 @@ def _apply_repo_settings_file(repo_settings_file):
         if not isinstance(contents, dict) or not contents:
             get_logger().debug(f"Skipping non-table or empty section: {section}")
             continue
-        allowed_keys = _REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION.get(section.lower())
+        allowed_keys = REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION.get(section.lower())
         if allowed_keys is not None:
             rejected = [k for k in contents if k.lower() not in allowed_keys]
             if rejected:
