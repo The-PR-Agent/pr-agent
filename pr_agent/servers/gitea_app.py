@@ -120,10 +120,27 @@ async def handle_comment_event(body: Dict[str, Any], event: str, action: str, ag
     if not comment_body or not comment_body.startswith("/"):
         return
 
+    # Gitea's issue_comment payload has no top-level `pull_request` key; the
+    # parent PR is under `issue` (whose `pull_request` metadata carries only
+    # merge state, no URL). Prefer the event's own URL when present
+    # (forward-compat), otherwise synthesize the PR URL the provider parses:
+    # {GITEA.URL}/{owner}/{repo}/pulls/{number}.
     pr_url = body.get("pull_request", {}).get("url")
     if not pr_url:
-        return
+        issue = body.get("issue", {})
+        is_pull = body.get("is_pull") or issue.get("pull_request") is not None
+        repo_full_name = body.get("repository", {}).get("full_name", "")
+        pr_number = issue.get("number")
+        if not is_pull:
+            get_logger().debug("Ignoring slash command on a plain issue")
+            return
+        if not repo_full_name or not pr_number:
+            get_logger().warning("issue_comment event missing repository.full_name or issue.number")
+            return
+        base_url = get_settings().get("GITEA.URL", "https://gitea.com").rstrip("/")
+        pr_url = f"{base_url}/{repo_full_name}/pulls/{pr_number}"
 
+    get_logger().info(f"Processing comment command on {pr_url}: {comment_body[:80]}")
     await agent.handle_request(pr_url, comment_body)
 
 async def _perform_commands_gitea(commands_conf: str, agent: PRAgent, body: dict, api_url: str):
