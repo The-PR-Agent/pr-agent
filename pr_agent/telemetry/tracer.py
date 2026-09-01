@@ -6,7 +6,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
 
 from pr_agent.log import get_logger
-from pr_agent.telemetry.config import get_otel_config
+from pr_agent.telemetry.config import get_otel_config, otlp_signal_endpoint
 from pr_agent.telemetry.registry import provider_registry
 from pr_agent.telemetry.shutdown import register_shutdown_handler
 from pr_agent.telemetry.types import ExporterType
@@ -58,16 +58,16 @@ def _create_exporter(config):
         # Imported lazily so a missing exporter package degrades telemetry
         # instead of breaking every `import pr_agent`.
         try:
-            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
         except ImportError:
             get_logger().warning(
-                "OTEL.EXPORTER_TYPE is 'otlp' but opentelemetry-exporter-otlp-proto-grpc "
+                "OTEL.EXPORTER_TYPE is 'otlp' but opentelemetry-exporter-otlp-proto-http "
                 "is not installed; telemetry will not be exported."
             )
             return None
         kwargs = {'timeout': config.otlp_timeout}
         if config.otlp_endpoint:
-            kwargs['endpoint'] = config.otlp_endpoint
+            kwargs['endpoint'] = otlp_signal_endpoint(config.otlp_endpoint, 'traces')
         if config.otlp_headers:
             kwargs['headers'] = config.otlp_headers
         return OTLPSpanExporter(**kwargs)

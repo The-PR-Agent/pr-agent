@@ -125,7 +125,7 @@ def test_otlp_with_endpoint_and_headers_parses_headers(monkeypatch):
     _use_settings(monkeypatch, {
         **VALID_ENABLED_SETTINGS,
         "OTEL.EXPORTER_TYPE": "otlp",
-        "OTEL.OTLP_ENDPOINT": "http://collector:4317",
+        "OTEL.OTLP_ENDPOINT": "http://collector:4318",
         "OTEL.OTLP_HEADERS": "x-team=abc,Authorization=Bearer tok",
     })
 
@@ -133,7 +133,7 @@ def test_otlp_with_endpoint_and_headers_parses_headers(monkeypatch):
 
     assert config.is_enabled is True
     assert config.exporter_type == ExporterType.OTLP
-    assert config.otlp_endpoint == "http://collector:4317"
+    assert config.otlp_endpoint == "http://collector:4318"
     assert config.otlp_headers == {"x-team": "abc", "Authorization": "Bearer tok"}
 
 

@@ -96,15 +96,18 @@ def test_metric_exporter_unknown_returns_none():
 
 
 @pytest.mark.parametrize("endpoint,headers,expected_kwargs", [
-    ("http://collector:4317", {"x-team": "k"},
-     {"timeout": 3, "endpoint": "http://collector:4317", "headers": {"x-team": "k"}}),
-    ("http://collector:4317", None, {"timeout": 3, "endpoint": "http://collector:4317"}),
+    # OTLP/HTTP needs the per-signal path; OTEL.OTLP_ENDPOINT is documented as the base URL.
+    ("http://collector:4318", {"x-team": "k"},
+     {"timeout": 3, "endpoint": "http://collector:4318/v1/traces", "headers": {"x-team": "k"}}),
+    ("http://collector:4318/", None, {"timeout": 3, "endpoint": "http://collector:4318/v1/traces"}),
+    # Already signal-scoped: appended once, never twice.
+    ("http://collector:4318/v1/traces", None, {"timeout": 3, "endpoint": "http://collector:4318/v1/traces"}),
     (None, None, {"timeout": 3}),
 ])
 def test_span_exporter_otlp_kwargs(endpoint, headers, expected_kwargs):
     # Patch the class in its home module — the lazy import inside _create_exporter
-    # re-resolves it at call time, and the real constructor opens a gRPC channel.
-    with mock.patch("opentelemetry.exporter.otlp.proto.grpc.trace_exporter.OTLPSpanExporter") as otlp_cls:
+    # re-resolves it at call time, and the real constructor opens a session.
+    with mock.patch("opentelemetry.exporter.otlp.proto.http.trace_exporter.OTLPSpanExporter") as otlp_cls:
         config = make_config(exporter_type=ExporterType.OTLP, otlp_endpoint=endpoint, otlp_headers=headers)
         exporter = _create_exporter(config)
 
@@ -113,13 +116,14 @@ def test_span_exporter_otlp_kwargs(endpoint, headers, expected_kwargs):
 
 
 @pytest.mark.parametrize("endpoint,headers,expected_kwargs", [
-    ("http://collector:4317", {"x-team": "k"},
-     {"timeout": 3, "endpoint": "http://collector:4317", "headers": {"x-team": "k"}}),
-    ("http://collector:4317", None, {"timeout": 3, "endpoint": "http://collector:4317"}),
+    ("http://collector:4318", {"x-team": "k"},
+     {"timeout": 3, "endpoint": "http://collector:4318/v1/metrics", "headers": {"x-team": "k"}}),
+    ("http://collector:4318/", None, {"timeout": 3, "endpoint": "http://collector:4318/v1/metrics"}),
+    ("http://collector:4318/v1/metrics", None, {"timeout": 3, "endpoint": "http://collector:4318/v1/metrics"}),
     (None, None, {"timeout": 3}),
 ])
 def test_metric_exporter_otlp_kwargs(endpoint, headers, expected_kwargs):
-    with mock.patch("opentelemetry.exporter.otlp.proto.grpc.metric_exporter.OTLPMetricExporter") as otlp_cls:
+    with mock.patch("opentelemetry.exporter.otlp.proto.http.metric_exporter.OTLPMetricExporter") as otlp_cls:
         config = make_config(exporter_type=ExporterType.OTLP, otlp_endpoint=endpoint, otlp_headers=headers)
         exporter = _create_metric_exporter(config)
 
@@ -128,25 +132,25 @@ def test_metric_exporter_otlp_kwargs(endpoint, headers, expected_kwargs):
 
 
 def test_span_exporter_otlp_missing_package_degrades_with_warning(monkeypatch):
-    """An environment without the gRPC exporter package must lose OTLP export
+    """An environment without the OTLP exporter package must lose OTLP export
     (with a warning naming the package), never the ability to import or run
     pr-agent. A None sys.modules entry makes the lazy import raise ImportError."""
-    monkeypatch.setitem(sys.modules, "opentelemetry.exporter.otlp.proto.grpc.trace_exporter", None)
+    monkeypatch.setitem(sys.modules, "opentelemetry.exporter.otlp.proto.http.trace_exporter", None)
 
     with capture_loguru(level="WARNING") as captured:
         exporter = _create_exporter(
-            make_config(exporter_type=ExporterType.OTLP, otlp_endpoint="http://collector:4317"))
+            make_config(exporter_type=ExporterType.OTLP, otlp_endpoint="http://collector:4318"))
 
     assert exporter is None
-    assert "opentelemetry-exporter-otlp-proto-grpc" in "\n".join(captured)
+    assert "opentelemetry-exporter-otlp-proto-http" in "\n".join(captured)
 
 
 def test_metric_exporter_otlp_missing_package_degrades_with_warning(monkeypatch):
-    monkeypatch.setitem(sys.modules, "opentelemetry.exporter.otlp.proto.grpc.metric_exporter", None)
+    monkeypatch.setitem(sys.modules, "opentelemetry.exporter.otlp.proto.http.metric_exporter", None)
 
     with capture_loguru(level="WARNING") as captured:
         exporter = _create_metric_exporter(
-            make_config(exporter_type=ExporterType.OTLP, otlp_endpoint="http://collector:4317"))
+            make_config(exporter_type=ExporterType.OTLP, otlp_endpoint="http://collector:4318"))
 
     assert exporter is None
-    assert "opentelemetry-exporter-otlp-proto-grpc" in "\n".join(captured)
+    assert "opentelemetry-exporter-otlp-proto-http" in "\n".join(captured)

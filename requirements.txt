@@ -44,12 +44,13 @@ pydantic==2.13.3
 pydantic-settings==2.14.2
 html2text==2024.2.26
 giteapy==1.0.8
-# Kept mandatory deliberately: api/sdk are langfuse transitives anyway, and grpcio already ships via
-# google-cloud-aiplatform. The gRPC exporter is imported lazily (see pr_agent/telemetry/), so its
-# absence degrades telemetry to a logged warning instead of breaking `import pr_agent`.
-opentelemetry-api==1.39.1
-opentelemetry-sdk==1.39.1
-opentelemetry-exporter-otlp-proto-grpc==1.39.1
+# Kept mandatory deliberately: all three are langfuse transitives anyway. Pinned explicitly because
+# pr_agent/telemetry imports them directly. The OTLP exporter is imported lazily (see
+# pr_agent/telemetry/), so its absence degrades telemetry to a logged warning instead of breaking
+# `import pr_agent`.
+opentelemetry-api==1.43.0
+opentelemetry-sdk==1.43.0
+opentelemetry-exporter-otlp-proto-http==1.43.0
 # Uncomment the following lines to enable the 'similar issue' tool
 # pinecone-client
 # pinecone-datasets @ git+https://github.com/mrT23/pinecone-datasets.git@main

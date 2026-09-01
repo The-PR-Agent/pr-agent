@@ -86,6 +86,20 @@ def get_otel_config() -> TelemetryConfig:
     )
 
 
+def otlp_signal_endpoint(endpoint: str, signal: str) -> str:
+    """
+    Append the per-signal path OTLP/HTTP requires ("traces" or "metrics").
+
+    The HTTP exporter uses its `endpoint` argument verbatim, unlike the
+    OTEL_EXPORTER_OTLP_ENDPOINT environment variable, which the SDK treats as a
+    base URL. OTEL.OTLP_ENDPOINT is documented as that base URL, so the path is
+    appended here — and left alone when the caller already supplied it.
+    """
+    endpoint = endpoint.rstrip('/')
+    suffix = f'/v1/{signal}'
+    return endpoint if endpoint.endswith(suffix) else endpoint + suffix
+
+
 def _parse_otlp_headers(headers_str: str) -> dict[str, str]:
     """
     Parse OTLP headers from configuration string.
