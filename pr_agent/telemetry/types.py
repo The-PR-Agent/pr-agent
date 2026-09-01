@@ -9,13 +9,20 @@ class ExporterType:
     NONE = "none"
 
 
+class OtlpProtocol:
+    """Canonical transport values for OTEL.OTLP_PROTOCOL."""
+    HTTP = "http"
+    GRPC = "grpc"  # exporter is the optional otel-grpc extra
+
+
 @dataclass
 class TelemetryConfig:
-    is_enabled: bool
-    exporter_type: Optional[str]
-    service_name: Optional[str]
-    service_version: Optional[str]
-    environment: Optional[str]
-    otlp_endpoint: Optional[str]
-    otlp_headers: Optional[Dict[str, str]]
+    is_enabled: bool = False
+    exporter_type: Optional[str] = None
+    service_name: Optional[str] = None
+    service_version: Optional[str] = None
+    environment: Optional[str] = None
+    otlp_endpoint: Optional[str] = None
+    otlp_headers: Optional[Dict[str, str]] = None
     otlp_timeout: int = 3  # seconds; hard deadline per export call, retries included
+    otlp_protocol: str = OtlpProtocol.HTTP

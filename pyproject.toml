@@ -31,6 +31,11 @@ dynamic = ["dependencies"]
 [tool.setuptools.dynamic]
 dependencies = { file = ["requirements.txt"] }
 
+[project.optional-dependencies]
+# OTLP/gRPC transport for pr-agent telemetry (OTEL.OTLP_PROTOCOL = "grpc").
+# The default OTLP/HTTP transport needs no extra: its exporter is a base dependency.
+otel-grpc = ["opentelemetry-exporter-otlp-proto-grpc==1.43.0"]
+
 [project.urls]
 "Homepage" = "https://github.com/the-pr-agent/pr-agent"
 "Documentation" = "https://docs.pr-agent.ai/"

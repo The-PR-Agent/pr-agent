@@ -303,7 +303,16 @@ otlp_endpoint = "http://my-collector:4318"
 otlp_headers = "x-honeycomb-team=YOUR_API_KEY" # optional, "key1=value1,key2=value2"
 ```
 
-Export uses OTLP over HTTP; `otlp_endpoint` is the base URL, and the `/v1/traces` and `/v1/metrics` paths are appended automatically.
+Export uses OTLP over HTTP by default; `otlp_endpoint` is the base URL, and the `/v1/traces` and `/v1/metrics` paths are appended automatically. To use OTLP over gRPC instead, install the optional exporter and select the protocol — the endpoint is then used as-is (gRPC collectors typically listen on port 4317):
+
+```bash
+pip install pr-agent[otel-grpc]
+```
+
+```toml
+[otel]
+otlp_protocol = "grpc" # default: "http"
+```
 
 This is the recommended topology for fleets: point every PR-Agent instance at the same collector and aggregate there. Each process creates its own exporter connection; use the `service_name` and `environment` resource attributes to slice instances apart on the backend.
 

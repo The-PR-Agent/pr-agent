@@ -143,6 +143,22 @@ def test_otlp_timeout_defaults_and_reads_setting(monkeypatch):
     assert get_otel_config().otlp_timeout == 10
 
 
+def test_otlp_protocol_defaults_to_http_and_reads_setting(monkeypatch):
+    _use_settings(monkeypatch, dict(VALID_ENABLED_SETTINGS))
+    assert get_otel_config().otlp_protocol == "http"
+
+    # Case/whitespace tolerant, like env-var style settings.
+    _use_settings(monkeypatch, {**VALID_ENABLED_SETTINGS, "OTEL.OTLP_PROTOCOL": " gRPC "})
+    assert get_otel_config().otlp_protocol == "grpc"
+
+
+def test_invalid_otlp_protocol_raises_value_error(monkeypatch):
+    _use_settings(monkeypatch, {**VALID_ENABLED_SETTINGS, "OTEL.OTLP_PROTOCOL": "quic"})
+
+    with pytest.raises(ValueError, match="Invalid OTEL.OTLP_PROTOCOL 'quic'"):
+        get_otel_config()
+
+
 @pytest.mark.parametrize("raw,expected", [
     ("", {}),
     ("   ", {}),
@@ -213,6 +229,7 @@ def test_shipped_configuration_toml_otel_section_values():
     assert configuration["service_name"] == "pr-agent"
     assert configuration["environment"] == "development"
     assert configuration["otlp_timeout"] == 3
+    assert configuration["otlp_protocol"] == "http", "the default transport must not need an extra"
     assert configuration["include_pr_url"] is False, "PR URLs must be opt-in (privacy)"
     assert configuration["include_error_details"] is False, "error details must be opt-in (privacy)"
 
