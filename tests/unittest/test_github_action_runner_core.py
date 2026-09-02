@@ -494,12 +494,14 @@ async def test_workflow_run_resolves_fork_pr_when_opted_in(monkeypatch, tmp_path
     )))
     monkeypatch.setenv("GITHUB_TOKEN", "token")
     get_settings().set("GITHUB_ACTION_CONFIG.WORKFLOW_RUN_RESOLVE_FORK_PRS", True)
-    monkeypatch.setattr(
-        github_action_runner,
-        "_resolve_workflow_run_pull_request",
-        lambda workflow_run: "https://api.github.com/repos/org/repo/pulls/42",
-        raising=False,
-    )
+    resolved = []
+
+    class FakeProvider:
+        def find_open_pr_url(self, base_repo, head_repo, head_branch, head_sha):
+            resolved.append((base_repo, head_repo, head_branch, head_sha))
+            return "https://api.github.com/repos/org/repo/pulls/42"
+
+    monkeypatch.setattr(github_action_runner, "get_git_provider", lambda: FakeProvider)
 
     def fake_get_setting_or_env(key, default=None):
         values = {
@@ -519,6 +521,7 @@ async def test_workflow_run_resolves_fork_pr_when_opted_in(monkeypatch, tmp_path
         ("describe", "https://api.github.com/repos/org/repo/pulls/42"),
         ("review", "https://api.github.com/repos/org/repo/pulls/42"),
     ]
+    assert resolved == [("org/repo", "contributor/repo", "feature/fork-review", "abc123")]
 
 
 @pytest.mark.asyncio

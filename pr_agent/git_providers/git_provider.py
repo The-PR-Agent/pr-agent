@@ -167,6 +167,12 @@ class GitProvider(ABC):
     def supports_line_question_history(self) -> bool:
         return False
 
+    def find_open_pr_url(
+            self, base_repo: str, head_repo: str, head_branch: str, head_sha: str
+    ) -> str:
+        """Return the unique open PR represented by repository and commit metadata."""
+        raise NotImplementedError("This git provider does not support PR lookup by commit metadata")
+
     #Given a url (issues or PR/MR) - get the .git repo url to which they belong. Needs to be implemented by the provider.
     def get_git_repo_url(self, issues_or_pr_url: str) -> str:
         get_logger().warning("Not implemented! Returning empty url")

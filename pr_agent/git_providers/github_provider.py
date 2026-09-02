@@ -1301,20 +1301,13 @@ class GithubProvider(GitProvider):
     def _get_pr(self):
         return self._get_repo().get_pull(self.pr_num)
 
-    def resolve_workflow_run_pull_request_url(self, workflow_run: dict) -> str:
-        """Resolve the unique open fork PR represented by a workflow run."""
-        repository = workflow_run.get("repository", {})
-        head_repository = workflow_run.get("head_repository", {})
-        base_repo = repository.get("full_name") if isinstance(repository, dict) else ""
-        head_repo = head_repository.get("full_name") if isinstance(head_repository, dict) else ""
-        head_branch = workflow_run.get("head_branch")
-        head_sha = workflow_run.get("head_sha")
-
+    def find_open_pr_url(self, base_repo: str, head_repo: str, head_branch: str, head_sha: str) -> str:
+        """Resolve the unique open fork PR represented by repository and commit metadata."""
         if not all(isinstance(value, str) and value for value in (base_repo, head_repo, head_branch, head_sha)):
-            get_logger().warning("Cannot resolve workflow_run PR: incomplete repository, branch, or SHA metadata")
+            get_logger().warning("Cannot resolve PR: incomplete repository, branch, or SHA metadata")
             return ""
         if base_repo.casefold() == head_repo.casefold() or base_repo.count("/") != 1 or head_repo.count("/") != 1:
-            get_logger().warning("Cannot resolve workflow_run PR: head repository is not a valid fork repository")
+            get_logger().warning("Cannot resolve PR: head repository is not a valid fork repository")
             return ""
 
         head_owner = head_repo.split("/", 1)[0]
@@ -1333,12 +1326,12 @@ class GithubProvider(GitProvider):
                 ):
                     matches.append(pull_request)
         except Exception as e:
-            get_logger().warning(f"Failed to resolve workflow_run PR for {base_repo}: {e}")
+            get_logger().warning(f"Failed to resolve PR for {base_repo}: {e}")
             return ""
 
         if len(matches) != 1:
             get_logger().info(
-                f"Skipping workflow_run PR resolution: expected one open PR for {head_repo}:{head_branch}@{head_sha}, "
+                f"Skipping PR resolution: expected one open PR for {head_repo}:{head_branch}@{head_sha}, "
                 f"found {len(matches)}"
             )
             return ""

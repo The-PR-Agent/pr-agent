@@ -91,6 +91,9 @@ jobs:
 
 #### Using `workflow_run` after fork CI
 
+!!! warning "Security considerations"
+    A `workflow_run` workflow runs with repository-level secrets and write permissions, and fork activity can trigger it. Do not add an `actions/checkout` step or execute scripts from the fork in this privileged workflow. Keep this workflow limited to API-based orchestration after the untrusted CI workflow; otherwise copies of this pattern can become `pull_request_target` vulnerabilities.
+
 If a separate `pull_request` workflow must run first — for example, to produce test reports or Terraform plans — PR-Agent can optionally run after that workflow completes. GitHub may omit `workflow_run.pull_requests` for pull requests from forks, so enable the opt-in resolver to find the open base-repository PR by the triggering run's fork repository, branch, and head SHA:
 
 ```yaml
@@ -116,7 +119,7 @@ jobs:
           github_action_config.workflow_run_resolve_fork_prs: "true"
 ```
 
-The setting is disabled by default. PR-Agent only accepts one matching open PR and verifies both the fork repository and exact head SHA; if the metadata is incomplete, no matching PR exists, or the match is ambiguous, the action skips the run. PR-Agent uses the GitHub API and does not check out or execute the fork's code. Because `workflow_run` workflows can access repository secrets and write permissions, do not add a checkout or execute untrusted fork code in this privileged workflow. `workflow_run` is intended for orchestration after another workflow; use `pull_request_target` when you do not need a separate CI workflow first.
+The setting is disabled by default. PR-Agent only accepts one matching open PR and verifies both the fork repository and exact head SHA; if the metadata is incomplete, no matching PR exists, or the match is ambiguous, the action skips the run. PR-Agent uses the GitHub API and does not check out or execute the fork's code. `workflow_run` is intended for orchestration after another workflow; use `pull_request_target` when you do not need a separate CI workflow first.
 
 ### Configuration Examples
 

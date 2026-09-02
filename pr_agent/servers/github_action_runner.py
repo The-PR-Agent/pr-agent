@@ -37,9 +37,21 @@ def get_setting_or_env(key: str, default: Union[str, bool] = None) -> Union[str,
 
 def _resolve_workflow_run_pull_request(workflow_run: dict) -> str:
     """Resolve a fork PR URL when GitHub omits it from a workflow_run payload."""
-    from pr_agent.git_providers.github_provider import GithubProvider
+    repository = workflow_run.get("repository", {})
+    head_repository = workflow_run.get("head_repository", {})
+    base_repo = repository.get("full_name", "") if isinstance(repository, dict) else ""
+    head_repo = head_repository.get("full_name", "") if isinstance(head_repository, dict) else ""
+    head_branch = workflow_run.get("head_branch", "")
+    head_sha = workflow_run.get("head_sha", "")
 
-    return GithubProvider().resolve_workflow_run_pull_request_url(workflow_run)
+    try:
+        return get_git_provider()().find_open_pr_url(base_repo, head_repo, head_branch, head_sha)
+    except NotImplementedError:
+        get_logger().warning("The configured git provider does not support PR lookup by workflow run metadata")
+        return ""
+    except Exception as e:
+        get_logger().warning(f"Failed to resolve workflow_run PR: {e}")
+        return ""
 
 
 def _inject_artifact_context():
