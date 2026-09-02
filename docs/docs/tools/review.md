@@ -59,6 +59,14 @@ extra_instructions = "..."
         <td>If set to true, the review comment will be persistent, meaning that every new review request will edit the previous one. Default is true.</td>
       </tr>
       <tr>
+        <td><b>publish_error_details</b></td>
+        <td>
+          If set to true, a failed manual review comment includes a deterministic, sanitized failure reason for known
+          provider and runtime errors. The failure formatter does not call an AI model, never publishes raw exception
+          text, and falls back to a generic internal-error message. Default is false.
+        </td>
+      </tr>
+      <tr>
         <td><b>review_heading</b></td>
         <td>
           Visible base heading for review comments, without the Markdown prefix or incremental label.

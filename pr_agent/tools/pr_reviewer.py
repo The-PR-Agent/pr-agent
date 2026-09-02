@@ -43,6 +43,72 @@ from pr_agent.tools.ticket_pr_compliance_check import extract_and_cache_pr_ticke
 MAX_REVIEW_COVERAGE_FILES = 50
 _SUGGESTION_FENCE_RE = re.compile(r"```[ \t]*suggestion\b", re.IGNORECASE)
 
+_REVIEW_FAILURE_REASONS = (
+    (
+        ("credit balance is too low", "insufficient credits", "insufficient balance", "insufficient_quota"),
+        "The model provider rejected the request because the API account has insufficient credits. "
+        "Add credits, then retry the command.",
+    ),
+    (
+        ("authenticationerror", "authentication error", "invalid api key", "invalid x-api-key"),
+        "PR-Agent could not authenticate with the model provider. Check the configured API credentials, then retry.",
+    ),
+    (
+        ("ratelimiterror", "rate limit", "too many requests"),
+        "The model provider rate-limited the request. Wait for the limit to reset, then retry.",
+    ),
+    (
+        ("apitimeouterror", "timeout error", "timed out"),
+        "The model provider timed out before completing the review. Retry the command or adjust the provider timeout.",
+    ),
+    (
+        ("context_length_exceeded", "maximum context length", "input is too long", "too many tokens"),
+        "The pull request exceeded the selected model's context limit. Retry with a larger-context model or an "
+        "incremental review.",
+    ),
+    (
+        ("apiconnectionerror", "connection error"),
+        "PR-Agent could not reach the model provider. Check provider availability and network access, then retry.",
+    ),
+    (
+        ("failed to generate prediction with any model",),
+        "Every configured model attempt failed. Check the PR-Agent service logs for the provider error, then retry.",
+    ),
+)
+_UNKNOWN_REVIEW_FAILURE_REASON = (
+    "PR-Agent encountered an unexpected internal error. Check the PR-Agent service logs for details."
+)
+
+
+def _exception_chain_text(error: Exception) -> str:
+    """Return exception types and messages for classification without publishing them."""
+    parts = []
+    current = error
+    seen = set()
+    while current is not None and id(current) not in seen and len(parts) < 8:
+        seen.add(id(current))
+        try:
+            message = str(current)
+        except Exception:
+            message = ""
+        parts.append(f"{type(current).__name__}: {message}")
+        current = current.__cause__ or current.__context__
+    return "\n".join(parts).casefold()
+
+
+def _review_failure_comment(error: Exception) -> str:
+    """Build an optional deterministic failure explanation from an allowlist of safe messages."""
+    if not get_settings().pr_reviewer.get("publish_error_details", False):
+        return "Failed to review PR"
+
+    error_text = _exception_chain_text(error)
+    reason = _UNKNOWN_REVIEW_FAILURE_REASON
+    for patterns, candidate in _REVIEW_FAILURE_REASONS:
+        if any(pattern in error_text for pattern in patterns):
+            reason = candidate
+            break
+    return f"Failed to review PR\n\n**Reason:** {reason}"
+
 
 class PRReviewer:
     """
@@ -143,7 +209,7 @@ class PRReviewer:
     async def run(self) -> None:
         init_run_details()
         progress_response = None
-        review_failed = False
+        review_error = None
         try:
             if not self.git_provider.get_files():
                 get_logger().info(f"PR has no files: {self.pr_url}, skipping review")
@@ -226,7 +292,7 @@ class PRReviewer:
                     pr_review = add_pr_review_identity(pr_review, identity_marker)
                 self.git_provider.publish_comment(pr_review, **review_thread_kwargs)
         except Exception as e:
-            review_failed = True
+            review_error = e
             get_logger().error(f"Failed to review PR: {e}")
             if get_settings().config.get("propagate_tool_errors", False):
                 raise
@@ -236,10 +302,10 @@ class PRReviewer:
                     self.git_provider.remove_comment(progress_response)
                 except Exception as e:
                     get_logger().exception(f"Failed to remove review progress comment, error: {e}")
-            if (review_failed and get_settings().config.publish_output and
+            if (review_error is not None and get_settings().config.publish_output and
                     not get_settings().config.get("is_auto_command", False)):
                 try:
-                    self.git_provider.publish_comment("Failed to review PR")
+                    self.git_provider.publish_comment(_review_failure_comment(review_error))
                 except Exception as e:
                     get_logger().exception(f"Failed to publish review failure result, error: {e}")
 
