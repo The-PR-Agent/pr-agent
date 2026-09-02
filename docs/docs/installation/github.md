@@ -92,7 +92,7 @@ jobs:
 #### Using `workflow_run` after fork CI
 
 !!! warning "Security considerations"
-    A `workflow_run` workflow runs with repository-level secrets and write permissions, and fork activity can trigger it. Do not add an `actions/checkout` step or execute scripts from the fork in this privileged workflow. Keep this workflow limited to API-based orchestration after the untrusted CI workflow; otherwise copies of this pattern can become `pull_request_target` vulnerabilities.
+    A `workflow_run` workflow runs with repository-level secrets and write permissions, and fork activity can trigger it. Do not add an `actions/checkout` step or execute scripts from the fork in this privileged workflow. Keep this workflow limited to API-based orchestration after the untrusted CI workflow; otherwise copies of this pattern can become `pull_request_target` vulnerabilities. If `[artifacts]` is configured or wired into this workflow, treat every artifact produced by the fork as untrusted prompt input because its contents can reach the model; it is not trusted instructions or code. PR-Agent's output is advisory and must never be used as a required status, merge gate, or approval condition for a fork pull request.
 
 If a separate `pull_request` workflow must run first — for example, to produce test reports or Terraform plans — PR-Agent can optionally run after that workflow completes. GitHub may omit `workflow_run.pull_requests` for pull requests from forks, so enable the opt-in resolver to find the open base-repository PR by the triggering run's fork repository, branch, and head SHA:
 
