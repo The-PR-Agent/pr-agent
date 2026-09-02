@@ -9,6 +9,8 @@ Examples of invoking the different tools via the CLI:
 - **Ask**:          `python -m pr_agent.cli --pr_url=<pr_url>  ask "Write me a poem about this PR"`
 - **Update Changelog**:      `python -m pr_agent.cli --pr_url=<pr_url>  update_changelog`
 
+The commands above assume the `pr_agent` package is importable — use the venv created by `uv sync`, or install PR-Agent.
+
 `<pr_url>` is the url of the relevant PR (for example: [#50](https://github.com/the-pr-agent/pr-agent/pull/50)).
 
 **Notes:**
