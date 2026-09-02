@@ -12,7 +12,7 @@ from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import PRReviewHeader, PRReviewIdentity
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
-from pr_agent.tools.pr_reviewer import PRReviewer
+from pr_agent.tools.pr_reviewer import PRReviewer, _review_failure_comment
 
 
 def _make_reviewer(git_provider=None):
@@ -29,6 +29,47 @@ def _make_prediction_reviewer(git_provider=None):
     reviewer.incremental = SimpleNamespace(is_incremental=False)
     reviewer.prediction = None
     return reviewer
+
+
+def test_review_failure_comment_publishes_known_reason_without_raw_error():
+    settings = get_settings()
+    original = settings.pr_reviewer.get("publish_error_details", False)
+    provider_error = RuntimeError(
+        "AnthropicException: Your credit balance is too low; key=sk-ant-secret; request_id=req_sensitive"
+    )
+    review_error = RuntimeError("Failed to generate prediction with any model")
+    review_error.__cause__ = provider_error
+    try:
+        settings.pr_reviewer.publish_error_details = True
+        comment = _review_failure_comment(review_error)
+    finally:
+        settings.pr_reviewer.publish_error_details = original
+
+    assert comment == (
+        "Failed to review PR\n\n"
+        "**Reason:** The model provider rejected the request because the API account has insufficient credits. "
+        "Add credits, then retry the command."
+    )
+    assert "sk-ant-secret" not in comment
+    assert "req_sensitive" not in comment
+
+
+def test_review_failure_comment_does_not_publish_unknown_exception_text():
+    settings = get_settings()
+    original = settings.pr_reviewer.get("publish_error_details", False)
+    try:
+        settings.pr_reviewer.publish_error_details = True
+        comment = _review_failure_comment(RuntimeError("Authorization: Bearer secret-token user@example.com"))
+    finally:
+        settings.pr_reviewer.publish_error_details = original
+
+    assert comment == (
+        "Failed to review PR\n\n"
+        "**Reason:** PR-Agent encountered an unexpected internal error. "
+        "Check the PR-Agent service logs for details."
+    )
+    assert "secret-token" not in comment
+    assert "user@example.com" not in comment
 
 
 @pytest.mark.asyncio
@@ -615,6 +656,60 @@ async def test_run_removes_its_progress_comment_when_review_generation_fails(
     ]
     git_provider.remove_comment.assert_called_once_with(progress_comment)
     git_provider.remove_initial_comment.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_publishes_sanitized_failure_reason_when_enabled(monkeypatch):
+    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+
+    progress_comment = MagicMock()
+    git_provider = MagicMock()
+    git_provider.get_files.return_value = ["app.py"]
+    git_provider.publish_comment.return_value = progress_comment
+    reviewer = _make_reviewer(git_provider)
+    reviewer.incremental = SimpleNamespace(is_incremental=False)
+    reviewer.vars = {}
+    reviewer.prediction = None
+
+    provider_error = RuntimeError("Your credit balance is too low; token=sk-ant-secret")
+    review_error = RuntimeError("Failed to generate prediction with any model")
+    review_error.__cause__ = provider_error
+    monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", AsyncMock())
+    monkeypatch.setattr(
+        pr_reviewer_module,
+        "retry_with_fallback_models",
+        AsyncMock(side_effect=review_error),
+    )
+
+    settings = get_settings()
+    original = {
+        "publish_output": settings.config.publish_output,
+        "is_auto_command": settings.config.get("is_auto_command", False),
+        "propagate_tool_errors": settings.config.get("propagate_tool_errors", False),
+        "publish_error_details": settings.pr_reviewer.get("publish_error_details", False),
+    }
+    try:
+        settings.config.publish_output = True
+        settings.config.is_auto_command = False
+        settings.config.propagate_tool_errors = False
+        settings.pr_reviewer.publish_error_details = True
+
+        await reviewer.run()
+    finally:
+        settings.config.publish_output = original["publish_output"]
+        settings.config.is_auto_command = original["is_auto_command"]
+        settings.config.propagate_tool_errors = original["propagate_tool_errors"]
+        settings.pr_reviewer.publish_error_details = original["publish_error_details"]
+
+    assert git_provider.publish_comment.call_args_list == [
+        (("Preparing review...",), {"is_temporary": True}),
+        ((
+            "Failed to review PR\n\n"
+            "**Reason:** The model provider rejected the request because the API account has insufficient credits. "
+            "Add credits, then retry the command.",
+        ), {}),
+    ]
+    git_provider.remove_comment.assert_called_once_with(progress_comment)
 
 
 @pytest.mark.asyncio
