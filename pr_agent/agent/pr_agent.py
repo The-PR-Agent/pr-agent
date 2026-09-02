@@ -8,8 +8,14 @@ from opentelemetry.trace import StatusCode
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.cli_args import CliArgs
+from pr_agent.algo.review_model_selection import (
+    ReviewModelSelectionConfig,
+    ReviewModelSelectionError,
+    parse_review_model_selection,
+)
 from pr_agent.algo.utils import update_settings_from_args
 from pr_agent.config_loader import get_settings
+from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import get_logger
 from pr_agent.telemetry.meter import get_commands_counter
@@ -50,6 +56,19 @@ command2class = {
     # fix is reviewed (see issue #2445). Re-enable by restoring `"help_docs": PRHelpDocs`
     # and its import once the hardening PR is merged.
 }
+
+
+def _publish_review_model_selection_error(pr_url: str, error: ReviewModelSelectionError) -> None:
+    """Publish a command error without entering the review/model execution path."""
+    message = f"**Invalid `/review` model selector**\n\n{error}"
+    try:
+        get_git_provider_with_context(pr_url).publish_comment(message)
+    except Exception as publish_error:
+        get_logger().warning(
+            f"Failed to publish /review model selector error: {publish_error}",
+            artifact={"error": error},
+        )
+
 
 commands = list(command2class.keys())
 
@@ -261,6 +280,33 @@ class PRAgent:
         span.update_name(f"pr_agent {action}")
         span.set_attribute("pr_agent.command", action)
         get_commands_counter().add(1, {"pr_agent.command": action, "vcs.provider.name": _git_provider})
+
+        model_selection = None
+        if action == "review":
+            try:
+                settings = get_settings()
+                selection_config = ReviewModelSelectionConfig(
+                    enabled=settings.get("PR_REVIEWER.ENABLE_COMMAND_MODEL_ALIASES", False),
+                    aliases=settings.get("PR_REVIEWER.COMMAND_MODEL_ALIASES", {}),
+                )
+                model_selection, args = parse_review_model_selection(args, selection_config)
+            except ReviewModelSelectionError as error:
+                get_logger().warning(f"Invalid /review model selector: {error}")
+                _publish_review_model_selection_error(pr_url, error)
+                if notify:
+                    try:
+                        notify()
+                    except Exception as notify_error:
+                        get_logger().warning(
+                            f"Failed to acknowledge invalid /review model selector: {notify_error}"
+                        )
+                return False
+
+        if model_selection:
+            settings.set("CONFIG.MODEL", model_selection.model)
+            settings.set("CONFIG.REASONING_EFFORT", model_selection.reasoning_effort)
+            if "claude" in model_selection.model.lower() and model_selection.reasoning_effort != "none":
+                settings.set("CONFIG.ENABLE_CLAUDE_ADAPTIVE_THINKING", True)
 
         with get_logger().contextualize(command=action, pr_url=pr_url):
             get_logger().info("PR-Agent request handler started", analytics=True)

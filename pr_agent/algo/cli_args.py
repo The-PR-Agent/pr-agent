@@ -47,6 +47,8 @@ class CliArgs:
                 ':amlyYV9iYXNlX3VybA==:YXBpX2Jhc2U=:YXBpX3R5cGU=:YXBpX3ZlcnNpb24='
                 ':c2tpcF9rZXlz:ZXh0cmFfY29uZmlnX3VybA==:ZGVzY3JpcHRpb25fcGF0aA=='
                 ':cmV2aWV3X3BhdGg=:aW1wcm92ZV9wYXRo'
+                ':ZW5hYmxlX2NvbW1hbmRfbW9kZWxfYWxpYXNlcw=='
+                ':Y29tbWFuZF9tb2RlbF9hbGlhc2Vz'
                 ':cHVzaF9vdXRwdXRzLg==:cHVzaF9vdXRwdXRzPQ=='
             )
 
