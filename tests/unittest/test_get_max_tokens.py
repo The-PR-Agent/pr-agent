@@ -2,6 +2,7 @@ import litellm
 import pytest
 
 import pr_agent.algo.utils as utils
+from pr_agent.algo import CLAUDE_EXTENDED_THINKING_MODELS, NO_SUPPORT_TEMPERATURE_MODELS
 from pr_agent.algo.utils import MAX_TOKENS, get_max_tokens
 
 
@@ -602,3 +603,87 @@ class TestGetMaxTokens:
         monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
 
         assert get_max_tokens(model) == expected_max_input_tokens
+
+    def test_claude_opus_4_8_family_expansion_and_capabilities(self):
+        """Independent verification of Opus 4.8 generated aliases and capabilities."""
+        expected_aliases = {
+            "claude-opus-4-8",
+            "anthropic/claude-opus-4-8",
+            "vertex_ai/claude-opus-4-8",
+            "bedrock/anthropic.claude-opus-4-8",
+            "bedrock/global.anthropic.claude-opus-4-8",
+            "bedrock/us.anthropic.claude-opus-4-8",
+            "bedrock/eu.anthropic.claude-opus-4-8",
+            "bedrock/au.anthropic.claude-opus-4-8",
+            "bedrock/jp.anthropic.claude-opus-4-8",
+        }
+
+        # Exact set equality against filtered MAX_TOKENS
+        actual_aliases = {k for k in MAX_TOKENS if "claude-opus-4-8" in k}
+        assert actual_aliases == expected_aliases
+
+        # Context window tokens
+        for alias in expected_aliases:
+            assert MAX_TOKENS[alias] == 1000000
+
+        # Capability lists
+        for alias in expected_aliases:
+            assert alias in NO_SUPPORT_TEMPERATURE_MODELS
+            assert alias not in CLAUDE_EXTENDED_THINKING_MODELS
+
+        # Negative checks to ensure no over-generation
+        assert "bedrock/apac.anthropic.claude-opus-4-8" not in MAX_TOKENS
+        assert "bedrock/apac.anthropic.claude-opus-4-8" not in NO_SUPPORT_TEMPERATURE_MODELS
+
+    def test_claude_opus_4_6_family_expansion_and_capabilities(self):
+        """Independent verification of Opus 4.6 generated aliases and capabilities."""
+        expected_max_tokens_aliases = {
+            "claude-opus-4-6",
+            "anthropic/claude-opus-4-6",
+            "vertex_ai/claude-opus-4-6",
+            "bedrock/anthropic.claude-opus-4-6-v1:0",
+            "bedrock/global.anthropic.claude-opus-4-6-v1:0",
+            "bedrock/eu.anthropic.claude-opus-4-6-v1:0",
+            "bedrock/au.anthropic.claude-opus-4-6-v1:0",
+            "bedrock/jp.anthropic.claude-opus-4-6-v1:0",
+            "bedrock/apac.anthropic.claude-opus-4-6-v1:0",
+            "bedrock/us.anthropic.claude-opus-4-6-v1:0",
+            "claude-opus-4-6-20260120",
+            "anthropic/claude-opus-4-6-20260120",
+            "vertex_ai/claude-opus-4-6@20260120",
+            "bedrock/anthropic.claude-opus-4-6-20260120-v1:0",
+            "bedrock/us.anthropic.claude-opus-4-6-20260120-v1:0",
+        }
+
+        # Exact set equality against filtered MAX_TOKENS
+        actual_aliases = {k for k in MAX_TOKENS if "claude-opus-4-6" in k}
+        assert actual_aliases == expected_max_tokens_aliases
+
+        # Context window tokens
+        for alias in expected_max_tokens_aliases:
+            assert MAX_TOKENS[alias] == 200000
+
+        # Extended thinking: 9 aliases
+        expected_thinking_aliases = {
+            "anthropic/claude-opus-4-6",
+            "claude-opus-4-6",
+            "vertex_ai/claude-opus-4-6",
+            "bedrock/anthropic.claude-opus-4-6-v1:0",
+            "bedrock/us.anthropic.claude-opus-4-6-v1:0",
+            "bedrock/au.anthropic.claude-opus-4-6-v1:0",
+            "bedrock/eu.anthropic.claude-opus-4-6-v1:0",
+            "bedrock/jp.anthropic.claude-opus-4-6-v1:0",
+            "bedrock/global.anthropic.claude-opus-4-6-v1:0",
+        }
+        actual_thinking_aliases = {k for k in CLAUDE_EXTENDED_THINKING_MODELS if "claude-opus-4-6" in k}
+        assert actual_thinking_aliases == expected_thinking_aliases
+
+        # Negative checks: apac and dated variants NOT in extended thinking
+        assert "bedrock/apac.anthropic.claude-opus-4-6-v1:0" not in CLAUDE_EXTENDED_THINKING_MODELS
+        assert "claude-opus-4-6-20260120" not in CLAUDE_EXTENDED_THINKING_MODELS
+        assert "anthropic/claude-opus-4-6-20260120" not in CLAUDE_EXTENDED_THINKING_MODELS
+        assert "vertex_ai/claude-opus-4-6@20260120" not in CLAUDE_EXTENDED_THINKING_MODELS
+
+        # Negative checks: no Opus 4.6 in NO_SUPPORT_TEMPERATURE_MODELS
+        for alias in expected_max_tokens_aliases:
+            assert alias not in NO_SUPPORT_TEMPERATURE_MODELS

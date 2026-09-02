@@ -1,3 +1,209 @@
+# ---------------------------------------------------------------------------
+# Canonical Claude model-family definitions.
+#
+# Each modern Claude family that follows the standard provider-prefix pattern
+# (bare, anthropic/, vertex_ai/, bedrock/ with optional cross-region prefixes)
+# is declared once here. The _generate_claude_registries() helper expands
+# these declarations into the token counts and capability lists that callers
+# consume via the public MAX_TOKENS, NO_SUPPORT_TEMPERATURE_MODELS, and
+# CLAUDE_EXTENDED_THINKING_MODELS registries.
+#
+# Historical / one-off Claude entries that do NOT follow the repeating
+# provider-prefix pattern are left as static literals inside the registries
+# themselves to avoid over-complicating the generator.
+# ---------------------------------------------------------------------------
+
+_DEFAULT_BEDROCK_REGIONS = ("global", "us", "eu", "au", "jp")
+
+_CLAUDE_MODEL_FAMILIES = [
+    # ── 1M-context models (no temperature, no extended thinking) ──────────
+    {
+        "model_id": "claude-opus-4-8",
+        "max_tokens": 1000000,
+        "bedrock_regions": _DEFAULT_BEDROCK_REGIONS,
+        "no_temperature": True,
+    },
+    {
+        "model_id": "claude-opus-5",
+        "max_tokens": 1000000,
+        "bedrock_regions": _DEFAULT_BEDROCK_REGIONS,
+        "no_temperature": True,
+    },
+    {
+        "model_id": "claude-sonnet-5",
+        "max_tokens": 1000000,
+        "bedrock_regions": _DEFAULT_BEDROCK_REGIONS,
+        "no_temperature": True,
+    },
+    {
+        "model_id": "claude-opus-4-7",
+        "max_tokens": 1000000,
+        "bedrock_regions": ("global", "us"),
+        "extra_bedrock": ("anthropic.claude-opus-4-7-v1:0",),
+        "no_temperature": True,
+    },
+    # ── 200K-context models with extended thinking ────────────────────────
+    {
+        "model_id": "claude-sonnet-4-6",
+        "max_tokens": 200000,
+        "bedrock_regions": ("us", "au", "eu", "jp", "apac", "global"),
+        "extra_bedrock_regions": {
+            "anthropic.claude-sonnet-4-6-v1:0": (
+                "us", "au", "eu", "jp", "apac", "global",
+            ),
+        },
+        "extended_thinking": True,
+    },
+    {
+        "model_id": "claude-opus-4-6",
+        "max_tokens": 200000,
+        "bedrock_name": "claude-opus-4-6-v1:0",
+        "bedrock_regions": ("global", "eu", "au", "jp", "apac", "us"),
+        "extra_aliases": {
+            "claude-opus-4-6-20260120": 200000,
+            "anthropic/claude-opus-4-6-20260120": 200000,
+            "vertex_ai/claude-opus-4-6@20260120": 200000,
+            "bedrock/anthropic.claude-opus-4-6-20260120-v1:0": 200000,
+            "bedrock/us.anthropic.claude-opus-4-6-20260120-v1:0": 200000,
+        },
+        "extended_thinking": True,
+    },
+    {
+        "model_id": "claude-haiku-4-5-20251001",
+        "max_tokens": 200000,
+        "vertex": "claude-haiku-4-5@20251001",
+        "bedrock_name": "claude-haiku-4-5-20251001-v1:0",
+        "bedrock_regions": ("us", "eu", "au", "jp", "apac", "global"),
+        "extended_thinking": True,
+    },
+    {
+        "model_id": "claude-opus-4-5-20251101",
+        "max_tokens": 200000,
+        "vertex": "claude-opus-4-5@20251101",
+        "bedrock_name": "claude-opus-4-5-20251101-v1:0",
+        "bedrock_regions": ("global", "eu", "au", "jp", "apac", "us"),
+        "extended_thinking": True,
+    },
+    {
+        "model_id": "claude-sonnet-4-5-20250929",
+        "max_tokens": 200000,
+        "bare": False,  # bare not in MAX_TOKENS
+        "vertex": "claude-sonnet-4-5@20250929",
+        "bedrock_name": "claude-sonnet-4-5-20250929-v1:0",
+        "bedrock_regions": ("us", "au", "eu", "jp", "global"),
+        "extended_thinking": True,
+    },
+    {
+        "model_id": "claude-3-7-sonnet-20250219",
+        "max_tokens": 200000,
+        "vertex": "claude-3-7-sonnet@20250219",
+        "bedrock_name": "claude-3-7-sonnet-20250219-v1:0",
+        "bedrock_regions": ("us", "apac"),
+        # Only bare + anthropic/ get extended thinking for 3.7
+        "extended_thinking": [
+            "anthropic/claude-3-7-sonnet-20250219",
+            "claude-3-7-sonnet-20250219",
+        ],
+    },
+    # ── No-temperature only (not in MAX_TOKENS) ──────────────────────────
+    {
+        "model_id": "claude-fable-5",
+        "max_tokens": None,
+        "vertex": False,
+        "bedrock": False,
+        "no_temperature": True,
+    },
+]
+
+
+def _generate_claude_registries():
+    """Expand _CLAUDE_MODEL_FAMILIES into token counts and capability lists.
+
+    Returns (claude_tokens, claude_no_temp, claude_extended_thinking) where:
+      - claude_tokens: dict[str, int] of generated model-id -> context-window
+      - claude_no_temp: list[str] of models that do not support temperature
+      - claude_extended_thinking: list[str] of models supporting extended thinking
+    """
+    claude_tokens = {}
+    claude_no_temp = []
+    claude_extended_thinking = []
+
+    for fam in _CLAUDE_MODEL_FAMILIES:
+        mid = fam["model_id"]
+        tokens = fam.get("max_tokens")
+
+        # -- Token counts -----------------------------------------------------
+        if tokens is not None:
+            if fam.get("bare", True):
+                claude_tokens[mid] = tokens
+            if fam.get("anthropic", True):
+                claude_tokens[f"anthropic/{mid}"] = tokens
+            vtx = fam.get("vertex", True)
+            if vtx:
+                vtx_name = vtx if isinstance(vtx, str) else mid
+                claude_tokens[f"vertex_ai/{vtx_name}"] = tokens
+            if fam.get("bedrock", True):
+                b_name = fam.get("bedrock_name", mid)
+                claude_tokens[f"bedrock/anthropic.{b_name}"] = tokens
+                for reg in fam.get("bedrock_regions", ()):
+                    claude_tokens[f"bedrock/{reg}.anthropic.{b_name}"] = tokens
+                for extra in fam.get("extra_bedrock", ()):
+                    claude_tokens[f"bedrock/{extra}"] = tokens
+                for extra_name, regs in fam.get("extra_bedrock_regions", {}).items():
+                    claude_tokens[f"bedrock/{extra_name}"] = tokens
+                    for reg in regs:
+                        claude_tokens[f"bedrock/{reg}.{extra_name}"] = tokens
+            for extra_alias, extra_tok in fam.get("extra_aliases", {}).items():
+                claude_tokens[extra_alias] = extra_tok
+
+        # -- NO_SUPPORT_TEMPERATURE_MODELS ------------------------------------
+        if fam.get("no_temperature"):
+            if fam.get("bare", True):
+                claude_no_temp.append(mid)
+            if fam.get("anthropic", True):
+                claude_no_temp.append(f"anthropic/{mid}")
+            vtx = fam.get("vertex", True)
+            if vtx:
+                vtx_name = vtx if isinstance(vtx, str) else mid
+                claude_no_temp.append(f"vertex_ai/{vtx_name}")
+            if fam.get("bedrock", True):
+                b_name = fam.get("bedrock_name", mid)
+                claude_no_temp.append(f"bedrock/anthropic.{b_name}")
+                for reg in fam.get("bedrock_regions", ()):
+                    claude_no_temp.append(f"bedrock/{reg}.anthropic.{b_name}")
+                for extra in fam.get("extra_bedrock", ()):
+                    claude_no_temp.append(f"bedrock/{extra}")
+
+        # -- CLAUDE_EXTENDED_THINKING_MODELS ----------------------------------
+        thinking = fam.get("extended_thinking")
+        if thinking:
+            if isinstance(thinking, (list, tuple)):
+                claude_extended_thinking.extend(thinking)
+            else:
+                if fam.get("anthropic", True):
+                    claude_extended_thinking.append(f"anthropic/{mid}")
+                claude_extended_thinking.append(mid)
+                vtx = fam.get("vertex", True)
+                if vtx:
+                    vtx_name = vtx if isinstance(vtx, str) else mid
+                    claude_extended_thinking.append(f"vertex_ai/{vtx_name}")
+                if fam.get("bedrock", True):
+                    b_name = fam.get("bedrock_name", mid)
+                    claude_extended_thinking.append(f"bedrock/anthropic.{b_name}")
+                    thinking_regions = fam.get(
+                        "thinking_bedrock_regions", ("us", "au", "eu", "jp", "global")
+                    )
+                    for reg in thinking_regions:
+                        claude_extended_thinking.append(f"bedrock/{reg}.anthropic.{b_name}")
+
+    return claude_tokens, claude_no_temp, claude_extended_thinking
+
+
+_claude_tokens, _claude_no_temp, _claude_extended_thinking = (
+    _generate_claude_registries()
+)
+
+
 MAX_TOKENS = {
     'text-embedding-ada-002': 8000,
     'gpt-3.5-turbo': 16000,
@@ -85,26 +291,17 @@ MAX_TOKENS = {
     'meta-llama/Llama-2-7b-chat-hf': 4096,
     'vertex_ai/codechat-bison': 6144,
     'vertex_ai/codechat-bison-32k': 32000,
+    # -- Vertex AI Claude --------------------------------------------------
     'vertex_ai/claude-3-haiku@20240307': 100000,
     'vertex_ai/claude-3-5-haiku@20241022': 100000,
-    'vertex_ai/claude-haiku-4-5@20251001': 200000,
     'vertex_ai/claude-3-sonnet@20240229': 100000,
     'vertex_ai/claude-3-opus@20240229': 100000,
     'vertex_ai/claude-opus-4@20250514': 200000,
     'vertex_ai/claude-opus-4-1@20250805': 200000,
-    'vertex_ai/claude-opus-4-5@20251101': 200000,
-    'vertex_ai/claude-opus-4-6@20260120': 200000,
-    'vertex_ai/claude-opus-4-6': 200000,
-    'vertex_ai/claude-opus-4-7': 1000000,
-    'vertex_ai/claude-opus-4-8': 1000000,
-    'vertex_ai/claude-opus-5': 1000000,
     'vertex_ai/claude-3-5-sonnet@20240620': 100000,
     'vertex_ai/claude-3-5-sonnet-v2@20241022': 100000,
-    'vertex_ai/claude-3-7-sonnet@20250219': 200000,
     'vertex_ai/claude-sonnet-4@20250514': 200000,
-    'vertex_ai/claude-sonnet-4-5@20250929': 200000,
-    'vertex_ai/claude-sonnet-4-6': 200000,
-    'vertex_ai/claude-sonnet-5': 1000000,
+    # -- Vertex AI non-Claude / Gemini -------------------------------------
     'vertex_ai/gemini-1.5-pro': 1048576,
     'vertex_ai/gemini-2.5-pro-preview-03-25': 1048576,
     'vertex_ai/gemini-2.5-pro-preview-05-06': 1048576,
@@ -150,125 +347,42 @@ MAX_TOKENS = {
     'gemini/gemini-3.7-flash': 1048576,
     'codechat-bison': 6144,
     'codechat-bison-32k': 32000,
+    # -- Anthropic Claude --------------------------------------------------
     'anthropic.claude-instant-v1': 100000,
     'anthropic.claude-v1': 100000,
     'anthropic.claude-v2': 100000,
     'anthropic/claude-3-opus-20240229': 100000,
     'anthropic/claude-opus-4-20250514': 200000,
     'anthropic/claude-opus-4-1-20250805': 200000,
-    'anthropic/claude-opus-4-5-20251101': 200000,
-    'anthropic/claude-opus-4-6': 200000,
-    'anthropic/claude-opus-4-6-20260120': 200000,
-    'anthropic/claude-opus-4-7': 1000000,
-    'anthropic/claude-opus-4-8': 1000000,
-    'anthropic/claude-opus-5': 1000000,
     'anthropic/claude-3-5-sonnet-20240620': 100000,
     'anthropic/claude-3-5-sonnet-20241022': 100000,
-    'anthropic/claude-3-7-sonnet-20250219': 200000,
     'anthropic/claude-sonnet-4-20250514': 200000,
-    'anthropic/claude-sonnet-4-5-20250929': 200000,
-    'anthropic/claude-sonnet-4-6': 200000,
-    'anthropic/claude-sonnet-5': 1000000,
+    # -- Bare Claude -------------------------------------------------------
     'claude-opus-4-1-20250805': 200000,
-    'claude-opus-4-5-20251101': 200000,
-    'claude-opus-4-6': 200000,
-    'claude-opus-4-6-20260120': 200000,
-    'claude-opus-4-7': 1000000,
-    'claude-opus-4-8': 1000000,
-    'claude-opus-5': 1000000,
-    'claude-3-7-sonnet-20250219': 200000,
-    'claude-sonnet-4-6': 200000,
-    'claude-sonnet-5': 1000000,
+    # -- Haiku -------------------------------------------------------------
     'anthropic/claude-3-5-haiku-20241022': 100000,
-    'anthropic/claude-haiku-4-5-20251001': 200000,
-    'claude-haiku-4-5-20251001': 200000,
+    # -- Bedrock Claude ----------------------------------------------------
     'bedrock/anthropic.claude-instant-v1': 100000,
     'bedrock/anthropic.claude-v2': 100000,
     'bedrock/anthropic.claude-v2:1': 100000,
     'bedrock/anthropic.claude-3-sonnet-20240229-v1:0': 100000,
     'bedrock/anthropic.claude-opus-4-20250514-v1:0': 200000,
     'bedrock/anthropic.claude-opus-4-1-20250805-v1:0': 200000,
-    'bedrock/anthropic.claude-opus-4-6-20260120-v1:0': 200000,
-    'bedrock/anthropic.claude-opus-4-6-v1:0': 200000,
-    'bedrock/anthropic.claude-opus-4-7': 1000000,
-    'bedrock/anthropic.claude-opus-4-7-v1:0': 1000000,
-    'bedrock/anthropic.claude-opus-4-8': 1000000,
-    'bedrock/anthropic.claude-opus-5': 1000000,
     'bedrock/anthropic.claude-3-haiku-20240307-v1:0': 100000,
     'bedrock/anthropic.claude-3-5-haiku-20241022-v1:0': 100000,
-    'bedrock/anthropic.claude-haiku-4-5-20251001-v1:0': 200000,
     'bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0': 100000,
     'bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0': 100000,
-    'bedrock/anthropic.claude-3-7-sonnet-20250219-v1:0': 200000,
     'bedrock/anthropic.claude-sonnet-4-20250514-v1:0': 200000,
-    'bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0': 200000,
-    'bedrock/anthropic.claude-sonnet-4-6': 200000,
-    'bedrock/anthropic.claude-sonnet-4-6-v1:0': 200000,
-    'bedrock/anthropic.claude-sonnet-5': 1000000,
-    'bedrock/anthropic.claude-opus-4-5-20251101-v1:0': 200000,
+    # -- Bedrock Claude (cross-region) -------------------------------------
     "bedrock/us.anthropic.claude-opus-4-20250514-v1:0": 200000,
     "bedrock/us.anthropic.claude-opus-4-1-20250805-v1:0": 200000,
-    "bedrock/us.anthropic.claude-opus-4-6-20260120-v1:0": 200000,
-    "bedrock/global.anthropic.claude-opus-4-5-20251101-v1:0": 200000,
-    "bedrock/eu.anthropic.claude-opus-4-5-20251101-v1:0": 200000,
-    "bedrock/au.anthropic.claude-opus-4-5-20251101-v1:0": 200000,
-    "bedrock/jp.anthropic.claude-opus-4-5-20251101-v1:0": 200000,
-    "bedrock/apac.anthropic.claude-opus-4-5-20251101-v1:0": 200000,
-    "bedrock/us.anthropic.claude-opus-4-5-20251101-v1:0": 200000,
-    "bedrock/global.anthropic.claude-opus-4-6-v1:0": 200000,
-    "bedrock/eu.anthropic.claude-opus-4-6-v1:0": 200000,
-    "bedrock/au.anthropic.claude-opus-4-6-v1:0": 200000,
-    "bedrock/jp.anthropic.claude-opus-4-6-v1:0": 200000,
-    "bedrock/apac.anthropic.claude-opus-4-6-v1:0": 200000,
-    "bedrock/us.anthropic.claude-opus-4-6-v1:0": 200000,
-    "bedrock/global.anthropic.claude-opus-4-7": 1000000,
-    "bedrock/us.anthropic.claude-opus-4-7": 1000000,
-    "bedrock/global.anthropic.claude-opus-4-8": 1000000,
-    "bedrock/us.anthropic.claude-opus-4-8": 1000000,
-    "bedrock/global.anthropic.claude-opus-5": 1000000,
-    "bedrock/us.anthropic.claude-opus-5": 1000000,
-    "bedrock/eu.anthropic.claude-opus-5": 1000000,
-    "bedrock/au.anthropic.claude-opus-5": 1000000,
-    "bedrock/jp.anthropic.claude-opus-5": 1000000,
-    "bedrock/eu.anthropic.claude-opus-4-8": 1000000,
-    "bedrock/au.anthropic.claude-opus-4-8": 1000000,
-    "bedrock/jp.anthropic.claude-opus-4-8": 1000000,
     "bedrock/us.anthropic.claude-3-5-sonnet-20241022-v2:0": 100000,
-    "bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0": 200000,
-    "bedrock/eu.anthropic.claude-haiku-4-5-20251001-v1:0": 200000,
-    "bedrock/au.anthropic.claude-haiku-4-5-20251001-v1:0": 200000,
-    "bedrock/jp.anthropic.claude-haiku-4-5-20251001-v1:0": 200000,
-    "bedrock/apac.anthropic.claude-haiku-4-5-20251001-v1:0": 200000,
-    "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0": 200000,
-    "bedrock/us.anthropic.claude-3-7-sonnet-20250219-v1:0": 200000,
     "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0": 200000,
     "bedrock/global.anthropic.claude-sonnet-4-20250514-v1:0": 200000,
-    "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0": 200000,
-    "bedrock/au.anthropic.claude-sonnet-4-5-20250929-v1:0": 200000,
-    "bedrock/us.anthropic.claude-sonnet-4-6": 200000,
-    "bedrock/us.anthropic.claude-sonnet-4-6-v1:0": 200000,
-    "bedrock/au.anthropic.claude-sonnet-4-6": 200000,
-    "bedrock/au.anthropic.claude-sonnet-4-6-v1:0": 200000,
     "bedrock/apac.anthropic.claude-3-5-sonnet-20241022-v2:0": 100000,
-    "bedrock/apac.anthropic.claude-3-7-sonnet-20250219-v1:0": 200000,
     "bedrock/apac.anthropic.claude-sonnet-4-20250514-v1:0": 200000,
-    "bedrock/eu.anthropic.claude-sonnet-4-5-20250929-v1:0": 200000,
-    "bedrock/eu.anthropic.claude-sonnet-4-6": 200000,
-    "bedrock/eu.anthropic.claude-sonnet-4-6-v1:0": 200000,
-    "bedrock/jp.anthropic.claude-sonnet-4-5-20250929-v1:0": 200000,
-    "bedrock/jp.anthropic.claude-sonnet-4-6": 200000,
-    "bedrock/jp.anthropic.claude-sonnet-4-6-v1:0": 200000,
-    "bedrock/apac.anthropic.claude-sonnet-4-6": 200000,
-    "bedrock/apac.anthropic.claude-sonnet-4-6-v1:0": 200000,
-    "bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0": 200000,
-    "bedrock/global.anthropic.claude-sonnet-4-6": 200000,
-    "bedrock/global.anthropic.claude-sonnet-4-6-v1:0": 200000,
-    "bedrock/us.anthropic.claude-sonnet-5": 1000000,
-    "bedrock/au.anthropic.claude-sonnet-5": 1000000,
-    "bedrock/eu.anthropic.claude-sonnet-5": 1000000,
-    "bedrock/jp.anthropic.claude-sonnet-5": 1000000,
-    "bedrock/global.anthropic.claude-sonnet-5": 1000000,
     'claude-3-5-sonnet': 100000,
+    # -- Non-Claude models -------------------------------------------------
     'bedrock/us.meta.llama4-scout-17b-instruct-v1:0': 128000,
     'bedrock/us.meta.llama4-maverick-17b-instruct-v1:0': 128000,
     "bedrock_mantle/xai.grok-4.3": 1000000,  # 1M context, but may be limited by config.max_model_tokens
@@ -331,7 +445,10 @@ MAX_TOKENS = {
     "codestral/codestral-2405": 8191,
     'xiaomi_mimo/mimo-v2.5': 1048576,  # 1M, matching the LiteLLM registry for mimo-v2.5, xiaomi_mimo/ is the native LiteLLM Xiaomi provider, but may be limited by config.max_model_tokens
     'xiaomi_mimo/mimo-v2.5-pro': 1048576,  # 1M, matching the LiteLLM registry for mimo-v2.5-pro, but may be limited by config.max_model_tokens
+    # Provider-prefixed Claude model IDs generated from _CLAUDE_MODEL_FAMILIES
+    **_claude_tokens,
 }
+
 
 OPENROUTER_ROUTER_MODEL_ALIASES = {
     "openrouter/auto": "openrouter/openrouter/auto",
@@ -372,43 +489,9 @@ NO_SUPPORT_TEMPERATURE_MODELS = [
     "gpt-5.2-codex",
     "gpt-5.3-codex",
     "gpt-5-mini",
-    # Anthropic Claude Opus 4-7 — temperature is deprecated (Issue #2400), (Issue #2449)
-    "claude-opus-4-7",
-    "anthropic/claude-opus-4-7",
-    "claude-opus-4-8",
-    "anthropic/claude-opus-4-8",
-    "vertex_ai/claude-opus-4-8",
-    "bedrock/anthropic.claude-opus-4-8",
-    "bedrock/global.anthropic.claude-opus-4-8",
-    "bedrock/us.anthropic.claude-opus-4-8",
-    "bedrock/eu.anthropic.claude-opus-4-8",
-    "bedrock/au.anthropic.claude-opus-4-8",
-    "bedrock/jp.anthropic.claude-opus-4-8",
-    "claude-opus-5",
-    "anthropic/claude-opus-5",
-    "vertex_ai/claude-opus-5",
-    "bedrock/anthropic.claude-opus-5",
-    "bedrock/global.anthropic.claude-opus-5",
-    "bedrock/us.anthropic.claude-opus-5",
-    "bedrock/eu.anthropic.claude-opus-5",
-    "bedrock/au.anthropic.claude-opus-5",
-    "bedrock/jp.anthropic.claude-opus-5",
-    "claude-fable-5",
-    "anthropic/claude-fable-5",
-    "claude-sonnet-5",
-    "anthropic/claude-sonnet-5",
-    "vertex_ai/claude-sonnet-5",
-    "bedrock/anthropic.claude-sonnet-5",
-    "bedrock/global.anthropic.claude-sonnet-5",
-    "bedrock/us.anthropic.claude-sonnet-5",
-    "bedrock/au.anthropic.claude-sonnet-5",
-    "bedrock/eu.anthropic.claude-sonnet-5",
-    "bedrock/jp.anthropic.claude-sonnet-5",
-    "vertex_ai/claude-opus-4-7",
-    "bedrock/anthropic.claude-opus-4-7",
-    "bedrock/anthropic.claude-opus-4-7-v1:0",
-    "bedrock/us.anthropic.claude-opus-4-7",
-    "bedrock/global.anthropic.claude-opus-4-7",
+    # Anthropic Claude -- temperature is deprecated (Issue #2400), (Issue #2449)
+    # Generated from _CLAUDE_MODEL_FAMILIES:
+    *_claude_no_temp,
 ]
 
 SUPPORT_REASONING_EFFORT_MODELS = [
@@ -449,55 +532,9 @@ GROK_REASONING_EFFORT_LEVELS = {
 # without also adding an adaptive-thinking code path. This list is the built-in
 # default; it can be replaced via the `claude_extended_thinking_models_override`
 # configuration option.
-CLAUDE_EXTENDED_THINKING_MODELS = [
-    "anthropic/claude-3-7-sonnet-20250219",
-    "claude-3-7-sonnet-20250219",
-    "anthropic/claude-sonnet-4-6",
-    "claude-sonnet-4-6",
-    "vertex_ai/claude-sonnet-4-6",
-    "bedrock/anthropic.claude-sonnet-4-6",
-    "bedrock/us.anthropic.claude-sonnet-4-6",
-    "bedrock/au.anthropic.claude-sonnet-4-6",
-    "bedrock/eu.anthropic.claude-sonnet-4-6",
-    "bedrock/jp.anthropic.claude-sonnet-4-6",
-    "bedrock/global.anthropic.claude-sonnet-4-6",
-    "anthropic/claude-sonnet-4-5-20250929",
-    "claude-sonnet-4-5-20250929",
-    "vertex_ai/claude-sonnet-4-5@20250929",
-    "bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0",
-    "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-    "bedrock/au.anthropic.claude-sonnet-4-5-20250929-v1:0",
-    "bedrock/eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
-    "bedrock/jp.anthropic.claude-sonnet-4-5-20250929-v1:0",
-    "bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0",
-    "anthropic/claude-opus-4-5-20251101",
-    "claude-opus-4-5-20251101",
-    "vertex_ai/claude-opus-4-5@20251101",
-    "bedrock/anthropic.claude-opus-4-5-20251101-v1:0",
-    "bedrock/us.anthropic.claude-opus-4-5-20251101-v1:0",
-    "bedrock/au.anthropic.claude-opus-4-5-20251101-v1:0",
-    "bedrock/eu.anthropic.claude-opus-4-5-20251101-v1:0",
-    "bedrock/jp.anthropic.claude-opus-4-5-20251101-v1:0",
-    "bedrock/global.anthropic.claude-opus-4-5-20251101-v1:0",
-    "anthropic/claude-opus-4-6",
-    "claude-opus-4-6",
-    "vertex_ai/claude-opus-4-6",
-    "bedrock/anthropic.claude-opus-4-6-v1:0",
-    "bedrock/us.anthropic.claude-opus-4-6-v1:0",
-    "bedrock/au.anthropic.claude-opus-4-6-v1:0",
-    "bedrock/eu.anthropic.claude-opus-4-6-v1:0",
-    "bedrock/jp.anthropic.claude-opus-4-6-v1:0",
-    "bedrock/global.anthropic.claude-opus-4-6-v1:0",
-    "anthropic/claude-haiku-4-5-20251001",
-    "claude-haiku-4-5-20251001",
-    "vertex_ai/claude-haiku-4-5@20251001",
-    "bedrock/anthropic.claude-haiku-4-5-20251001-v1:0",
-    "bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0",
-    "bedrock/au.anthropic.claude-haiku-4-5-20251001-v1:0",
-    "bedrock/eu.anthropic.claude-haiku-4-5-20251001-v1:0",
-    "bedrock/jp.anthropic.claude-haiku-4-5-20251001-v1:0",
-    "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0",
-]
+#
+# Generated from _CLAUDE_MODEL_FAMILIES:
+CLAUDE_EXTENDED_THINKING_MODELS = list(_claude_extended_thinking)
 
 # Models that require streaming mode
 STREAMING_REQUIRED_MODELS = [
