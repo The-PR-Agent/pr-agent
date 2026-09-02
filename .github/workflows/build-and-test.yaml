@@ -36,7 +36,20 @@ jobs:
       - id: test
         name: Test dev docker
         run: |
-          docker run --rm pragent/pr-agent:test pytest -v tests/unittest
+          docker run --name test_container pragent/pr-agent:test pytest -v tests/unittest --cov=pr_agent --cov-report term --cov-report xml:coverage.xml
+          docker cp test_container:/app/coverage.xml coverage.xml
+          docker rm test_container
+
+      - name: Validate coverage report
+        run: |
+          if [ ! -f coverage.xml ]; then
+            echo "Coverage report not found"
+            exit 1
+          fi
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@75cd11691c0faa626561e295848008c8a7dddffe  # v5.5.4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
 
       # Unit tests override CMD, so a broken server launcher never fails CI.
       # Smoke-start github_app (gunicorn + uvicorn) with no secrets; GET / → 200.

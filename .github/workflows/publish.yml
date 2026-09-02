@@ -135,8 +135,8 @@ jobs:
             target: mosaico_agent
             suffix: mosaico_agent
             rolling: mosaico_agent
-          - dockerfile: Dockerfile.github_action
-            target: ''
+          - dockerfile: docker/Dockerfile
+            target: github_action
             suffix: github_action
             rolling: github_action
           - dockerfile: docker/Dockerfile.lambda
