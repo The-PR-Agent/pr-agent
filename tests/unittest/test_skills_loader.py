@@ -408,15 +408,13 @@ class TestResourceGathering:
         """Safe per-repo preferences may be set from a
         repo's .pr_agent.toml; only the host-only skills.paths is refused.
         """
-        repo_toml = b'[skills]\nenabled = true\nmax_skills_tokens = 1234\napply_to_ask = true\n'
+        repo_toml = b'[skills]\nenabled = true\nmax_skills_tokens = 1234\n'
         settings = self._apply_repo_skills_toml(monkeypatch, repo_toml)
 
         assert settings.skills.enabled is True, \
             "Repo settings should be able to toggle skills.enabled"
         assert int(settings.skills.max_skills_tokens) == 1234, \
             "Repo settings should be able to set skills.max_skills_tokens"
-        assert settings.skills.apply_to_ask is True, \
-            "Repo settings should be able to opt top-level /ask into skills"
 
     def test_format_skills_context_includes_resource_content(self, tmp_path):
         _write_skill(tmp_path, "doc")

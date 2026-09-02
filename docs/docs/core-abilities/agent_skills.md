@@ -1,6 +1,6 @@
 # Agent Skills
 
-`Supported Tools: Review, Improve, Describe, Ask (opt-in)`
+`Supported Tools: Review, Improve, Describe, Ask`
 
 ## Overview
 
@@ -19,7 +19,7 @@ description: Use when reviewing Terraform code — checks state safety and risky
 - ...
 ```
 
-When enabled, PR-Agent discovers every `SKILL.md` under the configured paths, parses it, and injects the skill's `name`, `description`, and body into the `/review`, `/improve`, and `/describe` prompts alongside `extra_instructions`. Top-level `/ask` can use the same context when `skills.apply_to_ask` is enabled. The model applies the guidance it judges relevant to the PR or question, using each skill's `description` as the signal for when the skill applies.
+When enabled, PR-Agent discovers every `SKILL.md` under the configured paths, parses it, and injects the skill's `name`, `description`, and body into the `/review`, `/improve`, `/describe`, and top-level `/ask` prompts alongside `extra_instructions`. The model applies the guidance it judges relevant to the PR or question, using each skill's `description` as the signal for when the skill applies.
 
 The value proposition is **org-wide, host-level skill libraries**: install one curated set of skills on your PR-Agent deployment and reuse it across many repositories, without checking guidance into each repo.
 
@@ -32,18 +32,16 @@ Skills are **disabled by default** and configured in `configuration.toml` (or an
 enabled = false
 paths = []                # directories scanned recursively for "*/SKILL.md"; supports ~ and $VAR
 max_skills_tokens = 8000  # token budget for the combined skills block
-apply_to_ask = false      # opt in for top-level /ask; /ask_line is unchanged
 ```
 
 - `enabled` — turn the feature on.
 - `paths` — a list of directories (scanned recursively for `*/SKILL.md`) or direct paths to a `SKILL.md` file. `~` and `$VAR`/`${VAR}` are expanded.
 - `max_skills_tokens` — caps the combined size of the injected skills block. Skills past the cap are dropped from the end with a warning; if the first skill alone exceeds the budget it is clipped and marked `[truncated]`.
-- `apply_to_ask` — when `true`, inject the same bounded skills context into top-level `/ask`. It defaults to `false` and does not affect `/ask_line`.
 
 !!! warning "`skills.paths` is host-level only"
     `skills.paths` **cannot be set from a repository's `.pr_agent.toml`** and is configurable only where the deployment is administered. Because it reads files from the PR-Agent host's filesystem, allowing a repository to set it would let a malicious repo point PR-Agent at sensitive host files (e.g. `~/.ssh/*`) and exfiltrate their contents into the model prompt. A repo-supplied `skills.paths` is ignored with a warning.
 
-A repository *may* set the safe per-repo preferences `skills.enabled`, `skills.max_skills_tokens`, and `skills.apply_to_ask` in its own `.pr_agent.toml` — e.g. to opt in to (or size) the host's admin-curated skill library for that repo. It can never redirect the filesystem scan.
+    A repository *may* set the safe per-repo preferences `skills.enabled` and `skills.max_skills_tokens` in its own `.pr_agent.toml` — e.g. to opt in to (or size) the host's admin-curated skill library for that repo. It can never redirect the filesystem scan.
 
 ## Bundled resources
 

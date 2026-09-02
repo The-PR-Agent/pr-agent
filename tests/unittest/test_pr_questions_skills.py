@@ -1,4 +1,4 @@
-"""Regression tests for the opt-in Agent Skills context in top-level /ask."""
+"""Regression tests for Agent Skills context in top-level /ask."""
 
 from types import SimpleNamespace
 
@@ -46,12 +46,11 @@ def _build_pr_questions(monkeypatch):
     )
 
 
-def test_top_level_ask_injects_skills_when_opted_in(monkeypatch):
+def test_top_level_ask_injects_skills_when_enabled(monkeypatch):
     settings = get_settings()
-    saved = snapshot_settings(("skills.enabled", "skills.apply_to_ask"))
+    saved = snapshot_settings(("skills.enabled",))
     try:
         settings.set("skills.enabled", True)
-        settings.set("skills.apply_to_ask", True)
         tool = _build_pr_questions(monkeypatch)
     finally:
         restore_settings(saved)
@@ -59,12 +58,12 @@ def test_top_level_ask_injects_skills_when_opted_in(monkeypatch):
     assert tool.vars["skills_context"] == "### Skill: security-review"
 
 
-def test_top_level_ask_does_not_load_skills_when_opt_out(monkeypatch):
+def test_top_level_ask_does_not_load_skills_when_disabled(monkeypatch):
     settings = get_settings()
-    saved = snapshot_settings(("skills.apply_to_ask",))
+    saved = snapshot_settings(("skills.enabled",))
     calls = []
     try:
-        settings.set("skills.apply_to_ask", False)
+        settings.set("skills.enabled", False)
         monkeypatch.setattr(
             pr_questions,
             "get_skills_context",
@@ -84,7 +83,7 @@ def test_top_level_ask_prompt_renders_skills_context():
         "skills_context": "### Skill: security-review\nRequire an authentication check.",
         "extra_instructions": "",
     }
-    prompt = Environment(undefined=StrictUndefined).from_string(
+    prompt = Environment(undefined=StrictUndefined, autoescape=True).from_string(
         get_settings().pr_questions_prompt.system
     ).render(variables)
 
@@ -94,7 +93,7 @@ def test_top_level_ask_prompt_renders_skills_context():
 
 def test_top_level_ask_prompt_omits_skills_block_when_empty():
     variables = {"skills_context": "", "extra_instructions": ""}
-    prompt = Environment(undefined=StrictUndefined).from_string(
+    prompt = Environment(undefined=StrictUndefined, autoescape=True).from_string(
         get_settings().pr_questions_prompt.system
     ).render(variables)
 

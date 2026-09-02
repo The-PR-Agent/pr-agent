@@ -31,7 +31,7 @@ class PRQuestions:
         settings = get_settings()
         skills_context = (
             get_skills_context()
-            if settings.skills.get("enabled", False) and settings.skills.get("apply_to_ask", False)
+            if settings.skills.get("enabled", False)
             else ""
         )
         self.vars = {
