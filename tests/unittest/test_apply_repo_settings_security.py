@@ -159,6 +159,23 @@ def test_valid_repo_settings_merge_overrides_key_and_preserves_siblings(monkeypa
     assert pr_reviewer.get("require_tests_review") == sibling_before
 
 
+def test_repo_settings_cannot_enable_publish_error_details(monkeypatch, settings_snapshot):
+    provider = FakeGitProvider(
+        repo_settings_bytes=b"[pr_reviewer]\npublish_error_details = true\nnum_max_findings = 11\n"
+    )
+    _install_provider(monkeypatch, provider)
+
+    get_settings().set("config.use_repo_settings_file", True)
+    settings = get_settings()
+    publish_error_details_before = _section(settings, "pr_reviewer").get("publish_error_details")
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    pr_reviewer = _section(settings, "pr_reviewer")
+    assert pr_reviewer.get("publish_error_details") == publish_error_details_before
+    assert pr_reviewer.get("num_max_findings") == 11
+
+
 def test_invalid_toml_does_not_pollute_settings(monkeypatch, settings_snapshot):
     """
     Malformed TOML must never leak into the live settings. The custom loader

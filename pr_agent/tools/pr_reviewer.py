@@ -96,9 +96,18 @@ def _exception_chain_text(error: Exception) -> str:
     return "\n".join(parts).casefold()
 
 
+def _as_bool(value) -> bool:
+    """Interpret configured boolean values without treating non-empty strings as true."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().casefold() in ("1", "true", "yes", "on")
+    return False
+
+
 def _review_failure_comment(error: Exception) -> str:
     """Build an optional deterministic failure explanation from an allowlist of safe messages."""
-    if not get_settings().pr_reviewer.get("publish_error_details", False):
+    if not _as_bool(get_settings().pr_reviewer.get("publish_error_details", False)):
         return "Failed to review PR"
 
     error_text = _exception_chain_text(error)

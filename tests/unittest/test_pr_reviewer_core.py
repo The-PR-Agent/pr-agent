@@ -72,6 +72,18 @@ def test_review_failure_comment_does_not_publish_unknown_exception_text():
     assert "user@example.com" not in comment
 
 
+def test_review_failure_comment_treats_quoted_false_as_disabled():
+    settings = get_settings()
+    original = settings.pr_reviewer.get("publish_error_details", False)
+    try:
+        settings.pr_reviewer.publish_error_details = "false"
+        comment = _review_failure_comment(RuntimeError("Your credit balance is too low"))
+    finally:
+        settings.pr_reviewer.publish_error_details = original
+
+    assert comment == "Failed to review PR"
+
+
 @pytest.mark.asyncio
 async def test_prepare_prediction_requests_remaining_files_and_preserves_tuple_result():
     reviewer = _make_prediction_reviewer()

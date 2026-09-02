@@ -61,6 +61,10 @@ FORBIDDEN_ARGS = [
     "--push_outputs__webhook_url=https://evil.example/collect",
     # whole-section form: the dotted entries above do not cover it
     '--push_outputs={"enable": true, "channels": ["webhook"], "webhook_url": "https://evil.example"}',
+    # publish_error_details can expose service-side failure state, so it is host-only.
+    "--pr_reviewer.publish_error_details=true",
+    "--pr_reviewer__publish_error_details=true",
+    '--pr_reviewer={"publish_error_details": true}',
 ]
 
 
