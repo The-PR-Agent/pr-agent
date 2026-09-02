@@ -26,6 +26,8 @@ global_settings = Dynaconf(
         "settings/pr_questions_prompts.toml",
         "settings/pr_line_questions_prompts.toml",
         "settings/pr_description_prompts.toml",
+        "settings/pr_description_only_files_prompts.toml",
+        "settings/pr_description_only_description_prompts.toml",
         "settings/code_suggestions/pr_code_suggestions_prompts.toml",
         "settings/code_suggestions/pr_code_suggestions_prompts_not_decoupled.toml",
         "settings/code_suggestions/pr_code_suggestions_reflect_prompts.toml",
