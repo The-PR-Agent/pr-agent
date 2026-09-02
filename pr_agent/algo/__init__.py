@@ -127,6 +127,7 @@ MAX_TOKENS = {
     'vertex_ai/gemini-3.5-pro': 1048576,
     'vertex_ai/gemini-3.6-flash': 1048576,
     'vertex_ai/gemini-3.7-flash': 1048576,
+    'vertex_ai/gemini-3.8-flash': 1048576,
     'vertex_ai/gemma2': 8200,
     'gemini/gemini-1.5-pro': 1048576,
     'gemini/gemini-1.5-flash': 1048576,
@@ -150,6 +151,7 @@ MAX_TOKENS = {
     'gemini/gemini-3.5-pro': 1048576,
     'gemini/gemini-3.6-flash': 1048576,
     'gemini/gemini-3.7-flash': 1048576,
+    'gemini/gemini-3.8-flash': 1048576,
     'codechat-bison': 6144,
     'codechat-bison-32k': 32000,
     'anthropic.claude-instant-v1': 100000,
@@ -442,6 +444,9 @@ SUPPORT_REASONING_EFFORT_MODELS = [
     "gemini-3.5-flash-lite",
     "gemini-3.6-flash",
     "gemini-3.7-flash",
+    # 3.8 Flash is absent from LiteLLM 1.98.0's registry (the model postdates
+    # it); litellm_ai_handler registers the id at import so the mapping works.
+    "gemini-3.8-flash",
     # Register each published Grok id separately so provider-prefixed forms match
     # and the allowlist below can clamp model-specific reasoning levels.
     "grok-4.5",
