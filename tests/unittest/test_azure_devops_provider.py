@@ -1387,3 +1387,48 @@ class TestAzureDevopsProviderSuggestionDiscussions:
         discussions = json.loads(provider.get_code_suggestion_thread_context())
 
         assert [reply["message"] for reply in discussions[0]["replies"]] == ["Rejected, keep as is."]
+
+
+def test_azure_issue_comments_newest_first_does_not_reverse_twice():
+    provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+    threads = [
+        SimpleNamespace(
+            id=1,
+            comments=[SimpleNamespace(
+                id=11,
+                content="old comment",
+                author=SimpleNamespace(unique_name="developer@example.com"),
+            )],
+        ),
+        SimpleNamespace(
+            id=2,
+            comments=[SimpleNamespace(
+                id=22,
+                content="new comment",
+                author=SimpleNamespace(unique_name="agent@example.com"),
+            )],
+        ),
+    ]
+    provider._get_threads = MagicMock(return_value=threads)
+
+    comments = provider.get_issue_comments_newest_first()
+
+    assert [comment.body for comment in comments] == ["new comment", "old comment"]
+
+
+@patch("pr_agent.git_providers.azuredevops_provider.get_settings")
+def test_azure_comment_authorship_uses_explicit_agent_identity(mock_get_settings):
+    mock_get_settings.return_value.get.side_effect = lambda key, default=None: (
+        "agent@example.com" if key == "azure_devops_server.agent_identity" else default
+    )
+    provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+    agent_comment = SimpleNamespace(
+        author=SimpleNamespace(unique_name="agent@example.com")
+    )
+    human_comment = SimpleNamespace(
+        author=SimpleNamespace(unique_name="human@example.com")
+    )
+
+    assert provider.supports_review_finding_state() is True
+    assert provider.is_comment_authored_by_pr_agent(agent_comment) is True
+    assert provider.is_comment_authored_by_pr_agent(human_comment) is False

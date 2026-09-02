@@ -8,7 +8,7 @@ from pr_agent.algo.review_finding_state import (
     reconcile_review_findings,
     serialize_review_state,
 )
-from pr_agent.algo.utils import PRReviewHeader
+from pr_agent.algo.utils import PRReviewHeader, PRReviewIdentity, add_pr_review_identity
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.tools.pr_reviewer import PRReviewer
@@ -23,6 +23,11 @@ def _reviewer(provider):
     reviewer.prediction = "review: {}"
     reviewer.set_review_labels = MagicMock()
     reviewer._review_state_block_reason = None
+    provider.supports_review_finding_state.return_value = True
+    provider.is_comment_authored_by_pr_agent.return_value = True
+    provider.get_issue_comments_newest_first.side_effect = (
+        lambda: list(reversed(provider.get_issue_comments()))
+    )
     return reviewer
 
 
@@ -39,6 +44,14 @@ def _settings(monkeypatch):
     monkeypatch.setattr(settings.pr_reviewer, "inline_key_issues", False)
     monkeypatch.setattr(settings.pr_reviewer, "publish_output_no_suggestions", False)
     return settings
+
+
+
+def test_review_finding_state_is_disabled_without_a_provider(monkeypatch):
+    _settings(monkeypatch)
+    reviewer = PRReviewer.__new__(PRReviewer)
+
+    assert reviewer._review_finding_state_enabled() is False
 
 
 def test_prepare_review_reconciles_previous_state_and_renders_resolved_section(monkeypatch):
@@ -71,6 +84,38 @@ def test_prepare_review_reconciles_previous_state_and_renders_resolved_section(m
     assert reviewer._review_state_result.resolved_ids == (previous["findings"][0]["finding_id"],)
     assert reviewer._review_state_result.state["last_run"]["complete"] is True
     assert settings.pr_reviewer.persistent_finding_state is True
+
+
+
+def test_prepare_review_pushes_final_markdown_with_lifecycle_state(monkeypatch):
+    _settings(monkeypatch)
+    previous = reconcile_review_findings(
+        None,
+        [_finding()],
+        allow_resolution=True,
+        timestamp="2026-01-01T00:00:00Z",
+    ).state
+    header = f"{PRReviewHeader.REGULAR.value} 🔍"
+    provider = MagicMock()
+    provider.get_issue_comments.return_value = [
+        SimpleNamespace(body=f"{header}\n\nold review\n\n{serialize_review_state(previous)}")
+    ]
+    provider.get_diff_files.return_value = []
+    provider.is_supported.side_effect = lambda capability: capability == "get_issue_comments"
+    reviewer = _reviewer(provider)
+
+    with (
+        patch("pr_agent.tools.pr_reviewer.load_yaml", return_value={"review": {"key_issues_to_review": []}}),
+        patch("pr_agent.tools.pr_reviewer.github_action_output"),
+        patch("pr_agent.tools.pr_reviewer.convert_to_markdown_v2", return_value="No major issues detected"),
+        patch("pr_agent.tools.pr_reviewer.push_outputs") as push_outputs,
+    ):
+        review = reviewer._prepare_pr_review()
+
+    assert "<summary>✅ Resolved findings</summary>" in review
+    push_outputs.assert_called_once()
+    assert push_outputs.call_args.kwargs["markdown"] == review
+    assert "<summary>✅ Resolved findings</summary>" in push_outputs.call_args.kwargs["markdown"]
 
 
 def test_load_review_finding_state_uses_latest_matching_comment():
@@ -112,6 +157,143 @@ def test_load_review_finding_state_accepts_dict_comment():
     provider = MagicMock()
     provider.get_issue_comments.return_value = [
         {"body": f"{header}\n\nreview\n\n{serialize_review_state(previous)}"}
+    ]
+    reviewer = _reviewer(provider)
+
+    parsed = reviewer._load_review_finding_state()
+
+    assert parsed.valid is True
+    assert parsed.state == previous
+
+
+
+def _state_body(state, heading, identity=None):
+    body = f"{heading}\n\nreview\n\n{serialize_review_state(state)}"
+    return add_pr_review_identity(body, identity) if identity else body
+
+
+def test_load_review_finding_state_accepts_default_heading_with_full_identity():
+    previous = reconcile_review_findings(
+        None,
+        [_finding()],
+        allow_resolution=True,
+        timestamp="2026-01-01T00:00:00Z",
+    ).state
+    heading = f"{PRReviewHeader.REGULAR.value} 🔍"
+    provider = MagicMock()
+    provider.get_issue_comments.return_value = [
+        SimpleNamespace(body=_state_body(previous, heading, PRReviewIdentity.REGULAR.value))
+    ]
+    reviewer = _reviewer(provider)
+
+    parsed = reviewer._load_review_finding_state()
+
+    assert parsed.valid is True
+    assert parsed.state == previous
+
+
+def test_load_review_finding_state_accepts_custom_heading_with_full_identity(monkeypatch):
+    settings = _settings(monkeypatch)
+    monkeypatch.setattr(settings.pr_reviewer, "review_heading", "Team Review", raising=False)
+    previous = reconcile_review_findings(
+        None,
+        [_finding()],
+        allow_resolution=True,
+        timestamp="2026-01-01T00:00:00Z",
+    ).state
+    provider = MagicMock()
+    provider.get_issue_comments.return_value = [
+        SimpleNamespace(
+            body=_state_body(
+                previous,
+                "## Team Review 🔍",
+                PRReviewIdentity.REGULAR.value,
+            )
+        )
+    ]
+    reviewer = _reviewer(provider)
+
+    parsed = reviewer._load_review_finding_state()
+
+    assert parsed.valid is True
+    assert parsed.state == previous
+
+
+def test_full_identity_state_beats_legacy_visible_heading():
+    old_state = reconcile_review_findings(
+        None,
+        [_finding("legacy")],
+        allow_resolution=True,
+        timestamp="2026-01-01T00:00:00Z",
+    ).state
+    new_state = reconcile_review_findings(
+        None,
+        [_finding("marked")],
+        allow_resolution=True,
+        timestamp="2026-01-01T00:01:00Z",
+    ).state
+    provider = MagicMock()
+    provider.get_issue_comments.return_value = [
+        SimpleNamespace(
+            body=_state_body(
+                old_state,
+                f"{PRReviewHeader.REGULAR.value} 🔍",
+            )
+        ),
+        SimpleNamespace(
+            body=_state_body(
+                new_state,
+                "## Team Review 🔍",
+                PRReviewIdentity.REGULAR.value,
+            )
+        ),
+    ]
+    reviewer = _reviewer(provider)
+
+    parsed = reviewer._load_review_finding_state()
+
+    assert parsed.valid is True
+    assert parsed.state == new_state
+
+
+def test_load_review_finding_state_does_not_adopt_incremental_identity():
+    state = reconcile_review_findings(
+        None,
+        [_finding()],
+        allow_resolution=True,
+        timestamp="2026-01-01T00:00:00Z",
+    ).state
+    provider = MagicMock()
+    provider.get_issue_comments.return_value = [
+        SimpleNamespace(
+            body=_state_body(
+                state,
+                "## Incremental Team Review 🔍",
+                PRReviewIdentity.INCREMENTAL.value,
+            )
+        )
+    ]
+    reviewer = _reviewer(provider)
+
+    parsed = reviewer._load_review_finding_state()
+
+    assert parsed.valid is True
+    assert parsed.present is False
+    assert parsed.state is None
+
+
+def test_load_review_finding_state_accepts_legacy_default_heading_without_identity():
+    previous = reconcile_review_findings(
+        None,
+        [_finding()],
+        allow_resolution=True,
+        timestamp="2026-01-01T00:00:00Z",
+    ).state
+    provider = MagicMock()
+    provider.get_issue_comments.return_value = [
+        SimpleNamespace(
+            body=_state_body(previous, f"{PRReviewHeader.REGULAR.value} 🔍")
+        )
     ]
     reviewer = _reviewer(provider)
 
@@ -413,7 +595,8 @@ def test_review_comment_budget_reserves_persistent_update_header():
 
     update_suffix = "\n\n#### (Review updated until commit commit-url)\n"
 
-    assert reviewer._review_comment_max_chars() == 1000 - len(update_suffix)
+    identity_overhead = len(PRReviewIdentity.REGULAR.value) + 2
+    assert reviewer._review_comment_max_chars() == 1000 - len(update_suffix) - identity_overhead
 
 
 def test_invalid_review_data_blocks_lifecycle_without_using_old_state(monkeypatch):
@@ -544,7 +727,10 @@ async def test_invalid_history_updates_persistent_comment_without_fallback(monke
     await reviewer.run()
 
     provider.publish_persistent_comment_full.assert_called_once()
-    assert provider.publish_persistent_comment_full.call_args.kwargs["fallback_on_error"] is False
+    kwargs = provider.publish_persistent_comment_full.call_args.kwargs
+    assert kwargs["fallback_on_error"] is False
+    assert kwargs["identity_marker"] == PRReviewIdentity.REGULAR.value
+    assert kwargs["legacy_initial_header"] == f"{PRReviewHeader.REGULAR.value} 🔍"
     provider.publish_comment.assert_not_called()
 
 
@@ -576,3 +762,169 @@ async def test_non_marker_state_block_publishes_without_overwriting_state(monkey
 
     provider.publish_comment.assert_any_call("review output")
     provider.publish_persistent_comment_full.assert_not_called()
+
+
+def test_load_review_finding_state_rejects_spoofed_full_identity():
+    previous = reconcile_review_findings(
+        None,
+        [_finding("spoofed state")],
+        allow_resolution=True,
+        timestamp="2026-01-01T00:00:00Z",
+    ).state
+    provider = MagicMock()
+    provider.get_issue_comments.return_value = [
+        SimpleNamespace(
+            body=_state_body(
+                previous,
+                PRReviewHeader.REGULAR.value + " " + chr(0x1F50D),
+                PRReviewIdentity.REGULAR.value,
+            ),
+            user=SimpleNamespace(login="human"),
+        )
+    ]
+    reviewer = _reviewer(provider)
+    provider.is_comment_authored_by_pr_agent.return_value = False
+
+    parsed = reviewer._load_review_finding_state()
+
+    assert parsed.present is False
+    assert parsed.valid is True
+    assert parsed.state is None
+
+
+def test_load_review_finding_state_skips_newer_spoof_and_loads_older_agent_state():
+    old_state = reconcile_review_findings(
+        None,
+        [_finding("old state")],
+        allow_resolution=True,
+        timestamp="2026-01-01T00:00:00Z",
+    ).state
+    spoofed_state = reconcile_review_findings(
+        None,
+        [_finding("spoofed state")],
+        allow_resolution=True,
+        timestamp="2026-01-01T00:01:00Z",
+    ).state
+    header = PRReviewHeader.REGULAR.value + " " + chr(0x1F50D)
+    old = SimpleNamespace(
+        body=_state_body(old_state, header, PRReviewIdentity.REGULAR.value),
+        user=SimpleNamespace(login="agent"),
+    )
+    spoofed = SimpleNamespace(
+        body=_state_body(spoofed_state, header, PRReviewIdentity.REGULAR.value),
+        user=SimpleNamespace(login="human"),
+    )
+    provider = MagicMock()
+    provider.get_issue_comments.return_value = [old, spoofed]
+    reviewer = _reviewer(provider)
+    provider.is_comment_authored_by_pr_agent.side_effect = (
+        lambda comment: comment.user.login == "agent"
+    )
+
+    parsed = reviewer._load_review_finding_state()
+
+    assert parsed.valid is True
+    assert parsed.state == old_state
+
+
+def test_legacy_state_requires_verified_comment_ownership():
+    previous = reconcile_review_findings(
+        None,
+        [_finding("legacy state")],
+        allow_resolution=True,
+        timestamp="2026-01-01T00:00:00Z",
+    ).state
+    header = PRReviewHeader.REGULAR.value + " " + chr(0x1F50D)
+    provider = MagicMock()
+    provider.get_issue_comments.return_value = [
+        SimpleNamespace(body=_state_body(previous, header), user=SimpleNamespace(login="human"))
+    ]
+    reviewer = _reviewer(provider)
+    provider.is_comment_authored_by_pr_agent.return_value = False
+
+    parsed = reviewer._load_review_finding_state()
+
+    assert parsed.present is False
+    assert parsed.state is None
+
+
+def _large_review_issues(count=10):
+    return [
+        {
+            "relevant_file": f"file-{index}.py",
+            "issue_content": f"finding {index} " + ("x" * 120),
+        }
+        for index in range(count)
+    ]
+
+
+def test_oversized_new_state_keeps_review_publishable_without_marker(monkeypatch):
+    settings = _settings(monkeypatch)
+    monkeypatch.setattr(settings.pr_reviewer, "num_max_findings", 100)
+    provider = MagicMock()
+    provider.get_issue_comments.return_value = []
+    provider.get_diff_files.return_value = []
+    provider.is_supported.side_effect = lambda capability: capability == "get_issue_comments"
+    provider.max_comment_chars = 500
+    reviewer = _reviewer(provider)
+
+    data = {"review": {"key_issues_to_review": _large_review_issues()}}
+    with (
+        patch("pr_agent.tools.pr_reviewer.load_yaml", return_value=data),
+        patch("pr_agent.tools.pr_reviewer.github_action_output"),
+        patch(
+            "pr_agent.tools.pr_reviewer.convert_to_markdown_v2",
+            return_value=PRReviewHeader.REGULAR.value + " " + chr(0x1F50D) + "\n\nhuman review",
+        ),
+        patch("pr_agent.tools.pr_reviewer.push_outputs") as push_outputs,
+    ):
+        review = reviewer._prepare_pr_review()
+
+    assert "human review" in review
+    assert parse_review_state(review).present is False
+    assert reviewer._review_state_result is None
+    assert reviewer._review_state_block_reason == "state_size"
+    push_outputs.assert_called_once()
+    assert push_outputs.call_args.kwargs["markdown"] == review
+
+
+def test_oversized_new_state_preserves_previous_valid_marker(monkeypatch):
+    settings = _settings(monkeypatch)
+    monkeypatch.setattr(settings.pr_reviewer, "num_max_findings", 100)
+    previous = reconcile_review_findings(
+        None,
+        [_finding("previous state")],
+        allow_resolution=True,
+        timestamp="2026-01-01T00:00:00Z",
+    ).state
+    header = PRReviewHeader.REGULAR.value + " " + chr(0x1F50D)
+    old = SimpleNamespace(
+        body=_state_body(previous, header, PRReviewIdentity.REGULAR.value),
+        user=SimpleNamespace(login="agent"),
+    )
+    provider = MagicMock()
+    provider.get_issue_comments.return_value = [old]
+    provider.get_diff_files.return_value = []
+    provider.is_supported.side_effect = lambda capability: capability == "get_issue_comments"
+    provider.max_comment_chars = 500
+    reviewer = _reviewer(provider)
+
+    data = {"review": {"key_issues_to_review": _large_review_issues()}}
+    with (
+        patch("pr_agent.tools.pr_reviewer.load_yaml", return_value=data),
+        patch("pr_agent.tools.pr_reviewer.github_action_output"),
+        patch(
+            "pr_agent.tools.pr_reviewer.convert_to_markdown_v2",
+            return_value=header + "\n\n" + ("human review " * 100),
+        ),
+        patch("pr_agent.tools.pr_reviewer.push_outputs"),
+    ):
+        review = reviewer._prepare_pr_review()
+
+    parsed = parse_review_state(review)
+    assert parsed.valid is True
+    assert parsed.state == previous
+    assert reviewer._review_state_result is None
+    assert reviewer._review_state_preserved is True
+    assert reviewer._review_state_block_reason == "state_size"
+    assert "human review" in review

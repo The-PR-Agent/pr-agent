@@ -920,6 +920,25 @@ class GitLabProvider(GitProvider):
     def supports_review_comment_identity(self) -> bool:
         return True
 
+    def supports_review_finding_state(self) -> bool:
+        return True
+
+    def is_comment_authored_by_pr_agent(self, comment) -> bool:
+        if isinstance(comment, dict):
+            author = comment.get("author") or comment.get("user")
+        else:
+            author = getattr(comment, "author", None) or getattr(comment, "user", None)
+        if isinstance(author, dict):
+            author_id = author.get("id")
+        else:
+            author_id = getattr(author, "id", None)
+        if author_id is None:
+            raise RuntimeError("GitLab comment author cannot be verified")
+        own_user_id = self._get_own_user_id()
+        if own_user_id is None:
+            raise RuntimeError("GitLab authenticated user cannot be verified")
+        return str(author_id) == str(own_user_id)
+
     def publish_persistent_comment(self, pr_comment: str,
                                    initial_header: str,
                                    update_header: bool = True,
@@ -1412,6 +1431,9 @@ class GitLabProvider(GitProvider):
 
     def get_issue_comments(self):
         return self.mr.notes.list(get_all=True)[::-1]
+
+    def get_issue_comments_newest_first(self):
+        return list(self.get_issue_comments())
 
     def get_repo_settings(self):
         settings_files = []

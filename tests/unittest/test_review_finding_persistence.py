@@ -6,11 +6,21 @@ from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.tools.pr_reviewer import PRReviewer
 
 
+def _set_issue_comments(provider, comments):
+    provider.get_issue_comments.return_value = comments
+    provider.get_issue_comments_newest_first.return_value = list(reversed(comments))
+
+
 def _reviewer(provider):
     reviewer = PRReviewer.__new__(PRReviewer)
     reviewer.git_provider = provider
     reviewer.incremental = SimpleNamespace(is_incremental=False)
     reviewer.remaining_files_list = []
+    provider.supports_review_finding_state.return_value = True
+    provider.is_comment_authored_by_pr_agent.return_value = True
+    provider.get_issue_comments_newest_first.side_effect = (
+        lambda: list(reversed(provider.get_issue_comments()))
+    )
     return reviewer
 
 
@@ -22,7 +32,7 @@ def test_invalid_structured_finding_fails_closed(monkeypatch):
 
     provider = MagicMock()
     provider.is_supported.return_value = True
-    provider.get_issue_comments.return_value = []
+    _set_issue_comments(provider, [])
     reviewer = _reviewer(provider)
 
     reviewer._prepare_review_finding_state({
@@ -40,7 +50,7 @@ def test_missing_structured_finding_collection_fails_closed():
 def test_stateful_persistent_update_does_not_fallback_after_edit_failure():
     header = "## PR Reviewer Guide 🔍"
     provider = MagicMock()
-    provider.get_issue_comments.return_value = [SimpleNamespace(body=header)]
+    _set_issue_comments(provider, [SimpleNamespace(body=header)])
     provider.get_latest_commit_url.return_value = "commit-url"
     provider.get_comment_url.return_value = "comment-url"
     provider.edit_comment.side_effect = RuntimeError("edit failed")
@@ -61,7 +71,7 @@ def test_stateful_persistent_update_does_not_fallback_after_edit_failure():
 def test_stateful_persistent_update_falls_back_when_enabled():
     header = "## PR Reviewer Guide 🔍"
     provider = MagicMock()
-    provider.get_issue_comments.return_value = [SimpleNamespace(body=header)]
+    _set_issue_comments(provider, [SimpleNamespace(body=header)])
     provider.get_latest_commit_url.return_value = "commit-url"
     provider.get_comment_url.return_value = "comment-url"
     provider.edit_comment.side_effect = RuntimeError("edit failed")
@@ -83,7 +93,7 @@ def test_stateful_persistent_update_falls_back_when_enabled():
 def test_stateful_persistent_update_does_not_fallback_after_false_edit_failure():
     header = "## PR Reviewer Guide 🔍"
     provider = MagicMock()
-    provider.get_issue_comments.return_value = [SimpleNamespace(body=header)]
+    _set_issue_comments(provider, [SimpleNamespace(body=header)])
     provider.get_latest_commit_url.return_value = "commit-url"
     provider.get_comment_url.return_value = "comment-url"
     provider.edit_comment.return_value = False
@@ -104,7 +114,7 @@ def test_stateful_persistent_update_does_not_fallback_after_false_edit_failure()
 def test_stateful_persistent_update_falls_back_after_false_edit_failure():
     header = "## PR Reviewer Guide 🔍"
     provider = MagicMock()
-    provider.get_issue_comments.return_value = [SimpleNamespace(body=header)]
+    _set_issue_comments(provider, [SimpleNamespace(body=header)])
     provider.get_latest_commit_url.return_value = "commit-url"
     provider.get_comment_url.return_value = "comment-url"
     provider.edit_comment.return_value = False
@@ -125,7 +135,7 @@ def test_stateful_persistent_update_falls_back_after_false_edit_failure():
 
 def test_stateful_persistent_update_still_creates_first_comment():
     provider = MagicMock()
-    provider.get_issue_comments.return_value = []
+    _set_issue_comments(provider, [])
     provider.publish_comment.return_value = "created"
 
     result = GitProvider.publish_persistent_comment_full(
@@ -157,7 +167,7 @@ def test_malformed_state_marker_is_replaced_without_duplicate_comment():
     body = f"{header}\n\nold review\n\n<!-- pr-agent-review-state:v1\nnot-json\n-->"
     comment = SimpleNamespace(body=body)
     provider = MagicMock()
-    provider.get_issue_comments.return_value = [comment]
+    _set_issue_comments(provider, [comment])
     provider.get_latest_commit_url.return_value = "commit-url"
     provider.get_comment_url.return_value = "comment-url"
 
@@ -180,7 +190,7 @@ def test_persistent_update_uses_latest_matching_comment():
     old = SimpleNamespace(body=f"{header}\n\nold review")
     latest = SimpleNamespace(body=f"{header}\n\nlatest review")
     provider = MagicMock()
-    provider.get_issue_comments.return_value = [old, latest]
+    _set_issue_comments(provider, [old, latest])
     provider.get_latest_commit_url.return_value = "commit-url"
     provider.get_comment_url.return_value = "comment-url"
 
@@ -202,7 +212,7 @@ def test_persistent_update_accepts_dict_comments_and_uses_latest():
     old = {"body": f"{header}\n\nold review", "id": 1}
     latest = {"body": f"{header}\n\nlatest review", "id": 2}
     provider = MagicMock()
-    provider.get_issue_comments.return_value = [old, latest]
+    _set_issue_comments(provider, [old, latest])
     provider.get_latest_commit_url.return_value = "commit-url"
     provider.get_comment_url.return_value = "comment-url"
 
@@ -224,7 +234,7 @@ def test_dict_comment_edit_failure_does_not_fallback():
     header = "## PR Reviewer Guide 🔍"
     comment = {"body": header, "id": 42}
     provider = MagicMock()
-    provider.get_issue_comments.return_value = [comment]
+    _set_issue_comments(provider, [comment])
     provider.edit_comment.side_effect = RuntimeError("edit failed")
 
     result = GitProvider.publish_persistent_comment_full(

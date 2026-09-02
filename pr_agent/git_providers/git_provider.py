@@ -436,6 +436,14 @@ class GitProvider(ABC):
     def supports_review_comment_identity(self) -> bool:
         return False
 
+    def supports_review_finding_state(self) -> bool:
+        """Return whether this provider can verify PR-Agent-authored review comments."""
+        return False
+
+    def is_comment_authored_by_pr_agent(self, comment) -> bool:
+        """Return whether a provider comment was authored by this PR-Agent identity."""
+        return False
+
     def unresolve_comment_thread(self, comment):  # noqa: B027 - intentional no-op
         pass
 
@@ -466,6 +474,32 @@ class GitProvider(ABC):
             return comment.get("body", "")
         return getattr(comment, "body", "")
 
+    def get_issue_comments_newest_first(self):
+        """Return issue comments newest first; providers override known API ordering."""
+        return list(reversed(list(self.get_issue_comments())))
+
+    def _iter_persistent_comments(
+        self,
+        identifiers,
+        *,
+        identity_marker: str | None = None,
+        require_agent_authorship: bool = False,
+    ):
+        """Yield matching comments in identity-priority and newest-first order."""
+        comments = self.get_issue_comments_newest_first()
+        for identifier in identifiers:
+            if not identifier:
+                continue
+            for comment in comments:
+                body = GitProvider._get_comment_body(comment)
+                if not comment_matches_identity(body, identifier):
+                    continue
+                if comment_carries_other_identity(body, identity_marker):
+                    continue
+                if require_agent_authorship and not self.is_comment_authored_by_pr_agent(comment):
+                    continue
+                yield comment, body
+
     def publish_persistent_comment_full(self, pr_comment: str,
                                    initial_header: str,
                                    update_header: bool = True,
@@ -474,29 +508,24 @@ class GitProvider(ABC):
                                    as_thread: bool = False,
                                    identity_marker: str | None = None,
                                    legacy_initial_header: str | None = None,
+                                   require_agent_authorship: bool = False,
                                    fallback_on_error: bool = True):
         try:
             pr_comment = add_pr_review_identity(pr_comment, identity_marker)
-            prev_comments = list(self.get_issue_comments())
             identifiers = (
                 [identity_marker, legacy_initial_header]
                 if identity_marker
                 else [initial_header]
             )
             comment_to_update = None
-            for identifier in identifiers:
-                if not identifier:
-                    continue
-                for comment in reversed(prev_comments):
-                    body = GitProvider._get_comment_body(comment)
-                    if (
-                        comment_matches_identity(body, identifier)
-                        and not comment_carries_other_identity(body, identity_marker)
-                    ):
-                        comment_to_update = comment
-                        break
-                if comment_to_update is not None:
-                    break
+            for comment, _body in GitProvider._iter_persistent_comments(
+                self,
+                identifiers,
+                identity_marker=identity_marker,
+                require_agent_authorship=require_agent_authorship,
+            ):
+                comment_to_update = comment
+                break
             if comment_to_update is not None:
                 comment = comment_to_update
                 latest_commit_url = self.get_latest_commit_url()

@@ -381,10 +381,10 @@ class GiteaProvider(GitProvider):
             )
         except ApiException as e:
             self.logger.error(f"Error editing comment: {e}")
-            raise
+            return False
         except Exception as e:
             self.logger.error(f"Unexpected error: {e}")
-            raise
+            return False
 
 
     def publish_inline_comment(self,body: str, relevant_file: str, relevant_line_in_file: str, original_suggestion=None):

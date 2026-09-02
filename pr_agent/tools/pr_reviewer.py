@@ -37,7 +37,6 @@ from pr_agent.algo.review_merge import merge_review_chunks
 =======
 >>>>>>> 2541960 (fix(review): harden persistent finding state)
 from pr_agent.algo.run_details import get_run_details, init_run_details
-
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (
@@ -45,7 +44,10 @@ from pr_agent.algo.utils import (
     PRReviewHeader,
     PRReviewIdentity,
     add_pr_review_identity,
+    comment_carries_other_identity,
+    comment_matches_identity,
     convert_to_markdown_v2,
+    get_pr_review_comment_identifiers,
     github_action_output,
     load_yaml,
     push_outputs,
@@ -66,6 +68,7 @@ _SUGGESTION_FENCE_RE = re.compile(r"```[ \t]*suggestion\b", re.IGNORECASE)
 _STATE_BLOCK_INVALID_MARKER = "invalid_marker"
 _STATE_BLOCK_READ_ERROR = "read_error"
 _STATE_BLOCK_REVIEW_DATA = "review_data"
+_STATE_BLOCK_SIZE = "state_size"
 
 
 class PRReviewer:
@@ -114,6 +117,8 @@ class PRReviewer:
         self._review_state_result = None
         self._review_state_blocked = False
         self._review_state_block_reason = None
+        self._review_finding_previous_state = None
+        self._review_state_preserved = False
         question_str, answer_str = self._get_user_answers()
         self.pr_description, self.pr_description_files = (
             self.git_provider.get_pr_description(split_changes_walkthrough=True))
@@ -251,14 +256,24 @@ class PRReviewer:
             # This intent applies to the review only - never to status comments or the output of other tools.
             review_thread_kwargs = {"as_thread": True} if self.git_provider.should_publish_review_as_thread() else {}
             state_block_reason = getattr(self, "_review_state_block_reason", None)
-            if state_blocked and state_block_reason == _STATE_BLOCK_INVALID_MARKER:
+            if state_blocked and (
+                state_block_reason == _STATE_BLOCK_INVALID_MARKER
+                or (
+                    state_block_reason == _STATE_BLOCK_SIZE
+                    and getattr(self, "_review_state_preserved", False)
+                )
+            ):
                 get_logger().warning(
-                    "Review finding state marker is invalid; replacing it with a clean persistent review"
+                    "Review finding state cannot be written safely; replacing the persistent review "
+                    "with a clean state marker"
                 )
                 persistent_args = dict(
                     initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
                     update_header=True,
                     final_update_message=False,
+                    identity_marker=PRReviewIdentity.REGULAR.value,
+                    legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
+                    require_agent_authorship=True,
                     fallback_on_error=False,
                     **review_thread_kwargs,
                 )
@@ -277,6 +292,7 @@ class PRReviewer:
                     final_update_message=final_update_message,
                     identity_marker=PRReviewIdentity.REGULAR.value,
                     legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
+                    require_agent_authorship=True,
                     **review_thread_kwargs,
                 )
                 if state_result is not None:
@@ -320,7 +336,10 @@ class PRReviewer:
             return False
         if not settings.pr_reviewer.get("persistent_finding_state", True):
             return False
-        publisher = getattr(self.git_provider, "publish_persistent_comment", None)
+        provider = getattr(self, "git_provider", None)
+        if provider is None:
+            return False
+        publisher = getattr(provider, "publish_persistent_comment", None)
         if getattr(publisher, "__func__", None) is GitProvider.publish_persistent_comment:
             # Skip generic publishers; they only create comments and cannot safely carry lifecycle state.
             return False
@@ -329,20 +348,23 @@ class PRReviewer:
         if getattr(getattr(self, "incremental", None), "is_incremental", False):
             return False
         try:
-            return bool(self.git_provider.is_supported("get_issue_comments"))
+            if provider.supports_review_finding_state() is not True:
+                return False
+            return bool(provider.is_supported("get_issue_comments"))
         except Exception as e:
             get_logger().warning(f"Review finding state is not supported by this provider, error: {e}")
             return False
 
     def _load_review_finding_state(self):
-        header = f"{PRReviewHeader.REGULAR.value} 🔍"
+        identifiers = get_pr_review_comment_identifiers(full=True, incremental=False)
         try:
-            comments = list(self.git_provider.get_issue_comments())
             invalid_marker_found = False
-            for comment in reversed(comments):
-                body = GitProvider._get_comment_body(comment)
-                if not isinstance(body, str) or not body.startswith(header):
-                    continue
+            for _comment, body in GitProvider._iter_persistent_comments(
+                self.git_provider,
+                identifiers,
+                identity_marker=PRReviewIdentity.REGULAR.value,
+                require_agent_authorship=True,
+            ):
                 parsed = parse_review_state(body)
                 if parsed.valid and parsed.present:
                     self._review_state_blocked = False
@@ -434,13 +456,19 @@ class PRReviewer:
             value = getattr(self.git_provider, attribute, None)
             if isinstance(value, int) and value > 0:
                 update_suffix = f"\n\n#### (Review updated until commit {self._review_run_id()})\n"
-                return value - len(update_suffix)
+                # The shared persistent publisher adds the full-review identity
+                # before inserting the update suffix. Reserve both pieces so a
+                # complete state marker remains inside the provider limit.
+                identity_overhead = len(PRReviewIdentity.REGULAR.value) + 2
+                return value - len(update_suffix) - identity_overhead
         return None
 
     def _prepare_review_finding_state(self, data: dict) -> None:
         self._review_state_result = None
         self._review_state_blocked = False
         self._review_state_block_reason = None
+        self._review_finding_previous_state = None
+        self._review_state_preserved = False
         if not self._review_finding_state_enabled():
             return
         if not isinstance(data.get("review"), dict):
@@ -450,6 +478,8 @@ class PRReviewer:
             return
 
         parsed = self._load_review_finding_state()
+        if parsed is not None and parsed.valid:
+            self._review_finding_previous_state = parsed.state
         if parsed is None and self._review_state_block_reason != _STATE_BLOCK_INVALID_MARKER:
             return
         current_findings = self._review_findings_from_data(data)
@@ -701,13 +731,42 @@ class PRReviewer:
             markdown_text += show_run_details(self.git_provider.is_supported("gfm_markdown"))
 
         if self._review_state_result is not None:
-            markdown_text = append_review_state(
-                markdown_text or "",
-                self._review_state_result.state,
-                max_chars=self._review_comment_max_chars(),
-            )
+            state_result = self._review_state_result
+            try:
+                markdown_text = append_review_state(
+                    markdown_text or "",
+                    state_result.state,
+                    max_chars=self._review_comment_max_chars(),
+                )
+            except ValueError as error:
+                previous_state = getattr(self, "_review_finding_previous_state", None)
+                self._review_state_result = None
+                self._review_state_blocked = True
+                self._review_state_block_reason = _STATE_BLOCK_SIZE
+                get_logger().warning(
+                    f"Persistent review state did not fit the provider comment limit; "
+                    f"publishing the review without advancing state: {error}"
+                )
+                if previous_state is not None:
+                    try:
+                        markdown_text = append_review_state(
+                            markdown_text or "",
+                            previous_state,
+                            max_chars=self._review_comment_max_chars(),
+                        )
+                    except ValueError as previous_error:
+                        get_logger().warning(
+                            f"Previous persistent review state also did not fit the provider "
+                            f"comment limit; leaving the existing state untouched: {previous_error}"
+                        )
+                    else:
+                        self._review_state_preserved = True
 
-
+        # Emit the review to optional external sinks (stdout/file/webhook/slack); no-op unless enabled.
+        # publish_output gates it so a dry run makes no external calls. The "no major issues"
+        # suppression deliberately does not: that only silences the PR comment.
+        if get_settings().config.publish_output:
+            push_outputs("review", payload=data.get('review', {}), markdown=markdown_text)
 
         # Add custom labels from the review prediction (effort, security)
         self.set_review_labels(data)

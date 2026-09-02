@@ -988,8 +988,9 @@ async def test_publish_no_suggestions_still_overwrites_the_progress_comment_when
 
     await tool.publish_no_suggestions()
 
-    _, kwargs = git_provider.edit_comment.call_args
-    assert "No code suggestions found for the PR." in kwargs["body"]
+    call = git_provider.edit_comment.call_args
+    edited_body = call.kwargs.get("body", call.args[1])
+    assert "No code suggestions found for the PR." in edited_body
     git_provider.remove_comment.assert_not_called()
 
 
@@ -1677,3 +1678,39 @@ def test_custom_heading_is_kept_when_a_history_section_already_exists():
     assert "Suggestions up to commit aaa1111" in updated
     assert "Suggestions up to commit 0000000" in updated
     provider.publish_comment.assert_not_called()
+
+
+@pytest.mark.parametrize("raises", [False, True], ids=["returns-false", "raises"])
+def test_first_persistent_improve_edit_failure_publishes_visible_fallback(raises):
+    provider = MagicMock()
+    provider.get_issue_comments.return_value = []
+    provider.get_latest_commit_url.return_value = "https://example.test/commit/deadbee"
+    progress = MagicMock()
+    fallback = MagicMock()
+    provider.publish_comment.return_value = fallback
+    if raises:
+        provider.edit_comment.side_effect = RuntimeError("edit failed")
+    else:
+        provider.edit_comment.return_value = False
+
+    header = "## PR Code Suggestions " + chr(0x2728)
+    new_comment = (
+        header + "\n\n"
+        + PRCodeSuggestionsIdentity.SUMMARY.value + "\n\n"
+        + "<!-- deadbee -->\n\n<table>new suggestions</table>\n\n"
+    )
+    result = PRCodeSuggestions.publish_persistent_comment_with_history(
+        provider,
+        header + "\n\n<table>new suggestions</table>",
+        header,
+        name="suggestions",
+        final_update_message=False,
+        progress_response=progress,
+        identity_marker=PRCodeSuggestionsIdentity.SUMMARY.value,
+        legacy_initial_header=PRCodeSuggestionsHeader.SUMMARY.value,
+    )
+
+    assert result is fallback
+    provider.edit_comment.assert_called_once_with(progress, new_comment)
+    provider.publish_comment.assert_called_once()
+    provider.remove_comment.assert_called_once_with(progress)

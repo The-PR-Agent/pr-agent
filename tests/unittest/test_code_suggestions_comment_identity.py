@@ -156,9 +156,9 @@ def test_github_check_run_receives_configured_presentation_without_identity():
 
 def _persistent_publish(prev_comment_bodies):
     provider = MagicMock()
-    provider.get_issue_comments.return_value = [
-        SimpleNamespace(body=body) for body in prev_comment_bodies
-    ]
+    comments = [SimpleNamespace(body=body) for body in prev_comment_bodies]
+    provider.get_issue_comments.return_value = comments
+    provider.get_issue_comments_newest_first.return_value = list(reversed(comments))
     GitProvider.publish_persistent_comment_full(
         provider,
         "## PR Code Suggestions ✨\n\n<table>new</table>",

@@ -1,5 +1,8 @@
 import json
+
 import pytest
+
+from pr_agent.algo import review_finding_state as state_module
 from pr_agent.algo.review_finding_state import (
     append_review_state,
     parse_review_state,
@@ -310,3 +313,43 @@ def test_invalid_reopen_metadata_fails_closed():
     assert parsed.present is True
     assert parsed.valid is False
     assert parsed.state is None
+
+
+def test_parse_duplicate_marker_uses_namespace_guard_before_regex(monkeypatch):
+    class RejectingPattern:
+        def finditer(self, *_args, **_kwargs):
+            raise AssertionError("regex scan should not run for duplicate markers")
+
+    monkeypatch.setattr(state_module, "_STATE_MARKER_RE", RejectingPattern())
+    body = (
+        f"{state_module._STATE_MARKER_NAMESPACE} first\n"
+        f"{state_module._STATE_MARKER_NAMESPACE} second"
+    )
+
+    parsed = state_module.parse_review_state(body)
+
+    assert parsed.present is True
+    assert parsed.valid is False
+
+
+def test_append_duplicate_marker_uses_namespace_guard_before_substitution(monkeypatch):
+    state = reconcile_review_findings(
+        None,
+        [_finding()],
+        allow_resolution=True,
+        timestamp="2026-01-01T00:00:00Z",
+    ).state
+
+    class RejectingPattern:
+        def sub(self, *_args, **_kwargs):
+            raise AssertionError("regex substitution should not run for duplicate markers")
+
+    monkeypatch.setattr(state_module, "_STATE_MARKER_RE", RejectingPattern())
+    body = (
+        f"human review\n{state_module._STATE_MARKER_NAMESPACE} first\n"
+        f"{state_module._STATE_MARKER_NAMESPACE} second"
+    )
+
+    result = append_review_state(body, state)
+
+    assert result.count(state_module._STATE_MARKER_NAMESPACE) == 1

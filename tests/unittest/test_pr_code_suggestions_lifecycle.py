@@ -106,8 +106,10 @@ async def test_run_does_not_remove_final_summary_when_cancelled_during_dual_publ
             await tool.run()
 
         provider.edit_comment.assert_called_once()
-        assert provider.edit_comment.call_args.args[0] is progress_comment
-        assert "final summary" in provider.edit_comment.call_args.kwargs["body"]
+        call = provider.edit_comment.call_args
+        assert call.args[0] is progress_comment
+        edited_body = call.kwargs.get("body", call.args[1])
+        assert "final summary" in edited_body
         provider.remove_comment.assert_not_called()
         assert tool.progress_response is None
     finally:

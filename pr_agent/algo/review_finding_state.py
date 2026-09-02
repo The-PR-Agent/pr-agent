@@ -136,10 +136,12 @@ def parse_review_state(comment_body: str) -> ParsedReviewState:
     """Parse the versioned state marker, treating malformed state as unsafe."""
     body = comment_body or ""
     namespace_count = body.count(_STATE_MARKER_NAMESPACE)
-    matches = list(_STATE_MARKER_RE.finditer(body))
     if namespace_count == 0:
         return ParsedReviewState(None, present=False, valid=True)
-    if namespace_count != 1 or len(matches) != 1:
+    if namespace_count != 1:
+        return ParsedReviewState(None, present=True, valid=False)
+    matches = list(_STATE_MARKER_RE.finditer(body))
+    if len(matches) != 1:
         return ParsedReviewState(None, present=True, valid=False)
     match = matches[0]
     try:
@@ -300,7 +302,16 @@ def append_review_state(
 
     The optional limit is reserved for the complete hidden marker.
     """
-    body = _STATE_MARKER_RE.sub("", review_body or "").rstrip()
+    raw_body = review_body or ""
+    namespace_count = raw_body.count(_STATE_MARKER_NAMESPACE)
+    if namespace_count == 1:
+        body = _STATE_MARKER_RE.sub("", raw_body).rstrip()
+        if _STATE_MARKER_NAMESPACE in body:
+            body = body.split(_STATE_MARKER_NAMESPACE, 1)[0].rstrip()
+    elif namespace_count > 1:
+        body = raw_body.split(_STATE_MARKER_NAMESPACE, 1)[0].rstrip()
+    else:
+        body = raw_body.rstrip()
     human_body = "\n\n".join(
         section
         for section in (body, _render_resolved_section(state))

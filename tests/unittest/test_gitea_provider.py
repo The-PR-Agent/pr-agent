@@ -47,6 +47,18 @@ def test_gitea_edit_comment_accepts_dict_ids(comment, expected_id):
     )
 
 
+def test_gitea_edit_comment_returns_false_on_failure():
+    provider = GiteaProvider.__new__(GiteaProvider)
+    provider.repo_api = MagicMock()
+    provider.repo_api.edit_comment.side_effect = RuntimeError("edit failed")
+    provider.owner = "owner"
+    provider.repo = "repo"
+    provider.max_comment_chars = 1000
+    provider.logger = MagicMock()
+
+    assert provider.edit_comment({"id": 42}, "updated body") is False
+
+
 def test_gitea_get_issue_comments_returns_empty_list_when_no_comments():
     provider = GiteaProvider.__new__(GiteaProvider)
     provider.enabled_issue = False

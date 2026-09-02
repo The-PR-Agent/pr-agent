@@ -1904,6 +1904,14 @@ class TestGitLabCapabilities:
 
         assert provider.get_issue_comments() == ["oldest", "middle", "newest"]
 
+    def test_persistent_state_ownership_uses_authenticated_user_id(self):
+        provider = self._provider()
+        provider._get_own_user_id = MagicMock(return_value=42)
+
+        assert provider.supports_review_finding_state() is True
+        assert provider.is_comment_authored_by_pr_agent({"author": {"id": 42}}) is True
+        assert provider.is_comment_authored_by_pr_agent({"author": {"id": 99}}) is False
+
     @pytest.mark.parametrize("capability", [
         "create_inline_comment",
         "publish_inline_comments",

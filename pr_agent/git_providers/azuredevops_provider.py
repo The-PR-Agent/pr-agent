@@ -954,6 +954,43 @@ class AzureDevopsProvider(GitProvider):
     def supports_review_comment_identity(self) -> bool:
         return True
 
+    def _configured_agent_identities(self) -> set[str]:
+        configured = get_settings().get("azure_devops_server.agent_identity", "")
+        if isinstance(configured, str):
+            values = (configured,)
+        elif isinstance(configured, (list, tuple, set)):
+            values = configured
+        else:
+            values = ()
+        return {
+            value.strip().casefold()
+            for value in values
+            if isinstance(value, str) and value.strip()
+        }
+
+    def supports_review_finding_state(self) -> bool:
+        return bool(self._configured_agent_identities())
+
+    def is_comment_authored_by_pr_agent(self, comment) -> bool:
+        identities = self._configured_agent_identities()
+        if not identities:
+            raise RuntimeError("Azure DevOps agent identity is not configured")
+        author = self._value(comment, "author") or self._value(comment, "user")
+        if author is None:
+            raise RuntimeError("Azure DevOps comment author cannot be verified")
+        values = []
+        for attribute, serialized_attribute in (
+            ("id", None),
+            ("display_name", "displayName"),
+            ("unique_name", "uniqueName"),
+        ):
+            value = self._value(author, attribute, serialized_attribute)
+            if value is not None:
+                values.append(str(value).strip().casefold())
+        if not values:
+            raise RuntimeError("Azure DevOps comment author cannot be verified")
+        return any(value in identities for value in values)
+
     def publish_description(self, pr_title: str, pr_body: str):
         if len(pr_body) > MAX_PR_DESCRIPTION_AZURE_LENGTH:
 
@@ -1294,6 +1331,7 @@ class AzureDevopsProvider(GitProvider):
             comments.append(SimpleNamespace(
                 id=self._value(comment, "id"),
                 body=content,
+                author=author,
                 user=SimpleNamespace(login=author_name),
             ))
         return comments
@@ -1366,6 +1404,9 @@ class AzureDevopsProvider(GitProvider):
                     comment.thread_id = thread.id
                     comment_list.append(comment)
         return comment_list
+
+    def get_issue_comments_newest_first(self):
+        return list(self.get_issue_comments())
 
     def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
         return None

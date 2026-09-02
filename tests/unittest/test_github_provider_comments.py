@@ -55,13 +55,32 @@ def _make_provider(pr=None, max_chars=65000):
     return p
 
 
-def test_edit_comment_reraises_github_failure():
+def test_edit_comment_returns_false_on_github_failure():
     provider = _make_provider()
     comment = MagicMock()
     comment.edit.side_effect = gh_module.GithubException(500, "edit failed", {})
 
-    with pytest.raises(gh_module.GithubException):
-        provider.edit_comment(comment, "updated body")
+    assert provider.edit_comment(comment, "updated body") is False
+
+
+@pytest.mark.parametrize(
+    ("deployment_type", "agent_login", "comment_login", "expected"),
+    [
+        ("user", "pr-agent", "pr-agent", True),
+        ("user", "pr-agent", "human", False),
+        ("app", "review-app[bot]", "review-app[bot]", True),
+        ("app", "review-app[bot]", "review-app[bot]-human", False),
+    ],
+)
+def test_comment_authorship_uses_authenticated_github_identity(
+    deployment_type, agent_login, comment_login, expected
+):
+    provider = _make_provider()
+    provider.deployment_type = deployment_type
+    provider.github_user_id = agent_login
+    comment = SimpleNamespace(user=SimpleNamespace(login=comment_login))
+
+    assert provider.is_comment_authored_by_pr_agent(comment) is expected
 
 
 # ---------------------------------------------------------------------------
