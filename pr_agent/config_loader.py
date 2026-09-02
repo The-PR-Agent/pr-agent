@@ -22,6 +22,7 @@ global_settings = Dynaconf(
         "settings/ignore.toml",
         "settings/generated_code_ignore.toml",
         "settings/language_extensions.toml",
+        "settings/prompt_fragments.toml",
         "settings/pr_reviewer_prompts.toml",
         "settings/pr_questions_prompts.toml",
         "settings/pr_line_questions_prompts.toml",

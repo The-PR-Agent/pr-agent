@@ -43,42 +43,7 @@ Additional scoring considerations:
 
 
 The PR code diff will be presented in the following structured format:
-======
-## File: 'src/file1.py'
-{%- if is_ai_metadata %}
-### AI-generated changes summary:
-* ...
-* ...
-{%- endif %}
-
-@@ ... @@ def func1():
-__new hunk__
-11  unchanged code line0
-12  unchanged code line1
-13 +new code line2 added
-14  unchanged code line3
-__old hunk__
- unchanged code line0
- unchanged code line1
--old code line2 removed
- unchanged code line3
-
-@@ ... @@ def func2():
-__new hunk__
-...
-__old hunk__
-...
-
-
-## File: 'src/file2.py'
-...
-======
-- In the format above, the diff is organized into separate '__new hunk__' and '__old hunk__' sections for each code chunk. '__new hunk__' contains the updated code, while '__old hunk__' shows the removed code. If no code was added or removed in a specific chunk, the corresponding section will be omitted.
-- Line numbers are included for the '__new hunk__' sections to enable referencing specific lines in the code suggestions. These numbers are for reference only and are not part of the actual code.
-- Code lines are prefixed with symbols: '+' for new code added in the PR, '-' for code removed, and ' ' for unchanged code.
-{%- if is_ai_metadata %}
-- When available, an AI-generated summary will precede each file's diff, with a high-level overview of the changes. Note that this summary may not be fully accurate or comprehensive.
-{%- endif %}
+{{ diff_hunk_format }}
 
 
 The output must be a YAML object equivalent to type $PRCodeSuggestionsFeedback, according to the following Pydantic definitions:

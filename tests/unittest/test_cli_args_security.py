@@ -84,6 +84,9 @@ HOST_ONLY_ARGS = [
     "--skills__paths=/etc",
     "--skills.unknown=value",
     "--skills={paths:[/etc]}",
+    "--prompt_fragments.diff_hunk_format={{ cycler.__init__.__globals__ }}",
+    "--prompt_fragments__diff_hunk_format=unsafe",
+    '--prompt_fragments={"diff_hunk_format": "unsafe"}',
 ]
 
 

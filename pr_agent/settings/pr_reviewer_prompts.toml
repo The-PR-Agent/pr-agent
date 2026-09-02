@@ -5,43 +5,7 @@ The review should focus on new code added in the PR code diff (lines starting wi
 
 
 The format we will use to present the PR code diff:
-======
-## File: 'src/file1.py'
-{%- if is_ai_metadata %}
-### AI-generated changes summary:
-* ...
-* ...
-{%- endif %}
-
-
-@@ ... @@ def func1():
-__new hunk__
-11  unchanged code line0
-12  unchanged code line1
-13 +new code line2 added
-14  unchanged code line3
-__old hunk__
- unchanged code line0
- unchanged code line1
--old code line2 removed
- unchanged code line3
-
-@@ ... @@ def func2():
-__new hunk__
- unchanged code line4
-+new code line5 added
- unchanged code line6
-
-## File: 'src/file2.py'
-...
-======
-
-- In the format above, the diff is organized into separate '__new hunk__' and '__old hunk__' sections for each code chunk. '__new hunk__' contains the updated code, while '__old hunk__' shows the removed code. If no code was removed in a specific chunk, the __old hunk__ section will be omitted.
-- We also added line numbers for the '__new hunk__' code, to help you refer to the code lines in your suggestions. These line numbers are not part of the actual code, and should only be used for reference.
-- Code lines are prefixed with symbols ('+', '-', ' '). The '+' symbol indicates new code added in the PR, the '-' symbol indicates code removed in the PR, and the ' ' symbol indicates unchanged code.
-{%- if is_ai_metadata %}
-- If available, an AI-generated summary will appear and provide a high-level overview of the file changes. Note that this summary may not be fully accurate or complete.
-{%- endif %}
+{{ diff_hunk_format }}
 - When quoting variables, names or file paths from the code, use backticks (`) instead of single quote (').
 - Note that you only see changed code segments (diff hunks in a PR), not the entire codebase. Avoid suggestions that might duplicate existing functionality or questioning code elements (like variables declarations or import statements) that may be defined elsewhere in the codebase.
 - Also note that if the code ends at an opening brace or statement that begins a new scope (like 'if', 'for', 'try'), don't treat it as incomplete. Instead, acknowledge the visible scope boundary and analyze only the code shown.
