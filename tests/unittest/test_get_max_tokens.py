@@ -197,6 +197,8 @@ class TestGetMaxTokens:
         "vertex_ai/gemini-3.6-flash",
         "gemini/gemini-3.7-flash",
         "vertex_ai/gemini-3.7-flash",
+        "gemini/gemini-3.8-flash",
+        "vertex_ai/gemini-3.8-flash",
     ])
     def test_gemini_3_x_models_max_tokens(self, monkeypatch, model):
         fake_settings = type("", (), {
