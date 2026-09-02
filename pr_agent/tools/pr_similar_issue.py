@@ -58,18 +58,13 @@ def _qdrant_collection_name(base_name: str) -> str:
 
     Point ids were re-seeded with the repository name in #2323, so points written by an earlier
     version live under ids that are never rewritten and never deleted. Writing the new ids into a
-    separate, suffixed collection keeps those stale points out of every query without deleting
-    anything: the pre-#2323 collection is left untouched and can be dropped by hand once it is no
-    longer wanted. Setting the suffix to an empty string restores the original collection name.
+    separate collection keeps those stale points out of every query without deleting anything: the
+    pre-#2323 collection is left untouched and can be dropped by hand once it is no longer wanted.
 
     Only the qdrant backend uses this; ``self.index_name`` is shared with pinecone and lancedb and
     is deliberately left alone.
     """
-    suffix = get_settings().get("pr_similar_issue.qdrant_collection_suffix", "v2")
-    suffix = str(suffix or "").strip().strip("-")
-    if not suffix:
-        return base_name
-    return f"{base_name}-{suffix}"
+    return f"{base_name}-v2"
 
 
 class PRSimilarIssue:

@@ -60,13 +60,7 @@ vectordb = "qdrant"
 
 You can get a free managed Qdrant instance from [Qdrant Cloud](https://cloud.qdrant.io/).
 
-Qdrant points are stored in a collection named `codium-ai-pr-agent-issues-<suffix>`, where the suffix
-comes from `qdrant_collection_suffix` (default `v2`):
-
-```
-[pr_similar_issue]
-qdrant_collection_suffix = "v2"
-```
+Qdrant points are stored in a collection named `codium-ai-pr-agent-issues-v2`.
 
 !!! note "Upgrading an index created before the point-id fix"
 
@@ -75,14 +69,11 @@ qdrant_collection_suffix = "v2"
     an earlier version are never rewritten or deleted - they still carry a matching `metadata.repo`
     payload, so they stay queryable and can surface alongside their replacements.
 
-    The default `qdrant_collection_suffix = "v2"` sidesteps this: the new index is written to
+    The `-v2` collection suffix sidesteps this: the new index is written to
     `codium-ai-pr-agent-issues-v2`, leaving the pre-existing `codium-ai-pr-agent-issues` collection
     untouched. Nothing is deleted, and the first run after the upgrade re-indexes the repository into
     the new collection. Once you are satisfied with the results, you can delete the old
     `codium-ai-pr-agent-issues` collection from Qdrant by hand to reclaim the storage.
-
-    If you would rather keep writing to the original collection - for example because you have already
-    re-indexed it from scratch - set `qdrant_collection_suffix = ""`.
 
 ## How to use
 
