@@ -219,8 +219,7 @@ class BitbucketProvider(GitProvider):
             post_parameters_list.append(post_parameters)
 
         try:
-            self.publish_inline_comments(post_parameters_list)
-            return True
+            return self.publish_inline_comments(post_parameters_list)
         except Exception as e:
             get_logger().error(f"Bitbucket failed to publish code suggestion, error: {e}")
             return False
@@ -502,7 +501,7 @@ class BitbucketProvider(GitProvider):
         path = relevant_file.strip()
         return dict(body=body, path=path, position=absolute_position) if subject_type == "LINE" else {}
 
-    def publish_inline_comment(self, comment: str, from_line: int, file: str, original_suggestion=None):
+    def publish_inline_comment(self, comment: str, from_line: int, file: str, original_suggestion=None) -> bool:
         comment = self.limit_output_characters(comment, self.max_comment_length)
         payload = json.dumps({
             "content": {
@@ -513,10 +512,16 @@ class BitbucketProvider(GitProvider):
                 "path": file
             },
         })
-        response = requests.request(
-            "POST", self.bitbucket_comment_api_url, data=payload, headers=self.headers
-        )
-        return response
+        try:
+            response = requests.request(
+                "POST", self.bitbucket_comment_api_url, data=payload, headers=self.headers
+            )
+            response.raise_for_status()
+        except Exception as e:
+            get_logger().error(
+                f"Failed to publish inline comment to '{file}' at line {from_line}, error: {e}")
+            return False
+        return True
 
     def get_line_link(self, relevant_file: str, relevant_line_start: int, relevant_line_end: int = None) -> str:
         if relevant_line_start == -1:
@@ -545,17 +550,28 @@ class BitbucketProvider(GitProvider):
 
         return ""
 
-    def publish_inline_comments(self, comments: list[dict]):
+    def publish_inline_comments(self, comments: list[dict]) -> bool:
+        publishable_count = 0
+        published_count = 0
         for comment in comments:
             if 'position' in comment:
-                self.publish_inline_comment(comment['body'], comment['position'], comment['path'])
+                from_line = comment['position']
             elif 'start_line' in comment:  # multi-line comment
                 # note that bitbucket does not seem to support range - only a comment on a single line - https://community.developer.atlassian.com/t/api-post-endpoint-for-inline-pull-request-comments/60452
-                self.publish_inline_comment(comment['body'], comment['start_line'], comment['path'])
+                from_line = comment['start_line']
             elif 'line' in comment:  # single-line comment
-                self.publish_inline_comment(comment['body'], comment['line'], comment['path'])
+                from_line = comment['line']
             else:
                 get_logger().error(f"Could not publish inline comment {comment}")
+                continue
+
+            publishable_count += 1
+            if self.publish_inline_comment(comment['body'], from_line, comment['path']):
+                published_count += 1
+
+        # A partial failure must not report failure: the caller republishes the whole
+        # list, which would post the already-accepted suggestions a second time.
+        return published_count > 0 or publishable_count == 0
 
     def get_title(self):
         return self.pr.title
