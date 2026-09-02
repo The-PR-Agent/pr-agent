@@ -54,9 +54,11 @@ jobs:
             echo "::error::Version '$VERSION' is not a valid SemVer 2.0.0 string."
             exit 1
           fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "sha=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=$VERSION"
+            echo "tag=$TAG"
+            echo "sha=${{ github.sha }}"
+          } >> "$GITHUB_OUTPUT"
 
   publish-pypi:
     needs: prepare

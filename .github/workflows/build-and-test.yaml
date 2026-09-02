@@ -70,7 +70,7 @@ jobs:
         name: Smoke-start the github_app container
         run: |
           docker run -d --name pr-agent-smoke -p 3000:3000 pragent/pr-agent:smoke
-          for i in $(seq 1 15); do
+          for _ in $(seq 1 15); do
             if curl -sf -o /dev/null http://localhost:3000/; then
               echo "container is serving"
               docker rm -f pr-agent-smoke
