@@ -1013,15 +1013,21 @@ class RepoApi(giteapy.RepositoryApi):
             body=body
         )
 
-    def get_change_file_pull_request(self, owner: str, repo: str, pr_number: int):
-        """Get changed files in the pull request"""
-        try:
-            url = f'/repos/{owner}/{repo}/pulls/{pr_number}/files'
+    def _list_all_pages(self, url: str, page_size: int = 50) -> list:
+        """Walk a paginated list endpoint until it answers with an empty page.
 
+        Gitea serves at most `limit` items per page and caps `limit` at the server's own
+        MAX_RESPONSE_ITEMS, so a page shorter than `page_size` is not necessarily the last
+        one. Errors propagate: a failure mid-way must not yield a silently truncated list.
+        """
+        items = []
+        page = 1
+        while True:
             response = self.api_client.call_api(
                 url,
                 'GET',
                 path_params={},
+                query_params=[('page', page), ('limit', page_size)],
                 response_type=None,
                 _return_http_data_only=False,
                 _preload_content=False,
@@ -1030,15 +1036,21 @@ class RepoApi(giteapy.RepositoryApi):
 
             if hasattr(response, 'data'):
                 raw_data = response.data.read()
-                diff_content = raw_data.decode('utf-8')
-                return json.loads(diff_content) if isinstance(diff_content, str) else diff_content
             elif isinstance(response, tuple):
                 raw_data = response[0].read()
-                diff_content = raw_data.decode('utf-8')
-                return json.loads(diff_content) if isinstance(diff_content, str) else diff_content
+            else:
+                return items
 
-            return []
+            page_items = json.loads(raw_data.decode('utf-8'))
+            if not isinstance(page_items, list) or not page_items:
+                return items
+            items.extend(page_items)
+            page += 1
 
+    def get_change_file_pull_request(self, owner: str, repo: str, pr_number: int):
+        """Get changed files in the pull request"""
+        try:
+            return self._list_all_pages(f'/repos/{owner}/{repo}/pulls/{pr_number}/files')
         except ApiException as e:
             self.logger.error(f"Error getting changed files: {e}")
             return []
@@ -1181,29 +1193,7 @@ class RepoApi(giteapy.RepositoryApi):
     def get_pr_commits(self, owner: str, repo: str, pr_number: int):
         """Get all commits in a pull request"""
         try:
-            url = f'/repos/{owner}/{repo}/pulls/{pr_number}/commits'
-
-            response = self.api_client.call_api(
-                url,
-                'GET',
-                path_params={},
-                response_type=None,
-                _return_http_data_only=False,
-                _preload_content=False,
-                auth_settings=['AuthorizationHeaderToken']
-            )
-
-            if hasattr(response, 'data'):
-                raw_data = response.data.read()
-                commits_data = json.loads(raw_data.decode('utf-8'))
-                return commits_data
-            elif isinstance(response, tuple):
-                raw_data = response[0].read()
-                commits_data = json.loads(raw_data.decode('utf-8'))
-                return commits_data
-
-            return []
-
+            return self._list_all_pages(f'/repos/{owner}/{repo}/pulls/{pr_number}/commits')
         except ApiException as e:
             self.logger.error(f"Error getting PR commits: {e}")
             return []

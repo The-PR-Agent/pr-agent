@@ -1,4 +1,6 @@
+import json
 from io import BytesIO
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -919,3 +921,82 @@ class TestGiteaProviderInlineCommentStatus:
 
         _, kwargs = client.call_api.call_args
         assert kwargs["body"]["event"] == "COMMENT"
+
+
+def _page(items):
+    """A raw (non-preloaded) giteapy response carrying one JSON page."""
+    return SimpleNamespace(data=BytesIO(json.dumps(items).encode("utf-8")))
+
+
+class TestGiteaRepoApiPagination:
+    """Gitea answers list endpoints one page at a time (30 items by default), so the PR
+    files and commits must be collected across every page."""
+
+    @staticmethod
+    def _repo_api(pages):
+        from pr_agent.git_providers.gitea_provider import RepoApi
+
+        repo_api = RepoApi(MagicMock())
+        repo_api.logger = MagicMock()
+        repo_api.api_client.call_api.side_effect = [_page(items) for items in pages]
+        return repo_api
+
+    @staticmethod
+    def _requested_pages(repo_api):
+        return [dict(call.kwargs["query_params"])["page"] for call in repo_api.api_client.call_api.call_args_list]
+
+    def test_pr_files_are_collected_across_pages(self):
+        repo_api = self._repo_api([
+            [{"filename": "a.py"}, {"filename": "b.py"}],
+            [{"filename": "c.py"}],
+            [],
+        ])
+
+        files = repo_api.get_change_file_pull_request(owner="owner", repo="repo", pr_number=7)
+
+        assert [f["filename"] for f in files] == ["a.py", "b.py", "c.py"]
+        assert self._requested_pages(repo_api) == [1, 2, 3]
+
+    def test_pr_commits_are_collected_across_pages(self):
+        repo_api = self._repo_api([
+            [{"sha": "newest"}, {"sha": "middle"}],
+            [{"sha": "oldest"}],
+            [],
+        ])
+
+        commits = repo_api.get_pr_commits(owner="owner", repo="repo", pr_number=7)
+
+        assert [c["sha"] for c in commits] == ["newest", "middle", "oldest"]
+        assert self._requested_pages(repo_api) == [1, 2, 3]
+
+    def test_a_page_shorter_than_the_requested_limit_is_not_the_last_page(self):
+        # A server capped at 30 items answers a limit of 50 with 30 items; only an empty
+        # page ends the walk, otherwise the original truncation would be back.
+        repo_api = self._repo_api([
+            [{"sha": str(i)} for i in range(30)],
+            [{"sha": str(i)} for i in range(30, 35)],
+            [],
+        ])
+
+        commits = repo_api.get_pr_commits(owner="owner", repo="repo", pr_number=7)
+
+        assert len(commits) == 35
+        assert self._requested_pages(repo_api) == [1, 2, 3]
+
+    def test_every_page_request_authenticates_via_header(self):
+        repo_api = self._repo_api([[{"filename": "a.py"}], []])
+
+        repo_api.get_change_file_pull_request(owner="owner", repo="repo", pr_number=7)
+
+        for call in repo_api.api_client.call_api.call_args_list:
+            assert call.kwargs["auth_settings"] == ["AuthorizationHeaderToken"]
+            assert "token" not in dict(call.kwargs["query_params"])
+
+    def test_a_failure_mid_way_does_not_return_a_partial_list(self):
+        repo_api = self._repo_api([])
+        repo_api.api_client.call_api.side_effect = [_page([{"filename": "a.py"}]), ApiException(status=502)]
+
+        files = repo_api.get_change_file_pull_request(owner="owner", repo="repo", pr_number=7)
+
+        assert files == []
+        repo_api.logger.error.assert_called_once()
