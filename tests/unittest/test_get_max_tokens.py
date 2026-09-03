@@ -2,7 +2,13 @@ import litellm
 import pytest
 
 import pr_agent.algo.utils as utils
-from pr_agent.algo import CLAUDE_EXTENDED_THINKING_MODELS, NO_SUPPORT_TEMPERATURE_MODELS
+from pr_agent.algo import (
+    _CLAUDE_MODEL_FAMILIES,
+    CLAUDE_EXTENDED_THINKING_MODELS,
+    NO_SUPPORT_TEMPERATURE_MODELS,
+    _generate_claude_registries,
+    _validate_claude_model_family,
+)
 from pr_agent.algo.utils import MAX_TOKENS, get_max_tokens
 
 
@@ -687,3 +693,96 @@ class TestGetMaxTokens:
         # Negative checks: no Opus 4.6 in NO_SUPPORT_TEMPERATURE_MODELS
         for alias in expected_max_tokens_aliases:
             assert alias not in NO_SUPPORT_TEMPERATURE_MODELS
+
+    def test_claude_model_family_metadata_key_validation(self):
+        """Regression test for validating Claude model family metadata keys.
+
+        Proves:
+        - all current shipped families validate successfully.
+        - an unknown key (e.g. 'bedrock_region') raises ValueError.
+        - the error message identifies both the invalid key and the model_id.
+        - global family definitions are not mutated.
+        """
+        # All current shipped families must pass validation
+        for fam in _CLAUDE_MODEL_FAMILIES:
+            _validate_claude_model_family(fam)
+
+        # Copied family with unknown key must raise ValueError
+        bad_fam = dict(_CLAUDE_MODEL_FAMILIES[0])
+        bad_fam["bedrock_region"] = ("global", "us")
+
+        with pytest.raises(ValueError) as exc_info:
+            _validate_claude_model_family(bad_fam)
+
+        err_msg = str(exc_info.value)
+        assert "bedrock_region" in err_msg
+        assert bad_fam["model_id"] in err_msg
+
+        # Generator must also reject the unknown key when expanding
+        with pytest.raises(ValueError) as exc_info_gen:
+            _generate_claude_registries(families=[bad_fam])
+        assert "bedrock_region" in str(exc_info_gen.value)
+        assert bad_fam["model_id"] in str(exc_info_gen.value)
+
+        # Ensure global families list was not mutated
+        assert "bedrock_region" not in _CLAUDE_MODEL_FAMILIES[0]
+
+    def test_claude_exceptional_extra_alias_capabilities(self):
+        """Prove exceptional extra-alias capability routing.
+
+        Proves:
+        - scalar int extra_aliases only populate token counts.
+        - structured extra_aliases route to no_temperature and extended_thinking when flagged.
+        - explicit extra_no_temperature and extra_extended_thinking populate capabilities.
+        """
+        synthetic_family = {
+            "model_id": "test-claude-synthetic",
+            "max_tokens": 500000,
+            "bedrock": False,
+            "vertex": False,
+            "extra_aliases": {
+                "test/extra-token-only": 500000,
+                "test/extra-no-temp": {
+                    "max_tokens": 500000,
+                    "no_temperature": True,
+                },
+                "test/extra-thinking": {
+                    "max_tokens": 500000,
+                    "extended_thinking": True,
+                },
+            },
+            "extra_no_temperature": ("test/explicit-extra-no-temp",),
+            "extra_extended_thinking": ("test/explicit-extra-thinking",),
+        }
+
+        tokens, no_temp, thinking = _generate_claude_registries(families=[synthetic_family])
+
+        # Token verification
+        assert tokens["test-claude-synthetic"] == 500000
+        assert tokens["anthropic/test-claude-synthetic"] == 500000
+        assert tokens["test/extra-token-only"] == 500000
+        assert tokens["test/extra-no-temp"] == 500000
+        assert tokens["test/extra-thinking"] == 500000
+
+        # No-temperature capability routing
+        assert "test/extra-no-temp" in no_temp
+        assert "test/explicit-extra-no-temp" in no_temp
+        assert "test/extra-token-only" not in no_temp
+        assert "test/extra-thinking" not in no_temp
+
+        # Extended-thinking capability routing
+        assert "test/extra-thinking" in thinking
+        assert "test/explicit-extra-thinking" in thinking
+        assert "test/extra-token-only" not in thinking
+        assert "test/extra-no-temp" not in thinking
+
+    def test_claude_registries_baseline_parity_and_no_duplicates(self):
+        """Verify baseline capability parity and that no duplicate entries exist."""
+        # Capability lists have no duplicates
+        assert len(NO_SUPPORT_TEMPERATURE_MODELS) == len(set(NO_SUPPORT_TEMPERATURE_MODELS))
+        assert len(CLAUDE_EXTENDED_THINKING_MODELS) == len(set(CLAUDE_EXTENDED_THINKING_MODELS))
+
+        # Extended thinking and no-temperature for Claude models are disjoint
+        claude_thinking = {m for m in CLAUDE_EXTENDED_THINKING_MODELS if "claude" in m}
+        claude_no_temp = {m for m in NO_SUPPORT_TEMPERATURE_MODELS if "claude" in m}
+        assert claude_thinking.isdisjoint(claude_no_temp)

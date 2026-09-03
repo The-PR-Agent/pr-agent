@@ -116,7 +116,36 @@ _CLAUDE_MODEL_FAMILIES = [
 ]
 
 
-def _generate_claude_registries():
+_ALLOWED_FAMILY_KEYS = {
+    "model_id",
+    "max_tokens",
+    "anthropic",
+    "bare",
+    "vertex",
+    "bedrock",
+    "bedrock_name",
+    "bedrock_regions",
+    "extra_aliases",
+    "extra_bedrock",
+    "extra_bedrock_regions",
+    "no_temperature",
+    "extended_thinking",
+    "thinking_bedrock_regions",
+    "extra_no_temperature",
+    "extra_extended_thinking",
+}
+
+
+def _validate_claude_model_family(fam: dict) -> None:
+    """Validate that a Claude model family dict contains only supported keys."""
+    unknown = set(fam) - _ALLOWED_FAMILY_KEYS
+    if unknown:
+        raise ValueError(
+            f"unknown Claude family key(s) for {fam.get('model_id')}: {sorted(unknown)}"
+        )
+
+
+def _generate_claude_registries(families=None):
     """Expand _CLAUDE_MODEL_FAMILIES into token counts and capability lists.
 
     Returns (claude_tokens, claude_no_temp, claude_extended_thinking) where:
@@ -124,11 +153,15 @@ def _generate_claude_registries():
       - claude_no_temp: list[str] of models that do not support temperature
       - claude_extended_thinking: list[str] of models supporting extended thinking
     """
+    if families is None:
+        families = _CLAUDE_MODEL_FAMILIES
+
     claude_tokens = {}
     claude_no_temp = []
     claude_extended_thinking = []
 
-    for fam in _CLAUDE_MODEL_FAMILIES:
+    for fam in families:
+        _validate_claude_model_family(fam)
         mid = fam["model_id"]
         tokens = fam.get("max_tokens")
 
@@ -153,8 +186,17 @@ def _generate_claude_registries():
                     claude_tokens[f"bedrock/{extra_name}"] = tokens
                     for reg in regs:
                         claude_tokens[f"bedrock/{reg}.{extra_name}"] = tokens
-            for extra_alias, extra_tok in fam.get("extra_aliases", {}).items():
-                claude_tokens[extra_alias] = extra_tok
+            for extra_alias, extra_val in fam.get("extra_aliases", {}).items():
+                if isinstance(extra_val, dict):
+                    tok = extra_val.get("max_tokens", tokens)
+                    if tok is not None:
+                        claude_tokens[extra_alias] = tok
+                    if extra_val.get("no_temperature"):
+                        claude_no_temp.append(extra_alias)
+                    if extra_val.get("extended_thinking"):
+                        claude_extended_thinking.append(extra_alias)
+                else:
+                    claude_tokens[extra_alias] = extra_val
 
         # -- NO_SUPPORT_TEMPERATURE_MODELS ------------------------------------
         if fam.get("no_temperature"):
@@ -173,6 +215,9 @@ def _generate_claude_registries():
                     claude_no_temp.append(f"bedrock/{reg}.anthropic.{b_name}")
                 for extra in fam.get("extra_bedrock", ()):
                     claude_no_temp.append(f"bedrock/{extra}")
+
+        for extra_alias in fam.get("extra_no_temperature", ()):
+            claude_no_temp.append(extra_alias)
 
         # -- CLAUDE_EXTENDED_THINKING_MODELS ----------------------------------
         thinking = fam.get("extended_thinking")
@@ -195,6 +240,9 @@ def _generate_claude_registries():
                     )
                     for reg in thinking_regions:
                         claude_extended_thinking.append(f"bedrock/{reg}.anthropic.{b_name}")
+
+        for extra_alias in fam.get("extra_extended_thinking", ()):
+            claude_extended_thinking.append(extra_alias)
 
     return claude_tokens, claude_no_temp, claude_extended_thinking
 
