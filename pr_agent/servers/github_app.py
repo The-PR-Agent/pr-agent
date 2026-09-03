@@ -160,6 +160,52 @@ async def handle_new_pr_opened(body: Dict[str, Any],
         else:
             get_logger().info(f"User {sender=} is not eligible to process PR {api_url=}")
 
+
+def _normalise_setting_list(value):
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (list, tuple, set)):
+        return list(value)
+    return [value]
+
+
+async def handle_pull_request_review_submitted(body: Dict[str, Any],
+                                               event: str,
+                                               sender: str,
+                                               sender_id: str,
+                                               sender_type: str,
+                                               action: str,
+                                               log_context: Dict[str, Any],
+                                               agent: PRAgent):
+    pull_request, api_url = _check_pull_request_event(action, body, log_context)
+    if not (pull_request and api_url):
+        get_logger().info(f"Invalid PR review event: {action=} {api_url=}")
+        return {}
+    if sender_type == "Bot":
+        get_logger().info(f"Skipping pull_request_review from bot sender: {sender=}")
+        return {}
+
+    apply_repo_settings(api_url)
+    review = body.get("review", {})
+    review_state = review.get("state", "") if isinstance(review, dict) else ""
+    review_state = str(review_state).strip().lower()
+    review_states = {
+        str(state).strip().lower()
+        for state in _normalise_setting_list(get_settings().get("GITHUB_APP.REVIEW_STATES", ["changes_requested"]))
+        if str(state).strip()
+    }
+    if review_state not in review_states:
+        get_logger().info(f"Skipping review submission with {review_state=}: state is not configured")
+        return {}
+
+    if get_identity_provider().verify_eligibility("github", sender_id, api_url) is not Eligibility.NOT_ELIGIBLE:
+        await _perform_auto_commands_github("review_commands", agent, body, api_url, log_context)
+    else:
+        get_logger().info(f"User {sender=} is not eligible to process review on PR {api_url=}")
+
+
 async def handle_push_trigger_for_new_commits(body: Dict[str, Any],
                         event: str,
                         sender: str,
@@ -355,6 +401,12 @@ async def handle_request(body: Dict[str, Any], event: str):
     if 'check_run' in body:  # handle failed checks
         # get_logger().debug(f'Request body', artifact=body, event=event) # added inside handle_checks
         pass
+    # handle submitted pull request reviews
+    elif event == 'pull_request_review' and action == 'submitted':
+        get_logger().debug('Request body', artifact=body, event=event)
+        await handle_pull_request_review_submitted(
+            body, event, sender, sender_id, sender_type, action, log_context, agent
+        )
     # handle comments on PRs
     elif action == 'created':
         get_logger().debug('Request body', artifact=body, event=event)
@@ -436,14 +488,15 @@ async def _perform_auto_commands_github(commands_conf: str, agent: PRAgent, body
     if is_draft and not feedback_on_draft:
         get_logger().info(f"Skipping draft PR {api_url=}")
         return
-    if commands_conf == "pr_commands" and get_settings().config.disable_auto_feedback:  # auto commands for PR, and auto feedback is disabled
+    if commands_conf in ("pr_commands", "review_commands") and get_settings().config.disable_auto_feedback:
+        # auto commands for PR/review, and auto feedback is disabled
         get_logger().info(f"Auto feedback is disabled, skipping auto commands for PR {api_url=}")
         return
     if not should_process_pr_logic(body): # Here we already updated the configuration with the repo settings
         return {}
     commands = get_settings().get(f"github_app.{commands_conf}")
     if not commands:
-        get_logger().info("New PR, but no auto commands configured")
+        get_logger().info(f"No {commands_conf} configured, skipping auto commands")
         return
     get_settings().set("config.is_auto_command", True)
     for command in commands:

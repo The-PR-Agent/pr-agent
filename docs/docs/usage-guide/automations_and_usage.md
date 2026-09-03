@@ -205,6 +205,32 @@ Adding `"synchronize"` to this list enables auto tools on new commits pushed to 
 
 `github_action_config.push_trigger_ignore_bot_commits` (default `true`) skips processing when the push author is a bot, avoiding redundant runs on automated commits.
 
+#### Automatic tools after a submitted GitHub review
+
+The GitHub App can run configured tools after a human reviewer submits a native GitHub review. This is opt-in: `review_commands` is empty by default. By default, only reviews submitted with the `changes_requested` state trigger the commands; set `review_states` to `approved`, `commented`, or any combination of these supported GitHub review states when a different workflow is needed.
+
+```toml
+[github_app]
+review_states = ["changes_requested"]
+review_commands = [
+    "/improve",
+]
+```
+
+The event must be `submitted`; edited or dismissed reviews do not trigger tools. Existing repository filtering, draft-PR handling, eligibility checks, and `config.disable_auto_feedback` still apply. The review text is not treated as a command; each configured command runs with the normal pull-request context.
+
+For GitHub Action, add the review event to the workflow and configure the equivalent settings. `github_action_config.*` overrides the corresponding `github_app.*` setting when present.
+
+```yaml
+on:
+  pull_request_review:
+    types: [submitted]
+
+env:
+  github_action_config.review_states: '["changes_requested"]'
+  github_action_config.review_commands: '["/improve"]'
+```
+
 `github_action_config.enable_output` are used to enable/disable github actions [output parameter](https://docs.github.com/en/actions/creating-actions/metadata-syntax-for-github-actions#outputs-for-docker-container-and-javascript-actions) (default is `true`).
 Review result is output as JSON to `steps.{step-id}.outputs.review` property.
 The JSON structure is equivalent to the yaml data structure defined in [pr_reviewer_prompts.toml](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/pr_reviewer_prompts.toml).
