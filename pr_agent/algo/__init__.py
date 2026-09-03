@@ -131,8 +131,12 @@ _ALLOWED_FAMILY_KEYS = {
     "no_temperature",
     "extended_thinking",
     "thinking_bedrock_regions",
-    "extra_no_temperature",
-    "extra_extended_thinking",
+}
+
+_ALLOWED_EXTRA_ALIAS_KEYS = {
+    "max_tokens",
+    "no_temperature",
+    "extended_thinking",
 }
 
 
@@ -143,6 +147,13 @@ def _validate_claude_model_family(fam: dict) -> None:
         raise ValueError(
             f"unknown Claude family key(s) for {fam.get('model_id')}: {sorted(unknown)}"
         )
+    for extra_alias, extra_val in fam.get("extra_aliases", {}).items():
+        if isinstance(extra_val, dict):
+            nested_unknown = set(extra_val) - _ALLOWED_EXTRA_ALIAS_KEYS
+            if nested_unknown:
+                raise ValueError(
+                    f"unknown Claude extra-alias key(s) for {fam.get('model_id')} / {extra_alias}: {sorted(nested_unknown)}"
+                )
 
 
 def _generate_claude_registries(families=None):
@@ -216,9 +227,6 @@ def _generate_claude_registries(families=None):
                 for extra in fam.get("extra_bedrock", ()):
                     claude_no_temp.append(f"bedrock/{extra}")
 
-        for extra_alias in fam.get("extra_no_temperature", ()):
-            claude_no_temp.append(extra_alias)
-
         # -- CLAUDE_EXTENDED_THINKING_MODELS ----------------------------------
         thinking = fam.get("extended_thinking")
         if thinking:
@@ -241,10 +249,8 @@ def _generate_claude_registries(families=None):
                     for reg in thinking_regions:
                         claude_extended_thinking.append(f"bedrock/{reg}.anthropic.{b_name}")
 
-        for extra_alias in fam.get("extra_extended_thinking", ()):
-            claude_extended_thinking.append(extra_alias)
-
     return claude_tokens, claude_no_temp, claude_extended_thinking
+
 
 
 _claude_tokens, _claude_no_temp, _claude_extended_thinking = (

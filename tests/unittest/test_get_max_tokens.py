@@ -699,15 +699,15 @@ class TestGetMaxTokens:
 
         Proves:
         - all current shipped families validate successfully.
-        - an unknown key (e.g. 'bedrock_region') raises ValueError.
-        - the error message identifies both the invalid key and the model_id.
+        - an unknown top-level key (e.g. 'bedrock_region') raises ValueError naming the key and model_id.
+        - an unknown nested extra_aliases key (e.g. 'extended_thinkin') raises ValueError naming the key, alias, and model_id.
         - global family definitions are not mutated.
         """
         # All current shipped families must pass validation
         for fam in _CLAUDE_MODEL_FAMILIES:
             _validate_claude_model_family(fam)
 
-        # Copied family with unknown key must raise ValueError
+        # 1. Copied family with unknown top-level key must raise ValueError
         bad_fam = dict(_CLAUDE_MODEL_FAMILIES[0])
         bad_fam["bedrock_region"] = ("global", "us")
 
@@ -718,11 +718,37 @@ class TestGetMaxTokens:
         assert "bedrock_region" in err_msg
         assert bad_fam["model_id"] in err_msg
 
-        # Generator must also reject the unknown key when expanding
+        # Generator must also reject the unknown top-level key when expanding
         with pytest.raises(ValueError) as exc_info_gen:
             _generate_claude_registries(families=[bad_fam])
         assert "bedrock_region" in str(exc_info_gen.value)
         assert bad_fam["model_id"] in str(exc_info_gen.value)
+
+        # 2. Family with unknown nested extra_aliases key must raise ValueError
+        bad_nested_fam = {
+            "model_id": "claude-opus-4-6",
+            "extra_aliases": {
+                "some/alias": {
+                    "max_tokens": 200000,
+                    "extended_thinkin": True,
+                }
+            },
+        }
+
+        with pytest.raises(ValueError) as exc_info_nested:
+            _validate_claude_model_family(bad_nested_fam)
+
+        err_nested = str(exc_info_nested.value)
+        assert "extended_thinkin" in err_nested
+        assert "some/alias" in err_nested
+        assert "claude-opus-4-6" in err_nested
+
+        # Generator must also reject the unknown nested key
+        with pytest.raises(ValueError) as exc_info_gen_nested:
+            _generate_claude_registries(families=[bad_nested_fam])
+        assert "extended_thinkin" in str(exc_info_gen_nested.value)
+        assert "some/alias" in str(exc_info_gen_nested.value)
+        assert "claude-opus-4-6" in str(exc_info_gen_nested.value)
 
         # Ensure global families list was not mutated
         assert "bedrock_region" not in _CLAUDE_MODEL_FAMILIES[0]
@@ -733,7 +759,7 @@ class TestGetMaxTokens:
         Proves:
         - scalar int extra_aliases only populate token counts.
         - structured extra_aliases route to no_temperature and extended_thinking when flagged.
-        - explicit extra_no_temperature and extra_extended_thinking populate capabilities.
+        - capability flags do not bleed to unrelated aliases.
         """
         synthetic_family = {
             "model_id": "test-claude-synthetic",
@@ -751,8 +777,6 @@ class TestGetMaxTokens:
                     "extended_thinking": True,
                 },
             },
-            "extra_no_temperature": ("test/explicit-extra-no-temp",),
-            "extra_extended_thinking": ("test/explicit-extra-thinking",),
         }
 
         tokens, no_temp, thinking = _generate_claude_registries(families=[synthetic_family])
@@ -764,15 +788,13 @@ class TestGetMaxTokens:
         assert tokens["test/extra-no-temp"] == 500000
         assert tokens["test/extra-thinking"] == 500000
 
-        # No-temperature capability routing
+        # No-temperature capability routing (no bleed)
         assert "test/extra-no-temp" in no_temp
-        assert "test/explicit-extra-no-temp" in no_temp
         assert "test/extra-token-only" not in no_temp
         assert "test/extra-thinking" not in no_temp
 
-        # Extended-thinking capability routing
+        # Extended-thinking capability routing (no bleed)
         assert "test/extra-thinking" in thinking
-        assert "test/explicit-extra-thinking" in thinking
         assert "test/extra-token-only" not in thinking
         assert "test/extra-no-temp" not in thinking
 
