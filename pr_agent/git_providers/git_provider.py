@@ -547,9 +547,15 @@ class GitProvider(ABC):
                         get_logger().warning(f"Failed to reopen review thread: {e}")
                 if final_update_message:
                     try:
-
-                        return self.publish_comment(
+                        status_comment = self.publish_comment(
                             f"**[Persistent {name}]({comment_url})** updated to latest commit {latest_commit_url}")
+                        if status_comment is None or status_comment is False:
+                            get_logger().warning(
+                                "Persistent review update message was not published; "
+                                "review was already updated"
+                            )
+                            return comment
+                        return status_comment
                     except Exception:
                         get_logger().opt(exception=True).warning(
                             "Failed to publish persistent review update message; review was already updated")

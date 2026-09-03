@@ -1004,6 +1004,7 @@ class AzureDevopsProvider(GitProvider):
         for attribute, serialized_attribute in (
             ("id", None),
             ("unique_name", "uniqueName"),
+            ("descriptor", "descriptor"),
         ):
             value = self._value(author, attribute, serialized_attribute)
             if value is not None:
@@ -1308,6 +1309,41 @@ class AzureDevopsProvider(GitProvider):
             return value.get(serialized_attribute or attribute)
         return getattr(value, attribute, None)
 
+    @staticmethod
+    def _stable_id_sort_key(value):
+        if value is None:
+            return (0, "")
+        text = str(value).strip()
+        if not text:
+            return (0, "")
+        try:
+            return (2, int(text))
+        except (TypeError, ValueError):
+            return (1, text.casefold())
+
+    @classmethod
+    def _comment_latest_timestamp(cls, comment):
+        timestamps = []
+        for attribute, serialized_attribute in (
+            ("published_date", "publishedDate"),
+            ("last_updated_date", "lastUpdatedDate"),
+        ):
+            value = cls._value(comment, attribute, serialized_attribute)
+            if isinstance(value, str):
+                value = value.strip()
+                if value.endswith("Z"):
+                    value = value[:-1] + "+00:00"
+                try:
+                    value = _dt.datetime.fromisoformat(value)
+                except ValueError:
+                    continue
+            if isinstance(value, _dt.datetime):
+                value = _to_naive_utc(value)
+                if value is not None:
+                    timestamps.append(value)
+        return max(timestamps, default=_dt.datetime.min)
+
+
     def _get_threads(self):
         threads = getattr(self, "_threads_cache", None)
         if threads is None:
@@ -1418,12 +1454,28 @@ class AzureDevopsProvider(GitProvider):
 
     def get_issue_comments(self) -> list[Comment]:
         comment_list = []
-        for thread in reversed(self._get_threads()):
-            for comment in thread.comments:
-                if comment.content and comment not in comment_list:
-                    comment.body = comment.content
-                    comment.thread_id = thread.id
-                    comment_list.append(comment)
+        for thread in self._get_threads():
+            thread_id = self._value(thread, "id")
+            for comment in self._value(thread, "comments") or []:
+                content = self._value(comment, "content")
+                if not content or comment in comment_list:
+                    continue
+                if isinstance(comment, dict):
+                    comment["body"] = content
+                    comment["thread_id"] = thread_id
+                else:
+                    comment.body = content
+                    comment.thread_id = thread_id
+                comment_list.append(comment)
+
+        comment_list.sort(
+            key=lambda comment: (
+                self._comment_latest_timestamp(comment),
+                self._stable_id_sort_key(self._value(comment, "id")),
+                self._stable_id_sort_key(self._value(comment, "thread_id")),
+            ),
+            reverse=True,
+        )
         return comment_list
 
     def get_issue_comments_newest_first(self):

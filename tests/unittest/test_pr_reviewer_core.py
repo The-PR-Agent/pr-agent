@@ -998,8 +998,11 @@ async def test_run_threads_only_the_final_review_comment(monkeypatch, persistent
     progress_comment = MagicMock()
     git_provider = MagicMock()
     git_provider.should_publish_review_as_thread.return_value = thread_enabled
+    git_provider.supports_review_finding_state.return_value = True
+    git_provider.is_supported.return_value = True
     git_provider.supports_review_comment_identity.return_value = False
     git_provider.publish_comment.return_value = progress_comment
+    git_provider.publish_persistent_comment_full.return_value = object()
     reviewer = _make_reviewer(git_provider)
     reviewer.incremental = SimpleNamespace(is_incremental=False)
     reviewer.vars = {}
@@ -1034,8 +1037,11 @@ async def test_run_threads_only_the_final_review_comment(monkeypatch, persistent
         settings.pr_reviewer.persistent_comment = original["persistent_comment"]
 
     if persistent:
-        publish = git_provider.publish_persistent_comment
+        publish = git_provider.publish_persistent_comment_full
         publish.assert_called_once()
+        assert publish.call_args.kwargs["require_agent_authorship"] is True
+        assert publish.call_args.kwargs["fallback_on_error"] is False
+        git_provider.publish_persistent_comment.assert_not_called()
         assert publish.call_args.kwargs["identity_marker"] == PRReviewIdentity.REGULAR.value
         assert publish.call_args.kwargs["legacy_initial_header"] == f"{PRReviewHeader.REGULAR.value} 🔍"
     else:

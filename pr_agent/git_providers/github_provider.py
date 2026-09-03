@@ -432,28 +432,17 @@ class GithubProvider(GitProvider):
     def supports_review_comment_identity(self) -> bool:
         return True
 
-    def _configured_app_bot_login(self) -> str:
-        app_name = get_settings().get("GITHUB.APP_NAME", "")
-        if not isinstance(app_name, str) or not app_name.strip():
-            return ""
-        app_name = app_name.strip()
-        if not app_name.casefold().endswith("[bot]"):
-            app_name = f"{app_name}[bot]"
-        return app_name
-
     def supports_review_finding_state(self) -> bool:
         deployment_type = getattr(self, "deployment_type", None)
         if deployment_type is None:
             deployment_type = get_settings().get("GITHUB.DEPLOYMENT_TYPE", "user")
-        # User deployments resolve the authenticated account through the API;
-        # app deployments use a cached or configured bot login.
+        # User deployments resolve the authenticated account through the API.
+        # App deployments require a login grounded in a trusted provider response.
         if deployment_type == "user":
             return True
         if deployment_type == "app":
-            return bool(
-                getattr(self, "github_user_id", None)
-                or self._configured_app_bot_login()
-            )
+            cached_login = getattr(self, "github_user_id", None)
+            return isinstance(cached_login, str) and bool(cached_login.strip())
         return False
 
     def is_comment_authored_by_pr_agent(self, comment) -> bool:
@@ -475,14 +464,13 @@ class GithubProvider(GitProvider):
             raise RuntimeError("Unsupported GitHub deployment identity")
 
         agent_login = getattr(self, "github_user_id", None)
-        if not agent_login:
+        if not isinstance(agent_login, str) or not agent_login.strip():
             if deployment_type == "app":
-                agent_login = self._configured_app_bot_login()
-            else:
-                try:
-                    agent_login = self.get_user_id()
-                except Exception as error:
-                    raise RuntimeError("GitHub user identity cannot be verified") from error
+                raise RuntimeError("GitHub App identity cannot be verified")
+            try:
+                agent_login = self.get_user_id()
+            except Exception as error:
+                raise RuntimeError("GitHub user identity cannot be verified") from error
         if not isinstance(agent_login, str) or not agent_login.strip():
             raise RuntimeError("GitHub user identity cannot be verified")
         return login.casefold() == agent_login.casefold()

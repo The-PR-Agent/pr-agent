@@ -1066,6 +1066,44 @@ class TestGiteaProviderInlineCommentStatus:
         assert kwargs["body"]["event"] == "COMMENT"
 
 
+def test_gitea_persistent_wrapper_preserves_identity_and_result():
+    published = object()
+
+    class RecordingGiteaProvider(GiteaProvider):
+        def __init__(self):
+            self.calls = []
+
+        def publish_persistent_comment_full(
+            self, pr_comment, initial_header, update_header=True, name="review",
+            final_update_message=True, as_thread=False, identity_marker=None,
+            legacy_initial_header=None, require_agent_authorship=False,
+            fallback_on_error=True,
+        ):
+            self.calls.append((
+                pr_comment, initial_header, update_header, name,
+                final_update_message, as_thread, identity_marker,
+                legacy_initial_header, require_agent_authorship, fallback_on_error,
+            ))
+            return published
+
+    provider = RecordingGiteaProvider()
+    result = provider.publish_persistent_comment(
+        "review body",
+        "initial header",
+        update_header=False,
+        name="review",
+        final_update_message=False,
+        identity_marker="marker",
+        legacy_initial_header="legacy header",
+    )
+
+    assert result is published
+    assert provider.calls == [(
+        "review body", "initial header", False, "review", False,
+        False, "marker", "legacy header", False, True,
+    )]
+
+
 def _page(items):
     """A raw (non-preloaded) giteapy response carrying one JSON page."""
     return SimpleNamespace(data=BytesIO(json.dumps(items).encode("utf-8")))

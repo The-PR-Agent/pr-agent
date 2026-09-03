@@ -187,6 +187,7 @@ class PRReviewer:
         init_run_details()
         progress_response = None
         review_failed = False
+        persistent_write_failed = False
         try:
             if not self.git_provider.get_files():
                 get_logger().info(f"PR has no files: {self.pr_url}, skipping review")
@@ -277,13 +278,22 @@ class PRReviewer:
                     fallback_on_error=False,
                     **review_thread_kwargs,
                 )
-                self.git_provider.publish_persistent_comment_full(pr_review, **persistent_args)
+                persistent_write_failed = True
+                result = self.git_provider.publish_persistent_comment_full(
+                    pr_review, **persistent_args
+                )
+                persistent_write_failed = not self._persistent_publish_succeeded(result)
+                if persistent_write_failed:
+                    review_failed = True
             elif state_blocked:
                 get_logger().warning(
                     "Review finding state is blocked by review data or provider read failure; "
                     "publishing without changing persistent state"
                 )
-                self.git_provider.publish_comment(pr_review, **review_thread_kwargs)
+                self.git_provider.publish_comment(
+                    self._as_non_authoritative_review(pr_review),
+                    **review_thread_kwargs,
+                )
             elif get_settings().pr_reviewer.persistent_comment and not self.incremental.is_incremental:
                 final_update_message = get_settings().pr_reviewer.final_update_message
                 persistent_args = dict(
@@ -297,9 +307,31 @@ class PRReviewer:
                 if state_result is not None:
                     persistent_args["require_agent_authorship"] = True
                     persistent_args["fallback_on_error"] = False
-                    self.git_provider.publish_persistent_comment_full(pr_review, **persistent_args)
+                    persistent_write_failed = True
+                    result = self.git_provider.publish_persistent_comment_full(
+                        pr_review, **persistent_args
+                    )
+                    persistent_write_failed = not self._persistent_publish_succeeded(result)
+                    if persistent_write_failed:
+                        review_failed = True
+                elif self._publish_review_check_run(pr_review):
+                    pass
+                elif self._review_comment_authorship_available():
+                    persistent_args["require_agent_authorship"] = True
+                    persistent_args["fallback_on_error"] = False
+                    persistent_write_failed = True
+                    result = self.git_provider.publish_persistent_comment_full(
+                        pr_review, **persistent_args
+                    )
+                    persistent_write_failed = not self._persistent_publish_succeeded(result)
+                    if persistent_write_failed:
+                        review_failed = True
                 else:
-                    self.git_provider.publish_persistent_comment(pr_review, **persistent_args)
+                    # An unverified provider identity must never update a canonical review.
+                    self.git_provider.publish_comment(
+                        self._as_non_authoritative_review(pr_review),
+                        **review_thread_kwargs,
+                    )
 
             else:
                 if self.git_provider.supports_review_comment_identity() is True:
@@ -321,8 +353,14 @@ class PRReviewer:
                     self.git_provider.remove_comment(progress_response)
                 except Exception as e:
                     get_logger().exception(f"Failed to remove review progress comment, error: {e}")
-            if (review_failed and get_settings().config.publish_output and
-                    not get_settings().config.get("is_auto_command", False)):
+            if (
+                review_failed
+                and get_settings().config.publish_output
+                and (
+                    persistent_write_failed
+                    or not get_settings().config.get("is_auto_command", False)
+                )
+            ):
                 try:
                     self.git_provider.publish_comment("Failed to review PR")
                 except Exception as e:
@@ -343,7 +381,10 @@ class PRReviewer:
         if getattr(publisher, "__func__", None) is GitProvider.publish_persistent_comment:
             # Skip generic publishers; they only create comments and cannot safely carry lifecycle state.
             return False
-        if getattr(getattr(settings, "github", None), "publish_as_check_run", False):
+        if (
+            getattr(getattr(settings, "github", None), "publish_as_check_run", False)
+            and callable(getattr(provider, "_publish_check_run", None))
+        ):
             return False
         if getattr(getattr(self, "incremental", None), "is_incremental", False):
             return False
@@ -353,6 +394,61 @@ class PRReviewer:
             return bool(provider.is_supported("get_issue_comments"))
         except Exception as e:
             get_logger().warning(f"Review finding state is not supported by this provider, error: {e}")
+            return False
+
+    @staticmethod
+    def _persistent_publish_succeeded(result) -> bool:
+        return result is not None and result is not False
+
+    @staticmethod
+    def _as_non_authoritative_review(pr_review: str) -> str:
+        identity_markers = {
+            PRReviewIdentity.REGULAR.value,
+            PRReviewIdentity.INCREMENTAL.value,
+        }
+        markerless_review = "\n".join(
+            line
+            for line in str(pr_review).splitlines()
+            if line.strip() not in identity_markers
+        ).strip()
+        return (
+            "## Standalone PR Review\n\n"
+            "_PR-Agent could not safely update the persistent review. "
+            "This standalone result will not replace the canonical review._\n\n"
+            f"{markerless_review}"
+        )
+
+    def _publish_review_check_run(self, pr_review: str) -> bool:
+        if not getattr(
+            getattr(get_settings(), "github", None),
+            "publish_as_check_run",
+            False,
+        ):
+            return False
+        publisher = getattr(self.git_provider, "_publish_check_run", None)
+        if not callable(publisher):
+            return False
+        try:
+            return publisher(pr_review, "review") is True
+        except Exception as error:
+            get_logger().warning(
+                f"Failed to publish review check run, error: {error}"
+            )
+            return False
+
+    def _review_comment_authorship_available(self) -> bool:
+        provider = getattr(self, "git_provider", None)
+        if provider is None:
+            return False
+        try:
+            return (
+                provider.supports_review_finding_state() is True
+                and provider.is_supported("get_issue_comments") is True
+            )
+        except Exception as error:
+            get_logger().warning(
+                f"Review comment authorship is not available, error: {error}"
+            )
             return False
 
     def _load_review_finding_state(self):

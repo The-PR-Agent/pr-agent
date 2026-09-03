@@ -320,12 +320,14 @@ class GiteaProvider(GitProvider):
                                    identity_marker: str | None = None,
                                    legacy_initial_header: str | None = None):
         # Keep the legacy updater path until Gitea normalizes its dictionary-shaped comment payloads.
-        self.publish_persistent_comment_full(
+        return self.publish_persistent_comment_full(
             pr_comment,
             initial_header,
             update_header,
             name,
             final_update_message,
+            identity_marker=identity_marker,
+            legacy_initial_header=legacy_initial_header,
         )
 
     def publish_comment(self, comment: str,is_temporary: bool = False) -> None:

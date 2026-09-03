@@ -115,7 +115,7 @@ thread, and uses the existing thread discussion as context. Generic phrases such
 response.
 
 For the first mention before PR-Agent has posted on the pull request, or when its Azure DevOps identity changes,
-configure the identity ID, display name, or unique name. A list can be used during an identity transition:
+configure a stable identity (GUID/ID, unique name, or descriptor). A list can be used during an identity transition:
 
 ```toml
 [azure_devops_server]

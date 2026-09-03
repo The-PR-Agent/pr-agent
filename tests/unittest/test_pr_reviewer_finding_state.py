@@ -9,9 +9,16 @@ from pr_agent.algo.review_finding_state import (
     reconcile_review_findings,
     serialize_review_state,
 )
-from pr_agent.algo.utils import PRReviewHeader, PRReviewIdentity, add_pr_review_identity
+from pr_agent.algo.utils import (
+    PRReviewHeader,
+    PRReviewIdentity,
+    add_pr_review_identity,
+    comment_matches_identity,
+    get_pr_review_comment_identifiers,
+)
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
 from pr_agent.git_providers.bitbucket_provider import BitbucketProvider
+from pr_agent.git_providers.bitbucket_server_provider import BitbucketServerProvider
 from pr_agent.git_providers.gitea_provider import GiteaProvider
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
 from pr_agent.config_loader import get_settings
@@ -750,7 +757,8 @@ async def test_non_marker_state_block_publishes_without_overwriting_state(monkey
     reviewer = _reviewer(provider)
     reviewer.vars = {}
     reviewer._prepare_prediction = AsyncMock()
-    reviewer._prepare_pr_review = MagicMock(return_value="review output")
+    review_body = f"{PRReviewHeader.REGULAR.value} {chr(0x1F50D)}\n\nreview output"
+    reviewer._prepare_pr_review = MagicMock(return_value=review_body)
     reviewer._review_state_result = None
     reviewer._review_state_blocked = True
     reviewer._review_state_block_reason = block_reason
@@ -766,7 +774,14 @@ async def test_non_marker_state_block_publishes_without_overwriting_state(monkey
 
     await reviewer.run()
 
-    provider.publish_comment.assert_any_call("review output")
+    final_body = provider.publish_comment.call_args_list[-1].args[0]
+    assert final_body.startswith("## Standalone PR Review\n")
+    assert review_body in final_body
+    assert PRReviewIdentity.REGULAR.value not in final_body
+    assert not any(
+        comment_matches_identity(final_body, identifier)
+        for identifier in get_pr_review_comment_identifiers(full=True, incremental=False)
+    )
     provider.publish_persistent_comment_full.assert_not_called()
 
 
@@ -937,17 +952,18 @@ def test_oversized_new_state_preserves_previous_valid_marker(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_legacy_review_publish_uses_provider_compatible_signature(monkeypatch):
+async def test_review_publish_uses_shared_full_signature_for_authorship(monkeypatch):
     _settings(monkeypatch)
     settings = get_settings()
     settings.config.is_auto_command = True
     settings.github.publish_as_check_run = False
 
     provider = GithubProvider.__new__(GithubProvider)
+    provider.deployment_type = "user"
     provider.get_files = lambda: ["app.py"]
     provider.should_publish_review_as_thread = lambda: False
     provider.publish_comment = MagicMock()
-    provider.publish_persistent_comment_full = MagicMock()
+    provider.publish_persistent_comment_full = MagicMock(return_value=object())
 
     reviewer = PRReviewer.__new__(PRReviewer)
     reviewer.git_provider = provider
@@ -981,9 +997,9 @@ async def test_legacy_review_publish_uses_provider_compatible_signature(monkeypa
     await reviewer.run()
 
     provider.publish_persistent_comment_full.assert_called_once()
-    assert "require_agent_authorship" not in (
-        provider.publish_persistent_comment_full.call_args.kwargs
-    )
+    kwargs = provider.publish_persistent_comment_full.call_args.kwargs
+    assert kwargs["require_agent_authorship"] is True
+    assert kwargs["fallback_on_error"] is False
     provider.publish_comment.assert_not_called()
 
 
@@ -995,15 +1011,19 @@ async def test_legacy_review_publish_uses_provider_compatible_signature(monkeypa
         AzureDevopsProvider,
         GiteaProvider,
         BitbucketProvider,
+        BitbucketServerProvider,
     ],
-    ids=["github", "gitlab", "azure", "gitea", "bitbucket"],
+    ids=["github", "gitlab", "azure", "gitea", "bitbucket", "bitbucket-server"],
 )
 def test_legacy_persistent_publish_overrides_accept_shared_arguments(provider_class):
     parameters = inspect.signature(
         provider_class.publish_persistent_comment
     ).parameters
 
+    assert "identity_marker" in parameters
+    assert "legacy_initial_header" in parameters
     assert "require_agent_authorship" not in parameters
+    assert "fallback_on_error" not in parameters
 
 
 def test_oversized_state_degradation_is_safe_on_the_next_run(monkeypatch):
@@ -1059,3 +1079,317 @@ def test_oversized_state_degradation_is_safe_on_the_next_run(monkeypatch):
     assert second_state.valid is True
     assert second_state.state["findings"][0]["state"] == "ACTIVE"
     assert second_reviewer._review_state_block_reason == "state_size"
+
+
+class _ReviewRunProvider:
+    def __init__(self, comments=None, supports_state=False, authored=False, fail_persistent=False):
+        self.comments = list(comments or [])
+        self.supports_state = supports_state
+        self.authored = authored
+        self.fail_persistent = fail_persistent
+        self.published = []
+        self.edited = []
+        self.removed = []
+        self.persistent_calls = []
+
+    def get_files(self):
+        return ["app.py"]
+
+    def should_publish_review_as_thread(self):
+        return False
+
+    def supports_review_comment_identity(self):
+        return True
+
+    def supports_review_finding_state(self):
+        return self.supports_state
+
+    def is_supported(self, capability):
+        return capability == "get_issue_comments"
+
+    def is_comment_authored_by_pr_agent(self, comment):
+        return self.authored
+
+    def get_issue_comments(self):
+        return list(self.comments)
+
+    def get_issue_comments_newest_first(self):
+        return list(reversed(self.comments))
+
+    def get_latest_commit_url(self):
+        return "https://example.test/commit/1"
+
+    def get_comment_url(self, comment):
+        return "https://example.test/comment/1"
+
+    def edit_comment(self, comment, body):
+        if self.fail_persistent:
+            return False
+        comment.body = body
+        self.edited.append((comment, body))
+        return True
+
+    def remove_comment(self, comment):
+        self.removed.append(comment)
+
+    def publish_comment(self, body, is_temporary=False, **kwargs):
+        body = str(body)
+        if (
+            self.fail_persistent
+            and not is_temporary
+            and PRReviewIdentity.REGULAR.value in body
+        ):
+            return None
+        result = SimpleNamespace(
+            id=len(self.published) + 1,
+            body=body,
+            user=SimpleNamespace(login="agent"),
+        )
+        self.published.append((body, is_temporary, kwargs))
+        return result
+
+    def publish_persistent_comment(self, pr_comment, **kwargs):
+        self.persistent_calls.append((pr_comment, kwargs))
+        return self.publish_persistent_comment_full(pr_comment, **kwargs)
+
+    def publish_persistent_comment_full(self, pr_comment, **kwargs):
+        return GitProvider.publish_persistent_comment_full(self, pr_comment, **kwargs)
+
+
+class _ReviewRunCheckProvider(_ReviewRunProvider, GithubProvider):
+    publish_persistent_comment = GithubProvider.publish_persistent_comment
+
+    def __init__(self, check_run_result, comments=None):
+        super().__init__(comments=comments, supports_state=False)
+        self.check_run_result = check_run_result
+        self.check_run_calls = []
+
+    def _publish_check_run(self, body, name):
+        self.check_run_calls.append((body, name))
+        return self.check_run_result
+
+
+def _reviewer_for_run(provider):
+    reviewer = PRReviewer.__new__(PRReviewer)
+    reviewer.git_provider = provider
+    reviewer.pr_url = "https://example.test/pull/1"
+    reviewer.incremental = SimpleNamespace(is_incremental=False)
+    reviewer.remaining_files_list = []
+    reviewer.vars = {}
+    reviewer.prediction = None
+    reviewer._review_state_result = None
+    reviewer._review_state_blocked = False
+    reviewer._review_state_block_reason = None
+    reviewer._review_state_preserved = False
+    reviewer._prepare_prediction = AsyncMock()
+    review_body = f"{PRReviewHeader.REGULAR.value} {chr(0x1F50D)}\n\nreview output"
+    reviewer._prepare_pr_review = MagicMock(return_value=review_body)
+    reviewer._should_publish_review_no_suggestions = lambda _review: True
+    return reviewer
+
+
+def _patch_run_dependencies(monkeypatch, reviewer):
+    async def fake_extract_tickets(git_provider, vars):
+        return None
+
+    async def fake_retry(prepare_fn, model_type=None):
+        reviewer.prediction = "prediction"
+
+    monkeypatch.setattr(
+        "pr_agent.tools.pr_reviewer.extract_and_cache_pr_tickets",
+        fake_extract_tickets,
+    )
+    monkeypatch.setattr(
+        "pr_agent.tools.pr_reviewer.retry_with_fallback_models",
+        fake_retry,
+    )
+
+
+def test_github_check_setting_does_not_disable_non_check_provider_lifecycle(monkeypatch):
+    settings = _settings(monkeypatch)
+    monkeypatch.setattr(settings.github, "publish_as_check_run", True)
+    monkeypatch.setattr(
+        settings.azure_devops_server, "agent_identity",
+        "11111111-1111-1111-1111-111111111111", raising=False,
+    )
+    provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+    reviewer = _reviewer_for_run(provider)
+
+    assert reviewer._review_finding_state_enabled() is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("check_run_result", [True, False])
+async def test_review_check_run_fallback_preserves_authorship_contract(
+    monkeypatch, check_run_result
+):
+    settings = _settings(monkeypatch)
+    monkeypatch.setattr(settings.config, "is_auto_command", True, raising=False)
+    monkeypatch.setattr(settings.github, "publish_as_check_run", True)
+    forged_body = add_pr_review_identity("forged review", PRReviewIdentity.REGULAR.value)
+    forged = SimpleNamespace(body=forged_body, user=SimpleNamespace(login="human"))
+    provider = _ReviewRunCheckProvider(check_run_result, comments=[forged])
+    reviewer = _reviewer_for_run(provider)
+    _patch_run_dependencies(monkeypatch, reviewer)
+
+    await reviewer.run()
+
+    review_body = reviewer._prepare_pr_review.return_value
+    assert provider.check_run_calls == [(review_body, "review")]
+    assert forged.body == forged_body
+    assert provider.edited == []
+    non_temporary = [
+        body for body, is_temporary, _kwargs in provider.published if not is_temporary
+    ]
+    if check_run_result:
+        assert non_temporary == []
+    else:
+        assert len(non_temporary) == 1
+        standalone_review = non_temporary[0]
+        assert standalone_review.startswith("## Standalone PR Review\n")
+        assert review_body in standalone_review
+        assert not any(
+            comment_matches_identity(standalone_review, identifier)
+            for identifier in get_pr_review_comment_identifiers(full=True, incremental=False)
+        )
+
+
+@pytest.mark.asyncio
+async def test_review_run_does_not_edit_forged_persistent_comment_without_authorship(monkeypatch):
+    _settings(monkeypatch)
+    forged_body = add_pr_review_identity(
+        "forged review", PRReviewIdentity.REGULAR.value
+    )
+    forged = SimpleNamespace(
+        body=forged_body,
+        user=SimpleNamespace(login="human"),
+    )
+    provider = _ReviewRunProvider(
+        comments=[forged],
+        supports_state=False,
+        authored=False,
+    )
+    reviewer = _reviewer_for_run(provider)
+    _patch_run_dependencies(monkeypatch, reviewer)
+
+    await reviewer.run()
+
+    assert forged.body == forged_body
+    assert provider.edited == []
+    assert provider.persistent_calls == []
+    non_temporary = [
+        body for body, is_temporary, _kwargs in provider.published if not is_temporary
+    ]
+    assert len(non_temporary) == 1
+    standalone_review = non_temporary[0]
+    assert standalone_review.startswith("## Standalone PR Review\n")
+    assert reviewer._prepare_pr_review.return_value in standalone_review
+    assert PRReviewIdentity.REGULAR.value not in standalone_review
+    assert not any(
+        comment_matches_identity(standalone_review, identifier)
+        for identifier in get_pr_review_comment_identifiers(full=True, incremental=False)
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_auto_command", [False, True])
+async def test_review_run_surfaces_failed_persistent_write(monkeypatch, is_auto_command):
+    settings = _settings(monkeypatch)
+    monkeypatch.setattr(settings.config, "is_auto_command", is_auto_command, raising=False)
+    old_body = add_pr_review_identity(
+        "previous review", PRReviewIdentity.REGULAR.value
+    )
+    old_comment = SimpleNamespace(
+        body=old_body,
+        user=SimpleNamespace(login="agent"),
+    )
+    provider = _ReviewRunProvider(
+        comments=[old_comment],
+        supports_state=True,
+        authored=True,
+        fail_persistent=True,
+    )
+    reviewer = _reviewer_for_run(provider)
+    reviewer._review_state_result = SimpleNamespace(changed=True)
+    _patch_run_dependencies(monkeypatch, reviewer)
+
+    await reviewer.run()
+
+    assert old_comment.body == old_body
+    non_temporary = [
+        body for body, is_temporary, _kwargs in provider.published if not is_temporary
+    ]
+    assert non_temporary == ["Failed to review PR"]
+    assert not any(
+        comment_matches_identity(non_temporary[0], identifier)
+        for identifier in get_pr_review_comment_identifiers(full=True, incremental=False)
+    )
+
+
+def test_persistent_publish_success_rejects_none_and_false():
+    assert PRReviewer._persistent_publish_succeeded(None) is False
+    assert PRReviewer._persistent_publish_succeeded(False) is False
+    assert PRReviewer._persistent_publish_succeeded(object()) is True
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_result", [None, False])
+async def test_successful_persistence_is_not_failed_by_optional_status_result(
+    monkeypatch, status_result
+):
+    settings = _settings(monkeypatch)
+    monkeypatch.setattr(settings.config, "is_auto_command", True, raising=False)
+    monkeypatch.setattr(settings.pr_reviewer, "final_update_message", True)
+    old_body = add_pr_review_identity("old review", PRReviewIdentity.REGULAR.value)
+    old_comment = SimpleNamespace(body=old_body)
+
+    class StatusNoticeProvider(_ReviewRunProvider):
+        def publish_comment(self, body, is_temporary=False, **kwargs):
+            if body.startswith("**[Persistent review]"):
+                self.status_attempts += 1
+                return status_result
+            return super().publish_comment(body, is_temporary=is_temporary, **kwargs)
+
+    provider = StatusNoticeProvider(
+        comments=[old_comment], supports_state=True, authored=True,
+    )
+    provider.status_attempts = 0
+    reviewer = _reviewer_for_run(provider)
+    reviewer._review_state_result = SimpleNamespace(changed=True)
+    _patch_run_dependencies(monkeypatch, reviewer)
+
+    await reviewer.run()
+
+    assert len(provider.edited) == 1
+    assert old_comment.body != old_body
+    assert provider.status_attempts == 1
+    assert provider.published == []
+
+
+@pytest.mark.asyncio
+async def test_persistent_publish_exception_is_visible_for_auto_review(monkeypatch):
+    settings = _settings(monkeypatch)
+    monkeypatch.setattr(settings.config, "is_auto_command", True, raising=False)
+    monkeypatch.setattr(settings.config, "propagate_tool_errors", False, raising=False)
+    old_body = add_pr_review_identity("old review", PRReviewIdentity.REGULAR.value)
+    old_comment = SimpleNamespace(body=old_body)
+
+    class RaisingPersistentProvider(_ReviewRunProvider):
+        def publish_persistent_comment_full(self, pr_comment, **kwargs):
+            raise RuntimeError("persistent publication failed")
+
+    provider = RaisingPersistentProvider(
+        comments=[old_comment], supports_state=True, authored=True,
+    )
+    reviewer = _reviewer_for_run(provider)
+    reviewer._review_state_result = SimpleNamespace(changed=True)
+    _patch_run_dependencies(monkeypatch, reviewer)
+
+    await reviewer.run()
+
+    assert old_comment.body == old_body
+    assert provider.edited == []
+    assert [body for body, temporary, _ in provider.published if not temporary] == [
+        "Failed to review PR",
+    ]

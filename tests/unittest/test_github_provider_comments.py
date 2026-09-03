@@ -625,7 +625,7 @@ class TestResolveCommentThread:
         assert result is False
 
 
-def test_app_comment_authorship_uses_configured_app_identity_without_user_endpoint(monkeypatch):
+def test_app_comment_authorship_requires_grounded_identity_without_user_endpoint(monkeypatch):
     provider = _make_provider()
     provider.deployment_type = "app"
     provider.github_user_id = ""
@@ -648,9 +648,47 @@ def test_app_comment_authorship_uses_configured_app_identity_without_user_endpoi
         user=SimpleNamespace(login="review-app-human")
     )
 
+    assert provider.supports_review_finding_state() is False
+    with pytest.raises(RuntimeError, match="identity"):
+        provider.is_comment_authored_by_pr_agent(bot_comment)
+    with pytest.raises(RuntimeError, match="identity"):
+        provider.is_comment_authored_by_pr_agent(copied_marker_comment)
+
+
+def test_app_comment_authorship_uses_published_response_identity_when_app_name_is_stale(
+    monkeypatch,
+):
+    provider = _make_provider()
+    provider.deployment_type = "app"
+    provider.github_user_id = ""
+    response = SimpleNamespace(user=SimpleNamespace(login="actual-app[bot]"))
+    provider.pr = SimpleNamespace(
+        create_issue_comment=lambda _body: response,
+    )
+    provider.issue_main = None
+    provider.github_client = SimpleNamespace(
+        get_user=lambda: pytest.fail("installation tokens must not use /user")
+    )
+    settings = SimpleNamespace(
+        get=lambda key, default=None: (
+            "stale-app" if key == "GITHUB.APP_NAME" else default
+        )
+    )
+
+    monkeypatch.setattr(gh_module, "get_settings", lambda: settings)
+
+    assert provider.publish_comment("identity bootstrap") is response
+    assert provider.github_user_id == "actual-app[bot]"
+    actual_bot_comment = SimpleNamespace(
+        user=SimpleNamespace(login="actual-app[bot]")
+    )
+    stale_bot_comment = SimpleNamespace(
+        user=SimpleNamespace(login="stale-app[bot]")
+    )
+
     assert provider.supports_review_finding_state() is True
-    assert provider.is_comment_authored_by_pr_agent(bot_comment) is True
-    assert provider.is_comment_authored_by_pr_agent(copied_marker_comment) is False
+    assert provider.is_comment_authored_by_pr_agent(actual_bot_comment) is True
+    assert provider.is_comment_authored_by_pr_agent(stale_bot_comment) is False
 
 
 def test_user_comment_authorship_resolves_authenticated_user():
