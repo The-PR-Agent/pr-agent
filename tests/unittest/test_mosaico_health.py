@@ -56,7 +56,7 @@ class TestHealthRoute:
 # under the pinned litellm). Under the OLD (removed) gate, health_check() short-circuited
 # to "Unhealthy: LLM does not support 'stop' parameter" for exactly such models — so these
 # tests would have failed before Fix A. They guard against the gate being reintroduced.
-_MODEL_WITHOUT_STOP = "o1-preview"
+_MODEL_WITHOUT_STOP = "perplexity/sonar"
 
 
 @pytest.fixture

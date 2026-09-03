@@ -140,7 +140,7 @@ for the authoritative default values.
       </tr>
       <tr>
         <td><b>collapsible_file_list</b></td>
-        <td>If set to true, the file list in the "Changes walkthrough" section will be collapsible. If set to "adaptive", the file list will be collapsible only if there are more than 8 files.</td>
+        <td>If set to true, the file list in the "Changes walkthrough" section will be collapsible. If set to "adaptive", the file list will be collapsible only when the number of files exceeds <code>collapsible_file_list_threshold</code>.</td>
       </tr>
       <tr>
         <td><b>enable_large_pr_handling</b></td>
