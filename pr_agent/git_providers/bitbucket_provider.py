@@ -15,6 +15,7 @@ from ..algo.language_handler import is_valid_file
 from ..algo.utils import add_pr_review_identity, comment_matches_identity, find_line_number_of_relevant_line_in_file
 from ..config_loader import get_settings, get_verbosity_level
 from ..log import get_logger
+from .diff_parsing import to_hunk_only_patch
 from .git_provider import MAX_FILES_ALLOWED_FULL, GitProvider, get_cached_global_settings, redact_credentials
 
 
@@ -298,32 +299,20 @@ class BitbucketProvider(GitProvider):
         if len(diff_split) != len(diffs):
             get_logger().error(f"Error - failed to split the diff into {len(diffs)} parts")
             return []
-        # bitbucket diff has a header for each file, we need to remove it:
-        # "diff --git filename
-        # new file mode 100644 (optional)
-        #  index caa56f0..61528d7 100644
-        #   --- a/pr_agent/cli_pip.py
-        #  +++ b/pr_agent/cli_pip.py
-        #   @@ -... @@"
-        for i, _ in enumerate(diff_split):
-            diff_split_lines = diff_split[i].splitlines()
-            if (len(diff_split_lines) >= 6) and \
-                    ((diff_split_lines[2].startswith("---") and
-                      diff_split_lines[3].startswith("+++") and
-                      diff_split_lines[4].startswith("@@")) or
-                     (diff_split_lines[3].startswith("---") and  # new or deleted file
-                      diff_split_lines[4].startswith("+++") and
-                      diff_split_lines[5].startswith("@@"))):
-                diff_split[i] = "\n".join(diff_split_lines[4:])
+        # Bitbucket headers vary by change type and may include mode or rename
+        # metadata. Keep only the unified-diff hunks consumed downstream.
+        for i, patch in enumerate(diff_split):
+            diff_split[i] = to_hunk_only_patch(patch)
+            if diff_split[i]:
+                continue
+
+            if diffs[i].data.get('lines_added', 0) == 0 and diffs[i].data.get('lines_removed', 0) == 0:
+                continue
+
+            if len(patch.splitlines()) <= 3:
+                get_logger().info(f"Disregarding empty diff for file {_gef_filename(diffs[i])}")
             else:
-                if diffs[i].data.get('lines_added', 0) == 0 and diffs[i].data.get('lines_removed', 0) == 0:
-                    diff_split[i] = ""
-                elif len(diff_split_lines) <= 3:
-                    diff_split[i] = ""
-                    get_logger().info(f"Disregarding empty diff for file {_gef_filename(diffs[i])}")
-                else:
-                    get_logger().warning(f"Bitbucket failed to get diff for file {_gef_filename(diffs[i])}")
-                    diff_split[i] = ""
+                get_logger().warning(f"Bitbucket failed to get diff for file {_gef_filename(diffs[i])}")
 
         invalid_files_names = []
         diff_files = []
