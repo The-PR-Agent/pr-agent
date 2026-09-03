@@ -1253,7 +1253,13 @@ class GitLabProvider(GitProvider):
                     continue
                 range = relevant_lines_end - relevant_lines_start # no need to add 1
                 body = body.replace('```suggestion', f'```suggestion:-0+{range}')
-                lines = target_file.head_file.splitlines()
+                lines = target_file.head_file.splitlines() if target_file.head_file else []
+                if not 0 < relevant_lines_start <= len(lines):
+                    get_logger().warning(
+                        f"Skipping suggestion: line {relevant_lines_start} out of range "
+                        f"for '{relevant_file}' (head content has {len(lines)} lines)"
+                    )
+                    continue
                 relevant_line_in_file = lines[relevant_lines_start - 1]
 
                 # edit_type, found, source_line_no, target_file, target_line_no = self.find_in_file(target_file,
