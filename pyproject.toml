@@ -196,5 +196,5 @@ testpaths = ["tests/unittest"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "--color=yes"
+addopts = "--color=yes --import-mode=importlib"
 console_output_style = "progress"
