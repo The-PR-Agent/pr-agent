@@ -64,6 +64,17 @@ def test_a_pyproject_with_a_utf8_bom_falls_back_instead_of_raising(tmp_path, mon
     assert get_version() == INSTALLED_VERSION
 
 
+def test_a_non_utf8_pyproject_falls_back_instead_of_raising(tmp_path, monkeypatch, installed_version):
+    """tomllib decodes the bytes itself, so a cp1252 file raises UnicodeDecodeError before any parsing.
+
+    UnicodeDecodeError is a sibling of TOMLDecodeError under ValueError, not a subclass.
+    """
+    monkeypatch.chdir(tmp_path)
+    write_pyproject(tmp_path, '[project]\nname = "café-app"\nversion = "7.7.7"\n', encoding="cp1252")
+
+    assert get_version() == INSTALLED_VERSION
+
+
 def test_a_pyproject_without_a_project_table_falls_back(tmp_path, monkeypatch, installed_version):
     """Poetry-style files have no [project] table."""
     monkeypatch.chdir(tmp_path)

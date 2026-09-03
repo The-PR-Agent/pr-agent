@@ -1941,7 +1941,7 @@ def get_version() -> str:
             try:
                 with open("pyproject.toml", "rb") as f:
                     data = tomllib.load(f)
-            except (OSError, tomllib.TOMLDecodeError) as e:
+            except (OSError, ValueError) as e:  # tomllib raises TOMLDecodeError, or UnicodeDecodeError on non-UTF-8
                 get_logger().warning(f"Unable to read pyproject.toml, falling back to package metadata: {e}")
             else:
                 # only trust this file when it is pr-agent's own pyproject.toml, otherwise an
