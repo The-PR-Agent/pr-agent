@@ -711,7 +711,7 @@ changes_diagram: |
     def test_prompt_jinja_variables_match_production_vars(self):
         """Cross-check every Jinja variable referenced in both new prompts
         against the production self.vars keys from _make_large_pr_instance."""
-        env = Environment(undefined=StrictUndefined)
+        env = Environment(undefined=StrictUndefined, autoescape=True)
         settings = get_settings()
         production_vars = _make_large_pr_instance().vars
         # _get_prediction adds 'diff' from patches_diff, so ensure it's present
