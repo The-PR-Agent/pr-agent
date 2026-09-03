@@ -1000,3 +1000,66 @@ class TestGiteaRepoApiPagination:
 
         assert files == []
         repo_api.logger.error.assert_called_once()
+
+
+class TestBaseUrlHtmlIsResolvedOnFirstUse:
+    """apply_repo_settings builds the provider before it merges the repo's .pr_agent.toml,
+    so a user-facing URL fixed in the constructor would ignore a repo-level web_url."""
+
+    @staticmethod
+    def _settings(values):
+        settings = MagicMock()
+        settings.get.side_effect = lambda k, d=None: values.get(k, d)
+        return settings
+
+    @staticmethod
+    def _provider():
+        provider = GiteaProvider.__new__(GiteaProvider)
+        provider.logger = MagicMock()
+        provider.owner = "owner"
+        provider.repo = "repo"
+        provider.pr_number = 4
+        provider.base_url = "http://forgejo:3000"
+        provider.pr = MagicMock(html_url="http://forgejo:3000/owner/repo/pulls/4")
+        provider.get_pr_branch = MagicMock(return_value="feature")
+        return provider
+
+    @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_the_constructor_leaves_the_url_unresolved(self, mock_get_settings, _):
+        mock_get_settings.return_value = self._settings({"GITEA.PERSONAL_ACCESS_TOKEN": "token"})
+
+        provider = GiteaProvider("https://gitea.example.com/repository")
+
+        assert provider._base_url_html is None
+
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_a_web_url_merged_after_construction_is_honoured(self, mock_get_settings):
+        values = {"GITEA.WEB_URL": ""}
+        mock_get_settings.return_value = self._settings(values)
+        provider = self._provider()
+        # The repo's .pr_agent.toml lands after the provider exists and before any link is built.
+        values["GITEA.WEB_URL"] = "https://git.example.com"
+
+        link = provider.get_line_link("src/app.py", 7)
+
+        assert link == "https://git.example.com/owner/repo/src/branch/feature/src/app.py#L7"
+        assert provider.get_pr_url() == "https://git.example.com/owner/repo/pulls/4"
+
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_the_url_is_resolved_once(self, mock_get_settings):
+        values = {"GITEA.WEB_URL": "https://git.example.com"}
+        mock_get_settings.return_value = self._settings(values)
+        provider = self._provider()
+
+        first = provider.base_url_html
+        values["GITEA.WEB_URL"] = "https://changed.example.com"
+
+        assert provider.base_url_html == first == "https://git.example.com"
+
+    def test_an_assigned_url_is_used_as_is(self):
+        provider = self._provider()
+
+        provider.base_url_html = "https://assigned.example.com"
+
+        assert provider.base_url_html == "https://assigned.example.com"

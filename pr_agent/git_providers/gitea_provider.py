@@ -37,6 +37,8 @@ class _GiteaCommitAdapter:
 
 
 class GiteaProvider(GitProvider):
+    _base_url_html: Optional[str] = None  # resolved on first use, see base_url_html
+
     def __init__(self, url: Optional[str] = None):
         super().__init__()
         self.logger = get_logger()
@@ -117,7 +119,18 @@ class GiteaProvider(GitProvider):
         else:
             self.pr_commits = None
 
-        self.base_url_html = self._resolve_base_url_html()
+    @property
+    def base_url_html(self) -> str:
+        """User-facing base URL, resolved on first use rather than in the constructor:
+        apply_repo_settings builds the provider before it merges the repo's .pr_agent.toml,
+        so resolving here is what lets a repo-level `gitea.web_url` take effect."""
+        if self._base_url_html is None:
+            self._base_url_html = self._resolve_base_url_html()
+        return self._base_url_html
+
+    @base_url_html.setter
+    def base_url_html(self, value: str) -> None:
+        self._base_url_html = value
 
     def _resolve_base_url_html(self) -> str:
         """User-facing base URL interpolated into links published in comments.
