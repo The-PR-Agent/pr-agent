@@ -270,6 +270,13 @@ async def handle_submitted_review(body: Dict[str, Any],
         get_logger().info(f"Skipping submitted review with {review_state=} for {api_url=}")
         return {}
 
+    # PR-Agent's own inline comment batches arrive as 'commented' reviews from a bot user, so without
+    # this guard a 'commented' trigger would run on its own output.
+    review_author_type = body.get("review", {}).get("user", {}).get("type", "")
+    if get_settings().get("github_app.review_trigger_ignore_bot_reviews", True) and review_author_type == "Bot":
+        get_logger().info(f"Skipping submitted review from a bot {sender=} for {api_url=}")
+        return {}
+
     if get_identity_provider().verify_eligibility("github", sender_id, api_url) is not Eligibility.NOT_ELIGIBLE:
         await _perform_auto_commands_github("review_commands", agent, body, api_url, log_context)
     else:

@@ -316,12 +316,15 @@ push_commands = [
 ]
 # settings for "pull_request_review" event with "submitted" action - opt-in trigger after a review is submitted.
 # 'review_states' is empty by default, which disables the trigger. Add states to enable it, for example
-# ['changes_requested', 'approved', 'commented']; states are matched case-insensitively.
+# ['changes_requested']; states are matched case-insensitively.
 # The review body is never parsed as a command - only 'review_commands' are run.
 review_states = []
 review_commands = [
     "/improve",
 ]
+# Skip reviews submitted by bots. PR-Agent's own inline comment batches are delivered as 'commented'
+# reviews, so a 'commented' trigger would otherwise run on its own output.
+review_trigger_ignore_bot_reviews = true
 
 [gitlab]
 url = "https://gitlab.com"

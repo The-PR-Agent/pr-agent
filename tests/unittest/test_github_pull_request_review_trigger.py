@@ -44,10 +44,16 @@ class RecordingAgent:
         self.commands.append(command)
 
 
-def _review_event(action="submitted", state="changes_requested", draft=False, pr_state="open"):
+def _review_event(action="submitted", state="changes_requested", draft=False, pr_state="open",
+                  review_user_type="User"):
     return {
         "action": action,
-        "review": {"id": 7, "state": state, "body": MALICIOUS_REVIEW_BODY},
+        "review": {
+            "id": 7,
+            "state": state,
+            "body": MALICIOUS_REVIEW_BODY,
+            "user": {"login": "reviewer", "id": 2, "type": review_user_type},
+        },
         "pull_request": {
             "url": PR_API_URL,
             "state": pr_state,
@@ -64,6 +70,7 @@ async def _run_github_app_review_event(
     review_commands=None,
     eligible=True,
     config_overrides=None,
+    ignore_bot_reviews=None,
     **event_kwargs,
 ):
     settings = get_settings()
@@ -75,6 +82,8 @@ async def _run_github_app_review_event(
         settings.set("GITHUB_APP.REVIEW_STATES", review_states)
     if review_commands is not None:
         settings.set("GITHUB_APP.REVIEW_COMMANDS", review_commands)
+    if ignore_bot_reviews is not None:
+        settings.set("GITHUB_APP.REVIEW_TRIGGER_IGNORE_BOT_REVIEWS", ignore_bot_reviews)
     for key, value in (config_overrides or {}).items():
         settings.set(f"CONFIG.{key}", value)
 
@@ -124,6 +133,34 @@ async def test_github_app_matches_review_state_case_insensitively(monkeypatch):
         review_states=["Changes_Requested"],
         review_commands=["/improve"],
         state="CHANGES_REQUESTED",
+    )
+
+    assert commands == [["/improve"]]
+
+
+@pytest.mark.asyncio
+async def test_github_app_skips_reviews_submitted_by_bots(monkeypatch):
+    """PR-Agent's own inline comment batches are 'commented' reviews from a bot: they must not re-fire."""
+    commands, _ = await _run_github_app_review_event(
+        monkeypatch,
+        review_states=["commented"],
+        review_commands=["/improve"],
+        state="commented",
+        review_user_type="Bot",
+    )
+
+    assert commands == []
+
+
+@pytest.mark.asyncio
+async def test_github_app_runs_bot_reviews_when_the_ignore_is_disabled(monkeypatch):
+    commands, _ = await _run_github_app_review_event(
+        monkeypatch,
+        review_states=["commented"],
+        review_commands=["/improve"],
+        ignore_bot_reviews=False,
+        state="commented",
+        review_user_type="Bot",
     )
 
     assert commands == [["/improve"]]
@@ -262,9 +299,9 @@ def restore_review_settings():
         settings.pr_description.final_update_message = original_final_update
 
 
-def _write_review_event(tmp_path, action="submitted", state="changes_requested"):
+def _write_review_event(tmp_path, action="submitted", state="changes_requested", review_user_type="User"):
     event_path = tmp_path / "event.json"
-    event_path.write_text(json.dumps(_review_event(action=action, state=state)))
+    event_path.write_text(json.dumps(_review_event(action=action, state=state, review_user_type=review_user_type)))
     return event_path
 
 
@@ -276,6 +313,7 @@ async def _run_action_review_event(
     action_config=None,
     action="submitted",
     state="changes_requested",
+    review_user_type="User",
 ):
     settings = get_settings()
     monkeypatch.setattr(github_action_runner, "apply_repo_settings", lambda pr_url: None)
@@ -294,7 +332,10 @@ async def _run_action_review_event(
 
     monkeypatch.setattr(github_action_runner, "PRAgent", FakeAgent)
     monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request_review")
-    monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_review_event(tmp_path, action=action, state=state)))
+    monkeypatch.setenv(
+        "GITHUB_EVENT_PATH",
+        str(_write_review_event(tmp_path, action=action, state=state, review_user_type=review_user_type)),
+    )
     monkeypatch.setenv("GITHUB_TOKEN", "token")
 
     await github_action_runner.run_action()
@@ -316,6 +357,36 @@ async def test_action_runs_review_commands_for_matching_state(monkeypatch, tmp_p
     )
 
     assert handled == [(PR_API_URL, "/improve"), (PR_API_URL, "/review")]
+
+
+@pytest.mark.asyncio
+async def test_action_skips_reviews_submitted_by_bots(monkeypatch, tmp_path, restore_review_settings):
+    handled = await _run_action_review_event(
+        monkeypatch,
+        tmp_path,
+        app_states=["commented"],
+        app_commands=["/improve"],
+        state="commented",
+        review_user_type="Bot",
+    )
+
+    assert handled == []
+
+
+@pytest.mark.asyncio
+async def test_action_runs_bot_reviews_when_the_ignore_is_disabled(monkeypatch, tmp_path, restore_review_settings):
+    # Action settings arrive as environment strings, so the override is the string "false".
+    handled = await _run_action_review_event(
+        monkeypatch,
+        tmp_path,
+        app_states=["commented"],
+        app_commands=["/improve"],
+        action_config={"review_trigger_ignore_bot_reviews": "false"},
+        state="commented",
+        review_user_type="Bot",
+    )
+
+    assert handled == [(PR_API_URL, "/improve")]
 
 
 @pytest.mark.asyncio

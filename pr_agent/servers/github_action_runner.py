@@ -313,6 +313,16 @@ async def run_action():
         if not matches_review_state(review_state, review_states):
             get_logger().info(f"Skipping submitted review with state: {review_state}")
             return
+        # PR-Agent's own inline comment batches arrive as 'commented' reviews from a bot user, so without
+        # this guard a 'commented' trigger would run on its own output. See issue #2398 for the same loop.
+        ignore_bot_reviews = get_settings().get(
+            "github_action_config.review_trigger_ignore_bot_reviews",
+            get_settings().get("github_app.review_trigger_ignore_bot_reviews", True),
+        )
+        review_author_type = event_payload.get("review", {}).get("user", {}).get("type", "")
+        if is_true(ignore_bot_reviews) and review_author_type == "Bot":
+            get_logger().info("Skipping submitted review from a bot")
+            return
         pr_url = event_payload.get("pull_request", {}).get("url")
         if not pr_url:
             return

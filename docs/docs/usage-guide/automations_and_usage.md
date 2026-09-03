@@ -188,6 +188,7 @@ This means that when a reviewer submits a "changes requested" review, PR-Agent w
 The supported states are the ones GitHub sends on the `pull_request_review` event - `approved`, `changes_requested` and `commented` - and they are matched case-insensitively.
 
 The review text itself is never interpreted as a PR-Agent command; only the tools listed in `review_commands` are run.
+Reviews submitted by bots are skipped by default (`review_trigger_ignore_bot_reviews = true`). PR-Agent publishes its own inline suggestions as `commented` reviews, so a `commented` trigger would otherwise run on its own output.
 Draft PRs and PRs matching the [ignore settings](additional_configurations.md#ignoring-automatic-commands-in-prs) are skipped, and setting `disable_auto_feedback = true` disables this trigger as well.
 
 For GitHub Action, settings fall back from `github_action_config.*` to `github_app.*`, so you can set either section. The workflow must also subscribe to the event:
@@ -235,6 +236,8 @@ Adding `"synchronize"` to this list enables auto tools on new commits pushed to 
 `github_action_config.review_states` defines which submitted review states trigger the review commands (fallback to `github_app.review_states`). It is empty by default, so the trigger is opt-in. The workflow must also subscribe to `pull_request_review: types: [submitted]`.
 
 `github_action_config.review_commands` defines which tools run when a matching review is submitted (fallback to `github_app.review_commands`).
+
+`github_action_config.review_trigger_ignore_bot_reviews` (default `true`) skips reviews submitted by bots, including PR-Agent's own inline comment batches, which GitHub delivers as `commented` reviews.
 
 `github_action_config.enable_output` are used to enable/disable github actions [output parameter](https://docs.github.com/en/actions/creating-actions/metadata-syntax-for-github-actions#outputs-for-docker-container-and-javascript-actions) (default is `true`).
 Review result is output as JSON to `steps.{step-id}.outputs.review` property.
