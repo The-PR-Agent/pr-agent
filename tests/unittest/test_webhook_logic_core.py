@@ -344,6 +344,7 @@ async def test_github_review_submission_runs_configured_commands(monkeypatch):
     original_is_auto_command = settings.get("CONFIG.IS_AUTO_COMMAND")
     settings.set("GITHUB_APP.REVIEW_COMMANDS", ["/review"])
     settings.set("GITHUB_APP.REVIEW_STATES", ["changes_requested"])
+    settings.set("GITHUB_APP.REVIEW_AUTHOR_TYPES", ["User"])
 
     agent = RecordingAgent()
     monkeypatch.setattr(github_app, "apply_repo_settings", lambda _url: None)
@@ -358,7 +359,11 @@ async def test_github_review_submission_runs_configured_commands(monkeypatch):
         await github_app.handle_request(
             {
                 "action": "submitted",
-                "review": {"state": "changes_requested", "body": "Please fix the validation."},
+                "review": {
+                    "state": "changes_requested",
+                    "body": "Please fix the validation.",
+                    "user": {"type": "User"},
+                },
                 "pull_request": {
                     "url": "https://api.github.com/repos/org/repo/pulls/1",
                     "state": "open",
@@ -387,6 +392,7 @@ async def test_github_review_submission_ignores_unconfigured_state(monkeypatch):
     original_is_auto_command = settings.get("CONFIG.IS_AUTO_COMMAND")
     settings.set("GITHUB_APP.REVIEW_COMMANDS", ["/review"])
     settings.set("GITHUB_APP.REVIEW_STATES", ["changes_requested"])
+    settings.set("GITHUB_APP.REVIEW_AUTHOR_TYPES", ["User"])
 
     agent = RecordingAgent()
     monkeypatch.setattr(github_app, "apply_repo_settings", lambda _url: None)
@@ -401,7 +407,7 @@ async def test_github_review_submission_ignores_unconfigured_state(monkeypatch):
         await github_app.handle_request(
             {
                 "action": "submitted",
-                "review": {"state": "approved"},
+                "review": {"state": "approved", "user": {"type": "User"}},
                 "pull_request": {
                     "url": "https://api.github.com/repos/org/repo/pulls/1",
                     "state": "open",
@@ -412,6 +418,50 @@ async def test_github_review_submission_ignores_unconfigured_state(monkeypatch):
                     "base": {"ref": "main"},
                 },
                 "sender": {"login": "alice", "id": 1, "type": "User"},
+                "repository": {"full_name": "org/repo"},
+            },
+            "pull_request_review",
+        )
+    finally:
+        settings.set("GITHUB_APP", original_github_app)
+        settings.set("CONFIG.IS_AUTO_COMMAND", original_is_auto_command)
+
+    assert agent.commands == []
+
+
+@pytest.mark.asyncio
+async def test_github_review_submission_ignores_unconfigured_author_type(monkeypatch):
+    settings = get_settings()
+    original_github_app = copy.deepcopy(settings.get("GITHUB_APP"))
+    original_is_auto_command = settings.get("CONFIG.IS_AUTO_COMMAND")
+    settings.set("GITHUB_APP.REVIEW_COMMANDS", ["/review"])
+    settings.set("GITHUB_APP.REVIEW_STATES", ["changes_requested"])
+    settings.set("GITHUB_APP.REVIEW_AUTHOR_TYPES", ["User"])
+
+    agent = RecordingAgent()
+    monkeypatch.setattr(github_app, "apply_repo_settings", lambda _url: None)
+    monkeypatch.setattr(github_app, "PRAgent", lambda: agent)
+    monkeypatch.setattr(
+        github_app,
+        "get_identity_provider",
+        lambda: SimpleNamespace(verify_eligibility=lambda *args, **kwargs: Eligibility.ELIGIBLE),
+    )
+
+    try:
+        await github_app.handle_request(
+            {
+                "action": "submitted",
+                "review": {"state": "changes_requested", "user": {"type": "Bot"}},
+                "pull_request": {
+                    "url": "https://api.github.com/repos/org/repo/pulls/1",
+                    "state": "open",
+                    "draft": False,
+                    "title": "Regular PR",
+                    "labels": [],
+                    "head": {"ref": "feature/cache"},
+                    "base": {"ref": "main"},
+                },
+                "sender": {"login": "review-bot", "id": 1, "type": "User"},
                 "repository": {"full_name": "org/repo"},
             },
             "pull_request_review",

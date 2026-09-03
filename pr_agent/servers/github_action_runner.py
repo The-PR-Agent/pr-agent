@@ -119,6 +119,23 @@ async def _run_review_commands(event_payload):
     review = event_payload.get("review", {})
     review_state = review.get("state", "") if isinstance(review, dict) else ""
     review_state = str(review_state).strip().lower()
+    review_author_type = ""
+    if isinstance(review, dict):
+        review_author = review.get("user", {})
+        if isinstance(review_author, dict):
+            review_author_type = str(review_author.get("type", "")).strip().lower()
+    review_author_types = get_list_setting_or_env(
+        "GITHUB_ACTION_CONFIG.REVIEW_AUTHOR_TYPES",
+        get_settings().get("GITHUB_APP.REVIEW_AUTHOR_TYPES", ["User"]),
+    )
+    review_author_types = {
+        str(author_type).strip().lower() for author_type in review_author_types if str(author_type).strip()
+    }
+    if review_author_type not in review_author_types:
+        get_logger().info(
+            f"Skipping pull_request_review from {review_author_type=}: author type is not configured"
+        )
+        return
     review_states = get_list_setting_or_env(
         "GITHUB_ACTION_CONFIG.REVIEW_STATES",
         get_settings().get("GITHUB_APP.REVIEW_STATES", ["changes_requested"]),

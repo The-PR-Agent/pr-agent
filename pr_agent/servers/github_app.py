@@ -191,6 +191,23 @@ async def handle_pull_request_review_submitted(body: Dict[str, Any],
     review = body.get("review", {})
     review_state = review.get("state", "") if isinstance(review, dict) else ""
     review_state = str(review_state).strip().lower()
+    review_author_type = ""
+    if isinstance(review, dict):
+        review_author = review.get("user", {})
+        if isinstance(review_author, dict):
+            review_author_type = str(review_author.get("type", "")).strip().lower()
+    review_author_types = {
+        str(author_type).strip().lower()
+        for author_type in _normalise_setting_list(
+            get_settings().get("GITHUB_APP.REVIEW_AUTHOR_TYPES", ["User"])
+        )
+        if str(author_type).strip()
+    }
+    if review_author_type not in review_author_types:
+        get_logger().info(
+            f"Skipping review submission from {review_author_type=}: author type is not configured"
+        )
+        return {}
     review_states = {
         str(state).strip().lower()
         for state in _normalise_setting_list(get_settings().get("GITHUB_APP.REVIEW_STATES", ["changes_requested"]))

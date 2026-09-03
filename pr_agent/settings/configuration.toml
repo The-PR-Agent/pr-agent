@@ -289,6 +289,7 @@ publish_as_check_run = false # when true, publish review/description/improve out
 # push_trigger_ignore_merge_commits = true
 # push_commands = ['/describe', '/review']  # defaults mirror github_app.push_commands
 # review_states = ['changes_requested']  # states that trigger review_commands after a submitted GitHub review
+# review_author_types = ['User']  # review.user.type values allowed to trigger review_commands
 # review_commands = []  # empty by default; falls back to github_app.review_commands when unset
 
 [github_app]
@@ -305,6 +306,7 @@ pr_commands = [
 ]
 # A submitted GitHub review can optionally trigger these commands. The empty default preserves current behavior.
 review_states = ["changes_requested"]
+review_author_types = ["User"]
 review_commands = []
 # settings for "pull_request" event with "synchronize" action - used to detect and handle push triggers for new commits
 handle_push_trigger = false
