@@ -17,14 +17,6 @@ from pr_agent.algo.inline_comment_dedup import (
     key_issue_fingerprint,
     key_issue_location_fingerprint,
 )
-from pr_agent.algo.pr_processing import add_ai_metadata_to_diff_files, get_pr_diff, retry_with_fallback_models
-from pr_agent.algo.repo_context import build_repo_context
-from pr_agent.algo.review_finding_state import (
-    append_review_state,
-    parse_review_state,
-    reconcile_review_findings,
-)
-<<<<<<< HEAD
 from pr_agent.algo.pr_processing import (
     add_ai_metadata_to_diff_files,
     get_pr_diff,
@@ -33,9 +25,12 @@ from pr_agent.algo.pr_processing import (
 )
 from pr_agent.algo.prompt_fragments import render_diff_hunk_format
 from pr_agent.algo.repo_context import build_repo_context
+from pr_agent.algo.review_finding_state import (
+    append_review_state,
+    parse_review_state,
+    reconcile_review_findings,
+)
 from pr_agent.algo.review_merge import merge_review_chunks
-=======
->>>>>>> 2541960 (fix(review): harden persistent finding state)
 from pr_agent.algo.run_details import get_run_details, init_run_details
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_handler import TokenHandler
