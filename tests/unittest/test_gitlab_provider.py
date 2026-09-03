@@ -2031,3 +2031,11 @@ class TestGitLabProviderUrlParsing:
         provider = self._provider("https://host.local/gitlab")
         with pytest.raises(ValueError):
             provider._parse_merge_request_url("https://host.local/gitlab/shai/pr-agent")
+
+
+def test_get_issue_comments_newest_first_returns_notes_newest_first():
+    provider = GitLabProvider.__new__(GitLabProvider)
+    provider.mr = MagicMock()
+    provider.mr.notes.list.return_value = ["newest", "middle", "oldest"]
+
+    assert provider.get_issue_comments_newest_first() == ["newest", "middle", "oldest"]

@@ -432,13 +432,29 @@ class GithubProvider(GitProvider):
     def supports_review_comment_identity(self) -> bool:
         return True
 
+    def _configured_app_bot_login(self) -> str:
+        app_name = get_settings().get("GITHUB.APP_NAME", "")
+        if not isinstance(app_name, str) or not app_name.strip():
+            return ""
+        app_name = app_name.strip()
+        if not app_name.casefold().endswith("[bot]"):
+            app_name = f"{app_name}[bot]"
+        return app_name
+
     def supports_review_finding_state(self) -> bool:
         deployment_type = getattr(self, "deployment_type", None)
         if deployment_type is None:
             deployment_type = get_settings().get("GITHUB.DEPLOYMENT_TYPE", "user")
-        # Both deployment modes expose the authenticated account through the
-        # provider API; an unsupported mode cannot safely verify comment ownership.
-        return deployment_type in {"user", "app"}
+        # User deployments resolve the authenticated account through the API;
+        # app deployments use a cached or configured bot login.
+        if deployment_type == "user":
+            return True
+        if deployment_type == "app":
+            return bool(
+                getattr(self, "github_user_id", None)
+                or self._configured_app_bot_login()
+            )
+        return False
 
     def is_comment_authored_by_pr_agent(self, comment) -> bool:
         if isinstance(comment, dict):
@@ -460,12 +476,13 @@ class GithubProvider(GitProvider):
 
         agent_login = getattr(self, "github_user_id", None)
         if not agent_login:
-            try:
-                # This resolves the authenticated user for both PAT and App
-                # deployments, including the App's [bot] login.
-                agent_login = self.get_user_id()
-            except Exception as error:
-                raise RuntimeError("GitHub user identity cannot be verified") from error
+            if deployment_type == "app":
+                agent_login = self._configured_app_bot_login()
+            else:
+                try:
+                    agent_login = self.get_user_id()
+                except Exception as error:
+                    raise RuntimeError("GitHub user identity cannot be verified") from error
         if not isinstance(agent_login, str) or not agent_login.strip():
             raise RuntimeError("GitHub user identity cannot be verified")
         return login.casefold() == agent_login.casefold()

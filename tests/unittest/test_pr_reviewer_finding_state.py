@@ -1,3 +1,4 @@
+import inspect
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -9,8 +10,13 @@ from pr_agent.algo.review_finding_state import (
     serialize_review_state,
 )
 from pr_agent.algo.utils import PRReviewHeader, PRReviewIdentity, add_pr_review_identity
+from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
+from pr_agent.git_providers.bitbucket_provider import BitbucketProvider
+from pr_agent.git_providers.gitea_provider import GiteaProvider
+from pr_agent.git_providers.gitlab_provider import GitLabProvider
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import GitProvider
+from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.tools.pr_reviewer import PRReviewer
 
 
@@ -928,3 +934,128 @@ def test_oversized_new_state_preserves_previous_valid_marker(monkeypatch):
     assert reviewer._review_state_preserved is True
     assert reviewer._review_state_block_reason == "state_size"
     assert "human review" in review
+
+
+@pytest.mark.asyncio
+async def test_legacy_review_publish_uses_provider_compatible_signature(monkeypatch):
+    _settings(monkeypatch)
+    settings = get_settings()
+    settings.config.is_auto_command = True
+    settings.github.publish_as_check_run = False
+
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.get_files = lambda: ["app.py"]
+    provider.should_publish_review_as_thread = lambda: False
+    provider.publish_comment = MagicMock()
+    provider.publish_persistent_comment_full = MagicMock()
+
+    reviewer = PRReviewer.__new__(PRReviewer)
+    reviewer.git_provider = provider
+    reviewer.pr_url = "https://example.test/pull/1"
+    reviewer.incremental = SimpleNamespace(is_incremental=False)
+    reviewer.remaining_files_list = []
+    reviewer.vars = {}
+    reviewer.prediction = None
+    reviewer._review_state_result = None
+    reviewer._review_state_blocked = False
+    reviewer._review_state_block_reason = None
+    reviewer._review_state_preserved = False
+    reviewer._prepare_pr_review = MagicMock(return_value="review output")
+    reviewer._should_publish_review_no_suggestions = lambda _review: True
+
+    async def fake_extract_tickets(git_provider, vars):
+        return None
+
+    async def fake_retry(prepare_fn, model_type=None):
+        reviewer.prediction = "prediction"
+
+    monkeypatch.setattr(
+        "pr_agent.tools.pr_reviewer.extract_and_cache_pr_tickets",
+        fake_extract_tickets,
+    )
+    monkeypatch.setattr(
+        "pr_agent.tools.pr_reviewer.retry_with_fallback_models",
+        fake_retry,
+    )
+
+    await reviewer.run()
+
+    provider.publish_persistent_comment_full.assert_called_once()
+    assert "require_agent_authorship" not in (
+        provider.publish_persistent_comment_full.call_args.kwargs
+    )
+    provider.publish_comment.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "provider_class",
+    [
+        GithubProvider,
+        GitLabProvider,
+        AzureDevopsProvider,
+        GiteaProvider,
+        BitbucketProvider,
+    ],
+    ids=["github", "gitlab", "azure", "gitea", "bitbucket"],
+)
+def test_legacy_persistent_publish_overrides_accept_shared_arguments(provider_class):
+    parameters = inspect.signature(
+        provider_class.publish_persistent_comment
+    ).parameters
+
+    assert "require_agent_authorship" not in parameters
+
+
+def test_oversized_state_degradation_is_safe_on_the_next_run(monkeypatch):
+    settings = _settings(monkeypatch)
+    monkeypatch.setattr(settings.pr_reviewer, "num_max_findings", 100)
+    previous = reconcile_review_findings(
+        None,
+        [_finding("previous state")],
+        allow_resolution=True,
+        timestamp="2026-01-01T00:00:00Z",
+    ).state
+    header = PRReviewHeader.REGULAR.value + " " + chr(0x1F50D)
+    old = SimpleNamespace(
+        body=_state_body(previous, header, PRReviewIdentity.REGULAR.value),
+        user=SimpleNamespace(login="agent"),
+    )
+    provider = MagicMock()
+    provider.get_issue_comments.return_value = [old]
+    provider.get_diff_files.return_value = []
+    provider.is_supported.side_effect = lambda capability: capability == "get_issue_comments"
+    provider.max_comment_chars = 500
+
+    data = {"review": {"key_issues_to_review": _large_review_issues()}}
+
+    def run_review(reviewer):
+        with (
+            patch("pr_agent.tools.pr_reviewer.load_yaml", return_value=data),
+            patch("pr_agent.tools.pr_reviewer.github_action_output"),
+            patch(
+                "pr_agent.tools.pr_reviewer.convert_to_markdown_v2",
+                return_value=header + "\n\n" + ("human review " * 100),
+            ),
+            patch("pr_agent.tools.pr_reviewer.push_outputs") as push_outputs,
+        ):
+            review = reviewer._prepare_pr_review()
+        push_outputs.assert_called_once()
+        return review
+
+    first_reviewer = _reviewer(provider)
+    first_review = run_review(first_reviewer)
+    first_state = parse_review_state(first_review)
+    assert first_state.valid is True
+    assert first_state.state["findings"][0]["state"] == "ACTIVE"
+    assert first_reviewer._review_state_block_reason == "state_size"
+
+    provider.get_issue_comments.return_value = [
+        SimpleNamespace(body=first_review, user=SimpleNamespace(login="agent"))
+    ]
+    second_reviewer = _reviewer(provider)
+    second_review = run_review(second_reviewer)
+    second_state = parse_review_state(second_review)
+
+    assert second_state.valid is True
+    assert second_state.state["findings"][0]["state"] == "ACTIVE"
+    assert second_reviewer._review_state_block_reason == "state_size"

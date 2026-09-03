@@ -1433,7 +1433,7 @@ class GitLabProvider(GitProvider):
         return self.mr.notes.list(get_all=True)[::-1]
 
     def get_issue_comments_newest_first(self):
-        return list(self.get_issue_comments())
+        return list(reversed(self.get_issue_comments()))
 
     def get_repo_settings(self):
         settings_files = []

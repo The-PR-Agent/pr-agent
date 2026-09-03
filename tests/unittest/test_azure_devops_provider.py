@@ -1432,3 +1432,48 @@ def test_azure_comment_authorship_uses_explicit_agent_identity(mock_get_settings
     assert provider.supports_review_finding_state() is True
     assert provider.is_comment_authored_by_pr_agent(agent_comment) is True
     assert provider.is_comment_authored_by_pr_agent(human_comment) is False
+
+
+@patch("pr_agent.git_providers.azuredevops_provider.get_settings")
+def test_azure_lifecycle_does_not_trust_display_name(mock_get_settings):
+    mock_get_settings.return_value.get.side_effect = lambda key, default=None: (
+        "PR Agent" if key == "azure_devops_server.agent_identity" else default
+    )
+    provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+    comment = SimpleNamespace(
+        author=SimpleNamespace(
+            id="actual-agent-id",
+            display_name="PR Agent",
+            unique_name="different@example.com",
+        )
+    )
+
+    assert provider.supports_review_finding_state() is False
+    assert provider.is_comment_authored_by_pr_agent(comment) is False
+
+
+@patch("pr_agent.git_providers.azuredevops_provider.get_settings")
+def test_azure_lifecycle_matches_stable_identity_not_display_name(mock_get_settings):
+    agent_id = "11111111-1111-1111-1111-111111111111"
+    mock_get_settings.return_value.get.side_effect = lambda key, default=None: (
+        agent_id if key == "azure_devops_server.agent_identity" else default
+    )
+    provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+    matching_comment = SimpleNamespace(
+        author=SimpleNamespace(
+            id=agent_id,
+            display_name="PR Agent",
+            unique_name="other@example.com",
+        )
+    )
+    same_name_different_id = SimpleNamespace(
+        author=SimpleNamespace(
+            id="22222222-2222-2222-2222-222222222222",
+            display_name="PR Agent",
+            unique_name="other@example.com",
+        )
+    )
+
+    assert provider.supports_review_finding_state() is True
+    assert provider.is_comment_authored_by_pr_agent(matching_comment) is True
+    assert provider.is_comment_authored_by_pr_agent(same_name_different_id) is False

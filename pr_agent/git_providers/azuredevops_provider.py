@@ -968,20 +968,41 @@ class AzureDevopsProvider(GitProvider):
             if isinstance(value, str) and value.strip()
         }
 
+    @staticmethod
+    def _is_stable_agent_identity(identity: str) -> bool:
+        return (
+            "@" in identity
+            or bool(re.fullmatch(
+                r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                identity,
+                re.IGNORECASE,
+            ))
+            or identity.startswith(("aad.", "acs.", "app.", "msa.", "svc.", "vss."))
+        )
+
+    def _configured_stable_agent_identities(self) -> set[str]:
+        return {
+            identity
+            for identity in self._configured_agent_identities()
+            if self._is_stable_agent_identity(identity)
+        }
+
     def supports_review_finding_state(self) -> bool:
-        return bool(self._configured_agent_identities())
+        return bool(self._configured_stable_agent_identities())
 
     def is_comment_authored_by_pr_agent(self, comment) -> bool:
         identities = self._configured_agent_identities()
         if not identities:
             raise RuntimeError("Azure DevOps agent identity is not configured")
+        stable_identities = self._configured_stable_agent_identities()
+        if not stable_identities:
+            return False
         author = self._value(comment, "author") or self._value(comment, "user")
         if author is None:
             raise RuntimeError("Azure DevOps comment author cannot be verified")
         values = []
         for attribute, serialized_attribute in (
             ("id", None),
-            ("display_name", "displayName"),
             ("unique_name", "uniqueName"),
         ):
             value = self._value(author, attribute, serialized_attribute)
@@ -989,7 +1010,7 @@ class AzureDevopsProvider(GitProvider):
                 values.append(str(value).strip().casefold())
         if not values:
             raise RuntimeError("Azure DevOps comment author cannot be verified")
-        return any(value in identities for value in values)
+        return any(value in stable_identities for value in values)
 
     def publish_description(self, pr_title: str, pr_body: str):
         if len(pr_body) > MAX_PR_DESCRIPTION_AZURE_LENGTH:

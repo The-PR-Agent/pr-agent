@@ -292,10 +292,10 @@ class PRReviewer:
                     final_update_message=final_update_message,
                     identity_marker=PRReviewIdentity.REGULAR.value,
                     legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
-                    require_agent_authorship=True,
                     **review_thread_kwargs,
                 )
                 if state_result is not None:
+                    persistent_args["require_agent_authorship"] = True
                     persistent_args["fallback_on_error"] = False
                     self.git_provider.publish_persistent_comment_full(pr_review, **persistent_args)
                 else:
