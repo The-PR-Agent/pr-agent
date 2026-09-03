@@ -1,5 +1,4 @@
 import copy
-import secrets
 from enum import Enum
 from json import JSONDecodeError
 
@@ -15,6 +14,7 @@ from pr_agent.agent.pr_agent import PRAgent
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers.gerrit_provider import GerritProvider
 from pr_agent.log import get_logger, setup_logger
+from pr_agent.servers.utils import basic_auth_matches
 
 setup_logger()
 router = APIRouter()
@@ -38,9 +38,7 @@ def authorize(credentials: HTTPBasicCredentials = Depends(security)):
             detail="Missing credentials.",
             headers={"WWW-Authenticate": "Basic"},
         )
-    is_user_ok = secrets.compare_digest(credentials.username, username)
-    is_pass_ok = secrets.compare_digest(credentials.password, password)
-    if not (is_user_ok and is_pass_ok):
+    if not basic_auth_matches(credentials, username, password):
         raise HTTPException(
             status_code=401,
             detail="Incorrect username or password.",

@@ -77,6 +77,15 @@ def test_an_unconfigured_deployment_keeps_the_previous_behaviour(monkeypatch):
     assert calls
 
 
+def test_a_non_ascii_configured_password_rejects_with_401_not_500(monkeypatch):
+    client, calls = build_client(monkeypatch, "admin", "şifre")
+
+    response = client.post("/api/v1/gerrit/review", json=PAYLOAD, auth=("admin", "sifre"))
+
+    assert response.status_code == 401
+    assert calls == []
+
+
 @pytest.mark.parametrize("username, password", [("admin", ""), ("", "s3cret")])
 def test_reject_a_half_configured_deployment(monkeypatch, username, password):
     """Fail closed when only one credential is set, rather than reverting to open access."""
