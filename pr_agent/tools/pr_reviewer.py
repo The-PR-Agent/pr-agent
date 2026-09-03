@@ -1,3 +1,4 @@
+import asyncio
 import copy
 import datetime
 import re
@@ -16,9 +17,15 @@ from pr_agent.algo.inline_comment_dedup import (
     key_issue_fingerprint,
     key_issue_location_fingerprint,
 )
-from pr_agent.algo.pr_processing import add_ai_metadata_to_diff_files, get_pr_diff, retry_with_fallback_models
+from pr_agent.algo.pr_processing import (
+    add_ai_metadata_to_diff_files,
+    get_pr_diff,
+    get_pr_multi_diffs,
+    retry_with_fallback_models,
+)
 from pr_agent.algo.prompt_fragments import render_diff_hunk_format
 from pr_agent.algo.repo_context import build_repo_context
+from pr_agent.algo.review_merge import merge_review_chunks
 from pr_agent.algo.run_details import get_run_details, init_run_details
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_handler import TokenHandler
@@ -49,6 +56,12 @@ class PRReviewer:
     """
     The PRReviewer class is responsible for reviewing a pull request and generating feedback using an AI model.
     """
+
+    # State of the chunked flow, rebound by _prepare_chunked_prediction. Class-level immutable
+    # defaults, so the single-call flow carries no bookkeeping.
+    prediction_data = None  # merged review dict; None means "parse self.prediction instead"
+    review_chunk_count = 1
+    review_failed_chunk_count = 0
 
     def __init__(self, pr_url: str, is_answer: bool = False, is_auto: bool = False, args: list = None,
                  ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
@@ -265,6 +278,11 @@ class PRReviewer:
             self.patches_diff = output
             self.remaining_files_list = []
 
+        # a non-empty remaining_files_list means the token budget truncated the diff
+        if self.remaining_files_list and get_settings().pr_reviewer.get("enable_large_pr_chunking", False):
+            if await self._prepare_chunked_prediction(model):
+                return
+
         if self.patches_diff:
             get_logger().debug("PR diff", diff=self.patches_diff)
             self.prediction = await self._get_prediction(model)
@@ -272,18 +290,73 @@ class PRReviewer:
             get_logger().warning(f"Empty diff for PR: {self.pr_url}")
             self.prediction = None
 
-    async def _get_prediction(self, model: str) -> str:
+    async def _prepare_chunked_prediction(self, model: str) -> bool:
+        """Review a too-large diff in chunks and merge the per-chunk verdicts.
+
+        Returns False when chunking does not apply, leaving the single-call flow in place.
+        """
+        patches_diff_list, remaining_files_list = get_pr_multi_diffs(
+            self.git_provider,
+            self.token_handler,
+            model,
+            max_calls=get_settings().pr_reviewer.get("max_number_of_calls", 3),
+            add_line_numbers=True,
+            return_remaining_files=True)
+        if len(patches_diff_list) < 2:
+            get_logger().info("Large-diff chunking produced a single chunk, reviewing the PR in one call")
+            return False
+
+        get_logger().info(f"Number of PR chunk calls: {len(patches_diff_list)}")
+        get_logger().debug("PR diff chunks", artifact=patches_diff_list)
+        predictions = await asyncio.gather(
+            *[self._get_prediction(model, patches_diff) for patches_diff in patches_diff_list],
+            return_exceptions=True)
+
+        raw_predictions, chunk_outputs, chunk_errors = [], [], []
+        for chunk_index, prediction in enumerate(predictions):
+            if isinstance(prediction, Exception):
+                chunk_errors.append(prediction)
+                get_logger().warning(f"Failed to review chunk {chunk_index + 1}; retaining successful chunks",
+                                     artifact={"error": prediction})
+                continue
+            if isinstance(prediction, BaseException):
+                raise prediction
+            data = self._load_review_yaml(prediction)
+            if not isinstance(data, dict) or not isinstance(data.get("review"), dict):
+                get_logger().warning(f"Failed to parse the review of chunk {chunk_index + 1}",
+                                     artifact={"data": data})
+                continue
+            raw_predictions.append(prediction)
+            chunk_outputs.append(data)
+
+        if not chunk_outputs:
+            if chunk_errors:
+                raise chunk_errors[0]
+            get_logger().warning("No chunk produced a parsable review, falling back to a single review call")
+            return False
+
+        # the raw text is kept for logging only; the merged verdict is in self.prediction_data
+        self.prediction = "\n".join(raw_predictions)
+        self.prediction_data = merge_review_chunks(chunk_outputs)
+        self.review_chunk_count = len(patches_diff_list)
+        self.review_failed_chunk_count = len(patches_diff_list) - len(chunk_outputs)
+        self.remaining_files_list = remaining_files_list
+        return True
+
+    async def _get_prediction(self, model: str, patches_diff: Optional[str] = None) -> str:
         """
         Generate an AI prediction for the pull request review.
 
         Args:
             model: A string representing the AI model to be used for the prediction.
+            patches_diff: The diff to review. Defaults to the whole prepared diff; the chunked
+                flow passes one chunk per call.
 
         Returns:
             A string representing the AI prediction for the pull request review.
         """
         variables = copy.deepcopy(self.vars)
-        variables["diff"] = self.patches_diff  # update diff
+        variables["diff"] = self.patches_diff if patches_diff is None else patches_diff  # update diff
 
         environment = Environment(undefined=StrictUndefined)
         system_prompt = environment.from_string(get_settings().pr_review_prompt.system).render(variables)
@@ -298,18 +371,20 @@ class PRReviewer:
 
         return response
 
+    @staticmethod
+    def _load_review_yaml(prediction: str) -> dict:
+        return load_yaml(prediction.strip(),
+                         keys_fix_yaml=["ticket_compliance_check", "estimated_effort_to_review_[1-5]:", "risk_level:",
+                                        "merge_recommendation:", "security_concerns:", "key_issues_to_review:",
+                                        "relevant_file:", "relevant_line:", "suggestion:"],
+                         first_key='review', last_key='security_concerns')
+
     def _prepare_pr_review(self) -> str:
         """
         Prepare the PR review by processing the AI prediction and generating a markdown-formatted text that summarizes
         the feedback.
         """
-        first_key = 'review'
-        last_key = 'security_concerns'
-        data = load_yaml(self.prediction.strip(),
-                         keys_fix_yaml=["ticket_compliance_check", "estimated_effort_to_review_[1-5]:", "risk_level:",
-                                        "merge_recommendation:", "security_concerns:", "key_issues_to_review:",
-                                        "relevant_file:", "relevant_line:", "suggestion:"],
-                         first_key=first_key, last_key=last_key)
+        data = self.prediction_data if self.prediction_data is not None else self._load_review_yaml(self.prediction)
         github_action_output(data, 'review')
 
         if 'review' not in data:
@@ -353,6 +428,16 @@ class PRReviewer:
                                             incremental_review_markdown_text,
                                                git_provider=self.git_provider,
                                                files=self.git_provider.get_diff_files())
+
+        if self.review_chunk_count > 1:
+            markdown_text += (
+                "\n\n<hr>\n\n"
+                "ℹ️ **Chunked review:** the diff exceeded the model token budget, so it was reviewed in "
+                f"{self.review_chunk_count} chunks and the per-chunk results were merged."
+            )
+            if self.review_failed_chunk_count:
+                markdown_text += (f" {self.review_failed_chunk_count} chunk(s) failed and are not covered "
+                                  "by this review.")
 
         if self.remaining_files_list and get_settings().pr_reviewer.enable_review_coverage_footer:
             displayed_files = self.remaining_files_list[:MAX_REVIEW_COVERAGE_FILES]

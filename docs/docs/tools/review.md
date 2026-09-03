@@ -87,6 +87,14 @@ extra_instructions = "..."
         <td>If set to true, the tool will display a review coverage footer when the token budget leaves files out of the review. Default is true.</td>
       </tr>
       <tr>
+        <td><b>enable_large_pr_chunking</b></td>
+        <td>If set to true, and the token budget leaves files out of the review, the diff is split into chunks, each chunk is reviewed separately, and the per-chunk results are merged into one review. See <a href="#reviewing-a-pr-that-does-not-fit-in-one-call">Reviewing a PR that does not fit in one call</a>. Default is false.</td>
+      </tr>
+      <tr>
+        <td><b>max_number_of_calls</b></td>
+        <td>Maximum number of chunk review calls, used only when <code>enable_large_pr_chunking</code> is true. Default is 3.</td>
+      </tr>
+      <tr>
         <td><b>num_max_findings</b></td>
         <td>Number of maximum returned findings. Default is 3.</td>
       </tr>
@@ -227,3 +235,34 @@ extra_instructions = "..."
     """
     ```
     Use triple quotes to write multi-line instructions. Use bullet points to make the instructions more readable.
+
+### Reviewing a PR that does not fit in one call
+
+!!! tip ""
+
+    When a PR diff is larger than the model's token budget, the `review` tool drops whole files
+    until the diff fits, and lists the dropped files in the review coverage footer.
+
+    Setting `enable_large_pr_chunking = true` changes what happens next: the diff is split into up
+    to `max_number_of_calls` chunks, each chunk is reviewed on its own, and the answers are merged
+    into a single review that says how many chunks it was built from. Files that do not fit even
+    after chunking are still listed in the coverage footer. Every chunk is a separate model call,
+    so a chunked review costs roughly `max_number_of_calls` times a normal one.
+
+    Each chunk answers the same questions about a different part of the PR, so the answers are
+    merged field by field:
+
+    | Field | Merge rule |
+    | --- | --- |
+    | `key_issues_to_review` | Union over the chunks, dropping findings that repeat the same file, header and text |
+    | `security_concerns` | Every chunk that reported a concern is kept; "No" only when every chunk said no |
+    | `todo_sections`, `review_priority_files`, `can_be_split` | Union, de-duplicated, in chunk order (`can_be_split` keeps at most 3 sub-PRs) |
+    | `relevant_tests` | Yes if any chunk found tests |
+    | `score` | The lowest score any chunk gave |
+    | `risk_level`, `merge_recommendation` | The most conservative value any chunk gave |
+    | `estimated_effort_to_review_[1-5]` | The sum over the chunks, capped at 5 |
+    | `contribution_time_cost_estimate` | The sum over the chunks, per case |
+    | `ticket_compliance_check` | One entry per ticket, with its bullet lists unioned across chunks |
+
+    The merged verdict is deliberately never less alarming than the worst chunk: a clean chunk
+    cannot raise a score, clear a security concern, or soften a risk level set by another chunk.

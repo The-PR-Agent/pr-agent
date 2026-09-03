@@ -137,6 +137,10 @@ minimal_minutes_for_incremental_review=0
 enable_intro_text=true
 enable_help_text=false # Determines whether to include help text in the PR review. Enabled by default.
 enable_review_coverage_footer=true
+# large-diff chunking (opt-in). When the token budget leaves files out of the review, split the diff
+# into chunks, review each chunk, and merge the per-chunk results into one review.
+enable_large_pr_chunking=false
+max_number_of_calls=3 # maximum number of chunk review calls, used only when enable_large_pr_chunking is true
 
 [pr_description] # /describe #
 publish_labels=false

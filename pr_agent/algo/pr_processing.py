@@ -394,7 +394,8 @@ def get_pr_multi_diffs(git_provider: GitProvider,
                        token_handler: TokenHandler,
                        model: str,
                        max_calls: int = 5,
-                       add_line_numbers: bool = True) -> List[str]:
+                       add_line_numbers: bool = True,
+                       return_remaining_files: bool = False):
     """
     Retrieves the diff files from a Git provider, sorts them by main language, and generates patches for each file.
     The patches are split into multiple groups based on the maximum number of tokens allowed for the given model.
@@ -404,9 +405,13 @@ def get_pr_multi_diffs(git_provider: GitProvider,
         token_handler (TokenHandler): An object that handles tokens in the context of a pull request.
         model (str): The name of the model.
         max_calls (int, optional): The maximum number of calls to retrieve diff files. Defaults to 5.
+        return_remaining_files (bool, optional): Also return the files the token budget left out, in the
+            same shape as `get_pr_diff`. Files without a patch, and delete-only files, are not reported:
+            nothing was omitted for them. Defaults to False.
 
     Returns:
         List[str]: A list of final diff strings, split into multiple groups based on the maximum number of tokens allowed for the given model.
+        With `return_remaining_files`, a tuple of that list and the list of omitted file names.
 
     Raises:
         RateLimitExceededException: If the rate limit for the Git provider API is exceeded.
@@ -435,7 +440,8 @@ def get_pr_multi_diffs(git_provider: GitProvider,
 
     # if we are under the limit, return the full diff
     if total_tokens + OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD < get_max_tokens(model):
-        return ["\n".join(patches_extended)] if patches_extended else []
+        full_diff_list = ["\n".join(patches_extended)] if patches_extended else []
+        return (full_diff_list, []) if return_remaining_files else full_diff_list
 
     # Sort files within each language group by tokens in descending order
     sorted_files = []
@@ -444,6 +450,7 @@ def get_pr_multi_diffs(git_provider: GitProvider,
 
     patches = []
     final_diff_list = []
+    files_in_patches = set()  # files that made it into a chunk
     total_tokens = token_handler.prompt_tokens
     call_number = 1
     for file in sorted_files:
@@ -509,6 +516,7 @@ def get_pr_multi_diffs(git_provider: GitProvider,
 
         if patch:
             patches.append(patch)
+            files_in_patches.add(file.filename)
             total_tokens += new_patch_tokens
             if get_verbosity_level() >= 2:
                 get_logger().info(f"Tokens: {total_tokens}, last filename: {file.filename}")
@@ -518,7 +526,20 @@ def get_pr_multi_diffs(git_provider: GitProvider,
         final_diff = "\n".join(patches)
         final_diff_list.append(final_diff.strip())
 
-    return final_diff_list
+    if not return_remaining_files:
+        return final_diff_list
+
+    remaining_files_list = []
+    for file in sorted_files:
+        if file.filename in files_in_patches or file.filename in remaining_files_list:
+            continue
+        # a file with no patch, or with a delete-only patch, has nothing to review:
+        # the token budget is not what kept it out of the diff
+        if not file.patch or handle_patch_deletions(file.patch, file.base_file, file.head_file,
+                                                    file.filename, file.edit_type) is None:
+            continue
+        remaining_files_list.append(file.filename)
+    return final_diff_list, remaining_files_list
 
 
 def add_ai_metadata_to_diff_files(git_provider, pr_description_files):
