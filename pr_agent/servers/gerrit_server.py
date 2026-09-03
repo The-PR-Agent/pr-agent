@@ -22,16 +22,16 @@ security = HTTPBasic(auto_error=False)
 
 
 def authorize(credentials: HTTPBasicCredentials = Depends(security)):
-    """Reject unauthenticated calls when webhook credentials are configured."""
+    """Require the configured webhook credentials on every call."""
     gerrit_settings = get_settings().get("gerrit", {})
     username = gerrit_settings.get("webhook_username", None) if gerrit_settings else None
     password = gerrit_settings.get("webhook_password", None) if gerrit_settings else None
-    if not username and not password:
-        return
     if not username or not password:
-        get_logger().error("Incomplete gerrit webhook credentials: set both "
-                           "gerrit.webhook_username and gerrit.webhook_password, or neither")
-        raise HTTPException(status_code=500, detail="Webhook authentication is misconfigured.")
+        # The route runs commands with caller-supplied arguments, so an unconfigured
+        # deployment is refused rather than left open, as the GitHub app does.
+        get_logger().error("Rejecting gerrit webhook: set both "
+                           "gerrit.webhook_username and gerrit.webhook_password")
+        raise HTTPException(status_code=403, detail="Webhook authentication is not configured.")
     if credentials is None:
         raise HTTPException(
             status_code=401,

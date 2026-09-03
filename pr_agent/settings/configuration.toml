@@ -388,7 +388,7 @@ request_timeout = 30 # positive seconds for connection and response-read inactiv
 # improve_path= "path/to/improve.md"
 
 [gerrit]
-# set both to require basic auth on the gerrit webhook endpoint; leave both empty to keep it open
+# both are required: the gerrit webhook endpoint rejects every call until they are set
 webhook_username = ""
 webhook_password = ""
 # endpoint to the gerrit service
