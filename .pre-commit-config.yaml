@@ -30,8 +30,9 @@ repos:
   - repo: https://github.com/rhysd/actionlint
     rev: v1.7.12
     hooks:
-       - id: actionlint
+      - id: actionlint
 
+  # ruff handles linting and import sorting (config in pyproject.toml).
   - repo: local
     hooks:
       - id: ruff-check
