@@ -288,6 +288,8 @@ publish_as_check_run = false # when true, publish review/description/improve out
 # push_trigger_ignore_bot_commits = true
 # push_trigger_ignore_merge_commits = true
 # push_commands = ['/describe', '/review']  # defaults mirror github_app.push_commands
+# review_states = ['changes_requested']  # opt-in trigger for submitted reviews (falls back to github_app.review_states; empty = disabled)
+# review_commands = ['/improve']  # defaults mirror github_app.review_commands
 
 [github_app]
 # these toggles allows running the github app from custom deployments
@@ -311,6 +313,14 @@ push_trigger_pending_tasks_ttl = 300
 push_commands = [
     "/describe",
     "/review",
+]
+# settings for "pull_request_review" event with "submitted" action - opt-in trigger after a review is submitted.
+# 'review_states' is empty by default, which disables the trigger. Add states to enable it, for example
+# ['changes_requested', 'approved', 'commented']; states are matched case-insensitively.
+# The review body is never parsed as a command - only 'review_commands' are run.
+review_states = []
+review_commands = [
+    "/improve",
 ]
 
 [gitlab]

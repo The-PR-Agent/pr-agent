@@ -224,6 +224,58 @@ async def handle_push_trigger_for_new_commits(body: Dict[str, Any],
             _duplicate_push_triggers[api_url] = max(0, _duplicate_push_triggers[api_url] - 1)
 
 
+def matches_review_state(review_state: Any, configured_states: Any) -> bool:
+    """Return True when a submitted review's state is one of the configured states.
+
+    GitHub sends the state lowercased on webhooks but uppercased on the REST API, so the
+    comparison is case-insensitive. An empty or unset list keeps the trigger disabled,
+    which is the default. Shared with the GitHub Action runner.
+    """
+    if isinstance(configured_states, str):
+        configured_states = [configured_states]
+    if not isinstance(configured_states, (list, tuple, set)) or not configured_states:
+        return False
+    if not isinstance(review_state, str) or not review_state.strip():
+        return False
+    normalized_state = review_state.strip().lower()
+    return any(isinstance(state, str) and state.strip().lower() == normalized_state
+               for state in configured_states)
+
+
+async def handle_submitted_review(body: Dict[str, Any],
+                                  event: str,
+                                  sender: str,
+                                  sender_id: str,
+                                  action: str,
+                                  log_context: Dict[str, Any],
+                                  agent: PRAgent):
+    """Run the opt-in commands configured for submitted reviews.
+
+    Only the commands listed in `github_app.review_commands` are dispatched: the review
+    body is data and is never parsed as a PR-Agent command.
+    """
+    if action != "submitted":
+        get_logger().info(f"Ignoring pull_request_review event with {action=}")
+        return {}
+
+    pull_request, api_url = _check_pull_request_event(action, body, log_context)
+    if not (pull_request and api_url):
+        get_logger().info(f"Invalid pull_request_review event: {action=}")
+        return {}
+
+    # Apply the repo settings first, so a repository can opt in through its own .pr_agent.toml
+    apply_repo_settings(api_url)
+    review_state = body.get("review", {}).get("state", "")
+    if not matches_review_state(review_state, get_settings().get("github_app.review_states", [])):
+        get_logger().info(f"Skipping submitted review with {review_state=} for {api_url=}")
+        return {}
+
+    if get_identity_provider().verify_eligibility("github", sender_id, api_url) is not Eligibility.NOT_ELIGIBLE:
+        await _perform_auto_commands_github("review_commands", agent, body, api_url, log_context)
+    else:
+        get_logger().info(f"User {sender=} is not eligible to process PR {api_url=}")
+
+
 def handle_closed_pr(body, event, action, log_context):
     pull_request = body.get("pull_request", {})
     is_merged = pull_request.get("merged", False)
@@ -371,6 +423,10 @@ async def handle_request(body: Dict[str, Any], event: str):
     elif event == 'pull_request' and action == 'closed':
         if get_settings().get("CONFIG.ANALYTICS_FOLDER", ""):
             handle_closed_pr(body, event, action, log_context)
+    # handle submitted reviews - opt-in trigger, disabled unless github_app.review_states is set
+    elif event == 'pull_request_review':
+        get_logger().debug('Request body', artifact=body, event=event)
+        await handle_submitted_review(body, event, sender, sender_id, action, log_context, agent)
     else:
         get_logger().info(f"event {event=} action {action=} does not require any handling")
     return {}
@@ -436,7 +492,7 @@ async def _perform_auto_commands_github(commands_conf: str, agent: PRAgent, body
     if is_draft and not feedback_on_draft:
         get_logger().info(f"Skipping draft PR {api_url=}")
         return
-    if commands_conf == "pr_commands" and get_settings().config.disable_auto_feedback:  # auto commands for PR, and auto feedback is disabled
+    if commands_conf in ("pr_commands", "review_commands") and get_settings().config.disable_auto_feedback:  # auto commands for PR, and auto feedback is disabled
         get_logger().info(f"Auto feedback is disabled, skipping auto commands for PR {api_url=}")
         return
     if not should_process_pr_logic(body): # Here we already updated the configuration with the repo settings

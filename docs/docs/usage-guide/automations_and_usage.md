@@ -169,6 +169,35 @@ For GitHub Action, settings fall back from `github_action_config.*` to `github_a
 
 This means that when new code is pushed to the PR, PR-Agent will run the `describe` and `review` tools, with the specified parameters.
 
+#### Automatic tools for submitted reviews
+
+PR-Agent can also respond when a reviewer submits a review on an open PR. This works for both **GitHub App** and **GitHub Action** deployments, and is disabled by default.
+
+The configuration parameter `review_states` defines which review states trigger the feature; an empty list (the default) keeps it disabled.
+The configuration parameter `review_commands` defines the list of tools that will be **run automatically** when a matching review is submitted.
+
+```toml
+[github_app]
+review_states = ["changes_requested"]
+review_commands = [
+    "/improve",
+]
+```
+
+This means that when a reviewer submits a "changes requested" review, PR-Agent will run the `improve` tool.
+The supported states are the ones GitHub sends on the `pull_request_review` event - `approved`, `changes_requested` and `commented` - and they are matched case-insensitively.
+
+The review text itself is never interpreted as a PR-Agent command; only the tools listed in `review_commands` are run.
+Draft PRs and PRs matching the [ignore settings](additional_configurations.md#ignoring-automatic-commands-in-prs) are skipped, and setting `disable_auto_feedback = true` disables this trigger as well.
+
+For GitHub Action, settings fall back from `github_action_config.*` to `github_app.*`, so you can set either section. The workflow must also subscribe to the event:
+
+```yaml
+on:
+  pull_request_review:
+    types: [submitted]
+```
+
 ### GitHub Action
 
 `GitHub Action` is a different way to trigger PR-Agent tools, and uses a different configuration mechanism than `GitHub App`.<br>
@@ -202,6 +231,10 @@ Adding `"synchronize"` to this list enables auto tools on new commits pushed to 
 `github_action_config.push_trigger_ignore_merge_commits` (default `true`) skips processing when the push contains a merge commit, avoiding duplicate reviews on "Update branch" clicks.
 
 `github_action_config.push_trigger_ignore_bot_commits` (default `true`) skips processing when the push author is a bot, avoiding redundant runs on automated commits.
+
+`github_action_config.review_states` defines which submitted review states trigger the review commands (fallback to `github_app.review_states`). It is empty by default, so the trigger is opt-in. The workflow must also subscribe to `pull_request_review: types: [submitted]`.
+
+`github_action_config.review_commands` defines which tools run when a matching review is submitted (fallback to `github_app.review_commands`).
 
 `github_action_config.enable_output` are used to enable/disable github actions [output parameter](https://docs.github.com/en/actions/creating-actions/metadata-syntax-for-github-actions#outputs-for-docker-container-and-javascript-actions) (default is `true`).
 Review result is output as JSON to `steps.{step-id}.outputs.review` property.

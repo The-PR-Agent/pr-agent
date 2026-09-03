@@ -13,7 +13,7 @@ from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import get_logger
-from pr_agent.servers.github_app import handle_line_comments
+from pr_agent.servers.github_app import handle_line_comments, matches_review_state
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.tools.pr_description import PRDescription
 from pr_agent.tools.pr_reviewer import PRReviewer
@@ -298,6 +298,40 @@ async def run_action():
                         )
                     else:
                         await PRAgent().handle_request(url, body)
+
+    # Handle pull_request_review event - opt-in trigger, disabled unless review_states is configured
+    elif GITHUB_EVENT_NAME == "pull_request_review":
+        action = event_payload.get("action")
+        if action != "submitted":
+            get_logger().info(f"Skipping pull_request_review action: {action}")
+            return
+        review_states = get_settings().get(
+            "github_action_config.review_states",
+            get_settings().get("github_app.review_states", []),
+        )
+        review_state = event_payload.get("review", {}).get("state", "")
+        if not matches_review_state(review_state, review_states):
+            get_logger().info(f"Skipping submitted review with state: {review_state}")
+            return
+        pr_url = event_payload.get("pull_request", {}).get("url")
+        if not pr_url:
+            return
+        review_commands = get_settings().get(
+            "github_action_config.review_commands",
+            get_settings().get("github_app.review_commands", []),
+        )
+        if isinstance(review_commands, str):
+            review_commands = [review_commands]
+        if not review_commands:
+            get_logger().info("No review_commands configured, skipping pull_request_review")
+            return
+        # Only the configured commands are dispatched - the review body is never parsed as a command.
+        _inject_artifact_context()
+        get_settings().config.is_auto_command = True
+        get_settings().pr_description.final_update_message = False
+        get_logger().info(f"Running review commands: {review_commands}")
+        for command in review_commands:
+            await PRAgent().handle_request(pr_url, command)
 
     # Handle workflow_run event (triggered after another workflow completes, e.g. after a terraform plan)
     elif GITHUB_EVENT_NAME == "workflow_run":
