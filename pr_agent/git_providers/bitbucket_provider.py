@@ -608,7 +608,7 @@ class BitbucketProvider(GitProvider):
         )
 
     def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
-        return True
+        return None
 
     def remove_reaction(self, issue_comment_id: int, reaction_id: int) -> bool:
         return True
@@ -696,7 +696,7 @@ class BitbucketProvider(GitProvider):
         except Exception:
             return ""
 
-    def get_commit_messages(self):
+    def get_commit_messages(self) -> str:
         return ""  # not implemented yet
 
     # bitbucket does not support labels

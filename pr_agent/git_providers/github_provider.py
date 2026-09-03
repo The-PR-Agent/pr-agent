@@ -1364,7 +1364,7 @@ class GithubProvider(GitProvider):
         labels = self.repo_obj.get_labels()
         return [label for label in itertools.islice(labels, 50)]
 
-    def get_commit_messages(self):
+    def get_commit_messages(self) -> str:
         """
         Retrieves the commit messages of a pull request.
 

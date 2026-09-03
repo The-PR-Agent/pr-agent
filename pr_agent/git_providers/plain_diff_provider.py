@@ -217,12 +217,12 @@ class PlainDiffGitProvider(GitProvider):
         pass
 
     def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
-        pass
+        return None
 
     def remove_reaction(self, issue_comment_id: int, reaction_id: int) -> bool:
-        pass
+        return True
 
-    def get_commit_messages(self):
+    def get_commit_messages(self) -> str:
         return ""
 
     def get_repo_settings(self):

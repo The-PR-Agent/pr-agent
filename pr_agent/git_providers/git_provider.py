@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from typing import Optional, Tuple
 
 from pr_agent.algo.types import FilePatchInfo
@@ -545,7 +546,8 @@ class GitProvider(ABC):
         pass
 
     @abstractmethod
-    def get_issue_comments(self):
+    def get_issue_comments(self) -> Iterable:
+        """Comments on the PR; every item exposes the comment text as `.body`."""
         pass
 
     def get_comment_url(self, comment) -> str:

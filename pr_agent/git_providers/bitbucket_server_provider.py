@@ -469,7 +469,7 @@ class BitbucketServerProvider(GitProvider):
         )
 
     def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
-        return True
+        return None
 
     def remove_reaction(self, issue_comment_id: int, reaction_id: int) -> bool:
         return True
@@ -542,7 +542,7 @@ class BitbucketServerProvider(GitProvider):
     def _get_pr_file_content(self, remote_link: str):
         return ""
 
-    def get_commit_messages(self):
+    def get_commit_messages(self) -> str:
         return ""
 
     # bitbucket does not support labels

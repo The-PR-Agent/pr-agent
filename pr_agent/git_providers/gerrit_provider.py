@@ -9,6 +9,7 @@ import uuid
 from collections import Counter, namedtuple
 from pathlib import Path
 from tempfile import NamedTemporaryFile, mkdtemp
+from typing import Optional
 
 import requests
 import urllib3.util
@@ -241,21 +242,19 @@ class GerritProvider(GitProvider):
         """
         return self.repo.branches[0].name
 
-    def get_issue_comments(self):
-        comments = list_comments(self.parsed_url, self.refspec)
-        Comments = namedtuple('Comments', ['reversed'])
+    def get_issue_comments(self) -> list:
         Comment = namedtuple('Comment', ['body'])
-        return Comments([Comment(c['message']) for c in reversed(comments)])
+        return [Comment(c['message']) for c in list_comments(self.parsed_url, self.refspec)]
 
     def get_pr_labels(self, update=False):
         raise NotImplementedError(
             'Getting labels is not implemented for the gerrit provider')
 
-    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False):
+    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
         raise NotImplementedError(
             'Adding reactions is not implemented for the gerrit provider')
 
-    def remove_reaction(self, issue_comment_id: int, reaction_id: int):
+    def remove_reaction(self, issue_comment_id: int, reaction_id: int) -> bool:
         raise NotImplementedError(
             'Removing reactions is not implemented for the gerrit provider')
 

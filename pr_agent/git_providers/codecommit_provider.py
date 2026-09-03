@@ -335,7 +335,7 @@ class CodeCommitProvider(GitProvider):
 
     def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
         get_logger().info("CodeCommit provider does not support eyes reaction yet")
-        return True
+        return None
 
     def remove_reaction(self, issue_comment_id: int, reaction_id: int) -> bool:
         get_logger().info("CodeCommit provider does not support removing reactions yet")
@@ -461,7 +461,7 @@ class CodeCommitProvider(GitProvider):
 
         return matching_contexts or self._get_target_contexts()[:1]
 
-    def get_commit_messages(self):
+    def get_commit_messages(self) -> str:
         return ""  # not implemented yet
 
     @staticmethod

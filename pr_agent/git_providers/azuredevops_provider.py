@@ -1368,7 +1368,7 @@ class AzureDevopsProvider(GitProvider):
         return comment_list
 
     def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
-        return True
+        return None
 
     def remove_reaction(self, issue_comment_id: int, reaction_id: int) -> bool:
         return True
@@ -1480,7 +1480,7 @@ class AzureDevopsProvider(GitProvider):
         )
         return self.pr
 
-    def get_commit_messages(self):
+    def get_commit_messages(self) -> str:
         return ""  # not implemented yet
 
     def get_pr_id(self):
