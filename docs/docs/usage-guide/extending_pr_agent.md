@@ -43,6 +43,20 @@ Implement a `GitProvider` subclass and register it:
 5. Select provider-dependent behavior with capability checks like `provider.is_supported("feature")` rather than provider-type checks.
 6. Add unit tests under `tests/unittest/test_<name>_provider.py` (see `test_bitbucket_provider.py`) and list the required env vars in `pr_agent/settings/.secrets_template.toml`.
 
+### Registering a provider from another package
+
+A provider does not have to live in this repository. Call `register_git_provider` from your own package before PR-Agent resolves the provider, for example from the module that starts your server or wraps the CLI:
+
+```python
+from pr_agent.git_providers import register_git_provider
+
+from my_package.forge_provider import ForgeProvider
+
+register_git_provider("forge", ForgeProvider)
+```
+
+Then select it with `git_provider="forge"` under `[config]`. The class must extend `GitProvider`. Registering the same class twice is a no-op, and registering a different class under an id that is already taken raises, so a package cannot silently replace a built-in provider.
+
 ## Adding a tool
 
 1. Implement the tool class in `pr_agent/tools/pr_<name>.py` with an `async def run(self)` entry point (see `pr_reviewer.py`).

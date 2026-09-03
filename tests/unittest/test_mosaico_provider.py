@@ -79,7 +79,7 @@ class TestParseUnifiedDiff:
 
 class TestProviderRegistration:
     def test_registry_has_mosaico_diff_and_originals_intact(self):
-        import pr_agent.mosaico.provider_registration  # noqa: F401 (triggers setdefault)
+        import pr_agent.mosaico.provider_registration  # noqa: F401 (registers mosaico_diff)
         from pr_agent.git_providers import _GIT_PROVIDERS
         assert _GIT_PROVIDERS.get("mosaico_diff") is DiffInputProvider
         # original keys intact (setdefault did not clobber)
