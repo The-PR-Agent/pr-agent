@@ -118,17 +118,23 @@ def test_an_unreadable_score_does_not_hide_the_scores_that_parsed():
     assert merged["review"]["score"] == "60"
 
 
-def test_review_effort_adds_up_across_the_chunks():
+def test_review_effort_reports_the_hardest_chunk():
     merged = merge_review_chunks([_chunk(**{"estimated_effort_to_review_[1-5]": "1"}),
                                   _chunk(**{"estimated_effort_to_review_[1-5]": 2})])
 
-    assert merged["review"]["estimated_effort_to_review_[1-5]"] == 3
+    assert merged["review"]["estimated_effort_to_review_[1-5]"] == 2
+
+
+def test_review_effort_does_not_saturate_across_modest_chunks():
+    merged = merge_review_chunks([_chunk(**{"estimated_effort_to_review_[1-5]": "2"}) for _ in range(3)])
+
+    assert merged["review"]["estimated_effort_to_review_[1-5]"] == 2
 
 
 def test_review_effort_stays_within_the_one_to_five_scale():
     merged = merge_review_chunks([_chunk(**{"estimated_effort_to_review_[1-5]": "4"}),
                                   _chunk(**{"estimated_effort_to_review_[1-5]": "3"}),
-                                  _chunk(**{"estimated_effort_to_review_[1-5]": "5"})])
+                                  _chunk(**{"estimated_effort_to_review_[1-5]": "7"})])
 
     assert merged["review"]["estimated_effort_to_review_[1-5]"] == 5
 

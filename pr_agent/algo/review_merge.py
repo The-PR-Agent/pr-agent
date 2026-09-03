@@ -8,10 +8,9 @@ one verdict. Three rules cover the schema:
 - Fields that report what a chunk *found* - key issues, security concerns, TODO sections,
   priority files, sub-PRs, ticket bullet lists - are unioned in chunk order, dropping repeats.
 - Fields that are one *judgement* about the whole PR - score, risk level, merge
-  recommendation, "does the PR have tests" - take the most conservative value any chunk
-  reported, so a merged review is never less alarming than its worst chunk.
-- Fields that measure *work* - review effort and contribution time - are summed, because the
-  chunks partition the change and reviewing all of them is the work of reviewing the PR.
+  recommendation, review effort, "does the PR have tests" - take the most conservative value
+  any chunk reported, so a merged review is never less alarming than its worst chunk.
+- Contribution time measures *work* and is summed, because the chunks partition the change.
 
 A key that matches none of the rules keeps the first chunk's non-empty value, so a field
 added to the prompt later still survives the merge instead of disappearing from the review.
@@ -95,11 +94,15 @@ def _as_int(value: Any) -> Optional[int]:
 
 
 def _merge_effort(values: List[Any]) -> Any:
-    """Reviewing every chunk is the work of reviewing the PR, so effort adds up (capped at 5)."""
+    """Effort is a 1-5 judgement, so the merged review reports the hardest chunk.
+
+    Summing would saturate at 5 for any PR of a few modest chunks, and the field would stop
+    telling PRs apart as soon as chunking is on.
+    """
     numbers = [number for number in (_as_int(value) for value in values) if number is not None]
     if not numbers:
         return _first_non_empty(values)
-    return max(1, min(MAX_EFFORT, sum(numbers)))
+    return max(1, min(MAX_EFFORT, max(numbers)))
 
 
 def _merge_score(values: List[Any]) -> Any:
