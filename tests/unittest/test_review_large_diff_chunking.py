@@ -207,13 +207,13 @@ async def test_chunks_that_answer_nothing_parsable_fall_back_to_a_single_call_re
 
 
 def _render_review(reviewer):
-    reviewer.prediction = "review: {}"
+    reviewer.prediction = "review:\n  summary: test"
     reviewer.git_provider.get_diff_files.return_value = []
     reviewer.git_provider.is_supported.return_value = False
     reviewer.set_review_labels = MagicMock()
 
     with (
-        patch("pr_agent.tools.pr_reviewer.load_yaml", return_value={"review": {}}),
+        patch("pr_agent.tools.pr_reviewer.load_yaml", return_value={"review": {"summary": "test"}}),
         patch("pr_agent.tools.pr_reviewer.github_action_output"),
         patch("pr_agent.tools.pr_reviewer.convert_to_markdown_v2", return_value="original review"),
     ):
