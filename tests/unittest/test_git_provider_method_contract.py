@@ -112,6 +112,19 @@ def _azure_devops(monkeypatch) -> AzureDevopsProvider:
     return provider
 
 
+def _bitbucket_server(monkeypatch) -> BitbucketServerProvider:
+    provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
+    provider.workspace_slug = "PRJ"
+    provider.repo_slug = "repo"
+    provider.pr_num = 7
+    provider.bitbucket_client = MagicMock()
+    provider.bitbucket_client.get_pull_requests_activities.return_value = [{
+        "action": "COMMENTED",
+        "comment": {"id": COMMENT_ID, "version": 1, "text": COMMENT_BODY},
+    }]
+    return provider
+
+
 def _bare(provider_type):
     """A provider with no backend wired at all: every call on it must succeed without one."""
     return lambda monkeypatch: provider_type.__new__(provider_type)
@@ -124,7 +137,7 @@ PROVIDERS: dict[str, tuple[type[GitProvider], Callable[[pytest.MonkeyPatch], Git
     "gerrit": (GerritProvider, _gerrit),
     "azure-devops": (AzureDevopsProvider, _azure_devops),
     "bitbucket": (BitbucketProvider, _bare(BitbucketProvider)),
-    "bitbucket-server": (BitbucketServerProvider, _bare(BitbucketServerProvider)),
+    "bitbucket-server": (BitbucketServerProvider, _bitbucket_server),
     "codecommit": (CodeCommitProvider, _bare(CodeCommitProvider)),
     "local": (LocalGitProvider, _bare(LocalGitProvider)),
     "plain-diff": (PlainDiffGitProvider, _bare(PlainDiffGitProvider)),
@@ -173,8 +186,8 @@ METHOD_CONTRACTS = (
         noop_value=[],
         check_supported=_is_comment_sequence,
         tiers=_tiers(
-            supported=("github", "gitlab", "gitea", "gerrit", "azure-devops"),
-            not_implemented=("bitbucket", "bitbucket-server", "codecommit", "local"),
+            supported=("github", "gitlab", "gitea", "gerrit", "azure-devops", "bitbucket-server"),
+            not_implemented=("bitbucket", "codecommit", "local"),
         ),
         # Implementations narrow the base `Iterable` (a paginated list, a list of SDK objects),
         # so the return annotation is checked by behaviour rather than by equality.
