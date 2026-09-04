@@ -299,7 +299,9 @@ class PRReviewer:
                     legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
                     **review_thread_kwargs,
                 )
-                if state_result is not None:
+                if not self._review_finding_state_in_play():
+                    self.git_provider.publish_persistent_comment(pr_review, **persistent_args)
+                elif state_result is not None:
                     persistent_args["require_agent_authorship"] = True
                     persistent_args["fallback_on_error"] = False
                     persistent_write_failed = True
@@ -430,6 +432,19 @@ class PRReviewer:
                 f"Failed to publish review check run, error: {error}"
             )
             return False
+
+    def _review_finding_state_in_play(self) -> bool:
+        if not get_settings().pr_reviewer.get("persistent_finding_state", True):
+            return False
+        provider = getattr(self, "git_provider", None)
+        if provider is None:
+            return False
+        capability = getattr(provider, "supports_review_finding_state", None)
+        implementation = getattr(capability, "__func__", capability)
+        return (
+            callable(capability)
+            and implementation is not GitProvider.supports_review_finding_state
+        )
 
     def _review_comment_authorship_available(self) -> bool:
         provider = getattr(self, "git_provider", None)

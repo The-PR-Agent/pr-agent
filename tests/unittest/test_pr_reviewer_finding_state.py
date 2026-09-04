@@ -1205,6 +1205,68 @@ def _patch_run_dependencies(monkeypatch, reviewer):
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider_class",
+    [GiteaProvider, BitbucketProvider],
+    ids=["gitea", "bitbucket"],
+)
+async def test_review_without_lifecycle_capability_uses_ordinary_persistent_review(
+    monkeypatch, provider_class
+):
+    settings = _settings(monkeypatch)
+    monkeypatch.setattr(settings.config, "is_auto_command", True, raising=False)
+    provider = _ReviewRunProvider(supports_state=False)
+    provider.supports_review_finding_state = (
+        provider_class.supports_review_finding_state.__get__(
+            provider,
+            provider_class,
+        )
+    )
+    provider.publish_persistent_comment = MagicMock(return_value=object())
+    provider.publish_persistent_comment_full = MagicMock()
+    reviewer = _reviewer_for_run(provider)
+    _patch_run_dependencies(monkeypatch, reviewer)
+
+    await reviewer.run()
+    await reviewer.run()
+
+    assert provider.publish_persistent_comment.call_count == 2
+    provider.publish_persistent_comment_full.assert_not_called()
+    assert provider.published == []
+    for call in provider.publish_persistent_comment.call_args_list:
+        review_body = call.args[0]
+        assert not review_body.startswith("## Standalone PR Review\n")
+        assert "<!-- pr-agent-review-state:" not in review_body
+        assert "require_agent_authorship" not in call.kwargs
+        assert "fallback_on_error" not in call.kwargs
+
+
+@pytest.mark.asyncio
+async def test_disabled_finding_state_uses_ordinary_persistent_review(monkeypatch):
+    settings = _settings(monkeypatch)
+    monkeypatch.setattr(settings.config, "is_auto_command", True, raising=False)
+    monkeypatch.setattr(
+        settings.pr_reviewer,
+        "persistent_finding_state",
+        False,
+        raising=False,
+    )
+    provider = _ReviewRunProvider(supports_state=True, authored=True)
+    provider.publish_persistent_comment = MagicMock(return_value=object())
+    provider.publish_persistent_comment_full = MagicMock()
+    reviewer = _reviewer_for_run(provider)
+    _patch_run_dependencies(monkeypatch, reviewer)
+
+    await reviewer.run()
+
+    provider.publish_persistent_comment.assert_called_once()
+    provider.publish_persistent_comment_full.assert_not_called()
+    assert provider.published == []
+    review_body = provider.publish_persistent_comment.call_args.args[0]
+    assert not review_body.startswith("## Standalone PR Review\n")
+    assert "<!-- pr-agent-review-state:" not in review_body
+
 def test_github_check_setting_does_not_disable_non_check_provider_lifecycle(monkeypatch):
     settings = _settings(monkeypatch)
     monkeypatch.setattr(settings.github, "publish_as_check_run", True)
