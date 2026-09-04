@@ -659,6 +659,7 @@ Allowing you to automate the review process on your private or public repositori
    - Set the following events:
      - Issue comment
      - Pull request
+     - Pull request review
      - Push (if you need to enable triggering on PR update)
      - Pull request review comment (required for `/ask` on review threads)
 
