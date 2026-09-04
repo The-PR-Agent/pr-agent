@@ -121,6 +121,12 @@ class PRDescription:
 
             # ticket extraction if exists
             await extract_and_cache_pr_tickets(self.git_provider, self.vars)
+            self.token_handler = TokenHandler(
+                self.git_provider.pr,
+                self.vars,
+                get_settings().pr_description_prompt.system,
+                get_settings().pr_description_prompt.user,
+            )
 
             await retry_with_fallback_models(self._prepare_prediction, ModelType.WEAK)
 

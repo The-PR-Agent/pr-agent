@@ -186,6 +186,12 @@ class PRReviewer:
 
             # ticket extraction if exists
             await extract_and_cache_pr_tickets(self.git_provider, self.vars)
+            self.token_handler = TokenHandler(
+                self.git_provider.pr,
+                self.vars,
+                get_settings().pr_review_prompt.system,
+                get_settings().pr_review_prompt.user,
+            )
 
             if (
                 self.incremental.is_incremental
