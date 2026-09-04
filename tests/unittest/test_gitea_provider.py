@@ -1069,7 +1069,9 @@ class TestGiteaProviderInlineCommentStatus:
 def test_gitea_persistent_wrapper_preserves_identity_and_result():
     published = object()
 
-    class RecordingGiteaProvider(GiteaProvider):
+    class RecordingGiteaProvider:
+        publish_persistent_comment = GiteaProvider.publish_persistent_comment
+
         def __init__(self):
             self.calls = []
 

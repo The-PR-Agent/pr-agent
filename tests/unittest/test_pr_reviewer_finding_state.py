@@ -1156,7 +1156,7 @@ class _ReviewRunProvider:
         return GitProvider.publish_persistent_comment_full(self, pr_comment, **kwargs)
 
 
-class _ReviewRunCheckProvider(_ReviewRunProvider, GithubProvider):
+class _ReviewRunCheckProvider(_ReviewRunProvider):
     publish_persistent_comment = GithubProvider.publish_persistent_comment
 
     def __init__(self, check_run_result, comments=None):
