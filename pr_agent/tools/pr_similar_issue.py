@@ -112,7 +112,7 @@ class PRSimilarIssue:
 
             upsert = True
             pinecone.init(api_key=api_key, environment=environment)
-            if not index_name in pinecone.list_indexes():
+            if index_name not in pinecone.list_indexes():
                 run_from_scratch = True
                 upsert = False
             else:

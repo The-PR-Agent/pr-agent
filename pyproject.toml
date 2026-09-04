@@ -139,8 +139,7 @@ lint.select = [
   "E",    # Pyflakes
   "F",    # Pyflakes
   "B",    # flake8-bugbear
-  "I001", # isort basic checks
-  "I002", # isort missing-required-import
+  "I",    # isort
 ]
 
 lint.fixable = [
@@ -163,9 +162,6 @@ lint.ignore = [
   "E402", # import not at top of file
   "E501", # line too long
   "E711", # comparison to None
-  "E713", # test for membership with `not ... in`
-  "E714", # test for object identity with `not ... is`
-  "E721", # type comparison with `==`
   "E722", # bare `except`
   "F811", # redefinition of unused name
   "F841", # unused local variable

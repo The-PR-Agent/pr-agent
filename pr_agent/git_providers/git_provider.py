@@ -313,7 +313,7 @@ class GitProvider(ABC):
             return description
 
     def get_user_description(self) -> str:
-        if hasattr(self, 'user_description') and not (self.user_description is None):
+        if hasattr(self, "user_description") and (self.user_description is not None):
             return self.user_description
 
         description = (self.get_pr_description_full() or "").strip()

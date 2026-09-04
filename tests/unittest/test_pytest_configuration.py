@@ -2,7 +2,6 @@ import os
 import subprocess
 import sys
 
-
 _PYTEST_COLLECTION_TIMEOUT_SECONDS = 30
 
 

@@ -519,16 +519,16 @@ class PRDescription:
         pr_labels = []
 
         # If the 'PR Type' key is present in the dictionary, split its value by comma and assign it to 'pr_types'
-        if 'labels' in self.data and self.data['labels']:
-            if type(self.data['labels']) == list:
-                pr_labels = self.data['labels']
-            elif type(self.data['labels']) == str:
-                pr_labels = self.data['labels'].split(',')
-        elif 'type' in self.data and self.data['type'] and get_settings().pr_description.publish_labels:
-            if type(self.data['type']) == list:
-                pr_labels = self.data['type']
-            elif type(self.data['type']) == str:
-                pr_labels = self.data['type'].split(',')
+        if "labels" in self.data and self.data["labels"]:
+            if isinstance(self.data["labels"], list):
+                pr_labels = self.data["labels"]
+            elif isinstance(self.data["labels"], str):
+                pr_labels = self.data["labels"].split(",")
+        elif "type" in self.data and self.data["type"] and get_settings().pr_description.publish_labels:
+            if isinstance(self.data["type"], list):
+                pr_labels = self.data["type"]
+            elif isinstance(self.data["type"], str):
+                pr_labels = self.data["type"].split(",")
         pr_labels = [label.strip() for label in pr_labels]
 
         # convert lowercase labels to original case
@@ -620,7 +620,7 @@ class PRDescription:
 
         # Remove the 'PR Title' key from the dictionary
         ai_title = self.data.pop('title', self.vars["title"])
-        if (not get_settings().pr_description.generate_ai_title):
+        if not get_settings().pr_description.generate_ai_title:
             # Assign the original PR title to the 'title' variable
             title = self.vars["title"]
         else:
