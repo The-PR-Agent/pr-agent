@@ -190,9 +190,14 @@ async def test_a_review_where_every_chunk_failed_raises_so_a_fallback_model_is_t
 
 
 @pytest.mark.asyncio
-async def test_chunks_that_answer_nothing_parsable_fall_back_to_a_single_call_review(chunking_enabled):
+@pytest.mark.parametrize("chunk_predictions", [
+    ["not yaml at all", "nor is this"],
+    ["review: {}", "review: {}"],
+])
+async def test_chunks_without_nonempty_reviews_fall_back_to_a_single_call_review(chunking_enabled,
+                                                                                 chunk_predictions):
     reviewer = _make_reviewer()
-    reviewer._get_prediction = AsyncMock(side_effect=["not yaml at all", "nor is this", CHUNK_A])
+    reviewer._get_prediction = AsyncMock(side_effect=[*chunk_predictions, CHUNK_A])
 
     with (
         patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),

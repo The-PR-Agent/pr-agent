@@ -702,7 +702,7 @@ class PRReviewer:
             if isinstance(prediction, BaseException):
                 raise prediction
             data = self._load_review_yaml(prediction)
-            if not isinstance(data, dict) or not isinstance(data.get("review"), dict):
+            if not isinstance(data, dict) or not isinstance(data.get("review"), dict) or not data["review"]:
                 get_logger().warning(f"Failed to parse the review of chunk {chunk_index + 1}",
                                      artifact={"data": data})
                 continue
