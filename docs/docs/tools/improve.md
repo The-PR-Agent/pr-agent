@@ -312,6 +312,9 @@ PR-Agent uses a dynamic strategy to generate code suggestions based on the size 
 #### 2. Generating suggestions
 
 - For each chunk, PR-Agent generates up to `pr_code_suggestions.num_code_suggestions_per_chunk` suggestions (default: 3).
+- To bound output from large or chunked PRs, set `pr_code_suggestions.max_suggestions_per_file` to a positive integer.
+  After all chunks are merged, the highest-scored suggestions are retained per file; ties keep their original order.
+  The default value `0` disables this cap.
 
 This approach has two main benefits:
 
@@ -392,6 +395,13 @@ for the authoritative default values.
       <tr>
         <td><b>num_code_suggestions_per_chunk</b></td>
         <td>Number of code suggestions provided by the 'improve' tool, per chunk.</td>
+      </tr>
+      <tr>
+        <td><b>max_suggestions_per_file</b></td>
+        <td>
+          Maximum number of suggestions retained for each file after chunk results are combined. The highest-scored
+          suggestions are retained. Set to <code>0</code> to preserve the uncapped behavior.
+        </td>
       </tr>
       <tr>
         <td><b>max_number_of_calls</b></td>

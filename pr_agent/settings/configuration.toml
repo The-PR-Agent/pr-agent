@@ -205,6 +205,8 @@ new_score_mechanism_th_medium=7
 # params for '/improve --extended' mode
 auto_extended_mode=true
 num_code_suggestions_per_chunk=3
+# Maximum suggestions retained per file after all chunks are merged; 0 disables the cap.
+max_suggestions_per_file = 0
 max_number_of_calls = 3
 parallel_calls = true
 

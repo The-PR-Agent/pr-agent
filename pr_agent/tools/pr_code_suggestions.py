@@ -877,6 +877,57 @@ class PRCodeSuggestions:
 
         return data
 
+    @staticmethod
+    def _suggestion_file_key(suggestion: Dict) -> str:
+        relevant_file = suggestion.get("relevant_file", "") if isinstance(suggestion, dict) else ""
+        return relevant_file.strip() if isinstance(relevant_file, str) else ""
+
+    @staticmethod
+    def _suggestion_score(suggestion: Dict) -> int:
+        try:
+            return int(suggestion.get("score", 0))
+        except (AttributeError, TypeError, ValueError):
+            return 0
+
+    def _limit_suggestions_per_file(self, suggestions: List[Dict]) -> List[Dict]:
+        raw_limit = get_settings().get("pr_code_suggestions.max_suggestions_per_file", 0)
+        try:
+            max_suggestions_per_file = int(raw_limit)
+        except (TypeError, ValueError):
+            get_logger().warning(
+                f"max_suggestions_per_file is not a number ({raw_limit!r}); disabling the per-file cap")
+            return suggestions
+
+        if max_suggestions_per_file <= 0 or not suggestions:
+            return suggestions
+
+        indexed_suggestions = list(enumerate(suggestions))
+        ranked_suggestions = sorted(
+            indexed_suggestions,
+            key=lambda item: (-self._suggestion_score(item[1]), item[0]),
+        )
+        kept_indices = set()
+        suggestions_per_file = {}
+        for index, suggestion in ranked_suggestions:
+            file_key = self._suggestion_file_key(suggestion)
+            if not file_key:
+                kept_indices.add(index)
+                continue
+            if suggestions_per_file.get(file_key, 0) >= max_suggestions_per_file:
+                continue
+            suggestions_per_file[file_key] = suggestions_per_file.get(file_key, 0) + 1
+            kept_indices.add(index)
+
+        limited_suggestions = [
+            suggestion for index, suggestion in indexed_suggestions if index in kept_indices
+        ]
+        dropped_count = len(suggestions) - len(limited_suggestions)
+        if dropped_count:
+            get_logger().info(
+                f"Limited PR code suggestions to {max_suggestions_per_file} per file; "
+                f"removed {dropped_count} lower-scored suggestion(s)")
+        return limited_suggestions
+
     async def push_inline_code_suggestions(self, data, include_coverage_footer: bool = True) -> None:
         code_suggestions = []
         fallback_comments = []
@@ -1360,6 +1411,7 @@ class PRCodeSuggestions:
                         except Exception as e:
                             get_logger().error(f"Error getting PR diff for suggestion {i} in call {j}, error: {e}",
                                                artifact={"prediction": prediction})
+            data["code_suggestions"] = self._limit_suggestions_per_file(data["code_suggestions"])
             self.data = data
         else:
             get_logger().warning("Empty PR diff list")

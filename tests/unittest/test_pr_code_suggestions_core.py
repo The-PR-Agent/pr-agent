@@ -67,6 +67,60 @@ code_suggestions:
     assert data["code_suggestions"][0]["improved_code"] == "new()"
 
 
+@pytest.mark.asyncio
+async def test_prepare_prediction_main_caps_suggestions_per_file_after_chunk_merge():
+    settings_snapshot = snapshot_settings((
+        "pr_code_suggestions.decouple_hunks",
+        "pr_code_suggestions.parallel_calls",
+        "pr_code_suggestions.max_suggestions_per_file",
+    ))
+    settings = get_settings()
+    settings.pr_code_suggestions.decouple_hunks = True
+    settings.pr_code_suggestions.parallel_calls = False
+    settings.set("pr_code_suggestions.max_suggestions_per_file", 1)
+    tool = _make_tool()
+    tool.token_handler = MagicMock()
+
+    async def fake_get_prediction(model, patches_diff, patches_diff_no_line_numbers):
+        return {"code_suggestions": [_valid_suggestion(
+            one_sentence_summary=f"Finding from {patches_diff}",
+            relevant_lines_start=1 if patches_diff == "chunk-a" else 2,
+        )]}
+
+    try:
+        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", return_value=["chunk-a", "chunk-b"]):
+            tool._get_prediction = fake_get_prediction
+
+            data = await tool.prepare_prediction_main("primary-model")
+    finally:
+        restore_settings(settings_snapshot)
+
+    assert data["code_suggestions"] == [_valid_suggestion(
+        one_sentence_summary="Finding from chunk-a",
+        relevant_lines_start=1,
+    )]
+
+
+def test_limit_suggestions_per_file_keeps_highest_scores_and_preserves_other_files():
+    settings_snapshot = snapshot_settings(("pr_code_suggestions.max_suggestions_per_file",))
+    settings = get_settings()
+    settings.set("pr_code_suggestions.max_suggestions_per_file", 2)
+    tool = _make_tool()
+    suggestions = [
+        _valid_suggestion(one_sentence_summary="Low", score=3),
+        _valid_suggestion(one_sentence_summary="High", score=9),
+        _valid_suggestion(one_sentence_summary="Medium", score=6),
+        _valid_suggestion(one_sentence_summary="Other file", relevant_file="worker.py", score=1),
+    ]
+
+    try:
+        limited = tool._limit_suggestions_per_file(suggestions)
+    finally:
+        restore_settings(settings_snapshot)
+
+    assert limited == [suggestions[1], suggestions[2], suggestions[3]]
+
+
 def test_prepare_pr_code_suggestions_renames_critical_label_when_focusing_only_on_problems():
     settings = get_settings()
     original_focus = settings.get("pr_code_suggestions.focus_only_on_problems", False)
