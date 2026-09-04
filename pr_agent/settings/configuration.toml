@@ -77,6 +77,7 @@ bot_user_indicators = ["codium", "bot_", "bot-", "_bot", "-bot"]
 #
 restricted_mode = false # when true, skip operations that require elevated permissions (e.g. pushing code to the repository)
 is_auto_command = false # will be auto-set to true if the command is triggered by an automation
+auto_command_stop_on_failure = false # when true, stop a configured automatic command sequence after a command fails
 propagate_tool_errors = false # when true, a tool re-raises instead of swallowing an internal error, so a caller can tell a failed run from an empty one
 enable_ai_metadata = false # will enable adding ai metadata
 add_user_to_requests = false # send the current command and PR URL in the OpenAI-compatible "user" request field, for provider-side attribution of requests (e.g. OpenRouter "external_user")

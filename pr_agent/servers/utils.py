@@ -6,6 +6,16 @@ from typing import Any, Callable
 
 from fastapi import HTTPException
 
+from pr_agent.config_loader import get_settings
+
+
+def should_stop_auto_commands() -> bool:
+    """Return whether configured automatic commands should fail fast."""
+    value = get_settings().get("CONFIG.AUTO_COMMAND_STOP_ON_FAILURE", False)
+    if isinstance(value, str):
+        return value.strip().lower() == "true"
+    return bool(value)
+
 
 def verify_signature(payload_body, secret_token, signature_header):
     """Verify that the payload was sent from GitHub by validating SHA256.
