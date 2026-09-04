@@ -877,7 +877,7 @@ class TestLiteLLMReasoningEffortGemini:
 
     @pytest.mark.asyncio
     async def test_gemini_prefixed_forms_get_reasoning_effort(self, monkeypatch, mock_logger):
-        """Bare and provider-prefixed Gemini 2.5 ids all receive the configured reasoning_effort."""
+        """Bare and provider-prefixed Gemini 2.5/3.x ids all receive the configured reasoning_effort."""
         fake_settings = create_mock_settings("low")
         monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
         self._isolate_env(monkeypatch)
@@ -887,6 +887,11 @@ class TestLiteLLMReasoningEffortGemini:
             "gemini-2.5-flash",
             "gemini/gemini-2.5-pro",
             "vertex_ai/gemini-2.5-pro",
+            "gemini-3.7-flash",
+            "gemini/gemini-3.5-flash",
+            "gemini/gemini-3.5-flash-lite",
+            "vertex_ai/gemini-3.5-flash",
+            "gemini/gemini-3.8-flash",
         ]
 
         for model in gemini_models:
@@ -903,12 +908,24 @@ class TestLiteLLMReasoningEffortGemini:
 
     @pytest.mark.asyncio
     async def test_non_listed_gemini_gets_no_reasoning_effort(self, monkeypatch, mock_logger):
-        """A Gemini model not in the support list (e.g. 1.5) must not receive reasoning_effort."""
+        """A Gemini model not in the support list must not receive reasoning_effort.
+
+        Locks in the deliberate 3.x exclusions: gemini-3.1-flash and gemini-3.5-pro
+        are absent from LiteLLM 1.98.0's registry, and gemini-3.1-pro exists only
+        under the deepinfra/google/ prefix — do not add them to
+        SUPPORT_REASONING_EFFORT_MODELS without checking the registry first.
+        """
         fake_settings = create_mock_settings("low")
         monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
         self._isolate_env(monkeypatch)
 
-        for model in ("openrouter/google/gemini-1.5-pro", "gemini-1.5-flash"):
+        for model in (
+            "openrouter/google/gemini-1.5-pro",
+            "gemini-1.5-flash",
+            "gemini/gemini-3.1-flash",
+            "gemini/gemini-3.1-pro",
+            "gemini-3.5-pro",
+        ):
             with patch('pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion', new_callable=AsyncMock) as mock_completion:
                 mock_completion.return_value = create_mock_acompletion_response()
 
