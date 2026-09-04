@@ -121,6 +121,16 @@ def test_limit_suggestions_per_file_keeps_highest_scores_and_preserves_other_fil
     assert limited == [suggestions[1], suggestions[2], suggestions[3]]
 
 
+def test_limit_suggestions_per_file_is_inert_at_the_shipped_default():
+    tool = _make_tool()
+    suggestions = [
+        _valid_suggestion(one_sentence_summary="First", score=3),
+        _valid_suggestion(one_sentence_summary="Second", score=9),
+    ]
+
+    assert tool._limit_suggestions_per_file(suggestions) == suggestions
+
+
 def test_prepare_pr_code_suggestions_renames_critical_label_when_focusing_only_on_problems():
     settings = get_settings()
     original_focus = settings.get("pr_code_suggestions.focus_only_on_problems", False)
