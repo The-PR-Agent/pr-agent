@@ -119,14 +119,18 @@ def test_resolve_returns_bare_local_path_without_tempfile(toml_on_disk):
 
 
 def test_resolve_accepts_file_url_scheme(toml_on_disk):
-    path, is_temp = _resolve_extra_config_to_file(f"file://{toml_on_disk}")
+    from pathlib import Path
+    path, is_temp = _resolve_extra_config_to_file(Path(toml_on_disk).as_uri())
     assert path == toml_on_disk
     assert is_temp is False
 
 
 def test_resolve_accepts_file_url_with_localhost_netloc(toml_on_disk):
     # file://localhost/<abs-path> is RFC 8089 form and must resolve same as file://
-    path, is_temp = _resolve_extra_config_to_file(f"file://localhost{toml_on_disk}")
+    from pathlib import Path
+    from urllib.parse import urlparse
+    uri_path = urlparse(Path(toml_on_disk).as_uri()).path  # /abs/path or /C:/abs/path
+    path, is_temp = _resolve_extra_config_to_file(f"file://localhost{uri_path}")
     assert path == toml_on_disk
     assert is_temp is False
 
@@ -135,7 +139,8 @@ def test_resolve_file_url_decodes_percent_encoded_path(tmp_path):
     # A real file at a path containing a space — file:// URL must percent-encode it.
     p = tmp_path / "name with space.toml"
     p.write_bytes(SAMPLE_TOML)
-    url = f"file://{str(p).replace(' ', '%20')}"
+    from pathlib import Path
+    url = Path(p).as_uri()  # Path.as_uri() percent-encodes spaces and is valid on all platforms
     path, is_temp = _resolve_extra_config_to_file(url)
     assert path == str(p), "file:// percent-encoded path must be URL-decoded before stat()"
     assert is_temp is False
