@@ -13,7 +13,7 @@ from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import get_logger
-from pr_agent.servers.github_app import handle_line_comments
+from pr_agent.servers.github_app import handle_line_comments, matches_review_state
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.tools.pr_description import PRDescription
 from pr_agent.tools.pr_reviewer import PRReviewer
@@ -118,7 +118,6 @@ async def _run_review_commands(event_payload):
 
     review = event_payload.get("review", {})
     review_state = review.get("state", "") if isinstance(review, dict) else ""
-    review_state = str(review_state).strip().lower()
     review_author_type = ""
     if isinstance(review, dict):
         review_author = review.get("user", {})
@@ -140,8 +139,7 @@ async def _run_review_commands(event_payload):
         "GITHUB_ACTION_CONFIG.REVIEW_STATES",
         get_settings().get("GITHUB_APP.REVIEW_STATES", ["changes_requested"]),
     )
-    review_states = {str(state).strip().lower() for state in review_states if str(state).strip()}
-    if review_state not in review_states:
+    if not matches_review_state(review_state, review_states):
         get_logger().info(f"Skipping pull_request_review with {review_state=}: state is not configured")
         return
 

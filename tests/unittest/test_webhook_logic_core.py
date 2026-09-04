@@ -337,6 +337,82 @@ async def test_github_automatic_feedback_preserves_quoted_command_arguments(monk
     assert repo_settings_calls == 1
 
 
+def _github_review_event(action="submitted", state="changes_requested", review_author_type="User"):
+    return {
+        "action": action,
+        "review": {"state": state, "user": {"type": review_author_type}},
+        "pull_request": {
+            "url": "https://api.github.com/repos/org/repo/pulls/1",
+            "state": "open",
+            "draft": False,
+            "title": "Regular PR",
+            "labels": [],
+            "head": {"ref": "feature/cache"},
+            "base": {"ref": "main"},
+        },
+        "sender": {"login": "alice", "id": 1, "type": "User"},
+        "repository": {"full_name": "org/repo"},
+    }
+
+
+def test_matches_review_state_is_case_insensitive_and_handles_empty_values():
+    assert github_app.matches_review_state(" CHANGES_REQUESTED ", ["changes_requested"])
+    assert github_app.matches_review_state("approved", "approved")
+    assert not github_app.matches_review_state("approved", [])
+    assert not github_app.matches_review_state("", ["approved"])
+
+
+@pytest.mark.asyncio
+async def test_github_review_submission_is_disabled_without_review_commands(monkeypatch):
+    settings = get_settings()
+    original_github_app = copy.deepcopy(settings.get("GITHUB_APP"))
+    original_is_auto_command = settings.get("CONFIG.IS_AUTO_COMMAND")
+    settings.set("GITHUB_APP.REVIEW_COMMANDS", [])
+    settings.set("GITHUB_APP.REVIEW_STATES", ["changes_requested"])
+    settings.set("GITHUB_APP.REVIEW_AUTHOR_TYPES", ["User"])
+
+    agent = RecordingAgent()
+    monkeypatch.setattr(github_app, "apply_repo_settings", lambda _url: None)
+    monkeypatch.setattr(github_app, "should_process_pr_logic", lambda _body: True)
+    monkeypatch.setattr(github_app, "PRAgent", lambda: agent)
+    monkeypatch.setattr(
+        github_app,
+        "get_identity_provider",
+        lambda: SimpleNamespace(verify_eligibility=lambda *args, **kwargs: Eligibility.ELIGIBLE),
+    )
+
+    try:
+        await github_app.handle_request(_github_review_event(), "pull_request_review")
+    finally:
+        settings.set("GITHUB_APP", original_github_app)
+        settings.set("CONFIG.IS_AUTO_COMMAND", original_is_auto_command)
+
+    assert agent.commands == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["edited", "dismissed"])
+async def test_github_review_submission_ignores_non_submitted_actions(monkeypatch, action):
+    settings = get_settings()
+    original_github_app = copy.deepcopy(settings.get("GITHUB_APP"))
+    original_is_auto_command = settings.get("CONFIG.IS_AUTO_COMMAND")
+    settings.set("GITHUB_APP.REVIEW_COMMANDS", ["/review"])
+    settings.set("GITHUB_APP.REVIEW_STATES", ["changes_requested"])
+    settings.set("GITHUB_APP.REVIEW_AUTHOR_TYPES", ["User"])
+
+    agent = RecordingAgent()
+    monkeypatch.setattr(github_app, "should_process_pr_logic", lambda _body: True)
+    monkeypatch.setattr(github_app, "PRAgent", lambda: agent)
+
+    try:
+        await github_app.handle_request(_github_review_event(action=action), "pull_request_review")
+    finally:
+        settings.set("GITHUB_APP", original_github_app)
+        settings.set("CONFIG.IS_AUTO_COMMAND", original_is_auto_command)
+
+    assert agent.commands == []
+
+
 @pytest.mark.asyncio
 async def test_github_review_submission_runs_configured_commands(monkeypatch):
     settings = get_settings()

@@ -171,6 +171,20 @@ def _normalise_setting_list(value):
     return [value]
 
 
+def matches_review_state(review_state: Any, configured_states: Any) -> bool:
+    """Return whether a review state matches one of the configured states."""
+    if not isinstance(review_state, str) or not review_state.strip():
+        return False
+    configured_states = _normalise_setting_list(configured_states)
+    if not configured_states:
+        return False
+    normalized_state = review_state.strip().lower()
+    return any(
+        isinstance(state, str) and state.strip().lower() == normalized_state
+        for state in configured_states
+    )
+
+
 async def handle_pull_request_review_submitted(body: Dict[str, Any],
                                                event: str,
                                                sender: str,
@@ -190,7 +204,6 @@ async def handle_pull_request_review_submitted(body: Dict[str, Any],
     apply_repo_settings(api_url)
     review = body.get("review", {})
     review_state = review.get("state", "") if isinstance(review, dict) else ""
-    review_state = str(review_state).strip().lower()
     review_author_type = ""
     if isinstance(review, dict):
         review_author = review.get("user", {})
@@ -208,12 +221,9 @@ async def handle_pull_request_review_submitted(body: Dict[str, Any],
             f"Skipping review submission from {review_author_type=}: author type is not configured"
         )
         return {}
-    review_states = {
-        str(state).strip().lower()
-        for state in _normalise_setting_list(get_settings().get("GITHUB_APP.REVIEW_STATES", ["changes_requested"]))
-        if str(state).strip()
-    }
-    if review_state not in review_states:
+    if not matches_review_state(
+        review_state, get_settings().get("GITHUB_APP.REVIEW_STATES", ["changes_requested"])
+    ):
         get_logger().info(f"Skipping review submission with {review_state=}: state is not configured")
         return {}
 
