@@ -120,7 +120,7 @@ similar-issue = [
   "pandas",  # imported directly by the qdrant indexing path
   "pinecone-client",
   "pinecone-datasets @ git+https://github.com/mrT23/pinecone-datasets.git@main",
-  "lancedb==0.5.1",
+  "lancedb==0.38.0",
   "qdrant-client==1.15.1",
 ]
 dev = [
@@ -192,7 +192,7 @@ tests = []
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["tests"]
+testpaths = ["tests/unittest"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]

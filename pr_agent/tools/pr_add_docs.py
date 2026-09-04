@@ -8,6 +8,7 @@ from jinja2 import Environment, StrictUndefined
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.pr_processing import get_pr_diff, retry_with_fallback_models
+from pr_agent.algo.prompt_fragments import render_diff_hunk_format
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import load_yaml
 from pr_agent.config_loader import get_settings, get_verbosity_level
@@ -39,6 +40,10 @@ class PRAddDocs:
             "diff": "",  # empty diff for initial calculation
             "extra_instructions": get_settings().pr_add_docs.extra_instructions,
             "commit_messages_str": self.git_provider.get_commit_messages(),
+            "diff_hunk_format": render_diff_hunk_format(
+                include_line_numbers=True,
+                include_ai_metadata=False,
+            ),
             'docs_for_language': get_docs_for_language(self.main_language,
                                                        get_settings().pr_add_docs.docs_style),
         }

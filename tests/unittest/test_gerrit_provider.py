@@ -21,6 +21,13 @@ def _make_repo(tmp_path, filenames):
     return repo
 
 
+def test_get_commit_messages_returns_text(tmp_path):
+    provider = object.__new__(GerritProvider)
+    provider.repo = _make_repo(tmp_path, ["app.py"])
+
+    assert provider.get_commit_messages() == "initial files"
+
+
 def test_get_diff_files_preserves_deleted_filename(tmp_path):
     repo = _make_repo(tmp_path, ["keep.py", "gone.py"])
     (tmp_path / "gone.py").unlink()

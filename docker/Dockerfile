@@ -55,6 +55,7 @@ FROM base AS test
 RUN uv sync --frozen --no-install-project
 ADD pr_agent pr_agent
 ADD tests tests
+ADD .github/workflows/publish.yml .github/workflows/publish.yml
 ADD docker/mosaico docker/mosaico
 
 FROM base AS cli

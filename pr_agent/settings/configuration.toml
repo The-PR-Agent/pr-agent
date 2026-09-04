@@ -25,6 +25,8 @@ extra_config_url="" # optional URL or path to an additional .pr_agent.toml merge
 disable_auto_feedback = false
 enable_auto_approval = false # when true, /review may auto-approve a PR via auto_approve_logic(); that caller is currently commented out
 ai_timeout=120 # 2 minutes
+retry_same_model_on_timeout = true # when false, a timed-out call is not retried on the same model and moves on to fallback_models
+# num_retries = 0 # per-call retries inside the completion client itself; unset keeps the client's default. These multiply the handler's own retry attempts
 skip_keys = []
 custom_reasoning_model = false # when true, disables system messages and temperature controls for models that don't support chat-style inputs
 response_language="en-US" # Language locales code for PR responses in ISO 3166 and ISO 639 format (e.g., "en-US", "it-IT", "zh-CN", ...)
@@ -135,6 +137,10 @@ minimal_minutes_for_incremental_review=0
 enable_intro_text=true
 enable_help_text=false # Determines whether to include help text in the PR review. Enabled by default.
 enable_review_coverage_footer=true
+# large-diff chunking (opt-in). When the token budget leaves files out of the review, split the diff
+# into chunks, review each chunk, and merge the per-chunk results into one review.
+enable_large_pr_chunking=false
+max_number_of_calls=3 # maximum number of chunk review calls, used only when enable_large_pr_chunking is true
 
 [pr_description] # /describe #
 publish_labels=false
@@ -157,6 +163,7 @@ publish_description_as_comment_persistent=true
 enable_semantic_files_types=true
 collapsible_file_list='adaptive' # true, false, 'adaptive'
 collapsible_file_list_threshold=6
+file_table_collapsible_open_by_default=false
 inline_file_summary=false # false, true, 'table'
 # markers
 use_description_markers=false

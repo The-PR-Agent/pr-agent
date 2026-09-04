@@ -1934,15 +1934,22 @@ def process_description(description_full: str) -> Tuple[str, List]:
     return base_description_str, files
 
 def get_version() -> str:
-    # First check pyproject.toml if running directly out of repository
+    # First check pyproject.toml if running directly out of the pr-agent repository
     if os.path.exists("pyproject.toml"):
         if sys.version_info >= (3, 11):
             import tomllib
-            with open("pyproject.toml", "rb") as f:
-                data = tomllib.load(f)
-                if "project" in data and "version" in data["project"]:
-                    return data["project"]["version"]
-                else:
+            try:
+                with open("pyproject.toml", "rb") as f:
+                    data = tomllib.load(f)
+            except (OSError, ValueError) as e:  # tomllib raises TOMLDecodeError, or UnicodeDecodeError on non-UTF-8
+                get_logger().warning(f"Unable to read pyproject.toml, falling back to package metadata: {e}")
+            else:
+                # only trust this file when it is pr-agent's own pyproject.toml, otherwise an
+                # unrelated project in the current working directory would dictate our version
+                project = data.get("project", {})
+                if project.get("name") == "pr-agent":
+                    if "version" in project:
+                        return project["version"]
                     get_logger().warning("Version not found in pyproject.toml")
         else:
             get_logger().warning("Unable to determine local version from pyproject.toml")

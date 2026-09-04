@@ -9,7 +9,7 @@ import litellm
 import openai
 import requests
 from litellm import acompletion
-from tenacity import retry, retry_if_exception_type, retry_if_not_exception_type, stop_after_attempt
+from tenacity import retry, retry_if_exception, stop_after_attempt
 
 from pr_agent.algo import (
     CLAUDE_EXTENDED_THINKING_MODELS,
@@ -34,6 +34,49 @@ from pr_agent.log import get_logger
 
 MODEL_RETRIES = 2
 DUMMY_LITELLM_API_KEY = "dummy_key"  # placeholder set when no OpenAI key is configured
+
+
+def _as_bool(value, default: bool) -> bool:
+    """Parse a config value that may arrive as a bool (toml) or a string (env override)."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes", "on")
+    return default
+
+
+def _configured_client_retries():
+    """config.num_retries as a non-negative int, or None (unset/invalid = client defaults).
+
+    Invalid values are logged and ignored rather than raised: this is read on the request
+    path, and a config typo should not fail the run — nor be wrapped and retried as an API
+    error by the caller's exception handling.
+    """
+    value = get_settings().config.get("num_retries", None)
+    if value is None:
+        return None
+    try:
+        parsed = int(str(value).strip())
+    except ValueError:
+        get_logger().warning(f"Ignoring invalid config.num_retries: {value!r}")
+        return None
+    if parsed < 0:
+        get_logger().warning(f"Ignoring negative config.num_retries: {parsed}")
+        return None
+    return parsed
+
+
+def _should_retry_same_model(exc: BaseException) -> bool:
+    """Whether chat_completion retries the SAME model, before falling back to fallback_models.
+
+    With config.retry_same_model_on_timeout set to false, a timed-out call is handed to the
+    fallback-models loop instead of being replayed on the model that just missed the deadline.
+    """
+    if isinstance(exc, openai.RateLimitError):
+        return False
+    if isinstance(exc, openai.APITimeoutError):
+        return _as_bool(get_settings().config.get("retry_same_model_on_timeout", True), default=True)
+    return isinstance(exc, openai.APIError)
 
 
 class LiteLLMAIHandler(BaseAiHandler):
@@ -702,7 +745,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         return cache_control_injection_points
 
     @retry(
-        retry=retry_if_exception_type(openai.APIError) & retry_if_not_exception_type(openai.RateLimitError),
+        retry=retry_if_exception(_should_retry_same_model),
         stop=stop_after_attempt(MODEL_RETRIES),
         reraise=True,  # surface the provider's error; RetryError hides the reason
     )
@@ -712,6 +755,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         # Validate config-derived kwargs before the try/except below, so a malformed value raises a
         # ValueError config error instead of being wrapped as openai.APIError and retried.
         cache_control_injection_points = self._resolve_cache_control_injection_points()
+        client_retries = _configured_client_retries()
         _bedrock_imds = self._aws_imds_mode and any(
             provider in model for provider in ("bedrock/", "bedrock_mantle/")
         )
@@ -820,6 +864,13 @@ class LiteLLMAIHandler(BaseAiHandler):
                         "timeout": get_settings().config.ai_timeout,
                         "api_base": api_base,
                     }
+
+                # Caps the completion client's own per-call retries, which otherwise
+                # multiply this handler's retry attempts. Parsed before the request
+                # try/except (see _configured_client_retries).
+                if client_retries is not None:
+                    kwargs["num_retries"] = client_retries
+                    kwargs["max_retries"] = client_retries
 
                 # Add temperature only if model supports it
                 if model not in self.no_support_temperature_models and not get_settings().config.custom_reasoning_model:

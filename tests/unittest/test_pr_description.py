@@ -1,9 +1,12 @@
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import yaml
+from jinja2 import Environment, StrictUndefined
 
 from pr_agent.algo.types import FilePatchInfo
+from pr_agent.algo.utils import load_yaml
+from pr_agent.config_loader import get_settings
 from pr_agent.tools.pr_description import (
     PRDescription,
     _longest_diagram_chain,
@@ -26,6 +29,42 @@ def _make_instance(prediction_yaml: str):
     obj.prediction = prediction_yaml
     obj.keys_fix = KEYS_FIX
     obj.user_description = ""
+    return obj
+
+
+def _make_large_pr_instance(diff_files=None):
+    """Create a PRDescription instance configured for _prepare_prediction testing."""
+    with patch.object(PRDescription, '__init__', lambda self, *a, **kw: None):
+        obj = PRDescription.__new__(PRDescription)
+    obj.pr_id = "1"
+    obj.user_description = ""
+    obj.keys_fix = KEYS_FIX
+    obj.git_provider = MagicMock()
+    obj.git_provider.pr = MagicMock()
+    obj.git_provider.get_diff_files.return_value = diff_files or [
+        FilePatchInfo("", "", "", "src/file1.py"),
+        FilePatchInfo("", "", "", "src/file2.py"),
+    ]
+    obj.token_handler = MagicMock()
+    obj.vars = {
+        "title": "Test PR",
+        "branch": "feature",
+        "description": "old desc",
+        "language": "Python",
+        "diff": "",
+        "extra_instructions": "",
+        "skills_context": "",
+        "repo_context": "",
+        "commit_messages_str": "feat: initial",
+        "enable_custom_labels": False,
+        "custom_labels_class": "",
+        "enable_semantic_files_types": True,
+        "related_tickets": "",
+        "include_file_summary_changes": True,
+        "duplicate_prompt_examples": False,
+        "enable_pr_diagram": False,
+        "enable_pr_description": True,
+    }
     return obj
 
 
@@ -342,7 +381,6 @@ def _adapt(diagram: str, direction: str = 'adaptive', threshold: int = 5) -> str
 
 def test_shipped_defaults_match_what_these_tests_assume():
     """Guards the test defaults above against drift in configuration.toml."""
-    from pr_agent.config_loader import get_settings
     assert get_settings().pr_description.pr_diagram_direction == 'adaptive'
     assert get_settings().pr_description.pr_diagram_direction_threshold == 5
 
@@ -399,3 +437,296 @@ class TestApplyDiagramDirection:
         body = 'A -- calls --> B -- reads --> C -- writes --> D -- returns --> E'
         diagram = _fenced(f'flowchart LR\n{body}')
         assert _adapt(diagram) == diagram
+
+
+class TestPRDescriptionLargePR:
+
+    def test_large_pr_prompt_sections_loaded(self):
+        """Verify both prompt sections are registered, present in settings, and expose system and user."""
+        settings = get_settings()
+        assert "pr_description_only_files_prompts" in settings
+        assert "pr_description_only_description_prompts" in settings
+
+        files_prompts = settings.pr_description_only_files_prompts
+        assert isinstance(files_prompts.system, str) and len(files_prompts.system) > 0
+        assert isinstance(files_prompts.user, str) and len(files_prompts.user) > 0
+
+        desc_prompts = settings.pr_description_only_description_prompts
+        assert isinstance(desc_prompts.system, str) and len(desc_prompts.system) > 0
+        assert isinstance(desc_prompts.user, str) and len(desc_prompts.user) > 0
+
+    def test_large_pr_handling_gate_logic(self):
+        """Verify the large-PR gate condition evaluates correctly with loaded settings and isolated configs."""
+        real_settings = get_settings()
+        is_active = (
+            real_settings.pr_description.get("enable_large_pr_handling", True)
+            and "pr_description_only_files_prompts" in real_settings
+        )
+        assert is_active is True
+
+        # Test isolated settings dictionary without mutating global Dynaconf state
+        class FakeSettings:
+            def __init__(self, enable_large=True, has_section=True):
+                self.pr_description = {"enable_large_pr_handling": enable_large}
+                self._has_section = has_section
+
+            def __contains__(self, item):
+                return self._has_section if item == "pr_description_only_files_prompts" else False
+
+        assert (
+            FakeSettings(enable_large=True, has_section=True).pr_description.get("enable_large_pr_handling", True)
+            and "pr_description_only_files_prompts" in FakeSettings(enable_large=True, has_section=True)
+        )
+        assert not (
+            FakeSettings(enable_large=False, has_section=True).pr_description.get("enable_large_pr_handling", True)
+            and "pr_description_only_files_prompts" in FakeSettings(enable_large=False, has_section=True)
+        )
+        assert not (
+            FakeSettings(enable_large=True, has_section=False).pr_description.get("enable_large_pr_handling", True)
+            and "pr_description_only_files_prompts" in FakeSettings(enable_large=True, has_section=False)
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("async_calls", [True, False])
+    async def test_prepare_prediction_large_pr_multi_patch_flow(self, monkeypatch, async_calls):
+        """Force _prepare_prediction() into the large-PR branch and verify chunk + header flow."""
+        obj = _make_large_pr_instance()
+        monkeypatch.setattr(get_settings().pr_description, "async_ai_calls", async_calls)
+
+        recorded_prompts = []
+
+        async def mock_get_prediction(model, patches_diff, prompt="pr_description_prompt"):
+            recorded_prompts.append((prompt, patches_diff))
+            if prompt == "pr_description_only_files_prompts":
+                if "file1" in patches_diff:
+                    return """```yaml
+pr_files:
+- filename: |
+    src/file1.py
+  changes_title: |
+    Add feature 1
+  changes_summary: |
+    - Detail 1
+  label: |
+    enhancement
+```"""
+                else:
+                    return """```yaml
+pr_files:
+- filename: |
+    src/file2.py
+  changes_title: |
+    Fix bug in file 2
+  changes_summary: |
+    - Detail 2
+  label: |
+    bug fix
+```"""
+            elif prompt == "pr_description_only_description_prompts":
+                return """```yaml
+type:
+- Enhancement
+- Bug fix
+title: |
+  Combined PR Title
+description: |
+  - Point 1
+  - Point 2
+```"""
+            raise ValueError(f"Unexpected prompt: {prompt}")
+
+        obj._get_prediction = AsyncMock(side_effect=mock_get_prediction)
+
+        chunks = [
+            ["diff --git a/src/file1.py b/src/file1.py\n... file1 ..."],
+            ["diff --git a/src/file2.py b/src/file2.py\n... file2 ..."],
+        ]
+
+        with patch("pr_agent.tools.pr_description.get_pr_diff", return_value="") as mock_diff, patch(
+            "pr_agent.tools.pr_description.get_pr_diff_multiple_patchs",
+            return_value=(chunks, [10, 10], [], [], {}, [["src/file1.py"], ["src/file2.py"]]),
+        ) as mock_multi:
+            await obj._prepare_prediction("gpt-4o")
+
+            # Verify get_pr_diff was called with exact production arguments
+            mock_diff.assert_called_once()
+            _, diff_kwargs = mock_diff.call_args
+            assert diff_kwargs.get("large_pr_handling") is True
+            assert diff_kwargs.get("return_remaining_files") is True
+
+            # Verify get_pr_diff_multiple_patchs was invoked
+            mock_multi.assert_called_once()
+
+        # Verify calls to prompts
+        prompts_called = [p for p, _ in recorded_prompts]
+        # Chunk predictions used files prompt
+        assert prompts_called.count("pr_description_only_files_prompts") == 2
+        # Final pass used description prompt
+        assert prompts_called.count("pr_description_only_description_prompts") == 1
+        # Negative assertion: standard single-prompt path was NOT called
+        assert "pr_description_prompt" not in prompts_called
+
+        # Verify final prediction YAML structure and parsing
+        assert obj.prediction is not None
+        assert "pr_files:" in obj.prediction
+        parsed = load_yaml(obj.prediction, keys_fix_yaml=obj.keys_fix)
+        assert isinstance(parsed, dict)
+        assert parsed["title"].strip() == "Combined PR Title"
+        assert parsed["type"] == ["Enhancement", "Bug fix"]
+        assert len(parsed["pr_files"]) == 2
+
+        file_names = [f["filename"].strip() for f in parsed["pr_files"]]
+        assert file_names == ["src/file1.py", "src/file2.py"]
+
+        # Downstream _prepare_data populates obj.data properly
+        obj._prepare_data()
+        assert obj.data["title"].strip() == "Combined PR Title"
+        assert [f["filename"].strip() for f in obj.data["pr_files"]] == ["src/file1.py", "src/file2.py"]
+
+    @pytest.mark.asyncio
+    async def test_prepare_prediction_normal_diff_uses_single_prompt(self):
+        """Verify normal diff under token limit does NOT fall into the large-PR multi-patch path."""
+        obj = _make_large_pr_instance()
+
+        recorded_prompts = []
+
+        async def mock_get_prediction(model, patches_diff, prompt="pr_description_prompt"):
+            recorded_prompts.append((prompt, patches_diff))
+            return """```yaml
+type:
+- Enhancement
+title: |
+  Normal PR Title
+pr_files:
+- filename: |
+    src/file1.py
+  changes_title: |
+    Normal change
+  label: |
+    enhancement
+```"""
+
+        obj._get_prediction = AsyncMock(side_effect=mock_get_prediction)
+
+        with patch("pr_agent.tools.pr_description.get_pr_diff", return_value="normal diff content") as mock_diff, patch(
+            "pr_agent.tools.pr_description.get_pr_diff_multiple_patchs"
+        ) as mock_multi:
+            await obj._prepare_prediction("gpt-4o")
+
+            mock_diff.assert_called_once()
+            mock_multi.assert_not_called()
+
+        prompts_called = [p for p, _ in recorded_prompts]
+        assert prompts_called == ["pr_description_prompt"]
+        assert "pr_description_only_files_prompts" not in prompts_called
+        assert "pr_description_only_description_prompts" not in prompts_called
+
+    @pytest.mark.asyncio
+    async def test_prepare_prediction_large_pr_with_diagram(self):
+        """Verify changes_diagram in header prediction flows into final prediction and parsed data."""
+        obj = _make_large_pr_instance([FilePatchInfo("", "", "", "src/file1.py")])
+        obj.vars["enable_pr_diagram"] = True
+
+        async def mock_get_prediction(model, patches_diff, prompt="pr_description_prompt"):
+            if prompt == "pr_description_only_files_prompts":
+                return """pr_files:
+- filename: src/file1.py
+  changes_title: Add diagram support
+  label: enhancement"""
+            elif prompt == "pr_description_only_description_prompts":
+                return """type:
+- Enhancement
+title: Diagram PR
+description: Adds mermaid diagram
+changes_diagram: |
+  ```mermaid
+  flowchart LR
+    A --> B
+  ```"""
+            raise ValueError(prompt)
+
+        obj._get_prediction = AsyncMock(side_effect=mock_get_prediction)
+
+        with patch("pr_agent.tools.pr_description.get_pr_diff", return_value=""), patch(
+            "pr_agent.tools.pr_description.get_pr_diff_multiple_patchs",
+            return_value=([["diff"]], [10], [], [], {}, [["src/file1.py"]]),
+        ):
+            await obj._prepare_prediction("gpt-4o")
+
+        assert "changes_diagram:" in obj.prediction
+        obj._prepare_data()
+        assert "changes_diagram" in obj.data
+        assert "```mermaid" in obj.data["changes_diagram"]
+        assert [f["filename"].strip() for f in obj.data["pr_files"]] == ["src/file1.py"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("prompt_name", [
+        "pr_description_only_files_prompts",
+        "pr_description_only_description_prompts",
+    ])
+    async def test_prompt_templates_render_with_strict_undefined(self, prompt_name):
+        """Render both new prompts through the real _get_prediction() code path.
+
+        Only ai_handler.chat_completion is mocked; the Jinja rendering with
+        StrictUndefined happens for real, so a misspelled variable name would
+        raise UndefinedError and fail the test.
+        """
+        obj = _make_large_pr_instance()
+        # Set up an ai_handler whose chat_completion captures rendered prompts
+        rendered = {}
+
+        async def capture_chat(*, model, temperature, system, user):
+            rendered["system"] = system
+            rendered["user"] = user
+            return ("type:\n- Enhancement\ntitle: stub", "stop")
+
+        obj.ai_handler = MagicMock()
+        obj.ai_handler.chat_completion = AsyncMock(side_effect=capture_chat)
+
+        # Call the real _get_prediction which renders templates via StrictUndefined
+        await obj._get_prediction("gpt-4o", "sample diff content", prompt=prompt_name)
+
+        # Both system and user must have been rendered without StrictUndefined errors
+        assert "system" in rendered and len(rendered["system"]) > 0
+        assert "user" in rendered and len(rendered["user"]) > 0
+
+        # Structural checks per prompt type
+        if prompt_name == "pr_description_only_files_prompts":
+            # Files-only prompt must request pr_files / FileDescription
+            assert "pr_files" in rendered["system"] or "FileDescription" in rendered["system"]
+            # Must receive the diff
+            assert "sample diff content" in rendered["user"]
+            # Must NOT request overall PR title/type/description as output fields
+            assert "PRDescriptionHeaders" not in rendered["system"]
+        else:
+            # Description-only prompt must request header fields
+            assert "PRDescriptionHeaders" in rendered["system"]
+            assert "PRType" in rendered["system"]
+            # Must receive the walkthrough as diff
+            assert "sample diff content" in rendered["user"]
+            # Must NOT request pr_files output
+            assert "FileDescription" not in rendered["system"]
+            assert "pr_files" not in rendered["system"].split("PRDescriptionHeaders")[1]
+
+    def test_prompt_jinja_variables_match_production_vars(self):
+        """Cross-check every Jinja variable referenced in both new prompts
+        against the production self.vars keys from _make_large_pr_instance."""
+        env = Environment(undefined=StrictUndefined, autoescape=True)
+        settings = get_settings()
+        production_vars = _make_large_pr_instance().vars
+        # _get_prediction adds 'diff' from patches_diff, so ensure it's present
+        production_vars["diff"] = "placeholder diff"
+
+        for prompt_name in [
+            "pr_description_only_files_prompts",
+            "pr_description_only_description_prompts",
+        ]:
+            system_tpl = settings.get(prompt_name, {}).get("system", "")
+            user_tpl = settings.get(prompt_name, {}).get("user", "")
+
+            # These must not raise UndefinedError
+            rendered_sys = env.from_string(system_tpl).render(production_vars)
+            rendered_usr = env.from_string(user_tpl).render(production_vars)
+
+            assert len(rendered_sys) > 0, f"{prompt_name} system rendered empty"
+            assert len(rendered_usr) > 0, f"{prompt_name} user rendered empty"

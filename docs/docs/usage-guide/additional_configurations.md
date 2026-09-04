@@ -42,7 +42,7 @@ On providers that support GitHub-Flavored Markdown this appends a collapsible se
 
 ```
 ⚙️ Agent run details
-- Model: gpt-5.6-terra (fallback)
+- Model: provider/fallback-model (fallback)
 - Tokens: 12,340 in / 1,205 out / 13,545 total
 - Time cost: 8.2s
 - AI calls: 1

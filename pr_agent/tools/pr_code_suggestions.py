@@ -21,6 +21,7 @@ from pr_agent.algo.pr_processing import (
     get_pr_multi_diffs,
     retry_with_fallback_models,
 )
+from pr_agent.algo.prompt_fragments import render_diff_hunk_format
 from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.run_details import init_run_details
 from pr_agent.algo.skills_loader import get_skills_context
@@ -108,6 +109,7 @@ class PRCodeSuggestions:
             get_settings().set("config.enable_ai_metadata", False)
             get_logger().debug("AI metadata is disabled for this command")
 
+        is_ai_metadata = get_settings().get("config.enable_ai_metadata", False)
         self.vars = {
             "title": self.git_provider.pr.title,
             "branch": self.git_provider.get_pr_branch(),
@@ -122,7 +124,11 @@ class PRCodeSuggestions:
             "suggestion_discussion_context": self._load_suggestion_discussion_context(),
             "commit_messages_str": self.git_provider.get_commit_messages(),
             "relevant_best_practices": "",
-            "is_ai_metadata": get_settings().get("config.enable_ai_metadata", False),
+            "is_ai_metadata": is_ai_metadata,
+            "diff_hunk_format": render_diff_hunk_format(
+                include_line_numbers=False,
+                include_ai_metadata=is_ai_metadata,
+            ),
             "focus_only_on_problems": get_settings().get("pr_code_suggestions.focus_only_on_problems", False),
             "date": datetime.now().strftime('%Y-%m-%d'),
             'duplicate_prompt_examples': get_settings().config.get('duplicate_prompt_examples', False),
@@ -1546,12 +1552,17 @@ class PRCodeSuggestions:
             for i, suggestion in enumerate(suggestion_list):
                 suggestion_str += f"suggestion {i + 1}: " + str(suggestion) + '\n\n'
 
+            is_ai_metadata = get_settings().get("config.enable_ai_metadata", False)
             variables = {'suggestion_list': suggestion_list,
                          'suggestion_str': suggestion_str,
                          "diff": patches_diff,
                          'num_code_suggestions': len(suggestion_list),
                          'prev_suggestions_str': prev_suggestions_str,
-                         "is_ai_metadata": get_settings().get("config.enable_ai_metadata", False),
+                         "is_ai_metadata": is_ai_metadata,
+                         "diff_hunk_format": render_diff_hunk_format(
+                             include_line_numbers=True,
+                             include_ai_metadata=is_ai_metadata,
+                         ),
                          'duplicate_prompt_examples': get_settings().config.get('duplicate_prompt_examples', False)}
             environment = Environment(undefined=StrictUndefined)
 

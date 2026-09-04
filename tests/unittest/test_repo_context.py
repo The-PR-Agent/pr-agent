@@ -5,6 +5,7 @@ from github import GithubException
 from jinja2 import Environment, StrictUndefined, select_autoescape
 
 from pr_agent.algo import repo_context
+from pr_agent.algo.prompt_fragments import render_diff_hunk_format
 from pr_agent.algo.repo_context import (
     TRUNCATION_MARKER,
     build_repo_context,
@@ -642,6 +643,17 @@ def test_github_provider_reads_from_default_branch_when_requested():
 )
 def test_prompt_templates_render_configured_repo_context(prompt_name, variables):
     template = getattr(get_settings(), prompt_name).system
+
+    if prompt_name == "pr_review_prompt":
+        variables["diff_hunk_format"] = render_diff_hunk_format(
+            include_line_numbers=True,
+            include_ai_metadata=False,
+        )
+    elif prompt_name == "pr_code_suggestions_prompt":
+        variables["diff_hunk_format"] = render_diff_hunk_format(
+            include_line_numbers=False,
+            include_ai_metadata=False,
+        )
 
     # select_autoescape() leaves string templates unescaped (matching production prompt rendering)
     # while avoiding the hard-coded autoescape=False that static analysis flags.

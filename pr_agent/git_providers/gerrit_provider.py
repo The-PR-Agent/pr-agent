@@ -259,8 +259,8 @@ class GerritProvider(GitProvider):
         raise NotImplementedError(
             'Removing reactions is not implemented for the gerrit provider')
 
-    def get_commit_messages(self):
-        return [self.repo.head.commit.message]
+    def get_commit_messages(self) -> str:
+        return self.repo.head.commit.message
 
     def get_repo_settings(self):
         try:

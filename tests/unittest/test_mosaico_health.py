@@ -5,8 +5,8 @@ health_check (the no-retry behavior itself was proven in 2c). Verify the route a
 200/503 response shape without relying on Starlette's thread-backed TestClient.
 
 Also exercises the REAL health_check() (no stub) to lock in Fix A: the removed
-'stop'-param gate must NOT short-circuit /health for models that lack 'stop' (e.g. the
-shipped gpt-5.x defaults), since PR-Agent's LiteLLMAIHandler never sends 'stop'."""
+'stop'-param gate must NOT short-circuit /health for models that lack 'stop', since
+PR-Agent's LiteLLMAIHandler never sends 'stop'."""
 import httpx
 import litellm
 import pytest
@@ -56,7 +56,7 @@ class TestHealthRoute:
 # under the pinned litellm). Under the OLD (removed) gate, health_check() short-circuited
 # to "Unhealthy: LLM does not support 'stop' parameter" for exactly such models — so these
 # tests would have failed before Fix A. They guard against the gate being reintroduced.
-_MODEL_WITHOUT_STOP = "gpt-5.6"
+_MODEL_WITHOUT_STOP = "perplexity/sonar"
 
 
 @pytest.fixture

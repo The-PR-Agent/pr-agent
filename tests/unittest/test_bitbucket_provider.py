@@ -11,6 +11,30 @@ from pr_agent.git_providers.bitbucket_provider import BitbucketProvider
 
 
 class TestBitbucketProvider:
+    @staticmethod
+    def _code_suggestion(line: int):
+        return {
+            "body": "**Suggestion:** fix it",
+            "relevant_file": "src/example.py",
+            "relevant_lines_start": line,
+            "relevant_lines_end": line,
+        }
+
+    @staticmethod
+    def _inline_comment_response(status_code: int):
+        response = MagicMock(status_code=status_code)
+        if status_code >= 400:
+            response.raise_for_status.side_effect = HTTPError(f"{status_code} response")
+        return response
+
+    @staticmethod
+    def _provider_for_code_suggestions():
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.max_comment_length = 32_768
+        provider.bitbucket_comment_api_url = "https://api.bitbucket.org/comments"
+        provider.headers = {"Authorization": "Bearer token"}
+        return provider
+
     def test_parse_pr_url(self):
         url = "https://bitbucket.org/WORKSPACE_XYZ/MY_TEST_REPO/pull-requests/321"
         workspace_slug, repo_slug, pr_number = BitbucketProvider._parse_pr_url(url)
@@ -228,8 +252,122 @@ class TestBitbucketProvider:
         existing.put.assert_called_once()
         provider.publish_comment.assert_not_called()
 
+    def test_publish_code_suggestions_reports_success(self):
+        provider = self._provider_for_code_suggestions()
+        responses = [self._inline_comment_response(201), self._inline_comment_response(201)]
+
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request", side_effect=responses) as request:
+            result = provider.publish_code_suggestions([
+                self._code_suggestion(2),
+                self._code_suggestion(3),
+            ])
+
+        assert result is True
+        assert request.call_count == 2
+        for response in responses:
+            response.raise_for_status.assert_called_once_with()
+
+    def test_publish_code_suggestions_reports_http_failures(self):
+        provider = self._provider_for_code_suggestions()
+        responses = [self._inline_comment_response(403), self._inline_comment_response(500)]
+
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request", side_effect=responses) as request:
+            result = provider.publish_code_suggestions([
+                self._code_suggestion(2),
+                self._code_suggestion(3),
+            ])
+
+        assert result is False
+        assert request.call_count == 2
+        for response in responses:
+            response.raise_for_status.assert_called_once_with()
+
+    def test_publish_code_suggestions_reports_success_on_partial_http_failure(self):
+        provider = self._provider_for_code_suggestions()
+        responses = [
+            self._inline_comment_response(201),
+            self._inline_comment_response(500),
+            self._inline_comment_response(201),
+        ]
+
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request", side_effect=responses) as request:
+            result = provider.publish_code_suggestions([
+                self._code_suggestion(1),
+                self._code_suggestion(2),
+                self._code_suggestion(3),
+            ])
+
+        assert result is True
+        assert request.call_count == 3
+
+    def test_publish_code_suggestions_reports_transport_failure(self):
+        provider = self._provider_for_code_suggestions()
+
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request",
+                   side_effect=RuntimeError("transport failed")) as request:
+            result = provider.publish_code_suggestions([self._code_suggestion(3)])
+
+        assert result is False
+        request.assert_called_once()
+
+    def test_publish_code_suggestions_reports_success_on_partial_transport_failure(self):
+        provider = self._provider_for_code_suggestions()
+        responses = [
+            self._inline_comment_response(201),
+            RuntimeError("transport failed"),
+            self._inline_comment_response(201),
+        ]
+
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request", side_effect=responses) as request:
+            result = provider.publish_code_suggestions([
+                self._code_suggestion(1),
+                self._code_suggestion(2),
+                self._code_suggestion(3),
+            ])
+
+        assert result is True
+        assert request.call_count == 3
+
+    def test_publish_code_suggestions_treats_empty_list_as_successful_noop(self):
+        provider = self._provider_for_code_suggestions()
+
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request") as request:
+            result = provider.publish_code_suggestions([])
+
+        assert result is True
+        request.assert_not_called()
+
+    def test_publish_code_suggestions_treats_unpublishable_list_as_successful_noop(self):
+        provider = self._provider_for_code_suggestions()
+        suggestion = self._code_suggestion(3)
+        suggestion["relevant_lines_start"] = -1
+
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request") as request:
+            result = provider.publish_code_suggestions([suggestion])
+
+        assert result is True
+        request.assert_not_called()
+
 
 class TestBitbucketServerProvider:
+    @staticmethod
+    def _code_suggestion(line: int):
+        return {
+            "body": "**Suggestion:** fix it",
+            "relevant_file": "src/example.py",
+            "relevant_lines_start": line,
+            "relevant_lines_end": line,
+        }
+
+    @staticmethod
+    def _provider_for_code_suggestions():
+        provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
+        provider.workspace_slug = "AAA"
+        provider.repo_slug = "my-repo"
+        provider.pr_num = 1
+        provider.bitbucket_client = MagicMock()
+        return provider
+
     def test_parse_pr_url(self):
         url = "https://git.onpreminstance.com/projects/AAA/repos/my-repo/pull-requests/1"
         workspace_slug, repo_slug, pr_number = BitbucketServerProvider._parse_pr_url(url)
@@ -243,6 +381,67 @@ class TestBitbucketServerProvider:
         assert workspace_slug == "~username"
         assert repo_slug == "my-repo"
         assert pr_number == 1
+
+    def test_publish_code_suggestions_reports_success(self):
+        provider = self._provider_for_code_suggestions()
+
+        result = provider.publish_code_suggestions([
+            self._code_suggestion(2),
+            self._code_suggestion(3),
+        ])
+
+        assert result is True
+        assert provider.bitbucket_client.post.call_count == 2
+
+    def test_publish_code_suggestions_reports_failures_and_continues(self):
+        provider = self._provider_for_code_suggestions()
+        provider.bitbucket_client.post.side_effect = [
+            HTTPError("403 response"),
+            RuntimeError("transport failed"),
+        ]
+
+        result = provider.publish_code_suggestions([
+            self._code_suggestion(2),
+            self._code_suggestion(3),
+        ])
+
+        assert result is False
+        assert provider.bitbucket_client.post.call_count == 2
+
+    def test_publish_code_suggestions_reports_success_on_partial_failure(self):
+        provider = self._provider_for_code_suggestions()
+        provider.bitbucket_client.post.side_effect = [
+            None,
+            HTTPError("500 response"),
+            None,
+        ]
+
+        result = provider.publish_code_suggestions([
+            self._code_suggestion(1),
+            self._code_suggestion(2),
+            self._code_suggestion(3),
+        ])
+
+        assert result is True
+        assert provider.bitbucket_client.post.call_count == 3
+
+    def test_publish_code_suggestions_treats_empty_list_as_successful_noop(self):
+        provider = self._provider_for_code_suggestions()
+
+        result = provider.publish_code_suggestions([])
+
+        assert result is True
+        provider.bitbucket_client.post.assert_not_called()
+
+    def test_publish_code_suggestions_treats_unpublishable_list_as_successful_noop(self):
+        provider = self._provider_for_code_suggestions()
+        suggestion = self._code_suggestion(3)
+        suggestion["relevant_lines_start"] = -1
+
+        result = provider.publish_code_suggestions([suggestion])
+
+        assert result is True
+        provider.bitbucket_client.post.assert_not_called()
 
     def test_get_repo_file_content_reads_from_target_ref(self):
         # Repo-context files must be read from the PR target ref (toRef), matching

@@ -51,12 +51,16 @@ extra_instructions = "..."
 
 ## Configuration options
 
+The descriptions below explain each option's behavior. See the relevant sections in
+[`configuration.toml`](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml)
+for the authoritative default values.
+
 ???+ example "General options"
 
     <table>
       <tr>
         <td><b>persistent_comment</b></td>
-        <td>If set to true, the review comment will be persistent, meaning that every new review request will edit the previous one. Default is true.</td>
+        <td>If set to true, the review comment will be persistent, meaning that every new review request will edit the previous one.</td>
       </tr>
       <tr>
         <td><b>review_heading</b></td>
@@ -67,12 +71,11 @@ extra_instructions = "..."
           <code>## Incremental Guideline Compliance Check 🔍</code> for an incremental review.
           On GitHub, GitLab, Azure DevOps, and Bitbucket Cloud, changing this value updates the same
           persistent review comment; it does not create a separate review channel.
-          Default is <code>PR Reviewer Guide</code>.
         </td>
       </tr>
       <tr>
       <td><b>final_update_message</b></td>
-      <td>When set to true, updating a persistent review comment during online commenting will automatically add a short comment with a link to the updated review in the pull request .Default is true.</td>
+      <td>When set to true, updating a persistent review comment during online commenting will automatically add a short comment with a link to the updated review in the pull request.</td>
       </tr>
       <tr>
         <td><b>extra_instructions</b></td>
@@ -80,19 +83,27 @@ extra_instructions = "..."
       </tr>
       <tr>
         <td><b>enable_help_text</b></td>
-        <td>If set to true, the tool will display a help text in the comment. Default is false.</td>
+        <td>If set to true, the tool will display a help text in the comment.</td>
       </tr>
       <tr>
         <td><b>enable_review_coverage_footer</b></td>
-        <td>If set to true, the tool will display a review coverage footer when the token budget leaves files out of the review. Default is true.</td>
+        <td>If set to true, the tool will display a review coverage footer when the token budget leaves files out of the review.</td>
+      </tr>
+      <tr>
+        <td><b>enable_large_pr_chunking</b></td>
+        <td>If set to true, and the token budget leaves files out of the review, the diff is split into chunks, each chunk is reviewed separately, and the per-chunk results are merged into one review. See <a href="#reviewing-a-pr-that-does-not-fit-in-one-call">Reviewing a PR that does not fit in one call</a>. Default is false.</td>
+      </tr>
+      <tr>
+        <td><b>max_number_of_calls</b></td>
+        <td>Maximum number of chunk review calls, used only when <code>enable_large_pr_chunking</code> is true. Default is 3.</td>
       </tr>
       <tr>
         <td><b>num_max_findings</b></td>
-        <td>Number of maximum returned findings. Default is 3.</td>
+        <td>Maximum number of returned findings.</td>
       </tr>
       <tr>
         <td><b>inline_key_issues</b></td>
-        <td>Azure DevOps only. If set to true, each key issue is published as an inline thread. A finding leaves the review summary when a matching thread exists or Azure accepts the new thread. Findings that cannot be anchored or published stay in the summary. Default is false.</td>
+        <td>Azure DevOps only. If set to true, each key issue is published as an inline thread. A finding leaves the review summary when a matching thread exists or Azure accepts the new thread. Findings that cannot be anchored or published stay in the summary.</td>
       </tr>
     </table>
 
@@ -101,48 +112,48 @@ extra_instructions = "..."
     <table>
       <tr>
         <td><b>require_score_review</b></td>
-        <td>If set to true, the tool will add a section that scores the PR. Default is false.</td>
+        <td>If set to true, the tool will add a section that scores the PR.</td>
       </tr>
       <tr>
         <td><b>require_tests_review</b></td>
-        <td>If set to true, the tool will add a section that checks if the PR contains tests. Default is true.</td>
+        <td>If set to true, the tool will add a section that checks if the PR contains tests.</td>
       </tr>
       <tr>
         <td><b>require_estimate_effort_to_review</b></td>
-        <td>If set to true, the tool will add a section that estimates the effort needed to review the PR. Default is true.</td>
+        <td>If set to true, the tool will add a section that estimates the effort needed to review the PR.</td>
       </tr>
       <tr>
         <td><b>require_estimate_contribution_time_cost</b></td>
-        <td>If set to true, the tool will add a section that estimates the time required for a senior developer to create and submit such changes. Default is false.</td>
+        <td>If set to true, the tool will add a section that estimates the time required for a senior developer to create and submit such changes.</td>
       </tr>
       <tr>
         <td><b>require_can_be_split_review</b></td>
-        <td>If set to true, the tool will add a section that checks if the PR contains several themes, and can be split into smaller PRs. Default is false.</td>
+        <td>If set to true, the tool will add a section that checks if the PR contains several themes, and can be split into smaller PRs.</td>
       </tr>
       <tr>
         <td><b>require_security_review</b></td>
-        <td>If set to true, the tool will add a section that checks if the PR contains a possible security or vulnerability issue. Default is true.</td>
+        <td>If set to true, the tool will add a section that checks if the PR contains a possible security or vulnerability issue.</td>
       </tr>
         <tr>
         <td><b>require_todo_scan</b></td>
-        <td>If set to true, the tool will add a section that lists TODO comments found in the PR code changes. Default is false.
+        <td>If set to true, the tool will add a section that lists TODO comments found in the PR code changes.
         </td>
       </tr>
       <tr>
         <td><b>require_ticket_analysis_review</b></td>
-        <td>If set to true, and the PR contains a GitHub or Jira ticket link, the tool will add a section that checks if the PR in fact fulfilled the ticket requirements. Default is true.</td>
+        <td>If set to true, and the PR contains a GitHub or Jira ticket link, the tool will add a section that checks if the PR in fact fulfilled the ticket requirements.</td>
       </tr>
       <tr>
         <td><b>require_risk_assessment</b></td>
-        <td>If set to true, the tool will add a section that rates the overall risk of the PR as low, medium or high. Default is false.</td>
+        <td>If set to true, the tool will add a section that rates the overall risk of the PR as low, medium or high.</td>
       </tr>
       <tr>
         <td><b>require_merge_recommendation</b></td>
-        <td>If set to true, the tool will add a section with a merge recommendation of safe_to_merge, merge_with_caution or changes_required. Default is false.</td>
+        <td>If set to true, the tool will add a section with a merge recommendation of safe_to_merge, merge_with_caution or changes_required.</td>
       </tr>
       <tr>
         <td><b>require_priority_files</b></td>
-        <td>If set to true, the tool will add a section listing the files a human reviewer should inspect first. Default is false.</td>
+        <td>If set to true, the tool will add a section listing the files a human reviewer should inspect first.</td>
       </tr>
     </table>
 
@@ -153,11 +164,11 @@ extra_instructions = "..."
     <table>
       <tr>
         <td><b>enable_review_labels_security</b></td>
-        <td>If set to true, the tool will publish a 'possible security issue' label if it detects a security issue. Default is true.</td>
+        <td>If set to true, the tool will publish a 'possible security issue' label if it detects a security issue.</td>
       </tr>
       <tr>
         <td><b>enable_review_labels_effort</b></td>
-        <td>If set to true, the tool will publish a 'Review effort x/5' label (1–5 scale). Default is true.</td>
+        <td>If set to true, the tool will publish a 'Review effort x/5' label (1–5 scale).</td>
       </tr>
     </table>
 
@@ -227,3 +238,34 @@ extra_instructions = "..."
     """
     ```
     Use triple quotes to write multi-line instructions. Use bullet points to make the instructions more readable.
+
+### Reviewing a PR that does not fit in one call
+
+!!! tip ""
+
+    When a PR diff is larger than the model's token budget, the `review` tool drops whole files
+    until the diff fits, and lists the dropped files in the review coverage footer.
+
+    Setting `enable_large_pr_chunking = true` changes what happens next: the diff is split into up
+    to `max_number_of_calls` chunks, each chunk is reviewed on its own, and the answers are merged
+    into a single review that says how many chunks it was built from. Files that do not fit even
+    after chunking are still listed in the coverage footer. Every chunk is a separate model call,
+    so a chunked review costs roughly `max_number_of_calls` times a normal one.
+
+    Each chunk answers the same questions about a different part of the PR, so the answers are
+    merged field by field:
+
+    | Field | Merge rule |
+    | --- | --- |
+    | `key_issues_to_review` | Union over the chunks, dropping findings that repeat the same file, header and text |
+    | `security_concerns` | Every chunk that reported a concern is kept; "No" only when every chunk said no |
+    | `todo_sections`, `review_priority_files`, `can_be_split` | Union, de-duplicated, in chunk order (`can_be_split` keeps at most 3 sub-PRs) |
+    | `relevant_tests` | Yes if any chunk found tests |
+    | `score` | The lowest score any chunk gave |
+    | `risk_level`, `merge_recommendation` | The most conservative value any chunk gave |
+    | `estimated_effort_to_review_[1-5]` | The highest value any chunk gave |
+    | `contribution_time_cost_estimate` | The sum over the chunks, per case |
+    | `ticket_compliance_check` | One entry per ticket, with its bullet lists unioned across chunks |
+
+    The merged verdict is deliberately never less alarming than the worst chunk: a clean chunk
+    cannot raise a score, clear a security concern, or soften a risk level set by another chunk.

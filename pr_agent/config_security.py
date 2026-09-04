@@ -15,7 +15,12 @@
 # repo set any of these would let a malicious repo exfiltrate review data to an arbitrary host,
 # reach internal endpoints (SSRF), or append to arbitrary host files. The whole section is
 # therefore host-only (empty allowlist -> every key dropped).
+#
+# prompt_fragments: contains Jinja source rendered by the host before it is inserted into tool
+# prompts. Keep the whole section host-only so repository settings and comment arguments cannot
+# supply executable template expressions.
 REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION = {
     "skills": frozenset({"enabled", "max_skills_tokens"}),
     "push_outputs": frozenset(),
+    "prompt_fragments": frozenset(),
 }

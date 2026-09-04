@@ -19,12 +19,16 @@ Keep model names in configuration, not in tool code.
 Models that behave differently are registered in `pr_agent/algo/__init__.py`:
 `NO_SUPPORT_TEMPERATURE_MODELS` for models that reject a temperature
 parameter; `CLAUDE_EXTENDED_THINKING_MODELS` for Claude models that
-take extended thinking. Add the exact model name to the matching list.
+take extended thinking. For Claude models with provider-prefixed aliases
+(bare, `anthropic/`, `vertex_ai/`, `bedrock/`), declare the canonical family
+in `_CLAUDE_MODEL_FAMILIES` to expand them across registries automatically.
+Other models can be added directly to the matching list.
 
 Context windows are registered in `MAX_TOKENS` in `pr_agent/algo/__init__.py`:
-add the model name and its context-window token count, or set
-`config.custom_model_max_tokens` in `configuration.toml`. Without
-either, `get_max_tokens()` raises.
+Claude model families declared in `_CLAUDE_MODEL_FAMILIES` populate their
+aliases automatically. For other models, add the model name and its
+context-window token count to `MAX_TOKENS`, or set `config.custom_model_max_tokens`
+in `configuration.toml`. Without either, `get_max_tokens()` raises.
 
 Verify with `PYTHONPATH=. uv run pytest tests/unittest`.
 
