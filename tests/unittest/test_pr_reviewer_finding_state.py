@@ -73,6 +73,7 @@ def test_prepare_review_reconciles_previous_state_and_renders_resolved_section(m
         None,
         [_finding()],
         allow_resolution=True,
+        head_sha="head-1",
         timestamp="2026-01-01T00:00:00Z",
     ).state
     old_body = (
@@ -80,6 +81,7 @@ def test_prepare_review_reconciles_previous_state_and_renders_resolved_section(m
         f"{serialize_review_state(previous)}"
     )
     provider = MagicMock()
+    provider.last_commit_id = "head-2"
     provider.get_issue_comments.return_value = [SimpleNamespace(body=old_body)]
     provider.get_diff_files.return_value = []
     provider.is_supported.side_effect = lambda capability: capability == "get_issue_comments"
@@ -99,6 +101,37 @@ def test_prepare_review_reconciles_previous_state_and_renders_resolved_section(m
     assert settings.pr_reviewer.persistent_finding_state is True
 
 
+def test_prepare_review_same_head_absence_preserves_active_finding(monkeypatch):
+    _settings(monkeypatch)
+    previous = reconcile_review_findings(
+        None,
+        [_finding()],
+        allow_resolution=True,
+        head_sha="head-1",
+        timestamp="2026-01-01T00:00:00Z",
+    ).state
+    old_body = (
+        f"{PRReviewHeader.REGULAR.value} 🔍\n\nold review\n\n"
+        f"{serialize_review_state(previous)}"
+    )
+    provider = MagicMock()
+    provider.last_commit_id = "head-1"
+    provider.get_issue_comments.return_value = [SimpleNamespace(body=old_body)]
+    provider.is_supported.side_effect = (
+        lambda capability: capability == "get_issue_comments"
+    )
+    reviewer = _reviewer(provider)
+
+    reviewer._prepare_review_finding_state(
+        {"review": {"key_issues_to_review": []}}
+    )
+
+    finding = reviewer._review_state_result.state["findings"][0]
+    assert finding["state"] == "ACTIVE"
+    assert reviewer._review_state_result.resolved_ids == ()
+    assert "resolved_at" not in finding
+    assert "resolved_head_sha" not in finding
+
 
 def test_prepare_review_pushes_final_markdown_with_lifecycle_state(monkeypatch):
     _settings(monkeypatch)
@@ -106,10 +139,12 @@ def test_prepare_review_pushes_final_markdown_with_lifecycle_state(monkeypatch):
         None,
         [_finding()],
         allow_resolution=True,
+        head_sha="head-1",
         timestamp="2026-01-01T00:00:00Z",
     ).state
     header = f"{PRReviewHeader.REGULAR.value} 🔍"
     provider = MagicMock()
+    provider.last_commit_id = "head-2"
     provider.get_issue_comments.return_value = [
         SimpleNamespace(body=f"{header}\n\nold review\n\n{serialize_review_state(previous)}")
     ]
@@ -458,12 +493,14 @@ def test_prepare_and_persisted_state_round_trip_preserves_marker_and_history(mon
             {"body": "b-body", "path": "b.py", "line_start": 3, "line_end": 3},
         ],
         allow_resolution=True,
+        head_sha="head-1",
         timestamp="2026-01-01T00:00:00Z",
     ).state
     comment = SimpleNamespace(
         body=f"{header}\n\nold review\n\n{serialize_review_state(previous)}"
     )
     provider = MagicMock()
+    provider.last_commit_id = "head-2"
     provider.get_issue_comments.return_value = [comment]
     provider.get_diff_files.return_value = []
     provider.is_supported.side_effect = lambda capability: capability == "get_issue_comments"

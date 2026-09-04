@@ -194,12 +194,27 @@ def reconcile_review_findings(
 ) -> ReconciliationResult:
     """Reconcile current structured findings against the previous state.
 
-    Resolution is deliberately controlled by the caller. The caller must only
-    pass allow_resolution=True for a successful, complete full review.
+    Resolution is deliberately conservative. The caller must only pass
+    allow_resolution=True for a successful, complete full review, and the
+    previous and current reviewed HEADs must both be known and different.
     """
     now = _timestamp(timestamp)
     current = normalize_findings(current_findings)
     previous_findings = list((previous_state or {}).get("findings", []))
+    previous_last_run = (previous_state or {}).get("last_run", {})
+    previous_head_sha = (
+        previous_last_run.get("head_sha", "")
+        if isinstance(previous_last_run, Mapping)
+        else ""
+    )
+    resolution_allowed = (
+        allow_resolution
+        and isinstance(previous_head_sha, str)
+        and bool(previous_head_sha.strip())
+        and isinstance(head_sha, str)
+        and bool(head_sha.strip())
+        and previous_head_sha != head_sha
+    )
     previous_by_id = {finding["finding_id"]: finding for finding in previous_findings}
     current_by_id = {finding["finding_id"]: finding for finding in current}
     reconciled: dict[str, dict[str, Any]] = {}
@@ -233,7 +248,7 @@ def reconcile_review_findings(
         if finding_id in current_by_id:
             continue
         record = copy.deepcopy(previous)
-        if record.get("state") == "ACTIVE" and allow_resolution:
+        if record.get("state") == "ACTIVE" and resolution_allowed:
             record["state"] = "RESOLVED"
             record["resolved_at"] = now
             if head_sha:

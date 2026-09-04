@@ -58,6 +58,7 @@ def test_complete_full_review_marks_absent_active_finding_resolved():
         None,
         [_finding()],
         allow_resolution=True,
+        head_sha="head-1",
         timestamp="2026-01-01T00:00:00Z",
     ).state
 
@@ -75,6 +76,131 @@ def test_complete_full_review_marks_absent_active_finding_resolved():
     assert finding["resolved_head_sha"] == "head-2"
     assert finding["resolution_run_id"] == "run-2"
     assert result.resolved_ids == (finding["finding_id"],)
+
+
+def test_same_head_absence_does_not_resolve_active_finding():
+    previous = reconcile_review_findings(
+        None,
+        [_finding()],
+        allow_resolution=True,
+        head_sha="head-1",
+        timestamp="2026-01-01T00:00:00Z",
+    ).state
+
+    result = reconcile_review_findings(
+        previous,
+        [],
+        allow_resolution=True,
+        head_sha="head-1",
+        timestamp="2026-01-01T00:01:00Z",
+    )
+
+    finding = result.state["findings"][0]
+    assert finding["state"] == "ACTIVE"
+    assert result.resolved_ids == ()
+    assert "resolved_at" not in finding
+    assert "resolved_head_sha" not in finding
+    assert result.state["last_run"] == {
+        "complete": True,
+        "excluded_files": [],
+        "head_sha": "head-1",
+        "kind": "full",
+        "run_id": "",
+    }
+
+
+def test_different_head_with_resolution_disabled_preserves_active_finding():
+    previous = reconcile_review_findings(
+        None,
+        [_finding()],
+        allow_resolution=True,
+        head_sha="head-1",
+        timestamp="2026-01-01T00:00:00Z",
+    ).state
+
+    result = reconcile_review_findings(
+        previous,
+        [],
+        allow_resolution=False,
+        head_sha="head-2",
+        timestamp="2026-01-01T00:01:00Z",
+    )
+
+    assert result.state["findings"][0]["state"] == "ACTIVE"
+    assert result.resolved_ids == ()
+
+
+def test_missing_previous_head_sha_preserves_active_finding():
+    previous = reconcile_review_findings(
+        None,
+        [_finding()],
+        allow_resolution=True,
+        timestamp="2026-01-01T00:00:00Z",
+    ).state
+
+    result = reconcile_review_findings(
+        previous,
+        [],
+        allow_resolution=True,
+        head_sha="head-2",
+        timestamp="2026-01-01T00:01:00Z",
+    )
+
+    assert result.state["findings"][0]["state"] == "ACTIVE"
+    assert result.resolved_ids == ()
+
+
+def test_missing_current_head_sha_preserves_active_finding():
+    previous = reconcile_review_findings(
+        None,
+        [_finding()],
+        allow_resolution=True,
+        head_sha="head-1",
+        timestamp="2026-01-01T00:00:00Z",
+    ).state
+
+    result = reconcile_review_findings(
+        previous,
+        [],
+        allow_resolution=True,
+        head_sha="",
+        timestamp="2026-01-01T00:01:00Z",
+    )
+
+    assert result.state["findings"][0]["state"] == "ACTIVE"
+    assert result.resolved_ids == ()
+
+
+def test_same_head_then_changed_head_resolves_only_after_code_changes():
+    first = reconcile_review_findings(
+        None,
+        [_finding()],
+        allow_resolution=True,
+        head_sha="head-1",
+        timestamp="2026-01-01T00:00:00Z",
+    )
+    same_head = reconcile_review_findings(
+        first.state,
+        [],
+        allow_resolution=True,
+        head_sha="head-1",
+        timestamp="2026-01-01T00:01:00Z",
+    )
+    changed_head = reconcile_review_findings(
+        same_head.state,
+        [],
+        allow_resolution=True,
+        head_sha="head-2",
+        timestamp="2026-01-01T00:02:00Z",
+    )
+
+    assert first.state["findings"][0]["state"] == "ACTIVE"
+    assert same_head.state["findings"][0]["state"] == "ACTIVE"
+    assert same_head.resolved_ids == ()
+    assert changed_head.state["findings"][0]["state"] == "RESOLVED"
+    assert changed_head.resolved_ids == (
+        changed_head.state["findings"][0]["finding_id"],
+    )
 
 
 def test_incremental_absence_is_not_negative_evidence():
@@ -121,12 +247,14 @@ def test_resolved_finding_reappearing_becomes_active_with_reopen_metadata():
         None,
         [_finding()],
         allow_resolution=True,
+        head_sha="head-1",
         timestamp="2026-01-01T00:00:00Z",
     ).state
     previous = reconcile_review_findings(
         previous,
         [],
         allow_resolution=True,
+        head_sha="head-2",
         timestamp="2026-01-01T00:01:00Z",
     ).state
 
@@ -134,6 +262,7 @@ def test_resolved_finding_reappearing_becomes_active_with_reopen_metadata():
         previous,
         [_finding()],
         allow_resolution=True,
+        head_sha="head-3",
         timestamp="2026-01-01T00:02:00Z",
     )
 
@@ -151,6 +280,7 @@ def test_multiple_findings_reconcile_independently():
         None,
         [finding_a, finding_b],
         allow_resolution=True,
+        head_sha="head-1",
         timestamp="2026-01-01T00:00:00Z",
     ).state
 
@@ -158,6 +288,7 @@ def test_multiple_findings_reconcile_independently():
         previous,
         [finding_a, _finding("C", "c.py")],
         allow_resolution=True,
+        head_sha="head-2",
         timestamp="2026-01-01T00:01:00Z",
     )
     states = {item["path"]: item["state"] for item in result.state["findings"]}
@@ -232,12 +363,14 @@ def test_resolved_render_is_collapsed_and_state_marker_is_hidden():
         None,
         [_finding()],
         allow_resolution=True,
+        head_sha="head-1",
         timestamp="2026-01-01T00:00:00Z",
     ).state
     resolved = reconcile_review_findings(
         previous,
         [],
         allow_resolution=True,
+        head_sha="head-2",
         timestamp="2026-01-01T00:01:00Z",
     ).state
 
@@ -280,12 +413,14 @@ def test_resolved_retention_never_drops_active_findings():
         None,
         [active, *old],
         allow_resolution=True,
+        head_sha="head-1",
         timestamp="2026-01-01T00:00:00Z",
     ).state
     previous = reconcile_review_findings(
         previous,
         [active],
         allow_resolution=True,
+        head_sha="head-2",
         timestamp="2026-01-01T00:01:00Z",
         max_resolved_findings=20,
     ).state
