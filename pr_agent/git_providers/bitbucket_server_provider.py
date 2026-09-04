@@ -334,6 +334,7 @@ class BitbucketServerProvider(GitProvider):
             return self.bitbucket_client.add_pull_request_comment(
                 self.workspace_slug, self.repo_slug, self.pr_num, pr_comment
             )
+        return None
 
     def publish_persistent_comment(self, pr_comment: str,
                                    initial_header: str,
