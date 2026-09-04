@@ -357,8 +357,6 @@ url = "https://gitea.com"
 # users browse a different external URL, or where the server's own ROOT_URL is
 # misconfigured. Defaults to `url` when it differs from the shipped default
 # above, else derived from the PR's html_url.
-# Resolved when the first link is built, after repo-level .pr_agent.toml settings
-# are merged, so a per-repo override applies as well.
 # web_url = ""
 handle_push_trigger = false
 pr_commands = [
