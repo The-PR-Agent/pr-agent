@@ -1,9 +1,12 @@
+from pr_agent.command_descriptions import COMMAND_DESCRIPTIONS
+
+
 class HelpMessage:
     @staticmethod
     def get_general_commands_text():
-       commands_text = "> - **/review**: Request a review of your Pull Request.   \n" \
-                "> - **/describe**: Update the PR title and description based on the contents of the PR.   \n" \
-                "> - **/improve [--extended]**: Suggest code improvements. Extended mode provides a higher quality feedback.   \n" \
+       commands_text = f"> - **/review**: {COMMAND_DESCRIPTIONS['review']}   \n" \
+                f"> - **/describe**: {COMMAND_DESCRIPTIONS['describe']}   \n" \
+                f"> - **/improve [--extended]**: {COMMAND_DESCRIPTIONS['improve']} Extended mode provides more thorough feedback.   \n" \
                 "> - **/ask \\<QUESTION\\>**: Ask a question about the PR.   \n" \
                 "> - **/update_changelog**: Update the changelog based on the PR's contents.   \n" \
                 "> - **/help_docs \\<QUESTION\\>**: Given a path to documentation (either for this repository or for a given one), ask a question.   \n" \
@@ -22,7 +25,8 @@ class HelpMessage:
     @staticmethod
     def get_review_usage_guide():
         output ="**Overview:**\n"
-        output +=("The `review` tool scans the PR code changes, and generates a PR review which includes several types of feedbacks, such as possible PR issues, security threats and relevant test in the PR. More feedbacks can be [added](https://pr-agent-docs.codium.ai/tools/review/#general-configurations) by configuring the tool.\n\n"
+        output += (f"{COMMAND_DESCRIPTIONS['review']} "
+                  "More feedback can be [added](https://pr-agent-docs.codium.ai/tools/review/#general-configurations) by configuring the tool.\n\n"
                   "The tool can be triggered [automatically](https://pr-agent-docs.codium.ai/usage-guide/automations_and_usage/#github-app-automatic-tools-when-a-new-pr-is-opened) every time a new PR is opened, or can be invoked manually by commenting on any PR.\n")
         output +="""\
 - When commenting, to edit [configurations](https://github.com/Codium-ai/pr-agent/blob/main/pr_agent/settings/configuration.toml#L23) related to the review tool (`pr_reviewer` section), use the following template:
@@ -46,7 +50,7 @@ some_config2=...
     @staticmethod
     def get_describe_usage_guide():
         output = "**Overview:**\n"
-        output += "The `describe` tool scans the PR code changes, and generates a description for the PR - title, type, summary, walkthrough and labels. "
+        output += f"{COMMAND_DESCRIPTIONS['describe']} "
         output += "The tool can be triggered [automatically](https://pr-agent-docs.codium.ai/usage-guide/automations_and_usage/#github-app-automatic-tools-when-a-new-pr-is-opened) every time a new PR is opened, or can be invoked manually by commenting on a PR.\n"
         output += """\
 
@@ -168,7 +172,7 @@ You can ask questions about the entire PR, about specific code lines, or about a
     @staticmethod
     def get_improve_usage_guide():
         output = "**Overview:**\n"
-        output += "The code suggestions tool, named `improve`, scans the PR code changes, and automatically generates code suggestions for improving the PR."
+        output += f"{COMMAND_DESCRIPTIONS['improve']} "
         output += "The tool can be triggered [automatically](https://pr-agent-docs.codium.ai/usage-guide/automations_and_usage/#github-app-automatic-tools-when-a-new-pr-is-opened) every time a new PR is opened, or can be invoked manually by commenting on a PR.\n"
         output += """\
 - When commenting, to edit [configurations](https://github.com/Codium-ai/pr-agent/blob/main/pr_agent/settings/configuration.toml#L78) related to the improve tool (`pr_code_suggestions` section), use the following template:
