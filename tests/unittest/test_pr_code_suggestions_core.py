@@ -865,6 +865,218 @@ async def test_suggestion_covering_the_anchored_range_is_published_as_committabl
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("improved_code", ["return new(", "return await new()"])
+async def test_invalid_python_replacement_is_published_as_a_pr_comment(improved_code):
+    git_provider = _provider_with_file("def fetch():\n    return old()\n")
+    tool = _make_tool(git_provider)
+
+    await tool.push_inline_code_suggestions({"code_suggestions": [
+        _valid_suggestion(
+            relevant_lines_start=2,
+            relevant_lines_end=2,
+            existing_code="return old()",
+            improved_code=improved_code,
+            score=8,
+        )
+    ]})
+
+    git_provider.publish_code_suggestions.assert_not_called()
+    body = git_provider.publish_comment.call_args.args[0]
+    assert "```suggestion" not in body
+    assert "because the proposed Python code has invalid syntax" in body
+    assert "`app.py:2-2`" in body
+
+
+@pytest.mark.asyncio
+async def test_invalid_python_replacement_stays_in_a_noncommittable_artifact():
+    git_provider = _provider_with_file("def fetch():\n    return old()\n")
+    git_provider.supports_code_suggestions_artifact.return_value = True
+    git_provider.publish_code_suggestions_artifact.return_value = True
+    tool = _make_tool(git_provider)
+
+    await tool.push_inline_code_suggestions({"code_suggestions": [
+        _valid_suggestion(
+            relevant_lines_start=2,
+            relevant_lines_end=2,
+            existing_code="return old()",
+            improved_code="return new(",
+            score=8,
+        )
+    ]})
+
+    published = git_provider.publish_code_suggestions_artifact.call_args.args[0]
+    assert len(published) == 1
+    assert "```suggestion" not in published[0]["body"]
+    assert "because the proposed Python code has invalid syntax" in published[0]["body"]
+    git_provider.publish_code_suggestions.assert_not_called()
+    git_provider.publish_comment.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_context_dependent_multiline_python_replacement_remains_committable():
+    git_provider = _provider_with_file(
+        "async def fetch():\n"
+        "    return await old(\n"
+        "        source,\n"
+        "    )\n"
+    )
+    tool = _make_tool(git_provider)
+
+    await tool.push_inline_code_suggestions({"code_suggestions": [
+        _valid_suggestion(
+            relevant_lines_start=2,
+            relevant_lines_end=4,
+            existing_code="return await old(\n    source,\n)",
+            improved_code="return await new()",
+            score=8,
+        )
+    ]})
+
+    body = _published_suggestion(git_provider)["body"]
+    assert "```suggestion\n    return await new()\n```" in body
+    git_provider.publish_comment.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_non_python_replacement_remains_best_effort():
+    git_provider = _provider_with_file(
+        "function fetch() {\n  return old();\n}\n",
+        filename="app.js",
+    )
+    tool = _make_tool(git_provider)
+
+    await tool.push_inline_code_suggestions({"code_suggestions": [
+        _valid_suggestion(
+            relevant_file="app.js",
+            relevant_lines_start=2,
+            relevant_lines_end=2,
+            existing_code="return old();",
+            improved_code="return (",
+            score=8,
+            language="python",
+        )
+    ]})
+
+    assert "```suggestion\n  return (\n```" in _published_suggestion(git_provider)["body"]
+    git_provider.publish_comment.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_python_replacement_with_incomplete_file_context_remains_best_effort():
+    git_provider = MagicMock()
+    git_provider.diff_files = [FilePatchInfo(
+        base_file="",
+        head_file="def fetch():\n    return old()\n",
+        patch="@@ -19,2 +19,2 @@\n def fetch():\n-    return older()\n+    return old()\n",
+        filename="app.py",
+        head_file_is_complete=False,
+    )]
+    git_provider.publish_code_suggestions.return_value = True
+    tool = _make_tool(git_provider)
+
+    await tool.push_inline_code_suggestions({"code_suggestions": [
+        _valid_suggestion(
+            relevant_lines_start=20,
+            relevant_lines_end=20,
+            existing_code="return old()",
+            improved_code="return new(",
+            score=8,
+        )
+    ]})
+
+    assert "```suggestion\n    return new(\n```" in _published_suggestion(git_provider)["body"]
+    git_provider.publish_comment.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_python_replacement_in_an_unparseable_file_remains_best_effort():
+    git_provider = _provider_with_file("def broken(:\n    return old()\n")
+    tool = _make_tool(git_provider)
+
+    await tool.push_inline_code_suggestions({"code_suggestions": [
+        _valid_suggestion(
+            relevant_lines_start=2,
+            relevant_lines_end=2,
+            existing_code="return old()",
+            improved_code="return new()",
+            score=8,
+        )
+    ]})
+
+    assert "```suggestion\n    return new()\n```" in _published_suggestion(git_provider)["body"]
+    git_provider.publish_comment.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("compile_side_effect", [
+    [RecursionError("baseline too deeply nested")],
+    [None, RecursionError("replacement too deeply nested")],
+])
+async def test_python_validation_failure_remains_best_effort(compile_side_effect):
+    git_provider = _provider_with_file("def fetch():\n    return old()\n")
+    tool = _make_tool(git_provider)
+
+    with patch(
+        "pr_agent.tools.pr_code_suggestions.compile",
+        side_effect=compile_side_effect,
+        create=True,
+    ):
+        await tool.push_inline_code_suggestions({"code_suggestions": [
+            _valid_suggestion(
+                relevant_lines_start=2,
+                relevant_lines_end=2,
+                existing_code="return old()",
+                improved_code="return new()",
+                score=8,
+            )
+        ]})
+
+    assert "```suggestion\n    return new()\n```" in _published_suggestion(git_provider)["body"]
+    git_provider.publish_comment.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("max_length", "improved_code", "truncated_code"), [
+    (6, "return new_value", "return"),
+    (2, "    return new()", ""),
+])
+async def test_truncated_replacement_is_published_as_a_pr_comment(
+        max_length, improved_code, truncated_code):
+    settings = get_settings()
+    snapshot = snapshot_settings((
+        "pr_code_suggestions.max_code_suggestion_length",
+        "pr_code_suggestions.suggestion_truncation_message",
+    ))
+    try:
+        settings.set("pr_code_suggestions.max_code_suggestion_length", max_length)
+        settings.set("pr_code_suggestions.suggestion_truncation_message", "")
+        git_provider = _provider_with_file(
+            "function fetch() {\n  return old();\n}\n",
+            filename="app.js",
+        )
+        tool = _make_tool(git_provider)
+        suggestion = PRCodeSuggestions._truncate_if_needed(_valid_suggestion(
+            relevant_file="app.js",
+            relevant_lines_start=2,
+            relevant_lines_end=2,
+            existing_code="return old();",
+            improved_code=improved_code,
+            score=8,
+        ))
+
+        assert suggestion["improved_code"].rstrip() == truncated_code
+        await tool.push_inline_code_suggestions({"code_suggestions": [suggestion]})
+
+        git_provider.publish_code_suggestions.assert_not_called()
+        body = git_provider.publish_comment.call_args.args[0]
+        assert "```suggestion" not in body
+        assert "because the proposed code was truncated" in body
+        assert "`app.js:2-2`" in body
+    finally:
+        restore_settings(snapshot)
+
+
+@pytest.mark.asyncio
 async def test_suggestion_rewriting_more_lines_than_it_replaces_is_published_as_a_plain_comment():
     git_provider = _provider_with_file("def f():\n    return old(\n        arg)\n")
     tool = _make_tool(git_provider)
