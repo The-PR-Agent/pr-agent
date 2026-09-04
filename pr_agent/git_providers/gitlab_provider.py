@@ -1388,6 +1388,46 @@ class GitLabProvider(GitProvider):
     def get_pr_branch(self):
         return self.mr.source_branch
 
+    def find_open_pr_url(self, base_repo: str, head_repo: str, head_branch: str, head_sha: str) -> str:
+        """Resolve the unique open merge request represented by project and commit metadata."""
+        if not all(isinstance(value, str) and value for value in (base_repo, head_repo, head_branch, head_sha)):
+            get_logger().warning("Cannot resolve MR: incomplete project, branch, or SHA metadata")
+            return ""
+
+        try:
+            base_project = self.gl.projects.get(base_repo)
+            head_project = self.gl.projects.get(head_repo)
+            head_project_id = getattr(head_project, "id", None)
+            if head_project_id is None:
+                get_logger().warning(f"Cannot resolve MR: source project '{head_repo}' has no ID")
+                return ""
+
+            merge_requests = base_project.mergerequests.list(
+                get_all=True, state="opened", source_branch=head_branch
+            )
+            matches = []
+            for merge_request in merge_requests:
+                source_project_id = getattr(merge_request, "source_project_id", None)
+                if (
+                    source_project_id is not None
+                    and str(source_project_id) == str(head_project_id)
+                    and getattr(merge_request, "source_branch", "") == head_branch
+                    and getattr(merge_request, "sha", "") == head_sha
+                    and getattr(merge_request, "state", "opened") == "opened"
+                ):
+                    matches.append(merge_request)
+        except Exception as e:
+            get_logger().warning(f"Failed to resolve MR for {base_repo}: {e}")
+            return ""
+
+        if len(matches) != 1:
+            get_logger().info(
+                f"Skipping MR resolution: expected one open MR for {head_repo}:{head_branch}@{head_sha}, "
+                f"found {len(matches)}"
+            )
+            return ""
+        return getattr(matches[0], "web_url", "") or ""
+
     def get_pr_owner_id(self) -> str | None:
         if not self.gitlab_url or 'gitlab.com' in self.gitlab_url:
             if not self.id_project:

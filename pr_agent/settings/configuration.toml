@@ -293,6 +293,9 @@ publish_as_check_run = false # when true, publish review/description/improve out
 # push_trigger_ignore_bot_commits = true
 # push_trigger_ignore_merge_commits = true
 # push_commands = ['/describe', '/review']  # defaults mirror github_app.push_commands
+# Resolve an open fork PR by its workflow_run head repository, branch, and SHA when
+# GitHub omits workflow_run.pull_requests (disabled by default).
+workflow_run_resolve_fork_prs = false
 
 [github_app]
 # these toggles allows running the github app from custom deployments

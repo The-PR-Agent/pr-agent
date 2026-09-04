@@ -1301,6 +1301,42 @@ class GithubProvider(GitProvider):
     def _get_pr(self):
         return self._get_repo().get_pull(self.pr_num)
 
+    def find_open_pr_url(self, base_repo: str, head_repo: str, head_branch: str, head_sha: str) -> str:
+        """Resolve the unique open fork PR represented by repository and commit metadata."""
+        if not all(isinstance(value, str) and value for value in (base_repo, head_repo, head_branch, head_sha)):
+            get_logger().warning("Cannot resolve PR: incomplete repository, branch, or SHA metadata")
+            return ""
+        if base_repo.casefold() == head_repo.casefold() or base_repo.count("/") != 1 or head_repo.count("/") != 1:
+            get_logger().warning("Cannot resolve PR: head repository is not a valid fork repository")
+            return ""
+
+        head_owner = head_repo.split("/", 1)[0]
+        try:
+            pull_requests = self.github_client.get_repo(base_repo).get_pulls(
+                state="open", head=f"{head_owner}:{head_branch}"
+            )
+            matches = []
+            for pull_request in pull_requests:
+                head = getattr(pull_request, "head", None)
+                pull_request_head_repo = getattr(getattr(head, "repo", None), "full_name", "")
+                if (
+                    isinstance(pull_request_head_repo, str)
+                    and pull_request_head_repo.casefold() == head_repo.casefold()
+                    and getattr(head, "sha", "") == head_sha
+                ):
+                    matches.append(pull_request)
+        except Exception as e:
+            get_logger().warning(f"Failed to resolve PR for {base_repo}: {e}")
+            return ""
+
+        if len(matches) != 1:
+            get_logger().info(
+                f"Skipping PR resolution: expected one open PR for {head_repo}:{head_branch}@{head_sha}, "
+                f"found {len(matches)}"
+            )
+            return ""
+        return getattr(matches[0], "url", "") or ""
+
     def get_pr_file_content(self, file_path: str, branch: str) -> str:
         try:
             file_content_str = str(

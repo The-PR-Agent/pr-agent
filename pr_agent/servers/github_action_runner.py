@@ -35,6 +35,25 @@ def get_setting_or_env(key: str, default: Union[str, bool] = None) -> Union[str,
     return value
 
 
+def _resolve_workflow_run_pull_request(workflow_run: dict) -> str:
+    """Resolve a fork PR URL when GitHub omits it from a workflow_run payload."""
+    repository = workflow_run.get("repository", {})
+    head_repository = workflow_run.get("head_repository", {})
+    base_repo = repository.get("full_name", "") if isinstance(repository, dict) else ""
+    head_repo = head_repository.get("full_name", "") if isinstance(head_repository, dict) else ""
+    head_branch = workflow_run.get("head_branch", "")
+    head_sha = workflow_run.get("head_sha", "")
+
+    try:
+        return get_git_provider()().find_open_pr_url(base_repo, head_repo, head_branch, head_sha)
+    except NotImplementedError:
+        get_logger().warning("The configured git provider does not support PR lookup by workflow run metadata")
+        return ""
+    except Exception as e:
+        get_logger().warning(f"Failed to resolve workflow_run PR: {e}")
+        return ""
+
+
 def _inject_artifact_context():
     """Inject CI artifact content into extra_instructions for configured tools."""
     artifact_path_env = (
@@ -311,10 +330,22 @@ async def run_action():
 
         pull_requests = workflow_run.get("pull_requests", [])
         if not pull_requests:
-            get_logger().info("Skipping workflow_run: no pull_requests found in payload (fork PRs are not supported)")
-            return
+            resolve_fork_prs = get_setting_or_env(
+                "GITHUB_ACTION_CONFIG.WORKFLOW_RUN_RESOLVE_FORK_PRS", False
+            )
+            if not is_true(resolve_fork_prs):
+                get_logger().info(
+                    "Skipping workflow_run: no pull_requests found in payload "
+                    "(fork PR resolution is disabled)"
+                )
+                return
+            pr_url = _resolve_workflow_run_pull_request(workflow_run)
+            if not pr_url:
+                get_logger().info("Skipping workflow_run: no unique open fork PR matched the workflow run")
+                return
+        else:
+            pr_url = pull_requests[0].get("url")
 
-        pr_url = pull_requests[0].get("url")
         if not pr_url:
             get_logger().info("Skipping workflow_run: pull_requests[0] has no url")
             return

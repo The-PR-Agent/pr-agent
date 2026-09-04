@@ -205,6 +205,8 @@ Adding `"synchronize"` to this list enables auto tools on new commits pushed to 
 
 `github_action_config.push_trigger_ignore_bot_commits` (default `true`) skips processing when the push author is a bot, avoiding redundant runs on automated commits.
 
+`github_action_config.workflow_run_resolve_fork_prs` (default `false`) opts into resolving an open fork PR by the `workflow_run` head repository, branch, and SHA when GitHub does not include a pull-request URL. The resolver fails closed when metadata is incomplete, no unique open PR matches, or the match is ambiguous. See the [fork CI workflow example](../installation/github.md#using-workflow_run-after-fork-ci).
+
 `github_action_config.enable_output` are used to enable/disable github actions [output parameter](https://docs.github.com/en/actions/creating-actions/metadata-syntax-for-github-actions#outputs-for-docker-container-and-javascript-actions) (default is `true`).
 Review result is output as JSON to `steps.{step-id}.outputs.review` property.
 The JSON structure is equivalent to the yaml data structure defined in [pr_reviewer_prompts.toml](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/pr_reviewer_prompts.toml).
