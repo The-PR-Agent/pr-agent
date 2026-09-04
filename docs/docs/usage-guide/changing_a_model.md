@@ -614,6 +614,37 @@ Create the credential per branch in the [Neon Console](https://console.neon.tech
 !!! note "Chat completions only"
     Some model IDs in Neon's catalog are served through the OpenAI Responses API, which Neon exposes under `/openai/v1` instead of `/v1`. The configuration above points at the chat-completions endpoint, so it cannot reach those models. Neon also documents a few models that return `message.content` as an array of typed blocks rather than a string, and PR-Agent reads the reply as a string.
 
+### Atlas Cloud
+
+[Atlas Cloud](https://www.atlascloud.ai/?utm_source=github&utm_medium=link&utm_campaign=pr-agent) is an OpenAI-compatible inference platform. It needs no provider-specific code in PR-Agent: the `openai/` prefix routes the request to Atlas's base URL through litellm's OpenAI-compatible path, the same way [OrcaRouter](#orcarouter) and the [Neon AI Gateway](#neon-ai-gateway) are handled.
+
+To use a model served by Atlas Cloud, set:
+
+```toml
+[config] # in configuration.toml
+model = "openai/deepseek-ai/deepseek-v4-pro"
+fallback_models = ["openai/deepseek-ai/deepseek-v4-pro"]
+custom_model_max_tokens = 1048000 # the context window Atlas publishes for the model
+
+[openai] # in .secrets.toml
+api_base = "https://api.atlascloud.ai/v1"
+key = "..." # your Atlas Cloud api key
+```
+
+or use the environment variables (make sure to use double underscores `__`):
+
+```bash
+OPENAI__API_BASE=https://api.atlascloud.ai/v1
+OPENAI__KEY=...
+```
+
+(you can obtain an Atlas Cloud API key from the [console](https://www.atlascloud.ai/console))
+
+Keep the `openai/` prefix on the model name, whichever Atlas model ID you use (`openai/deepseek-ai/deepseek-v4-pro`, `openai/zai-org/glm-5`, `openai/moonshotai/kimi-k2.6`, ...): the prefix routes the request through litellm's OpenAI-compatible path. A prefixed name is not in the `MAX_TOKENS` table [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py), so you also have to set `custom_model_max_tokens`. Take the value from Atlas's [model catalog](https://www.atlascloud.ai/models).
+
+!!! note "Reasoning models need output headroom"
+    Several Atlas models are reasoning models that spend completion tokens on a hidden chain of thought before writing the answer. `deepseek-ai/deepseek-v4-pro` with `max_tokens = 16` returns `finish_reason = "length"` and an **empty** `message.content` — all 16 completion tokens were reasoning tokens. If a tool comes back blank, raise the output budget rather than assuming the request failed. Non-reasoning IDs such as `deepseek-ai/DeepSeek-V3.1` are unaffected.
+
 ### Custom models
 
 If the relevant model doesn't appear [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py), you can still use it as a custom model:
