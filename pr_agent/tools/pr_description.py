@@ -39,6 +39,7 @@ from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
 from pr_agent.tools.ticket_pr_compliance_check import (
     extract_and_cache_pr_tickets,
+    fit_related_tickets_to_prompt_budget,
 )
 
 
@@ -121,12 +122,7 @@ class PRDescription:
 
             # ticket extraction if exists
             await extract_and_cache_pr_tickets(self.git_provider, self.vars)
-            self.token_handler = TokenHandler(
-                self.git_provider.pr,
-                self.vars,
-                get_settings().pr_description_prompt.system,
-                get_settings().pr_description_prompt.user,
-            )
+            self._raw_prompt_vars = copy.deepcopy(self.vars)
 
             await retry_with_fallback_models(self._prepare_prediction, ModelType.WEAK)
 
@@ -254,6 +250,15 @@ class PRDescription:
             get_logger().info("Markers were enabled, but user description does not contain markers. Skipping AI prediction")
             return None
 
+        raw_prompt_vars = getattr(self, "_raw_prompt_vars", getattr(self, "vars", None))
+        if raw_prompt_vars is not None:
+            self.vars, self.token_handler = fit_related_tickets_to_prompt_budget(
+                self.git_provider.pr,
+                raw_prompt_vars,
+                get_settings().pr_description_prompt.system,
+                get_settings().pr_description_prompt.user,
+                model,
+            )
         large_pr_handling = get_settings().pr_description.get("enable_large_pr_handling", True) and "pr_description_only_files_prompts" in get_settings()
         output = get_pr_diff(self.git_provider, self.token_handler, model, large_pr_handling=large_pr_handling, return_remaining_files=True)
         if isinstance(output, tuple):
@@ -279,11 +284,12 @@ class PRDescription:
         else:
             # get the diff in multiple patches, with the token handler only for the files prompt
             get_logger().debug('large_pr_handling for describe')
-            token_handler_only_files_prompt = TokenHandler(
+            self.vars, token_handler_only_files_prompt = fit_related_tickets_to_prompt_budget(
                 self.git_provider.pr,
-                self.vars,
+                raw_prompt_vars if raw_prompt_vars is not None else self.vars,
                 get_settings().pr_description_only_files_prompts.system,
                 get_settings().pr_description_only_files_prompts.user,
+                model,
             )
             (patches_compressed_list, total_tokens_list, deleted_files_list, remaining_files_list, file_dict,
              files_in_patches_list) = get_pr_diff_multiple_patchs(
@@ -319,11 +325,12 @@ class PRDescription:
                     get_logger().debug(f"failed to generate predictions in iteration {i + 1} for describe files")
 
             # generate files_walkthrough string, with proper token handling
-            token_handler_only_description_prompt = TokenHandler(
+            self.vars, token_handler_only_description_prompt = fit_related_tickets_to_prompt_budget(
                 self.git_provider.pr,
-                self.vars,
+                raw_prompt_vars if raw_prompt_vars is not None else self.vars,
                 get_settings().pr_description_only_description_prompts.system,
-                get_settings().pr_description_only_description_prompts.user)
+                get_settings().pr_description_only_description_prompts.user,
+                model)
             files_walkthrough = "\n".join(file_description_str_list)
             files_walkthrough_prompt = copy.deepcopy(files_walkthrough)
             MAX_EXTRA_FILES_TO_PROMPT = 50

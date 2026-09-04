@@ -46,7 +46,10 @@ from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.git_provider import IncrementalPR, get_main_pr_language
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
-from pr_agent.tools.ticket_pr_compliance_check import extract_and_cache_pr_tickets
+from pr_agent.tools.ticket_pr_compliance_check import (
+    extract_and_cache_pr_tickets,
+    fit_related_tickets_to_prompt_budget,
+)
 
 MAX_REVIEW_COVERAGE_FILES = 50
 _SUGGESTION_FENCE_RE = re.compile(r"```[ \t]*suggestion\b", re.IGNORECASE)
@@ -186,12 +189,7 @@ class PRReviewer:
 
             # ticket extraction if exists
             await extract_and_cache_pr_tickets(self.git_provider, self.vars)
-            self.token_handler = TokenHandler(
-                self.git_provider.pr,
-                self.vars,
-                get_settings().pr_review_prompt.system,
-                get_settings().pr_review_prompt.user,
-            )
+            self._raw_prompt_vars = copy.deepcopy(self.vars)
 
             if (
                 self.incremental.is_incremental
@@ -272,6 +270,15 @@ class PRReviewer:
         return get_settings().pr_reviewer.get('publish_output_no_suggestions', True) or "No major issues detected" not in pr_review
 
     async def _prepare_prediction(self, model: str) -> None:
+        raw_prompt_vars = getattr(self, "_raw_prompt_vars", getattr(self, "vars", None))
+        if raw_prompt_vars is not None:
+            self.vars, self.token_handler = fit_related_tickets_to_prompt_budget(
+                self.git_provider.pr,
+                raw_prompt_vars,
+                get_settings().pr_review_prompt.system,
+                get_settings().pr_review_prompt.user,
+                model,
+            )
         output = get_pr_diff(self.git_provider,
                              self.token_handler,
                              model,
