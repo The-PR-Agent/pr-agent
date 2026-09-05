@@ -65,6 +65,11 @@ class _RecordingAgent:
         self.commands.append(command)
 
 
+class _IdentityProvider:
+    def verify_eligibility(self, *_args):
+        return Eligibility.ELIGIBLE
+
+
 class _Request:
     def __init__(self, payload):
         self.headers = {"authorization": "JWT e30.eyJpc3MiOiJjbGllbnQifQ.signature"}
@@ -79,13 +84,13 @@ class _Request:
 
 @pytest.mark.parametrize(("provider", "expected"), DEFAULT_PR_COMMANDS.items())
 def test_default_pr_command_profiles_match_existing_provider_behavior(monkeypatch, provider, expected):
-    monkeypatch.setattr(server_utils, "get_settings", lambda: _Settings())
+    monkeypatch.setattr(server_utils, "get_settings", _Settings)
 
     assert server_utils.get_pr_commands(provider) == expected
 
 
 def test_default_pr_commands_are_fresh_lists(monkeypatch):
-    monkeypatch.setattr(server_utils, "get_settings", lambda: _Settings())
+    monkeypatch.setattr(server_utils, "get_settings", _Settings)
 
     first = server_utils.get_pr_commands("github_app")
     second = server_utils.get_pr_commands("github_app")
@@ -220,7 +225,7 @@ async def _dispatch_default_pr_commands(provider, monkeypatch, agent):
 @pytest.mark.parametrize("provider", DEFAULT_PR_COMMANDS)
 async def test_each_webhook_dispatches_its_default_profile(provider, monkeypatch):
     agent = _RecordingAgent()
-    monkeypatch.setattr(server_utils, "get_settings", lambda: _Settings())
+    monkeypatch.setattr(server_utils, "get_settings", _Settings)
 
     with request_cycle_context({}):
         context["settings"] = copy.deepcopy(global_settings)
@@ -250,7 +255,7 @@ async def test_bitbucket_app_default_profile_passes_the_early_gate(monkeypatch):
     async def perform_commands(*args):
         calls.append(args)
 
-    monkeypatch.setattr(server_utils, "get_settings", lambda: _Settings())
+    monkeypatch.setattr(server_utils, "get_settings", _Settings)
     monkeypatch.setattr(bitbucket_app, "is_bot_user", lambda _data: False)
     monkeypatch.setattr(bitbucket_app, "should_process_pr_logic", lambda _data: True)
     monkeypatch.setattr(bitbucket_app, "get_fork_safe_secret_provider", lambda: secret_provider)
@@ -259,7 +264,7 @@ async def test_bitbucket_app_default_profile_passes_the_early_gate(monkeypatch):
     monkeypatch.setattr(
         bitbucket_app,
         "get_identity_provider",
-        lambda: type("IdentityProvider", (), {"verify_eligibility": lambda self, *args: Eligibility.ELIGIBLE})(),
+        _IdentityProvider,
     )
     monkeypatch.setattr(bitbucket_app, "_perform_commands_bitbucket", perform_commands)
     endpoint = next(route.endpoint for route in bitbucket_app.router.routes if route.path == "/webhook")
