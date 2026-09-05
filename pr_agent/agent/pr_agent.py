@@ -158,6 +158,14 @@ def prepare_command(command: str) -> list[str]:
             key, value = argument.split("=", 1)
             argument = f"{key}={json.dumps(value, ensure_ascii=False)}"
         args.append(argument)
+    is_valid, offending_arg = CliArgs.validate_user_args(args)
+    if not is_valid:
+        get_logger().error(
+            f"Dropping auto-command argument for forbidden param '{offending_arg}'. "
+            f"Use instead a configuration file."
+        )
+        args = [argument for argument in args
+                if CliArgs.validate_user_args([argument])[0]]
     other_args = update_settings_from_args(args)
     return [action] + other_args
 
