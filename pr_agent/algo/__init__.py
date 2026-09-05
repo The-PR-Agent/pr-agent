@@ -370,6 +370,7 @@ MAX_TOKENS = {
     'vertex_ai/gemini-3-pro-preview': 1048576,
     'vertex_ai/gemini-3.1-flash': 1048576,
     'vertex_ai/gemini-3.1-pro': 1048576,
+    'vertex_ai/gemini-3.1-flash-lite': 1048576,
     'vertex_ai/gemini-3.1-flash-lite-preview': 1048576,
     'vertex_ai/gemini-3.1-pro-preview': 1048576,
     'vertex_ai/gemini-3.5-flash': 1048576,
@@ -393,6 +394,7 @@ MAX_TOKENS = {
     'gemini/gemini-3-pro-preview': 1048576,
     'gemini/gemini-3.1-flash': 1048576,
     'gemini/gemini-3.1-pro': 1048576,
+    'gemini/gemini-3.1-flash-lite': 1048576,
     'gemini/gemini-3.1-flash-lite-preview': 1048576,
     'gemini/gemini-3.1-pro-preview': 1048576,
     'gemini/gemini-3.5-flash': 1048576,
@@ -560,10 +562,33 @@ SUPPORT_REASONING_EFFORT_MODELS = [
     # Gemini 2.5 exposes a thinking budget controlled by reasoning_effort. Without
     # these entries a configured effort is silently dropped, so a runaway thinking
     # trace can consume the whole output budget and return an empty completion.
-    # LiteLLM maps native provider paths to thinkingConfig.thinkingBudget, while
+    # For these 2.5 ids LiteLLM maps native provider paths to
+    # thinkingConfig.thinkingBudget (the 3.x entries below map differently), while
     # LiteLLMAIHandler routes OpenRouter-prefixed forms through extra_body.reasoning.
     "gemini-2.5-pro",
     "gemini-2.5-flash",
+    # Gemini 3.x thinking models. Same rationale as the 2.5 entries above: without
+    # these, a configured reasoning_effort is silently dropped and the model runs
+    # at its API-default thinking. Unlike the 2.5 budget mapping, LiteLLM 1.98.0
+    # maps 3.x ids to thinkingConfig.thinkingLevel (no fixed token ceiling).
+    # Only ids LiteLLM registers with supports_reasoning=true under the gemini/ or
+    # vertex_ai/ prefixes are listed: gemini-3.1-flash and gemini-3.5-pro are
+    # absent from its registry entirely, and gemini-3.1-pro exists only as
+    # deepinfra/google/gemini-3.1-pro — sending the parameter for the unregistered
+    # native forms would be rejected rather than mapped, so they stay out until
+    # LiteLLM registers them.
+    "gemini-3-flash-preview",
+    "gemini-3-pro-preview",
+    "gemini-3.1-flash-lite",
+    "gemini-3.1-flash-lite-preview",
+    "gemini-3.1-pro-preview",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.6-flash",
+    "gemini-3.7-flash",
+    # 3.8 Flash is absent from LiteLLM 1.98.0's registry (the model postdates
+    # it); litellm_ai_handler registers the id at import so the mapping works.
+    "gemini-3.8-flash",
     # Register each published Grok id separately so provider-prefixed forms match
     # and the allowlist below can clamp model-specific reasoning levels.
     "grok-4.5",

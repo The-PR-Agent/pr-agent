@@ -192,6 +192,8 @@ class TestGetMaxTokens:
         "vertex_ai/gemini-3.1-flash",
         "gemini/gemini-3.1-pro",
         "vertex_ai/gemini-3.1-pro",
+        "gemini/gemini-3.1-flash-lite",
+        "vertex_ai/gemini-3.1-flash-lite",
         "gemini/gemini-3.1-flash-lite-preview",
         "vertex_ai/gemini-3.1-flash-lite-preview",
         "gemini/gemini-3.5-flash",

@@ -35,6 +35,35 @@ from pr_agent.log import get_logger
 MODEL_RETRIES = 2
 DUMMY_LITELLM_API_KEY = "dummy_key"  # placeholder set when no OpenAI key is configured
 
+# The bundled LiteLLM (1.98.0) predates Gemini 3.8 Flash (GA September 2026), so
+# its model registry has no entry for the id. Without one, supports_reasoning()
+# is false and LiteLLM skips the reasoning_effort -> thinkingConfig mapping,
+# silently dropping a configured effort — the same failure the
+# SUPPORT_REASONING_EFFORT_MODELS additions fix for the registered 3.x ids.
+# Register the id at import, mirroring the registry's gemini-3.7-flash entry
+# (same context window and promo pricing per ai.google.dev/pricing/gemini-3,
+# September 2026). Drop this once the bundled LiteLLM registers the model.
+_GEMINI_38_FLASH_MODEL_INFO = {
+    "mode": "chat",
+    "max_tokens": 65536,
+    "max_input_tokens": 1048576,
+    "max_output_tokens": 65536,
+    "input_cost_per_token": 7.5e-07,
+    "output_cost_per_token": 3.75e-06,
+    "output_cost_per_reasoning_token": 3.75e-06,
+    "supports_reasoning": True,
+    "supports_system_messages": True,
+    "source": "https://ai.google.dev/pricing/gemini-3",
+}
+for _gemini_38_id, _provider in (
+    ("gemini/gemini-3.8-flash", "gemini"),
+    ("vertex_ai/gemini-3.8-flash", "vertex_ai-language-models"),
+):
+    if _gemini_38_id not in litellm.model_cost:
+        litellm.register_model(
+            {_gemini_38_id: {**_GEMINI_38_FLASH_MODEL_INFO, "litellm_provider": _provider}}
+        )
+
 
 def _as_bool(value, default: bool) -> bool:
     """Parse a config value that may arrive as a bool (toml) or a string (env override)."""
