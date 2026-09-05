@@ -23,8 +23,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${ENV_FILE:-$SCRIPT_DIR/.env}"
 BASE="http://localhost:${PORT}"
 
-# 0700 by construction, so the /health body (which embeds the raw provider exception
-# when unhealthy) is neither world-readable nor writable at a predictable path.
+# Keep 0700 permissions so health and round-trip responses are neither world-readable
+# nor writable at a predictable path.
 TMPDIR_RUN="$(mktemp -d)" || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
 # Only tear down a container this run actually started: the name is fixed, so an early
 # exit (a failed pull, or a `docker run` that lost a name race) must not reap someone
@@ -106,10 +106,17 @@ fi
 # --- FULL: /health (live LLM ping -> 200/503) ---
 echo "==> [full] GET /health (live LLM probe)"
 code=$(curl -s "${CURL_CONNECT[@]}" --max-time 120 -o "$TMPDIR_RUN/health.json" -w '%{http_code}' "$BASE/health")
-# On 503 the body is a raw provider exception (it can name the endpoint), which is
-# exactly the diagnostic you want here - just don't paste it into a public issue.
+# On 503 the body is intentionally generic. Container logs can contain sensitive
+# details, so only print them when the caller explicitly opts in.
 cat "$TMPDIR_RUN/health.json"; echo
-[[ "$code" == "200" ]] || fail "/health returned $code (expected 200) — check LLM creds"
+if [[ "$code" != "200" ]]; then
+  if [[ "${SMOKE_TEST_DUMP_LOGS:-0}" == "1" ]]; then
+    docker logs "$CONTAINER" 2>&1 | tail -40
+  else
+    echo "    Set SMOKE_TEST_DUMP_LOGS=1 to print container logs (may contain sensitive data)." >&2
+  fi
+  fail "/health returned $code (expected 200) — check LLM creds"
+fi
 
 # --- FULL: SendMessage review on an inline diff (no PR URL / GitHub token needed) ---
 # A2A 1.0 wire contract: the `A2A-Version: 1.0` header is REQUIRED (the server treats a

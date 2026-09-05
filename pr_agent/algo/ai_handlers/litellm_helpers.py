@@ -60,7 +60,14 @@ def _stream_usage(chunk):
     return None
 
 
-async def _handle_streaming_response(response, model=None):
+async def _handle_streaming_response(
+    response,
+    model=None,
+    *,
+    allow_empty_content=False,
+    include_exception_details=True,
+    close_timeout=None,
+):
     """
     Handle streaming response from acompletion and collect the full response.
 
@@ -73,6 +80,7 @@ async def _handle_streaming_response(response, model=None):
     full_response = ""
     finish_reason = None
     finalized_usage = None
+    received_reasoning = False
 
     try:
         async for chunk in response:
@@ -83,14 +91,30 @@ async def _handle_streaming_response(response, model=None):
                 choice = chunk.choices[0]
                 delta = choice.delta
                 content = getattr(delta, 'content', None)
+                if getattr(delta, "reasoning_content", None):
+                    received_reasoning = True
                 if content:
                     full_response += content
                 if choice.finish_reason:
                     finish_reason = choice.finish_reason
     except Exception as e:
-        get_logger().error(f"Error handling streaming response: {e}")
+        exception_details = str(e) if include_exception_details else type(e).__name__
+        get_logger().error(f"Error handling streaming response: {exception_details}")
         raise
+    finally:
+        close_stream = getattr(response, "aclose", None)
+        if callable(close_stream):
+            try:
+                if close_timeout is None:
+                    await close_stream()
+                else:
+                    async with asyncio.timeout(close_timeout):
+                        await close_stream()
+            except Exception as e:
+                get_logger().debug(f"Failed to close streaming response: {type(e).__name__}")
 
+    if not full_response and allow_empty_content and (received_reasoning or finish_reason is not None):
+        return full_response, finish_reason, MockResponse(full_response, finish_reason, finalized_usage, model)
     if not full_response and finish_reason is None:
         get_logger().warning("Streaming response resulted in empty content with no finish reason")
         raise openai.APIError("Empty streaming response received without proper completion")
@@ -128,24 +152,31 @@ class MockResponse:
         return data
 
 
-def _get_azure_ad_token():
+def _get_azure_ad_credential(settings):
+    """Create an Azure AD credential for one handler/request context."""
+    from azure.identity import ClientSecretCredential
+
+    return ClientSecretCredential(
+        tenant_id=settings.azure_ad.tenant_id,
+        client_id=settings.azure_ad.client_id,
+        client_secret=settings.azure_ad.client_secret,
+    )
+
+
+def _get_azure_ad_token(credential):
     """
     Generates an access token using Azure AD credentials from settings.
     Returns:
         str: The access token
     """
-    from azure.identity import ClientSecretCredential
+    if credential is None:
+        raise ValueError("Azure AD credential is required for request-local token resolution")
     try:
-        credential = ClientSecretCredential(
-            tenant_id=get_settings().azure_ad.tenant_id,
-            client_id=get_settings().azure_ad.client_id,
-            client_secret=get_settings().azure_ad.client_secret
-        )
         # Get token for Azure OpenAI service
         token = credential.get_token("https://cognitiveservices.azure.com/.default")
         return token.token
     except Exception as e:
-        get_logger().error(f"Failed to get Azure AD token: {e}")
+        get_logger().error(f"Failed to get Azure AD token: {type(e).__name__}")
         raise
 
 

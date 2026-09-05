@@ -16,11 +16,13 @@ import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_handler
 # credential path (entered when AWS_USE_IMDS is set) writes the AWS_* variables,
 # and OPENAI_API_KEY influences the litellm.api_key fallback.
 _HANDLER_ENV_VARS = (
+    *litellm_handler.AWS_CREDENTIAL_CHAIN_ENV_VARS,
     "AWS_USE_IMDS",
     "AWS_ACCESS_KEY_ID",
     "AWS_SECRET_ACCESS_KEY",
     "AWS_SESSION_TOKEN",
     "AWS_REGION_NAME",
+    "AWS_BEARER_TOKEN_BEDROCK",
     "OPENAI_API_KEY",
 )
 
@@ -28,11 +30,12 @@ _HANDLER_ENV_VARS = (
 @pytest.fixture(autouse=True)
 def _restore_litellm_globals():
     """LiteLLMAIHandler.__init__ mutates global litellm/openai state and, when
-    AWS_USE_IMDS is set, os.environ; snapshot and restore both, and drop
-    AWS_USE_IMDS so the AWS credential path never runs in these tests."""
+    AWS_USE_IMDS is set, os.environ; snapshot and restore both, and clear the
+    AWS credential environment so these tests remain deterministic."""
     saved = (litellm.api_key, getattr(litellm, "openai_key", None), openai.api_key)
     saved_env = {name: os.environ.get(name) for name in _HANDLER_ENV_VARS}
-    os.environ.pop("AWS_USE_IMDS", None)
+    for name in _HANDLER_ENV_VARS:
+        os.environ.pop(name, None)
     try:
         yield
     finally:
@@ -49,6 +52,11 @@ def _restore_litellm_globals():
 def _make_settings(config_values=None):
     """Minimal settings whose `config.get(key, ...)` serves the given dict."""
     config_values = config_values or {}
+    settings_values = {
+        "aws.AWS_ACCESS_KEY_ID": "test-access-key",
+        "aws.AWS_SECRET_ACCESS_KEY": "test-secret-key",
+        "aws.AWS_REGION_NAME": "us-east-1",
+    }
 
     class Config:
         reasoning_effort = None
@@ -66,7 +74,7 @@ def _make_settings(config_values=None):
         "litellm": type("LiteLLM", (), {
             "get": lambda self, key, default=None: default,
         })(),
-        "get": lambda self, key, default=None: default,
+        "get": lambda self, key, default=None: settings_values.get(key, default),
     })()
 
 

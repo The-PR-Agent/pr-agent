@@ -298,6 +298,10 @@ Set `AWS_USE_IMDS=true` in the environment. PR-Agent will resolve credentials vi
 | EKS pod with IRSA | Web identity token + STS |
 | Lambda function | Runtime-injected credentials |
 
+The same opt-in is required for other boto3 provider-chain sources, including `AWS_PROFILE` and shared credentials
+files. LiteLLM-specific `AWS_PROFILE_NAME` and `AWS_ROLE_NAME` selectors are not supported because they can override
+request-local credentials; unset them and use `AWS_USE_IMDS=true` instead.
+
 Minimal GitHub Actions workflow (no AWS secret keys required):
 
 ```yaml
@@ -320,7 +324,7 @@ The IAM role must have `bedrock:InvokeModel` permission on the target model ARN,
 }
 ```
 
-If you also configure static keys in `[aws]`, they serve as an automatic fallback: if the ambient credentials fail a Bedrock call (e.g., the role lacks `bedrock:InvokeModel`), PR-Agent retries with the static keys and logs a warning.
+If you also configure static keys in `[aws]`, they serve as an automatic fallback when ambient credentials cannot be resolved or a Bedrock call fails with a credential error, such as an expired or invalid token. IAM authorization errors do not trigger this fallback.
 
 #### Custom Inference Profiles
 

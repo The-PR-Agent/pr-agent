@@ -1,3 +1,5 @@
+import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -5,6 +7,22 @@ import openai
 import pytest
 
 import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_handler
+
+
+@pytest.fixture(autouse=True)
+def isolate_aws_environment(monkeypatch):
+    environment_variables = set(litellm_handler.AWS_CREDENTIAL_CHAIN_ENV_VARS) | {
+        "AWS_USE_IMDS",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "AWS_REGION_NAME",
+        "AWS_REGION",
+        "AWS_DEFAULT_REGION",
+        "AWS_BEARER_TOKEN_BEDROCK",
+    }
+    for variable in environment_variables:
+        monkeypatch.delenv(variable, raising=False)
 
 
 class FakeBox:
@@ -29,7 +47,12 @@ class FakeSettings:
             model="gpt-4o",
         )
         self.litellm = FakeBox()
-        self._settings_values = settings_values or {}
+        self._settings_values = {
+            "aws.AWS_ACCESS_KEY_ID": "test-access-key",
+            "aws.AWS_SECRET_ACCESS_KEY": "test-secret-key",
+            "aws.AWS_REGION_NAME": "us-east-1",
+            **(settings_values or {}),
+        }
 
     def get(self, key, default=None):
         return self._settings_values.get(key, default)
@@ -87,6 +110,22 @@ async def test_chat_completion_scopes_model_id_to_classic_bedrock(monkeypatch, m
         assert "model_id" not in mock_call.call_args.kwargs
     else:
         assert mock_call.call_args.kwargs["model_id"] == expected_model_id
+
+
+@pytest.mark.asyncio
+async def test_health_probe_uses_snapshotted_classic_bedrock_model_id(monkeypatch):
+    active_settings = FakeSettings(settings_values={"litellm.model_id": "profile-a"})
+    monkeypatch.setattr(litellm_handler, "get_settings", lambda: active_settings)
+    handler = litellm_handler.LiteLLMAIHandler()
+    active_settings = FakeSettings(settings_values={"litellm.model_id": "profile-b"})
+    completion = AsyncMock(return_value=_mock_response())
+
+    await handler.probe_completion(
+        "bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0",
+        _completion=completion,
+    )
+
+    assert completion.call_args.kwargs["model_id"] == "profile-a"
 
 
 @pytest.mark.asyncio
@@ -393,10 +432,83 @@ async def test_get_completion_uses_streaming_for_required_models():
 
     assert mock_call.call_args.kwargs["stream"] is True
     assert mock_call.call_args.kwargs["stream_options"] == {"include_usage": True}
-    mock_stream.assert_awaited_once_with("stream", model="streaming-model")
+    mock_stream.assert_awaited_once_with(
+        "stream",
+        model="streaming-model",
+        close_timeout=litellm_handler.CANCELLATION_CLEANUP_SECONDS,
+    )
     assert resp == "streamed text"
     assert finish_reason == "stop"
     assert response_obj.dict()["choices"][0]["message"]["content"] == "streamed text"
+
+
+@pytest.mark.parametrize("model", ("azure/qwq-plus", "azure/openai/qwq-plus"))
+@pytest.mark.asyncio
+async def test_get_completion_preserves_streaming_requirement_after_azure_routing(model):
+    handler = litellm_handler.LiteLLMAIHandler.__new__(litellm_handler.LiteLLMAIHandler)
+    handler.streaming_required_models = ["openai/qwq-plus"]
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call, \
+            patch("pr_agent.algo.ai_handlers.litellm_ai_handler._handle_streaming_response",
+                  new_callable=AsyncMock) as mock_stream:
+        mock_call.return_value = "stream"
+        mock_stream.return_value = ("streamed text", "stop", MagicMock())
+
+        await handler._get_completion(model=model, messages=[])
+
+    assert mock_call.call_args.kwargs["stream"] is True
+
+
+@pytest.mark.asyncio
+async def test_get_completion_bounds_stream_close(monkeypatch):
+    handler = litellm_handler.LiteLLMAIHandler.__new__(litellm_handler.LiteLLMAIHandler)
+    handler.streaming_required_models = ["streaming-model"]
+    monkeypatch.setattr(litellm_handler, "CANCELLATION_CLEANUP_SECONDS", 0.01)
+
+    class StalledCloseStream:
+        def __init__(self):
+            self._consumed = False
+            self.close_started = asyncio.Event()
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if self._consumed:
+                raise StopAsyncIteration
+            self._consumed = True
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(content="streamed text", reasoning_content=None),
+                        finish_reason="stop",
+                    )
+                ],
+                usage=None,
+            )
+
+        async def aclose(self):
+            self.close_started.set()
+            await asyncio.Event().wait()
+
+    stalled_stream = StalledCloseStream()
+    with patch(
+        "pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion",
+        new_callable=AsyncMock,
+        return_value=stalled_stream,
+    ):
+        task = asyncio.create_task(handler._get_completion(model="streaming-model", messages=[]))
+        done, pending = await asyncio.wait({task}, timeout=0.3)
+
+    if pending:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert done == {task}
+    assert not pending
+    resp, finish_reason, _ = task.result()
+    assert stalled_stream.close_started.is_set()
+    assert resp == "streamed text"
+    assert finish_reason == "stop"
 
 
 def _empty_content_response(finish_reason="stop"):

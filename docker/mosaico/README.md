@@ -48,7 +48,8 @@ Endpoints (port `9000`):
   `A2A-Version: 1.0` header; the header is required, as the server treats a request
   without it as protocol 0.3 and rejects it. The reply comes back as a task artifact
   (`result.task.artifacts[].parts[].text`), not as a status message.
-- `GET /health` — a **live LLM connectivity probe** (200 healthy / 503 unhealthy)
+- `GET /health` — a **live LLM connectivity probe** (200 healthy / 503 unhealthy).
+  Failed probes return a generic response body instead of provider exception details.
 
 Env-var contract (MOSAICO agent requirements are defined in the demonstrator's
 [`docs/agent-requirements.md`](https://gitlab.eclipse.org/eclipse-research-labs/mosaico-project/mosaico-demonstrator/-/blob/main/docs/agent-requirements.md)):
@@ -134,7 +135,10 @@ Two outcomes:
 - **Container stays `unhealthy`, registration never runs.** `/health` is a live LLM probe and
   returns `503` on bad/missing credentials — this is intended (the healthcheck matches the
   peer solution agents' probe verbatim, and a registered card backed by a dead LLM is worse
-  than no registration). Check `API_BASE`/`API_KEY`/`MODEL_NAME`, not the compose file.
+  than no registration). Check `API_BASE`/`API_KEY`/`MODEL_NAME`, not the compose file. The
+  response intentionally omits provider details. When using the smoke test, set
+  `SMOKE_TEST_DUMP_LOGS=1` to print the last container log lines after a `/health` failure,
+  and treat that output as sensitive.
 - **Agent registers but the reference agent never reaches it.** The advertised card URL is
   `localhost`; see the `AGENT_CARD_HOST`/`AGENT_CARD_PORT` section above.
 - **The registration container itself can't fetch the agent card.** `01-compose.sh` falls back

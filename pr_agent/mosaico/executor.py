@@ -15,7 +15,7 @@ TaskStatusUpdateEvent), then failed().  The first event to the ActiveTask MUST b
 TaskArtifactUpdateEvent (not a TaskStatusUpdateEvent), otherwise the SDK raises
 "Agent should enqueue Task before TaskStatusUpdateEvent event".
 
-health_check issues a single, NON-retry-wrapped litellm probe."""
+health_check issues a NON-retry-wrapped litellm probe with at most one static AWS credential fallback."""
 import copy
 
 from a2a.server.agent_execution import AgentExecutor, RequestContext
@@ -24,7 +24,6 @@ from a2a.server.tasks import TaskUpdater
 from a2a.types import Part
 from starlette_context import context as sctx
 
-from pr_agent.algo import normalize_litellm_model
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.log import get_logger
 from pr_agent.mosaico.dispatch import route_and_run_result
@@ -85,38 +84,23 @@ class PRAgentExecutor(AgentExecutor):
 
 
 async def health_check() -> str:
-    """LLM-connectivity probe for /health. NO-RETRY: bypasses pr-agent's retry-wrapped
-    LiteLLMAIHandler.chat_completion (which would retry-hang a down LLM) and issues a
-    single litellm.acompletion, after applying the MOSAICO LLM settings."""
+    """LLM-connectivity probe for /health. Bypasses pr-agent's retry-wrapped
+    LiteLLMAIHandler.chat_completion and allows only one static AWS credential retry,
+    after applying the MOSAICO LLM settings."""
     try:
         import litellm
 
-        # Construct the handler purely for its side effect of applying pr-agent's LLM
-        # config (api_base/key/callbacks/etc.) onto the litellm module — do NOT call its
-        # retry-wrapped chat_completion.
+        # Construct the handler to snapshot request-local provider credentials and
+        # routing without using its retry-wrapped chat_completion.
         from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
+
         handler = LiteLLMAIHandler()
 
         model = get_settings().get("CONFIG.MODEL", None)
         if not model:
             return "Unhealthy: no model configured"
-
-        custom_llm_provider = str(
-            getattr(get_settings().litellm, "custom_llm_provider", "") or ""
-        ).strip().lower()
-        kwargs = {
-            "model": normalize_litellm_model(model, custom_llm_provider),
-            "messages": [{"role": "system", "content": "Say ping"}],
-            "max_tokens": 10,
-            "timeout": 10,
-        }
-        if custom_llm_provider:
-            kwargs["custom_llm_provider"] = custom_llm_provider
-        if getattr(handler, "api_base", None):
-            kwargs["api_base"] = handler.api_base
-
-        await litellm.acompletion(**kwargs)
+        await handler.probe_completion(model, _completion=litellm.acompletion)
         return "OK"
     except Exception as e:
-        get_logger().warning(f"MOSAICO health_check unhealthy: {e}")
-        return f"Unhealthy: {e}"
+        get_logger().warning(f"MOSAICO health_check unhealthy: {type(e).__name__}")
+        return "Unhealthy: LLM check failed"
