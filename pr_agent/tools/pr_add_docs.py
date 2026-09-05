@@ -104,6 +104,10 @@ class PRAddDocs:
         data = load_yaml(docs)
         if isinstance(data, list):
             data = {'Code Documentation': data}
+        if not isinstance(data, dict) or not isinstance(data.get('Code Documentation'), list):
+            get_logger().warning("The model did not return a Code Documentation list",
+                                 artifact={'prediction': docs})
+            return {'Code Documentation': []}
         return data
 
     def push_inline_docs(self, data):
