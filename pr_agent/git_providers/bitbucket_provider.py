@@ -690,19 +690,17 @@ class BitbucketProvider(GitProvider):
         return ""  # not implemented yet
 
     # bitbucket does not support labels
-    def publish_description(self, pr_title: str, description: str):
+    def publish_description(self, pr_title: str, description: str) -> None:
         payload_dict = {"description": description}
         if pr_title is not None:
             payload_dict["title"] = pr_title
         payload = json.dumps(payload_dict)
 
         response = requests.request("PUT", self.bitbucket_pull_request_api_url, headers=self.headers, data=payload)
-        try:
-            if response.status_code != 200:
-                get_logger().info(f"Failed to update description, error code: {response.status_code}")
-        except:
-            pass
-        return response
+        if response.status_code != 200:
+            message = f"Failed to update description, error code: {response.status_code}"
+            get_logger().error(message)
+            raise RuntimeError(message)
 
     # bitbucket does not support labels
     def publish_labels(self, pr_types: list):

@@ -15,6 +15,18 @@ from pr_agent.git_providers.azuredevops_provider import (
 from pr_agent.log import get_logger
 
 
+def test_publish_description_propagates_update_failure():
+    provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+    provider.workspace_slug = "my-project"
+    provider.repo_slug = "my-repo"
+    provider.pr_num = 1
+    provider.azure_devops_client = MagicMock()
+    provider.azure_devops_client.update_pull_request.side_effect = RuntimeError("permission denied")
+
+    with pytest.raises(RuntimeError, match="permission denied"):
+        provider.publish_description("AI title", "Updated description")
+
+
 class TestAzureDevopsProviderRepoContext:
     def test_get_repo_file_content_reads_from_target_commit(self):
         # Repo-context files must be read from the PR target (base) commit, matching

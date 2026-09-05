@@ -210,7 +210,16 @@ class PRDescription:
                     # anywhere in the body without depending on visible section
                     # headers that a human might quote.
                     pr_body = '<!-- pr-agent-generated -->\n' + pr_body
-                    self.git_provider.publish_description(title_to_publish, pr_body)
+                    try:
+                        self.git_provider.publish_description(title_to_publish, pr_body)
+                    except Exception:
+                        try:
+                            self.git_provider.publish_comment("Failed to update PR description")
+                        except Exception as publication_error:
+                            get_logger().exception(
+                                f"Failed to publish PR description failure result, error: {publication_error}"
+                            )
+                        raise
 
                     # publish final update message
                     if (get_settings().pr_description.final_update_message and not get_settings().config.get('is_auto_command', False)):
