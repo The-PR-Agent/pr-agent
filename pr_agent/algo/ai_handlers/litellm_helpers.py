@@ -2,6 +2,7 @@ import asyncio
 import inspect
 import json
 import sys
+from math import isfinite
 
 import httpx
 import litellm
@@ -130,6 +131,25 @@ class MockResponse:
             else:
                 data["usage"] = vars(self.usage).copy()
         return data
+
+
+def get_repetition_penalty():
+    """Return huggingface.repetition_penalty as a float, or None when it is unusable.
+
+    The value is read in LiteLLMAIHandler.__init__, before any handler exists to turn a bad
+    setting into a readable error, so an unreadable value must not raise there.
+    """
+    value = get_settings().get("HUGGINGFACE.REPETITION_PENALTY", None)
+    if value is None:
+        return None
+    try:
+        penalty = float(value)
+    except (TypeError, ValueError, OverflowError):
+        penalty = None
+    if penalty is None or not isfinite(penalty):
+        get_logger().warning(f"huggingface.repetition_penalty is not a usable number ({value!r}); ignoring it")
+        return None
+    return penalty
 
 
 def _get_azure_ad_token():
