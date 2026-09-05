@@ -1604,3 +1604,57 @@ def test_azure_raw_comment_order_uses_updates_and_thread_id_ties():
         assert [comment["body"] for comment in comments] == [
             "edited-newest", "tied-newer-thread", "tied-older-thread",
         ]
+
+
+class TestAzureDevopsProviderSuggestionFence:
+    """Regression tests for #2110: Azure DevOps has no committable suggestion blocks, so the
+    ```suggestion fence /improve emits was published verbatim and rendered as a raw block.
+    """
+
+    @staticmethod
+    def _committable_suggestion(relevant_file="/src/app.py"):
+        suggestion = _suggestion(relevant_file)
+        suggestion["body"] = "**Suggestion:** use a set [best practice]\n```suggestion\nvalues = set()\n```"
+        suggestion["original_suggestion"] = {
+            "existing_code": "values = []",
+            "improved_code": "values = set()",
+        }
+        return suggestion
+
+    def test_suggestion_fence_is_published_as_a_diff_block(self):
+        provider = _provider_with_diff("/src/app.py")
+
+        provider.publish_code_suggestions([self._committable_suggestion()])
+
+        body = _created_threads(provider)[-1].comments[0].content
+        assert "```suggestion" not in body
+        assert "```diff" in body
+        assert "-values = []" in body
+        assert "+values = set()" in body
+        assert body.startswith("**Suggestion:** use a set [best practice]")
+
+    def test_body_is_left_alone_when_there_is_no_original_suggestion(self):
+        provider = _provider_with_diff("/src/app.py")
+
+        provider.publish_code_suggestions([_suggestion("/src/app.py")])
+
+        assert _created_threads(provider)[-1].comments[0].content == "```suggestion\nfixed\n```"
+
+    def test_pr_level_fallback_also_carries_the_diff_block(self):
+        provider = _provider_with_diff("/src/app.py")
+        provider.publish_comment = MagicMock()
+
+        provider.publish_code_suggestions([self._committable_suggestion("/src/removed.py")])
+
+        published = provider.publish_comment.call_args[0][0]
+        assert "```diff" in published
+        assert "```suggestion" not in published
+
+    def test_unusable_original_suggestion_keeps_the_suggestion(self):
+        provider = _provider_with_diff("/src/app.py")
+        suggestion = self._committable_suggestion()
+        del suggestion["original_suggestion"]["improved_code"]
+
+        provider.publish_code_suggestions([suggestion])
+
+        assert "```suggestion" in _created_threads(provider)[-1].comments[0].content
