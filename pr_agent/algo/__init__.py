@@ -473,6 +473,8 @@ MAX_TOKENS = {
     "xai/grok-4.5-latest": 500000,
     "xai/grok-build-latest": 500000,
     "xai/grok-4.6": 500000,  # 500K context, but may be limited by config.max_model_tokens
+    "xai/grok-4.3": 1000000,  # 1M context, but may be limited by config.max_model_tokens
+    "xai/grok-4.3-latest": 1000000,
     "openrouter/x-ai/grok-4.5": 500000,
     "openrouter/x-ai/grok-4.6": 500000,
     'ollama/llama3': 4096,
@@ -570,6 +572,8 @@ SUPPORT_REASONING_EFFORT_MODELS = [
     "grok-4.5-latest",
     "grok-build-latest",
     "grok-4.6",
+    "grok-4.3",
+    "grok-4.3-latest",
 ]
 
 # Clamp OpenAI-only levels for always-on Grok reasoning; allow xhigh on 4.6+.
@@ -578,6 +582,9 @@ GROK_REASONING_EFFORT_LEVELS = {
     "grok-4.5-latest": {"low", "medium", "high"},
     "grok-build-latest": {"low", "medium", "high"},
     "grok-4.6": {"low", "medium", "high", "xhigh"},
+    # 4.3 mirrors 4.5: xhigh is granted only where it is published, which is 4.6.
+    "grok-4.3": {"low", "medium", "high"},
+    "grok-4.3-latest": {"low", "medium", "high"},
 }
 
 # Claude models that support "extended thinking" through the manual

@@ -984,6 +984,8 @@ class TestLiteLLMReasoningEffortGrok:
             ("xai/grok-build-latest", {"low", "medium", "high"}),
             ("xai/grok-4.6", {"low", "medium", "high", "xhigh"}),
             ("openrouter/x-ai/grok-4.6:nitro", {"low", "medium", "high", "xhigh"}),
+            ("xai/grok-4.3", {"low", "medium", "high"}),
+            ("xai/grok-4.3-latest", {"low", "medium", "high"}),
             ("xai/grok-3-mini", None),
         ],
     )
@@ -1001,6 +1003,9 @@ class TestLiteLLMReasoningEffortGrok:
             ("xai/grok-4.5", "max", "high"),
             ("xai/grok-4.5", "xhigh", "high"),
             ("xai/grok-4.5", "extreme", "extreme"),
+            ("xai/grok-4.3", "none", "low"),
+            ("xai/grok-4.3", "max", "high"),
+            ("xai/grok-4.3-latest", "xhigh", "high"),
             ("openrouter/google/gemini-2.5-pro", "xhigh", "xhigh"),
         ],
     )
