@@ -1479,7 +1479,8 @@ class PRCodeSuggestions:
 
             prediction_list = []
             chunk_errors = []
-            chunk_pairs = list(zip(self.patches_diff_list, self.patches_diff_list_no_line_numbers))
+            chunk_pairs = list(
+                zip(self.patches_diff_list, self.patches_diff_list_no_line_numbers, strict=True))
             self.total_chunk_count = len(chunk_pairs)
 
             # parallelize calls to AI:

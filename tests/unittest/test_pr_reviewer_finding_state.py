@@ -16,14 +16,14 @@ from pr_agent.algo.utils import (
     comment_matches_identity,
     get_pr_review_comment_identifiers,
 )
+from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
 from pr_agent.git_providers.bitbucket_provider import BitbucketProvider
 from pr_agent.git_providers.bitbucket_server_provider import BitbucketServerProvider
-from pr_agent.git_providers.gitea_provider import GiteaProvider
-from pr_agent.git_providers.gitlab_provider import GitLabProvider
-from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import GitProvider
+from pr_agent.git_providers.gitea_provider import GiteaProvider
 from pr_agent.git_providers.github_provider import GithubProvider
+from pr_agent.git_providers.gitlab_provider import GitLabProvider
 from pr_agent.tools.pr_reviewer import PRReviewer
 
 

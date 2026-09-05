@@ -227,7 +227,7 @@ class TestGitLabProvider:
 
     def test_has_create_or_update_pr_file_method(self, gitlab_provider):
         assert hasattr(gitlab_provider, "create_or_update_pr_file")
-        assert callable(getattr(gitlab_provider, "create_or_update_pr_file"))
+        assert callable(gitlab_provider.create_or_update_pr_file)
 
     def test_method_signature_compatibility(self, gitlab_provider):
         import inspect
