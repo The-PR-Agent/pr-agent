@@ -1,17 +1,22 @@
 import json
 import os
 import pathlib
+import re
 import shutil
+import string
 import subprocess
 import uuid
 from collections import Counter, namedtuple
 from pathlib import Path
 from tempfile import NamedTemporaryFile, mkdtemp
+from typing import Optional
 
 import requests
 import urllib3.util
 from git import Repo
 
+from pr_agent.algo.file_filter import filter_ignored
+from pr_agent.algo.language_handler import build_language_file_matcher
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import GitProvider
@@ -103,16 +108,51 @@ def prepare_repo(url: urllib3.util.Url, project, refspec):
     repo_url = (f"{url.scheme}://{url.auth}@{url.host}:{url.port}/{project}")
 
     directory = pathlib.Path(mkdtemp())
-    clone(repo_url, directory)
-    fetch(repo_url, refspec, cwd=directory)
-    checkout(cwd=directory)
+    try:
+        clone(repo_url, directory)
+        fetch(repo_url, refspec, cwd=directory)
+        checkout(cwd=directory)
+    except BaseException:
+        try:
+            shutil.rmtree(directory)
+        except OSError as cleanup_error:
+            get_logger().warning(
+                "Failed to clean up temp repo at {} after setup failed: {}",
+                directory, cleanup_error
+            )
+        raise
     return directory
+
+
+_ASK_HEADING_PREFIX = "### **"
+_ASK_HEADING_SUFFIX = "** ❓"
+_ESCAPED_MARKDOWN_PUNCTUATION = re.compile(
+    r"\\([" + re.escape(string.punctuation) + r"])"
+)
+
+
+def _convert_gerrit_ask_heading(line: str) -> str | None:
+    """Convert only the generated /ask heading to Gerrit's plain-text form."""
+    if not line.startswith(_ASK_HEADING_PREFIX) or not line.endswith(_ASK_HEADING_SUFFIX):
+        return None
+    escaped_heading = line[len(_ASK_HEADING_PREFIX):-len(_ASK_HEADING_SUFFIX)]
+    heading = _ESCAPED_MARKDOWN_PUNCTUATION.sub(
+        lambda match: match.group(1),
+        escaped_heading,
+    )
+    return f"{heading}❓"
 
 
 def adopt_to_gerrit_message(message):
     lines = message.splitlines()
     buf = []
-    for line in lines:
+    for line_number, line in enumerate(lines):
+        if line_number == 0:
+            ask_heading = _convert_gerrit_ask_heading(line.strip())
+            if ask_heading is not None:
+                buf.append(f"\n{ask_heading}:")
+                continue
+
         # remove markdown formatting
         line = (line.replace("*", "")
                 .replace("``", "`")
@@ -202,26 +242,24 @@ class GerritProvider(GitProvider):
         """
         return self.repo.branches[0].name
 
-    def get_issue_comments(self):
-        comments = list_comments(self.parsed_url, self.refspec)
-        Comments = namedtuple('Comments', ['reversed'])
+    def get_issue_comments(self) -> list:
         Comment = namedtuple('Comment', ['body'])
-        return Comments([Comment(c['message']) for c in reversed(comments)])
+        return [Comment(c['message']) for c in list_comments(self.parsed_url, self.refspec)]
 
     def get_pr_labels(self, update=False):
         raise NotImplementedError(
             'Getting labels is not implemented for the gerrit provider')
 
-    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False):
+    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
         raise NotImplementedError(
             'Adding reactions is not implemented for the gerrit provider')
 
-    def remove_reaction(self, issue_comment_id: int, reaction_id: int):
+    def remove_reaction(self, issue_comment_id: int, reaction_id: int) -> bool:
         raise NotImplementedError(
             'Removing reactions is not implemented for the gerrit provider')
 
-    def get_commit_messages(self):
-        return [self.repo.head.commit.message]
+    def get_commit_messages(self) -> str:
+        return self.repo.head.commit.message
 
     def get_repo_settings(self):
         try:
@@ -232,25 +270,31 @@ class GerritProvider(GitProvider):
             return b""
 
     def get_diff_files(self) -> list[FilePatchInfo]:
-        diffs = self.repo.head.commit.diff(
-            self.repo.head.commit.parents[0],  # previous commit
-            create_patch=True,
-            R=True
+        diffs = list(
+            self.repo.head.commit.diff(
+                self.repo.head.commit.parents[0],  # previous commit
+                create_patch=True,
+                R=True
+            )
         )
+        diffs = filter_ignored(diffs, "gerrit")
 
         diff_files = []
         for diff_item in diffs:
-            if diff_item.a_blob is not None:
-                original_file_content_str = (
-                    diff_item.a_blob.data_stream.read().decode('utf-8')
-                )
-            else:
-                original_file_content_str = ""  # empty file
-            if diff_item.b_blob is not None:
-                new_file_content_str = diff_item.b_blob.data_stream.read(). \
-                    decode('utf-8')
-            else:
-                new_file_content_str = ""  # empty file
+            filename = diff_item.b_path or diff_item.a_path
+            try:
+                if diff_item.a_blob is not None:
+                    original_file_content_str = diff_item.a_blob.data_stream.read().decode("utf-8")
+                else:
+                    original_file_content_str = ""  # empty file
+                if diff_item.b_blob is not None:
+                    new_file_content_str = diff_item.b_blob.data_stream.read().decode("utf-8")
+                else:
+                    new_file_content_str = ""  # empty file
+                patch = diff_item.diff.decode("utf-8")
+            except UnicodeDecodeError as e:
+                get_logger().warning(f"Skipping non-UTF-8 file in Gerrit diff: {filename!r} ({e})")
+                continue
             edit_type = EDIT_TYPE.MODIFIED
             if diff_item.new_file:
                 edit_type = EDIT_TYPE.ADDED
@@ -262,8 +306,8 @@ class GerritProvider(GitProvider):
                 FilePatchInfo(
                     original_file_content_str,
                     new_file_content_str,
-                    diff_item.diff.decode('utf-8'),
-                    diff_item.b_path,
+                    patch,
+                    filename,
                     edit_type=edit_type,
                     old_filename=None
                     if diff_item.a_path == diff_item.b_path
@@ -287,18 +331,21 @@ class GerritProvider(GitProvider):
         Calculate percentage of languages in repository. Used for hunk
         prioritisation.
         """
+        lang_map = get_settings().get("language_extension_map_org", {}) or {}
+        get_language = build_language_file_matcher(lang_map)
+
         # Get all files in repository
         filepaths = [Path(item.path) for item in
                      self.repo.tree().traverse() if item.type == 'blob']
-        # Identify language by file extension and count
-        lang_count = Counter(
-            ext.lstrip('.') for filepath in filepaths for ext in
-            [filepath.suffix.lower()])
+        # Identify language by filename and count
+        lang_count = Counter()
+        for filepath in filepaths:
+            language = get_language(filepath.name)
+            if language:
+                lang_count[language] += 1
         # Convert counts to percentages
-        total_files = len(filepaths)
-        lang_percentage = {lang: count / total_files * 100 for lang, count
-                           in lang_count.items()}
-        return lang_percentage
+        total = sum(lang_count.values()) or 1
+        return {lang: count / total * 100 for lang, count in lang_count.items()}
 
     def get_pr_description_full(self):
         return self.repo.head.commit.message
@@ -400,9 +447,36 @@ class GerritProvider(GitProvider):
         # but required by the interface
         pass
 
+    def cleanup(self):
+        """Remove the temporary cloned repository from disk."""
+        if self.repo_path and pathlib.Path(self.repo_path).exists():
+            try:
+                shutil.rmtree(self.repo_path)
+                get_logger().info("Cleaned up temp repo at {}", self.repo_path)
+            except (OSError, PermissionError) as e:
+                get_logger().warning(
+                    "Failed to clean up temp repo at {}: {}",
+                    self.repo_path, e
+                )
+
+    def __del__(self):
+        """Safety net: clean up temp repo if cleanup() was not called.
+
+        The server's finally block can only reach providers stored in
+        starlette_context. PRQuestions builds its own provider with
+        get_git_provider(), so an /ask request never registers there and
+        would leak its clone without this.
+        """
+        try:
+            self.cleanup()
+        except Exception as e:
+            get_logger().debug("Temp repo cleanup failed during __del__: {}", e)
+
     def remove_initial_comment(self):
-        # remove repo, cloned in previous steps
-        # shutil.rmtree(self.repo_path)
+        # Do NOT call cleanup() here — this method is invoked during the
+        # request lifecycle while the cloned repo is still needed by
+        # subsequent commands.  Actual cleanup happens in the server's
+        # finally block and in __del__ as a safety net.
         pass
 
     def remove_comment(self, comment):

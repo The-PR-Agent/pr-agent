@@ -19,9 +19,10 @@ class PullRequestCCMimic:
     This class mimics the PullRequest class from the PyGithub library for the CodeCommitProvider.
     """
 
-    def __init__(self, title: str, diff_files: List[FilePatchInfo]):
+    def __init__(self, title: str, diff_files: List[FilePatchInfo], targets=None):
         self.title = title
         self.diff_files = diff_files
+        self.targets = targets or []
         self.description = None
         self.source_commit = None
         self.source_branch = None  # the branch containing your new code changes
@@ -41,6 +42,9 @@ class CodeCommitFile:
         b_path: str,
         b_blob_id: str,
         edit_type: EDIT_TYPE,
+        repository_name: Optional[str] = None,
+        source_commit: Optional[str] = None,
+        destination_commit: Optional[str] = None,
     ):
         self.a_path = a_path
         self.a_blob_id = a_blob_id
@@ -48,6 +52,9 @@ class CodeCommitFile:
         self.b_blob_id = b_blob_id
         self.edit_type: EDIT_TYPE = edit_type
         self.filename = b_path if b_path else a_path
+        self.repository_name = repository_name
+        self.source_commit = source_commit
+        self.destination_commit = destination_commit
 
 
 class CodeCommitProvider(GitProvider):
@@ -76,7 +83,8 @@ class CodeCommitProvider(GitProvider):
             "create_inline_comment",
             "publish_inline_comments",
             "get_labels",
-            "gfm_markdown"
+            "gfm_markdown",
+            "markdown_backslash_escapes",
         ]:
             return False
         return True
@@ -91,13 +99,23 @@ class CodeCommitProvider(GitProvider):
             return self.git_files
 
         self.git_files = []
-        differences = self.codecommit_client.get_differences(self.repo_name, self.pr.destination_commit, self.pr.source_commit)
-        for item in differences:
-            self.git_files.append(CodeCommitFile(item.before_blob_path,
-                                                 item.before_blob_id,
-                                                 item.after_blob_path,
-                                                 item.after_blob_id,
-                                                 CodeCommitProvider._get_edit_type(item.change_type)))
+        for target in self._get_target_contexts():
+            differences = self.codecommit_client.get_differences(
+                target["repository_name"], target["destination_commit"], target["source_commit"]
+            )
+            for item in differences:
+                self.git_files.append(
+                    CodeCommitFile(
+                        item.before_blob_path,
+                        item.before_blob_id,
+                        item.after_blob_path,
+                        item.after_blob_id,
+                        CodeCommitProvider._get_edit_type(item.change_type),
+                        repository_name=target["repository_name"],
+                        source_commit=target["source_commit"],
+                        destination_commit=target["destination_commit"],
+                    )
+                )
         return self.git_files
 
     def get_diff_files(self) -> list[FilePatchInfo]:
@@ -117,23 +135,35 @@ class CodeCommitProvider(GitProvider):
 
         files = self.get_files()
         for diff_item in files:
-            patch_filename = ""
-            if diff_item.a_blob_id is not None:
-                patch_filename = diff_item.a_path
-                original_file_content_str = self.codecommit_client.get_file(
-                    self.repo_name, diff_item.a_path, self.pr.destination_commit)
-                if isinstance(original_file_content_str, (bytes, bytearray)):
-                    original_file_content_str = original_file_content_str.decode("utf-8")
-            else:
-                original_file_content_str = ""
+            # Skip "bad extensions" from language_extensions.toml, lockfiles and minified assets
+            if not is_valid_file(diff_item.filename):
+                continue
 
-            if diff_item.b_blob_id is not None:
-                patch_filename = diff_item.b_path
-                new_file_content_str = self.codecommit_client.get_file(self.repo_name, diff_item.b_path, self.pr.source_commit)
-                if isinstance(new_file_content_str, (bytes, bytearray)):
-                    new_file_content_str = new_file_content_str.decode("utf-8")
-            else:
-                new_file_content_str = ""
+            patch_filename = ""
+            repository_name = diff_item.repository_name or self.repo_name
+            destination_commit = diff_item.destination_commit or self.pr.destination_commit
+            source_commit = diff_item.source_commit or self.pr.source_commit
+            try:
+                if diff_item.a_blob_id:
+                    patch_filename = diff_item.a_path
+                    original_file_content_str = self.codecommit_client.get_file(
+                        repository_name, diff_item.a_path, destination_commit)
+                    if isinstance(original_file_content_str, (bytes, bytearray)):
+                        original_file_content_str = original_file_content_str.decode("utf-8")
+                else:
+                    original_file_content_str = ""
+
+                if diff_item.b_blob_id:
+                    patch_filename = diff_item.b_path
+                    new_file_content_str = self.codecommit_client.get_file(
+                        repository_name, diff_item.b_path, source_commit)
+                    if isinstance(new_file_content_str, (bytes, bytearray)):
+                        new_file_content_str = new_file_content_str.decode("utf-8")
+                else:
+                    new_file_content_str = ""
+            except UnicodeDecodeError as e:
+                get_logger().warning(f"Skipping non-UTF-8 file in CodeCommit diff: {diff_item.filename!r} ({e})")
+                continue
 
             patch = load_large_diff(patch_filename, new_file_content_str, original_file_content_str)
 
@@ -142,17 +172,13 @@ class CodeCommitProvider(GitProvider):
                 original_file_content_str,
                 new_file_content_str,
                 patch,
-                diff_item.b_path,
+                diff_item.filename,
                 edit_type=diff_item.edit_type,
                 old_filename=None
                 if diff_item.a_path == diff_item.b_path
                 else diff_item.a_path,
             )
-            # Only add valid files to the diff list
-            # "bad extensions" are set in the language_extensions.toml file
-            # a "valid file" is one that is not in the "bad extensions" list
-            if is_valid_file(info.filename):
-                self.diff_files.append(info)
+            self.diff_files.append(info)
 
         return self.diff_files
 
@@ -175,13 +201,14 @@ class CodeCommitProvider(GitProvider):
         pr_comment = CodeCommitProvider._add_additional_newlines(pr_comment)
 
         try:
-            self.codecommit_client.publish_comment(
-                repo_name=self.repo_name,
-                pr_number=self.pr_num,
-                destination_commit=self.pr.destination_commit,
-                source_commit=self.pr.source_commit,
-                comment=pr_comment,
-            )
+            for target in self._get_target_contexts():
+                self.codecommit_client.publish_comment(
+                    repo_name=target["repository_name"],
+                    pr_number=self.pr_num,
+                    destination_commit=target["destination_commit"],
+                    source_commit=target["source_commit"],
+                    comment=pr_comment,
+                )
         except Exception as e:
             raise ValueError(f"CodeCommit Cannot publish comment for PR: {self.pr_num}") from e
 
@@ -193,20 +220,24 @@ class CodeCommitProvider(GitProvider):
                 get_logger().warning(f"Skipping code suggestion #{counter}: Each suggestion must have 'body', 'relevant_file', 'relevant_lines_start' keys")
                 continue
 
-            # Publish the code suggestion to CodeCommit
-            try:
-                get_logger().debug(f"Code Suggestion #{counter} in file: {suggestion['relevant_file']}: {suggestion['relevant_lines_start']}")
-                self.codecommit_client.publish_comment(
-                    repo_name=self.repo_name,
-                    pr_number=self.pr_num,
-                    destination_commit=self.pr.destination_commit,
-                    source_commit=self.pr.source_commit,
-                    comment=suggestion["body"],
-                    annotation_file=suggestion["relevant_file"],
-                    annotation_line=suggestion["relevant_lines_start"],
-                )
-            except Exception as e:
-                raise ValueError(f"CodeCommit Cannot publish code suggestions for PR: {self.pr_num}") from e
+            target_contexts = self._get_target_contexts_for_file(suggestion["relevant_file"])
+            for target in target_contexts:
+                try:
+                    get_logger().debug(
+                        f"Code Suggestion #{counter} in file: {suggestion['relevant_file']}: "
+                        f"{suggestion['relevant_lines_start']} for repository: {target['repository_name']}"
+                    )
+                    self.codecommit_client.publish_comment(
+                        repo_name=target["repository_name"],
+                        pr_number=self.pr_num,
+                        destination_commit=target["destination_commit"],
+                        source_commit=target["source_commit"],
+                        comment=suggestion["body"],
+                        annotation_file=suggestion["relevant_file"],
+                        annotation_line=suggestion["relevant_lines_start"],
+                    )
+                except Exception as e:
+                    raise ValueError(f"CodeCommit Cannot publish code suggestions for PR: {self.pr_num}") from e
 
             counter += 1
 
@@ -297,11 +328,14 @@ class CodeCommitProvider(GitProvider):
     def get_repo_settings(self):
         # a local ".pr_agent.toml" settings file is optional
         settings_filename = ".pr_agent.toml"
-        return self.codecommit_client.get_file(self.repo_name, settings_filename, self.pr.source_commit, optional=True)
+        target = self._get_target_contexts()[0]
+        return self.codecommit_client.get_file(
+            target["repository_name"], settings_filename, target["source_commit"], optional=True
+        )
 
     def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
         get_logger().info("CodeCommit provider does not support eyes reaction yet")
-        return True
+        return None
 
     def remove_reaction(self, issue_comment_id: int, reaction_id: int) -> bool:
         get_logger().info("CodeCommit provider does not support removing reactions yet")
@@ -367,16 +401,9 @@ class CodeCommitProvider(GitProvider):
         if len(response.targets) == 0:
             raise ValueError(f"No files found in CodeCommit PR: {self.pr_num}")
 
-        # TODO: implement support for multiple targets in one CodeCommit PR
-        #       for now, we are only using the first target in the PR
-        if len(response.targets) > 1:
-            get_logger().warning(
-                "Multiple targets in one PR is not supported for CodeCommit yet. Continuing, using the first target only..."
-            )
-
         # Return our object that mimics PullRequest class from the PyGithub library
         # (This strategy was copied from the LocalGitProvider)
-        mimic = PullRequestCCMimic(response.title, self.diff_files)
+        mimic = PullRequestCCMimic(response.title, self.diff_files, targets=response.targets)
         mimic.description = response.description
         mimic.source_commit = response.targets[0].source_commit
         mimic.source_branch = response.targets[0].source_branch
@@ -385,7 +412,56 @@ class CodeCommitProvider(GitProvider):
 
         return mimic
 
-    def get_commit_messages(self):
+    def _get_target_contexts(self):
+        """Return the CodeCommit comparisons represented by this pull request.
+
+        CodeCommit can associate one pull request with multiple repository/branch
+        targets. Keep a scalar fallback for callers and tests that construct the
+        legacy PR mimic directly.
+        """
+        targets = getattr(self.pr, "targets", None) or []
+        if not targets:
+            return [{
+                "repository_name": self.repo_name,
+                "source_commit": self.pr.source_commit,
+                "destination_commit": self.pr.destination_commit,
+            }]
+
+        return [
+            {
+                "repository_name": getattr(target, "repository_name", "") or self.repo_name,
+                "source_commit": target.source_commit,
+                "destination_commit": target.destination_commit,
+            }
+            for target in targets
+        ]
+
+    def _get_target_contexts_for_file(self, filename: str):
+        """Return target comparisons whose CodeCommit diff contains ``filename``.
+
+        Suggestions are tied to a file comparison. Publishing an annotation to
+        every target would fail when only one target changed that path, so route
+        it to matching target comparisons and retain the legacy first-target
+        fallback for malformed or synthetic suggestions.
+        """
+        normalized_filename = filename.lstrip("/")
+        matching_contexts = []
+        for diff_file in self.get_files():
+            paths = {diff_file.a_path, diff_file.b_path}
+            normalized_paths = {path.lstrip("/") for path in paths if path}
+            if filename not in paths and normalized_filename not in normalized_paths:
+                continue
+            context = {
+                "repository_name": diff_file.repository_name or self.repo_name,
+                "source_commit": diff_file.source_commit or self.pr.source_commit,
+                "destination_commit": diff_file.destination_commit or self.pr.destination_commit,
+            }
+            if context not in matching_contexts:
+                matching_contexts.append(context)
+
+        return matching_contexts or self._get_target_contexts()[:1]
+
+    def get_commit_messages(self) -> str:
         return ""  # not implemented yet
 
     @staticmethod

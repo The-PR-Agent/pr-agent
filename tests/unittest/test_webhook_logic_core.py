@@ -1,13 +1,16 @@
 import copy
 import importlib
+import json
 from types import SimpleNamespace
 
+import httpx
 import pytest
-from starlette.testclient import TestClient
+from starlette.background import BackgroundTasks
+from starlette_context import request_cycle_context
 
 from pr_agent.config_loader import get_settings
 from pr_agent.identity_providers.identity_provider import Eligibility
-from pr_agent.servers import bitbucket_server_webhook, github_app
+from pr_agent.servers import bitbucket_server_webhook, gitea_app, github_app
 
 
 @pytest.fixture
@@ -48,6 +51,56 @@ def _bitbucket_server_payload(**overrides):
     return payload
 
 
+class _StubRequest:
+    """Minimal stand-in for a starlette Request, exposing only what handle_webhook reads."""
+
+    def __init__(self, payload: dict):
+        self._payload = payload
+        self.headers = {}
+
+    async def json(self):
+        return self._payload
+
+    async def body(self):
+        return json.dumps(self._payload).encode()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event_key", ["pr:from_ref_updated", "repo:refs_changed"])
+async def test_bitbucket_server_handle_webhook_accepts_push_trigger_event_keys(event_key, monkeypatch):
+    # Regression test: "pr:from_ref_updated" used to be excluded from this branch and
+    # fell through to the "Unsupported event" 400 response instead of running push commands.
+    settings = get_settings()
+    original_webhook_secret = settings.get("BITBUCKET_SERVER.WEBHOOK_SECRET", None)
+    original_handle_push_trigger = settings.get("BITBUCKET_SERVER.HANDLE_PUSH_TRIGGER", None)
+    settings.set("BITBUCKET_SERVER.WEBHOOK_SECRET", None)
+    settings.set("BITBUCKET_SERVER.HANDLE_PUSH_TRIGGER", True)
+
+    monkeypatch.setattr(bitbucket_server_webhook, "apply_repo_settings", lambda url: None)
+    monkeypatch.setattr(bitbucket_server_webhook, "should_process_pr_logic", lambda data: True)
+    monkeypatch.setattr(
+        bitbucket_server_webhook,
+        "_get_commands_list_from_settings",
+        lambda key: ["/review"] if key == "BITBUCKET_SERVER.PUSH_COMMANDS" else [],
+    )
+
+    payload = _bitbucket_server_payload()
+    payload["eventKey"] = event_key
+    request = _StubRequest(payload)
+    background_tasks = BackgroundTasks()
+
+    try:
+        with request_cycle_context({}):
+            response = await bitbucket_server_webhook.handle_webhook(background_tasks, request)
+    finally:
+        settings.set("BITBUCKET_SERVER.WEBHOOK_SECRET", original_webhook_secret)
+        settings.set("BITBUCKET_SERVER.HANDLE_PUSH_TRIGGER", original_handle_push_trigger)
+
+    assert response.status_code == 200
+    assert json.loads(response.body)["message"] == "success"
+    assert len(background_tasks.tasks) == 1
+
+
 def _gitlab_payload(**object_attributes):
     return {
         "object_attributes": {
@@ -60,6 +113,14 @@ def _gitlab_payload(**object_attributes):
         "project": {"path_with_namespace": "org/repo"},
         "user": {"username": "alice", "name": "Alice"},
     }
+
+
+async def _post_gitlab_webhook(app, data):
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        return await client.post(
+            "/webhook", headers={"X-Gitlab-Token": "secret-id"}, json=data
+        )
 
 
 def test_bitbucket_server_should_process_pr_logic_ignores_author_title_and_branch():
@@ -101,14 +162,15 @@ def test_bitbucket_server_should_process_pr_logic_ignores_author_title_and_branc
         settings.set("CONFIG.IGNORE_PR_TARGET_BRANCHES", original["ignore_pr_target_branches"])
 
 
-def test_bitbucket_server_process_command_applies_repo_settings_and_filters_args(monkeypatch):
+def test_bitbucket_server_process_command_applies_repo_settings_before_preparing_command(monkeypatch):
     calls = []
 
     monkeypatch.setattr(bitbucket_server_webhook, "apply_repo_settings", lambda url: calls.append(("repo", url)))
+    prepared = []
     monkeypatch.setattr(
         bitbucket_server_webhook,
-        "update_settings_from_args",
-        lambda args: [arg for arg in args if not arg.startswith("--config.")],
+        "prepare_command",
+        lambda command: prepared.append(command) or ["/review"],
     )
 
     command = bitbucket_server_webhook._process_command(
@@ -117,7 +179,8 @@ def test_bitbucket_server_process_command_applies_repo_settings_and_filters_args
     )
 
     assert calls == [("repo", "https://example/pr/1")]
-    assert command == "/review --pr_reviewer.extra_instructions=test"
+    assert prepared == ["/review --config.temperature=0 --pr_reviewer.extra_instructions=test"]
+    assert command == ["/review"]
 
 
 def test_bitbucket_server_to_list_rejects_non_list_strings():
@@ -152,6 +215,12 @@ def test_gitlab_should_process_pr_logic_ignores_labels_and_branches(gitlab_webho
         assert gitlab_webhook_module.should_process_pr_logic(
             _gitlab_payload(target_branch="legacy")
         ) is False
+
+        settings.set("CONFIG.IGNORE_PR_TITLE", ["^Auto:"])
+        for nullable_field in ("source_branch", "target_branch", "labels"):
+            assert gitlab_webhook_module.should_process_pr_logic(
+                _gitlab_payload(title="Auto: bump deps", **{nullable_field: None})
+            ) is False
     finally:
         settings.set("CONFIG.IGNORE_REPOSITORIES", original["ignore_repositories"])
         settings.set("CONFIG.IGNORE_PR_AUTHORS", original["ignore_pr_authors"])
@@ -182,13 +251,18 @@ class RecordingAgent:
         self.commands.append(command)
 
 
-async def _run_github_pr_commands(monkeypatch, repo_setting, action="opened", draft=True):
+async def _run_github_pr_commands(
+    monkeypatch, repo_setting, action="opened", draft=True, configured_commands=None
+):
     # draft=None omits the field from the payload.
     settings = get_settings()
     original_github_app = copy.deepcopy(settings.get("GITHUB_APP"))
     original_is_auto_command = settings.get("CONFIG.IS_AUTO_COMMAND")
     settings.set("GITHUB_APP.HANDLE_PR_ACTIONS", ["opened", "reopened", "ready_for_review"])
-    settings.set("GITHUB_APP.PR_COMMANDS", ["/review"])
+    settings.set(
+        "GITHUB_APP.PR_COMMANDS",
+        configured_commands if configured_commands is not None else ["/review"],
+    )
     # Prove the repo setting, not the global default, decides.
     settings.set("GITHUB_APP.FEEDBACK_ON_DRAFT_PR", not repo_setting)
 
@@ -235,8 +309,8 @@ async def _run_github_pr_commands(monkeypatch, repo_setting, action="opened", dr
         ("opened", True, False, []),
         # A missing draft field defaults to draft and is rejected.
         ("opened", None, False, []),
-        ("opened", True, True, ["/review"]),
-        ("ready_for_review", False, False, ["/review"]),
+        ("opened", True, True, [["/review"]]),
+        ("ready_for_review", False, False, [["/review"]]),
         ("ready_for_review", False, True, []),
     ],
 )
@@ -251,7 +325,276 @@ async def test_github_automatic_feedback_follows_draft_setting(
     assert repo_settings_calls == 1
 
 
-def _run_gitlab_pr_commands(module, monkeypatch, draft, repo_setting, event="open"):
+@pytest.mark.asyncio
+async def test_github_automatic_feedback_preserves_quoted_command_arguments(monkeypatch):
+    commands, repo_settings_calls = await _run_github_pr_commands(
+        monkeypatch,
+        repo_setting=True,
+        configured_commands=['/ask "why is this change risky?"'],
+    )
+
+    assert commands == [["/ask", "why is this change risky?"]]
+    assert repo_settings_calls == 1
+
+
+def _github_review_event(action="submitted", state="changes_requested", review_author_type="User"):
+    return {
+        "action": action,
+        "review": {"state": state, "user": {"type": review_author_type}},
+        "pull_request": {
+            "url": "https://api.github.com/repos/org/repo/pulls/1",
+            "state": "open",
+            "draft": False,
+            "title": "Regular PR",
+            "labels": [],
+            "head": {"ref": "feature/cache"},
+            "base": {"ref": "main"},
+        },
+        "sender": {"login": "alice", "id": 1, "type": "User"},
+        "repository": {"full_name": "org/repo"},
+    }
+
+
+def test_matches_review_state_is_case_insensitive_and_handles_empty_values():
+    assert github_app.matches_review_state(" CHANGES_REQUESTED ", ["changes_requested"])
+    assert github_app.matches_review_state("approved", "approved")
+    assert not github_app.matches_review_state("approved", [])
+    assert not github_app.matches_review_state("", ["approved"])
+
+
+@pytest.mark.asyncio
+async def test_github_review_submission_is_disabled_without_review_commands(monkeypatch):
+    settings = get_settings()
+    original_github_app = copy.deepcopy(settings.get("GITHUB_APP"))
+    original_is_auto_command = settings.get("CONFIG.IS_AUTO_COMMAND")
+    settings.set("GITHUB_APP.REVIEW_COMMANDS", [])
+    settings.set("GITHUB_APP.REVIEW_STATES", ["changes_requested"])
+    settings.set("GITHUB_APP.REVIEW_AUTHOR_TYPES", ["User"])
+
+    agent = RecordingAgent()
+    monkeypatch.setattr(github_app, "apply_repo_settings", lambda _url: None)
+    monkeypatch.setattr(github_app, "should_process_pr_logic", lambda _body: True)
+    monkeypatch.setattr(github_app, "PRAgent", lambda: agent)
+    monkeypatch.setattr(
+        github_app,
+        "get_identity_provider",
+        lambda: SimpleNamespace(verify_eligibility=lambda *args, **kwargs: Eligibility.ELIGIBLE),
+    )
+
+    try:
+        await github_app.handle_request(_github_review_event(), "pull_request_review")
+    finally:
+        settings.set("GITHUB_APP", original_github_app)
+        settings.set("CONFIG.IS_AUTO_COMMAND", original_is_auto_command)
+
+    assert agent.commands == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["edited", "dismissed"])
+async def test_github_review_submission_ignores_non_submitted_actions(monkeypatch, action):
+    settings = get_settings()
+    original_github_app = copy.deepcopy(settings.get("GITHUB_APP"))
+    original_is_auto_command = settings.get("CONFIG.IS_AUTO_COMMAND")
+    settings.set("GITHUB_APP.REVIEW_COMMANDS", ["/review"])
+    settings.set("GITHUB_APP.REVIEW_STATES", ["changes_requested"])
+    settings.set("GITHUB_APP.REVIEW_AUTHOR_TYPES", ["User"])
+
+    agent = RecordingAgent()
+    monkeypatch.setattr(github_app, "should_process_pr_logic", lambda _body: True)
+    monkeypatch.setattr(github_app, "PRAgent", lambda: agent)
+
+    try:
+        await github_app.handle_request(_github_review_event(action=action), "pull_request_review")
+    finally:
+        settings.set("GITHUB_APP", original_github_app)
+        settings.set("CONFIG.IS_AUTO_COMMAND", original_is_auto_command)
+
+    assert agent.commands == []
+
+
+@pytest.mark.asyncio
+async def test_github_review_submission_runs_configured_commands(monkeypatch):
+    settings = get_settings()
+    original_github_app = copy.deepcopy(settings.get("GITHUB_APP"))
+    original_is_auto_command = settings.get("CONFIG.IS_AUTO_COMMAND")
+    settings.set("GITHUB_APP.REVIEW_COMMANDS", ["/review"])
+    settings.set("GITHUB_APP.REVIEW_STATES", ["changes_requested"])
+    settings.set("GITHUB_APP.REVIEW_AUTHOR_TYPES", ["User"])
+
+    agent = RecordingAgent()
+    monkeypatch.setattr(github_app, "apply_repo_settings", lambda _url: None)
+    monkeypatch.setattr(github_app, "PRAgent", lambda: agent)
+    monkeypatch.setattr(
+        github_app,
+        "get_identity_provider",
+        lambda: SimpleNamespace(verify_eligibility=lambda *args, **kwargs: Eligibility.ELIGIBLE),
+    )
+
+    try:
+        await github_app.handle_request(
+            {
+                "action": "submitted",
+                "review": {
+                    "state": "changes_requested",
+                    "body": "Please fix the validation.",
+                    "user": {"type": "User"},
+                },
+                "pull_request": {
+                    "url": "https://api.github.com/repos/org/repo/pulls/1",
+                    "state": "open",
+                    "draft": False,
+                    "title": "Regular PR",
+                    "labels": [],
+                    "head": {"ref": "feature/cache"},
+                    "base": {"ref": "main"},
+                },
+                "sender": {"login": "alice", "id": 1, "type": "User"},
+                "repository": {"full_name": "org/repo"},
+            },
+            "pull_request_review",
+        )
+    finally:
+        settings.set("GITHUB_APP", original_github_app)
+        settings.set("CONFIG.IS_AUTO_COMMAND", original_is_auto_command)
+
+    assert agent.commands == [["/review"]]
+
+
+@pytest.mark.asyncio
+async def test_github_review_submission_ignores_unconfigured_state(monkeypatch):
+    settings = get_settings()
+    original_github_app = copy.deepcopy(settings.get("GITHUB_APP"))
+    original_is_auto_command = settings.get("CONFIG.IS_AUTO_COMMAND")
+    settings.set("GITHUB_APP.REVIEW_COMMANDS", ["/review"])
+    settings.set("GITHUB_APP.REVIEW_STATES", ["changes_requested"])
+    settings.set("GITHUB_APP.REVIEW_AUTHOR_TYPES", ["User"])
+
+    agent = RecordingAgent()
+    monkeypatch.setattr(github_app, "apply_repo_settings", lambda _url: None)
+    monkeypatch.setattr(github_app, "PRAgent", lambda: agent)
+    monkeypatch.setattr(
+        github_app,
+        "get_identity_provider",
+        lambda: SimpleNamespace(verify_eligibility=lambda *args, **kwargs: Eligibility.ELIGIBLE),
+    )
+
+    try:
+        await github_app.handle_request(
+            {
+                "action": "submitted",
+                "review": {"state": "approved", "user": {"type": "User"}},
+                "pull_request": {
+                    "url": "https://api.github.com/repos/org/repo/pulls/1",
+                    "state": "open",
+                    "draft": False,
+                    "title": "Regular PR",
+                    "labels": [],
+                    "head": {"ref": "feature/cache"},
+                    "base": {"ref": "main"},
+                },
+                "sender": {"login": "alice", "id": 1, "type": "User"},
+                "repository": {"full_name": "org/repo"},
+            },
+            "pull_request_review",
+        )
+    finally:
+        settings.set("GITHUB_APP", original_github_app)
+        settings.set("CONFIG.IS_AUTO_COMMAND", original_is_auto_command)
+
+    assert agent.commands == []
+
+
+@pytest.mark.asyncio
+async def test_github_review_submission_ignores_unconfigured_author_type(monkeypatch):
+    settings = get_settings()
+    original_github_app = copy.deepcopy(settings.get("GITHUB_APP"))
+    original_is_auto_command = settings.get("CONFIG.IS_AUTO_COMMAND")
+    settings.set("GITHUB_APP.REVIEW_COMMANDS", ["/review"])
+    settings.set("GITHUB_APP.REVIEW_STATES", ["changes_requested"])
+    settings.set("GITHUB_APP.REVIEW_AUTHOR_TYPES", ["User"])
+
+    agent = RecordingAgent()
+    monkeypatch.setattr(github_app, "apply_repo_settings", lambda _url: None)
+    monkeypatch.setattr(github_app, "PRAgent", lambda: agent)
+    monkeypatch.setattr(
+        github_app,
+        "get_identity_provider",
+        lambda: SimpleNamespace(verify_eligibility=lambda *args, **kwargs: Eligibility.ELIGIBLE),
+    )
+
+    try:
+        await github_app.handle_request(
+            {
+                "action": "submitted",
+                "review": {"state": "changes_requested", "user": {"type": "Bot"}},
+                "pull_request": {
+                    "url": "https://api.github.com/repos/org/repo/pulls/1",
+                    "state": "open",
+                    "draft": False,
+                    "title": "Regular PR",
+                    "labels": [],
+                    "head": {"ref": "feature/cache"},
+                    "base": {"ref": "main"},
+                },
+                "sender": {"login": "review-bot", "id": 1, "type": "User"},
+                "repository": {"full_name": "org/repo"},
+            },
+            "pull_request_review",
+        )
+    finally:
+        settings.set("GITHUB_APP", original_github_app)
+        settings.set("CONFIG.IS_AUTO_COMMAND", original_is_auto_command)
+
+    assert agent.commands == []
+
+
+@pytest.mark.asyncio
+async def test_github_automatic_feedback_continues_after_invalid_command(monkeypatch):
+    commands, repo_settings_calls = await _run_github_pr_commands(
+        monkeypatch,
+        repo_setting=True,
+        configured_commands=['/ask "unterminated', "/review"],
+    )
+
+    assert commands == [["/review"]]
+    assert repo_settings_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_gitea_automatic_feedback_continues_after_invalid_command(monkeypatch):
+    settings = get_settings()
+    original_gitea = copy.deepcopy(settings.get("GITEA"))
+    original_is_auto_command = settings.get("CONFIG.IS_AUTO_COMMAND")
+    settings.set("GITEA.PR_COMMANDS", ['/ask "unterminated', "/review"])
+
+    agent = RecordingAgent()
+    body = {
+        "action": "opened",
+        "pull_request": {
+            "url": "https://gitea.example.com/org/repo/pulls/1",
+            "title": "Regular PR",
+            "labels": [],
+            "head": {"ref": "feature/cache"},
+            "base": {"ref": "main"},
+        },
+        "sender": {"login": "alice"},
+        "repository": {"full_name": "org/repo"},
+    }
+
+    monkeypatch.setattr(gitea_app, "apply_repo_settings", lambda _url: None)
+    try:
+        await gitea_app._perform_commands_gitea(
+            "pr_commands", agent, body, body["pull_request"]["url"]
+        )
+    finally:
+        settings.set("GITEA", original_gitea)
+        settings.set("CONFIG.IS_AUTO_COMMAND", original_is_auto_command)
+
+    assert agent.commands == [["/review"]]
+
+
+async def _run_gitlab_pr_commands(module, monkeypatch, draft, repo_setting, event="open"):
     settings = get_settings()
     original_is_auto_command = settings.get("CONFIG.IS_AUTO_COMMAND")
     settings.set("GITLAB.PR_COMMANDS", ["/review"])
@@ -288,10 +631,7 @@ def _run_gitlab_pr_commands(module, monkeypatch, draft, repo_setting, event="ope
     if event == "draft_ready":
         data["changes"] = {"draft": {"previous": True, "current": False}}
     try:
-        with TestClient(module.app) as client:
-            response = client.post(
-                "/webhook", headers={"X-Gitlab-Token": "secret-id"}, json=data
-            )
+        response = await _post_gitlab_webhook(module.app, data)
     finally:
         settings.set("CONFIG.IS_AUTO_COMMAND", original_is_auto_command)
 
@@ -299,21 +639,22 @@ def _run_gitlab_pr_commands(module, monkeypatch, draft, repo_setting, event="ope
     return agent.commands, repo_settings_calls
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("event", "draft", "feedback_on_draft_pr", "expected_commands"),
     [
         ("open", True, False, []),
-        ("open", True, True, ["/review"]),
-        ("open", False, False, ["/review"]),
+        ("open", True, True, [["/review"]]),
+        ("open", False, False, [["/review"]]),
         ("reopen", True, False, []),
-        ("reopen", True, True, ["/review"]),
+        ("reopen", True, True, [["/review"]]),
         ("update", True, False, []),
-        ("update", True, True, ["/review"]),
-        ("draft_ready", False, False, ["/review"]),
+        ("update", True, True, [["/review"]]),
+        ("draft_ready", False, False, [["/review"]]),
         ("draft_ready", False, True, []),
     ],
 )
-def test_gitlab_automatic_feedback_follows_draft_setting(
+async def test_gitlab_automatic_feedback_follows_draft_setting(
     gitlab_webhook_module,
     monkeypatch,
     event,
@@ -321,7 +662,7 @@ def test_gitlab_automatic_feedback_follows_draft_setting(
     feedback_on_draft_pr,
     expected_commands,
 ):
-    commands, repo_settings_calls = _run_gitlab_pr_commands(
+    commands, repo_settings_calls = await _run_gitlab_pr_commands(
         gitlab_webhook_module, monkeypatch, draft, feedback_on_draft_pr, event
     )
 
@@ -329,7 +670,8 @@ def test_gitlab_automatic_feedback_follows_draft_setting(
     assert repo_settings_calls == 1
 
 
-def test_gitlab_manual_feedback_on_draft_is_unaffected(gitlab_webhook_module, monkeypatch):
+@pytest.mark.asyncio
+async def test_gitlab_manual_feedback_on_draft_is_unaffected(gitlab_webhook_module, monkeypatch):
     settings = get_settings()
     settings.set("GITLAB.FEEDBACK_ON_DRAFT_PR", False)
 
@@ -357,10 +699,7 @@ def test_gitlab_manual_feedback_on_draft_is_unaffected(gitlab_webhook_module, mo
         }
     )
 
-    with TestClient(gitlab_webhook_module.app) as client:
-        response = client.post(
-            "/webhook", headers={"X-Gitlab-Token": "secret-id"}, json=data
-        )
+    response = await _post_gitlab_webhook(gitlab_webhook_module.app, data)
 
     assert response.status_code == 200
     assert agent.commands == ["/review"]

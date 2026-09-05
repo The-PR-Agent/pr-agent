@@ -9,6 +9,7 @@ from pr_agent.algo.inline_comment_dedup import (
     key_issue_fingerprint,
 )
 from pr_agent.algo.types import FilePatchInfo
+from pr_agent.algo.utils import PRReviewHeader, PRReviewIdentity
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
 from pr_agent.tools.pr_reviewer import PRReviewer
@@ -520,6 +521,369 @@ def test_should_publish_review_no_suggestions_respects_config():
         settings.pr_reviewer.publish_output_no_suggestions = original_publish_no_suggestions
 
 
+@pytest.mark.asyncio
+async def test_run_removes_its_progress_comment_when_quiet_output_suppresses_review(monkeypatch):
+    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+
+    progress_comment = MagicMock()
+    git_provider = MagicMock()
+    git_provider.get_files.return_value = ["app.py"]
+    git_provider.publish_comment.return_value = progress_comment
+    reviewer = _make_reviewer(git_provider)
+    reviewer.incremental = SimpleNamespace(is_incremental=False)
+    reviewer.vars = {}
+    reviewer.prediction = None
+    reviewer._prepare_pr_review = lambda: "No major issues detected"
+
+    async def fake_retry(prepare_fn, model_type=None):
+        reviewer.prediction = "prediction"
+
+    monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", AsyncMock())
+    monkeypatch.setattr(pr_reviewer_module, "retry_with_fallback_models", fake_retry)
+
+    settings = get_settings()
+    original = {
+        "publish_output": settings.config.publish_output,
+        "publish_output_no_suggestions": settings.pr_reviewer.publish_output_no_suggestions,
+        "is_auto_command": settings.config.get("is_auto_command", False),
+    }
+    try:
+        settings.config.publish_output = True
+        settings.config.is_auto_command = False
+        settings.pr_reviewer.publish_output_no_suggestions = False
+
+        await reviewer.run()
+    finally:
+        settings.config.publish_output = original["publish_output"]
+        settings.config.is_auto_command = original["is_auto_command"]
+        settings.pr_reviewer.publish_output_no_suggestions = original["publish_output_no_suggestions"]
+
+    git_provider.publish_comment.assert_called_once_with("Preparing review...", is_temporary=True)
+    git_provider.remove_comment.assert_called_once_with(progress_comment)
+    git_provider.remove_initial_comment.assert_not_called()
+    git_provider.publish_persistent_comment.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("propagate_tool_errors", [False, True])
+async def test_run_removes_its_progress_comment_when_review_generation_fails(
+        monkeypatch, propagate_tool_errors):
+    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+
+    progress_comment = MagicMock()
+    git_provider = MagicMock()
+    git_provider.get_files.return_value = ["app.py"]
+    git_provider.publish_comment.return_value = progress_comment
+    reviewer = _make_reviewer(git_provider)
+    reviewer.incremental = SimpleNamespace(is_incremental=False)
+    reviewer.vars = {}
+    reviewer.prediction = None
+
+    monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", AsyncMock())
+    review_error = RuntimeError("model unavailable")
+    monkeypatch.setattr(
+        pr_reviewer_module,
+        "retry_with_fallback_models",
+        AsyncMock(side_effect=review_error),
+    )
+
+    settings = get_settings()
+    original = {
+        "publish_output": settings.config.publish_output,
+        "is_auto_command": settings.config.get("is_auto_command", False),
+        "propagate_tool_errors": settings.config.get("propagate_tool_errors", False),
+    }
+    try:
+        settings.config.publish_output = True
+        settings.config.is_auto_command = False
+        settings.config.propagate_tool_errors = propagate_tool_errors
+
+        if propagate_tool_errors:
+            with pytest.raises(RuntimeError, match="model unavailable") as exc_info:
+                await reviewer.run()
+            assert exc_info.value is review_error
+        else:
+            await reviewer.run()
+    finally:
+        settings.config.publish_output = original["publish_output"]
+        settings.config.is_auto_command = original["is_auto_command"]
+        settings.config.propagate_tool_errors = original["propagate_tool_errors"]
+
+    assert git_provider.publish_comment.call_args_list == [
+        (("Preparing review...",), {"is_temporary": True}),
+        (("Failed to review PR",), {}),
+    ]
+    git_provider.remove_comment.assert_called_once_with(progress_comment)
+    git_provider.remove_initial_comment.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_publishes_failure_result_when_progress_comment_has_no_handle(monkeypatch):
+    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+
+    git_provider = MagicMock()
+    git_provider.get_files.return_value = ["app.py"]
+    git_provider.publish_comment.side_effect = [None, MagicMock()]
+    reviewer = _make_reviewer(git_provider)
+    reviewer.incremental = SimpleNamespace(is_incremental=False)
+    reviewer.vars = {}
+    reviewer.prediction = None
+
+    monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", AsyncMock())
+    monkeypatch.setattr(
+        pr_reviewer_module,
+        "retry_with_fallback_models",
+        AsyncMock(side_effect=RuntimeError("model unavailable")),
+    )
+
+    settings = get_settings()
+    original = {
+        "publish_output": settings.config.publish_output,
+        "is_auto_command": settings.config.get("is_auto_command", False),
+        "propagate_tool_errors": settings.config.get("propagate_tool_errors", False),
+    }
+    try:
+        settings.config.publish_output = True
+        settings.config.is_auto_command = False
+        settings.config.propagate_tool_errors = False
+
+        await reviewer.run()
+    finally:
+        settings.config.publish_output = original["publish_output"]
+        settings.config.is_auto_command = original["is_auto_command"]
+        settings.config.propagate_tool_errors = original["propagate_tool_errors"]
+
+    assert git_provider.publish_comment.call_args_list == [
+        (("Preparing review...",), {"is_temporary": True}),
+        (("Failed to review PR",), {}),
+    ]
+    git_provider.remove_comment.assert_not_called()
+    git_provider.remove_initial_comment.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_publishes_failure_result_when_review_fails_before_progress_comment():
+    review_error = RuntimeError("files unavailable")
+    git_provider = MagicMock()
+    git_provider.get_files.side_effect = review_error
+    reviewer = _make_reviewer(git_provider)
+
+    settings = get_settings()
+    original = {
+        "publish_output": settings.config.publish_output,
+        "is_auto_command": settings.config.get("is_auto_command", False),
+        "propagate_tool_errors": settings.config.get("propagate_tool_errors", False),
+    }
+    try:
+        settings.config.publish_output = True
+        settings.config.is_auto_command = False
+        settings.config.propagate_tool_errors = False
+
+        await reviewer.run()
+    finally:
+        settings.config.publish_output = original["publish_output"]
+        settings.config.is_auto_command = original["is_auto_command"]
+        settings.config.propagate_tool_errors = original["propagate_tool_errors"]
+
+    git_provider.publish_comment.assert_called_once_with("Failed to review PR")
+    git_provider.remove_comment.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("publish_output", "is_auto_command", "propagate_tool_errors"),
+    [
+        (False, False, False),
+        (False, False, True),
+        (True, True, False),
+        (True, True, True),
+    ],
+)
+async def test_run_does_not_publish_failure_result_when_output_disabled_or_auto(
+        monkeypatch, publish_output, is_auto_command, propagate_tool_errors):
+    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+
+    git_provider = MagicMock()
+    git_provider.get_files.return_value = ["app.py"]
+    reviewer = _make_reviewer(git_provider)
+    reviewer.incremental = SimpleNamespace(is_incremental=False)
+    reviewer.vars = {}
+    reviewer.prediction = None
+
+    review_error = RuntimeError("model unavailable")
+    monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", AsyncMock())
+    monkeypatch.setattr(
+        pr_reviewer_module,
+        "retry_with_fallback_models",
+        AsyncMock(side_effect=review_error),
+    )
+
+    settings = get_settings()
+    original = {
+        "publish_output": settings.config.publish_output,
+        "is_auto_command": settings.config.get("is_auto_command", False),
+        "propagate_tool_errors": settings.config.get("propagate_tool_errors", False),
+    }
+    try:
+        settings.config.publish_output = publish_output
+        settings.config.is_auto_command = is_auto_command
+        settings.config.propagate_tool_errors = propagate_tool_errors
+
+        if propagate_tool_errors:
+            with pytest.raises(RuntimeError, match="model unavailable") as exc_info:
+                await reviewer.run()
+            assert exc_info.value is review_error
+        else:
+            await reviewer.run()
+    finally:
+        settings.config.publish_output = original["publish_output"]
+        settings.config.is_auto_command = original["is_auto_command"]
+        settings.config.propagate_tool_errors = original["propagate_tool_errors"]
+
+    git_provider.publish_comment.assert_not_called()
+    git_provider.remove_comment.assert_not_called()
+    git_provider.remove_initial_comment.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_publishes_failure_result_when_progress_cleanup_fails(monkeypatch):
+    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+
+    progress_comment = MagicMock()
+    git_provider = MagicMock()
+    git_provider.get_files.return_value = ["app.py"]
+    git_provider.publish_comment.return_value = progress_comment
+    git_provider.remove_comment.side_effect = RuntimeError("cleanup failed")
+    reviewer = _make_reviewer(git_provider)
+    reviewer.incremental = SimpleNamespace(is_incremental=False)
+    reviewer.vars = {}
+    reviewer.prediction = None
+
+    review_error = RuntimeError("model unavailable")
+    monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", AsyncMock())
+    monkeypatch.setattr(
+        pr_reviewer_module,
+        "retry_with_fallback_models",
+        AsyncMock(side_effect=review_error),
+    )
+
+    settings = get_settings()
+    original = {
+        "publish_output": settings.config.publish_output,
+        "is_auto_command": settings.config.get("is_auto_command", False),
+        "propagate_tool_errors": settings.config.get("propagate_tool_errors", False),
+    }
+    try:
+        settings.config.publish_output = True
+        settings.config.is_auto_command = False
+        settings.config.propagate_tool_errors = True
+
+        with pytest.raises(RuntimeError, match="model unavailable") as exc_info:
+            await reviewer.run()
+        assert exc_info.value is review_error
+    finally:
+        settings.config.publish_output = original["publish_output"]
+        settings.config.is_auto_command = original["is_auto_command"]
+        settings.config.propagate_tool_errors = original["propagate_tool_errors"]
+
+    assert git_provider.publish_comment.call_args_list == [
+        (("Preparing review...",), {"is_temporary": True}),
+        (("Failed to review PR",), {}),
+    ]
+    git_provider.remove_comment.assert_called_once_with(progress_comment)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("propagate_tool_errors", [False, True])
+async def test_run_failure_result_publication_does_not_mask_review_error(
+        monkeypatch, propagate_tool_errors):
+    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+
+    progress_comment = MagicMock()
+    publication_error = RuntimeError("comment unavailable")
+    git_provider = MagicMock()
+    git_provider.get_files.return_value = ["app.py"]
+    git_provider.publish_comment.side_effect = [progress_comment, publication_error]
+    reviewer = _make_reviewer(git_provider)
+    reviewer.incremental = SimpleNamespace(is_incremental=False)
+    reviewer.vars = {}
+    reviewer.prediction = None
+
+    review_error = RuntimeError("model unavailable")
+    monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", AsyncMock())
+    monkeypatch.setattr(
+        pr_reviewer_module,
+        "retry_with_fallback_models",
+        AsyncMock(side_effect=review_error),
+    )
+
+    settings = get_settings()
+    original = {
+        "publish_output": settings.config.publish_output,
+        "is_auto_command": settings.config.get("is_auto_command", False),
+        "propagate_tool_errors": settings.config.get("propagate_tool_errors", False),
+    }
+    try:
+        settings.config.publish_output = True
+        settings.config.is_auto_command = False
+        settings.config.propagate_tool_errors = propagate_tool_errors
+
+        if propagate_tool_errors:
+            with pytest.raises(RuntimeError, match="model unavailable") as exc_info:
+                await reviewer.run()
+            assert exc_info.value is review_error
+        else:
+            await reviewer.run()
+    finally:
+        settings.config.publish_output = original["publish_output"]
+        settings.config.is_auto_command = original["is_auto_command"]
+        settings.config.propagate_tool_errors = original["propagate_tool_errors"]
+
+    assert git_provider.publish_comment.call_args_list == [
+        (("Preparing review...",), {"is_temporary": True}),
+        (("Failed to review PR",), {}),
+    ]
+    git_provider.remove_comment.assert_called_once_with(progress_comment)
+
+
+def test_prepare_review_publishes_provider_neutral_structured_data(monkeypatch):
+    git_provider = MagicMock()
+    git_provider.is_supported.return_value = False
+    git_provider.get_diff_files.return_value = []
+    reviewer = _make_prediction_reviewer(git_provider)
+    reviewer.prediction = """review:
+  key_issues_to_review: []
+  security_concerns: no
+"""
+    reviewer.incremental = SimpleNamespace(is_incremental=False)
+    reviewer.set_review_labels = MagicMock()
+    monkeypatch.setattr(
+        "pr_agent.tools.pr_reviewer.convert_to_markdown_v2",
+        lambda *args, **kwargs: "## Review",
+    )
+
+    from pr_agent.algo.run_details import add_token_usage, init_run_details
+
+    init_run_details()
+    add_token_usage({"prompt_tokens": 30, "completion_tokens": 12, "total_tokens": 42})
+
+    reviewer._prepare_pr_review()
+
+    git_provider.publish_structured_review.assert_called_once_with({
+        "review": {
+            "key_issues_to_review": [],
+            "security_concerns": False,
+        },
+        "usage": {"prompt_tokens": 30, "completion_tokens": 12, "total_tokens": 42},
+    })
+    # Assert key order to prove the snapshot is isolated: _prepare_pr_review moves
+    # key_issues_to_review to the end of its own dict after the hook fires, so an
+    # aliased snapshot ends with it while a deep copy keeps the original order.
+    # (assert_called_once_with cannot catch this: dict equality ignores key order.)
+    published = git_provider.publish_structured_review.call_args[0][0]
+    assert list(published["review"].keys()) == ["key_issues_to_review", "security_concerns"]
+
+
 def test_can_run_incremental_review_skips_auto_mode_without_new_commit():
     reviewer = _make_reviewer()
     reviewer.is_auto = True
@@ -568,6 +932,43 @@ def test_set_review_labels_replaces_stale_review_labels_and_keeps_user_labels():
         settings.pr_reviewer.enable_review_labels_security = original["enable_review_labels_security"]
 
 
+def test_set_review_labels_skips_providers_without_label_support():
+    settings = get_settings()
+    original = {
+        "publish_output": settings.config.publish_output,
+        "require_estimate_effort_to_review": settings.pr_reviewer.require_estimate_effort_to_review,
+        "require_security_review": settings.pr_reviewer.require_security_review,
+        "enable_review_labels_effort": settings.pr_reviewer.enable_review_labels_effort,
+        "enable_review_labels_security": settings.pr_reviewer.enable_review_labels_security,
+    }
+    settings.config.publish_output = True
+    settings.pr_reviewer.require_estimate_effort_to_review = True
+    settings.pr_reviewer.require_security_review = True
+    settings.pr_reviewer.enable_review_labels_effort = True
+    settings.pr_reviewer.enable_review_labels_security = True
+    git_provider = MagicMock()
+    git_provider.is_supported.return_value = False
+    reviewer = _make_reviewer(git_provider)
+    data = {
+        "review": {
+            "estimated_effort_to_review_[1-5]": "3, moderate",
+            "security_concerns": "yes",
+        }
+    }
+
+    try:
+        reviewer.set_review_labels(data)
+
+        git_provider.get_pr_labels.assert_not_called()
+        git_provider.publish_labels.assert_not_called()
+    finally:
+        settings.config.publish_output = original["publish_output"]
+        settings.pr_reviewer.require_estimate_effort_to_review = original["require_estimate_effort_to_review"]
+        settings.pr_reviewer.require_security_review = original["require_security_review"]
+        settings.pr_reviewer.enable_review_labels_effort = original["enable_review_labels_effort"]
+        settings.pr_reviewer.enable_review_labels_security = original["enable_review_labels_security"]
+
+
 def test_get_user_answers_collects_question_and_answer_from_issue_comments():
     git_provider = MagicMock()
     git_provider.get_issue_comments.return_value = [
@@ -594,8 +995,14 @@ async def test_run_threads_only_the_final_review_comment(monkeypatch, persistent
     """
     from pr_agent.tools import pr_reviewer as pr_reviewer_module
 
+    progress_comment = MagicMock()
     git_provider = MagicMock()
     git_provider.should_publish_review_as_thread.return_value = thread_enabled
+    git_provider.supports_review_finding_state.return_value = True
+    git_provider.is_supported.return_value = True
+    git_provider.supports_review_comment_identity.return_value = False
+    git_provider.publish_comment.return_value = progress_comment
+    git_provider.publish_persistent_comment_full.return_value = object()
     reviewer = _make_reviewer(git_provider)
     reviewer.incremental = SimpleNamespace(is_incremental=False)
     reviewer.vars = {}
@@ -630,8 +1037,13 @@ async def test_run_threads_only_the_final_review_comment(monkeypatch, persistent
         settings.pr_reviewer.persistent_comment = original["persistent_comment"]
 
     if persistent:
-        publish = git_provider.publish_persistent_comment
+        publish = git_provider.publish_persistent_comment_full
         publish.assert_called_once()
+        assert publish.call_args.kwargs["require_agent_authorship"] is True
+        assert publish.call_args.kwargs["fallback_on_error"] is False
+        git_provider.publish_persistent_comment.assert_not_called()
+        assert publish.call_args.kwargs["identity_marker"] == PRReviewIdentity.REGULAR.value
+        assert publish.call_args.kwargs["legacy_initial_header"] == f"{PRReviewHeader.REGULAR.value} 🔍"
     else:
         publish = git_provider.publish_comment
     assert publish.call_args.args[0] == review_text
@@ -641,6 +1053,69 @@ async def test_run_threads_only_the_final_review_comment(monkeypatch, persistent
         assert "as_thread" not in publish.call_args.kwargs
     # The temporary progress comment is published without as_thread regardless of the flag.
     git_provider.publish_comment.assert_any_call("Preparing review...", is_temporary=True)
+    git_provider.remove_comment.assert_called_once_with(progress_comment)
+    git_provider.remove_initial_comment.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("is_incremental", "expected_identity"),
+    [
+        (False, PRReviewIdentity.REGULAR.value),
+        (True, PRReviewIdentity.INCREMENTAL.value),
+    ],
+)
+async def test_nonpersistent_review_adds_identity_for_incremental_capable_provider(
+    monkeypatch,
+    is_incremental,
+    expected_identity,
+):
+    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+
+    progress_comment = MagicMock()
+    git_provider = MagicMock()
+    git_provider.should_publish_review_as_thread.return_value = False
+    git_provider.supports_review_comment_identity.return_value = True
+    git_provider.publish_comment.return_value = progress_comment
+    reviewer = _make_reviewer(git_provider)
+    reviewer.incremental = SimpleNamespace(is_incremental=is_incremental)
+    if is_incremental:
+        reviewer._can_run_incremental_review = lambda: True
+    reviewer.vars = {}
+    reviewer.prediction = None
+    reviewer._prepare_pr_review = lambda: "## Team Review 🔍\n\nsome findings"
+
+    async def fake_extract_tickets(git_provider, vars):
+        return None
+
+    async def fake_retry(prepare_fn, model_type=None):
+        reviewer.prediction = "prediction"
+
+    monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", fake_extract_tickets)
+    monkeypatch.setattr(pr_reviewer_module, "retry_with_fallback_models", fake_retry)
+
+    settings = get_settings()
+    original_publish_output = settings.config.publish_output
+    original_persistent_comment = settings.pr_reviewer.persistent_comment
+    original_auto_command = settings.config.get("is_auto_command", False)
+    try:
+        settings.config.publish_output = True
+        settings.config.is_auto_command = False
+        settings.pr_reviewer.persistent_comment = False
+
+        await reviewer.run()
+    finally:
+        settings.config.publish_output = original_publish_output
+        settings.config.is_auto_command = original_auto_command
+        settings.pr_reviewer.persistent_comment = original_persistent_comment
+
+    published_review = [
+        call
+        for call in git_provider.publish_comment.call_args_list
+        if call.args and call.args[0].startswith("## Team Review")
+    ]
+    assert len(published_review) == 1
+    assert expected_identity in published_review[0].args[0]
 
 
 def test_init_maps_user_question_and_answer_to_correct_prompt_vars(monkeypatch):
@@ -763,3 +1238,41 @@ def test_answer_mode_prefers_the_newest_question_and_answer(monkeypatch):
 
     assert reviewer.vars["question_str"] == "Questions to better understand the PR:\n- Current question?"
     assert reviewer.vars["answer_str"] == "/answer Current answer."
+
+
+def _render_review_capturing_push(reviewer, publish_output):
+    reviewer.prediction = "review: {}"
+    reviewer.remaining_files_list = []
+    reviewer.git_provider.get_diff_files.return_value = []
+    reviewer.git_provider.is_supported.return_value = False
+    reviewer.set_review_labels = MagicMock()
+
+    settings = get_settings()
+    original_publish_output = settings.config.publish_output
+    try:
+        settings.config.publish_output = publish_output
+        with (
+            patch("pr_agent.tools.pr_reviewer.load_yaml", return_value={"review": {"score": "1"}}),
+            patch("pr_agent.tools.pr_reviewer.github_action_output"),
+            patch("pr_agent.tools.pr_reviewer.convert_to_markdown_v2", return_value="original review"),
+            patch("pr_agent.tools.pr_reviewer.push_outputs") as push,
+        ):
+            reviewer._prepare_pr_review()
+        return push
+    finally:
+        settings.config.publish_output = original_publish_output
+
+
+def test_prepare_pr_review_does_not_push_outputs_on_a_dry_run():
+    # publish_output=false is used by the CLI and by mosaico's dispatch to render a review
+    # without touching the PR; it must not reach an external sink either.
+    push = _render_review_capturing_push(_make_prediction_reviewer(), publish_output=False)
+    push.assert_not_called()
+
+
+def test_prepare_pr_review_pushes_outputs_when_publishing():
+    push = _render_review_capturing_push(_make_prediction_reviewer(), publish_output=True)
+    push.assert_called_once()
+    assert push.call_args.args[0] == "review"
+    assert push.call_args.kwargs["payload"] == {"score": "1"}
+    assert push.call_args.kwargs["markdown"] == "original review"

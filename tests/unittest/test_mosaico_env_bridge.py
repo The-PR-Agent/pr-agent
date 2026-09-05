@@ -9,10 +9,8 @@ import litellm
 import pytest
 
 from pr_agent.config_loader import get_settings, global_settings
-from pr_agent.mosaico.env_bridge import (apply_mosaico_env,
-                                         langfuse_env_present)
-from pr_agent.mosaico.observability import (mosaico_log_context,
-                                            parse_observability_metadata)
+from pr_agent.mosaico.env_bridge import apply_mosaico_env, langfuse_env_present
+from pr_agent.mosaico.observability import mosaico_log_context, parse_observability_metadata
 
 _SNAPSHOT_KEYS = [
     "OPENAI.API_BASE",

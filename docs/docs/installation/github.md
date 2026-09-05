@@ -345,6 +345,13 @@ When the GitHub Actions runner is on AWS infrastructure (EC2, ECS, EKS), use the
 
 The IAM role must have `bedrock:InvokeModel` on the target model ARN. See [Bedrock model configuration](../usage-guide/changing_a_model.md#amazon-bedrock) for the full IAM policy example and supported models.
 
+To route calls through a VPC interface endpoint, add `AWS_BEDROCK_RUNTIME_ENDPOINT` alongside the credentials above:
+
+```yaml
+      env:
+        AWS_BEDROCK_RUNTIME_ENDPOINT: "https://bedrock-runtime.us-east-1.amazonaws.com"
+```
+
 #### Advanced Configuration Options
 
 ##### Custom Review Instructions
@@ -513,7 +520,7 @@ If you encounter rate limiting:
         OPENAI_KEY: ${{ secrets.OPENAI_KEY }}
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         # Add a fallback model for better reliability
-        config.fallback_models: '["gpt-5.6-terra"]'
+        config.fallback_models: '["your-fallback-model"]'
         # Increase timeout for slower models
         config.ai_timeout: "300"
         github_action_config.auto_review: "true"
@@ -648,13 +655,22 @@ Allowing you to automate the review process on your private or public repositori
      - Pull requests: Read & write
      - Issue comment: Read & write
      - Metadata: Read-only
-     - Contents: Read-only
+     - Contents: Read-only (or Read & write if using `resolve_threads` — see note below)
    - Set the following events:
      - Issue comment
      - Pull request
+     - Pull request review
      - Push (if you need to enable triggering on PR update)
+     - Pull request review comment (required for `/ask` on review threads)
 
-2) Generate a random secret for your app, and save it for later. For example, you can use:
+   > **Note:** If you enable `pr_questions.resolve_threads`, the GitHub App requires **Contents: Read & write** permission. GitHub's `resolveReviewThread` GraphQL mutation is gated behind the Contents permission, even though it only modifies PR thread metadata. See [GitHub community discussion](https://github.com/orgs/community/discussions/204269) for details.
+   >
+   > **Important:** When enabled, the LLM may resolve threads started by
+   > human reviewers — not only bot-generated threads. Use this setting
+   > only when your team is comfortable with AI-driven thread resolution.
+   > The feature is opt-in and defaults to off.
+
+2) Generate a random secret for your app, and save it for later. The webhook secret is required: if `GITHUB.WEBHOOK_SECRET` is not configured, the server rejects every incoming webhook with HTTP 403. For example, you can use:
 
 ```bash
 WEBHOOK_SECRET=$(python -c "import secrets; print(secrets.token_hex(10))")
@@ -681,12 +697,11 @@ cp pr_agent/settings/.secrets_template.toml pr_agent/settings/.secrets.toml
 - Your OpenAI key.
 - Copy your app's private key to the private_key field.
 - Copy your app's ID to the app_id field.
-- Copy your app's webhook secret to the webhook_secret field.
+- Copy your app's webhook secret to the webhook_secret field (required).
 - Set deployment_type to 'app' in [configuration.toml](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml)
 
-    > The .secrets.toml file is not copied to the Docker image by default, and is only used for local development.
-    > If you want to use the .secrets.toml file in your Docker image, you can add remove it from the .dockerignore file.
-    > In most production environments, you would inject the secrets file as environment variables or as mounted volumes.
+    > The local `.secrets.toml` file is excluded from the Docker build context. Never bake secrets into a container image.
+    > For container deployments, provide secrets at runtime through environment variables or a mounted secret volume.
     > For example, in order to inject a secrets file as a volume in a Kubernetes environment you can update your pod spec to include the following,
     > assuming you have a secret named `pr-agent-settings` with a key named `.secrets.toml`:
 
@@ -790,7 +805,7 @@ CONFIG__SECRET_PROVIDER=aws_secrets_manager
 
 ### AWS CodeCommit Setup
 
-Not all features have been added to CodeCommit yet.  As of right now, CodeCommit has been implemented to run the PR-Agent CLI on the command line, using AWS credentials stored in environment variables.  (More features will be added in the future.)  The following is a set of instructions to have PR-Agent do a review of your CodeCommit pull request from the command line:
+Not all features have been added to CodeCommit yet.  As of right now, CodeCommit has been implemented to run the PR-Agent CLI on the command line, using AWS credentials stored in environment variables.  CodeCommit pull requests with multiple targets are reviewed across every target repository and commit comparison; single-target pull requests keep the same behavior.  The following is a set of instructions to have PR-Agent do a review of your CodeCommit pull request from the command line:
 
 1. Create an IAM user that you will use to read CodeCommit pull requests and post comments
     - Note: That user should have CLI access only, not Console access

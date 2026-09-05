@@ -5,17 +5,17 @@ from typing import Callable, List, Tuple
 
 from github import RateLimitExceededException
 
-from pr_agent.algo.file_filter import filter_ignored
 from pr_agent.algo.git_patch_processing import (
-    decouple_and_convert_to_hunks_with_lines_numbers, extend_patch,
-    handle_patch_deletions)
+    decouple_and_convert_to_hunks_with_lines_numbers,
+    extend_patch,
+    handle_patch_deletions,
+)
 from pr_agent.algo.language_handler import sort_files_by_main_languages
 from pr_agent.algo.run_details import record_model_used
 from pr_agent.algo.token_handler import TokenHandler
-from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
-from pr_agent.algo.utils import (ModelType, clip_tokens, get_max_tokens,
-                                 get_model)
-from pr_agent.config_loader import get_settings
+from pr_agent.algo.types import EDIT_TYPE
+from pr_agent.algo.utils import ModelType, clip_tokens, get_max_tokens, get_model
+from pr_agent.config_loader import get_settings, get_verbosity_level
 from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.log import get_logger
 
@@ -31,6 +31,12 @@ MAX_EXTRA_LINES = 10
 
 
 def cap_and_log_extra_lines(value, direction) -> int:
+    try:
+        value = int(value)
+    except (TypeError, ValueError, OverflowError):
+        get_logger().warning(
+            f"patch_extra_lines_{direction} is not a number ({value!r}), using 0")
+        return 0
     if value > MAX_EXTRA_LINES:
         get_logger().warning(f"patch_extra_lines_{direction} was {value}, capping to {MAX_EXTRA_LINES}")
         return MAX_EXTRA_LINES
@@ -214,6 +220,11 @@ def pr_generate_compressed_diff(top_langs: list, token_handler: TokenHandler, mo
                                 large_pr_handling: bool) -> Tuple[list, list, list, list, dict, list]:
     deleted_files_list = []
 
+    for lang in top_langs:
+        for file in lang["files"]:
+            if file.tokens is None or file.tokens < 0:
+                file.tokens = token_handler.count_tokens(file.patch) if file.patch else 0
+
     # sort each one of the languages in top_langs by the number of tokens in the diff
     sorted_files = []
     for lang in top_langs:
@@ -302,7 +313,7 @@ def generate_full_patch(convert_hunks_to_line_numbers, file_dict, max_tokens_mod
             # Current logic is to skip the patch if it's too large
             # TODO: Option for alternative logic to remove hunks from the patch to reduce the number of tokens
             #  until we meet the requirements
-            if get_settings().config.verbosity_level >= 2:
+            if get_verbosity_level() >= 2:
                 get_logger().warning(f"Patch too large, skipping it: '{filename}'")
             remaining_files_list_new.append(filename)
             continue
@@ -315,7 +326,7 @@ def generate_full_patch(convert_hunks_to_line_numbers, file_dict, max_tokens_mod
             patches.append(patch_final)
             total_tokens += token_handler.count_tokens(patch_final)
             files_in_patch_list.append(filename)
-            if get_settings().config.verbosity_level >= 2:
+            if get_verbosity_level() >= 2:
                 get_logger().info(f"Tokens: {total_tokens}, last filename: {filename}")
     return total_tokens, patches, remaining_files_list_new, files_in_patch_list
 
@@ -323,25 +334,29 @@ def generate_full_patch(convert_hunks_to_line_numbers, file_dict, max_tokens_mod
 async def retry_with_fallback_models(f: Callable, model_type: ModelType = ModelType.REGULAR):
     all_models = _get_all_models(model_type)
     all_deployments = _get_all_deployments(all_models)
-    # try each (model, deployment_id) pair until one is successful, otherwise raise exception
-    for i, (model, deployment_id) in enumerate(zip(all_models, all_deployments)):
-        try:
-            get_logger().debug(
-                f"Generating prediction with {model}"
-                f"{(' from deployment ' + deployment_id) if deployment_id else ''}"
-            )
-            get_settings().set("openai.deployment_id", deployment_id)
-            result = await f(model)
-        except Exception as e:
-            get_logger().warning(
-                f"Failed to generate prediction with {model}",
-                artifact={"error": e},
-            )
-            if i == len(all_models) - 1:  # If it's the last iteration
-                raise Exception(f"Failed to generate prediction with any model of {all_models}") from e
-        else:
-            record_model_used(model, is_fallback=i > 0)
-            return result
+    original_deployment_id = get_settings().get("openai.deployment_id", None)
+    try:
+        # try each (model, deployment_id) pair until one is successful, otherwise raise exception
+        for i, (model, deployment_id) in enumerate(zip(all_models, all_deployments)):
+            try:
+                get_logger().debug(
+                    f"Generating prediction with {model}"
+                    f"{(' from deployment ' + deployment_id) if deployment_id else ''}"
+                )
+                get_settings().set("openai.deployment_id", deployment_id)
+                result = await f(model)
+            except Exception as e:
+                get_logger().warning(
+                    f"Failed to generate prediction with {model}",
+                    artifact={"error": e},
+                )
+                if i == len(all_models) - 1:  # If it's the last iteration
+                    raise Exception(f"Failed to generate prediction with any model of {all_models}") from e
+            else:
+                record_model_used(model, is_fallback=i > 0)
+                return result
+    finally:
+        get_settings().set("openai.deployment_id", original_deployment_id)
 
 
 def _get_all_models(model_type: ModelType = ModelType.REGULAR) -> List[str]:
@@ -379,7 +394,8 @@ def get_pr_multi_diffs(git_provider: GitProvider,
                        token_handler: TokenHandler,
                        model: str,
                        max_calls: int = 5,
-                       add_line_numbers: bool = True) -> List[str]:
+                       add_line_numbers: bool = True,
+                       return_remaining_files: bool = False):
     """
     Retrieves the diff files from a Git provider, sorts them by main language, and generates patches for each file.
     The patches are split into multiple groups based on the maximum number of tokens allowed for the given model.
@@ -389,9 +405,13 @@ def get_pr_multi_diffs(git_provider: GitProvider,
         token_handler (TokenHandler): An object that handles tokens in the context of a pull request.
         model (str): The name of the model.
         max_calls (int, optional): The maximum number of calls to retrieve diff files. Defaults to 5.
+        return_remaining_files (bool, optional): Also return the files the token budget left out, in the
+            same shape as `get_pr_diff`. Files without a patch, and delete-only files, are not reported:
+            nothing was omitted for them. Defaults to False.
 
     Returns:
         List[str]: A list of final diff strings, split into multiple groups based on the maximum number of tokens allowed for the given model.
+        With `return_remaining_files`, a tuple of that list and the list of omitted file names.
 
     Raises:
         RateLimitExceededException: If the rate limit for the Git provider API is exceeded.
@@ -420,7 +440,8 @@ def get_pr_multi_diffs(git_provider: GitProvider,
 
     # if we are under the limit, return the full diff
     if total_tokens + OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD < get_max_tokens(model):
-        return ["\n".join(patches_extended)] if patches_extended else []
+        full_diff_list = ["\n".join(patches_extended)] if patches_extended else []
+        return (full_diff_list, []) if return_remaining_files else full_diff_list
 
     # Sort files within each language group by tokens in descending order
     sorted_files = []
@@ -429,11 +450,12 @@ def get_pr_multi_diffs(git_provider: GitProvider,
 
     patches = []
     final_diff_list = []
+    files_in_patches = set()  # files that made it into a chunk
     total_tokens = token_handler.prompt_tokens
     call_number = 1
     for file in sorted_files:
         if call_number > max_calls:
-            if get_settings().config.verbosity_level >= 2:
+            if get_verbosity_level() >= 2:
                 get_logger().info(f"Reached max calls ({max_calls})")
             break
 
@@ -486,16 +508,17 @@ def get_pr_multi_diffs(git_provider: GitProvider,
             total_tokens = token_handler.prompt_tokens
             call_number += 1
             if call_number > max_calls: # avoid creating new patches
-                if get_settings().config.verbosity_level >= 2:
+                if get_verbosity_level() >= 2:
                     get_logger().info(f"Reached max calls ({max_calls})")
                 break
-            if get_settings().config.verbosity_level >= 2:
+            if get_verbosity_level() >= 2:
                 get_logger().info(f"Call number: {call_number}")
 
         if patch:
             patches.append(patch)
+            files_in_patches.add(file.filename)
             total_tokens += new_patch_tokens
-            if get_settings().config.verbosity_level >= 2:
+            if get_verbosity_level() >= 2:
                 get_logger().info(f"Tokens: {total_tokens}, last filename: {file.filename}")
 
     # Add the last chunk
@@ -503,7 +526,20 @@ def get_pr_multi_diffs(git_provider: GitProvider,
         final_diff = "\n".join(patches)
         final_diff_list.append(final_diff.strip())
 
-    return final_diff_list
+    if not return_remaining_files:
+        return final_diff_list
+
+    remaining_files_list = []
+    for file in sorted_files:
+        if file.filename in files_in_patches or file.filename in remaining_files_list:
+            continue
+        # a file with no patch, or with a delete-only patch, has nothing to review:
+        # the token budget is not what kept it out of the diff
+        if not file.patch or handle_patch_deletions(file.patch, file.base_file, file.head_file,
+                                                    file.filename, file.edit_type) is None:
+            continue
+        remaining_files_list.append(file.filename)
+    return final_diff_list, remaining_files_list
 
 
 def add_ai_metadata_to_diff_files(git_provider, pr_description_files):
@@ -512,7 +548,7 @@ def add_ai_metadata_to_diff_files(git_provider, pr_description_files):
     """
     try:
         if not pr_description_files:
-            get_logger().warning(f"PR description files are empty.")
+            get_logger().warning("PR description files are empty.")
             return
         available_files = {pr_file['full_file_name'].strip(): pr_file for pr_file in pr_description_files}
         diff_files = git_provider.get_diff_files()
@@ -523,7 +559,7 @@ def add_ai_metadata_to_diff_files(git_provider, pr_description_files):
                 file.ai_file_summary = available_files[filename]
                 found_any_match = True
         if not found_any_match:
-            get_logger().error(f"Failed to find any matching files between PR description and diff files.",
+            get_logger().error("Failed to find any matching files between PR description and diff files.",
                                artifact={"pr_description_files": pr_description_files})
     except Exception as e:
         get_logger().error(f"Failed to add AI metadata to diff files: {e}",

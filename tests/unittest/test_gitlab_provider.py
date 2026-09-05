@@ -1,11 +1,12 @@
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 from gitlab import Gitlab
 from gitlab.exceptions import GitlabGetError
 from gitlab.v4.objects import ProjectFile, ProjectMergeRequest, ProjectMergeRequestManager
 
+from pr_agent.algo.utils import PRCodeSuggestionsIdentity, PRReviewHeader, PRReviewIdentity
 from pr_agent.git_providers.git_provider import IncrementalPR
 from pr_agent.git_providers.gitlab_provider import (
     GitLabProvider,
@@ -15,13 +16,46 @@ from pr_agent.git_providers.gitlab_provider import (
 )
 
 
-def _mock_settings(publish_review_as_thread=False):
-    """Settings stub whose .get() returns the GitLab review-thread flag and passes other keys through to the default."""
+def _mock_settings(publish_review_as_thread=False, resolve_outdated_inline_threads=False):
+    """Settings stub whose .get() returns the GitLab thread flags and passes other keys through to the default."""
     settings = MagicMock()
     settings.get.side_effect = lambda key, default=None: {
         "GITLAB.PUBLISH_REVIEW_AS_THREAD": publish_review_as_thread,
+        "GITLAB.RESOLVE_OUTDATED_INLINE_THREADS": resolve_outdated_inline_threads,
     }.get(key, default)
     return settings
+
+
+_BOT_USER_ID = 7
+_CURRENT_HEAD_SHA = "head-current"
+_OUTDATED_HEAD_SHA = "head-old"
+
+
+_AGENT_BODY = "**Suggestion:** Rename this [best practice, importance: 5]\n```suggestion\nx = 1\n```"
+_HUMAN_BODY = "Please rename this variable before we merge."
+
+
+def _thread_note(author_id=_BOT_USER_ID, system=False, resolved=False, resolvable=True,
+                 with_position=True, head_sha=_OUTDATED_HEAD_SHA, position_type='text',
+                 line_key='new_line', body=_AGENT_BODY):
+    note = {'author': {'id': author_id}, 'system': system, 'resolved': resolved,
+            'resolvable': resolvable, 'body': body}
+    if with_position:
+        position = {'position_type': position_type, 'new_path': 'src/app.py',
+                    'old_path': 'src/app.py'}
+        if head_sha is not None:
+            position['head_sha'] = head_sha
+        if line_key:
+            position[line_key] = 12
+        note['position'] = position
+    return note
+
+
+def _thread(notes, discussion_id='d1'):
+    discussion = MagicMock()
+    discussion.id = discussion_id
+    discussion.attributes = {'id': discussion_id, 'notes': notes}
+    return discussion
 
 
 class TestGitLabProvider:
@@ -130,11 +164,21 @@ class TestGitLabProvider:
     def test_get_repo_file_content_treats_missing_file_as_empty(self, gitlab_provider, mock_project):
         mock_project.default_branch = "main"
         gitlab_provider.mr = MagicMock(target_branch="main")
-        mock_project.files.get.side_effect = GitlabGetError("404 Not Found")
+        mock_project.files.get.side_effect = GitlabGetError("404 Not Found", response_code=404)
 
         content = gitlab_provider.get_repo_file_content("AGENTS.md")
 
         assert content == ""
+
+    def test_get_repo_file_content_propagates_non_404_errors(self, gitlab_provider, mock_project):
+        mock_project.default_branch = "main"
+        gitlab_provider.mr = MagicMock(target_branch="main")
+        mock_project.files.get.side_effect = GitlabGetError(
+            "500 Server Error", response_code=500, response_body=b"upstream failure"
+        )
+
+        with pytest.raises(GitlabGetError, match="500 Server Error"):
+            gitlab_provider.get_repo_file_content("AGENTS.md")
 
     def test_create_or_update_pr_file_create_new(self, gitlab_provider, mock_project):
         mock_project.files.get.side_effect = GitlabGetError("404 Not Found")
@@ -294,6 +338,12 @@ class TestGitLabProvider:
         )
         assert gitlab_provider.get_line_link("src/app.py", 10, 12) == (
             "https://gitlab.com/group/repo/-/blob/feature/cache/src/app.py?ref_type=heads#L10-12"
+        )
+        assert gitlab_provider.get_line_link("src/app.py", 10, 5) == (
+            "https://gitlab.com/group/repo/-/blob/feature/cache/src/app.py?ref_type=heads#L10-10"
+        )
+        assert gitlab_provider.get_line_link("src/app.py", 10, "not-a-number") == (
+            "https://gitlab.com/group/repo/-/blob/feature/cache/src/app.py?ref_type=heads#L10"
         )
 
     def test_publish_description_with_none_title_leaves_title_unchanged(self, gitlab_provider):
@@ -481,6 +531,57 @@ class TestGitLabProvider:
         gitlab_provider.mr.discussions.create.assert_not_called()
         gitlab_provider.mr.notes.create.assert_not_called()
 
+    def test_persistent_review_update_does_not_duplicate_when_status_message_fails(self, gitlab_provider):
+        # The review was already updated successfully, so a failure publishing the optional status
+        # message must not reach the outer fallback and publish the full review again.
+        header = "## PR Review"
+        existing = MagicMock()
+        existing.body = f"{header}\n\nprevious review"
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.get_issue_comments = MagicMock(return_value=[existing])
+        gitlab_provider.get_latest_commit_url = MagicMock(return_value="https://gitlab.com/c/abc")
+        gitlab_provider.get_comment_url = MagicMock(return_value="https://gitlab.com/n/1")
+        gitlab_provider.unresolve_comment_thread = MagicMock()
+        gitlab_provider.mr.notes.create.side_effect = Exception("status publish failed")
+
+        with patch("pr_agent.git_providers.git_provider.get_logger") as mock_get_logger:
+            result = gitlab_provider.publish_persistent_comment_full(f"{header}\n\nnew review",
+                                                                     initial_header=header,
+                                                                     update_header=True,
+                                                                     final_update_message=True,
+                                                                     as_thread=True)
+
+        assert result is existing
+        gitlab_provider.mr.notes.update.assert_called_once()
+        gitlab_provider.mr.notes.create.assert_called_once()
+        assert "updated to latest commit" in gitlab_provider.mr.notes.create.call_args.args[0]["body"]
+        gitlab_provider.mr.discussions.create.assert_not_called()
+        mock_get_logger.return_value.opt.assert_called_once_with(exception=True)
+        mock_get_logger.return_value.opt.return_value.warning.assert_called_once_with(
+            "Failed to publish persistent review update message; review was already updated")
+
+    def test_persistent_review_update_falls_back_when_edit_fails(self, gitlab_provider):
+        # A failure before the existing review is updated must retain the full-review fallback.
+        header = "## PR Review"
+        existing = MagicMock()
+        existing.body = f"{header}\n\nprevious review"
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.discussions.create.return_value.attributes = {"notes": [{"id": 42}]}
+        gitlab_provider.get_issue_comments = MagicMock(return_value=[existing])
+        gitlab_provider.get_latest_commit_url = MagicMock(return_value="https://gitlab.com/c/abc")
+        gitlab_provider.get_comment_url = MagicMock(return_value="https://gitlab.com/n/1")
+        gitlab_provider.edit_comment = MagicMock(side_effect=Exception("edit failed"))
+
+        gitlab_provider.publish_persistent_comment_full(f"{header}\n\nnew review",
+                                                        initial_header=header,
+                                                        update_header=True,
+                                                        final_update_message=True,
+                                                        as_thread=True)
+
+        gitlab_provider.edit_comment.assert_called_once()
+        gitlab_provider.mr.discussions.create.assert_called_once_with({"body": f"{header}\n\nnew review"})
+        gitlab_provider.mr.notes.create.assert_not_called()
+
     def test_persistent_review_update_without_thread_keeps_resolution(self, gitlab_provider):
         # Without as_thread (the persistent comment isn't a thread), resolution state must not be touched.
         header = "## PR Review"
@@ -498,6 +599,72 @@ class TestGitLabProvider:
 
         gitlab_provider.mr.notes.update.assert_called_once()
         gitlab_provider.unresolve_comment_thread.assert_not_called()
+
+    def test_persistent_review_migrates_legacy_heading_to_stable_identity(self, gitlab_provider):
+        legacy = MagicMock(id=7)
+        legacy.body = "## PR Reviewer Guide 🔍\n\nprevious review"
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.get_issue_comments = MagicMock(return_value=[legacy])
+        gitlab_provider.get_latest_commit_url = MagicMock(return_value="https://gitlab.com/c/abc")
+        gitlab_provider.get_comment_url = MagicMock(return_value="https://gitlab.com/n/7")
+
+        gitlab_provider.publish_persistent_comment(
+            "## Guideline Compliance Check 🔍\n\nnew review",
+            initial_header="## Guideline Compliance Check 🔍",
+            update_header=True,
+            final_update_message=False,
+            identity_marker=PRReviewIdentity.REGULAR.value,
+            legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
+        )
+
+        gitlab_provider.mr.notes.update.assert_called_once()
+        updated_body = gitlab_provider.mr.notes.update.call_args.args[1]["body"]
+        assert updated_body.startswith("## Guideline Compliance Check 🔍\n\n")
+        assert PRReviewIdentity.REGULAR.value in updated_body
+        gitlab_provider.mr.notes.create.assert_not_called()
+
+    def test_persistent_review_prefers_marked_comment_over_legacy_comment(self, gitlab_provider):
+        legacy = MagicMock(id=1)
+        legacy.body = "## PR Reviewer Guide 🔍\n\nlegacy review"
+        marked = MagicMock(id=2)
+        marked.body = (
+            "## Old Custom Heading 🔍\n\n"
+            f"{PRReviewIdentity.REGULAR.value}\n\nmarked review"
+        )
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.get_issue_comments = MagicMock(return_value=[legacy, marked])
+        gitlab_provider.get_latest_commit_url = MagicMock(return_value="https://gitlab.com/c/abc")
+        gitlab_provider.get_comment_url = MagicMock(return_value="https://gitlab.com/n/2")
+
+        gitlab_provider.publish_persistent_comment(
+            "## New Custom Heading 🔍\n\nnew review",
+            initial_header="## New Custom Heading 🔍",
+            update_header=True,
+            final_update_message=False,
+            identity_marker=PRReviewIdentity.REGULAR.value,
+            legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
+        )
+
+        assert gitlab_provider.mr.notes.update.call_args.args[0] == 2
+        gitlab_provider.mr.notes.create.assert_not_called()
+
+    def test_persistent_review_does_not_adopt_similar_human_heading(self, gitlab_provider):
+        human_comment = MagicMock(id=3)
+        human_comment.body = "## PR Reviewer Guide for maintainers\n\nhuman notes"
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.get_issue_comments = MagicMock(return_value=[human_comment])
+
+        gitlab_provider.publish_persistent_comment(
+            "## New Custom Heading 🔍\n\nnew review",
+            initial_header="## New Custom Heading 🔍",
+            update_header=True,
+            final_update_message=False,
+            identity_marker=PRReviewIdentity.REGULAR.value,
+            legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
+        )
+
+        gitlab_provider.mr.notes.update.assert_not_called()
+        gitlab_provider.mr.notes.create.assert_called_once()
 
     @pytest.mark.parametrize("resolvable,resolved,should_reopen", [
         (True, True, True),     # resolved thread -> reopen it
@@ -551,6 +718,165 @@ class TestGitLabProvider:
         gitlab_provider.mr.discussions.list.side_effect = Exception("gitlab api error")
 
         gitlab_provider.unresolve_comment_thread(MagicMock(id=1))  # must not raise
+
+    @pytest.mark.parametrize("resolvable,resolved,should_resolve", [
+        (True, False, True),    # open thread -> resolve it
+        (True, True, False),    # already resolved -> leave
+        (False, False, False),  # not resolvable -> nothing to do
+    ])
+    def test_resolve_comment_thread(self, gitlab_provider, resolvable, resolved, should_resolve):
+        discussion = MagicMock()
+        discussion.attributes = {'notes': [{'id': 42, 'resolvable': resolvable, 'resolved': resolved}]}
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.discussions.list.return_value = [discussion]
+
+        assert gitlab_provider.resolve_comment_thread(42) is should_resolve
+
+        if should_resolve:
+            assert discussion.resolved is True
+            discussion.save.assert_called_once()
+        else:
+            discussion.save.assert_not_called()
+
+    def test_resolve_comment_thread_ignores_unrelated_discussions(self, gitlab_provider):
+        # An open discussion that does not own our note must be left untouched.
+        other = MagicMock()
+        other.attributes = {'notes': [{'id': 1, 'resolvable': True, 'resolved': False}]}
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.discussions.list.return_value = [other]
+
+        assert gitlab_provider.resolve_comment_thread(99) is False
+
+        other.save.assert_not_called()
+
+    def test_resolve_comment_thread_soft_fails(self, gitlab_provider):
+        # A GitLab API error while resolving must not raise.
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.discussions.list.side_effect = Exception("gitlab api error")
+
+        assert gitlab_provider.resolve_comment_thread(1) is False
+
+    def _prepare_outdated_cleanup(self, gitlab_provider, threads, own_user_id=_BOT_USER_ID,
+                                  current_head_sha=_CURRENT_HEAD_SHA):
+        gitlab_provider._own_user_id = own_user_id
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.diff_refs = {'head_sha': current_head_sha}
+        gitlab_provider.mr.discussions.list.return_value = threads
+
+    def _run_outdated_cleanup(self, gitlab_provider, enabled=True):
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings",
+                   return_value=_mock_settings(resolve_outdated_inline_threads=enabled)):
+            gitlab_provider.resolve_outdated_inline_threads()
+
+    def test_resolve_outdated_inline_threads_is_opt_in(self, gitlab_provider):
+        outdated = _thread([_thread_note()])
+        self._prepare_outdated_cleanup(gitlab_provider, [outdated])
+
+        self._run_outdated_cleanup(gitlab_provider, enabled=False)
+
+        gitlab_provider.mr.discussions.list.assert_not_called()
+        outdated.save.assert_not_called()
+
+    def test_resolve_outdated_inline_threads_resolves_only_the_bots_outdated_threads(self, gitlab_provider):
+        outdated = _thread([_thread_note()], discussion_id='outdated')
+        current = _thread([_thread_note(head_sha=_CURRENT_HEAD_SHA)], discussion_id='current')
+        with_human_reply = _thread([_thread_note(),
+                                    _thread_note(author_id=99, with_position=False)],
+                                   discussion_id='human')
+        self._prepare_outdated_cleanup(gitlab_provider, [outdated, current, with_human_reply])
+
+        self._run_outdated_cleanup(gitlab_provider)
+
+        assert outdated.resolved is True
+        outdated.save.assert_called_once()
+        current.save.assert_not_called()
+        with_human_reply.save.assert_not_called()
+
+    def test_resolve_outdated_inline_threads_ignores_gitlab_system_notes(self, gitlab_provider):
+        outdated = _thread([_thread_note(),
+                            _thread_note(author_id=99, system=True, with_position=False)])
+        self._prepare_outdated_cleanup(gitlab_provider, [outdated])
+
+        self._run_outdated_cleanup(gitlab_provider)
+
+        assert outdated.resolved is True
+        outdated.save.assert_called_once()
+
+    def test_resolve_outdated_inline_threads_accepts_a_marked_body_without_the_suggestion_lead(self, gitlab_provider):
+        marked = _thread([_thread_note(body="**Possible Issue**\n\nx\n\n<!-- pr-agent-dedup: a1b2c3d4e5f6 -->")])
+        self._prepare_outdated_cleanup(gitlab_provider, [marked])
+
+        self._run_outdated_cleanup(gitlab_provider)
+
+        assert marked.resolved is True
+        marked.save.assert_called_once()
+
+    @pytest.mark.parametrize("notes", [
+        pytest.param([], id="no_notes"),
+        pytest.param(["not-a-dict"], id="opener_not_a_dict"),
+        pytest.param([_thread_note(resolved=True)], id="already_resolved"),
+        pytest.param([_thread_note(resolvable=False)], id="not_resolvable"),
+        pytest.param([_thread_note(with_position=False)], id="no_position"),
+        pytest.param([_thread_note(position_type='image')], id="not_a_text_position"),
+        pytest.param([_thread_note(line_key=None)], id="not_line_anchored"),
+        pytest.param([_thread_note(head_sha=None)], id="no_recorded_head_sha"),
+        pytest.param([_thread_note(head_sha=_CURRENT_HEAD_SHA)], id="on_the_current_diff"),
+        pytest.param([_thread_note(body=_HUMAN_BODY)], id="hand_written_by_the_token_owner"),
+        pytest.param([_thread_note(body=None)], id="no_body"),
+        pytest.param([_thread_note(body="<!-- pr-agent-dedup: in prose")], id="malformed_marker"),
+        pytest.param([{'author': 'not-a-dict', 'body': _AGENT_BODY,
+                       'position': {'position_type': 'text', 'new_line': 1,
+                                    'head_sha': _OUTDATED_HEAD_SHA}}],
+                     id="author_not_a_dict"),
+        pytest.param([_thread_note(), 'not-a-dict'], id="reply_not_a_dict"),
+    ])
+    def test_resolve_outdated_inline_threads_leaves_unconfirmed_threads_alone(self, gitlab_provider, notes):
+        thread = _thread(notes)
+        self._prepare_outdated_cleanup(gitlab_provider, [thread])
+
+        self._run_outdated_cleanup(gitlab_provider)
+
+        thread.save.assert_not_called()
+
+    @pytest.mark.parametrize("own_user_id,current_head_sha", [
+        (None, _CURRENT_HEAD_SHA),
+        (_BOT_USER_ID, None),
+    ])
+    def test_resolve_outdated_inline_threads_skips_when_identity_or_head_is_unknown(
+            self, gitlab_provider, own_user_id, current_head_sha):
+        outdated = _thread([_thread_note()])
+        self._prepare_outdated_cleanup(gitlab_provider, [outdated], own_user_id=own_user_id,
+                                       current_head_sha=current_head_sha)
+
+        self._run_outdated_cleanup(gitlab_provider)
+
+        gitlab_provider.mr.discussions.list.assert_not_called()
+        outdated.save.assert_not_called()
+
+    def test_resolve_outdated_inline_threads_continues_past_a_failing_thread(self, gitlab_provider):
+        failing = _thread([_thread_note()], discussion_id='failing')
+        failing.save.side_effect = Exception("gitlab api error")
+        outdated = _thread([_thread_note()], discussion_id='outdated')
+        self._prepare_outdated_cleanup(gitlab_provider, [failing, outdated])
+
+        self._run_outdated_cleanup(gitlab_provider)
+
+        outdated.save.assert_called_once()
+
+    def test_resolve_outdated_inline_threads_soft_fails(self, gitlab_provider):
+        self._prepare_outdated_cleanup(gitlab_provider, [])
+        gitlab_provider.mr.discussions.list.side_effect = Exception("gitlab api error")
+
+        self._run_outdated_cleanup(gitlab_provider)
+
+    def test_publish_code_suggestions_resolves_outdated_inline_threads_first(self, gitlab_provider):
+        gitlab_provider.resolve_outdated_inline_threads = MagicMock()
+        gitlab_provider.send_inline_comment = MagicMock()
+
+        assert gitlab_provider.publish_code_suggestions([]) is True
+
+        gitlab_provider.resolve_outdated_inline_threads.assert_called_once_with()
+        gitlab_provider.send_inline_comment.assert_not_called()
 
     # ---- publish_labels / get_pr_labels tests ----
 
@@ -725,6 +1051,23 @@ class TestGitLabGlobalSettings:
         assert result == b"[pr_reviewer]\nnum_max_findings = 5\n"
         provider.gl.projects.get.assert_called_with("mygroup/pr-agent-settings")
         proj.files.get.assert_called_once_with(file_path=".pr_agent.toml", ref="main")
+
+    def test_numeric_project_id_uses_canonical_group_for_global_settings(self):
+        provider = self._provider()
+        provider.id_project = "127014"
+        project = MagicMock(path_with_namespace="mygroup/myrepo")
+        settings_project = MagicMock()
+        settings_project.default_branch = "main"
+        settings_project.files.get.return_value.decode.return_value = b"[pr_reviewer]\nnum_max_findings = 5\n"
+        provider.gl.projects.get.side_effect = [project, settings_project]
+
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = True
+            result = provider._get_global_repo_settings()
+
+        assert result == b"[pr_reviewer]\nnum_max_findings = 5\n"
+        assert provider.gl.projects.get.call_args_list[0].args == ("127014",)
+        assert provider.gl.projects.get.call_args_list[1].args == ("mygroup/pr-agent-settings",)
 
     def test_skips_on_self_hosted(self):
         # "mygitlab.com" contains the substring "gitlab.com" but is NOT GitLab.com — must be skipped.
@@ -969,9 +1312,85 @@ class TestGitLabIncrementalReview:
 
         assert gitlab_provider.get_files() == ["x.py"]
 
-    def test_get_previous_review_returns_most_recent_match(self, gitlab_provider):
-        from pr_agent.algo.utils import PRReviewHeader
+    def test_get_files_retries_raw_diffs_when_changes_overflow(self, gitlab_provider):
+        gitlab_provider.git_files = None
+        gitlab_provider.mr.changes.side_effect = [
+            {"changes": [{"new_path": "visible.py"}], "overflow": True},
+            {
+                "changes": [
+                    {"new_path": "visible.py"},
+                    {"new_path": "hidden.py"},
+                ],
+                "overflow": False,
+            },
+        ]
 
+        assert gitlab_provider.get_files() == ["visible.py", "hidden.py"]
+        assert gitlab_provider.mr.changes.call_args_list == [
+            call(),
+            call(access_raw_diffs=True),
+        ]
+
+    def test_get_diff_files_retries_raw_diffs_when_changes_overflow(self, gitlab_provider):
+        change = {
+            "old_path": "visible.py",
+            "new_path": "visible.py",
+            "diff": "@@ -1 +1 @@\n-old\n+new\n",
+            "new_file": False,
+            "deleted_file": False,
+            "renamed_file": False,
+        }
+        hidden_change = {**change, "old_path": "hidden.py", "new_path": "hidden.py"}
+        gitlab_provider.mr.changes.side_effect = [
+            {"changes": [change], "overflow": True},
+            {"changes": [change, hidden_change], "overflow": False},
+        ]
+        gitlab_provider.get_pr_file_content = MagicMock(return_value="")
+
+        diff_files = gitlab_provider.get_diff_files()
+
+        assert [file.filename for file in diff_files] == ["visible.py", "hidden.py"]
+        assert gitlab_provider.mr.changes.call_args_list == [
+            call(),
+            call(access_raw_diffs=True),
+        ]
+
+    def test_incremental_scope_retries_raw_diffs_when_changes_overflow(
+        self, gitlab_provider, mock_project
+    ):
+        gitlab_provider.mr.notes.list.return_value = [
+            self._make_note(7, "## PR Reviewer Guide 🔍\nbody", "2024-05-01T10:00:00Z"),
+        ]
+        gitlab_provider.mr.commits.return_value = [
+            self._make_commit("c1", "2024-05-01T11:00:00Z"),
+            self._make_commit("c0", "2024-05-01T09:00:00Z"),
+        ]
+        mock_project.repository_compare.return_value = {
+            "diffs": [
+                {"new_path": "visible.py"},
+                {"new_path": "hidden.py"},
+            ]
+        }
+        gitlab_provider.mr.changes.side_effect = [
+            {"changes": [{"new_path": "visible.py"}], "overflow": True},
+            {
+                "changes": [
+                    {"new_path": "visible.py"},
+                    {"new_path": "hidden.py"},
+                ],
+                "overflow": False,
+            },
+        ]
+
+        gitlab_provider.get_incremental_commits(IncrementalPR(True))
+
+        assert set(gitlab_provider.unreviewed_files_map) == {"visible.py", "hidden.py"}
+        assert gitlab_provider.mr.changes.call_args_list == [
+            call(),
+            call(access_raw_diffs=True),
+        ]
+
+    def test_get_previous_review_returns_most_recent_match(self, gitlab_provider):
         # GitLab returns notes in created_at-DESC order. The helper relies on that order
         # (no local sort) — the unrelated newest note must be skipped, the newer matching
         # note must win over the older matching note.
@@ -985,6 +1404,23 @@ class TestGitLabIncrementalReview:
 
         assert result is not None
         assert result.id == 2
+
+    def test_get_previous_review_accepts_custom_heading_with_stable_identity(self, gitlab_provider):
+        gitlab_provider.mr.notes.list.return_value = [
+            self._make_note(
+                7,
+                (
+                    "## Guideline Compliance Check 🔍\n\n"
+                    f"{PRReviewIdentity.REGULAR.value}\n\nbody"
+                ),
+                "2024-05-01T10:00:00Z",
+            ),
+        ]
+
+        result = gitlab_provider.get_previous_review(full=True, incremental=False)
+
+        assert result is not None
+        assert result.id == 7
 
     def test_master_merge_files_are_excluded_from_incremental_scope(self, gitlab_provider, mock_project):
         # Reproduction of the MR !1115 bug: user ran `git merge master` on the feature branch,
@@ -1263,6 +1699,135 @@ class TestGitLabIncrementalReview:
         assert gitlab_provider.incremental.last_seen_commit_sha == "c1"
         mock_project.repository_compare.assert_called_once_with("c1", "head")
 
+    def test_incremental_suggestions_uses_newest_stable_or_legacy_anchor(
+            self, gitlab_provider, mock_project):
+        gitlab_provider.mr.notes.list.return_value = [
+            self._make_note(
+                9,
+                "## PR Code Suggestions ✨\n\n<!-- aaa1111 -->\n\n<table>legacy</table>",
+                "2026-05-15T12:00:00Z",
+            ),
+            self._make_note(
+                8,
+                "## Team Suggestions ✨\n\n"
+                f"{PRCodeSuggestionsIdentity.SUMMARY.value}\n\n"
+                "<!-- bbb2222 -->\n\n<table>marked</table>",
+                "2026-05-15T10:00:00Z",
+            ),
+        ]
+        gitlab_provider.mr.commits.return_value = [
+            self._make_commit("c2", "2026-05-15T13:00:00Z"),
+            self._make_commit("c1", "2026-05-15T11:00:00Z"),
+            self._make_commit("c0", "2026-05-15T09:00:00Z"),
+        ]
+        mock_project.repository_compare.return_value = {
+            "diffs": [{"new_path": "a.py", "old_path": "a.py", "diff": "@@ ... @@",
+                       "new_file": False, "deleted_file": False, "renamed_file": False}],
+        }
+        gitlab_provider.mr.changes.return_value = {"changes": [{"new_path": "a.py"}]}
+
+        gitlab_provider.get_incremental_commits(IncrementalPR(True), kind="suggestions")
+
+        assert gitlab_provider.incremental.is_incremental is True
+        assert gitlab_provider.incremental.first_new_commit_sha == "c2"
+        assert gitlab_provider.incremental.last_seen_commit_sha == "c1"
+        mock_project.repository_compare.assert_called_once_with("c1", "head")
+
+    def test_incremental_suggestions_uses_latest_activity_across_stable_and_legacy_anchors(
+            self, gitlab_provider, mock_project):
+        gitlab_provider.mr.notes.list.return_value = [
+            self._make_note(
+                9,
+                "## PR Code Suggestions ✨\n\n<!-- aaa1111 -->\n\n<table>legacy</table>",
+                "2026-05-15T12:00:00Z",
+            ),
+            self._make_note(
+                8,
+                "## Team Suggestions ✨\n\n"
+                f"{PRCodeSuggestionsIdentity.SUMMARY.value}\n\n"
+                "<!-- bbb2222 -->\n\n<table>marked</table>",
+                created_at="2026-05-15T09:00:00Z",
+                updated_at="2026-05-15T15:00:00Z",
+            ),
+        ]
+        gitlab_provider.mr.commits.return_value = [
+            self._make_commit("c3", "2026-05-15T16:00:00Z"),
+            self._make_commit("c2", "2026-05-15T14:00:00Z"),
+            self._make_commit("c1", "2026-05-15T11:00:00Z"),
+        ]
+        mock_project.repository_compare.return_value = {
+            "diffs": [{"new_path": "a.py", "old_path": "a.py", "diff": "@@ ... @@",
+                       "new_file": False, "deleted_file": False, "renamed_file": False}],
+        }
+        gitlab_provider.mr.changes.return_value = {"changes": [{"new_path": "a.py"}]}
+
+        gitlab_provider.get_incremental_commits(IncrementalPR(True), kind="suggestions")
+
+        assert gitlab_provider.incremental.is_incremental is True
+        assert gitlab_provider.incremental.first_new_commit_sha == "c3"
+        assert gitlab_provider.incremental.last_seen_commit_sha == "c2"
+        mock_project.repository_compare.assert_called_once_with("c2", "head")
+
+    def test_incremental_suggestions_unparseable_newest_anchor_falls_back_to_full(
+            self, gitlab_provider, mock_project):
+        gitlab_provider.mr.notes.list.return_value = [
+            self._make_note(
+                9,
+                "## PR Code Suggestions ✨\n\n<!-- aaa1111 -->\n\n<table>legacy</table>",
+                "not-a-date",
+            ),
+            self._make_note(
+                8,
+                "## Team Suggestions ✨\n\n"
+                f"{PRCodeSuggestionsIdentity.SUMMARY.value}\n\n"
+                "<!-- bbb2222 -->\n\n<table>marked</table>",
+                "2026-05-15T10:00:00Z",
+            ),
+        ]
+        gitlab_provider.mr.commits.return_value = [
+            self._make_commit("c1", "2026-05-15T11:00:00Z"),
+        ]
+
+        gitlab_provider.get_incremental_commits(IncrementalPR(True), kind="suggestions")
+
+        assert gitlab_provider.incremental.is_incremental is False
+        mock_project.repository_compare.assert_not_called()
+
+    def test_incremental_suggestions_uses_newer_custom_no_suggestions_result(
+            self, gitlab_provider, mock_project):
+        gitlab_provider.mr.notes.list.return_value = [
+            self._make_note(
+                9,
+                "## Team Suggestions ✨\n\n"
+                f"{PRCodeSuggestionsIdentity.NO_SUGGESTIONS.value}\n\n"
+                "No code suggestions found for the PR.",
+                "2026-05-15T12:00:00Z",
+            ),
+            self._make_note(
+                8,
+                "## Previous Suggestions ✨\n\n"
+                f"{PRCodeSuggestionsIdentity.SUMMARY.value}\n\n"
+                "<!-- bbb2222 -->\n\n<table>marked</table>",
+                "2026-05-15T10:00:00Z",
+            ),
+        ]
+        gitlab_provider.mr.commits.return_value = [
+            self._make_commit("c2", "2026-05-15T13:00:00Z"),
+            self._make_commit("c1", "2026-05-15T11:00:00Z"),
+        ]
+        mock_project.repository_compare.return_value = {
+            "diffs": [{"new_path": "a.py", "old_path": "a.py", "diff": "@@ ... @@",
+                       "new_file": False, "deleted_file": False, "renamed_file": False}],
+        }
+        gitlab_provider.mr.changes.return_value = {"changes": [{"new_path": "a.py"}]}
+
+        gitlab_provider.get_incremental_commits(IncrementalPR(True), kind="suggestions")
+
+        assert gitlab_provider.incremental.is_incremental is True
+        assert gitlab_provider.incremental.first_new_commit_sha == "c2"
+        assert gitlab_provider.incremental.last_seen_commit_sha == "c1"
+        mock_project.repository_compare.assert_called_once_with("c1", "head")
+
     def test_incremental_kind_suggestions_falls_back_when_no_prior_suggestion(self, gitlab_provider, mock_project):
         # A /review note exists, but no /improve has ever run. /improve -i must fall back to
         # a full pass, not anchor on the review note.
@@ -1339,6 +1904,14 @@ class TestGitLabCapabilities:
 
         assert provider.get_issue_comments() == ["oldest", "middle", "newest"]
 
+    def test_persistent_state_ownership_uses_authenticated_user_id(self):
+        provider = self._provider()
+        provider._get_own_user_id = MagicMock(return_value=42)
+
+        assert provider.supports_review_finding_state() is True
+        assert provider.is_comment_authored_by_pr_agent({"author": {"id": 42}}) is True
+        assert provider.is_comment_authored_by_pr_agent({"author": {"id": 99}}) is False
+
     @pytest.mark.parametrize("capability", [
         "create_inline_comment",
         "publish_inline_comments",
@@ -1399,3 +1972,70 @@ class TestGitLabRelevantDiff:
             provider.get_relevant_diff("app.py", "+added line")
 
         assert mock_logger.return_value.debug.call_count == 1
+
+
+class TestGitLabProviderUrlParsing:
+    """Cover MR URL parsing on GitLab instances deployed under a relative URL (sub-path).
+
+    `__init__` performs network calls, so build the provider with `__new__`
+    and exercise the pure helper only.
+    """
+
+    @staticmethod
+    def _provider(gitlab_url="https://gitlab.com"):
+        provider = GitLabProvider.__new__(GitLabProvider)
+        provider.gitlab_url = gitlab_url
+        return provider
+
+    def test_parse_merge_request_url_plain(self):
+        provider = self._provider("https://gitlab.com")
+        assert provider._parse_merge_request_url(
+            "https://gitlab.com/group/subgroup/repo/-/merge_requests/123") == ("group/subgroup/repo", 123)
+
+    def test_parse_merge_request_url_strips_sub_path_prefix(self):
+        provider = self._provider("https://host.local/gitlab")
+        assert provider._parse_merge_request_url(
+            "https://host.local/gitlab/shai/pr-agent/-/merge_requests/12") == ("shai/pr-agent", 12)
+
+    def test_parse_merge_request_url_sub_path_nested_groups(self):
+        provider = self._provider("https://host.local/gitlab")
+        assert provider._parse_merge_request_url(
+            "https://host.local/gitlab/group/sub/repo/-/merge_requests/9") == ("group/sub/repo", 9)
+
+    def test_parse_merge_request_url_multi_segment_sub_path(self):
+        provider = self._provider("https://gitlab.example.com/gitlab/app")
+        assert provider._parse_merge_request_url(
+            "https://gitlab.example.com/gitlab/app/shai/pr-agent/-/merge_requests/5") == ("shai/pr-agent", 5)
+
+    def test_parse_merge_request_url_config_with_trailing_slash(self):
+        provider = self._provider("https://host.local/gitlab/")
+        assert provider._parse_merge_request_url(
+            "https://host.local/gitlab/shai/pr-agent/-/merge_requests/12") == ("shai/pr-agent", 12)
+
+    def test_parse_merge_request_url_matches_host_with_port(self):
+        provider = self._provider("https://host.local:8443/gitlab")
+        assert provider._parse_merge_request_url(
+            "https://host.local:8443/gitlab/shai/pr-agent/-/merge_requests/12") == ("shai/pr-agent", 12)
+
+    def test_parse_merge_request_url_prefix_on_other_host_is_not_stripped(self):
+        provider = self._provider("https://host.local/gitlab")
+        assert provider._parse_merge_request_url(
+            "https://other.example/gitlab/acme/repo/-/merge_requests/7") == ("gitlab/acme/repo", 7)
+
+    def test_parse_merge_request_url_prefix_mismatch_keeps_current_behavior(self):
+        provider = self._provider("https://gitlab.com")
+        assert provider._parse_merge_request_url(
+            "https://host.local/gitlab/shai/pr-agent/-/merge_requests/12") == ("gitlab/shai/pr-agent", 12)
+
+    def test_parse_merge_request_url_rejects_non_mr_url_with_sub_path(self):
+        provider = self._provider("https://host.local/gitlab")
+        with pytest.raises(ValueError):
+            provider._parse_merge_request_url("https://host.local/gitlab/shai/pr-agent")
+
+
+def test_get_issue_comments_newest_first_returns_notes_newest_first():
+    provider = GitLabProvider.__new__(GitLabProvider)
+    provider.mr = MagicMock()
+    provider.mr.notes.list.return_value = ["newest", "middle", "oldest"]
+
+    assert provider.get_issue_comments_newest_first() == ["newest", "middle", "oldest"]

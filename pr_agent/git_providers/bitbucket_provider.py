@@ -12,10 +12,11 @@ from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 
 from ..algo.file_filter import filter_ignored
 from ..algo.language_handler import is_valid_file
-from ..algo.utils import find_line_number_of_relevant_line_in_file
-from ..config_loader import get_settings
+from ..algo.utils import add_pr_review_identity, comment_matches_identity, find_line_number_of_relevant_line_in_file
+from ..config_loader import get_settings, get_verbosity_level
 from ..log import get_logger
-from .git_provider import MAX_FILES_ALLOWED_FULL, GitProvider, get_cached_global_settings
+from .diff_parsing import to_hunk_only_patch
+from .git_provider import MAX_FILES_ALLOWED_FULL, GitProvider, get_cached_global_settings, redact_credentials
 
 
 def _gef_filename(diff):
@@ -127,7 +128,7 @@ class BitbucketProvider(GitProvider):
         # Read from the PR destination (target) branch, matching the other providers,
         # or from the repository default branch when from_default_branch is requested.
         branch = self.get_repo_default_branch() if from_default_branch else self.pr.destination_branch
-        return self.get_pr_file_content(file_path, branch)
+        return self.get_pr_file_content(file_path, branch, propagate_errors=True)
 
     def get_git_repo_url(self, pr_url: str=None) -> str: #bitbucket does not support issue url, so ignore param
         try:
@@ -219,8 +220,7 @@ class BitbucketProvider(GitProvider):
             post_parameters_list.append(post_parameters)
 
         try:
-            self.publish_inline_comments(post_parameters_list)
-            return True
+            return self.publish_inline_comments(post_parameters_list)
         except Exception as e:
             get_logger().error(f"Bitbucket failed to publish code suggestion, error: {e}")
             return False
@@ -264,7 +264,7 @@ class BitbucketProvider(GitProvider):
                 names_original = [d.new.path for d in diffs_original]
                 names_kept = [d.new.path for d in diffs]
                 names_filtered = list(set(names_original) - set(names_kept))
-                get_logger().info(f"Filtered out [ignore] files for PR", extra={
+                get_logger().info("Filtered out [ignore] files for PR", extra={
                     'original_files': names_original,
                     'names_kept': names_kept,
                     'names_filtered': names_filtered
@@ -299,32 +299,20 @@ class BitbucketProvider(GitProvider):
         if len(diff_split) != len(diffs):
             get_logger().error(f"Error - failed to split the diff into {len(diffs)} parts")
             return []
-        # bitbucket diff has a header for each file, we need to remove it:
-        # "diff --git filename
-        # new file mode 100644 (optional)
-        #  index caa56f0..61528d7 100644
-        #   --- a/pr_agent/cli_pip.py
-        #  +++ b/pr_agent/cli_pip.py
-        #   @@ -... @@"
-        for i, _ in enumerate(diff_split):
-            diff_split_lines = diff_split[i].splitlines()
-            if (len(diff_split_lines) >= 6) and \
-                    ((diff_split_lines[2].startswith("---") and
-                      diff_split_lines[3].startswith("+++") and
-                      diff_split_lines[4].startswith("@@")) or
-                     (diff_split_lines[3].startswith("---") and  # new or deleted file
-                      diff_split_lines[4].startswith("+++") and
-                      diff_split_lines[5].startswith("@@"))):
-                diff_split[i] = "\n".join(diff_split_lines[4:])
+        # Bitbucket headers vary by change type and may include mode or rename
+        # metadata. Keep only the unified-diff hunks consumed downstream.
+        for i, patch in enumerate(diff_split):
+            diff_split[i] = to_hunk_only_patch(patch)
+            if diff_split[i]:
+                continue
+
+            if diffs[i].data.get('lines_added', 0) == 0 and diffs[i].data.get('lines_removed', 0) == 0:
+                continue
+
+            if len(patch.splitlines()) <= 3:
+                get_logger().info(f"Disregarding empty diff for file {_gef_filename(diffs[i])}")
             else:
-                if diffs[i].data.get('lines_added', 0) == 0 and diffs[i].data.get('lines_removed', 0) == 0:
-                    diff_split[i] = ""
-                elif len(diff_split_lines) <= 3:
-                    diff_split[i] = ""
-                    get_logger().info(f"Disregarding empty diff for file {_gef_filename(diffs[i])}")
-                else:
-                    get_logger().warning(f"Bitbucket failed to get diff for file {_gef_filename(diffs[i])}")
-                    diff_split[i] = ""
+                get_logger().warning(f"Bitbucket failed to get diff for file {_gef_filename(diffs[i])}")
 
         invalid_files_names = []
         diff_files = []
@@ -354,7 +342,7 @@ class BitbucketProvider(GitProvider):
                 else:
                     if counter_valid == MAX_FILES_ALLOWED_FULL // 2:
                         get_logger().info(
-                            f"Bitbucket too many files in PR, will avoid loading full content for rest of files")
+                            "Bitbucket too many files in PR, will avoid loading full content for rest of files")
                     original_file_content_str = ""
                     new_file_content_str = ""
             except Exception as e:
@@ -395,25 +383,60 @@ class BitbucketProvider(GitProvider):
                                    initial_header: str,
                                    update_header: bool = True,
                                    name='review',
-                                   final_update_message=True):
+                                   final_update_message=True,
+                                   identity_marker: str | None = None,
+                                   legacy_initial_header: str | None = None):
         try:
-            for comment in self.pr.comments():
-                body = comment.raw
-                if initial_header in body:
-                    latest_commit_url = self.get_latest_commit_url()
-                    comment_url = self.get_comment_url(comment)
-                    if update_header:
-                        updated_header = f"{initial_header}\n\n#### ({name.capitalize()} updated until commit {latest_commit_url})\n"
-                        pr_comment_updated = pr_comment.replace(initial_header, updated_header)
-                    else:
-                        pr_comment_updated = pr_comment
-                    get_logger().info(f"Persistent mode - updating comment {comment_url} to latest {name} message")
-                    d = {"content": {"raw": pr_comment_updated}}
-                    response = comment._update_data(comment.put(None, data=d))
-                    if final_update_message:
+            pr_comment = add_pr_review_identity(pr_comment, identity_marker)
+            comments = list(self.pr.comments())
+            if identity_marker:
+                comment_to_update = next(
+                    (
+                        comment
+                        for comment in comments
+                        if comment_matches_identity(comment.raw, identity_marker)
+                    ),
+                    None,
+                )
+                if comment_to_update is None and legacy_initial_header:
+                    comment_to_update = next(
+                        (
+                            comment
+                            for comment in comments
+                            if comment_matches_identity(comment.raw, legacy_initial_header)
+                        ),
+                        None,
+                    )
+            else:
+                # Preserve Bitbucket's existing behavior for non-review persistent comments.
+                comment_to_update = next(
+                    (comment for comment in comments if initial_header in comment.raw),
+                    None,
+                )
+            if comment_to_update is not None:
+                comment = comment_to_update
+                latest_commit_url = self.get_latest_commit_url()
+                comment_url = self.get_comment_url(comment)
+                if update_header:
+                    update_message = f"#### ({name.capitalize()} updated until commit {latest_commit_url})\n"
+                    update_anchor = identity_marker or initial_header
+                    updated_anchor = f"{update_anchor}\n\n{update_message}"
+                    pr_comment_updated = pr_comment.replace(update_anchor, updated_anchor, 1)
+                else:
+                    pr_comment_updated = pr_comment
+                get_logger().info(f"Persistent mode - updating comment {comment_url} to latest {name} message")
+                d = {"content": {"raw": pr_comment_updated}}
+                comment._update_data(comment.put(None, data=d))
+                if final_update_message:
+                    try:
                         self.publish_comment(
                             f"**[Persistent {name}]({comment_url})** updated to latest commit {latest_commit_url}")
-                    return
+                    except Exception:
+                        # The review was already updated in place; a notification failure must not reach
+                        # the outer except, whose fallback publish would duplicate the review.
+                        get_logger().opt(exception=True).warning(
+                            "Failed to publish persistent review update message; review was already updated")
+                return
         except Exception as e:
             get_logger().exception(f"Failed to update persistent review, error: {e}")
             pass
@@ -435,6 +458,7 @@ class BitbucketProvider(GitProvider):
             comment.update(body)
         except Exception as e:
             get_logger().exception(f"Failed to update comment, error: {e}")
+            return False
 
     def remove_initial_comment(self):
         try:
@@ -445,7 +469,8 @@ class BitbucketProvider(GitProvider):
 
     def remove_comment(self, comment):
         try:
-            self.pr.delete(f"comments/{comment}")
+            comment_id = comment["id"] if isinstance(comment, dict) else comment
+            self.pr.delete(f"comments/{comment_id}")
         except Exception as e:
             get_logger().exception(f"Failed to remove comment, error: {e}")
 
@@ -458,7 +483,7 @@ class BitbucketProvider(GitProvider):
                                                                                 relevant_line_in_file,
                                                                                 absolute_position)
         if position == -1:
-            if get_settings().config.verbosity_level >= 2:
+            if get_verbosity_level() >= 2:
                 get_logger().info(f"Could not find position for {relevant_file} {relevant_line_in_file}")
             subject_type = "FILE"
         else:
@@ -466,7 +491,7 @@ class BitbucketProvider(GitProvider):
         path = relevant_file.strip()
         return dict(body=body, path=path, position=absolute_position) if subject_type == "LINE" else {}
 
-    def publish_inline_comment(self, comment: str, from_line: int, file: str, original_suggestion=None):
+    def publish_inline_comment(self, comment: str, from_line: int, file: str, original_suggestion=None) -> bool:
         comment = self.limit_output_characters(comment, self.max_comment_length)
         payload = json.dumps({
             "content": {
@@ -477,10 +502,16 @@ class BitbucketProvider(GitProvider):
                 "path": file
             },
         })
-        response = requests.request(
-            "POST", self.bitbucket_comment_api_url, data=payload, headers=self.headers
-        )
-        return response
+        try:
+            response = requests.request(
+                "POST", self.bitbucket_comment_api_url, data=payload, headers=self.headers
+            )
+            response.raise_for_status()
+        except Exception as e:
+            get_logger().error(
+                f"Failed to publish inline comment to '{file}' at line {from_line}, error: {e}")
+            return False
+        return True
 
     def get_line_link(self, relevant_file: str, relevant_line_start: int, relevant_line_end: int = None) -> str:
         if relevant_line_start == -1:
@@ -504,22 +535,33 @@ class BitbucketProvider(GitProvider):
                 link = f"{self.pr_url}/#L{relevant_file}T{absolute_position}"
                 return link
         except Exception as e:
-            if get_settings().config.verbosity_level >= 2:
+            if get_verbosity_level() >= 2:
                 get_logger().info(f"Failed adding line link, error: {e}")
 
         return ""
 
-    def publish_inline_comments(self, comments: list[dict]):
+    def publish_inline_comments(self, comments: list[dict]) -> bool:
+        publishable_count = 0
+        published_count = 0
         for comment in comments:
             if 'position' in comment:
-                self.publish_inline_comment(comment['body'], comment['position'], comment['path'])
+                from_line = comment['position']
             elif 'start_line' in comment:  # multi-line comment
                 # note that bitbucket does not seem to support range - only a comment on a single line - https://community.developer.atlassian.com/t/api-post-endpoint-for-inline-pull-request-comments/60452
-                self.publish_inline_comment(comment['body'], comment['start_line'], comment['path'])
+                from_line = comment['start_line']
             elif 'line' in comment:  # single-line comment
-                self.publish_inline_comment(comment['body'], comment['line'], comment['path'])
+                from_line = comment['line']
             else:
                 get_logger().error(f"Could not publish inline comment {comment}")
+                continue
+
+            publishable_count += 1
+            if self.publish_inline_comment(comment['body'], from_line, comment['path']):
+                published_count += 1
+
+        # A partial failure must not report failure: the caller republishes the whole
+        # list, which would post the already-accepted suggestions a second time.
+        return published_count > 0 or publishable_count == 0
 
     def get_title(self):
         return self.pr.title
@@ -556,7 +598,7 @@ class BitbucketProvider(GitProvider):
         )
 
     def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
-        return True
+        return None
 
     def remove_reaction(self, issue_comment_id: int, reaction_id: int) -> bool:
         return True
@@ -594,7 +636,7 @@ class BitbucketProvider(GitProvider):
     def _get_pr(self):
         return self._get_repo().pullrequests.get(self.pr_num)
 
-    def get_pr_file_content(self, file_path: str, branch: str) -> str:
+    def get_pr_file_content(self, file_path: str, branch: str, propagate_errors: bool = True) -> str:
         try:
             if branch == self.pr.source_branch:
                 branch = self.pr.data["source"]["commit"]["hash"]
@@ -605,9 +647,15 @@ class BitbucketProvider(GitProvider):
             response = requests.request("GET", url, headers=self.headers)
             if response.status_code == 404:  # not found
                 return ""
+            # Distinguish an unavailable file from a failed request to prevent an error response
+            # body from being treated as repository instructions or changelog content.
+            if propagate_errors:
+                response.raise_for_status()
             contents = response.text
             return contents
         except Exception:
+            if propagate_errors:
+                raise
             return ""
 
     def create_or_update_pr_file(self, file_path: str, branch: str, contents="", message="") -> None:
@@ -638,7 +686,7 @@ class BitbucketProvider(GitProvider):
         except Exception:
             return ""
 
-    def get_commit_messages(self):
+    def get_commit_messages(self) -> str:
         return ""  # not implemented yet
 
     # bitbucket does not support labels
@@ -671,7 +719,8 @@ class BitbucketProvider(GitProvider):
 
         (scheme, base_url) = repo_url_to_clone.split("bitbucket.org")
         if not all([scheme, base_url]):
-            get_logger().error(f"repo_url_to_clone: {repo_url_to_clone} is not a valid bitbucket URL.")
+            get_logger().error(
+                f"repo_url_to_clone: {redact_credentials(repo_url_to_clone)} is not a valid bitbucket URL.")
             return None
 
         if self.auth_type == "basic":

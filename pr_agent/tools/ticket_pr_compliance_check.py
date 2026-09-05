@@ -1,3 +1,4 @@
+import copy
 import math
 import re
 import traceback
@@ -5,8 +6,11 @@ from urllib.parse import urlparse
 
 import aiohttp
 
+from pr_agent.algo.pr_processing import OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD
+from pr_agent.algo.token_handler import TokenHandler
+from pr_agent.algo.utils import get_max_tokens
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers import AzureDevopsProvider, GithubProvider
+from pr_agent.git_providers import AzureDevopsProvider, GithubProvider, GitLabProvider
 from pr_agent.log import get_logger
 
 # Compile the regex pattern once, outside the function
@@ -52,6 +56,80 @@ DEFAULT_ASANA_REQUEST_TIMEOUT = 10
 MAX_ASANA_REQUEST_TIMEOUT = 60
 MAX_ASANA_TICKETS = 3
 MAX_GITHUB_TICKETS = 3
+MAX_GITLAB_TICKETS = 3
+GITLAB_TICKET_PATTERN = re.compile(
+    r"(?P<url>https?://[^\s<>(),;]+)"
+    r"|(?<![\w./-])(?P<project>[\w.-]+(?:/[\w.-]+)+)#(?P<project_issue>\d+)\b"
+    r"|(?<![\w/#])#(?P<local_issue>\d+)\b"
+)
+GITLAB_ISSUE_PATH_PATTERN = re.compile(r"/-/issues/(?P<iid>\d+)(?=/|$)")
+
+
+def fit_related_tickets_to_prompt_budget(
+    pr,
+    raw_vars: dict,
+    system_prompt: str,
+    user_prompt: str,
+    model: str,
+) -> tuple[dict, TokenHandler]:
+    """Fit complete related-ticket records while preserving room for the PR diff."""
+    prompt_vars = copy.deepcopy(raw_vars)
+    related_tickets = prompt_vars.get("related_tickets")
+    if not isinstance(related_tickets, list) or not related_tickets:
+        return prompt_vars, TokenHandler(
+            pr,
+            prompt_vars,
+            system_prompt,
+            user_prompt,
+            model=model,
+        )
+
+    raw_tickets = copy.deepcopy(related_tickets)
+    prompt_vars["related_tickets"] = []
+    token_handler = TokenHandler(
+        pr,
+        prompt_vars,
+        system_prompt,
+        user_prompt,
+        model=model,
+    )
+    prompt_token_limit = max(
+        token_handler.prompt_tokens,
+        get_max_tokens(model) - 2 * OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+    )
+
+    lower_bound = 1
+    upper_bound = len(raw_tickets)
+    while lower_bound <= upper_bound:
+        prefix_size = (lower_bound + upper_bound) // 2
+        candidate_vars = copy.deepcopy(prompt_vars)
+        candidate_vars["related_tickets"] = copy.deepcopy(raw_tickets[:prefix_size])
+        candidate_handler = TokenHandler(
+            pr,
+            candidate_vars,
+            system_prompt,
+            user_prompt,
+            model=model,
+        )
+        if candidate_handler.prompt_tokens > prompt_token_limit:
+            upper_bound = prefix_size - 1
+        else:
+            prompt_vars = candidate_vars
+            token_handler = candidate_handler
+            lower_bound = prefix_size + 1
+
+    included_tickets = len(prompt_vars["related_tickets"])
+    if included_tickets < len(raw_tickets):
+        get_logger().info(
+            "Clipped related tickets to preserve the prompt token budget",
+            artifact={
+                "included_tickets": included_tickets,
+                "omitted_tickets": len(raw_tickets) - included_tickets,
+                "model": model,
+            },
+        )
+
+    return prompt_vars, token_handler
 
 
 def find_asana_tickets(text: str | None) -> list:
@@ -175,6 +253,61 @@ def _get_user_description_for_asana(git_provider) -> str:
         get_logger().warning(f"Failed to read PR description for Asana references: {e}")
         return ""
     return description if isinstance(description, str) else ""
+
+
+def extract_gitlab_ticket_references(pr_description, repo_path, gitlab_url):
+    """Extract ``(project_path, issue_iid)`` references from a GitLab MR description."""
+    if not isinstance(pr_description, str) or not pr_description:
+        return []
+
+    try:
+        provider_url = urlparse(gitlab_url or "")
+        provider_host = provider_url.hostname or ""
+        provider_base_path = provider_url.path.rstrip("/")
+    except (AttributeError, TypeError, ValueError):
+        provider_host = ""
+        provider_base_path = ""
+
+    references = []
+    seen = set()
+    for match in GITLAB_TICKET_PATTERN.finditer(pr_description):
+        if match.group("url"):
+            try:
+                parsed_ticket_url = urlparse(match.group("url").rstrip(".:!?'\\\"]}`*"))
+            except ValueError:
+                continue
+            if not provider_host or parsed_ticket_url.hostname != provider_host:
+                continue
+
+            ticket_path = parsed_ticket_url.path
+            if provider_base_path:
+                if not ticket_path.startswith(f"{provider_base_path}/"):
+                    continue
+                ticket_path = ticket_path[len(provider_base_path):]
+
+            path_match = GITLAB_ISSUE_PATH_PATTERN.search(ticket_path)
+            if not path_match:
+                continue
+            issue_iid = int(path_match.group("iid"))
+            issue_project = ticket_path[:path_match.start()].strip("/")
+        elif match.group("project"):
+            issue_project = match.group("project")
+            issue_iid = int(match.group("project_issue"))
+        else:
+            issue_project = repo_path
+            issue_iid = int(match.group("local_issue"))
+
+        if not issue_project:
+            continue
+        reference = (issue_project, issue_iid)
+        dedupe_key = (issue_project.casefold(), issue_iid)
+        if dedupe_key not in seen:
+            seen.add(dedupe_key)
+            references.append(reference)
+
+    if len(references) > MAX_GITLAB_TICKETS:
+        get_logger().info(f"Too many GitLab tickets found in MR description: {len(references)}")
+    return references[:MAX_GITLAB_TICKETS]
 
 
 def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url_html='https://github.com'):
@@ -430,6 +563,41 @@ async def extract_tickets(git_provider):
                         'labels': ", ".join(labels),
                         'sub_issues': sub_issues_content  # Store sub-issues content
                     })
+
+            tickets_content.extend(asana_tickets_content)
+            return tickets_content
+
+        elif isinstance(git_provider, GitLabProvider):
+            references = extract_gitlab_ticket_references(
+                user_description,
+                git_provider.id_project,
+                git_provider.gitlab_url,
+            )
+            tickets_content = []
+            for project_path, issue_iid in references:
+                try:
+                    project = git_provider.gl.projects.get(project_path)
+                    issue = project.issues.get(issue_iid)
+                except Exception as e:
+                    get_logger().error(
+                        f"Error getting GitLab issue {project_path}#{issue_iid}: {e}",
+                        artifact={"traceback": traceback.format_exc()},
+                    )
+                    continue
+
+                issue_body = issue.description or ""
+                if len(issue_body) > MAX_TICKET_CHARACTERS:
+                    issue_body = issue_body[:MAX_TICKET_CHARACTERS] + "..."
+
+                tickets_content.append(
+                    {
+                        "ticket_id": issue.iid,
+                        "ticket_url": issue.web_url,
+                        "title": issue.title,
+                        "body": issue_body,
+                        "labels": ", ".join(issue.labels or []),
+                    }
+                )
 
             tickets_content.extend(asana_tickets_content)
             return tickets_content

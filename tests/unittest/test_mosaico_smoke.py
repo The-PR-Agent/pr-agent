@@ -1,7 +1,7 @@
 """Full-path smoke test (A2A 1.0).
 
-Drives ONE message/send through the SDK via Starlette TestClient against build_app()
-(REAL RawContextMiddleware mounted), proving the full path:
+Drive message/send requests through the SDK via an in-process ASGI HTTP transport against
+build_app() (REAL RawContextMiddleware mounted), proving the full path:
   HTTP POST / -> RawContextMiddleware -> DefaultRequestHandler -> PRAgentExecutor.execute
   -> request-scoped settings deepcopy -> route_and_run -> DiffInputProvider -> render.
 
@@ -13,12 +13,12 @@ This test passing is the end-to-end proof that the middleware->executor->dispatc
 provider->render chain works through the wire."""
 import uuid
 
+import httpx
 import pytest
+from a2a.types import Message, Part, Role, SendMessageRequest
 from google.protobuf.json_format import MessageToDict
-from starlette.testclient import TestClient
 
 import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_mod
-from a2a.types import Message, Part, Role, SendMessageRequest
 from pr_agent.mosaico.server import build_app
 
 REVIEW_DIFF = """```diff
@@ -88,16 +88,21 @@ def _extract_text(result: dict) -> str:
     return "\n".join(chunks)
 
 
+async def _post_message(text: str):
+    transport = httpx.ASGITransport(app=build_app())
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        return await client.post("/", json=_send_message_payload(text), headers=_A2A_HEADERS)
+
+
 class TestSmokeFullPath:
-    def test_review_diff_round_trip(self, monkeypatch):
+    @pytest.mark.asyncio
+    async def test_review_diff_round_trip(self, monkeypatch):
         async def fake_chat_completion(self, model, system, user, temperature=0.2, **kwargs):
             return CANNED_REVIEW_YAML, "stop"
 
         monkeypatch.setattr(litellm_mod.LiteLLMAIHandler, "chat_completion", fake_chat_completion)
 
-        client = TestClient(build_app())
-        resp = client.post("/", json=_send_message_payload(f"review this\n{REVIEW_DIFF}"),
-                           headers=_A2A_HEADERS)
+        resp = await _post_message(f"review this\n{REVIEW_DIFF}")
         assert resp.status_code == 200, resp.text
         body = resp.json()
         assert "error" not in body, body
@@ -117,7 +122,8 @@ class TestSmokeFullPath:
         # Must NOT be the executor's exception placeholder.
         assert not text.startswith("Error:"), text
 
-    def test_empty_diff_yields_fallback_no_exception(self, monkeypatch):
+    @pytest.mark.asyncio
+    async def test_empty_diff_yields_fallback_no_exception(self, monkeypatch):
         # No LLM call should be needed (parse yields nothing -> empty fallback), but mock
         # anyway so any accidental call is harmless.
         async def fake_chat_completion(self, model, system, user, temperature=0.2, **kwargs):
@@ -125,10 +131,8 @@ class TestSmokeFullPath:
 
         monkeypatch.setattr(litellm_mod.LiteLLMAIHandler, "chat_completion", fake_chat_completion)
 
-        client = TestClient(build_app())
         empty = "```diff\nnot actually a diff\n```"
-        resp = client.post("/", json=_send_message_payload(f"review\n{empty}"),
-                           headers=_A2A_HEADERS)
+        resp = await _post_message(f"review\n{empty}")
         assert resp.status_code == 200, resp.text
         body = resp.json()
         assert "error" not in body, body
@@ -145,8 +149,9 @@ class TestSmokeFullPath:
         assert "no output produced" in text, text
         assert not text.startswith("Error:"), text
 
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("verb", ["review", "improve", "describe", "ask"])
-    def test_llm_outage_yields_failed_not_completed(self, monkeypatch, verb):
+    async def test_llm_outage_yields_failed_not_completed(self, monkeypatch, verb):
         """A total model outage must reach the caller as TASK_STATE_FAILED. review/improve/
         describe used to swallow it and report success with 'no output produced'; 'ask' was
         already correct and is pinned here so the fix does not regress it."""
@@ -155,9 +160,7 @@ class TestSmokeFullPath:
 
         monkeypatch.setattr(litellm_mod.LiteLLMAIHandler, "chat_completion", failing_chat_completion)
 
-        client = TestClient(build_app())
-        resp = client.post("/", json=_send_message_payload(f"{verb} this\n{REVIEW_DIFF}"),
-                           headers=_A2A_HEADERS)
+        resp = await _post_message(f"{verb} this\n{REVIEW_DIFF}")
         assert resp.status_code == 200, resp.text
         body = resp.json()
         assert "error" not in body, body

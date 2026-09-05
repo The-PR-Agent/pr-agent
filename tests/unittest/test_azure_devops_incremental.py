@@ -1,11 +1,12 @@
 import datetime as _dt
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from pr_agent.algo.utils import PRReviewIdentity
 from pr_agent.git_providers import AzureDevopsProvider
-from pr_agent.git_providers.azuredevops_provider import (
-    _AzureCommitAdapter,
-    _to_naive_utc,
-)
+from pr_agent.git_providers.azuredevops_provider import _AzureCommitAdapter, _to_naive_utc
 from pr_agent.git_providers.git_provider import IncrementalPR
 
 
@@ -19,11 +20,12 @@ def _raw_commit(commit_id, comment, author_date, parents=None):
     return raw
 
 
-def _comment(body, published_date):
+def _comment(body, published_date, last_updated_date=None):
     c = MagicMock()
     c.body = body
     c.content = body
     c.published_date = published_date
+    c.last_updated_date = last_updated_date
     c.thread_id = 7
     return c
 
@@ -89,6 +91,64 @@ class TestGetIncrementalCommits:
         assert provider.incremental.is_incremental is False
         assert provider.previous_review is None
 
+    def test_previous_review_accepts_custom_heading_with_stable_identity(self):
+        provider = self._make_provider()
+        review_time = _dt.datetime(2024, 6, 1, 10, 0, tzinfo=_dt.timezone.utc)
+        marked = _comment(
+            (
+                "## Guideline Compliance Check 🔍\n\n"
+                f"{PRReviewIdentity.REGULAR.value}\n\nbody"
+            ),
+            review_time,
+        )
+        provider.get_issue_comments = MagicMock(return_value=[marked])
+
+        result = provider.get_previous_review(full=True, incremental=False)
+
+        assert result is marked
+
+    def test_supports_review_and_suggestions_kinds(self):
+        provider = self._make_provider()
+
+        assert provider.supports_incremental_kind("review") is True
+        assert provider.supports_incremental_kind("suggestions") is True
+        assert provider.supports_incremental_kind("unknown") is False
+
+    @pytest.mark.parametrize("suggestions_header", [
+        "## PR Code Suggestions ✨",
+        "## Unanchored Code Suggestions",
+    ])
+    def test_suggestions_kind_anchors_on_latest_improve_comment(self, suggestions_header):
+        provider = self._make_provider()
+        old = _raw_commit("old", "seen", _dt.datetime(2024, 5, 1), parents=["base"])
+        new = _raw_commit("new", "added", _dt.datetime(2024, 6, 2), parents=["old"])
+        provider.azure_devops_client.get_pull_request_commits.return_value = [new, old]
+        provider.get_issue_comments = MagicMock(return_value=[
+            _comment("## PR Reviewer Guide", _dt.datetime(2024, 6, 2)),
+            _comment(suggestions_header, _dt.datetime(2024, 6, 1)),
+        ])
+        changes = MagicMock()
+        changes.changes = [{"item": {"path": "/new.py", "gitObjectType": "blob"}}]
+        provider.azure_devops_client.get_changes.return_value = changes
+
+        provider.get_incremental_commits(IncrementalPR(True), kind="suggestions")
+
+        assert provider.incremental.is_incremental is True
+        assert provider.previous_review.body == suggestions_header
+        assert provider.incremental.last_seen_commit_sha == "old"
+        assert provider.unreviewed_files_map == {"/new.py": "/new.py"}
+
+    def test_persistent_comment_update_is_the_incremental_anchor(self):
+        provider = self._make_provider()
+        published = _dt.datetime(2024, 5, 1)
+        updated = _dt.datetime(2024, 6, 1)
+        comment = _comment("## PR Code Suggestions", published, updated)
+        provider.get_issue_comments = MagicMock(return_value=[comment])
+
+        anchor = provider._find_incremental_anchor(("## PR Code Suggestions",))
+
+        assert anchor.created_at == updated
+
     def test_populates_commits_range_and_files(self):
         provider = self._make_provider()
 
@@ -130,6 +190,31 @@ class TestGetIncrementalCommits:
         assert "/bar.py" in provider.unreviewed_files_map
         assert "/somedir" not in provider.unreviewed_files_map
         assert prev.html_url == provider.get_comment_url(prev)
+
+    def test_populates_files_from_sdk_change_objects(self):
+        provider = self._make_provider()
+
+        review_time = _dt.datetime(2024, 6, 1, 10, 0, tzinfo=_dt.timezone.utc)
+        old = _raw_commit(
+            "old1", "first", _dt.datetime(2024, 5, 1, tzinfo=_dt.timezone.utc), parents=["p0"],
+        )
+        new = _raw_commit(
+            "new1", "second", _dt.datetime(2024, 6, 2, tzinfo=_dt.timezone.utc), parents=["old1"],
+        )
+        provider.azure_devops_client.get_pull_request_commits = MagicMock(return_value=[new, old])
+        provider.get_issue_comments = MagicMock(
+            return_value=[_comment("## PR Reviewer Guide\nbody", review_time)]
+        )
+
+        changes_obj = MagicMock()
+        changes_obj.changes = [
+            SimpleNamespace(item=SimpleNamespace(path="/src/sdk.py")),
+        ]
+        provider.azure_devops_client.get_changes = MagicMock(return_value=changes_obj)
+
+        provider.get_incremental_commits(IncrementalPR(True))
+
+        assert "/src/sdk.py" in provider.unreviewed_files_map
 
     def test_skips_merge_commits(self):
         provider = self._make_provider()

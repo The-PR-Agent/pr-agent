@@ -183,6 +183,78 @@ def test_get_pr_multi_diffs_clips_large_patch_when_policy_is_clip(monkeypatch):
         settings.config.verbosity_level = original["verbosity_level"]
 
 
+def test_get_pr_multi_diffs_reports_the_files_the_token_budget_left_out(monkeypatch):
+    # /review needs the same coverage list get_pr_diff returns, so the review footer can name
+    # the files that were dropped even when the diff was reviewed in chunks.
+    settings = get_settings()
+    original = {
+        "patch_extra_lines_before": settings.config.patch_extra_lines_before,
+        "patch_extra_lines_after": settings.config.patch_extra_lines_after,
+        "large_patch_policy": settings.config.get("large_patch_policy", "skip"),
+        "verbosity_level": settings.config.verbosity_level,
+    }
+    settings.config.patch_extra_lines_before = 0
+    settings.config.patch_extra_lines_after = 0
+    settings.config.large_patch_policy = "skip"
+    settings.config.verbosity_level = 0
+
+    def _file(filename, patch):
+        return FilePatchInfo(base_file="old\n", head_file="new\n", patch=patch,
+                             filename=filename, edit_type=EDIT_TYPE.MODIFIED)
+
+    hunk = "@@ -1 +1 @@\n-old\n+" + ("alpha " * 60)
+    deleted = FilePatchInfo(base_file="old\n", head_file="", patch="@@ -1 +0,0 @@\n-old",
+                            filename="deleted.py", edit_type=EDIT_TYPE.DELETED)
+    files = [_file("first.py", hunk), _file("second.py", hunk), _file("no_patch.py", ""), deleted]
+    provider = FakeProvider(files)
+    token_handler = FakeTokenHandler(prompt_tokens=100)
+
+    monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda languages, files: [{"files": files}])
+    monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: 1700)
+
+    try:
+        diffs, remaining_files = pr_processing.get_pr_multi_diffs(
+            provider, token_handler, "tiny-model", max_calls=1, add_line_numbers=False,
+            return_remaining_files=True
+        )
+
+        assert len(diffs) == 1
+        assert "first.py" in diffs[0]
+        # second.py did not fit within max_calls; no_patch.py and deleted.py have nothing to
+        # review, so they are not something the token budget left out
+        assert remaining_files == ["second.py"]
+    finally:
+        for key, value in original.items():
+            setattr(settings.config, key, value)
+
+
+def test_get_pr_multi_diffs_reports_no_remaining_files_when_the_whole_diff_fits(monkeypatch):
+    settings = get_settings()
+    original_before = settings.config.patch_extra_lines_before
+    original_after = settings.config.patch_extra_lines_after
+    settings.config.patch_extra_lines_before = 0
+    settings.config.patch_extra_lines_after = 0
+
+    file_info = FilePatchInfo(base_file="old\n", head_file="new\n", patch="@@ -1 +1 @@\n-old\n+new",
+                              filename="small.py", edit_type=EDIT_TYPE.MODIFIED)
+    provider = FakeProvider([file_info])
+    token_handler = FakeTokenHandler(prompt_tokens=100)
+
+    monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda languages, files: [{"files": files}])
+    monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: 100000)
+
+    try:
+        diffs, remaining_files = pr_processing.get_pr_multi_diffs(
+            provider, token_handler, "big-model", add_line_numbers=False, return_remaining_files=True
+        )
+
+        assert len(diffs) == 1
+        assert remaining_files == []
+    finally:
+        settings.config.patch_extra_lines_before = original_before
+        settings.config.patch_extra_lines_after = original_after
+
+
 def test_pr_description_reads_fall_back_when_keys_missing():
     # Regression for "'DynaBox' object has no attribute 'enable_large_pr_handling'":
     # custom_merge_loader replaces a section instead of merging it, so a custom

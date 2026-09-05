@@ -8,9 +8,10 @@ from jinja2 import Environment, StrictUndefined
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.pr_processing import get_pr_diff, retry_with_fallback_models
+from pr_agent.algo.prompt_fragments import render_diff_hunk_format
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import load_yaml
-from pr_agent.config_loader import get_settings
+from pr_agent.config_loader import get_settings, get_verbosity_level
 from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.git_provider import get_main_pr_language
 from pr_agent.log import get_logger
@@ -39,6 +40,10 @@ class PRAddDocs:
             "diff": "",  # empty diff for initial calculation
             "extra_instructions": get_settings().pr_add_docs.extra_instructions,
             "commit_messages_str": self.git_provider.get_commit_messages(),
+            "diff_hunk_format": render_diff_hunk_format(
+                include_line_numbers=True,
+                include_ai_metadata=False,
+            ),
             'docs_for_language': get_docs_for_language(self.main_language,
                                                        get_settings().pr_add_docs.docs_style),
         }
@@ -86,7 +91,7 @@ class PRAddDocs:
         environment = Environment(undefined=StrictUndefined)
         system_prompt = environment.from_string(get_settings().pr_add_docs_prompt.system).render(variables)
         user_prompt = environment.from_string(get_settings().pr_add_docs_prompt.user).render(variables)
-        if get_settings().config.verbosity_level >= 2:
+        if get_verbosity_level() >= 2:
             get_logger().info(f"\nSystem prompt:\n{system_prompt}")
             get_logger().info(f"\nUser prompt:\n{user_prompt}")
         response, finish_reason = await self.ai_handler.chat_completion(
@@ -109,7 +114,7 @@ class PRAddDocs:
 
         for d in data['Code Documentation']:
             try:
-                if get_settings().config.verbosity_level >= 2:
+                if get_verbosity_level() >= 2:
                     get_logger().info(f"add_docs: {d}")
                 relevant_file = d['relevant file'].strip()
                 relevant_line = int(d['relevant line'])  # absolute position
@@ -119,12 +124,12 @@ class PRAddDocs:
                     new_code_snippet = self.dedent_code(relevant_file, relevant_line, documentation, doc_placement,
                                                         add_original_line=True)
 
-                    body = f"**Suggestion:** Proposed documentation\n```suggestion\n" + new_code_snippet + "\n```"
+                    body = "**Suggestion:** Proposed documentation\n```suggestion\n" + new_code_snippet + "\n```"
                     docs.append({'body': body, 'relevant_file': relevant_file,
                                              'relevant_lines_start': relevant_line,
                                              'relevant_lines_end': relevant_line})
             except Exception:
-                if get_settings().config.verbosity_level >= 2:
+                if get_verbosity_level() >= 2:
                     get_logger().info(f"Could not parse code docs: {d}")
 
         is_successful = self.git_provider.publish_code_suggestions(docs)
@@ -139,13 +144,22 @@ class PRAddDocs:
             self.diff_files = self.git_provider.diff_files if self.git_provider.diff_files \
                 else self.git_provider.get_diff_files()
             original_initial_line = None
+            file_lines = []
             for file in self.diff_files:
                 if file.filename.strip() == relevant_file:
-                    original_initial_line = file.head_file.splitlines()[relevant_lines_start - 1]
+                    file_lines = file.head_file.splitlines() if file.head_file else []
+                    if not 1 <= relevant_lines_start <= len(file_lines):
+                        get_logger().warning(
+                            "Could not dedent code snippet, relevant_lines_start is out of range",
+                            artifact={'filename': file.filename,
+                                      'relevant_lines_start': relevant_lines_start,
+                                      'num_lines': len(file_lines)})
+                        return new_code_snippet
+                    original_initial_line = file_lines[relevant_lines_start - 1]
                     break
             if original_initial_line:
-                if doc_placement == 'after':
-                    line = file.head_file.splitlines()[relevant_lines_start]
+                if doc_placement == 'after' and relevant_lines_start < len(file_lines):
+                    line = file_lines[relevant_lines_start]
                 else:
                     line = original_initial_line
                 suggested_initial_line = new_code_snippet.splitlines()[0]
@@ -160,7 +174,7 @@ class PRAddDocs:
                     else:
                         new_code_snippet = new_code_snippet.rstrip() + "\n" + original_initial_line
         except Exception as e:
-            if get_settings().config.verbosity_level >= 2:
+            if get_verbosity_level() >= 2:
                 get_logger().info(f"Could not dedent code snippet for file {relevant_file}, error: {e}")
 
         return new_code_snippet

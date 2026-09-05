@@ -1,5 +1,6 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import openai
 import pytest
 
@@ -34,9 +35,15 @@ class FakeSettings:
         return self._settings_values.get(key, default)
 
 
-def _mock_response():
+def _mock_response(usage=None):
     mock = MagicMock()
     response = {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+    if usage is not None:
+        response["usage"] = usage
+        # run_details reads the litellm attribute, not the dict form
+        mock.usage = usage
+    else:
+        mock.usage = None
     mock.__getitem__.side_effect = response.__getitem__
     mock.dict.return_value = response
     return mock
@@ -53,6 +60,52 @@ async def test_chat_completion_passes_seed_when_temperature_is_zero(monkeypatch)
         await handler.chat_completion(model="gpt-4o", system="sys", user="usr", temperature=0)
 
     assert mock_call.call_args.kwargs["seed"] == 123
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model", "expected_model_id"),
+    [
+        ("bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0", "profile-123"),
+        ("bedrock_mantle/xai.grok-4.3", None),
+    ],
+)
+async def test_chat_completion_scopes_model_id_to_classic_bedrock(monkeypatch, model, expected_model_id):
+    monkeypatch.setattr(
+        litellm_handler,
+        "get_settings",
+        lambda: FakeSettings(settings_values={"litellm.model_id": "profile-123"}),
+    )
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+
+        await handler.chat_completion(model=model, system="sys", user="usr")
+
+    if expected_model_id is None:
+        assert "model_id" not in mock_call.call_args.kwargs
+    else:
+        assert mock_call.call_args.kwargs["model_id"] == expected_model_id
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_accumulates_usage_into_run_details(monkeypatch):
+    from pr_agent.algo.run_details import init_run_details
+
+    monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+    usage = {"prompt_tokens": 101, "completion_tokens": 23, "total_tokens": 124}
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response(usage)
+        handler = litellm_handler.LiteLLMAIHandler()
+
+        details = init_run_details()
+        await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
+
+    assert details.prompt_tokens == 101
+    assert details.completion_tokens == 23
+    assert details.total_tokens == 124
 
 
 @pytest.mark.asyncio
@@ -245,6 +298,79 @@ async def test_chat_completion_combines_prompts_for_user_message_only_models(mon
     assert messages == [{"role": "user", "content": "sys\n\n\nusr"}]
 
 
+# Wiring tests for the retry knobs: the helpers (_should_retry_same_model,
+# _configured_client_retries) are unit-tested in test_litellm_retry_config.py, but those
+# tests keep passing when the @retry predicate or the kwargs pass-through in
+# chat_completion is reverted. The four tests below drive chat_completion itself, so a
+# regression in the wiring — not just the helpers — fails a test.
+
+
+def _timeout_error():
+    return openai.APITimeoutError(request=httpx.Request("POST", "http://model.invalid"))
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_passes_configured_retries_to_completion_call(monkeypatch):
+    monkeypatch.setattr(litellm_handler, "get_settings", lambda: FakeSettings(config_values={"num_retries": 0}))
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+
+        await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
+
+    assert mock_call.call_args.kwargs["num_retries"] == 0
+    assert mock_call.call_args.kwargs["max_retries"] == 0
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_unset_num_retries_keeps_client_defaults(monkeypatch):
+    monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+
+        await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
+
+    assert "num_retries" not in mock_call.call_args.kwargs
+    assert "max_retries" not in mock_call.call_args.kwargs
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_timeout_retries_same_model_by_default(monkeypatch):
+    monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.side_effect = _timeout_error()
+        handler = litellm_handler.LiteLLMAIHandler()
+
+        with pytest.raises(openai.APITimeoutError):
+            await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
+
+    assert mock_call.call_count == litellm_handler.MODEL_RETRIES
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_timeout_not_retried_same_model_when_disabled(monkeypatch):
+    monkeypatch.setattr(
+        litellm_handler,
+        "get_settings",
+        lambda: FakeSettings(config_values={"retry_same_model_on_timeout": False}),
+    )
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.side_effect = _timeout_error()
+        handler = litellm_handler.LiteLLMAIHandler()
+
+        # The timeout must surface to the caller's fallback-models loop after a single
+        # attempt, instead of being replayed on the model that just missed the deadline.
+        with pytest.raises(openai.APITimeoutError):
+            await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
+
+    assert mock_call.call_count == 1
+
+
 @pytest.mark.asyncio
 async def test_get_completion_uses_streaming_for_required_models():
     handler = litellm_handler.LiteLLMAIHandler.__new__(litellm_handler.LiteLLMAIHandler)
@@ -254,7 +380,11 @@ async def test_get_completion_uses_streaming_for_required_models():
             patch("pr_agent.algo.ai_handlers.litellm_ai_handler._handle_streaming_response",
                   new_callable=AsyncMock) as mock_stream:
         mock_call.return_value = "stream"
-        mock_stream.return_value = ("streamed text", "stop")
+        completed_response = MagicMock()
+        completed_response.dict.return_value = {
+            "choices": [{"message": {"content": "streamed text"}, "finish_reason": "stop"}]
+        }
+        mock_stream.return_value = ("streamed text", "stop", completed_response)
 
         resp, finish_reason, response_obj = await handler._get_completion(
             model="streaming-model",
@@ -262,6 +392,8 @@ async def test_get_completion_uses_streaming_for_required_models():
         )
 
     assert mock_call.call_args.kwargs["stream"] is True
+    assert mock_call.call_args.kwargs["stream_options"] == {"include_usage": True}
+    mock_stream.assert_awaited_once_with("stream", model="streaming-model")
     assert resp == "streamed text"
     assert finish_reason == "stop"
     assert response_obj.dict()["choices"][0]["message"]["content"] == "streamed text"

@@ -56,6 +56,7 @@ _DEFAULT_MAX_SKILLS_TOKENS = 8000
 # matching the agent-skills standard's executable/binary conventions.
 _EXCLUDED_RESOURCE_DIRS = frozenset({"scripts", "assets"})
 _CONTEXT_CACHE_KEY = "skills_context"
+_CONTEXT_CACHE_SETTINGS_KEY = "skills_context_settings"
 # Per-resource-file size cap. Defence-in-depth against pathological skill
 # directories (large markdown dumps, accidental inclusion of generated docs,
 # or a misconfigured paths entry pointing at a directory with huge files).
@@ -75,6 +76,22 @@ class Skill:
     description: str
     body: str
     resources: Tuple[SkillResource, ...] = field(default_factory=tuple)
+
+
+def _expand_skill_path(raw_path: object) -> Optional[str]:
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return None
+    return os.path.expanduser(os.path.expandvars(raw_path.strip()))
+
+
+def _expanded_skill_paths(paths: List[str]) -> Tuple[str, ...]:
+    """Return the normalized path values used by discovery and cache keys."""
+    expanded_paths = []
+    for raw_path in paths or []:
+        expanded = _expand_skill_path(raw_path)
+        if expanded is not None:
+            expanded_paths.append(expanded)
+    return tuple(expanded_paths)
 
 
 def _count_tokens(text: str) -> int:
@@ -189,9 +206,9 @@ def discover_skills(paths: List[str]) -> List[Skill]:
     seen: set = set()
 
     for raw_path in paths or []:
-        if not isinstance(raw_path, str) or not raw_path.strip():
+        expanded = _expand_skill_path(raw_path)
+        if expanded is None:
             continue
-        expanded = os.path.expanduser(os.path.expandvars(raw_path.strip()))
         if not os.path.exists(expanded):
             get_logger().warning(f"Skills path does not exist: {expanded}")
             continue
@@ -259,6 +276,8 @@ def format_skills_context(skills: List[Skill], max_tokens: int) -> str:
             if not pieces:
                 budget = max(1, max_tokens - marker_tokens)
                 truncated = clip_tokens(formatted, budget, add_three_dots=False)
+                while truncated and _count_tokens(truncated + truncate_marker) > max_tokens:
+                    truncated = truncated[: int(len(truncated) * 0.9)]
                 pieces.append(truncated + truncate_marker)
                 if len(skills) > 1:
                     get_logger().info(
@@ -275,8 +294,10 @@ def format_skills_context(skills: List[Skill], max_tokens: int) -> str:
     return separator.join(pieces).strip()
 
 
-def _get_cached_context() -> Optional[str]:
+def _get_cached_context(cache_settings: Tuple[bool, Tuple[object, ...], Optional[int]]) -> Optional[str]:
     try:
+        if context.get(_CONTEXT_CACHE_SETTINGS_KEY, None) != cache_settings:
+            return None
         return context.get(_CONTEXT_CACHE_KEY, None)
     except ContextDoesNotExistError:
         # No request-scoped context (e.g. CLI runs): nothing is memoised, so
@@ -284,8 +305,9 @@ def _get_cached_context() -> Optional[str]:
         return None
 
 
-def _set_cached_context(value: str) -> None:
+def _set_cached_context(cache_settings: Tuple[bool, Tuple[object, ...], Optional[int]], value: str) -> None:
     try:
+        context[_CONTEXT_CACHE_SETTINGS_KEY] = cache_settings
         context[_CONTEXT_CACHE_KEY] = value
     except ContextDoesNotExistError:
         # No request-scoped context (e.g. CLI runs): skip memoisation. The value
@@ -296,29 +318,42 @@ def _set_cached_context(value: str) -> None:
 def get_skills_context() -> str:
     """Read settings, discover skills, and format them for prompt injection.
 
-    Memoised per request via ``starlette_context`` so the three tools that
-    inject ``skills_context`` (review, improve, describe) share a single
-    discovery + parse + format. Returns ``''`` when skills are disabled, no
-    paths are configured, or no skills are found.
+    Memoised per request and effective Skills settings via ``starlette_context``
+    so the three tools that inject ``skills_context`` (review, improve, describe)
+    share a single discovery + parse + format. Returns ``''`` when skills are
+    disabled, no paths are configured, or no skills are found.
     """
-    cached = _get_cached_context()
-    if cached is not None:
-        return cached
-
     settings = get_settings()
-    if not settings.skills.enabled:
-        _set_cached_context("")
-        return ""
+    enabled = bool(settings.skills.enabled)
     paths = list(settings.skills.paths or [])
+    expanded_paths = _expanded_skill_paths(paths)
+
+    if not enabled:
+        cache_settings = (False, expanded_paths, None)
+        cached = _get_cached_context(cache_settings)
+        if cached is not None:
+            return cached
+        _set_cached_context(cache_settings, "")
+        return ""
+
     raw_max = settings.skills.max_skills_tokens
+    invalid_max = False
     try:
         max_tokens = int(raw_max)
     except (TypeError, ValueError):
+        invalid_max = True
+        max_tokens = _DEFAULT_MAX_SKILLS_TOKENS
+
+    cache_settings = (True, expanded_paths, max_tokens)
+    cached = _get_cached_context(cache_settings)
+    if cached is not None:
+        return cached
+    if invalid_max:
         get_logger().warning(
             f"Invalid skills.max_skills_tokens={raw_max!r}; falling back to {_DEFAULT_MAX_SKILLS_TOKENS}"
         )
-        max_tokens = _DEFAULT_MAX_SKILLS_TOKENS
+
     skills = discover_skills(paths)
     out = format_skills_context(skills, max_tokens) if skills else ""
-    _set_cached_context(out)
+    _set_cached_context(cache_settings, out)
     return out

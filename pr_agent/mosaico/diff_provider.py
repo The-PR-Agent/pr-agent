@@ -100,6 +100,7 @@ def parse_unified_diff(diff_text: str) -> List[FilePatchInfo]:
             filename=filename,
             edit_type=edit_type,
             old_filename=old_filename,
+            head_file_is_complete=False,
         ))
     return files
 
@@ -134,7 +135,7 @@ class DiffInputProvider(GitProvider):
     def get_pr_branch(self):
         return ""
 
-    def get_commit_messages(self):
+    def get_commit_messages(self) -> str:
         return ""
 
     def get_pr_description_full(self) -> str:
@@ -177,7 +178,7 @@ class DiffInputProvider(GitProvider):
     def get_pr_labels(self, update=False):
         return []
 
-    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False):
+    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
         return None
 
     def remove_reaction(self, issue_comment_id: int, reaction_id: int) -> bool:

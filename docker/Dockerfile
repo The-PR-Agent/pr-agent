@@ -1,12 +1,14 @@
-FROM python:3.12.13-slim AS base
+FROM python:3.12.14-slim AS base
+COPY --from=ghcr.io/astral-sh/uv:0.9.7 /uv /uvx /bin/
 
 RUN apt update && apt install --no-install-recommends -y git curl && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-ADD pyproject.toml .
-ADD requirements.txt .
+ENV UV_COMPILE_BYTECODE=1
+ADD pyproject.toml uv.lock ./
 ADD docs docs
-RUN pip install --no-cache-dir . && rm pyproject.toml requirements.txt
+RUN uv sync --frozen --no-install-project --no-dev
+ENV PATH="/app/.venv/bin:$PATH"
 ENV PYTHONPATH=/app
 
 FROM base AS github_app
@@ -24,6 +26,12 @@ CMD ["python", "pr_agent/servers/bitbucket_server_webhook.py"]
 FROM base AS github_polling
 ADD pr_agent pr_agent
 CMD ["python", "pr_agent/servers/github_polling.py"]
+
+FROM base AS github_action
+ADD pr_agent pr_agent
+ADD github_action/entrypoint.sh /
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
 
 FROM base AS gitlab_webhook
 ADD pr_agent pr_agent
@@ -44,12 +52,13 @@ CMD ["python", "pr_agent/mosaico/server.py"]
 
 
 FROM base AS test
-ADD requirements-dev.txt .
-RUN pip install --no-cache-dir -r requirements-dev.txt && rm requirements-dev.txt
+RUN uv sync --frozen --no-install-project
 ADD pr_agent pr_agent
 ADD tests tests
+ADD .github/workflows/publish.yml .github/workflows/publish.yml
 ADD docker/mosaico docker/mosaico
 
 FROM base AS cli
 ADD pr_agent pr_agent
+RUN uv sync --frozen --no-dev && ln -s /app/.venv/bin/pr-agent /usr/local/bin/pr-agent
 ENTRYPOINT ["python", "pr_agent/cli.py"]

@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import secrets
 import time
 from collections import defaultdict
 from typing import Any, Callable
@@ -23,6 +24,20 @@ def verify_signature(payload_body, secret_token, signature_header):
     expected_signature = "sha256=" + hash_object.hexdigest()
     if not hmac.compare_digest(expected_signature, signature_header):
         raise HTTPException(status_code=403, detail="Request signatures didn't match!")
+
+
+def basic_auth_matches(credentials, username, password) -> bool:
+    """Compare HTTP basic credentials against the configured pair in constant time.
+
+    The comparison runs on UTF-8 bytes: given `str` arguments, secrets.compare_digest
+    accepts ASCII only and raises TypeError otherwise, so a configured username or
+    password with a non-ASCII character would turn every authenticated call into a 500.
+    Both fields are compared before the result is combined, so a wrong username costs
+    the same as a wrong password.
+    """
+    user_ok = secrets.compare_digest(credentials.username.encode("utf-8"), str(username).encode("utf-8"))
+    pass_ok = secrets.compare_digest(credentials.password.encode("utf-8"), str(password).encode("utf-8"))
+    return user_ok and pass_ok
 
 
 class RateLimitExceeded(Exception):
@@ -75,12 +90,26 @@ class DefaultDictWithTimeout(defaultdict):
         if self.__update_key_time_on_get:
             self.__key_times[__key] = self.__time()
         self.__refresh()
-        return super().__getitem__(__key)
+        try:
+            return super().__getitem__(__key)
+        except KeyError:
+            self.__key_times.pop(__key, None)
+            raise
 
     def __setitem__(self, __key, __value):
         self.__key_times[__key] = self.__time()
         return super().__setitem__(__key, __value)
 
     def __delitem__(self, __key):
-        del self.__key_times[__key]
-        return super().__delitem__(__key)
+        self.__key_times.pop(__key, None)
+        if super().__contains__(__key):
+            super().__delitem__(__key)
+
+    def setdefault(self, __key, __default=None):
+        self.__refresh()
+        if super().__contains__(__key):
+            if self.__update_key_time_on_get:
+                self.__key_times[__key] = self.__time()
+            return super().__getitem__(__key)
+        self[__key] = __default
+        return __default

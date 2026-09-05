@@ -12,6 +12,7 @@ from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 _TRACKED_KEYS_REVIEW = (
     "config.output_run_details",
+    "config.output_run_cost",
     "config.publish_output",
     "config.is_auto_command",
     "data",
@@ -73,6 +74,7 @@ async def _noop_async(*_args, **_kwargs):
 
 def test_flag_defaults_to_false():
     assert get_settings().config.get("output_run_details", None) is False
+    assert get_settings().config.get("output_run_cost", None) is False
 
 
 @pytest.mark.asyncio
@@ -105,6 +107,7 @@ review:
         get_settings().set("config.is_auto_command", False)
         get_settings().pr_reviewer.enable_help_text = False
 
+        get_settings().set("config.output_run_cost", True)
         get_settings().set("config.output_run_details", False)
         await reviewer.run()
         without_details = get_settings().data["artifact"]
@@ -114,7 +117,9 @@ review:
         with_details = get_settings().data["artifact"]
 
         assert "⚙️ Agent run details" not in without_details
+        assert "Estimated API cost" not in without_details
         assert "⚙️ Agent run details" in with_details
+        assert "Estimated API cost: unavailable" in with_details
     finally:
         restore_settings(snapshot)
 
@@ -224,6 +229,7 @@ async def test_pr_code_suggestions_appends_run_details_when_no_suggestions(monke
         suggestions.progress_response = None
         suggestions.git_provider = MagicMock()
         suggestions.git_provider.get_files.return_value = ["changed.py"]
+        suggestions.git_provider.supports_code_suggestions_artifact.return_value = False
         suggestions.git_provider.is_supported.side_effect = lambda cap: cap == "gfm_markdown" and gfm_supported
 
         async def _fake_retry_empty(*_args, **_kwargs):

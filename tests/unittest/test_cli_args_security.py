@@ -24,6 +24,9 @@ FORBIDDEN_ARGS = [
     "--litellm.api_type=azure",
     "--litellm.api_version=2024-01-01",
     "--jira.jira_base_url=https://evil.example",
+    # gitea.web_url is resolved on first use, so a comment could otherwise redirect published links
+    "--gitea.web_url=https://evil.example",
+    "--gitea__web_url=https://evil.example",
     "--config.url=https://evil.example",
     "--config.uri=https://evil.example",
     # provider / auth selection and skip lists
@@ -50,12 +53,25 @@ FORBIDDEN_ARGS = [
     "--github__webhook_secret=secret",
     "--github_app__private_key=xxx",
     "--litellm__api_base=https://evil.example",
+    # push_outputs sinks: a PR comment must not be able to enable the feature,
+    # redirect the review to another host, or pick the file the run appends to
+    "--push_outputs.enable=true",
+    '--push_outputs.channels=["webhook"]',
+    "--push_outputs.webhook_url=https://evil.example/collect",
+    "--push_outputs.slack_webhook_url=https://evil.example/slack",
+    "--push_outputs.file_path=/etc/cron.d/pwn",
+    "--PUSH_OUTPUTS.WEBHOOK_URL=https://evil.example/collect",
+    "--push_outputs__webhook_url=https://evil.example/collect",
+    # whole-section form: the dotted entries above do not cover it
+    '--push_outputs={"enable": true, "channels": ["webhook"], "webhook_url": "https://evil.example"}',
 ]
 
 
 ALLOWED_ARGS_SINGLE = [
     "--pr_reviewer.num_code_suggestions=3",
     "--pr_reviewer.require_tests_review=true",
+    "--skills.enabled=true",
+    "--skills.max_skills_tokens=1000",
     "--config.response_language=zh-tw",
     "--pr_description.publish_labels=false",
     # non-flag arguments are not validated against the forbidden list
@@ -66,6 +82,17 @@ ALLOWED_ARGS_SINGLE = [
 ]
 
 
+HOST_ONLY_ARGS = [
+    "--skills.paths=/etc",
+    "--skills__paths=/etc",
+    "--skills.unknown=value",
+    "--skills={paths:[/etc]}",
+    "--prompt_fragments.diff_hunk_format={{ cycler.__init__.__globals__ }}",
+    "--prompt_fragments__diff_hunk_format=unsafe",
+    '--prompt_fragments={"diff_hunk_format": "unsafe"}',
+]
+
+
 @pytest.mark.parametrize("forbidden", FORBIDDEN_ARGS)
 def test_validate_user_args_rejects_forbidden(forbidden):
     ok, offending = CliArgs.validate_user_args([forbidden])
@@ -73,6 +100,13 @@ def test_validate_user_args_rejects_forbidden(forbidden):
     assert isinstance(offending, str) and offending, (
         f"Expected an offending-token string for {forbidden!r}, got {offending!r}"
     )
+
+
+@pytest.mark.parametrize("host_only", HOST_ONLY_ARGS)
+def test_validate_user_args_rejects_keys_not_in_repo_allowlist(host_only):
+    ok, offending = CliArgs.validate_user_args([host_only])
+    assert ok is False
+    assert offending.lstrip('.') in host_only.lower().replace('__', '.')
 
 
 @pytest.mark.parametrize("allowed", ALLOWED_ARGS_SINGLE)
@@ -143,3 +177,12 @@ async def test_handle_request_uses_real_validator_to_block_forbidden(monkeypatch
 
     assert handled is False
     notify.assert_not_called()
+
+
+@pytest.mark.parametrize("prefix", ["  ", "\t", "\n", " \t "])
+def test_validate_user_args_rejects_forbidden_arg_with_leading_whitespace(prefix):
+    """Reject a forbidden argument that arrives with leading whitespace, since
+    update_settings_from_args strips the token before applying it."""
+    ok, offending = CliArgs.validate_user_args([f"{prefix}--github.webhook_secret=secret"])
+    assert ok is False
+    assert "webhook_secret" in offending
