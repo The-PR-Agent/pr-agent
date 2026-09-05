@@ -35,28 +35,48 @@ jobs:
       - name: Reject workflow_dispatch from non-main ref
         if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
         run: |
-          echo "::error::workflow_dispatch must be triggered from the main branch (got ${{ github.ref }})."
+          echo "::error::workflow_dispatch must be triggered from the main branch (got $GITHUB_REF)."
           exit 1
 
       - name: Resolve version
         id: resolve
+        env:
+          RELEASE_INPUT_VERSION: ${{ inputs.version }}
         run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
+          if [ "$GITHUB_EVENT_NAME" = "release" ]; then
             VERSION="${GITHUB_REF_NAME#v}"
             TAG="${GITHUB_REF_NAME}"
           else
-            VERSION="${{ inputs.version }}"
+            VERSION="$RELEASE_INPUT_VERSION"
             TAG="v${VERSION}"
           fi
-          # Strict SemVer 2.0.0 regex (https://semver.org/#is-there-a-suggested-regular-expression-regex-to-check-a-semver-string)
-          SEMVER='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$'
-          if ! printf '%s' "$VERSION" | grep -Pq "$SEMVER"; then
-            echo "::error::Version '$VERSION' is not a valid SemVer 2.0.0 string."
+          if [[ "$VERSION" == *$'\n'* || "$VERSION" == *$'\r'* ]]; then
+            echo "::error::Version must be a valid SemVer 2.0.0 value (for example, 0.35.0 or 0.35.0-rc.1)."
             exit 1
           fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "sha=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          # Strict SemVer 2.0.0 regex adapted for Bash's POSIX ERE operator.
+          # See https://semver.org/#is-there-a-suggested-regular-expression-regex-to-check-a-semver-string
+          SEMVER='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(\.(0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*))?(\+([0-9a-zA-Z-]+(\.[0-9a-zA-Z-]+)*))?$'
+          if ! [[ "$VERSION" =~ $SEMVER ]]; then
+            echo "::error::Version must be a valid SemVer 2.0.0 value (for example, 0.35.0 or 0.35.0-rc.1)."
+            printf 'Rejected version: %q\n' "$VERSION"
+            exit 1
+          fi
+          if [[ "$VERSION" == *+* ]]; then
+            echo "::error::SemVer build metadata is not supported for releases."
+            exit 1
+          fi
+          # Keep version-suffix tags within Docker's 128-character limit:
+          # 128 - 1 separator - 24 ("bitbucket_server_webhook") = 103.
+          if (( ${#VERSION} > 103 )); then
+            echo "::error::Version is too long for release image tags (maximum 103 characters)."
+            exit 1
+          fi
+          {
+            echo "version=$VERSION"
+            echo "tag=$TAG"
+            echo "sha=$GITHUB_SHA"
+          } >> "$GITHUB_OUTPUT"
 
   publish-pypi:
     needs: prepare
@@ -135,8 +155,8 @@ jobs:
             target: mosaico_agent
             suffix: mosaico_agent
             rolling: mosaico_agent
-          - dockerfile: Dockerfile.github_action
-            target: ''
+          - dockerfile: docker/Dockerfile
+            target: github_action
             suffix: github_action
             rolling: github_action
           - dockerfile: docker/Dockerfile.lambda

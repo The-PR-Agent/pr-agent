@@ -14,8 +14,11 @@ import pytest
 import pr_agent.tools.pr_line_questions as plq
 from pr_agent.algo.utils import format_pr_questions_header
 from pr_agent.config_loader import get_settings
+from pr_agent.git_providers import AzureDevopsProvider
 from pr_agent.git_providers.codecommit_provider import CodeCommitProvider
 from pr_agent.git_providers.gerrit_provider import GerritProvider, adopt_to_gerrit_message
+from pr_agent.git_providers.git_provider import GitProvider
+from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
 from pr_agent.tools.pr_questions import PRQuestions
 from tests.unittest._settings_helpers import SENTINEL, restore_settings, snapshot_settings
@@ -33,15 +36,31 @@ def _make_pr_questions(question_str: str = "", prediction: str = "", git_provide
     obj.question_str = question_str
     obj.prediction = prediction
     obj.vars = {}
-    obj.git_provider = git_provider if git_provider is not None else MagicMock()
+    if git_provider is None:
+        git_provider = MagicMock()
+        git_provider.supports_threaded_pr_questions.return_value = False
+    obj.git_provider = git_provider
     return obj
 
 
 def _make_line_questions() -> plq.PR_LineQuestions:
     obj = plq.PR_LineQuestions.__new__(plq.PR_LineQuestions)
     obj.vars = {}
+    obj.resolve_threads = False
     obj.git_provider = MagicMock()
+    obj.git_provider.supports_threaded_pr_questions.return_value = False
+    obj.git_provider.supports_line_question_history.return_value = False
     return obj
+
+
+def test_question_capabilities_are_provider_driven():
+    provider = MagicMock()
+
+    assert GitProvider.supports_threaded_pr_questions(provider) is False
+    assert GitProvider.supports_line_question_history(provider) is False
+    assert AzureDevopsProvider.supports_threaded_pr_questions(provider) is True
+    assert AzureDevopsProvider.supports_line_question_history(provider) is True
+    assert GithubProvider.supports_line_question_history(provider) is True
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +80,11 @@ class TestPRQuestionsParseArgs:
     def test_single_arg(self):
         pr = _make_pr_questions()
         assert pr.parse_args(["hello"]) == "hello"
+
+    def test_decodes_internal_question_argument(self):
+        pr = _make_pr_questions()
+        encoded = "__pr_agent_encoded_text__:does%20--some_key%3D1%20change%20the%20request%3F"
+        assert pr.parse_args([encoded]) == "does --some_key=1 change the request?"
 
 
 # ---------------------------------------------------------------------------
@@ -322,6 +346,109 @@ class TestPreparePrAnswer:
         assert "Model answer contains GitHub quick actions" not in out
 
 
+class TestPublishPrAnswer:
+    def test_replies_to_azure_thread_when_comment_id_is_set(self):
+        settings = get_settings()
+        saved = snapshot_settings(("comment_id",))
+        provider = MagicMock(spec=AzureDevopsProvider)
+        provider.supports_threaded_pr_questions.return_value = True
+        pr = _make_pr_questions(git_provider=provider)
+        try:
+            settings.set("comment_id", 42)
+            pr._publish_answer("answer")
+        finally:
+            restore_settings(saved)
+
+        provider.reply_to_comment_from_comment_id.assert_called_once_with(42, "answer")
+        provider.publish_comment.assert_not_called()
+
+    def test_non_azure_answer_ignores_thread_setting(self):
+        settings = get_settings()
+        saved = snapshot_settings(("comment_id",))
+        provider = MagicMock()
+        provider.supports_threaded_pr_questions.return_value = False
+        pr = _make_pr_questions(git_provider=provider)
+        try:
+            settings.set("comment_id", 42)
+            pr._publish_answer("answer")
+        finally:
+            restore_settings(saved)
+
+        provider.publish_comment.assert_called_once_with("answer")
+        provider.reply_to_comment_from_comment_id.assert_not_called()
+
+    def test_publishes_normally_without_comment_id(self):
+        settings = get_settings()
+        saved = snapshot_settings(("comment_id",))
+        provider = MagicMock(spec=AzureDevopsProvider)
+        provider.supports_threaded_pr_questions.return_value = True
+        pr = _make_pr_questions(git_provider=provider)
+        try:
+            settings.set("comment_id", "")
+            pr._publish_answer("answer")
+        finally:
+            restore_settings(saved)
+
+        provider.publish_comment.assert_called_once_with("answer")
+        provider.reply_to_comment_from_comment_id.assert_not_called()
+
+
+class TestLoadPrConversationHistory:
+    def test_formats_prior_comments_and_skips_current_question(self):
+        settings = get_settings()
+        saved = snapshot_settings(("comment_id", "origin_comment_id", "pr_questions.use_conversation_history"))
+        provider = MagicMock(spec=AzureDevopsProvider)
+        provider.supports_threaded_pr_questions.return_value = True
+        provider.get_review_thread_comments.return_value = [
+            SimpleNamespace(id=10, body="Original suggestion", user=SimpleNamespace(login="agent")),
+            SimpleNamespace(id=11, body="Current question", user=SimpleNamespace(login="alice")),
+            SimpleNamespace(id=12, body="Earlier reply", user=SimpleNamespace(login="bob")),
+        ]
+        pr = _make_pr_questions(git_provider=provider)
+        try:
+            settings.set("comment_id", 20)
+            settings.set("origin_comment_id", 11)
+            settings.set("pr_questions.use_conversation_history", True)
+            history = pr._load_conversation_history()
+        finally:
+            restore_settings(saved)
+
+        assert history == "1. agent: Original suggestion\n2. bob: Earlier reply"
+        provider.get_review_thread_comments.assert_called_once_with(20)
+
+    def test_returns_empty_when_history_is_disabled(self):
+        settings = get_settings()
+        saved = snapshot_settings(("comment_id", "pr_questions.use_conversation_history"))
+        provider = MagicMock()
+        provider.supports_threaded_pr_questions.return_value = False
+        pr = _make_pr_questions(git_provider=provider)
+        try:
+            settings.set("comment_id", 20)
+            settings.set("pr_questions.use_conversation_history", False)
+            history = pr._load_conversation_history()
+        finally:
+            restore_settings(saved)
+
+        assert history == ""
+        provider.get_review_thread_comments.assert_not_called()
+
+    def test_ignores_non_azure_thread_settings(self):
+        settings = get_settings()
+        saved = snapshot_settings(("comment_id", "pr_questions.use_conversation_history"))
+        provider = MagicMock()
+        provider.supports_threaded_pr_questions.return_value = False
+        pr = _make_pr_questions(git_provider=provider)
+        try:
+            settings.set("comment_id", 20)
+            settings.set("pr_questions.use_conversation_history", True)
+            history = pr._load_conversation_history()
+        finally:
+            restore_settings(saved)
+
+        assert history == ""
+        provider.get_review_thread_comments.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # PR_LineQuestions.parse_args
 # ---------------------------------------------------------------------------
@@ -336,6 +463,11 @@ class TestLineQuestionsParseArgs:
         assert lq.parse_args([]) == ""
         assert lq.parse_args(None) == ""
 
+    def test_decodes_internal_question_argument(self):
+        lq = _make_line_questions()
+        encoded = "__pr_agent_encoded_text__:does%20--some_key%3D1%20change%20the%20request%3F"
+        assert lq.parse_args([encoded]) == "does --some_key=1 change the request?"
+
 
 # ---------------------------------------------------------------------------
 # PR_LineQuestions._load_conversation_history
@@ -349,12 +481,38 @@ def line_question_settings():
     truly removed during teardown, rather than being restored as ``None``.
     """
     settings = get_settings()
-    keys = ("comment_id", "file_name", "line_end")
+    keys = ("comment_id", "origin_comment_id", "file_name", "file_name_encoded", "line_start", "line_end", "side")
     saved = snapshot_settings(keys)
     try:
         yield settings
     finally:
         restore_settings(saved)
+
+
+@pytest.mark.asyncio
+async def test_line_question_decodes_webhook_file_path(monkeypatch, line_question_settings):
+    file_name = "/src/folder name/don't.py"
+    line_question_settings.set("file_name", "%2Fsrc%2Ffolder%20name%2Fdon%27t.py")
+    line_question_settings.set("file_name_encoded", True)
+    line_question_settings.set("line_start", 8)
+    line_question_settings.set("line_end", 8)
+    line_question_settings.set("side", "right")
+    line_question_settings.set("comment_id", 22)
+
+    lq = _make_line_questions()
+    lq.git_provider.get_diff_files.return_value = [SimpleNamespace(filename=file_name, patch="diff")]
+    extract_hunk = MagicMock(return_value=("@@ -8,1 +8,1 @@\n patch", "selected"))
+
+    async def get_answer(*args, **kwargs):
+        return "answer"
+
+    monkeypatch.setattr("pr_agent.tools.pr_line_questions.extract_hunk_lines_from_patch", extract_hunk)
+    monkeypatch.setattr("pr_agent.tools.pr_line_questions.retry_with_fallback_models", get_answer)
+
+    await lq.run()
+
+    extract_hunk.assert_called_once_with("diff", file_name, line_start=8, line_end=8, side="right")
+    lq.git_provider.reply_to_comment_from_comment_id.assert_called_once_with(22, "answer")
 
 
 class TestLoadConversationHistory:
@@ -407,6 +565,20 @@ class TestLoadConversationHistory:
 
         out = lq._load_conversation_history()
         assert out == "1. dave: first reply\n2. erin: second reply"
+
+    def test_uses_origin_comment_id_when_reply_target_is_a_thread(self, line_question_settings):
+        self._set_required(line_question_settings, comment_id=200)
+        line_question_settings.set("origin_comment_id", 102)
+        comments = [
+            SimpleNamespace(id=101, body="Earlier context", user=SimpleNamespace(login="alice")),
+            SimpleNamespace(id=102, body="Current question", user=SimpleNamespace(login="bob")),
+        ]
+        lq = _make_line_questions()
+        lq.git_provider = MagicMock(spec=AzureDevopsProvider)
+        lq.git_provider.supports_threaded_pr_questions.return_value = True
+        lq.git_provider.get_review_thread_comments = MagicMock(return_value=comments)
+
+        assert lq._load_conversation_history() == "1. alice: Earlier context"
 
     def test_user_without_login_attribute_is_unknown(self, line_question_settings):
         self._set_required(line_question_settings, comment_id=1)
@@ -486,14 +658,20 @@ class TestExtraInstructionsPromptRendering:
             "pr_questions.extra_instructions",
             "Do not answer questions that ask to rate PR quality.",
         )
-        variables = {"extra_instructions": get_settings().pr_questions.extra_instructions}
+        variables = {
+            "extra_instructions": get_settings().pr_questions.extra_instructions,
+            "skills_context": "",
+        }
         system_prompt = _render_jinja_template(get_settings().pr_questions_prompt.system, variables)
         assert "Do not answer questions that ask to rate PR quality." in system_prompt
         assert "take precedence over any conflicting guidance" in system_prompt
 
     def test_ask_system_prompt_omits_extra_instructions_block_when_empty(self, extra_instructions_settings):
         extra_instructions_settings.set("pr_questions.extra_instructions", "")
-        variables = {"extra_instructions": get_settings().pr_questions.extra_instructions}
+        variables = {
+            "extra_instructions": get_settings().pr_questions.extra_instructions,
+            "skills_context": "",
+        }
         system_prompt = _render_jinja_template(get_settings().pr_questions_prompt.system, variables)
         assert "Extra instructions from the user" not in system_prompt
 
@@ -900,3 +1078,17 @@ class TestPRLineQuestionsRunSkipsEmptySelection:
             assert "nothing to answer about" in obj.git_provider.publish_comment.call_args[0][0]
         finally:
             restore_settings(saved)
+def test_ask_user_prompt_includes_untrusted_conversation_history():
+    variables = {
+        "branch": "feature/test",
+        "conversation_history": "1. alice: Keep this nullable",
+        "description": "",
+        "diff": "+value",
+        "language": "C#",
+        "questions": "Can this throw?",
+        "title": "Test PR",
+    }
+    prompt = _render_jinja_template(get_settings().pr_questions_prompt.user, variables)
+
+    assert "Keep this nullable" in prompt
+    assert "untrusted data" in prompt

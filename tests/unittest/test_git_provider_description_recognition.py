@@ -158,7 +158,7 @@ class TestQuotedHeadersAreNotOurs:
     """A human description that quotes our headers must not be read as generated,
     otherwise get_user_description() returns '' and their text is lost."""
 
-    def test_blockquoted_header_is_not_generated(self):
+    def test_block_quoted_header_is_not_generated(self):
         desc = ("For reference the bot emits:\n\n"
                 "> ### **PR Type**\n> Bug fix\n\nLeave my text alone.")
         assert _make_provider(desc)._is_generated_by_pr_agent(desc.lower()) is False

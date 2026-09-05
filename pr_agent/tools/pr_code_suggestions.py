@@ -21,6 +21,7 @@ from pr_agent.algo.pr_processing import (
     get_pr_multi_diffs,
     retry_with_fallback_models,
 )
+from pr_agent.algo.prompt_fragments import render_diff_hunk_format
 from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.run_details import init_run_details
 from pr_agent.algo.skills_loader import get_skills_context
@@ -40,7 +41,7 @@ from pr_agent.algo.utils import (
     show_relevant_configurations,
     show_run_details,
 )
-from pr_agent.config_loader import get_settings
+from pr_agent.config_loader import get_settings, get_verbosity_level
 from pr_agent.git_providers import (
     GithubProvider,
     get_git_provider_with_context,
@@ -68,6 +69,23 @@ def get_suggestions_score_threshold() -> int:
 
 def get_dual_publishing_score_threshold() -> int:
     return _as_threshold("pr_code_suggestions.dual_publishing_score_threshold", 0, 0)
+
+
+def _supports_code_suggestion_state(git_provider) -> bool:
+    supports = getattr(git_provider, "supports_code_suggestion_state", None)
+    return callable(supports) and bool(supports())
+
+
+def _edit_comment_safely(git_provider, comment, body: str) -> bool:
+    try:
+        result = git_provider.edit_comment(comment, body)
+    except Exception as error:
+        get_logger().warning(f"Failed to edit code suggestions comment: {error}")
+        return False
+    if result is False:
+        get_logger().warning("Failed to edit code suggestions comment")
+        return False
+    return True
 
 
 class PRCodeSuggestions:
@@ -121,6 +139,7 @@ class PRCodeSuggestions:
             get_settings().set("config.enable_ai_metadata", False)
             get_logger().debug("AI metadata is disabled for this command")
 
+        is_ai_metadata = get_settings().get("config.enable_ai_metadata", False)
         self.vars = {
             "title": self.git_provider.pr.title,
             "branch": self.git_provider.get_pr_branch(),
@@ -132,9 +151,14 @@ class PRCodeSuggestions:
             "extra_instructions": get_settings().pr_code_suggestions.extra_instructions,
             "skills_context": get_skills_context(),
             "repo_context": build_repo_context(self.git_provider),
+            "suggestion_discussion_context": self._load_suggestion_discussion_context(),
             "commit_messages_str": self.git_provider.get_commit_messages(),
             "relevant_best_practices": "",
-            "is_ai_metadata": get_settings().get("config.enable_ai_metadata", False),
+            "is_ai_metadata": is_ai_metadata,
+            "diff_hunk_format": render_diff_hunk_format(
+                include_line_numbers=False,
+                include_ai_metadata=is_ai_metadata,
+            ),
             "focus_only_on_problems": get_settings().get("pr_code_suggestions.focus_only_on_problems", False),
             "date": datetime.now().strftime('%Y-%m-%d'),
             'duplicate_prompt_examples': get_settings().config.get('duplicate_prompt_examples', False),
@@ -154,6 +178,15 @@ class PRCodeSuggestions:
 
         self.progress = build_progress_comment()
         self.progress_response = None
+
+    def _load_suggestion_discussion_context(self) -> str:
+        if not _supports_code_suggestion_state(self.git_provider):
+            return ""
+        try:
+            return self.git_provider.get_code_suggestion_thread_context()
+        except Exception as e:
+            get_logger().warning(f"Failed to load prior code suggestion discussions: {e}")
+            return ""
 
     @staticmethod
     def _parse_incremental(args):
@@ -182,6 +215,16 @@ class PRCodeSuggestions:
         init_run_details()
         self._output_published = False
         try:
+            if _supports_code_suggestion_state(self.git_provider):
+                try:
+                    fixed = self.git_provider.reconcile_code_suggestion_threads()
+                    if fixed:
+                        get_logger().info(f"Marked {fixed} applied code suggestion(s) as fixed")
+                        if hasattr(self, "vars"):
+                            self.vars["suggestion_discussion_context"] = self._load_suggestion_discussion_context()
+                except Exception as e:
+                    get_logger().warning(f"Failed to reconcile code suggestion threads: {e}")
+
             if getattr(self, "_incremental_empty_scope", False):
                 # Set by `__init__` when incremental anchored cleanly but no files changed
                 # since the previous suggestions pass. Skip silently — re-running on the
@@ -205,7 +248,10 @@ class PRCodeSuggestions:
             if (get_settings().config.publish_output and get_settings().config.publish_output_progress and
                     not get_settings().config.get('is_auto_command', False)):
                 if self.git_provider.is_supported("gfm_markdown"):
-                    self.progress_response = self.git_provider.publish_comment(self.progress)
+                    # The progress comment later becomes the final suggestions comment (edited in place),
+                    # so it must already be a thread when threaded output is requested.
+                    self.progress_response = self.git_provider.publish_comment(self.progress,
+                                                                               **self._improve_thread_kwargs())
                 else:
                     self.progress_response = self.git_provider.publish_comment(
                         "Preparing suggestions...", is_temporary=True)
@@ -274,6 +320,7 @@ class PRCodeSuggestions:
                             progress_response=self.progress_response,
                             identity_marker=PRCodeSuggestionsIdentity.SUMMARY.value,
                             legacy_initial_header=PRCodeSuggestionsHeader.SUMMARY.value,
+                            as_thread=self.git_provider.should_publish_improve_as_thread(),
                         )
                         if published_comment is not None:
                             self.progress_response = None
@@ -284,10 +331,19 @@ class PRCodeSuggestions:
                             PRCodeSuggestionsIdentity.SUMMARY.value,
                         )
                         if self.progress_response:
-                            self.git_provider.edit_comment(self.progress_response, body=pr_body)
+                            if not _edit_comment_safely(self.git_provider, self.progress_response, pr_body):
+                                self.git_provider.publish_comment(
+                                    pr_body, **self._improve_thread_kwargs()
+                                )
+                                try:
+                                    self.git_provider.remove_comment(self.progress_response)
+                                except Exception as cleanup_error:
+                                    get_logger().warning(
+                                        f"Failed to remove the failed progress comment: {cleanup_error}"
+                                    )
                             self.progress_response = None
                         else:
-                            self.git_provider.publish_comment(pr_body)
+                            self.git_provider.publish_comment(pr_body, **self._improve_thread_kwargs())
                         self._output_published = True
 
                     # dual publishing mode
@@ -305,16 +361,11 @@ class PRCodeSuggestions:
                 return
         except asyncio.CancelledError:
             if self.progress_response is not None:
-                try:
-                    self.git_provider.edit_comment(
-                        self.progress_response,
-                        "Code suggestions generation cancelled.",
-                    )
-                except Exception as cleanup_error:
-                    get_logger().exception(
-                        f"Failed to update code suggestions progress comment after cancellation, "
-                        f"error: {cleanup_error}"
-                    )
+                _edit_comment_safely(
+                    self.git_provider,
+                    self.progress_response,
+                    "Code suggestions generation cancelled.",
+                )
                 try:
                     self.git_provider.remove_comment(self.progress_response)
                 except Exception as cleanup_error:
@@ -386,9 +437,31 @@ class PRCodeSuggestions:
                 pr_body += show_run_details(self.git_provider.is_supported("gfm_markdown"))
             get_logger().debug("PR output", artifact=pr_body)
             if self.progress_response:
-                self.git_provider.edit_comment(self.progress_response, body=pr_body)
+                progress_response = self.progress_response
+                if _edit_comment_safely(self.git_provider, progress_response, pr_body):
+                    if self._improve_thread_kwargs():
+                        # A mere status message isn't actionable; resolve the thread instead of
+                        # leaving it open for the user to close manually.
+                        self.git_provider.resolve_comment_thread(progress_response.id)
+                else:
+                    try:
+                        comment = self.git_provider.publish_comment(
+                            pr_body, **self._improve_thread_kwargs()
+                        )
+                        if comment and self._improve_thread_kwargs():
+                            self.git_provider.resolve_comment_thread(comment.id)
+                    finally:
+                        try:
+                            self.git_provider.remove_comment(progress_response)
+                        except Exception as cleanup_error:
+                            get_logger().warning(
+                                f"Failed to remove the failed progress comment: {cleanup_error}"
+                            )
+                        self.progress_response = None
             else:
-                self.git_provider.publish_comment(pr_body)
+                comment = self.git_provider.publish_comment(pr_body, **self._improve_thread_kwargs())
+                if comment and self._improve_thread_kwargs():
+                    self.git_provider.resolve_comment_thread(comment.id)
         else:
             get_settings().data = {"artifact": pr_body if coverage_footer else ""}
             if self.progress_response:
@@ -413,6 +486,10 @@ class PRCodeSuggestions:
         except Exception as e:
             get_logger().error(f"Failed to publish dual publishing suggestions, error: {e}")
 
+    def _improve_thread_kwargs(self) -> dict:
+        # Providers that support it (GitLab) can post the suggestions comment as a resolvable thread.
+        return {"as_thread": True} if self.git_provider.should_publish_improve_as_thread() else {}
+
     @staticmethod
     def publish_persistent_comment_with_history(git_provider: GitProvider,
                                                 pr_comment: str,
@@ -424,27 +501,74 @@ class PRCodeSuggestions:
                                                 progress_response=None,
                                                 only_fold=False,
                                                 identity_marker: str | None = None,
-                                                legacy_initial_header: str | None = None):
-        def _clean_up_progress_note() -> bool:
+                                                legacy_initial_header: str | None = None,
+                                                as_thread: bool = False):
+        def _edit_comment(comment, body: str):
+            if not _edit_comment_safely(git_provider, comment, body):
+                raise RuntimeError("Failed to edit code suggestions comment")
+            return True
+
+        def _clean_up_progress_note(
+            message: str = "Code suggestions published in the persistent thread above.",
+        ) -> bool:
             if not progress_response:
                 return True
+            _edit_comment_safely(git_provider, progress_response, message)
             try:
-                git_provider.edit_comment(
-                    progress_response,
-                    "Code suggestions published in the persistent thread above.",
-                )
                 git_provider.remove_comment(progress_response)
-            except Exception as cleanup_error:
-                get_logger().warning(
-                    "Failed to clean up progress note after persistent update, "
-                    f"leaving it in place: {cleanup_error}"
-                )
+            except Exception as remove_error:
+                get_logger().warning(f"Failed to remove progress note: {remove_error}")
                 return False
             return True
+
+        def _publish_persistent_update_failure():
+            _clean_up_progress_note()
+            failure_body = (
+                f"⚠️ Failed to update the persistent {name} comment; "
+                f"the previous {name} remain unchanged."
+            )
+            try:
+                return git_provider.publish_comment(
+                    failure_body,
+                    **({"as_thread": True} if as_thread else {}),
+                )
+            except Exception as error:
+                get_logger().exception(
+                    f"Failed to publish persistent update failure, error: {error}"
+                )
+                return None
+
+        def _update_existing_comment(comment, body: str):
+            try:
+                _edit_comment(comment, body)
+            except Exception as error:
+                get_logger().exception(
+                    f"Failed to update persistent {name} comment, error: {error}"
+                )
+                return _publish_persistent_update_failure()
+            return comment
 
         if hasattr(git_provider, '_publish_check_run') and get_settings().github.publish_as_check_run:
             if git_provider._publish_check_run(pr_comment, name):
                 return progress_response if _clean_up_progress_note() else None
+
+        if _supports_code_suggestion_state(git_provider) and max_previous_comments <= 0:
+            result = GitProvider.publish_persistent_comment_full(
+                git_provider,
+                pr_comment,
+                initial_header,
+                update_header,
+                name,
+                final_update_message,
+                as_thread=as_thread,
+                identity_marker=identity_marker,
+                legacy_initial_header=legacy_initial_header,
+                fallback_on_error=False,
+            )
+            if result is not None:
+                _clean_up_progress_note("Code suggestions updated in the persistent thread above.")
+                return result
+            return _publish_persistent_update_failure()
 
         def _extract_link(comment_text: str):
             match = re.search(r"<!--\s*([0-9a-fA-F]{7,40})\s*-->", comment_text)
@@ -495,7 +619,7 @@ class PRCodeSuggestions:
 
         if max_previous_comments > 0:
             try:
-                prev_comments = list(git_provider.get_issue_comments())
+                prev_comments = list(git_provider.get_issue_comments_newest_first())
                 if identity_marker:
                     comment = next(
                         (
@@ -536,7 +660,9 @@ class PRCodeSuggestions:
                                 f"{initial_header}\n\n{latest_commit_html_comment}\n\n"
                                 f"{new_suggestion_table}\n\n"
                             )
-                            git_provider.edit_comment(comment, pr_comment_updated)
+                            updated_comment = _update_existing_comment(comment, pr_comment_updated)
+                            if updated_comment is not comment:
+                                return updated_comment
                             _clean_up_progress_note()
                             return comment
                         # find http link from comment.body[:table_index]
@@ -590,7 +716,9 @@ class PRCodeSuggestions:
                         )
 
                     get_logger().info(f"Persistent mode - updating comment {comment_url} to latest {name} message")
-                    git_provider.edit_comment(comment, pr_comment_updated)
+                    updated_comment = _update_existing_comment(comment, pr_comment_updated)
+                    if updated_comment is not comment:
+                        return updated_comment
                     _clean_up_progress_note()
                     return comment
             except Exception as e:
@@ -603,12 +731,21 @@ class PRCodeSuggestions:
             f"{new_suggestion_table}\n\n"
         )
         if progress_response:
-            git_provider.edit_comment(progress_response, pr_comment)
-            new_comment = progress_response
+            if not _edit_comment_safely(git_provider, progress_response, pr_comment):
+                new_comment = git_provider.publish_comment(
+                    pr_comment,
+                    **({"as_thread": True} if as_thread else {}),
+                )
+                if new_comment is not None:
+                    try:
+                        git_provider.remove_comment(progress_response)
+                    except Exception as remove_error:
+                        get_logger().warning(f"Failed to remove progress note: {remove_error}")
+            else:
+                new_comment = progress_response
         else:
-            new_comment = git_provider.publish_comment(pr_comment)
+            new_comment = git_provider.publish_comment(pr_comment, **({"as_thread": True} if as_thread else {}))
         return new_comment
-
 
     def extract_link(self, s):
         r = re.compile(r"<!--.*?-->")
@@ -753,6 +890,7 @@ class PRCodeSuggestions:
 
     @staticmethod
     def _truncate_if_needed(suggestion):
+        suggestion.pop('_is_truncated', None)
         max_code_suggestion_length = get_settings().get("PR_CODE_SUGGESTIONS.MAX_CODE_SUGGESTION_LENGTH", 0)
         suggestion_truncation_message = get_settings().get("PR_CODE_SUGGESTIONS.SUGGESTION_TRUNCATION_MESSAGE", "")
         if max_code_suggestion_length > 0:
@@ -761,6 +899,7 @@ class PRCodeSuggestions:
                                   f"characters to {max_code_suggestion_length} characters")
                 suggestion['improved_code'] = suggestion['improved_code'][:max_code_suggestion_length]
                 suggestion['improved_code'] += f"\n{suggestion_truncation_message}"
+                suggestion['_is_truncated'] = True
         return suggestion
 
     def _prepare_pr_code_suggestions(self, predictions: str) -> Dict:
@@ -769,6 +908,11 @@ class PRCodeSuggestions:
                          first_key="code_suggestions", last_key="label")
         if isinstance(data, list):
             data = {'code_suggestions': data}
+        if not isinstance(data, dict) or not isinstance(data.get("code_suggestions"), list):
+            get_logger().error("Failed to parse code suggestions from the AI prediction",
+                               artifact={"predictions": predictions})
+            self.parse_failure_count = getattr(self, "parse_failure_count", 0) + 1
+            return {"code_suggestions": []}
 
         # remove or edit invalid suggestions
         suggestion_list = []
@@ -814,7 +958,58 @@ class PRCodeSuggestions:
 
         return data
 
-    async def push_inline_code_suggestions(self, data, include_coverage_footer: bool = True):
+    @staticmethod
+    def _suggestion_file_key(suggestion: Dict) -> str:
+        relevant_file = suggestion.get("relevant_file", "") if isinstance(suggestion, dict) else ""
+        return relevant_file.strip() if isinstance(relevant_file, str) else ""
+
+    @staticmethod
+    def _suggestion_score(suggestion: Dict) -> int:
+        try:
+            return int(suggestion.get("score", 0))
+        except (AttributeError, TypeError, ValueError):
+            return 0
+
+    def _limit_suggestions_per_file(self, suggestions: List[Dict]) -> List[Dict]:
+        raw_limit = get_settings().get("pr_code_suggestions.max_suggestions_per_file", 0)
+        try:
+            max_suggestions_per_file = int(raw_limit)
+        except (TypeError, ValueError):
+            get_logger().warning(
+                f"max_suggestions_per_file is not a number ({raw_limit!r}); disabling the per-file cap")
+            return suggestions
+
+        if max_suggestions_per_file <= 0 or not suggestions:
+            return suggestions
+
+        indexed_suggestions = list(enumerate(suggestions))
+        ranked_suggestions = sorted(
+            indexed_suggestions,
+            key=lambda item: (-self._suggestion_score(item[1]), item[0]),
+        )
+        kept_indices = set()
+        suggestions_per_file = {}
+        for index, suggestion in ranked_suggestions:
+            file_key = self._suggestion_file_key(suggestion)
+            if not file_key:
+                kept_indices.add(index)
+                continue
+            if suggestions_per_file.get(file_key, 0) >= max_suggestions_per_file:
+                continue
+            suggestions_per_file[file_key] = suggestions_per_file.get(file_key, 0) + 1
+            kept_indices.add(index)
+
+        limited_suggestions = [
+            suggestion for index, suggestion in indexed_suggestions if index in kept_indices
+        ]
+        dropped_count = len(suggestions) - len(limited_suggestions)
+        if dropped_count:
+            get_logger().info(
+                f"Limited PR code suggestions to {max_suggestions_per_file} per file; "
+                f"removed {dropped_count} lower-scored suggestion(s)")
+        return limited_suggestions
+
+    async def push_inline_code_suggestions(self, data, include_coverage_footer: bool = True) -> None:
         code_suggestions = []
         fallback_comments = []
         coverage_footer = self._get_suggestions_coverage_footer() if include_coverage_footer else ""
@@ -828,14 +1023,15 @@ class PRCodeSuggestions:
                                       if empty_coverage_footer else "No suggestions found to improve this PR.")
             pr_body = no_suggestions_message + empty_coverage_footer
             if self.progress_response:
-                return self.git_provider.edit_comment(self.progress_response,
-                                                      body=pr_body)
+                if not _edit_comment_safely(self.git_provider, self.progress_response, pr_body):
+                    self.git_provider.publish_comment(pr_body)
             else:
-                return self.git_provider.publish_comment(pr_body)
+                self.git_provider.publish_comment(pr_body)
+            return
 
         for d in data['code_suggestions']:
             try:
-                if get_settings().config.verbosity_level >= 2:
+                if get_verbosity_level() >= 2:
                     get_logger().info(f"suggestion: {d}")
                 relevant_file = d['relevant_file'].strip()
                 relevant_lines_start = int(d['relevant_lines_start'])  # absolute position
@@ -856,6 +1052,23 @@ class PRCodeSuggestions:
             if new_code_snippet and has_valid_anchor:
                 new_code_snippet = self.dedent_code(relevant_file, relevant_lines_start, new_code_snippet)
 
+            requires_pr_fallback = False
+            if d.get('_is_truncated'):
+                is_applicable = False
+                fallback_reason = "the proposed code was truncated"
+                requires_pr_fallback = True
+            elif new_code_snippet and is_applicable:
+                python_syntax_is_valid = self._validate_python_replacement_syntax(
+                    relevant_file,
+                    relevant_lines_start,
+                    relevant_lines_end,
+                    new_code_snippet,
+                )
+                if python_syntax_is_valid is False:
+                    is_applicable = False
+                    fallback_reason = "the proposed Python code has invalid syntax"
+                    requires_pr_fallback = True
+
             score = d.get("score")
             header = f"**Suggestion:** {content} [{label}, importance: {score}]" if score \
                 else f"**Suggestion:** {content} [{label}]"
@@ -866,8 +1079,11 @@ class PRCodeSuggestions:
                 if new_code_snippet:
                     body += (f"\n\nProposed code (not offered as a committable change because {fallback_reason}):\n"
                              f"```\n{new_code_snippet}\n```")
+                elif requires_pr_fallback:
+                    body += f"\n\nNot offered as a committable change because {fallback_reason}."
 
-            if not has_valid_anchor:
+            # Keep safety-rejected suggestions out of provider patch APIs while preserving standalone artifacts.
+            if not has_valid_anchor or (requires_pr_fallback and not supports_suggestions_artifact):
                 fallback_comments.append(f"{body}\n\nLocation: `{relevant_file}:"
                                          f"{relevant_lines_start}-{relevant_lines_end}`")
             else:
@@ -894,6 +1110,7 @@ class PRCodeSuggestions:
         if fallback_comments:
             self.git_provider.publish_comment("\n\n---\n\n".join(fallback_comments))
             self._output_published = True
+        return
 
     def _get_diff_file(self, relevant_file):
         diff_files = getattr(self.git_provider, "diff_files", None)
@@ -903,6 +1120,47 @@ class PRCodeSuggestions:
             if file.filename and file.filename.strip() == relevant_file:
                 return file
         return None
+
+    def _validate_python_replacement_syntax(
+        self,
+        relevant_file: str,
+        relevant_lines_start: int,
+        relevant_lines_end: int,
+        new_code_snippet: str,
+    ) -> Optional[bool]:
+        """Return False only when a verified replacement makes valid Python fail compilation."""
+        if not relevant_file.lower().endswith((".py", ".pyi", ".pyw")):
+            return None
+
+        diff_file = self._get_diff_file(relevant_file)
+        if (diff_file is None
+                or not diff_file.head_file
+                or not getattr(diff_file, "head_file_is_complete", True)):
+            return None
+
+        try:
+            compile(diff_file.head_file, relevant_file, "exec", dont_inherit=True)
+        except (SyntaxError, ValueError):
+            return None
+        except Exception as e:
+            get_logger().warning(f"Could not validate Python suggestion syntax: {e}")
+            return None
+
+        file_lines = diff_file.head_file.splitlines()
+        if (relevant_lines_start < 1
+                or relevant_lines_end < relevant_lines_start
+                or relevant_lines_end > len(file_lines)):
+            return None
+        file_lines[relevant_lines_start - 1:relevant_lines_end] = new_code_snippet.splitlines()
+
+        try:
+            compile("\n".join(file_lines), relevant_file, "exec", dont_inherit=True)
+        except (SyntaxError, ValueError):
+            return False
+        except Exception as e:
+            get_logger().warning(f"Could not validate Python suggestion syntax: {e}")
+            return None
+        return True
 
     @staticmethod
     def _get_patch_range_lines(patch, relevant_lines_start, relevant_lines_end) -> Optional[List[str]]:
@@ -1205,6 +1463,7 @@ class PRCodeSuggestions:
     async def prepare_prediction_main(self, model: str) -> dict:
         self.failed_chunk_count = 0
         self.total_chunk_count = 0
+        self.parse_failure_count = 0
         # get PR diff
         if get_settings().pr_code_suggestions.decouple_hunks:
             self.patches_diff_list = get_pr_multi_diffs(self.git_provider,
@@ -1230,6 +1489,7 @@ class PRCodeSuggestions:
                                                             model,
                                                             max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
                                                             add_line_numbers=True)  # decouple hunk with line numbers
+                self.patches_diff_list_no_line_numbers = self.remove_line_numbers(self.patches_diff_list)
 
         if self.patches_diff_list:
             get_logger().info(f"Number of PR chunk calls: {len(self.patches_diff_list)}")
@@ -1237,7 +1497,8 @@ class PRCodeSuggestions:
 
             prediction_list = []
             chunk_errors = []
-            chunk_pairs = list(zip(self.patches_diff_list, self.patches_diff_list_no_line_numbers))
+            chunk_pairs = list(
+                zip(self.patches_diff_list, self.patches_diff_list_no_line_numbers, strict=True))
             self.total_chunk_count = len(chunk_pairs)
 
             # parallelize calls to AI:
@@ -1273,7 +1534,7 @@ class PRCodeSuggestions:
                     else:
                         prediction_list.append(prediction)
 
-            self.failed_chunk_count = len(chunk_errors)
+            self.failed_chunk_count = len(chunk_errors) + self.parse_failure_count
             if chunk_errors and not prediction_list:
                 raise chunk_errors[0]
             self.prediction_list = prediction_list
@@ -1294,6 +1555,7 @@ class PRCodeSuggestions:
                         except Exception as e:
                             get_logger().error(f"Error getting PR diff for suggestion {i} in call {j}, error: {e}",
                                                artifact={"prediction": prediction})
+            data["code_suggestions"] = self._limit_suggestions_per_file(data["code_suggestions"])
             self.data = data
         else:
             get_logger().warning("Empty PR diff list")
@@ -1486,12 +1748,17 @@ class PRCodeSuggestions:
             for i, suggestion in enumerate(suggestion_list):
                 suggestion_str += f"suggestion {i + 1}: " + str(suggestion) + '\n\n'
 
+            is_ai_metadata = get_settings().get("config.enable_ai_metadata", False)
             variables = {'suggestion_list': suggestion_list,
                          'suggestion_str': suggestion_str,
                          "diff": patches_diff,
                          'num_code_suggestions': len(suggestion_list),
                          'prev_suggestions_str': prev_suggestions_str,
-                         "is_ai_metadata": get_settings().get("config.enable_ai_metadata", False),
+                         "is_ai_metadata": is_ai_metadata,
+                         "diff_hunk_format": render_diff_hunk_format(
+                             include_line_numbers=True,
+                             include_ai_metadata=is_ai_metadata,
+                         ),
                          'duplicate_prompt_examples': get_settings().config.get('duplicate_prompt_examples', False)}
             environment = Environment(undefined=StrictUndefined)
 

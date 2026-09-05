@@ -12,9 +12,19 @@ Thank you for your interest in contributing to the PR-Agent project!
    - For bug fixes: `git checkout -b fix/issue-description`
 5. Make your changes
 6. Write or update tests as needed
-7. Run tests locally to ensure everything passes
-8. Commit your changes using conventional commit messages
-9. Push to your fork and submit a pull request
+7. Run tests locally to ensure everything passes:
+   ```bash
+   PYTHONPATH=. uv run pytest tests/unittest
+   ```
+   The end-to-end and health suites require provider tokens or API keys,
+   so the unit suite is the default local check.
+8. Lint your changed files, then run the pre-commit hooks on them:
+   ```bash
+   uv run ruff check --fix <changed Python files>
+   uv run pre-commit run --files <changed files>
+   ```
+9. Commit your changes using conventional commit messages.
+10. Push to your fork and submit a pull request
 
 ## Development Guidelines
 
