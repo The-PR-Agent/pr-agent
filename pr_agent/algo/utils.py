@@ -1066,6 +1066,25 @@ def try_fix_yaml(response_text: str,
     for i in range(0, len(response_text_lines_copy)):
         initial_space = len(response_text_lines_copy[i]) - len(response_text_lines_copy[i].lstrip())
         if initial_space == 2 and '|2' not in response_text_lines_copy[i] and '}' in response_text_lines_copy[i]:
+            if response_text_lines_copy[i].strip() == '}':
+                # Only move a standalone brace into the block scalar when it closes an earlier opening brace.
+                block_scalar_lines = []
+                should_indent = False
+                for previous_line in reversed(response_text_lines_copy[:i]):
+                    if not previous_line.strip():
+                        block_scalar_lines.append(previous_line)
+                        continue
+                    previous_space = len(previous_line) - len(previous_line.lstrip())
+                    if previous_space < initial_space:
+                        break
+                    if previous_space == initial_space:
+                        if re.search(r':\s*\|[0-9+-]*\s*$', previous_line):
+                            block_scalar = '\n'.join(reversed(block_scalar_lines))
+                            should_indent = block_scalar.count('{') > block_scalar.count('}')
+                        break
+                    block_scalar_lines.append(previous_line)
+                if not should_indent:
+                    continue
             response_text_lines_copy[i] = '    ' + response_text_lines_copy[i].lstrip()
     try:
         data = yaml.safe_load('\n'.join(response_text_lines_copy))
