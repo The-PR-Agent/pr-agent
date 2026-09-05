@@ -408,7 +408,7 @@ def convert_to_markdown_v2(output_data: dict,
                     markdown_text += f"{emoji}&nbsp;<strong>No security concerns identified</strong>"
                 else:
                     markdown_text += f"{emoji}&nbsp;<strong>Security concerns</strong><br><br>\n\n"
-                    value = emphasize_header(as_review_text(value))
+                    value = emphasize_header(value.strip()) if isinstance(value, str) else as_review_text(value)
                     markdown_text += f"{value}"
                 markdown_text += "</td></tr>\n"
             else:
@@ -416,7 +416,7 @@ def convert_to_markdown_v2(output_data: dict,
                     markdown_text += f'### {emoji} No security concerns identified\n\n'
                 else:
                     markdown_text += f"### {emoji} Security concerns\n\n"
-                    value = emphasize_header(as_review_text(value), only_markdown=True)
+                    value = emphasize_header(value.strip(), only_markdown=True) if isinstance(value, str) else as_review_text(value)
                     markdown_text += f"{value}\n\n"
         elif 'risk level' in key_nice.lower():
             risk_value = str(value).strip().lower().replace("_", " ")
