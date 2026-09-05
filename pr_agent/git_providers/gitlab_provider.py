@@ -4,7 +4,7 @@ import urllib.parse
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import gitlab
 from gitlab import GitlabAuthenticationError, GitlabCreateError, GitlabGetError, GitlabUpdateError
@@ -460,10 +460,10 @@ class GitLabProvider(GitProvider):
                 get_logger().exception(f"Cannot get PR: {self.pr_url} default branch. Tried project ID: {self.id_project}")
                 return ("", "")
             # numeric-alias URLs need the "projects/" segment, same as get_line_link
-            prefix = f"{self._get_project_web_url()}/-/blob/{desired_branch}"
+            prefix = f"{self._get_project_web_url()}/-/blob/{quote(desired_branch)}"
         else: #Use repo git url
             repo_path = repo_git_url.split('.git')[0].split('.com/')[-1]
-            prefix = f"{self.gitlab_url}/{repo_path}/-/blob/{desired_branch}"
+            prefix = f"{self.gitlab_url}/{repo_path}/-/blob/{quote(desired_branch)}"
         suffix = "?ref_type=heads"  # gitlab cloud adds this suffix. gitlab server does not, but it is harmless.
         return (prefix, suffix)
 

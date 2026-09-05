@@ -2,7 +2,7 @@ import difflib
 import json
 import re
 from typing import Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import requests
 from atlassian.bitbucket import Cloud
@@ -156,7 +156,7 @@ class BitbucketProvider(GitProvider):
             parsed_pr_url = urlparse(self.pr_url)
             scheme_and_netloc = parsed_pr_url.scheme + "://" + parsed_pr_url.netloc
             workspace_name, project_name = (self.workspace_slug, self.repo_slug)
-        prefix = f"{scheme_and_netloc}/{workspace_name}/{project_name}/src/{desired_branch}"
+        prefix = f"{scheme_and_netloc}/{workspace_name}/{project_name}/src/{quote(desired_branch)}"
         suffix = "" #None
         return (prefix, suffix)
 
