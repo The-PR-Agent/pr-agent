@@ -1317,32 +1317,66 @@ def get_max_tokens(model):
     logic:
     (1) If the model is in './pr_agent/algo/__init__.py', use the value from there.
     (2) else if 'config.custom_model_max_tokens' is set to a positive value, use it.
-    (3) else, fall back to litellm.get_model_info(model)["max_input_tokens"].
-    (4) else, raise an error.
+    (3) else if it is a GPT-5.x _thinking alias registered under its base name, use that value.
+    (4) else, query LiteLLM for provider-qualified and bare alias bases before the original model.
+    (5) else, raise an error.
 
     For all cases, we further limit the number of tokens to 'config.max_model_tokens' if it is set.
     This aims to improve the algorithmic quality, as the AI model degrades in performance when the input is too long.
     """
     settings = get_settings()
     custom_max_tokens = _as_int(settings.config.custom_model_max_tokens)
+    # Normalize GPT-5.x _thinking aliases before token-limit lookup to match
+    # LiteLLMAIHandler request normalization.
+    model_for_max_tokens = model
+    litellm_lookup_models = (model,)
+    if isinstance(model, str):
+        tmp = model
+        while tmp.startswith(("openai/", "azure/")):
+            tmp = tmp.removeprefix("openai/").removeprefix("azure/")
+        if tmp.startswith("gpt-5") and tmp.endswith("_thinking"):
+            model_for_max_tokens = tmp.removesuffix("_thinking")
+            settings_get = getattr(settings, "get", None)
+            azure_mode = callable(settings_get) and (
+                settings_get("OPENAI.API_TYPE", None) == "azure"
+                or bool(settings_get("AZURE_AD.CLIENT_ID", None))
+            )
+            if azure_mode or model.startswith("azure/"):
+                provider_prefix = "azure/"
+            else:
+                provider_prefix = "openai/"
+            provider_model = provider_prefix + model_for_max_tokens
+            litellm_lookup_models = tuple(dict.fromkeys((provider_model, model_for_max_tokens, model)))
     if model in MAX_TOKENS:
         max_tokens_model = MAX_TOKENS[model]
     elif custom_max_tokens > 0:
         max_tokens_model = custom_max_tokens
+    elif model_for_max_tokens in MAX_TOKENS:
+        max_tokens_model = MAX_TOKENS[model_for_max_tokens]
     else:
         # Fallback: ask LiteLLM for the model's metadata before giving up.
         max_tokens_model = 0
         import litellm
-        try:
-            model_info = litellm.get_model_info(model)
-        except Exception:
-            get_logger().debug(f"litellm.get_model_info could not resolve model '{model}'")
-            model_info = None
-        if model_info:
-            litellm_max = model_info.get("max_input_tokens")
-            if litellm_max and int(litellm_max) > 0:
-                max_tokens_model = int(litellm_max)
-                get_logger().debug(f"Resolved max_input_tokens for '{model}' from litellm: {max_tokens_model}")
+        # Try provider-qualified and bare bases before the raw alias.
+        for lookup_model in litellm_lookup_models:
+            try:
+                model_info = litellm.get_model_info(lookup_model)
+            except Exception:
+                get_logger().debug(f"litellm.get_model_info could not resolve model '{lookup_model}'")
+                model_info = None
+            if model_info:
+                litellm_max = model_info.get("max_input_tokens")
+                try:
+                    parsed_max_tokens = int(litellm_max)
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if parsed_max_tokens > 0:
+                    max_tokens_model = parsed_max_tokens
+                    get_logger().debug(
+                        f"Resolved max_input_tokens for '{model}' from litellm "
+                        f"(lookup '{lookup_model}'): {max_tokens_model}"
+                    )
+                    break
 
         if max_tokens_model <= 0:
             get_logger().error(

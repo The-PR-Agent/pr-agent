@@ -7,6 +7,7 @@ from litellm.litellm_core_utils.get_model_cost_map import GetModelCostMap
 from litellm.utils import get_optional_params
 
 import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_handler
+import pr_agent.algo.utils as utils
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 
 
@@ -62,6 +63,63 @@ class TestLiteLLMReasoningEffort:
     """
 
     # ========== Group 1: Valid Configuration Tests ==========
+
+    @pytest.mark.parametrize("metadata_fallback", [False, True])
+    @pytest.mark.parametrize(("model", "base", "request_model", "azure_mode"), [
+        ("gpt-5.6_thinking", "gpt-5.6", "openai/gpt-5.6", False),
+        ("openai/gpt-5.6-sol_thinking", "gpt-5.6-sol", "openai/gpt-5.6-sol", False),
+        ("azure/gpt-5.6-terra_thinking", "gpt-5.6-terra", "azure/gpt-5.6-terra", False),
+        ("azure/openai/gpt-5.6-luna_thinking", "gpt-5.6-luna", "azure/gpt-5.6-luna", False),
+        ("openai/azure/gpt-5.6_thinking", "gpt-5.6", "openai/gpt-5.6", False),
+        ("gpt-5.6_thinking", "gpt-5.6", "azure/gpt-5.6", True),
+        ("openai/gpt-5.6-sol_thinking", "gpt-5.6-sol", "azure/gpt-5.6-sol", True),
+    ])
+    async def test_legacy_alias_token_lookup_matches_handler(
+        self, monkeypatch, mock_logger, model, base, request_model, azure_mode, metadata_fallback,
+    ):
+        """Pin both real paths to the same supported suffix aliases and explicit expected names."""
+        settings = create_mock_settings("medium")
+        settings.config.custom_model_max_tokens = 0
+        settings.config.max_model_tokens = 0
+        settings.openai = type("OpenAISettings", (), {"api_type": "azure", "key": "test-key"})()
+        setting_values = {"OPENAI.API_TYPE": "azure"} if azure_mode else {}
+        monkeypatch.setattr(settings, "get", lambda key, default=None: setting_values.get(key, default))
+        monkeypatch.setattr(utils, "get_settings", lambda: settings)
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: settings)
+        for name in ("AWS_USE_IMDS", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+                     "AWS_SESSION_TOKEN", "AWS_REGION_NAME", "OPENAI_API_KEY"):
+            monkeypatch.delenv(name, raising=False)
+        for name in ("api_key", "openai_key", "azure_key"):
+            monkeypatch.setattr(litellm, name, None)
+        monkeypatch.setattr(litellm_handler.openai, "api_key", None)
+
+        expected_limit = utils.MAX_TOKENS[base]
+        if metadata_fallback:
+            # Force the real lookup through LiteLLM without depending on future model IDs.
+            monkeypatch.delitem(utils.MAX_TOKENS, base)
+        lookups = []
+
+        def get_model_info(lookup_model):
+            lookups.append(lookup_model)
+            if lookup_model == request_model:
+                return {"max_input_tokens": expected_limit}
+            raise ValueError("Unexpected model name")
+
+        monkeypatch.setattr(litellm, "get_model_info", get_model_info)
+        token_limit = utils.get_max_tokens(model)
+        assert token_limit == expected_limit
+        assert lookups == ([request_model] if metadata_fallback else [])
+
+        with patch.object(litellm_handler, "acompletion", new_callable=AsyncMock) as completion:
+            completion.return_value = create_mock_acompletion_response()
+            handler = LiteLLMAIHandler()
+            await handler.chat_completion(model=model, system="system", user="user")
+
+        completion.assert_awaited_once()
+        assert completion.call_args.kwargs["model"] == request_model
+        assert completion.call_args.kwargs["reasoning_effort"] == "medium"
+        if metadata_fallback:
+            assert lookups[0] == completion.call_args.kwargs["model"]
 
     @pytest.mark.asyncio
     async def test_gpt5_valid_reasoning_effort_none(self, monkeypatch, mock_logger):

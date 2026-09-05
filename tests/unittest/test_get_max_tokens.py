@@ -95,6 +95,200 @@ class TestGetMaxTokens:
 
         assert get_max_tokens(model) == 1050000
 
+    @pytest.mark.parametrize("model", [
+        "gpt-5_thinking",
+        "gpt-5-2025-08-07_thinking",
+        "gpt-5.4-mini_thinking",
+        "gpt-5.6_thinking",
+        "gpt-5.6-sol_thinking",
+        "gpt-5.6-terra_thinking",
+        "gpt-5.6-luna_thinking",
+    ])
+    def test_gpt5_thinking_model_max_tokens(self, monkeypatch, model):
+        fake_settings = type("", (), {
+            "config": type("", (), {
+                "custom_model_max_tokens": 0,
+                "max_model_tokens": 0
+            })()
+        })()
+        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        expected = MAX_TOKENS[model.removesuffix("_thinking")]
+        assert get_max_tokens(model) == expected
+
+    @pytest.mark.parametrize("model", [
+        "gpt-5.6_thinking",
+        "openai/gpt-5.6_thinking",
+        "azure/gpt-5.6_thinking",
+    ])
+    def test_gpt5_thinking_alias_preserves_custom_limit(self, monkeypatch, model):
+        fake_settings = type("", (), {
+            "config": type("", (), {
+                "custom_model_max_tokens": 7000,
+                "max_model_tokens": 0
+            })()
+        })()
+        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+
+        assert get_max_tokens(model) == 7000
+
+    @pytest.mark.parametrize("custom_limit", [
+        pytest.param(0, id="normalized-registry"),
+        pytest.param(9000, id="custom-limit"),
+    ])
+    def test_gpt5_thinking_alias_respects_max_model_tokens_cap(self, monkeypatch, custom_limit):
+        fake_settings = type("", (), {
+            "config": type("", (), {
+                "custom_model_max_tokens": custom_limit,
+                "max_model_tokens": 7000
+            })()
+        })()
+        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+
+        assert get_max_tokens("openai/gpt-5.6_thinking") == 7000
+
+    @pytest.mark.parametrize("model", [
+        "openai/gpt-5_thinking",
+        "azure/gpt-5.6_thinking",
+        "openai/gpt-5.6-sol_thinking",
+        "azure/gpt-5.6-terra_thinking",
+        "openai/gpt-5.6-luna_thinking",
+        "azure/openai/gpt-5.6_thinking",
+        "openai/gpt-5-2025-08-07_thinking",
+        "azure/gpt-5-2025-08-07_thinking",
+    ])
+    def test_gpt5_thinking_prefixed_model_max_tokens(self, monkeypatch, model):
+        fake_settings = type("", (), {
+            "config": type("", (), {
+                "custom_model_max_tokens": 0,
+                "max_model_tokens": 0
+            })()
+        })()
+        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        # Strip provider prefixes then _thinking suffix to get base key
+        tmp = model
+        while tmp.startswith(("openai/", "azure/")):
+            tmp = tmp.removeprefix("openai/").removeprefix("azure/")
+        base = tmp.removesuffix("_thinking")
+        expected = MAX_TOKENS[base]
+        assert get_max_tokens(model) == expected
+
+    def test_non_gpt5_thinking_model_max_tokens_not_stripped(self, monkeypatch):
+        fake_settings = type("", (), {
+            "config": type("", (), {
+                "custom_model_max_tokens": 0,
+                "max_model_tokens": 0
+            })()
+        })()
+        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        with pytest.raises(Exception):
+            get_max_tokens("gpt-4o_thinking")
+
+    @pytest.mark.parametrize("invalid_limit", ["unknown", None, {}, float("inf"), 0, -1])
+    @pytest.mark.parametrize("raw_resolves", [False, True])
+    def test_thinking_fallback_skips_invalid_token_metadata(self, monkeypatch, invalid_limit, raw_resolves):
+        """Continue past unusable metadata to the raw alias or the unresolved-model error."""
+        settings = type("Settings", (), {
+            "config": type("Config", (), {"custom_model_max_tokens": 0, "max_model_tokens": 32000})(),
+            "get": lambda self, key, default=None: default,
+        })()
+        monkeypatch.setattr(utils, "get_settings", lambda: settings)
+        model = "openai/gpt-5.9_thinking"
+        lookups = []
+
+        def get_model_info(candidate):
+            lookups.append(candidate)
+            return {"max_input_tokens": "65536" if raw_resolves and candidate == model else invalid_limit}
+
+        monkeypatch.setattr(litellm, "get_model_info", get_model_info)
+        if raw_resolves:
+            assert get_max_tokens(model) == 32000
+        else:
+            with pytest.raises(Exception, match="Ensure .* is defined in MAX_TOKENS"):
+                get_max_tokens(model)
+        assert lookups == ["openai/gpt-5.9", "gpt-5.9", model]
+
+    @pytest.mark.parametrize(
+        ("model", "resolved_model", "expected_lookups", "azure_mode"),
+        [
+            (
+                "gpt-5.9_thinking",
+                "openai/gpt-5.9",
+                ["openai/gpt-5.9"],
+                False,
+            ),
+            (
+                "gpt-5.9_thinking",
+                "gpt-5.9",
+                ["openai/gpt-5.9", "gpt-5.9"],
+                False,
+            ),
+            (
+                "gpt-5.9_thinking",
+                "azure/gpt-5.9",
+                ["azure/gpt-5.9"],
+                True,
+            ),
+            (
+                "openai/gpt-5.9_thinking",
+                "openai/gpt-5.9",
+                ["openai/gpt-5.9"],
+                False,
+            ),
+            (
+                "openai/gpt-5.9_thinking",
+                "azure/gpt-5.9",
+                ["azure/gpt-5.9"],
+                True,
+            ),
+            (
+                "azure/gpt-5.9_thinking",
+                "azure/gpt-5.9",
+                ["azure/gpt-5.9"],
+                False,
+            ),
+            (
+                "azure/openai/gpt-5.9_thinking",
+                "azure/gpt-5.9",
+                ["azure/gpt-5.9"],
+                False,
+            ),
+            (
+                "openai/gpt-5.9_thinking",
+                "openai/gpt-5.9_thinking",
+                ["openai/gpt-5.9", "gpt-5.9", "openai/gpt-5.9_thinking"],
+                False,
+            ),
+        ],
+    )
+    def test_gpt5_thinking_litellm_fallback(
+        self,
+        monkeypatch,
+        model,
+        resolved_model,
+        expected_lookups,
+        azure_mode,
+    ):
+        setting_values = {"OPENAI.API_TYPE": "azure"} if azure_mode else {}
+        fake_settings = type("", (), {
+            "config": type("", (), {
+                "custom_model_max_tokens": 0,
+                "max_model_tokens": 0
+            })(),
+            "get": lambda self, key, default=None: setting_values.get(key, default),
+        })()
+        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        lookups = []
+
+        def mock_get_model_info(m):
+            lookups.append(m)
+            if m == resolved_model:
+                return {"max_input_tokens": 123456}
+            raise Exception("not found")
+
+        monkeypatch.setattr(litellm, "get_model_info", mock_get_model_info)
+        assert get_max_tokens(model) == 123456
+        assert lookups == expected_lookups
+
     @pytest.mark.parametrize(
         ("model", "expected"),
         [
