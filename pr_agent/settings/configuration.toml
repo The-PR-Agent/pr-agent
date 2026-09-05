@@ -281,6 +281,7 @@ enable_help_text=false
 # The type of deployment to create. Valid values are 'app' or 'user'.
 deployment_type = "user"
 ratelimit_retries = 5
+polling_request_timeout = 10 # total seconds for comment-history fallback; positive values capped at 60
 base_url = "https://api.github.com"
 publish_inline_comments_fallback_with_verification = true
 try_fix_invalid_inline_comments = true

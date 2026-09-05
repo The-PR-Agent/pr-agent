@@ -9,6 +9,18 @@ There are several ways to use PR-Agent:
 - [Azure DevOps integration](./azure.md)
 - [Gitea integration](./gitea.md)
 
+## GitHub polling HTTP requests
+
+When GitHub polling needs to look back through PR comments, it reuses the polling
+HTTP session rather than blocking the event loop with a synchronous request.
+`github.polling_request_timeout` sets the total timeout for this fallback request
+(default: 10 seconds; positive values are capped at 60). Invalid values use the
+default with a warning. Set it in the host configuration or through
+`GITHUB__POLLING_REQUEST_TIMEOUT`; repository settings do not control this limit.
+This does not change the other polling requests or the sequential notification
+scan. The fallback now follows the existing aiohttp session's proxy and TLS
+behavior, not Requests-specific environment settings.
+
 ## Sizing a self-hosted webhook server
 
 The GitHub, GitLab and Gitea webhook servers (the `github_app`, `gitlab_webhook` and `gitea_app` Docker targets) run under gunicorn with multiple worker processes, so that a worker busy handling a request cannot block the health check served by another. The other deployments — Bitbucket, Azure DevOps, GitHub polling, and the Lambda variants — run a single process and are unaffected by this section.

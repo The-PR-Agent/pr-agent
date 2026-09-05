@@ -1,11 +1,11 @@
 import asyncio
+import math
 import multiprocessing
 import traceback
 from collections import deque
 from datetime import datetime, timezone
 
 import aiohttp
-import requests
 
 from pr_agent.agent.pr_agent import PRAgent
 from pr_agent.algo.ai_handlers.litellm_helpers import (
@@ -13,12 +13,47 @@ from pr_agent.algo.ai_handlers.litellm_helpers import (
     drain_litellm_callbacks,
     litellm_callbacks_registered,
 )
-from pr_agent.config_loader import get_settings
+from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import get_git_provider
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
 NOTIFICATION_URL = "https://api.github.com/notifications"
+DEFAULT_POLLING_REQUEST_TIMEOUT = 10
+MAX_POLLING_REQUEST_TIMEOUT = 60
+
+
+def _get_polling_request_timeout() -> float:
+    """Bound the timeout for notification fallback requests."""
+    value = global_settings.get("github.polling_request_timeout", DEFAULT_POLLING_REQUEST_TIMEOUT)
+    try:
+        timeout = float(value) if not isinstance(value, bool) else 0.0
+    except (TypeError, ValueError, OverflowError):
+        timeout = 0.0
+    if not math.isfinite(timeout) or timeout <= 0:
+        get_logger().warning(
+            f"Invalid github.polling_request_timeout; using {DEFAULT_POLLING_REQUEST_TIMEOUT} seconds"
+        )
+        return float(DEFAULT_POLLING_REQUEST_TIMEOUT)
+    if timeout > MAX_POLLING_REQUEST_TIMEOUT:
+        get_logger().warning(f"Capping github.polling_request_timeout at {MAX_POLLING_REQUEST_TIMEOUT} seconds")
+    return min(timeout, float(MAX_POLLING_REQUEST_TIMEOUT))
+
+
+async def _fetch_comment_history(session, url, headers) -> list:
+    """Fetch fallback comments without retaining a response or blocking the event loop."""
+    async with session.get(
+        url,
+        headers=headers,
+        timeout=aiohttp.ClientTimeout(total=_get_polling_request_timeout()),
+        allow_redirects=True,
+        max_redirects=30,
+    ) as response:
+        response.raise_for_status()
+        comments = await response.json(content_type=None)
+    if not isinstance(comments, list):
+        raise ValueError("Expected a list of pull request comments")
+    return comments
 
 
 async def mark_notification_as_read(headers, notification, session):
@@ -135,8 +170,7 @@ async def is_valid_notification(notification, headers, handled_ids, session, use
                         else: # we could not find the user tag in the latest comment. Check previous comments
                             # get all comments in the PR
                             requests_url = f"{pr_url}/comments".replace("pulls", "issues")
-                            comments_response = requests.get(requests_url, headers=headers)
-                            comments = comments_response.json()[::-1]
+                            comments = (await _fetch_comment_history(session, requests_url, headers))[::-1]
                             max_comment_to_scan = 4
                             for comment in comments[:max_comment_to_scan]:
                                 if 'user' in comment and 'login' in comment['user']:
