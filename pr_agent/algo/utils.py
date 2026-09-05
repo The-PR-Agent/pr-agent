@@ -1010,9 +1010,12 @@ def load_yaml(response_text: str, keys_fix_yaml: List[str] = [], first_key="", l
     # strip the fence label only when it is a complete info string, so a key such as
     # "yml_config" is not truncated to "_config"
     unfenced = re.sub(r'^```[ \t]*(?:(?i:yaml|yml))?[ \t]*(?=\r?\n)', '', response_text)
-    if unfenced == response_text:
+    opened_with_a_fence = unfenced != response_text
+    if not opened_with_a_fence:
         unfenced = response_text.removeprefix('yaml')
-    response_text = unfenced.rstrip().removesuffix('```')
+    response_text = unfenced.rstrip()
+    if opened_with_a_fence:
+        response_text = response_text.removesuffix('```')
     response_text = sanitize_yaml_control_chars(response_text)
     response_text_original_sanitized = sanitize_yaml_control_chars(response_text_original, log=False)
     try:
