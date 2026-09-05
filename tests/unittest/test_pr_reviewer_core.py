@@ -619,14 +619,23 @@ async def test_run_removes_its_progress_comment_when_review_generation_fails(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "prediction",
-    ["::: not : valid : yaml :::\n\t- [", "review: {}", "review: [invalid]"],
+    ("prediction", "expected_action_data"),
+    [
+        ("::: not : valid : yaml :::\n\t- [", {}),
+        ("review: {}", {"review": {}}),
+        ("review: [invalid]", {"review": ["invalid"]}),
+    ],
     ids=["unparseable", "empty-review", "invalid-review-shape"],
 )
 @pytest.mark.parametrize("persistent_comment", [False, True])
 @pytest.mark.parametrize("propagate_tool_errors", [False, True])
 async def test_run_does_not_publish_an_empty_review(
-        monkeypatch, prediction, persistent_comment, propagate_tool_errors):
+    monkeypatch,
+    prediction,
+    expected_action_data,
+    persistent_comment,
+    propagate_tool_errors,
+):
     from pr_agent.tools import pr_reviewer as pr_reviewer_module
 
     progress_comment = MagicMock()
@@ -679,7 +688,7 @@ async def test_run_does_not_publish_an_empty_review(
     ]
     git_provider.publish_persistent_comment.assert_not_called()
     git_provider.publish_structured_review.assert_not_called()
-    action_output.assert_not_called()
+    action_output.assert_called_once_with(expected_action_data, "review")
     push_output.assert_not_called()
     git_provider.remove_comment.assert_called_once_with(progress_comment)
 
