@@ -538,6 +538,7 @@ class BitbucketServerProvider(GitProvider):
             self.workspace_slug,
             self.repo_slug,
             self.pr_num,
+            limit=100,
         )
         for activity in activities:
             if not isinstance(activity, dict) or activity.get("action") != "COMMENTED":
@@ -560,6 +561,11 @@ class BitbucketServerProvider(GitProvider):
                 user=SimpleNamespace(login=author.get("name") or author.get("slug") or ""),
             ))
         return comments
+
+    def get_issue_comments_newest_first(self):
+        # The activities feed has no documented ordering, so order by comment id,
+        # which Bitbucket Server assigns monotonically.
+        return sorted(self.get_issue_comments(), key=lambda comment: comment.id, reverse=True)
 
     def get_comment_url(self, comment) -> str:
         return f"{self._get_pr_web_url()}/overview?commentId={comment.id}"

@@ -632,7 +632,19 @@ class TestBitbucketServerProvider:
             (11, 2, "first review", "pr-agent"),
             (12, 5, "second review", "review-bot"),
         ]
-        provider.bitbucket_client.get_pull_requests_activities.assert_called_once_with("AAA", "my-repo", 1)
+        provider.bitbucket_client.get_pull_requests_activities.assert_called_once_with("AAA", "my-repo", 1, limit=100)
+
+    @pytest.mark.parametrize("activity_ids", [(100, 200), (200, 100)])
+    def test_get_issue_comments_newest_first_uses_comment_id(self, activity_ids):
+        provider = self._persistent_provider()
+        provider.bitbucket_client.get_pull_requests_activities.return_value = [
+            self._comment_activity("review", comment_id=comment_id)
+            for comment_id in activity_ids
+        ]
+
+        comments = provider.get_issue_comments_newest_first()
+
+        assert [comment.id for comment in comments] == [200, 100]
 
     def test_persistent_review_creates_once_then_updates_the_same_comment(self):
         provider = self._persistent_provider()
