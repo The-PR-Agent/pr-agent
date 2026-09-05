@@ -3,9 +3,42 @@ import hmac
 import secrets
 import time
 from collections import defaultdict
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 from fastapi import HTTPException
+
+from pr_agent.config_loader import get_settings
+
+# custom_merge_loader bypasses Dynaconf token expansion, so TOML references such as
+# @get would remain strings. Keep the shared profiles immutable and copy only defaults.
+_STANDARD_PR_COMMANDS = (
+    "/describe --pr_description.final_update_message=false",
+    "/review",
+    "/improve",
+)
+_PLAIN_PR_COMMANDS = ("/describe", "/review", "/improve")
+_COMMITTABLE_PR_COMMANDS = (
+    "/describe --pr_description.final_update_message=false",
+    "/review",
+    "/improve --pr_code_suggestions.commitable_code_suggestions=true",
+)
+_DEFAULT_PR_COMMANDS_BY_PROVIDER = {
+    "github_app": _STANDARD_PR_COMMANDS,
+    "gitlab": _STANDARD_PR_COMMANDS,
+    "gitea": _PLAIN_PR_COMMANDS,
+    "azure_devops_server": _PLAIN_PR_COMMANDS,
+    "bitbucket_app": _COMMITTABLE_PR_COMMANDS,
+    "bitbucket_server": _COMMITTABLE_PR_COMMANDS,
+}
+_MISSING = object()
+
+
+def get_pr_commands(provider: str) -> Sequence[str]:
+    """Return an explicit provider override or a fresh copy of its default profile."""
+    configured = get_settings().get(f"{provider}.pr_commands", _MISSING)
+    if configured is not _MISSING:
+        return configured
+    return list(_DEFAULT_PR_COMMANDS_BY_PROVIDER[provider])
 
 
 def verify_signature(payload_body, secret_token, signature_header):
