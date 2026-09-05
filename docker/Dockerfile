@@ -27,6 +27,12 @@ FROM base AS github_polling
 ADD pr_agent pr_agent
 CMD ["python", "pr_agent/servers/github_polling.py"]
 
+FROM base AS github_action
+ADD pr_agent pr_agent
+ADD github_action/entrypoint.sh /
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
+
 FROM base AS gitlab_webhook
 ADD pr_agent pr_agent
 CMD ["python", "-m", "gunicorn", "-k", "uvicorn.workers.UvicornWorker", "-c", "pr_agent/servers/gunicorn_config.py", "--forwarded-allow-ips", "*", "pr_agent.servers.gitlab_webhook:app"]
@@ -49,8 +55,10 @@ FROM base AS test
 RUN uv sync --frozen --no-install-project
 ADD pr_agent pr_agent
 ADD tests tests
+ADD .github/workflows/publish.yml .github/workflows/publish.yml
 ADD docker/mosaico docker/mosaico
 
 FROM base AS cli
 ADD pr_agent pr_agent
+RUN uv sync --frozen --no-dev && ln -s /app/.venv/bin/pr-agent /usr/local/bin/pr-agent
 ENTRYPOINT ["python", "pr_agent/cli.py"]

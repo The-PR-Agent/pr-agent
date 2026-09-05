@@ -54,7 +54,7 @@ class FakeGitProvider:
         self.comments.append(body)
 
 
-SNAPSHOT_SECTIONS = ("CONFIG", "PR_REVIEWER", "CUSTOM_SECTION_FOR_TEST")
+SNAPSHOT_SECTIONS = ("CONFIG", "PR_REVIEWER", "PROMPT_FRAGMENTS", "CUSTOM_SECTION_FOR_TEST")
 
 
 def _snapshot_settings_sections(settings):
@@ -157,6 +157,22 @@ def test_valid_repo_settings_merge_overrides_key_and_preserves_siblings(monkeypa
     assert pr_reviewer.get("num_max_findings") == 11
     # Unrelated sibling key in the same section must be preserved by the merge logic.
     assert pr_reviewer.get("require_tests_review") == sibling_before
+
+
+def test_repo_settings_cannot_override_prompt_fragments(monkeypatch, settings_snapshot):
+    provider = FakeGitProvider(
+        repo_settings_bytes=b'[prompt_fragments]\ndiff_hunk_format = "UNTRUSTED-FRAGMENT"\n'
+    )
+    captured = _install_provider(monkeypatch, provider)
+
+    get_settings().set("config.use_repo_settings_file", True)
+    settings = get_settings()
+    fragment_before = _section(settings, "prompt_fragments").get("diff_hunk_format")
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    assert captured["errors"] is None
+    assert _section(settings, "prompt_fragments").get("diff_hunk_format") == fragment_before
 
 
 def test_invalid_toml_does_not_pollute_settings(monkeypatch, settings_snapshot):

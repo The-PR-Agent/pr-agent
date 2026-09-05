@@ -27,10 +27,11 @@ repos:
       - id: trailing-whitespace
         exclude: ^tests/unittest/test_extend_patch\.py$ # trailing space; stripping it breaks the test.
 
-  # - repo: https://github.com/rhysd/actionlint
-  #   rev: v1.7.3
-  #   hooks:
-  #     - id: actionlint
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.12
+    hooks:
+      - id: actionlint
+
   # ruff handles linting and import sorting (config in pyproject.toml).
   - repo: local
     hooks:

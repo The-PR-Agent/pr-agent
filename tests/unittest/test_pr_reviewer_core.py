@@ -932,6 +932,43 @@ def test_set_review_labels_replaces_stale_review_labels_and_keeps_user_labels():
         settings.pr_reviewer.enable_review_labels_security = original["enable_review_labels_security"]
 
 
+def test_set_review_labels_skips_providers_without_label_support():
+    settings = get_settings()
+    original = {
+        "publish_output": settings.config.publish_output,
+        "require_estimate_effort_to_review": settings.pr_reviewer.require_estimate_effort_to_review,
+        "require_security_review": settings.pr_reviewer.require_security_review,
+        "enable_review_labels_effort": settings.pr_reviewer.enable_review_labels_effort,
+        "enable_review_labels_security": settings.pr_reviewer.enable_review_labels_security,
+    }
+    settings.config.publish_output = True
+    settings.pr_reviewer.require_estimate_effort_to_review = True
+    settings.pr_reviewer.require_security_review = True
+    settings.pr_reviewer.enable_review_labels_effort = True
+    settings.pr_reviewer.enable_review_labels_security = True
+    git_provider = MagicMock()
+    git_provider.is_supported.return_value = False
+    reviewer = _make_reviewer(git_provider)
+    data = {
+        "review": {
+            "estimated_effort_to_review_[1-5]": "3, moderate",
+            "security_concerns": "yes",
+        }
+    }
+
+    try:
+        reviewer.set_review_labels(data)
+
+        git_provider.get_pr_labels.assert_not_called()
+        git_provider.publish_labels.assert_not_called()
+    finally:
+        settings.config.publish_output = original["publish_output"]
+        settings.pr_reviewer.require_estimate_effort_to_review = original["require_estimate_effort_to_review"]
+        settings.pr_reviewer.require_security_review = original["require_security_review"]
+        settings.pr_reviewer.enable_review_labels_effort = original["enable_review_labels_effort"]
+        settings.pr_reviewer.enable_review_labels_security = original["enable_review_labels_security"]
+
+
 def test_get_user_answers_collects_question_and_answer_from_issue_comments():
     git_provider = MagicMock()
     git_provider.get_issue_comments.return_value = [
@@ -961,8 +998,11 @@ async def test_run_threads_only_the_final_review_comment(monkeypatch, persistent
     progress_comment = MagicMock()
     git_provider = MagicMock()
     git_provider.should_publish_review_as_thread.return_value = thread_enabled
+    git_provider.supports_review_finding_state.return_value = True
+    git_provider.is_supported.return_value = True
     git_provider.supports_review_comment_identity.return_value = False
     git_provider.publish_comment.return_value = progress_comment
+    git_provider.publish_persistent_comment_full.return_value = object()
     reviewer = _make_reviewer(git_provider)
     reviewer.incremental = SimpleNamespace(is_incremental=False)
     reviewer.vars = {}
@@ -997,8 +1037,11 @@ async def test_run_threads_only_the_final_review_comment(monkeypatch, persistent
         settings.pr_reviewer.persistent_comment = original["persistent_comment"]
 
     if persistent:
-        publish = git_provider.publish_persistent_comment
+        publish = git_provider.publish_persistent_comment_full
         publish.assert_called_once()
+        assert publish.call_args.kwargs["require_agent_authorship"] is True
+        assert publish.call_args.kwargs["fallback_on_error"] is False
+        git_provider.publish_persistent_comment.assert_not_called()
         assert publish.call_args.kwargs["identity_marker"] == PRReviewIdentity.REGULAR.value
         assert publish.call_args.kwargs["legacy_initial_header"] == f"{PRReviewHeader.REGULAR.value} 🔍"
     else:
@@ -1195,3 +1238,41 @@ def test_answer_mode_prefers_the_newest_question_and_answer(monkeypatch):
 
     assert reviewer.vars["question_str"] == "Questions to better understand the PR:\n- Current question?"
     assert reviewer.vars["answer_str"] == "/answer Current answer."
+
+
+def _render_review_capturing_push(reviewer, publish_output):
+    reviewer.prediction = "review: {}"
+    reviewer.remaining_files_list = []
+    reviewer.git_provider.get_diff_files.return_value = []
+    reviewer.git_provider.is_supported.return_value = False
+    reviewer.set_review_labels = MagicMock()
+
+    settings = get_settings()
+    original_publish_output = settings.config.publish_output
+    try:
+        settings.config.publish_output = publish_output
+        with (
+            patch("pr_agent.tools.pr_reviewer.load_yaml", return_value={"review": {"score": "1"}}),
+            patch("pr_agent.tools.pr_reviewer.github_action_output"),
+            patch("pr_agent.tools.pr_reviewer.convert_to_markdown_v2", return_value="original review"),
+            patch("pr_agent.tools.pr_reviewer.push_outputs") as push,
+        ):
+            reviewer._prepare_pr_review()
+        return push
+    finally:
+        settings.config.publish_output = original_publish_output
+
+
+def test_prepare_pr_review_does_not_push_outputs_on_a_dry_run():
+    # publish_output=false is used by the CLI and by mosaico's dispatch to render a review
+    # without touching the PR; it must not reach an external sink either.
+    push = _render_review_capturing_push(_make_prediction_reviewer(), publish_output=False)
+    push.assert_not_called()
+
+
+def test_prepare_pr_review_pushes_outputs_when_publishing():
+    push = _render_review_capturing_push(_make_prediction_reviewer(), publish_output=True)
+    push.assert_called_once()
+    assert push.call_args.args[0] == "review"
+    assert push.call_args.kwargs["payload"] == {"score": "1"}
+    assert push.call_args.kwargs["markdown"] == "original review"

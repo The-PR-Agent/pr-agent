@@ -1,5 +1,7 @@
 """Embed with the openai>=1.0 client that requirements.txt pins."""
 import inspect
+import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -97,3 +99,38 @@ def test_the_client_is_reused_across_calls(monkeypatch):
     psi._embed(["c"])
 
     assert built == ["unit-test-key"]
+
+
+@pytest.mark.asyncio
+async def test_pinecone_query_import_is_available_in_run(monkeypatch):
+    queried = []
+
+    class FakeIndex:
+        def query(self, *args, **kwargs):
+            queried.append(kwargs)
+            return SimpleNamespace(to_dict=lambda: {"matches": []})
+
+    monkeypatch.setitem(sys.modules, "pinecone", SimpleNamespace(Index=lambda **kwargs: FakeIndex()))
+    monkeypatch.setattr(psi, "_embed", lambda texts: [[0.5]])
+    monkeypatch.setattr(
+        psi,
+        "get_settings",
+        lambda: SimpleNamespace(
+            config=SimpleNamespace(publish_output=False),
+            pr_similar_issue=SimpleNamespace(vectordb="pinecone", skip_comments=True),
+        ),
+    )
+
+    issue = SimpleNamespace(title="Issue", body="Body", number=1, get_comments=lambda: [])
+    tool = psi.PRSimilarIssue.__new__(psi.PRSimilarIssue)
+    tool.supported = True
+    tool.issue_url = "https://github.com/example/repo/issues/1"
+    tool.index_name = "issues"
+    tool.repo_name_for_index = "example-repo"
+    tool.git_provider = SimpleNamespace(
+        _parse_issue_url=lambda url: ("example/repo", 1),
+        repo_obj=SimpleNamespace(get_issue=lambda number: issue),
+    )
+
+    assert await tool.run() is None
+    assert queried, "run() never entered the pinecone branch"

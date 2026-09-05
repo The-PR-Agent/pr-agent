@@ -87,28 +87,32 @@ The direction of the diagram adapts to its shape. A diagram whose longest chain 
 
 ## Configuration options
 
+The descriptions below explain each option's behavior. See the relevant sections in
+[`configuration.toml`](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml)
+for the authoritative default values.
+
 ???+ example "Possible configurations"
 
     <table>
       <tr>
         <td><b>publish_labels</b></td>
-        <td>If set to true, the tool will publish labels to the PR. Default is false.</td>
+        <td>If set to true, the tool will publish labels to the PR.</td>
       </tr>
       <tr>
         <td><b>publish_description_as_comment</b></td>
-        <td>If set to true, the tool will publish the description as a comment to the PR. If false, it will overwrite the original description. Default is false.</td>
+        <td>If set to true, the tool will publish the description as a comment to the PR. If false, it will overwrite the original description.</td>
       </tr>
       <tr>
         <td><b>publish_description_as_comment_persistent</b></td>
-        <td>If set to true and `publish_description_as_comment` is true, the tool will publish the description as a persistent comment to the PR. Default is true.</td>
+        <td>If set to true and `publish_description_as_comment` is true, the tool will publish the description as a persistent comment to the PR.</td>
       </tr>
       <tr>
         <td><b>add_original_user_description</b></td>
-        <td>If set to true, the tool will add the original user description to the generated description. Default is true.</td>
+        <td>If set to true, the tool will add the original user description to the generated description.</td>
       </tr>
       <tr>
         <td><b>generate_ai_title</b></td>
-        <td>If set to true, the tool will also generate an AI title for the PR. Default is false.</td>
+        <td>If set to true, the tool will also generate an AI title for the PR.</td>
       </tr>
       <tr>
         <td><b>extra_instructions</b></td>
@@ -116,51 +120,51 @@ The direction of the diagram adapts to its shape. A diagram whose longest chain 
       </tr>
       <tr>
         <td><b>enable_pr_type</b></td>
-        <td>If set to false, it will not show the `PR type` as a text value in the description content. Default is true.</td>
+        <td>If set to false, it will not show the `PR type` as a text value in the description content.</td>
       </tr>
       <tr>
         <td><b>enable_pr_description</b></td>
-        <td>If set to false, the AI-generated summary section will not be requested from the model, nor shown in the description content. The other sections (diagram, changes walkthrough) are unaffected. Default is true.</td>
+        <td>If set to false, the AI-generated summary section will not be requested from the model, nor shown in the description content. The other sections (diagram, changes walkthrough) are unaffected.</td>
       </tr>
       <tr>
         <td><b>final_update_message</b></td>
-        <td>If set to true, it will add a comment message [`PR Description updated to latest commit...`](https://github.com/the-pr-agent/pr-agent/pull/499#issuecomment-1837412176) after finishing calling `/describe`. Default is true.</td>
+        <td>If set to true, it will add a comment message [`PR Description updated to latest commit...`](https://github.com/the-pr-agent/pr-agent/pull/499#issuecomment-1837412176) after finishing calling `/describe`.</td>
       </tr>
       <tr>
         <td><b>enable_semantic_files_types</b></td>
-        <td>If set to true, "Changes walkthrough" section will be generated. Default is true.</td>
+        <td>If set to true, "Changes walkthrough" section will be generated.</td>
       </tr>
       <tr>
             <td><b>file_table_collapsible_open_by_default</b></td>
-            <td>If set to true, the file list in the "Changes walkthrough" section will be open by default. If set to false, it will be closed by default. Default is false.</td>
+            <td>Controls whether the file list in the "Changes walkthrough" section is initially open or closed.</td>
       </tr>
       <tr>
         <td><b>collapsible_file_list</b></td>
-        <td>If set to true, the file list in the "Changes walkthrough" section will be collapsible. If set to "adaptive", the file list will be collapsible only if there are more than 8 files. Default is "adaptive".</td>
+        <td>If set to true, the file list in the "Changes walkthrough" section will be collapsible. If set to "adaptive", the file list will be collapsible only when the number of files exceeds <code>collapsible_file_list_threshold</code>.</td>
       </tr>
       <tr>
         <td><b>enable_large_pr_handling</b></td>
-        <td>If set to true, in case of a large PR the tool will make several calls to the AI and combine them to be able to cover more files. Default is true.</td>
+        <td>If set to true, in case of a large PR the tool will make several calls to the AI and combine them to be able to cover more files.</td>
       </tr>
       <tr>
         <td><b>enable_help_text</b></td>
-        <td>If set to true, the tool will display a help text in the comment. Default is false.</td>
+        <td>If set to true, the tool will display a help text in the comment.</td>
       </tr>
       <tr>
         <td><b>enable_pr_diagram</b></td>
-        <td>If set to true, the tool will generate a Mermaid flowchart summarizing the main pull request changes. This field remains empty if not applicable. Default is true.</td>
+        <td>If set to true, the tool will generate a Mermaid flowchart summarizing the main pull request changes. This field remains empty if not applicable.</td>
       </tr>
       <tr>
         <td><b>pr_diagram_direction</b></td>
-        <td>Direction of the generated Mermaid flowchart: <b>adaptive</b>, <b>LR</b> or <b>TD</b>. With adaptive, the direction is chosen from the shape of the diagram. Default is adaptive.</td>
+        <td>Direction of the generated Mermaid flowchart: <b>adaptive</b>, <b>LR</b> or <b>TD</b>. With adaptive, the direction is chosen from the shape of the diagram.</td>
       </tr>
       <tr>
         <td><b>pr_diagram_direction_threshold</b></td>
-        <td>With <b>adaptive</b> direction, a diagram whose longest chain exceeds this many nodes is drawn top-down instead of left-to-right. Default is 5.</td>
+        <td>With <b>adaptive</b> direction, a diagram whose longest chain exceeds this many nodes is drawn top-down instead of left-to-right.</td>
       </tr>
       <tr>
         <td><b>auto_create_ticket</b></td>
-        <td>If set to true, this will automatically create a ticket in the ticketing system when a PR is opened. Default is false.</td>
+        <td>If set to true, this will automatically create a ticket in the ticketing system when a PR is opened.</td>
       </tr>
     </table>
 

@@ -36,10 +36,11 @@ class CodeCommitPullRequestResponse:
     class CodeCommitPullRequestTarget:
         """
         CodeCommitPullRequestTarget is a subclass of CodeCommitPullRequestResponse that
-        holds details about an individual target commit.
+        holds details about an individual target repository and commit comparison.
         """
 
         def __init__(self, json: dict):
+            self.repository_name = json.get("repositoryName", "")
             self.source_commit = json.get("sourceCommit", "")
             self.source_branch = json.get("sourceReference", "")
             self.destination_commit = json.get("destinationCommit", "")

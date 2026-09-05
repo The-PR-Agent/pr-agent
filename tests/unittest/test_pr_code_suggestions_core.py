@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -8,6 +9,7 @@ from pr_agent.algo.pr_processing import retry_with_fallback_models
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import PRCodeSuggestionsHeader, PRCodeSuggestionsIdentity
 from pr_agent.config_loader import get_settings
+from pr_agent.git_providers import AzureDevopsProvider
 from pr_agent.git_providers.git_provider import GitProvider, IncrementalPR
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
@@ -63,6 +65,70 @@ code_suggestions:
     assert len(data["code_suggestions"]) == 1
     assert data["code_suggestions"][0]["one_sentence_summary"] == "Avoid duplicated work"
     assert data["code_suggestions"][0]["improved_code"] == "new()"
+
+
+@pytest.mark.asyncio
+async def test_prepare_prediction_main_caps_suggestions_per_file_after_chunk_merge():
+    settings_snapshot = snapshot_settings((
+        "pr_code_suggestions.decouple_hunks",
+        "pr_code_suggestions.parallel_calls",
+        "pr_code_suggestions.max_suggestions_per_file",
+    ))
+    settings = get_settings()
+    settings.pr_code_suggestions.decouple_hunks = True
+    settings.pr_code_suggestions.parallel_calls = False
+    settings.set("pr_code_suggestions.max_suggestions_per_file", 1)
+    tool = _make_tool()
+    tool.token_handler = MagicMock()
+
+    async def fake_get_prediction(model, patches_diff, patches_diff_no_line_numbers):
+        return {"code_suggestions": [_valid_suggestion(
+            one_sentence_summary=f"Finding from {patches_diff}",
+            relevant_lines_start=1 if patches_diff == "chunk-a" else 2,
+        )]}
+
+    try:
+        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", return_value=["chunk-a", "chunk-b"]):
+            tool._get_prediction = fake_get_prediction
+
+            data = await tool.prepare_prediction_main("primary-model")
+    finally:
+        restore_settings(settings_snapshot)
+
+    assert data["code_suggestions"] == [_valid_suggestion(
+        one_sentence_summary="Finding from chunk-a",
+        relevant_lines_start=1,
+    )]
+
+
+def test_limit_suggestions_per_file_keeps_highest_scores_and_preserves_other_files():
+    settings_snapshot = snapshot_settings(("pr_code_suggestions.max_suggestions_per_file",))
+    settings = get_settings()
+    settings.set("pr_code_suggestions.max_suggestions_per_file", 2)
+    tool = _make_tool()
+    suggestions = [
+        _valid_suggestion(one_sentence_summary="Low", score=3),
+        _valid_suggestion(one_sentence_summary="High", score=9),
+        _valid_suggestion(one_sentence_summary="Medium", score=6),
+        _valid_suggestion(one_sentence_summary="Other file", relevant_file="worker.py", score=1),
+    ]
+
+    try:
+        limited = tool._limit_suggestions_per_file(suggestions)
+    finally:
+        restore_settings(settings_snapshot)
+
+    assert limited == [suggestions[1], suggestions[2], suggestions[3]]
+
+
+def test_limit_suggestions_per_file_is_inert_at_the_shipped_default():
+    tool = _make_tool()
+    suggestions = [
+        _valid_suggestion(one_sentence_summary="First", score=3),
+        _valid_suggestion(one_sentence_summary="Second", score=9),
+    ]
+
+    assert tool._limit_suggestions_per_file(suggestions) == suggestions
 
 
 def test_prepare_pr_code_suggestions_renames_critical_label_when_focusing_only_on_problems():
@@ -271,6 +337,42 @@ async def test_prepare_prediction_main_keeps_outer_fallback_when_all_chunks_fail
     assert len(data["code_suggestions"]) == 2
     assert tool.failed_chunk_count == 0
     assert tool.total_chunk_count == 2
+
+
+@pytest.mark.asyncio
+async def test_prepare_prediction_main_rebuilds_unnumbered_chunks_after_conversion_fallback():
+    settings = get_settings()
+    original_decouple_hunks = settings.pr_code_suggestions.decouple_hunks
+    original_parallel_calls = settings.pr_code_suggestions.parallel_calls
+    settings.pr_code_suggestions.decouple_hunks = False
+    settings.pr_code_suggestions.parallel_calls = False
+    tool = _make_tool()
+    tool.token_handler = MagicMock()
+    tool.convert_to_decoupled_with_line_numbers = AsyncMock(return_value=[])
+    chunk_pairs = []
+
+    async def fake_get_prediction(model, patches_diff, patches_diff_no_line_numbers):
+        chunk_pairs.append((patches_diff, patches_diff_no_line_numbers))
+        return {"code_suggestions": [_valid_suggestion(relevant_file=f"chunk-{len(chunk_pairs)}.py")]}
+
+    try:
+        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", side_effect=[
+            ["stale unnumbered chunk"],
+            ["1 fallback-a", "2 fallback-b"],
+        ]):
+            tool._get_prediction = fake_get_prediction
+
+            data = await tool.prepare_prediction_main("primary-model")
+    finally:
+        settings.pr_code_suggestions.decouple_hunks = original_decouple_hunks
+        settings.pr_code_suggestions.parallel_calls = original_parallel_calls
+
+    assert chunk_pairs == [
+        ("1 fallback-a", "fallback-a"),
+        ("2 fallback-b", "fallback-b"),
+    ]
+    assert tool.total_chunk_count == 2
+    assert len(data["code_suggestions"]) == 2
 
 
 def test_suggestions_coverage_footer_reports_partial_runs_and_respects_flag():
@@ -827,6 +929,218 @@ async def test_suggestion_covering_the_anchored_range_is_published_as_committabl
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("improved_code", ["return new(", "return await new()"])
+async def test_invalid_python_replacement_is_published_as_a_pr_comment(improved_code):
+    git_provider = _provider_with_file("def fetch():\n    return old()\n")
+    tool = _make_tool(git_provider)
+
+    await tool.push_inline_code_suggestions({"code_suggestions": [
+        _valid_suggestion(
+            relevant_lines_start=2,
+            relevant_lines_end=2,
+            existing_code="return old()",
+            improved_code=improved_code,
+            score=8,
+        )
+    ]})
+
+    git_provider.publish_code_suggestions.assert_not_called()
+    body = git_provider.publish_comment.call_args.args[0]
+    assert "```suggestion" not in body
+    assert "because the proposed Python code has invalid syntax" in body
+    assert "`app.py:2-2`" in body
+
+
+@pytest.mark.asyncio
+async def test_invalid_python_replacement_stays_in_a_noncommittable_artifact():
+    git_provider = _provider_with_file("def fetch():\n    return old()\n")
+    git_provider.supports_code_suggestions_artifact.return_value = True
+    git_provider.publish_code_suggestions_artifact.return_value = True
+    tool = _make_tool(git_provider)
+
+    await tool.push_inline_code_suggestions({"code_suggestions": [
+        _valid_suggestion(
+            relevant_lines_start=2,
+            relevant_lines_end=2,
+            existing_code="return old()",
+            improved_code="return new(",
+            score=8,
+        )
+    ]})
+
+    published = git_provider.publish_code_suggestions_artifact.call_args.args[0]
+    assert len(published) == 1
+    assert "```suggestion" not in published[0]["body"]
+    assert "because the proposed Python code has invalid syntax" in published[0]["body"]
+    git_provider.publish_code_suggestions.assert_not_called()
+    git_provider.publish_comment.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_context_dependent_multiline_python_replacement_remains_committable():
+    git_provider = _provider_with_file(
+        "async def fetch():\n"
+        "    return await old(\n"
+        "        source,\n"
+        "    )\n"
+    )
+    tool = _make_tool(git_provider)
+
+    await tool.push_inline_code_suggestions({"code_suggestions": [
+        _valid_suggestion(
+            relevant_lines_start=2,
+            relevant_lines_end=4,
+            existing_code="return await old(\n    source,\n)",
+            improved_code="return await new()",
+            score=8,
+        )
+    ]})
+
+    body = _published_suggestion(git_provider)["body"]
+    assert "```suggestion\n    return await new()\n```" in body
+    git_provider.publish_comment.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_non_python_replacement_remains_best_effort():
+    git_provider = _provider_with_file(
+        "function fetch() {\n  return old();\n}\n",
+        filename="app.js",
+    )
+    tool = _make_tool(git_provider)
+
+    await tool.push_inline_code_suggestions({"code_suggestions": [
+        _valid_suggestion(
+            relevant_file="app.js",
+            relevant_lines_start=2,
+            relevant_lines_end=2,
+            existing_code="return old();",
+            improved_code="return (",
+            score=8,
+            language="python",
+        )
+    ]})
+
+    assert "```suggestion\n  return (\n```" in _published_suggestion(git_provider)["body"]
+    git_provider.publish_comment.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_python_replacement_with_incomplete_file_context_remains_best_effort():
+    git_provider = MagicMock()
+    git_provider.diff_files = [FilePatchInfo(
+        base_file="",
+        head_file="def fetch():\n    return old()\n",
+        patch="@@ -19,2 +19,2 @@\n def fetch():\n-    return older()\n+    return old()\n",
+        filename="app.py",
+        head_file_is_complete=False,
+    )]
+    git_provider.publish_code_suggestions.return_value = True
+    tool = _make_tool(git_provider)
+
+    await tool.push_inline_code_suggestions({"code_suggestions": [
+        _valid_suggestion(
+            relevant_lines_start=20,
+            relevant_lines_end=20,
+            existing_code="return old()",
+            improved_code="return new(",
+            score=8,
+        )
+    ]})
+
+    assert "```suggestion\n    return new(\n```" in _published_suggestion(git_provider)["body"]
+    git_provider.publish_comment.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_python_replacement_in_an_unparseable_file_remains_best_effort():
+    git_provider = _provider_with_file("def broken(:\n    return old()\n")
+    tool = _make_tool(git_provider)
+
+    await tool.push_inline_code_suggestions({"code_suggestions": [
+        _valid_suggestion(
+            relevant_lines_start=2,
+            relevant_lines_end=2,
+            existing_code="return old()",
+            improved_code="return new()",
+            score=8,
+        )
+    ]})
+
+    assert "```suggestion\n    return new()\n```" in _published_suggestion(git_provider)["body"]
+    git_provider.publish_comment.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("compile_side_effect", [
+    [RecursionError("baseline too deeply nested")],
+    [None, RecursionError("replacement too deeply nested")],
+])
+async def test_python_validation_failure_remains_best_effort(compile_side_effect):
+    git_provider = _provider_with_file("def fetch():\n    return old()\n")
+    tool = _make_tool(git_provider)
+
+    with patch(
+        "pr_agent.tools.pr_code_suggestions.compile",
+        side_effect=compile_side_effect,
+        create=True,
+    ):
+        await tool.push_inline_code_suggestions({"code_suggestions": [
+            _valid_suggestion(
+                relevant_lines_start=2,
+                relevant_lines_end=2,
+                existing_code="return old()",
+                improved_code="return new()",
+                score=8,
+            )
+        ]})
+
+    assert "```suggestion\n    return new()\n```" in _published_suggestion(git_provider)["body"]
+    git_provider.publish_comment.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("max_length", "improved_code", "truncated_code"), [
+    (6, "return new_value", "return"),
+    (2, "    return new()", ""),
+])
+async def test_truncated_replacement_is_published_as_a_pr_comment(
+        max_length, improved_code, truncated_code):
+    settings = get_settings()
+    snapshot = snapshot_settings((
+        "pr_code_suggestions.max_code_suggestion_length",
+        "pr_code_suggestions.suggestion_truncation_message",
+    ))
+    try:
+        settings.set("pr_code_suggestions.max_code_suggestion_length", max_length)
+        settings.set("pr_code_suggestions.suggestion_truncation_message", "")
+        git_provider = _provider_with_file(
+            "function fetch() {\n  return old();\n}\n",
+            filename="app.js",
+        )
+        tool = _make_tool(git_provider)
+        suggestion = PRCodeSuggestions._truncate_if_needed(_valid_suggestion(
+            relevant_file="app.js",
+            relevant_lines_start=2,
+            relevant_lines_end=2,
+            existing_code="return old();",
+            improved_code=improved_code,
+            score=8,
+        ))
+
+        assert suggestion["improved_code"].rstrip() == truncated_code
+        await tool.push_inline_code_suggestions({"code_suggestions": [suggestion]})
+
+        git_provider.publish_code_suggestions.assert_not_called()
+        body = git_provider.publish_comment.call_args.args[0]
+        assert "```suggestion" not in body
+        assert "because the proposed code was truncated" in body
+        assert "`app.js:2-2`" in body
+    finally:
+        restore_settings(snapshot)
+
+
+@pytest.mark.asyncio
 async def test_suggestion_rewriting_more_lines_than_it_replaces_is_published_as_a_plain_comment():
     git_provider = _provider_with_file("def f():\n    return old(\n        arg)\n")
     tool = _make_tool(git_provider)
@@ -944,13 +1258,15 @@ async def test_publish_no_suggestions_still_overwrites_the_progress_comment_when
     publish_output_no_suggestions(True)
     git_provider = MagicMock()
     git_provider.supports_code_suggestions_artifact.return_value = False
+    git_provider.supports_code_suggestion_state.return_value = False
     tool = _make_tool(git_provider)
     tool.progress_response = MagicMock()
 
     await tool.publish_no_suggestions()
 
-    _, kwargs = git_provider.edit_comment.call_args
-    assert "No code suggestions found for the PR." in kwargs["body"]
+    call = git_provider.edit_comment.call_args
+    edited_body = call.kwargs.get("body", call.args[1])
+    assert "No code suggestions found for the PR." in edited_body
     git_provider.remove_comment.assert_not_called()
 
 
@@ -1051,6 +1367,70 @@ def test_setup_incremental_scope_noop_without_incremental_flag():
 
     git_provider.supports_incremental_kind.assert_not_called()
     git_provider.get_incremental_commits.assert_not_called()
+
+
+def test_load_suggestion_discussion_context_delegates_to_provider():
+    provider = MagicMock(spec=AzureDevopsProvider)
+    provider.get_code_suggestion_thread_context.return_value = '[{"thread_id": 1}]'
+    tool = _make_tool(provider)
+
+    assert tool._load_suggestion_discussion_context() == '[{"thread_id": 1}]'
+
+
+def test_load_suggestion_discussion_context_degrades_to_empty():
+    provider = MagicMock(spec=AzureDevopsProvider)
+    provider.get_code_suggestion_thread_context.side_effect = RuntimeError("unavailable")
+    tool = _make_tool(provider)
+
+    assert tool._load_suggestion_discussion_context() == ""
+
+
+def test_load_suggestion_discussion_context_ignores_other_providers():
+    provider = MagicMock()
+    provider.supports_code_suggestion_state.return_value = False
+    tool = _make_tool(provider)
+
+    assert tool._load_suggestion_discussion_context() == ""
+    provider.get_code_suggestion_thread_context.assert_not_called()
+
+
+def _render_suggestions_user_prompt(prompt_key: str, discussion_context: str) -> str:
+    from jinja2 import Environment, StrictUndefined
+
+    variables = {
+        "title": "Test PR",
+        "date": "2024-01-01",
+        "diff_no_line_numbers": "+value",
+        "duplicate_prompt_examples": False,
+        "suggestion_discussion_context": discussion_context,
+    }
+    environment = Environment(undefined=StrictUndefined, autoescape=True)
+    return environment.from_string(get_settings().get(prompt_key)).render(variables)
+
+
+@pytest.mark.parametrize("prompt_key", [
+    "pr_code_suggestions_prompt.user",
+    "pr_code_suggestions_prompt_not_decoupled.user",
+])
+def test_suggestion_prompt_includes_untrusted_discussion_context(prompt_key):
+    prompt = _render_suggestions_user_prompt(
+        prompt_key,
+        '[{"thread_id": 7, "replies": [{"author": "alice", "message": "Keep this nullable"}]}]',
+    )
+
+    assert "Keep this nullable" in prompt
+    assert "untrusted data" in prompt
+
+
+@pytest.mark.parametrize("prompt_key", [
+    "pr_code_suggestions_prompt.user",
+    "pr_code_suggestions_prompt_not_decoupled.user",
+])
+def test_suggestion_prompt_omits_discussion_section_when_context_empty(prompt_key):
+    prompt = _render_suggestions_user_prompt(prompt_key, "")
+
+    assert "Prior code-suggestion discussions" not in prompt
+    assert "untrusted data" not in prompt
 
 
 def test_supports_incremental_kind_defaults_to_false_on_base_provider():
@@ -1232,21 +1612,192 @@ def test_is_applicable_suggestion_uses_absolute_patch_lines_for_partial_head_con
     tool = _make_tool(git_provider)
 
     assert tool.is_applicable_suggestion("app.py", 100, 100, "later()") is True
+def test_code_suggestion_state_is_provider_driven():
+    provider = MagicMock()
+
+    assert GitProvider.supports_code_suggestion_state(provider) is False
+    assert AzureDevopsProvider.supports_code_suggestion_state(provider) is True
 
 
-def test_persistent_update_survives_progress_cleanup_failure():
-    """A failing progress-note cleanup must not abort the persistent update:
-    if the cleanup error propagated, the caller would fall back to publishing
-    a new suggestions thread, re-creating the duplicate-thread bug."""
+@pytest.mark.asyncio
+async def test_empty_incremental_run_reconciles_existing_suggestions():
+    provider = MagicMock(spec=AzureDevopsProvider)
+    provider.reconcile_code_suggestion_threads.return_value = 1
+    provider.get_code_suggestion_thread_context.return_value = '[{"status": "fixed"}]'
+    tool = _make_tool(provider)
+    tool._incremental_empty_scope = True
+    tool.pr_url = "https://example.test/pr/1"
+    tool.vars = {"suggestion_discussion_context": '[{"status": "active"}]'}
+
+    assert await tool.run() is None
+    provider.reconcile_code_suggestion_threads.assert_called_once_with()
+    provider.get_files.assert_not_called()
+    assert tool.vars["suggestion_discussion_context"] == '[{"status": "fixed"}]'
+
+
+def test_azure_persistent_comment_updates_without_history():
+    provider = MagicMock(spec=AzureDevopsProvider)
+    provider.supports_code_suggestion_state.return_value = True
+    provider.get_issue_comments_newest_first.return_value = []
+    existing = MagicMock()
+    provider.publish_comment.return_value = existing
+
+    result = PRCodeSuggestions.publish_persistent_comment_with_history(
+        provider,
+        "## PR Code Suggestions ✨\n\nnew suggestions",
+        "## PR Code Suggestions ✨",
+        update_header=True,
+        name="suggestions",
+        final_update_message=False,
+        max_previous_comments=0,
+        identity_marker=PRCodeSuggestionsIdentity.SUMMARY.value,
+        legacy_initial_header=PRCodeSuggestionsHeader.SUMMARY.value,
+    )
+
+    assert result is existing
+    provider.publish_comment.assert_called_once()
+    assert PRCodeSuggestionsIdentity.SUMMARY.value in (
+        provider.publish_comment.call_args.args[0]
+    )
+    provider.publish_persistent_comment.assert_not_called()
+
+
+def test_azure_persistent_comment_without_history_keeps_identity_marker():
+    published = {}
+
+    def _publish_comment(pr_comment, is_temporary=False, thread_context=None):
+        published["body"] = pr_comment
+        return SimpleNamespace(body=pr_comment)
+
+    # built without __init__ rather than subclassed: the real constructor needs a live Azure
+    # connection, and a subclass that skips it trips CodeQL's missing-super-init rule
+    provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+    provider.get_issue_comments = lambda: []
+    provider.publish_comment = _publish_comment
+
+    PRCodeSuggestions.publish_persistent_comment_with_history(
+        provider,
+        "## Team Suggestions ✨\n\nnew suggestions",
+        "## Team Suggestions ✨",
+        update_header=True,
+        name="suggestions",
+        final_update_message=False,
+        max_previous_comments=0,
+        identity_marker=PRCodeSuggestionsIdentity.SUMMARY.value,
+        legacy_initial_header=PRCodeSuggestionsHeader.SUMMARY.value,
+    )
+
+    assert PRCodeSuggestionsIdentity.SUMMARY.value in published["body"]
+    assert AzureDevopsProvider._is_agent_comment(published["body"])
+
+
+def test_failed_azure_persistent_update_keeps_progress_comment():
+    provider = MagicMock(spec=AzureDevopsProvider)
+    provider.supports_code_suggestion_state.return_value = True
+    existing = MagicMock()
+    existing.body = "## PR Code Suggestions ✨\n\nold suggestions"
+    provider.get_issue_comments_newest_first.return_value = [existing]
+    provider.edit_comment.return_value = False
+    fallback = MagicMock()
+    provider.publish_comment.return_value = fallback
+    progress = MagicMock()
+
+    result = PRCodeSuggestions.publish_persistent_comment_with_history(
+        provider,
+        "## PR Code Suggestions ✨\n\nnew suggestions",
+        "## PR Code Suggestions ✨",
+        update_header=True,
+        name="suggestions",
+        final_update_message=False,
+        max_previous_comments=0,
+        progress_response=progress,
+    )
+
+    assert result is fallback
+    assert provider.edit_comment.call_count == 2
+    assert provider.edit_comment.call_args_list[0].args[0] is existing
+    assert provider.edit_comment.call_args_list[1].args[0] is progress
+    provider.publish_comment.assert_called_once()
+    provider.remove_comment.assert_called_once_with(progress)
+
+
+def test_failed_azure_history_update_publishes_current_suggestions():
+    provider = MagicMock(spec=AzureDevopsProvider)
+    existing = MagicMock()
+    existing.body = (
+        "## Team Suggestions ✨\n\n"
+        f"{PRCodeSuggestionsIdentity.SUMMARY.value}\n\n"
+        "<!-- aaa1111 -->\n\n<table>old suggestions</table>"
+    )
+    progress = MagicMock()
+    fallback = MagicMock()
+    provider.get_issue_comments.return_value = [existing]
+    provider.get_issue_comments_newest_first.return_value = [
+        existing
+    ]
+    provider.get_comment_url.return_value = "https://example.test/comment/1"
+    provider.get_latest_commit_url.return_value = "https://example.test/commit/deadbee"
+    provider.edit_comment.side_effect = [False, False]
+    provider.publish_comment.return_value = fallback
+
+    result = PRCodeSuggestions.publish_persistent_comment_with_history(
+        provider,
+        "## Team Suggestions ✨\n\n<table>new suggestions</table>",
+        "## Team Suggestions ✨",
+        name="suggestions",
+        progress_response=progress,
+        identity_marker=PRCodeSuggestionsIdentity.SUMMARY.value,
+        legacy_initial_header=PRCodeSuggestionsHeader.SUMMARY.value,
+    )
+
+    assert result is fallback
+    assert provider.edit_comment.call_args_list[0].args[0] is existing
+    assert provider.edit_comment.call_args_list[1].args[0] is progress
+    provider.publish_comment.assert_called_once()
+    provider.remove_comment.assert_called_once_with(progress)
+
+
+@pytest.mark.asyncio
+async def test_azure_no_suggestions_uses_current_result_identity():
+    provider = MagicMock(spec=AzureDevopsProvider)
+    provider.supports_code_suggestion_state.return_value = True
+    tool = _make_tool(provider)
+    settings = get_settings()
+    original_persistent = settings.pr_code_suggestions.persistent_comment
+    original_publish_empty = settings.pr_code_suggestions.publish_output_no_suggestions
+    original_history = settings.pr_code_suggestions.max_history_len
+    original_publish_output = settings.config.publish_output
+    try:
+        settings.pr_code_suggestions.persistent_comment = True
+        settings.pr_code_suggestions.publish_output_no_suggestions = True
+        settings.pr_code_suggestions.max_history_len = 0
+        settings.config.publish_output = True
+
+        await tool.publish_no_suggestions()
+
+        published = provider.publish_comment.call_args.args[0]
+        assert published.startswith(
+            "## PR Code Suggestions ✨\n\n"
+            f"{PRCodeSuggestionsIdentity.NO_SUGGESTIONS.value}\n\n"
+        )
+        assert published.endswith("No code suggestions found for the PR.")
+        provider.publish_persistent_comment.assert_not_called()
+    finally:
+        settings.pr_code_suggestions.persistent_comment = original_persistent
+        settings.pr_code_suggestions.publish_output_no_suggestions = original_publish_empty
+        settings.pr_code_suggestions.max_history_len = original_history
+        settings.config.publish_output = original_publish_output
+
+
+def test_persistent_update_removes_progress_after_status_edit_failure():
     initial_header = "## PR Code Suggestions"
     existing = MagicMock()
     existing.body = f"{initial_header}\n<!-- aaa1111 -->\n<table>old suggestions</table>"
     provider = MagicMock()
     provider.get_issue_comments.return_value = [existing]
+    provider.get_issue_comments_newest_first.return_value = [existing]
     provider.get_comment_url.return_value = "https://example.test/comment/1"
     provider.get_latest_commit_url.return_value = "https://example.test/commit/deadbee"
-    # First edit updates the persistent comment and succeeds; the second edit
-    # (re-labelling the progress note before deletion) fails.
     provider.edit_comment.side_effect = [None, RuntimeError("cleanup failed")]
     progress_note = MagicMock()
 
@@ -1257,13 +1808,16 @@ def test_persistent_update_survives_progress_cleanup_failure():
 
     assert result is existing
     assert provider.edit_comment.call_count == 2
-    provider.remove_comment.assert_not_called()
+    provider.remove_comment.assert_called_once_with(progress_note)
     provider.publish_comment.assert_not_called()
 
 
 def _persistent_provider(existing_comments):
     provider = MagicMock()
     provider.get_issue_comments.return_value = existing_comments
+    provider.get_issue_comments_newest_first.return_value = list(
+        reversed(existing_comments)
+    )
     provider.get_comment_url.return_value = "https://example.test/comment/1"
     provider.get_latest_commit_url.return_value = "https://example.test/commit/deadbee"
     return provider
@@ -1413,3 +1967,221 @@ def test_custom_heading_is_kept_when_a_history_section_already_exists():
     assert "Suggestions up to commit aaa1111" in updated
     assert "Suggestions up to commit 0000000" in updated
     provider.publish_comment.assert_not_called()
+
+
+@pytest.mark.parametrize("raises", [False, True], ids=["returns-false", "raises"])
+def test_first_persistent_improve_edit_failure_publishes_visible_fallback(raises):
+    provider = MagicMock()
+    provider.get_issue_comments.return_value = []
+    provider.get_latest_commit_url.return_value = "https://example.test/commit/deadbee"
+    progress = MagicMock()
+    fallback = MagicMock()
+    provider.publish_comment.return_value = fallback
+    if raises:
+        provider.edit_comment.side_effect = RuntimeError("edit failed")
+    else:
+        provider.edit_comment.return_value = False
+
+    header = "## PR Code Suggestions " + chr(0x2728)
+    new_comment = (
+        header + "\n\n"
+        + PRCodeSuggestionsIdentity.SUMMARY.value + "\n\n"
+        + "<!-- deadbee -->\n\n<table>new suggestions</table>\n\n"
+    )
+    result = PRCodeSuggestions.publish_persistent_comment_with_history(
+        provider,
+        header + "\n\n<table>new suggestions</table>",
+        header,
+        name="suggestions",
+        final_update_message=False,
+        progress_response=progress,
+        identity_marker=PRCodeSuggestionsIdentity.SUMMARY.value,
+        legacy_initial_header=PRCodeSuggestionsHeader.SUMMARY.value,
+    )
+
+    assert result is fallback
+    provider.edit_comment.assert_called_once_with(progress, new_comment)
+    provider.publish_comment.assert_called_once()
+    provider.remove_comment.assert_called_once_with(progress)
+
+
+class _LifecycleSuggestionProvider:
+    def __init__(self, comments=(), edit_results=(), supports_state=False):
+        self.comments = list(comments)
+        self.edit_results = list(edit_results)
+        self._supports_state = supports_state
+        self.edits = []
+        self.published = []
+        self.removed = []
+
+    def get_issue_comments(self):
+        return list(self.comments)
+
+    def get_issue_comments_newest_first(self):
+        return list(reversed(self.get_issue_comments()))
+
+    def get_latest_commit_url(self):
+        return "https://example.test/commit/deadbee"
+
+    def get_comment_url(self, comment):
+        return f"https://example.test/comment/{comment.name}"
+
+    def edit_comment(self, comment, body):
+        self.edits.append((comment, body))
+        if self.edit_results:
+            result = self.edit_results.pop(0)
+            if isinstance(result, Exception):
+                raise result
+            return result
+        return None
+
+    def publish_comment(self, body, **kwargs):
+        comment = SimpleNamespace(body=body, name=f"published-{len(self.published)}")
+        self.published.append((body, kwargs, comment))
+        return comment
+
+    def remove_comment(self, comment):
+        self.removed.append(comment)
+
+    def supports_code_suggestion_state(self):
+        return self._supports_state
+
+    def should_publish_improve_as_thread(self):
+        return False
+
+    def supports_code_suggestions_artifact(self):
+        return False
+
+    def is_supported(self, capability):
+        return False
+
+    def publish_persistent_comment(
+        self,
+        pr_comment,
+        initial_header,
+        update_header=True,
+        name="review",
+        final_update_message=True,
+        identity_marker=None,
+        legacy_initial_header=None,
+    ):
+        if self.comments:
+            result = self.edit_comment(self.comments[-1], pr_comment)
+            if result is False:
+                return self.publish_comment(
+                    f"{pr_comment}\n\n{identity_marker or ''}".rstrip()
+                )
+            return self.comments[-1]
+        return self.publish_comment(
+            f"{pr_comment}\n\n{identity_marker or ''}".rstrip()
+        )
+
+
+def _lifecycle_suggestion_comment(name):
+    body = (
+        f"{PRCodeSuggestionsHeader.SUMMARY.value}\n\n"
+        f"{PRCodeSuggestionsIdentity.SUMMARY.value}\n\n"
+        f"<!-- {name} -->\n\n<table>{name}</table>"
+    )
+    return SimpleNamespace(body=body, name=name)
+
+
+def test_persistent_improve_uses_newest_matching_comment():
+    old = _lifecycle_suggestion_comment("old")
+    newest = _lifecycle_suggestion_comment("newest")
+    provider = _LifecycleSuggestionProvider([old, newest])
+
+    result = PRCodeSuggestions.publish_persistent_comment_with_history(
+        provider,
+        f"{PRCodeSuggestionsHeader.SUMMARY.value}\n\n<table>new suggestions</table>",
+        PRCodeSuggestionsHeader.SUMMARY.value,
+        name="suggestions",
+        final_update_message=False,
+        identity_marker=PRCodeSuggestionsIdentity.SUMMARY.value,
+        legacy_initial_header=PRCodeSuggestionsHeader.SUMMARY.value,
+    )
+
+    assert result is newest
+    assert provider.edits[0][0] is newest
+    assert provider.published == []
+
+
+def test_persistent_improve_edit_failure_does_not_publish_duplicate_summary():
+    existing = _lifecycle_suggestion_comment("existing")
+    progress = SimpleNamespace(body="Preparing suggestions...", name="progress")
+    provider = _LifecycleSuggestionProvider([existing], edit_results=[False, False])
+
+    result = PRCodeSuggestions.publish_persistent_comment_with_history(
+        provider,
+        f"{PRCodeSuggestionsHeader.SUMMARY.value}\n\n<table>new suggestions</table>",
+        PRCodeSuggestionsHeader.SUMMARY.value,
+        name="suggestions",
+        progress_response=progress,
+        identity_marker=PRCodeSuggestionsIdentity.SUMMARY.value,
+        legacy_initial_header=PRCodeSuggestionsHeader.SUMMARY.value,
+    )
+
+    assert result is provider.published[0][2]
+    assert len(provider.published) == 1
+    failure_body = provider.published[0][0]
+    assert PRCodeSuggestionsIdentity.SUMMARY.value not in failure_body
+    assert "previous suggestions remain unchanged" in failure_body
+    assert provider.removed == [progress]
+
+
+@pytest.mark.asyncio
+async def test_no_suggestions_failure_removes_stale_progress_comment():
+    settings_snapshot = snapshot_settings(
+        (
+            "config.publish_output",
+            "config.publish_output_progress",
+            "pr_code_suggestions.publish_output_no_suggestions",
+        )
+    )
+    try:
+        settings = get_settings()
+        settings.config.publish_output = True
+        settings.config.publish_output_progress = True
+        settings.pr_code_suggestions.publish_output_no_suggestions = True
+
+        provider = _LifecycleSuggestionProvider(
+            edit_results=[False],
+        )
+        progress = SimpleNamespace(body="Preparing suggestions...", name="progress")
+        tool = _make_tool(provider)
+        tool.progress_response = progress
+
+        await tool.publish_no_suggestions()
+
+        assert len(provider.published) == 1
+        assert "No code suggestions found" in provider.published[0][0]
+        assert provider.removed == [progress]
+        assert tool.progress_response is None
+    finally:
+        restore_settings(settings_snapshot)
+
+
+def test_stateful_no_history_edit_failure_has_no_duplicate_authoritative_summary():
+    existing = _lifecycle_suggestion_comment("existing")
+    provider = _LifecycleSuggestionProvider(
+        [existing],
+        edit_results=[False],
+        supports_state=True,
+    )
+
+    result = PRCodeSuggestions.publish_persistent_comment_with_history(
+        provider,
+        f"{PRCodeSuggestionsHeader.SUMMARY.value}\n\n<table>new suggestions</table>",
+        PRCodeSuggestionsHeader.SUMMARY.value,
+        name="suggestions",
+        final_update_message=False,
+        max_previous_comments=0,
+        identity_marker=PRCodeSuggestionsIdentity.SUMMARY.value,
+        legacy_initial_header=PRCodeSuggestionsHeader.SUMMARY.value,
+    )
+
+    assert result is provider.published[0][2]
+    assert len(provider.published) == 1
+    failure_body = provider.published[0][0]
+    assert PRCodeSuggestionsIdentity.SUMMARY.value not in failure_body
+    assert "previous suggestions remain unchanged" in failure_body
