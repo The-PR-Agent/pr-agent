@@ -233,6 +233,9 @@ class PRReviewer:
             pr_review = self._prepare_pr_review()
             get_logger().debug("PR output", artifact=pr_review)
 
+            if not pr_review:
+                raise ValueError("Failed to prepare review output")
+
             state_result = getattr(self, "_review_state_result", None)
             state_changed = bool(state_result and state_result.changed)
             state_blocked = getattr(self, "_review_state_blocked", False)
@@ -699,7 +702,7 @@ class PRReviewer:
             if isinstance(prediction, BaseException):
                 raise prediction
             data = self._load_review_yaml(prediction)
-            if not isinstance(data, dict) or not isinstance(data.get("review"), dict):
+            if not isinstance(data, dict) or not isinstance(data.get("review"), dict) or not data["review"]:
                 get_logger().warning(f"Failed to parse the review of chunk {chunk_index + 1}",
                                      artifact={"data": data})
                 continue
@@ -764,7 +767,7 @@ class PRReviewer:
         data = self.prediction_data if self.prediction_data is not None else self._load_review_yaml(self.prediction)
         github_action_output(data, 'review')
 
-        if not isinstance(data.get('review'), dict):
+        if not isinstance(data, dict) or not isinstance(data.get('review'), dict) or not data['review']:
             if self._review_finding_state_enabled():
                 self._review_state_blocked = True
                 self._review_state_block_reason = _STATE_BLOCK_REVIEW_DATA

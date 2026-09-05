@@ -175,6 +175,24 @@ async def test_a_chunk_that_fails_does_not_lose_the_chunks_that_succeeded(chunki
 
 
 @pytest.mark.asyncio
+async def test_an_empty_chunk_does_not_lose_a_valid_sibling_or_trigger_fallback(chunking_enabled):
+    reviewer = _make_reviewer()
+    reviewer._get_prediction = AsyncMock(side_effect=["review: {}", CHUNK_B])
+
+    with (
+        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
+        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
+              return_value=(["chunk-a", "chunk-b"], [])),
+    ):
+        await reviewer._prepare_prediction("model")
+
+    assert reviewer._get_prediction.await_count == 2
+    assert reviewer.prediction_data["review"]["score"] == "40"
+    assert reviewer.review_chunk_count == 2
+    assert reviewer.review_failed_chunk_count == 1
+
+
+@pytest.mark.asyncio
 async def test_a_review_where_every_chunk_failed_raises_so_a_fallback_model_is_tried(chunking_enabled):
     reviewer = _make_reviewer()
     reviewer._get_prediction = AsyncMock(side_effect=[RuntimeError("model refused"),
@@ -190,9 +208,14 @@ async def test_a_review_where_every_chunk_failed_raises_so_a_fallback_model_is_t
 
 
 @pytest.mark.asyncio
-async def test_chunks_that_answer_nothing_parsable_fall_back_to_a_single_call_review(chunking_enabled):
+@pytest.mark.parametrize("chunk_predictions", [
+    ["not yaml at all", "nor is this"],
+    ["review: {}", "review: {}"],
+])
+async def test_chunks_without_nonempty_reviews_fall_back_to_a_single_call_review(chunking_enabled,
+                                                                                 chunk_predictions):
     reviewer = _make_reviewer()
-    reviewer._get_prediction = AsyncMock(side_effect=["not yaml at all", "nor is this", CHUNK_A])
+    reviewer._get_prediction = AsyncMock(side_effect=[*chunk_predictions, CHUNK_A])
 
     with (
         patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
@@ -207,13 +230,13 @@ async def test_chunks_that_answer_nothing_parsable_fall_back_to_a_single_call_re
 
 
 def _render_review(reviewer):
-    reviewer.prediction = "review: {}"
+    reviewer.prediction = "review:\n  summary: test"
     reviewer.git_provider.get_diff_files.return_value = []
     reviewer.git_provider.is_supported.return_value = False
     reviewer.set_review_labels = MagicMock()
 
     with (
-        patch("pr_agent.tools.pr_reviewer.load_yaml", return_value={"review": {}}),
+        patch("pr_agent.tools.pr_reviewer.load_yaml", return_value={"review": {"summary": "test"}}),
         patch("pr_agent.tools.pr_reviewer.github_action_output"),
         patch("pr_agent.tools.pr_reviewer.convert_to_markdown_v2", return_value="original review"),
     ):
