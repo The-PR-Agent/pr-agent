@@ -2,6 +2,7 @@ import difflib
 import re
 import shlex
 import subprocess
+from types import SimpleNamespace
 from typing import Optional, Tuple
 from urllib.parse import quote_plus, urlparse
 
@@ -200,7 +201,7 @@ class BitbucketServerProvider(GitProvider):
         pass
 
     def is_supported(self, capability: str) -> bool:
-        if capability in ['get_issue_comments', 'get_labels', 'gfm_markdown', 'publish_file_comments']:
+        if capability in ['get_labels', 'gfm_markdown', 'publish_file_comments']:
             return False
         return True
 
@@ -328,9 +329,77 @@ class BitbucketServerProvider(GitProvider):
         self.diff_files = diff_files
         return diff_files
 
-    def publish_comment(self, pr_comment: str, is_temporary: bool = False):
+    def publish_comment(self, pr_comment: str, is_temporary: bool = False, as_thread: bool = False):
         if not is_temporary:
-            self.bitbucket_client.add_pull_request_comment(self.workspace_slug, self.repo_slug, self.pr_num, pr_comment)
+            return self.bitbucket_client.add_pull_request_comment(
+                self.workspace_slug, self.repo_slug, self.pr_num, pr_comment
+            )
+        return None
+
+    def publish_persistent_comment(self, pr_comment: str,
+                                   initial_header: str,
+                                   update_header: bool = True,
+                                   name='review',
+                                   final_update_message=True,
+                                   as_thread: bool = False,
+                                   identity_marker: str | None = None,
+                                   legacy_initial_header: str | None = None):
+        return self.publish_persistent_comment_full(
+            pr_comment,
+            initial_header,
+            update_header,
+            name,
+            final_update_message,
+            as_thread,
+            identity_marker=identity_marker,
+            legacy_initial_header=legacy_initial_header,
+        )
+
+    def supports_review_comment_identity(self) -> bool:
+        return True
+
+    def edit_comment(self, comment, body: str) -> bool:
+        try:
+            self.bitbucket_client.update_pull_request_comment(
+                self.workspace_slug,
+                self.repo_slug,
+                self.pr_num,
+                comment.id,
+                body,
+                comment.version,
+            )
+            return True
+        except HTTPError as e:
+            if getattr(getattr(e, "response", None), "status_code", None) == 409:
+                try:
+                    current = self.bitbucket_client.get_pull_request_comment(
+                        self.workspace_slug,
+                        self.repo_slug,
+                        self.pr_num,
+                        comment.id,
+                    )
+                    current_version = current.get("version") if isinstance(current, dict) else None
+                    if not isinstance(current_version, int):
+                        raise ValueError("Bitbucket returned a comment without a valid version")
+                    self.bitbucket_client.update_pull_request_comment(
+                        self.workspace_slug,
+                        self.repo_slug,
+                        self.pr_num,
+                        comment.id,
+                        body,
+                        current_version,
+                    )
+                    return True
+                except Exception as retry_error:
+                    get_logger().exception(
+                        f"Failed to update comment after refreshing its version, error: {retry_error}"
+                    )
+                    return False
+            get_logger().exception(f"Failed to update comment, error: {e}")
+            return False
+        except Exception as e:
+            get_logger().exception(f"Failed to update comment, error: {e}")
+            return False
 
     def remove_initial_comment(self):
         try:
@@ -464,9 +533,49 @@ class BitbucketServerProvider(GitProvider):
         return 0
 
     def get_issue_comments(self):
-        raise NotImplementedError(
-            "Bitbucket provider does not support issue comments yet"
+        comments = []
+        activities = self.bitbucket_client.get_pull_requests_activities(
+            self.workspace_slug,
+            self.repo_slug,
+            self.pr_num,
+            limit=100,
         )
+        for activity in activities:
+            if not isinstance(activity, dict) or activity.get("action") != "COMMENTED":
+                continue
+            comment = activity.get("comment")
+            if not isinstance(comment, dict):
+                continue
+            if comment.get("parent") or comment.get("anchor") or comment.get("state") == "DELETED":
+                continue
+            body = comment.get("text")
+            comment_id = comment.get("id")
+            version = comment.get("version")
+            if not isinstance(body, str) or not isinstance(comment_id, int) or not isinstance(version, int):
+                continue
+            author = comment.get("author") if isinstance(comment.get("author"), dict) else {}
+            comments.append(SimpleNamespace(
+                body=body,
+                id=comment_id,
+                version=version,
+                user=SimpleNamespace(login=author.get("name") or author.get("slug") or ""),
+            ))
+        return comments
+
+    def get_issue_comments_newest_first(self):
+        # The activities feed has no documented ordering, so order by comment id,
+        # which Bitbucket Server assigns monotonically.
+        return sorted(self.get_issue_comments(), key=lambda comment: comment.id, reverse=True)
+
+    def get_comment_url(self, comment) -> str:
+        return f"{self._get_pr_web_url()}/overview?commentId={comment.id}"
+
+    def get_latest_commit_url(self) -> str:
+        try:
+            return f"{self._get_repo_web_url()}/commits/{self.pr.fromRef['latestCommit']}"
+        except Exception as e:
+            get_logger().warning(f"Failed to get latest commit URL, error: {e}")
+            return ""
 
     def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
         return None
@@ -575,6 +684,14 @@ class BitbucketServerProvider(GitProvider):
 
     def _get_pr_comments_path(self):
         return f"rest/api/latest/projects/{self.workspace_slug}/repos/{self.repo_slug}/pull-requests/{self.pr_num}/comments"
+
+    def _get_repo_web_url(self) -> str:
+        parsed_url = urlparse(self.pr_url)
+        repo_path = parsed_url.path.rsplit("/pull-requests/", 1)[0]
+        return f"{parsed_url.scheme}://{parsed_url.netloc}{repo_path}"
+
+    def _get_pr_web_url(self) -> str:
+        return f"{self._get_repo_web_url()}/pull-requests/{self.pr_num}"
 
     def _get_merge_base(self):
         return f"rest/api/latest/projects/{self.workspace_slug}/repos/{self.repo_slug}/pull-requests/{self.pr_num}/merge-base"

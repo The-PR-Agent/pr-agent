@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -5,9 +6,15 @@ from atlassian.bitbucket import Bitbucket
 from requests.exceptions import HTTPError
 
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
-from pr_agent.algo.utils import PRReviewHeader, PRReviewIdentity
+from pr_agent.algo.utils import (
+    PRCodeSuggestionsHeader,
+    PRCodeSuggestionsIdentity,
+    PRReviewHeader,
+    PRReviewIdentity,
+)
 from pr_agent.git_providers import BitbucketServerProvider
 from pr_agent.git_providers.bitbucket_provider import BitbucketProvider
+from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 
 
 class TestBitbucketProvider:
@@ -572,6 +579,32 @@ class TestBitbucketServerProvider:
         provider.bitbucket_client = MagicMock()
         return provider
 
+    @staticmethod
+    def _persistent_provider(
+        pr_url="https://git.example.com/bitbucket/projects/AAA/repos/my-repo/pull-requests/1",
+        workspace_slug="AAA",
+    ):
+        provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
+        provider.workspace_slug = workspace_slug
+        provider.repo_slug = "my-repo"
+        provider.pr_num = 1
+        provider.pr_url = pr_url
+        provider.pr = SimpleNamespace(fromRef={"latestCommit": "deadbeef12345678"})
+        provider.bitbucket_client = MagicMock()
+        provider.bitbucket_client.get_pull_requests_activities.return_value = []
+        return provider
+
+    @staticmethod
+    def _comment_activity(body, comment_id=7, version=3, **comment_fields):
+        comment = {
+            "id": comment_id,
+            "version": version,
+            "text": body,
+            "author": {"name": "pr-agent"},
+            **comment_fields,
+        }
+        return {"action": "COMMENTED", "comment": comment}
+
     def test_parse_pr_url(self):
         url = "https://git.onpreminstance.com/projects/AAA/repos/my-repo/pull-requests/1"
         workspace_slug, repo_slug, pr_number = BitbucketServerProvider._parse_pr_url(url)
@@ -585,6 +618,183 @@ class TestBitbucketServerProvider:
         assert workspace_slug == "~username"
         assert repo_slug == "my-repo"
         assert pr_number == 1
+
+    def test_get_issue_comments_normalizes_top_level_comments_from_all_activities(self):
+        provider = self._persistent_provider()
+        provider.bitbucket_client.get_pull_requests_activities.return_value = iter([
+            {"action": "OPENED"},
+            {"action": "COMMENTED", "comment": None},
+            self._comment_activity("missing version", version=None),
+            self._comment_activity("reply", comment_id=8, parent={"id": 7}),
+            self._comment_activity("inline", comment_id=9, anchor={"line": 4}),
+            self._comment_activity("deleted", comment_id=10, state="DELETED"),
+            self._comment_activity("first review", comment_id=11, version=2),
+            self._comment_activity("second review", comment_id=12, version=5, author={"slug": "review-bot"}),
+        ])
+
+        comments = provider.get_issue_comments()
+
+        assert provider.is_supported("get_issue_comments") is True
+        assert provider.supports_review_comment_identity() is True
+        assert [(comment.id, comment.version, comment.body, comment.user.login) for comment in comments] == [
+            (11, 2, "first review", "pr-agent"),
+            (12, 5, "second review", "review-bot"),
+        ]
+        provider.bitbucket_client.get_pull_requests_activities.assert_called_once_with("AAA", "my-repo", 1, limit=100)
+
+    @pytest.mark.parametrize("activity_ids", [(100, 200), (200, 100)])
+    def test_get_issue_comments_newest_first_uses_comment_id(self, activity_ids):
+        provider = self._persistent_provider()
+        provider.bitbucket_client.get_pull_requests_activities.return_value = [
+            self._comment_activity("review", comment_id=comment_id)
+            for comment_id in activity_ids
+        ]
+
+        comments = provider.get_issue_comments_newest_first()
+
+        assert [comment.id for comment in comments] == [200, 100]
+
+    def test_persistent_review_creates_once_then_updates_the_same_comment(self):
+        provider = self._persistent_provider()
+        provider.bitbucket_client.add_pull_request_comment.return_value = {"id": 7, "version": 0}
+        header = "## Team Review 🔍"
+
+        provider.publish_persistent_comment(
+            f"{header}\n\nfirst review",
+            initial_header=header,
+            final_update_message=False,
+            as_thread=True,
+            identity_marker=PRReviewIdentity.REGULAR.value,
+            legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
+        )
+        first_body = provider.bitbucket_client.add_pull_request_comment.call_args.args[3]
+        provider.bitbucket_client.get_pull_requests_activities.return_value = [
+            self._comment_activity(first_body),
+        ]
+
+        updated = provider.publish_persistent_comment(
+            f"{header}\n\nsecond review",
+            initial_header=header,
+            final_update_message=False,
+            identity_marker=PRReviewIdentity.REGULAR.value,
+            legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
+        )
+
+        assert updated.id == 7
+        provider.bitbucket_client.add_pull_request_comment.assert_called_once()
+        provider.bitbucket_client.update_pull_request_comment.assert_called_once()
+        update_args = provider.bitbucket_client.update_pull_request_comment.call_args.args
+        assert update_args[:4] == ("AAA", "my-repo", 1, 7)
+        assert update_args[5] == 3
+        assert PRReviewIdentity.REGULAR.value in update_args[4]
+        assert "second review" in update_args[4]
+
+    def test_persistent_review_migrates_legacy_heading_to_stable_identity(self):
+        provider = self._persistent_provider()
+        provider.bitbucket_client.get_pull_requests_activities.return_value = [
+            self._comment_activity("## PR Reviewer Guide 🔍\n\nprevious review"),
+        ]
+
+        provider.publish_persistent_comment(
+            "## Team Review 🔍\n\nnew review",
+            initial_header="## Team Review 🔍",
+            final_update_message=False,
+            identity_marker=PRReviewIdentity.REGULAR.value,
+            legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
+        )
+
+        provider.bitbucket_client.add_pull_request_comment.assert_not_called()
+        updated_body = provider.bitbucket_client.update_pull_request_comment.call_args.args[4]
+        assert updated_body.startswith("## Team Review 🔍\n\n")
+        assert PRReviewIdentity.REGULAR.value in updated_body
+
+    def test_edit_comment_retries_once_with_refreshed_version_after_conflict(self):
+        provider = self._persistent_provider()
+        response = MagicMock(status_code=409)
+        conflict = HTTPError("409 Conflict", response=response)
+        provider.bitbucket_client.update_pull_request_comment.side_effect = [conflict, {"version": 5}]
+        provider.bitbucket_client.get_pull_request_comment.return_value = {"id": 7, "version": 4}
+        comment = SimpleNamespace(id=7, version=3, body="previous review")
+
+        assert provider.edit_comment(comment, "new review") is True
+
+        assert provider.bitbucket_client.update_pull_request_comment.call_args_list[0].args[-1] == 3
+        assert provider.bitbucket_client.update_pull_request_comment.call_args_list[1].args[-1] == 4
+        provider.bitbucket_client.get_pull_request_comment.assert_called_once_with("AAA", "my-repo", 1, 7)
+
+    def test_persistent_review_falls_back_to_one_new_comment_when_update_fails(self):
+        provider = self._persistent_provider()
+        existing_body = f"## Team Review 🔍\n\n{PRReviewIdentity.REGULAR.value}\n\nprevious review"
+        provider.bitbucket_client.get_pull_requests_activities.return_value = [
+            self._comment_activity(existing_body),
+        ]
+        provider.bitbucket_client.update_pull_request_comment.side_effect = RuntimeError("update failed")
+        provider.bitbucket_client.add_pull_request_comment.return_value = {"id": 8, "version": 0}
+
+        result = provider.publish_persistent_comment(
+            "## Team Review 🔍\n\nnew review",
+            initial_header="## Team Review 🔍",
+            final_update_message=False,
+            identity_marker=PRReviewIdentity.REGULAR.value,
+            legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
+        )
+
+        assert result == {"id": 8, "version": 0}
+        provider.bitbucket_client.update_pull_request_comment.assert_called_once()
+        provider.bitbucket_client.add_pull_request_comment.assert_called_once()
+
+    @pytest.mark.parametrize(
+        "pr_url,workspace_slug,expected_repo_url",
+        [
+            (
+                "https://git.example.com/bitbucket/projects/AAA/repos/my-repo/pull-requests/1",
+                "AAA",
+                "https://git.example.com/bitbucket/projects/AAA/repos/my-repo",
+            ),
+            (
+                "https://git.example.com/bitbucket/users/alice/repos/my-repo/pull-requests/1/overview",
+                "~alice",
+                "https://git.example.com/bitbucket/users/alice/repos/my-repo",
+            ),
+        ],
+    )
+    def test_persistent_comment_links_preserve_project_and_personal_repository_paths(
+        self, pr_url, workspace_slug, expected_repo_url
+    ):
+        provider = self._persistent_provider(pr_url, workspace_slug)
+        comment = SimpleNamespace(id=7)
+
+        assert provider.get_comment_url(comment) == f"{expected_repo_url}/pull-requests/1/overview?commentId=7"
+        assert provider.get_latest_commit_url() == f"{expected_repo_url}/commits/deadbeef12345678"
+
+    def test_improve_history_updates_existing_bitbucket_server_comment(self):
+        provider = self._persistent_provider()
+        existing_body = (
+            f"{PRCodeSuggestionsHeader.SUMMARY.value}\n\n"
+            f"{PRCodeSuggestionsIdentity.SUMMARY.value}\n\n"
+            "<!-- abc1234 -->\n\n<table>previous suggestions</table>"
+        )
+        provider.bitbucket_client.get_pull_requests_activities.return_value = [
+            self._comment_activity(existing_body),
+        ]
+
+        updated = PRCodeSuggestions.publish_persistent_comment_with_history(
+            provider,
+            f"{PRCodeSuggestionsHeader.SUMMARY.value}\n\n<table>new suggestions</table>",
+            initial_header=PRCodeSuggestionsHeader.SUMMARY.value,
+            name="suggestions",
+            final_update_message=False,
+            max_previous_comments=4,
+            identity_marker=PRCodeSuggestionsIdentity.SUMMARY.value,
+            legacy_initial_header=PRCodeSuggestionsHeader.SUMMARY.value,
+        )
+
+        assert updated.id == 7
+        provider.bitbucket_client.add_pull_request_comment.assert_not_called()
+        updated_body = provider.bitbucket_client.update_pull_request_comment.call_args.args[4]
+        assert PRCodeSuggestionsIdentity.SUMMARY.value in updated_body
+        assert "new suggestions" in updated_body
+        assert "Previous suggestions" in updated_body
 
     def test_publish_code_suggestions_reports_success(self):
         provider = self._provider_for_code_suggestions()
