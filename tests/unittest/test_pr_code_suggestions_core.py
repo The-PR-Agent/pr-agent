@@ -743,7 +743,8 @@ def test_dedent_code_uses_patch_when_head_file_is_partial():
 
 
 @pytest.mark.asyncio
-async def test_push_inline_code_suggestions_falls_back_to_individual_publish_calls():
+@pytest.mark.parametrize("retry_results", [(True, True), (True, False), (False, True)])
+async def test_push_inline_code_suggestions_falls_back_to_individual_publish_calls(retry_results):
     git_provider = MagicMock()
     git_provider.diff_files = [
         FilePatchInfo(
@@ -759,7 +760,7 @@ async def test_push_inline_code_suggestions_falls_back_to_individual_publish_cal
             filename="worker.py",
         ),
     ]
-    git_provider.publish_code_suggestions.side_effect = [False, True, True]
+    git_provider.publish_code_suggestions.side_effect = [False, *retry_results]
     tool = _make_tool(git_provider)
     data = {"code_suggestions": [
         _valid_suggestion(
