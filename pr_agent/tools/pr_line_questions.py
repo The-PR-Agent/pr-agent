@@ -15,6 +15,7 @@ from pr_agent.config_loader import get_settings, get_verbosity_level
 from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.git_provider import get_main_pr_language
 from pr_agent.log import get_logger
+from pr_agent.tools.pr_questions import _sanitize_slash_commands
 
 
 class PR_LineQuestions:
@@ -107,10 +108,7 @@ class PR_LineQuestions:
                 should_resolve = True
                 model_answer = answer_stripped[:-len("[THREAD_RESOLVED]")].rstrip()
 
-            # sanitize the answer so that no line will start with "/"
-            model_answer_sanitized = model_answer.strip().replace("\n/", "\n /")
-            if model_answer_sanitized.startswith("/"):
-                model_answer_sanitized = " " + model_answer_sanitized
+            model_answer_sanitized = _sanitize_slash_commands(model_answer.strip())
 
             get_logger().info('Preparing answer...')
             if comment_id:
