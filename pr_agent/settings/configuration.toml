@@ -23,7 +23,10 @@ use_repo_settings_file=true
 use_global_settings_file=true
 extra_config_url="" # optional URL or path to an additional .pr_agent.toml merged before the repo-local config; also settable via --extra_config_url or PR_AGENT_EXTRA_CONFIG_URL. See docs/docs/usage-guide/configuration_options.md#external-configuration-url.
 disable_auto_feedback = false
+enable_auto_approval = false # when true, /review may auto-approve a PR via auto_approve_logic(); that caller is currently commented out
 ai_timeout=120 # 2 minutes
+retry_same_model_on_timeout = true # when false, a timed-out call is not retried on the same model and moves on to fallback_models
+# num_retries = 0 # per-call retries inside the completion client itself; unset keeps the client's default. These multiply the handler's own retry attempts
 skip_keys = []
 custom_reasoning_model = false # when true, disables system messages and temperature controls for models that don't support chat-style inputs
 response_language="en-US" # Language locales code for PR responses in ISO 3166 and ISO 639 format (e.g., "en-US", "it-IT", "zh-CN", ...)
@@ -50,7 +53,7 @@ output_run_details=false # if true, append an agent run details section (model, 
 output_run_cost=false # if true, collect estimated LiteLLM API cost and include it inside the enabled run details section
 large_patch_policy = "clip" # "clip", "skip"
 duplicate_prompt_examples = false
-# Persistent inline comments (issue #2037): when true, the GitHub and GitLab providers
+# Persistent inline comments (issue #2037): when true, the GitHub, GitLab, and Azure DevOps providers
 # fingerprint each inline comment, embed the fingerprint as an HTML marker, and skip
 # re-posting suggestions already present on the PR/MR across runs.
 persistent_inline_comments = false
@@ -111,11 +114,17 @@ require_security_review=true
 require_estimate_contribution_time_cost=false
 require_todo_scan=false
 require_ticket_analysis_review=true
+# Opt-in structured assessment fields. Each adds one field to the review output and to the model's output schema.
+require_risk_assessment=false # ask the model for an overall risk level (low/medium/high)
+require_merge_recommendation=false # ask the model for a merge recommendation (safe_to_merge/merge_with_caution/changes_required)
+require_priority_files=false # ask the model which files a human should inspect first
 # general options
 publish_output_no_suggestions=true # Set to "false" if you only need the reviewer's remarks (not labels, not "security audit", etc.) and want to avoid noisy "No major issues detected" comments.
 persistent_comment=true
 # Visible base heading for full and incremental review comments. Identity is tracked separately.
 review_heading = "PR Reviewer Guide"
+persistent_finding_state=true # Persist review finding state across complete review runs.
+
 inline_key_issues=false
 extra_instructions = ""
 num_max_findings = 3
@@ -130,6 +139,10 @@ minimal_minutes_for_incremental_review=0
 enable_intro_text=true
 enable_help_text=false # Determines whether to include help text in the PR review. Enabled by default.
 enable_review_coverage_footer=true
+# large-diff chunking (opt-in). When the token budget leaves files out of the review, split the diff
+# into chunks, review each chunk, and merge the per-chunk results into one review.
+enable_large_pr_chunking=false
+max_number_of_calls=3 # maximum number of chunk review calls, used only when enable_large_pr_chunking is true
 
 [pr_description] # /describe #
 publish_labels=false
@@ -152,6 +165,7 @@ publish_description_as_comment_persistent=true
 enable_semantic_files_types=true
 collapsible_file_list='adaptive' # true, false, 'adaptive'
 collapsible_file_list_threshold=6
+file_table_collapsible_open_by_default=false
 inline_file_summary=false # false, true, 'table'
 # markers
 use_description_markers=false
@@ -193,6 +207,8 @@ new_score_mechanism_th_medium=7
 # params for '/improve --extended' mode
 auto_extended_mode=true
 num_code_suggestions_per_chunk=3
+# Maximum suggestions retained per file after all chunks are merged; 0 disables the cap.
+max_suggestions_per_file = 0
 max_number_of_calls = 3
 parallel_calls = true
 
@@ -281,6 +297,9 @@ publish_as_check_run = false # when true, publish review/description/improve out
 # push_trigger_ignore_bot_commits = true
 # push_trigger_ignore_merge_commits = true
 # push_commands = ['/describe', '/review']  # defaults mirror github_app.push_commands
+# review_states = ['changes_requested']  # states that trigger review_commands after a submitted GitHub review
+# review_author_types = ['User']  # review.user.type values allowed to trigger review_commands
+# review_commands = []  # empty by default; falls back to github_app.review_commands when unset
 
 [github_app]
 # these toggles allows running the github app from custom deployments
@@ -294,6 +313,10 @@ pr_commands = [
     "/review",
     "/improve",
 ]
+# A submitted GitHub review can optionally trigger these commands. The empty default preserves current behavior.
+review_states = ["changes_requested"]
+review_author_types = ["User"]
+review_commands = []
 # settings for "pull_request" event with "synchronize" action - used to detect and handle push triggers for new commits
 handle_push_trigger = false
 push_trigger_ignore_bot_commits = true
@@ -312,6 +335,8 @@ expand_submodule_diffs = false
 feedback_on_draft_pr = false
 # Post the /review summary as a resolvable thread (discussion) instead of a plain note.
 publish_review_as_thread = false
+# Post the /improve suggestions comment as a resolvable thread (discussion) instead of a plain note.
+publish_improve_as_thread = false
 # When pr_code_suggestions.commitable_code_suggestions is true, queue each suggestion as a GitLab draft
 # note and publish them all together in one batch (like GitLab's own "start a review" flow) instead of
 # posting each as its own live discussion - and its own notification - as soon as it's created.
@@ -343,9 +368,6 @@ url = "https://gitea.com"
 # users browse a different external URL, or where the server's own ROOT_URL is
 # misconfigured. Defaults to `url` when it differs from the shipped default
 # above, else derived from the PR's html_url.
-# Like `url`, this is read when the provider is constructed, before repo-level
-# .pr_agent.toml settings are merged, so a per-repo override does not apply to
-# /describe, /review and /improve - set it globally or via GITEA__WEB_URL.
 # web_url = ""
 handle_push_trigger = false
 pr_commands = [
@@ -374,7 +396,7 @@ request_timeout = 30 # positive seconds for connection and response-read inactiv
 # improve_path= "path/to/improve.md"
 
 [gerrit]
-# set both to require basic auth on the gerrit webhook endpoint; leave both empty to keep it open
+# both are required: the gerrit webhook endpoint rejects every call until they are set
 webhook_username = ""
 webhook_password = ""
 # endpoint to the gerrit service
@@ -403,6 +425,7 @@ enable_callbacks = false
 success_callback = []
 failure_callback = []
 service_callback = []
+turn_off_message_logging = false # set true to keep prompt/response content (the whole PR diff) out of callback payloads; strongly recommended with the "otel" callback
 # Optional: forward a fixed custom_llm_provider to LiteLLM, so a raw hosted model id
 # (e.g. "claude-sonnet-4-5") reaches the provider unchanged instead of being rewritten
 # by LiteLLM's prefix inference. Empty = let LiteLLM infer the provider from the model name.
@@ -441,6 +464,17 @@ reasoning_effort = ""
 reasoning_max_tokens = 0
 max_tokens = 0 # hard cap on completion tokens for the request; 0 = unset
 
+[otel]
+# Keys map to settings.get("OTEL.*") via section-key dot notation.
+is_enabled = false # disabled by default; set to true to enable telemetry
+exporter_type = "console" # "console", "otlp", or "none"
+service_name = "pr-agent"
+environment = "development" # "development", "staging", "production", etc.
+otlp_timeout = 3 # seconds; hard deadline per OTLP export call (incl. retries). Bounds CLI-exit/request stalls when the collector is unreachable; batches slower than this are dropped.
+otlp_protocol = "http" # "http" (default; exporter ships with pr-agent) or "grpc" (requires the otel-grpc extra: pip install pr-agent[otel-grpc])
+include_pr_url = false # set to true to attach PR URLs to spans (may expose private repo names)
+include_error_details = false # set to true to attach exception messages and rejected-command text to spans (may expose PR URLs, repo names, or other request content)
+
 [pr_similar_issue]
 skip_comments = false
 force_update_dataset = false
@@ -470,7 +504,8 @@ uri = "./lancedb"
 
 [skills]
 # Agent skills (SKILL.md) support: discovers SKILL.md files from the configured
-# filesystem paths and injects their content into review/improve/describe prompts.
+# filesystem paths and injects their content into review/improve/describe and
+# top-level /ask prompts.
 # Sibling *.md files in the skill directory tree (e.g. references/guide.md) are
 # inlined alongside SKILL.md. PR-Agent supports text-only skills: scripts/ and
 # assets/ subdirectories are skipped because PR-Agent uses a single-shot model
@@ -515,8 +550,16 @@ request_timeout = 10 # seconds allowed for each Asana task API request
 default_comment_status = "closed"
 
 [azure_devops_server]
+agent_identity = "" # empty: discover the identity from earlier agent comments on the PR
 pr_commands = [
     "/describe",
     "/review",
     "/improve",
 ]
+
+[push_outputs] # push tool outputs to external sinks without calling git-provider APIs (disabled by default)
+enable = false
+channels = [] # any of: "stdout", "file", "webhook", "slack". Nothing is emitted until a channel is listed here
+file_path = "pr-agent-outputs/reviews.jsonl" # used by the "file" channel
+webhook_url = "" # used by the "webhook" channel: generic JSON POST target. Must be an absolute https:// URL
+slack_webhook_url = "" # used by the "slack" channel: a Slack Incoming Webhook URL. Must be an absolute https:// URL

@@ -255,6 +255,66 @@ class TestConvertToMarkdown:
         """)
         assert convert_to_markdown_v2(input_data, gfm_supported=False).strip() == expected_output_no_gfm.strip()
 
+    def test_structured_review_fields_render(self):
+        input_data = {
+            "review": {
+                "risk_level": "medium",
+                "merge_recommendation": "merge_with_caution",
+                "review_priority_files": ["gui_app.py", "app.py"],
+            }
+        }
+
+        markdown = convert_to_markdown_v2(input_data, gfm_supported=False)
+
+        assert "Risk level: Medium" in markdown
+        assert "Merge recommendation: Merge with caution" in markdown
+        assert "Priority files" in markdown
+        assert "- gui_app.py" in markdown
+        assert "- app.py" in markdown
+
+    def test_structured_review_fields_render_empty_priority_files(self):
+        input_data = {
+            "review": {
+                "risk_level": "low",
+                "merge_recommendation": "safe_to_merge",
+                "review_priority_files": [],
+            }
+        }
+
+        markdown = convert_to_markdown_v2(input_data, gfm_supported=False)
+
+        assert "Risk level: Low" in markdown
+        assert "Merge recommendation: Safe to merge" in markdown
+        assert "Priority files: None" in markdown
+
+    def test_structured_review_fields_ignore_invalid_priority_files_type(self):
+        input_data = {
+            "review": {
+                "review_priority_files": {"file": "gui_app.py"},
+            }
+        }
+
+        markdown = convert_to_markdown_v2(input_data, gfm_supported=False)
+
+        assert "Priority files: None" in markdown
+
+    def test_structured_review_fields_render_gfm(self):
+        input_data = {
+            "review": {
+                "risk_level": "medium",
+                "merge_recommendation": "changes_required",
+                "review_priority_files": ["gui_app.py"],
+            }
+        }
+
+        markdown = convert_to_markdown_v2(input_data, gfm_supported=True)
+
+        assert "<strong>Risk level</strong>: Medium" in markdown
+        assert "<strong>Merge recommendation</strong>: Changes required" in markdown
+        assert "<strong>Priority files</strong>" in markdown
+        assert "<ul>\n<li>gui_app.py</li>\n</ul>" in markdown
+        assert "- gui_app.py" not in markdown
+        assert markdown.count("<tr><td>") == markdown.count("</td></tr>") == 3
 
     # Tests that the function works correctly with an empty dictionary input
     def test_empty_dictionary_input(self):

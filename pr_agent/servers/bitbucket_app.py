@@ -272,10 +272,12 @@ def should_process_pr_logic(data) -> bool:
 async def handle_github_webhooks(background_tasks: BackgroundTasks, request: Request):
     app_name = get_settings().get("CONFIG.APP_NAME", "Unknown")
     log_context = {"server_type": "bitbucket_app", "app_name": app_name}
-    get_logger().debug(request.headers)
     jwt_header = request.headers.get("authorization", None)
-    if jwt_header:
-        input_jwt = jwt_header.split(" ")[1]
+    jwt_parts = jwt_header.split() if jwt_header else []
+    if len(jwt_parts) != 2 or jwt_parts[0].casefold() != "jwt":
+        get_logger().error("Bitbucket webhook authorization header is malformed")
+        return "OK"
+    input_jwt = jwt_parts[1]
     data = await request.json()
     get_logger().debug(data)
 
@@ -399,9 +401,7 @@ async def handle_github_webhooks(request: Request, response: Response):
 async def handle_installed_webhooks(request: Request, response: Response):
     try:
         get_logger().info("handle_installed_webhooks")
-        get_logger().info(request.headers)
         data = await request.json()
-        get_logger().info(data)
         shared_secret = data["sharedSecret"]
         client_key = data["clientKey"]
         username = data["principal"]["username"]

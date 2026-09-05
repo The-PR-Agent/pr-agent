@@ -9,6 +9,7 @@ import uuid
 from collections import Counter, namedtuple
 from pathlib import Path
 from tempfile import NamedTemporaryFile, mkdtemp
+from typing import Optional
 
 import requests
 import urllib3.util
@@ -107,9 +108,19 @@ def prepare_repo(url: urllib3.util.Url, project, refspec):
     repo_url = (f"{url.scheme}://{url.auth}@{url.host}:{url.port}/{project}")
 
     directory = pathlib.Path(mkdtemp())
-    clone(repo_url, directory)
-    fetch(repo_url, refspec, cwd=directory)
-    checkout(cwd=directory)
+    try:
+        clone(repo_url, directory)
+        fetch(repo_url, refspec, cwd=directory)
+        checkout(cwd=directory)
+    except BaseException:
+        try:
+            shutil.rmtree(directory)
+        except OSError as cleanup_error:
+            get_logger().warning(
+                "Failed to clean up temp repo at {} after setup failed: {}",
+                directory, cleanup_error
+            )
+        raise
     return directory
 
 
@@ -231,26 +242,24 @@ class GerritProvider(GitProvider):
         """
         return self.repo.branches[0].name
 
-    def get_issue_comments(self):
-        comments = list_comments(self.parsed_url, self.refspec)
-        Comments = namedtuple('Comments', ['reversed'])
+    def get_issue_comments(self) -> list:
         Comment = namedtuple('Comment', ['body'])
-        return Comments([Comment(c['message']) for c in reversed(comments)])
+        return [Comment(c['message']) for c in list_comments(self.parsed_url, self.refspec)]
 
     def get_pr_labels(self, update=False):
         raise NotImplementedError(
             'Getting labels is not implemented for the gerrit provider')
 
-    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False):
+    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
         raise NotImplementedError(
             'Adding reactions is not implemented for the gerrit provider')
 
-    def remove_reaction(self, issue_comment_id: int, reaction_id: int):
+    def remove_reaction(self, issue_comment_id: int, reaction_id: int) -> bool:
         raise NotImplementedError(
             'Removing reactions is not implemented for the gerrit provider')
 
-    def get_commit_messages(self):
-        return [self.repo.head.commit.message]
+    def get_commit_messages(self) -> str:
+        return self.repo.head.commit.message
 
     def get_repo_settings(self):
         try:
@@ -438,9 +447,36 @@ class GerritProvider(GitProvider):
         # but required by the interface
         pass
 
+    def cleanup(self):
+        """Remove the temporary cloned repository from disk."""
+        if self.repo_path and pathlib.Path(self.repo_path).exists():
+            try:
+                shutil.rmtree(self.repo_path)
+                get_logger().info("Cleaned up temp repo at {}", self.repo_path)
+            except (OSError, PermissionError) as e:
+                get_logger().warning(
+                    "Failed to clean up temp repo at {}: {}",
+                    self.repo_path, e
+                )
+
+    def __del__(self):
+        """Safety net: clean up temp repo if cleanup() was not called.
+
+        The server's finally block can only reach providers stored in
+        starlette_context. PRQuestions builds its own provider with
+        get_git_provider(), so an /ask request never registers there and
+        would leak its clone without this.
+        """
+        try:
+            self.cleanup()
+        except Exception as e:
+            get_logger().debug("Temp repo cleanup failed during __del__: {}", e)
+
     def remove_initial_comment(self):
-        # remove repo, cloned in previous steps
-        # shutil.rmtree(self.repo_path)
+        # Do NOT call cleanup() here — this method is invoked during the
+        # request lifecycle while the cloned repo is still needed by
+        # subsequent commands.  Actual cleanup happens in the server's
+        # finally block and in __del__ as a safety net.
         pass
 
     def remove_comment(self, comment):

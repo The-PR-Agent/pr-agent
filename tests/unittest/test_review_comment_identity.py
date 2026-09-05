@@ -198,16 +198,23 @@ def test_azure_comment_path_forwards_review_identity():
     }
 
 
-def test_gitea_keeps_identity_inactive_until_comment_payloads_are_normalized():
+def test_gitea_keeps_identity_inactive_but_preserves_wrapper_arguments():
     provider = GiteaProvider.__new__(GiteaProvider)
-    provider.publish_persistent_comment_full = MagicMock()
+    published = object()
+    provider.publish_persistent_comment_full = MagicMock(return_value=published)
     review = "## Team Review 🔍\n\nbody"
+    legacy_header = "## PR Reviewer Guide 🔍"
 
-    provider.publish_persistent_comment(
+    result = provider.publish_persistent_comment(
         review,
         initial_header="## Team Review 🔍",
         identity_marker=PRReviewIdentity.REGULAR.value,
-        legacy_initial_header="## PR Reviewer Guide 🔍",
+        legacy_initial_header=legacy_header,
     )
 
-    assert provider.publish_persistent_comment_full.call_args.kwargs == {}
+    assert provider.supports_review_comment_identity() is False
+    assert result is published
+    assert provider.publish_persistent_comment_full.call_args.kwargs == {
+        "identity_marker": PRReviewIdentity.REGULAR.value,
+        "legacy_initial_header": legacy_header,
+    }
