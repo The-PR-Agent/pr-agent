@@ -520,7 +520,7 @@ If you encounter rate limiting:
         OPENAI_KEY: ${{ secrets.OPENAI_KEY }}
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         # Add a fallback model for better reliability
-        config.fallback_models: '["gpt-5.6-terra"]'
+        config.fallback_models: '["your-fallback-model"]'
         # Increase timeout for slower models
         config.ai_timeout: "300"
         github_action_config.auto_review: "true"
@@ -659,6 +659,7 @@ Allowing you to automate the review process on your private or public repositori
    - Set the following events:
      - Issue comment
      - Pull request
+     - Pull request review
      - Push (if you need to enable triggering on PR update)
      - Pull request review comment (required for `/ask` on review threads)
 
@@ -699,9 +700,8 @@ cp pr_agent/settings/.secrets_template.toml pr_agent/settings/.secrets.toml
 - Copy your app's webhook secret to the webhook_secret field (required).
 - Set deployment_type to 'app' in [configuration.toml](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml)
 
-    > The .secrets.toml file is not copied to the Docker image by default, and is only used for local development.
-    > If you want to use the .secrets.toml file in your Docker image, you can add remove it from the .dockerignore file.
-    > In most production environments, you would inject the secrets file as environment variables or as mounted volumes.
+    > The local `.secrets.toml` file is excluded from the Docker build context. Never bake secrets into a container image.
+    > For container deployments, provide secrets at runtime through environment variables or a mounted secret volume.
     > For example, in order to inject a secrets file as a volume in a Kubernetes environment you can update your pod spec to include the following,
     > assuming you have a secret named `pr-agent-settings` with a key named `.secrets.toml`:
 
@@ -805,7 +805,7 @@ CONFIG__SECRET_PROVIDER=aws_secrets_manager
 
 ### AWS CodeCommit Setup
 
-Not all features have been added to CodeCommit yet.  As of right now, CodeCommit has been implemented to run the PR-Agent CLI on the command line, using AWS credentials stored in environment variables.  (More features will be added in the future.)  The following is a set of instructions to have PR-Agent do a review of your CodeCommit pull request from the command line:
+Not all features have been added to CodeCommit yet.  As of right now, CodeCommit has been implemented to run the PR-Agent CLI on the command line, using AWS credentials stored in environment variables.  CodeCommit pull requests with multiple targets are reviewed across every target repository and commit comparison; single-target pull requests keep the same behavior.  The following is a set of instructions to have PR-Agent do a review of your CodeCommit pull request from the command line:
 
 1. Create an IAM user that you will use to read CodeCommit pull requests and post comments
     - Note: That user should have CLI access only, not Console access

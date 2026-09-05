@@ -227,7 +227,7 @@ class TestGitLabProvider:
 
     def test_has_create_or_update_pr_file_method(self, gitlab_provider):
         assert hasattr(gitlab_provider, "create_or_update_pr_file")
-        assert callable(getattr(gitlab_provider, "create_or_update_pr_file"))
+        assert callable(gitlab_provider.create_or_update_pr_file)
 
     def test_method_signature_compatibility(self, gitlab_provider):
         import inspect
@@ -338,6 +338,12 @@ class TestGitLabProvider:
         )
         assert gitlab_provider.get_line_link("src/app.py", 10, 12) == (
             "https://gitlab.com/group/repo/-/blob/feature/cache/src/app.py?ref_type=heads#L10-12"
+        )
+        assert gitlab_provider.get_line_link("src/app.py", 10, 5) == (
+            "https://gitlab.com/group/repo/-/blob/feature/cache/src/app.py?ref_type=heads#L10-10"
+        )
+        assert gitlab_provider.get_line_link("src/app.py", 10, "not-a-number") == (
+            "https://gitlab.com/group/repo/-/blob/feature/cache/src/app.py?ref_type=heads#L10"
         )
 
     def test_publish_description_with_none_title_leaves_title_unchanged(self, gitlab_provider):
@@ -712,6 +718,43 @@ class TestGitLabProvider:
         gitlab_provider.mr.discussions.list.side_effect = Exception("gitlab api error")
 
         gitlab_provider.unresolve_comment_thread(MagicMock(id=1))  # must not raise
+
+    @pytest.mark.parametrize("resolvable,resolved,should_resolve", [
+        (True, False, True),    # open thread -> resolve it
+        (True, True, False),    # already resolved -> leave
+        (False, False, False),  # not resolvable -> nothing to do
+    ])
+    def test_resolve_comment_thread(self, gitlab_provider, resolvable, resolved, should_resolve):
+        discussion = MagicMock()
+        discussion.attributes = {'notes': [{'id': 42, 'resolvable': resolvable, 'resolved': resolved}]}
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.discussions.list.return_value = [discussion]
+
+        assert gitlab_provider.resolve_comment_thread(42) is should_resolve
+
+        if should_resolve:
+            assert discussion.resolved is True
+            discussion.save.assert_called_once()
+        else:
+            discussion.save.assert_not_called()
+
+    def test_resolve_comment_thread_ignores_unrelated_discussions(self, gitlab_provider):
+        # An open discussion that does not own our note must be left untouched.
+        other = MagicMock()
+        other.attributes = {'notes': [{'id': 1, 'resolvable': True, 'resolved': False}]}
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.discussions.list.return_value = [other]
+
+        assert gitlab_provider.resolve_comment_thread(99) is False
+
+        other.save.assert_not_called()
+
+    def test_resolve_comment_thread_soft_fails(self, gitlab_provider):
+        # A GitLab API error while resolving must not raise.
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.discussions.list.side_effect = Exception("gitlab api error")
+
+        assert gitlab_provider.resolve_comment_thread(1) is False
 
     def _prepare_outdated_cleanup(self, gitlab_provider, threads, own_user_id=_BOT_USER_ID,
                                   current_head_sha=_CURRENT_HEAD_SHA):
@@ -1861,6 +1904,14 @@ class TestGitLabCapabilities:
 
         assert provider.get_issue_comments() == ["oldest", "middle", "newest"]
 
+    def test_persistent_state_ownership_uses_authenticated_user_id(self):
+        provider = self._provider()
+        provider._get_own_user_id = MagicMock(return_value=42)
+
+        assert provider.supports_review_finding_state() is True
+        assert provider.is_comment_authored_by_pr_agent({"author": {"id": 42}}) is True
+        assert provider.is_comment_authored_by_pr_agent({"author": {"id": 99}}) is False
+
     @pytest.mark.parametrize("capability", [
         "create_inline_comment",
         "publish_inline_comments",
@@ -1980,3 +2031,11 @@ class TestGitLabProviderUrlParsing:
         provider = self._provider("https://host.local/gitlab")
         with pytest.raises(ValueError):
             provider._parse_merge_request_url("https://host.local/gitlab/shai/pr-agent")
+
+
+def test_get_issue_comments_newest_first_returns_notes_newest_first():
+    provider = GitLabProvider.__new__(GitLabProvider)
+    provider.mr = MagicMock()
+    provider.mr.notes.list.return_value = ["newest", "middle", "oldest"]
+
+    assert provider.get_issue_comments_newest_first() == ["newest", "middle", "oldest"]

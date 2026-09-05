@@ -9,26 +9,75 @@ import litellm
 import openai
 import requests
 from litellm import acompletion
-from tenacity import (retry, retry_if_exception_type,
-                      retry_if_not_exception_type, stop_after_attempt)
+from tenacity import retry, retry_if_exception, stop_after_attempt
 
-from pr_agent.algo import (CLAUDE_EXTENDED_THINKING_MODELS,
-                           GROK_REASONING_EFFORT_LEVELS,
-                           NO_SUPPORT_TEMPERATURE_MODELS,
-                           STREAMING_REQUIRED_MODELS,
-                           SUPPORT_REASONING_EFFORT_MODELS,
-                           USER_MESSAGE_ONLY_MODELS, normalize_litellm_model)
+from pr_agent.algo import (
+    CLAUDE_EXTENDED_THINKING_MODELS,
+    GROK_REASONING_EFFORT_LEVELS,
+    NO_SUPPORT_TEMPERATURE_MODELS,
+    STREAMING_REQUIRED_MODELS,
+    SUPPORT_REASONING_EFFORT_MODELS,
+    USER_MESSAGE_ONLY_MODELS,
+    normalize_litellm_model,
+)
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_helpers import (
-    _get_azure_ad_token, _handle_streaming_response,
-    _process_litellm_extra_body, _response_field, get_repetition_penalty)
+    _get_azure_ad_token,
+    _handle_streaming_response,
+    _process_litellm_extra_body,
+    _response_field,
+    get_repetition_penalty,
+)
 from pr_agent.algo.run_details import _as_decimal_cost, record_ai_call
 from pr_agent.algo.utils import ReasoningEffort, get_version
-from pr_agent.config_loader import get_settings
+from pr_agent.config_loader import get_settings, get_verbosity_level
 from pr_agent.log import get_logger
 
 MODEL_RETRIES = 2
 DUMMY_LITELLM_API_KEY = "dummy_key"  # placeholder set when no OpenAI key is configured
+
+
+def _as_bool(value, default: bool) -> bool:
+    """Parse a config value that may arrive as a bool (toml) or a string (env override)."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes", "on")
+    return default
+
+
+def _configured_client_retries():
+    """config.num_retries as a non-negative int, or None (unset/invalid = client defaults).
+
+    Invalid values are logged and ignored rather than raised: this is read on the request
+    path, and a config typo should not fail the run — nor be wrapped and retried as an API
+    error by the caller's exception handling.
+    """
+    value = get_settings().config.get("num_retries", None)
+    if value is None:
+        return None
+    try:
+        parsed = int(str(value).strip())
+    except ValueError:
+        get_logger().warning(f"Ignoring invalid config.num_retries: {value!r}")
+        return None
+    if parsed < 0:
+        get_logger().warning(f"Ignoring negative config.num_retries: {parsed}")
+        return None
+    return parsed
+
+
+def _should_retry_same_model(exc: BaseException) -> bool:
+    """Whether chat_completion retries the SAME model, before falling back to fallback_models.
+
+    With config.retry_same_model_on_timeout set to false, a timed-out call is handed to the
+    fallback-models loop instead of being replayed on the model that just missed the deadline.
+    """
+    if isinstance(exc, openai.RateLimitError):
+        return False
+    if isinstance(exc, openai.APITimeoutError):
+        return _as_bool(get_settings().config.get("retry_same_model_on_timeout", True), default=True)
+    return isinstance(exc, openai.APIError)
 
 
 class LiteLLMAIHandler(BaseAiHandler):
@@ -159,6 +208,16 @@ class LiteLLMAIHandler(BaseAiHandler):
             litellm.failure_callback = get_settings().litellm.failure_callback
         if get_settings().get("LITELLM.SERVICE_CALLBACK", None):
             litellm.service_callback = get_settings().litellm.service_callback
+        # litellm's callbacks attach full prompt and response content — here, the whole
+        # PR diff — to whatever they emit, unless message logging is turned off.
+        if get_settings().get("LITELLM.TURN_OFF_MESSAGE_LOGGING", False):
+            litellm.turn_off_message_logging = True
+        # With pr-agent's own telemetry enabled, its command span is the active parent and
+        # litellm's "otel" callback would skip its own request span, writing gen_ai attributes
+        # onto the command span instead. Keep the two layers separately aggregatable;
+        # setdefault leaves an explicit operator override in effect.
+        if self._litellm_otel_callback_enabled() and get_settings().get("OTEL.IS_ENABLED", False):
+            os.environ.setdefault("USE_OTEL_LITELLM_REQUEST_SPAN", "true")
         if get_settings().get("OPENAI.ORG", None):
             litellm.organization = get_settings().openai.org
         if get_settings().get("OPENAI.API_TYPE", None):
@@ -324,6 +383,14 @@ class LiteLLMAIHandler(BaseAiHandler):
                     "Ignoring invalid value."
                 )
             self.force_streaming_api_base_substrings = []
+
+    @staticmethod
+    def _litellm_otel_callback_enabled() -> bool:
+        """True when litellm's built-in OpenTelemetry callback is registered."""
+        return any(
+            "otel" in (getattr(litellm, name, None) or [])
+            for name in ("callbacks", "success_callback", "failure_callback", "service_callback")
+        )
 
     @staticmethod
     def _write_frozen_aws_creds_to_env(frozen) -> None:
@@ -501,12 +568,12 @@ class LiteLLMAIHandler(BaseAiHandler):
             "type": "enabled",
             "budget_tokens": extended_thinking_budget_tokens
         }
-        if get_settings().config.verbosity_level >= 2:
+        if get_verbosity_level() >= 2:
             get_logger().info(f"Adding max output tokens {extended_thinking_max_output_tokens} to model {model}, extended thinking budget tokens: {extended_thinking_budget_tokens}")
         kwargs["max_tokens"] = extended_thinking_max_output_tokens
 
         # temperature may only be set to 1 when thinking is enabled
-        if get_settings().config.verbosity_level >= 2:
+        if get_verbosity_level() >= 2:
             get_logger().info("Temperature may only be set to 1 when thinking is enabled with claude models.")
         kwargs["temperature"] = 1
 
@@ -680,7 +747,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         return cache_control_injection_points
 
     @retry(
-        retry=retry_if_exception_type(openai.APIError) & retry_if_not_exception_type(openai.RateLimitError),
+        retry=retry_if_exception(_should_retry_same_model),
         stop=stop_after_attempt(MODEL_RETRIES),
         reraise=True,  # surface the provider's error; RetryError hides the reason
     )
@@ -690,6 +757,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         # Validate config-derived kwargs before the try/except below, so a malformed value raises a
         # ValueError config error instead of being wrapped as openai.APIError and retried.
         cache_control_injection_points = self._resolve_cache_control_injection_points()
+        client_retries = _configured_client_retries()
         _bedrock_imds = self._aws_imds_mode and any(
             provider in model for provider in ("bedrock/", "bedrock_mantle/")
         )
@@ -798,6 +866,13 @@ class LiteLLMAIHandler(BaseAiHandler):
                         "timeout": get_settings().config.ai_timeout,
                         "api_base": api_base,
                     }
+
+                # Caps the completion client's own per-call retries, which otherwise
+                # multiply this handler's retry attempts. Parsed before the request
+                # try/except (see _configured_client_retries).
+                if client_retries is not None:
+                    kwargs["num_retries"] = client_retries
+                    kwargs["max_retries"] = client_retries
 
                 # Add temperature only if model supports it
                 if model not in self.no_support_temperature_models and not get_settings().config.custom_reasoning_model:
@@ -1093,7 +1168,7 @@ class LiteLLMAIHandler(BaseAiHandler):
 
                 get_logger().debug("Prompts", artifact={"system": system, "user": user})
 
-                if get_settings().config.verbosity_level >= 2:
+                if get_verbosity_level() >= 2:
                     get_logger().info(f"\nSystem prompt:\n{system}")
                     get_logger().info(f"\nUser prompt:\n{user}")
 
@@ -1146,7 +1221,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         get_logger().debug("Full_response", artifact=response_log)
 
         # for CLI debugging
-        if get_settings().config.verbosity_level >= 2:
+        if get_verbosity_level() >= 2:
             get_logger().info(f"\nAI response:\n{resp}")
 
         self._record_completion_metadata(response_obj, model=model, display_model=user_model)

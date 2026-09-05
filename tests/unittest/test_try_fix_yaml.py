@@ -385,7 +385,7 @@ code_suggestions:
         sink_id = get_logger().add(lambda msg: captured.append(msg), level="INFO")
         try:
             result = load_yaml('\x08\x08\x08')
-            assert result is None
+            assert result == {}
             assert not any("Successfully parsed" in m for m in captured)
             assert any("Failed to parse AI prediction after fallbacks" in m for m in captured)
         finally:
@@ -398,7 +398,7 @@ code_suggestions:
         sink_id = get_logger().add(lambda msg: captured.append(msg), level="INFO")
         try:
             result = load_yaml('-\n-#x')
-            assert result is None
+            assert result == {}
             assert not any("normalizing diff removal markers" in m for m in captured)
             assert any("Failed to parse AI prediction after fallbacks" in m for m in captured)
         finally:

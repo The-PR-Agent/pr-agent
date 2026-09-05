@@ -48,7 +48,7 @@ dependencies = [
   "google-cloud-storage==3.12.0; python_version >= '3.13'",
   "protobuf==6.33.6",  # grpcio-status 1.80.0 forces >=6.31.1,<7; pinned to lock the resolved transitive version
   "Jinja2==3.1.6",
-  "litellm==1.98.0",
+  "litellm==1.99.0",
   "loguru==0.7.2",
   "msrest==0.7.1",
   "openai>=1.55.3",
@@ -61,18 +61,23 @@ dependencies = [
   "tiktoken==0.12.0",
   "ujson>=5.13.0,<6",
   "unidiff==0.7.5",
-  "uvicorn==0.22.0",
+  "uvicorn>=0.31.1,<1",
   "tenacity==8.2.3",
   "a2a-sdk[http-server]==1.0.3",
   "langfuse==3.14.5",
   "gunicorn==23.0.0",
   "pydantic==2.13.3",
-  # litellm 1.98.0 declares pydantic-settings as a base dependency and imports it unconditionally from
+  # litellm 1.99.0 declares pydantic-settings as a base dependency and imports it unconditionally from
   # litellm/integrations/otel/model/config.py. Keep the exact pin to lock the resolved transitive version.
   # Version matches litellm's own constraint (>=2.14.1,<3.0); the existing observability guard covers the callback import.
   "pydantic-settings==2.14.2",
   "html2text==2024.2.26",
   "giteapy==1.0.8",
+  # pr_agent/telemetry imports these directly; already resolved transitively via
+  # langfuse and litellm, pinned here to lock the version the code is tested against.
+  "opentelemetry-api==1.43.0",
+  "opentelemetry-sdk==1.43.0",
+  "opentelemetry-exporter-otlp-proto-http==1.43.0",
 ]
 
 [project.urls]
@@ -93,6 +98,9 @@ include = [
 [project.optional-dependencies]
 # AWS Lambda deployment (docker/Dockerfile.lambda).
 lambda = ["mangum==0.17.0"]
+# OTLP/gRPC transport for pr-agent telemetry (OTEL.OTLP_PROTOCOL = "grpc").
+# The default OTLP/HTTP transport needs no extra: its exporter is a base dependency.
+otel-grpc = ["opentelemetry-exporter-otlp-proto-grpc==1.43.0"]
 # LangChainOpenAIHandler. Install with: uv sync --extra langchain
 langchain = [
   "langchain",
@@ -109,9 +117,10 @@ pr-agent = "pr_agent.cli:run"
 # resolves from a git fork, which wheel metadata cannot reference (PyPI rejects
 # direct URL deps), so a pip-installed extra would silently pull the wrong package.
 similar-issue = [
+  "pandas",  # imported directly by the qdrant indexing path
   "pinecone-client",
   "pinecone-datasets @ git+https://github.com/mrT23/pinecone-datasets.git@main",
-  "lancedb==0.5.1",
+  "lancedb==0.38.0",
   "qdrant-client==1.15.1",
 ]
 dev = [
@@ -130,8 +139,7 @@ lint.select = [
   "E",    # Pyflakes
   "F",    # Pyflakes
   "B",    # flake8-bugbear
-  "I001", # isort basic checks
-  "I002", # isort missing-required-import
+  "I",    # isort
 ]
 
 lint.fixable = [
@@ -154,32 +162,21 @@ lint.ignore = [
   "E402", # import not at top of file
   "E501", # line too long
   "E711", # comparison to None
-  "E713", # test for membership with `not ... in`
-  "E714", # test for object identity with `not ... is`
-  "E721", # type comparison with `==`
   "E722", # bare `except`
   "F811", # redefinition of unused name
   "F841", # unused local variable
-  "B005", # strip() with multi-character string
   "B006", # mutable argument default
   "B007", # unused loop control variable
-  "B009", # getattr with constant attribute
   "B011", # `assert False`
-  "B012", # break/continue/return inside finally
   "B017", # assertRaises(Exception)
   "B023", # function definition uses loop variable
   "B027", # empty method without @abstractmethod
   "B904", # raise without `from` inside `except`
-  "B905", # zip() without explicit strict=
 ]
 
 [tool.ruff.lint.per-file-ignores]
 # Ignore import-position and unused-import in __init__.py (re-export modules).
 "__init__.py" = ["E402", "F401"]
-# The 'similar issue' tool imports its optional deps (pinecone, pandas,
-# pinecone-datasets) lazily at runtime; ruff can't see them at module scope.
-"pr_agent/tools/pr_similar_issue.py" = ["F821"]
-
 [tool.bandit]
 exclude_dirs = ["tests"]
 skips = ["B101"]
@@ -187,9 +184,9 @@ tests = []
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["tests"]
+testpaths = ["tests/unittest"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "--color=yes"
+addopts = "--color=yes --import-mode=importlib"
 console_output_style = "progress"
