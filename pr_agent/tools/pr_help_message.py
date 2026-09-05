@@ -11,6 +11,7 @@ from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.pr_processing import retry_with_fallback_models
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import ModelType, clip_tokens, get_max_tokens, load_yaml
+from pr_agent.command_descriptions import COMMAND_DESCRIPTIONS
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import BitbucketServerProvider, GithubProvider, get_git_provider_with_context
 from pr_agent.log import get_logger
@@ -214,9 +215,9 @@ class PRHelpMessage:
                 tool_names.append(f"[GENERATE CUSTOM LABELS]({base_path}/generate_labels/)")
 
                 descriptions = []
-                descriptions.append("Generates PR description - title, type, summary, code walkthrough and labels")
-                descriptions.append("Adjustable feedback about the PR, possible issues, security concerns, review effort and more")
-                descriptions.append("Code suggestions for improving the PR")
+                descriptions.append(COMMAND_DESCRIPTIONS["describe"])
+                descriptions.append(COMMAND_DESCRIPTIONS["review"])
+                descriptions.append(COMMAND_DESCRIPTIONS["improve"])
                 descriptions.append("Automatically updates the changelog")
                 descriptions.append("Answers a question regarding this repository, or a given one, based on given documentation path")
                 descriptions.append("Generates documentation to methods/functions/classes that changed in the PR")

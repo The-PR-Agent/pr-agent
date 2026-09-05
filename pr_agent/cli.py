@@ -10,6 +10,7 @@ from pr_agent.algo.ai_handlers.litellm_helpers import (
     litellm_callbacks_registered,
 )
 from pr_agent.algo.utils import get_version
+from pr_agent.command_descriptions import COMMAND_DESCRIPTIONS
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger, setup_logger
 
@@ -19,7 +20,7 @@ setup_logger(log_level)
 
 def set_parser():
     parser = argparse.ArgumentParser(description='AI based pull request analyzer', usage=
-    """\
+    f"""\
     Usage: cli.py --pr_url=<URL on supported git hosting service> <command> [<args>].
     For example:
     - cli.py --pr_url=... review
@@ -31,13 +32,13 @@ def set_parser():
     - cli.py --pr_url/--issue_url= help_docs [<asked question>]
 
     Supported commands:
-    - review / review_pr - Add a review that includes a summary of the PR and specific suggestions for improvement.
+    - review / review_pr - {COMMAND_DESCRIPTIONS["review"]}
 
     - ask / ask_question [question] - Ask a question about the PR.
 
-    - describe / describe_pr - Modify the PR title and description based on the PR's contents.
+    - describe / describe_pr - {COMMAND_DESCRIPTIONS["describe"]}
 
-    - improve / improve_code - Suggest improvements to the code in the PR as pull request comments ready to commit.
+    - improve / improve_code - {COMMAND_DESCRIPTIONS["improve"]}
     Extended mode ('improve --extended') employs several calls, and provides a more thorough feedback
 
     - reflect - Ask the PR author questions about the PR.
