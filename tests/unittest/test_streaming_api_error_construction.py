@@ -4,8 +4,7 @@ import asyncio
 import openai
 import pytest
 
-from pr_agent.algo.ai_handlers.litellm_helpers import \
-    _handle_streaming_response
+from pr_agent.algo.ai_handlers.litellm_helpers import _handle_streaming_response
 
 
 class Chunk:
