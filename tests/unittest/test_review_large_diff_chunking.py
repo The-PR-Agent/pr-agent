@@ -175,6 +175,24 @@ async def test_a_chunk_that_fails_does_not_lose_the_chunks_that_succeeded(chunki
 
 
 @pytest.mark.asyncio
+async def test_an_empty_chunk_does_not_lose_a_valid_sibling_or_trigger_fallback(chunking_enabled):
+    reviewer = _make_reviewer()
+    reviewer._get_prediction = AsyncMock(side_effect=["review: {}", CHUNK_B])
+
+    with (
+        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
+        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
+              return_value=(["chunk-a", "chunk-b"], [])),
+    ):
+        await reviewer._prepare_prediction("model")
+
+    assert reviewer._get_prediction.await_count == 2
+    assert reviewer.prediction_data["review"]["score"] == "40"
+    assert reviewer.review_chunk_count == 2
+    assert reviewer.review_failed_chunk_count == 1
+
+
+@pytest.mark.asyncio
 async def test_a_review_where_every_chunk_failed_raises_so_a_fallback_model_is_tried(chunking_enabled):
     reviewer = _make_reviewer()
     reviewer._get_prediction = AsyncMock(side_effect=[RuntimeError("model refused"),
