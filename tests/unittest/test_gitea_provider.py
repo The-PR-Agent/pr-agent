@@ -1,3 +1,4 @@
+import copy
 import json
 from io import BytesIO
 from types import SimpleNamespace
@@ -5,7 +6,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from giteapy.rest import ApiException
+from starlette_context import context, request_cycle_context
 
+from pr_agent.config_loader import global_settings
 from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.git_providers.gitea_provider import GiteaProvider
 
@@ -1246,3 +1249,94 @@ class TestBaseUrlHtmlIsResolvedOnFirstUse:
         provider.base_url_html = "https://assigned.example.com"
 
         assert provider.base_url_html == "https://assigned.example.com"
+
+
+class TestGiteaRepoIgnoreRules:
+    """Regression for #2620: repository-level [ignore] rules from .pr_agent.toml
+    are merged into settings AFTER GiteaProvider is constructed (so the eager
+    filter in __init__ could never see them). The filter now runs inside
+    get_diff_files(), at diff time, when the merged repo settings are in effect.
+    """
+
+    GITEA_SETTINGS = {
+        "GITEA.URL": "https://gitea.example.com",
+        "GITEA.PERSONAL_ACCESS_TOKEN": "test-token",
+        "GITEA.REPO_SETTING": None,
+        "GITEA.SKIP_SSL_VERIFICATION": False,
+        "GITEA.SSL_CA_CERT": None,
+    }
+
+    FILES = [
+        {"filename": "generated/client.py", "additions": 10, "deletions": 0, "status": "added"},
+        {"filename": "api/schema.d.ts", "additions": 5, "deletions": 0, "status": "modified"},
+        {"filename": "src/application.py", "additions": 3, "deletions": 1, "status": "modified"},
+    ]
+
+    def _build_provider(self, mock_repo_api_cls, mock_get_settings, mock_api_client_cls):
+        settings = MagicMock()
+        settings.get.side_effect = lambda k, d=None: self.GITEA_SETTINGS.get(k, d)
+        mock_get_settings.return_value = settings
+
+        repo_api = mock_repo_api_cls.return_value
+        pr = SimpleNamespace(
+            head=SimpleNamespace(sha="head-sha"),
+            base=SimpleNamespace(sha="base-sha", ref="main"),
+        )
+        repo_api.get_pull_request.return_value = pr
+        repo_api.get_change_file_pull_request.return_value = self.FILES
+        repo_api.get_file_content.return_value = "file content"
+        repo_api.get_pull_request_diff.return_value = (
+            "diff --git a/generated/client.py b/generated/client.py\n"
+            "@@ -1 +1 @@\n-old\n+new\n"
+            "diff --git a/api/schema.d.ts b/api/schema.d.ts\n"
+            "@@ -1 +1 @@\n-old\n+new\n"
+            "diff --git a/src/application.py b/src/application.py\n"
+            "@@ -1 +1 @@\n-old\n+new\n"
+        )
+        repo_api.get_pr_commits.return_value = [{"sha": "head-sha"}]
+
+        from pr_agent.git_providers.gitea_provider import GiteaProvider
+
+        return GiteaProvider("https://gitea.example.com/owner/repo/pulls/1")
+
+    @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
+    @patch("pr_agent.git_providers.gitea_provider.RepoApi")
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_repo_ignore_globs_exclude_files_at_diff_time(
+        self, mock_get_settings, mock_repo_api_cls, mock_api_client_cls
+    ):
+        """Construct the provider with NO ignore rules (as happens before
+        apply_repo_settings merges the repo .pr_agent.toml), then merge the
+        repo's [ignore] rules into the request settings and confirm
+        get_diff_files() drops the matching files."""
+        provider = self._build_provider(mock_repo_api_cls, mock_get_settings, mock_api_client_cls)
+
+        with request_cycle_context({}):
+            context["settings"] = copy.deepcopy(global_settings)
+            context["settings"].ignore.glob = ["generated/**", "api/schema.d.ts"]
+            context["settings"].ignore.regex = []
+
+            diff_files = provider.get_diff_files()
+            names = [f.filename for f in diff_files]
+
+            assert "src/application.py" in names
+            assert "generated/client.py" not in names, \
+                "repo-level glob 'generated/**' must exclude generated/client.py"
+            assert "api/schema.d.ts" not in names, \
+                "repo-level glob 'api/schema.d.ts' must exclude api/schema.d.ts"
+
+    @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
+    @patch("pr_agent.git_providers.gitea_provider.RepoApi")
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_no_ignore_rules_keeps_all_files(
+        self, mock_get_settings, mock_repo_api_cls, mock_api_client_cls
+    ):
+        provider = self._build_provider(mock_repo_api_cls, mock_get_settings, mock_api_client_cls)
+
+        with request_cycle_context({}):
+            context["settings"] = copy.deepcopy(global_settings)
+            context["settings"].ignore.glob = []
+            context["settings"].ignore.regex = []
+
+            names = [f.filename for f in provider.get_diff_files()]
+            assert sorted(names) == ["api/schema.d.ts", "generated/client.py", "src/application.py"]

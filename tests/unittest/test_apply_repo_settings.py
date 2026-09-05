@@ -119,3 +119,4 @@ foo = "X-FROM-REPO-A"
             git_utils.apply_repo_settings("https://git.example/projects/B/repos/b/pull-requests/1")
             assert get_settings().get("my_custom_repo_section.foo") is None, \
                 "repo A's [my_custom_repo_section] leaked into repo B"
+
