@@ -3,6 +3,7 @@ import inspect
 import json
 import sys
 
+import httpx
 import litellm
 import openai
 
@@ -93,10 +94,13 @@ async def _handle_streaming_response(response, model=None):
 
     if not full_response and finish_reason is None:
         get_logger().warning("Streaming response resulted in empty content with no finish reason")
-        raise openai.APIError("Empty streaming response received without proper completion")
+        raise openai.APIError("Empty streaming response received without proper completion",
+                              request=httpx.Request("POST", model or ""), body=None)
     elif not full_response and finish_reason:
         get_logger().debug(f"Streaming response resulted in empty content but completed with finish_reason: {finish_reason}")
-        raise openai.APIError(f"Streaming response completed with finish_reason '{finish_reason}' but no content received")
+        raise openai.APIError(
+            f"Streaming response completed with finish_reason '{finish_reason}' but no content received",
+            request=httpx.Request("POST", model or ""), body=None)
     return full_response, finish_reason, MockResponse(full_response, finish_reason, finalized_usage, model)
 
 
