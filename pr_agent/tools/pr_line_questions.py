@@ -1,5 +1,6 @@
 import copy
 from functools import partial
+from urllib.parse import unquote
 
 from jinja2 import Environment, StrictUndefined, select_autoescape
 from litellm import token_counter
@@ -9,11 +10,10 @@ from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.git_patch_processing import extract_hunk_lines_from_patch
 from pr_agent.algo.pr_processing import OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD, retry_with_fallback_models
 from pr_agent.algo.token_handler import TokenEncoder, TokenHandler
-from pr_agent.algo.utils import ModelType, get_max_tokens
-from pr_agent.config_loader import get_settings
+from pr_agent.algo.utils import ModelType, decode_user_text_args, get_max_tokens
+from pr_agent.config_loader import get_settings, get_verbosity_level
 from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.git_provider import get_main_pr_language
-from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.log import get_logger
 
 
@@ -40,6 +40,7 @@ class PR_LineQuestions:
             "selected_lines": "",
             "conversation_history": "",
             "resolve_threads": self.resolve_threads,
+            "is_azure_devops": self.git_provider.supports_threaded_pr_questions(),
             "extra_instructions": get_settings().pr_questions.extra_instructions,
         }
         self.token_handler = TokenHandler(self.git_provider.pr,
@@ -50,11 +51,7 @@ class PR_LineQuestions:
         self.prediction = None
 
     def parse_args(self, args):
-        if args and len(args) > 0:
-            question_str = " ".join(args)
-        else:
-            question_str = ""
-        return question_str
+        return decode_user_text_args(args)
 
 
     async def run(self):
@@ -62,9 +59,8 @@ class PR_LineQuestions:
         # if get_settings().config.publish_output:
         #     self.git_provider.publish_comment("Preparing answer...", is_temporary=True)
 
-        # set conversation history if enabled
-        # currently only supports GitHub provider
-        if get_settings().pr_questions.use_conversation_history and isinstance(self.git_provider, GithubProvider):
+        if (get_settings().pr_questions.use_conversation_history
+                and self.git_provider.supports_line_question_history()):
             conversation_history = self._load_conversation_history()
             self.vars["conversation_history"] = conversation_history
 
@@ -75,6 +71,8 @@ class PR_LineQuestions:
         line_end = get_settings().get('line_end', '')
         side = get_settings().get('side', 'RIGHT')
         file_name = get_settings().get('file_name', '')
+        if get_settings().get("file_name_encoded", False):
+            file_name = unquote(file_name)
         comment_id = get_settings().get('comment_id', '')
         if not comment_id:
             self.resolve_threads = False
@@ -90,7 +88,8 @@ class PR_LineQuestions:
             diff_files = self.git_provider.get_diff_files()
             for file in diff_files:
                 if file.filename == file_name:
-                    self.patch_with_lines, self.selected_lines = extract_hunk_lines_from_patch(file.patch, file.filename,
+                    self.patch_with_lines, self.selected_lines = extract_hunk_lines_from_patch(file.patch,
+                                                                                               file.filename,
                                                                                                line_start=line_start,
                                                                                                line_end=line_end,
                                                                                                side=side)
@@ -144,6 +143,8 @@ class PR_LineQuestions:
             str: The formatted conversation history
         """
         comment_id = get_settings().get('comment_id', '')
+        origin_comment_id = (get_settings().get("origin_comment_id", comment_id)
+                             if self.git_provider.supports_threaded_pr_questions() else comment_id)
         file_path = get_settings().get('file_name', '')
         line_number = get_settings().get('line_end', '')
 
@@ -159,14 +160,15 @@ class PR_LineQuestions:
             # filter and prepare comments
             filtered_comments = []
             for comment in thread_comments:
-                body = getattr(comment, 'body', '')
+                body = getattr(comment, "body", "")
 
                 # skip empty comments, current comment(will be added as a question at prompt)
-                if not body or not body.strip() or comment_id == comment.id:
+                if (not isinstance(body, str) or not body.strip()
+                        or origin_comment_id == getattr(comment, "id", None)):
                     continue
 
-                user = comment.user
-                author = user.login if hasattr(user, 'login') else 'Unknown'
+                user = getattr(comment, "user", None)
+                author = getattr(user, "login", "Unknown")
                 filtered_comments.append((author, body))
 
             # transform conversation history to string using the same pattern as get_commit_messages
@@ -191,7 +193,7 @@ class PR_LineQuestions:
         variables["selected_lines"] = self.selected_lines
         variables["conversation_history"] = self._fit_conversation_history(variables, model)
         system_prompt, user_prompt = self._render_prompts(variables)
-        if get_settings().config.verbosity_level >= 2:
+        if get_verbosity_level() >= 2:
             # get_logger().info(f"\nSystem prompt:\n{system_prompt}")
             # get_logger().info(f"\nUser prompt:\n{user_prompt}")
             print(f"\nSystem prompt:\n{system_prompt}")

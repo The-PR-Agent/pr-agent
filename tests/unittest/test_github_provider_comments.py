@@ -8,6 +8,7 @@ These tests use ``GithubProvider.__new__(GithubProvider)`` to bypass network-bou
 
 import json
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -52,6 +53,34 @@ def _make_provider(pr=None, max_chars=65000):
     p.diff_files = []
     p.base_url = "https://api.github.com"
     return p
+
+
+def test_edit_comment_returns_false_on_github_failure():
+    provider = _make_provider()
+    comment = MagicMock()
+    comment.edit.side_effect = gh_module.GithubException(500, "edit failed", {})
+
+    assert provider.edit_comment(comment, "updated body") is False
+
+
+@pytest.mark.parametrize(
+    ("deployment_type", "agent_login", "comment_login", "expected"),
+    [
+        ("user", "pr-agent", "pr-agent", True),
+        ("user", "pr-agent", "human", False),
+        ("app", "review-app[bot]", "review-app[bot]", True),
+        ("app", "review-app[bot]", "review-app[bot]-human", False),
+    ],
+)
+def test_comment_authorship_uses_authenticated_github_identity(
+    deployment_type, agent_login, comment_login, expected
+):
+    provider = _make_provider()
+    provider.deployment_type = deployment_type
+    provider.github_user_id = agent_login
+    comment = SimpleNamespace(user=SimpleNamespace(login=comment_login))
+
+    assert provider.is_comment_authored_by_pr_agent(comment) is expected
 
 
 # ---------------------------------------------------------------------------
@@ -594,3 +623,82 @@ class TestResolveCommentThread:
 
         result = p.resolve_comment_thread(123)
         assert result is False
+
+
+def test_app_comment_authorship_requires_grounded_identity_without_user_endpoint(monkeypatch):
+    provider = _make_provider()
+    provider.deployment_type = "app"
+    provider.github_user_id = ""
+
+    def fail_get_user():
+        raise AssertionError("installation tokens must not use /user")
+
+    provider.github_client = SimpleNamespace(get_user=fail_get_user)
+    settings = SimpleNamespace(
+        get=lambda key, default=None: (
+            "review-app" if key == "GITHUB.APP_NAME" else default
+        )
+    )
+    monkeypatch.setattr(gh_module, "get_settings", lambda: settings)
+
+    bot_comment = SimpleNamespace(
+        user=SimpleNamespace(login="review-app[bot]")
+    )
+    copied_marker_comment = SimpleNamespace(
+        user=SimpleNamespace(login="review-app-human")
+    )
+
+    assert provider.supports_review_finding_state() is False
+    with pytest.raises(RuntimeError, match="identity"):
+        provider.is_comment_authored_by_pr_agent(bot_comment)
+    with pytest.raises(RuntimeError, match="identity"):
+        provider.is_comment_authored_by_pr_agent(copied_marker_comment)
+
+
+def test_app_comment_authorship_uses_published_response_identity_when_app_name_is_stale(
+    monkeypatch,
+):
+    provider = _make_provider()
+    provider.deployment_type = "app"
+    provider.github_user_id = ""
+    response = SimpleNamespace(user=SimpleNamespace(login="actual-app[bot]"))
+    provider.pr = SimpleNamespace(
+        create_issue_comment=lambda _body: response,
+    )
+    provider.issue_main = None
+    provider.github_client = SimpleNamespace(
+        get_user=lambda: pytest.fail("installation tokens must not use /user")
+    )
+    settings = SimpleNamespace(
+        get=lambda key, default=None: (
+            "stale-app" if key == "GITHUB.APP_NAME" else default
+        )
+    )
+
+    monkeypatch.setattr(gh_module, "get_settings", lambda: settings)
+
+    assert provider.publish_comment("identity bootstrap") is response
+    assert provider.github_user_id == "actual-app[bot]"
+    actual_bot_comment = SimpleNamespace(
+        user=SimpleNamespace(login="actual-app[bot]")
+    )
+    stale_bot_comment = SimpleNamespace(
+        user=SimpleNamespace(login="stale-app[bot]")
+    )
+
+    assert provider.supports_review_finding_state() is True
+    assert provider.is_comment_authored_by_pr_agent(actual_bot_comment) is True
+    assert provider.is_comment_authored_by_pr_agent(stale_bot_comment) is False
+
+
+def test_user_comment_authorship_resolves_authenticated_user():
+    provider = _make_provider()
+    provider.deployment_type = "user"
+    provider.github_user_id = ""
+    provider.github_client = SimpleNamespace(
+        get_user=lambda: SimpleNamespace(raw_data={"login": "user-agent"})
+    )
+    comment = SimpleNamespace(user=SimpleNamespace(login="user-agent"))
+
+    assert provider.supports_review_finding_state() is True
+    assert provider.is_comment_authored_by_pr_agent(comment) is True

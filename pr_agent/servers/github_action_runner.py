@@ -13,7 +13,7 @@ from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import get_logger
-from pr_agent.servers.github_app import handle_line_comments
+from pr_agent.servers.github_app import handle_line_comments, matches_review_state
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.tools.pr_description import PRDescription
 from pr_agent.tools.pr_reviewer import PRReviewer
@@ -33,6 +33,25 @@ def get_setting_or_env(key: str, default: Union[str, bool] = None) -> Union[str,
     except AttributeError:  # TBD still need to debug why this happens on GitHub Actions
         value = os.getenv(key, None) or os.getenv(key.upper(), None) or os.getenv(key.lower(), None) or default
     return value
+
+
+def get_list_setting_or_env(key, fallback=None):
+    value = get_setting_or_env(key, None)
+    if value is None:
+        value = fallback
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return []
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return [value]
+    if isinstance(value, (list, tuple, set)):
+        return list(value)
+    return [value]
 
 
 def _inject_artifact_context():
@@ -80,6 +99,78 @@ def _inject_artifact_context():
         get_logger().info(f"Injected artifact context into tools: {target_tools}")
     except (OSError, ValueError, TypeError) as e:
         get_logger().warning(f"github action: failed to process artifacts: {e}", exc_info=True)
+
+
+async def _run_review_commands(event_payload):
+    action = event_payload.get("action")
+    if action != "submitted":
+        get_logger().info(f"Skipping pull_request_review action: {action}")
+        return
+    if event_payload.get("sender", {}).get("type") == "Bot":
+        get_logger().info("Skipping pull_request_review event from a bot sender")
+        return
+
+    pull_request = event_payload.get("pull_request", {})
+    pr_url = pull_request.get("url")
+    if not pr_url:
+        get_logger().info("Skipping pull_request_review: pull_request.url is missing")
+        return
+
+    review = event_payload.get("review", {})
+    review_state = review.get("state", "") if isinstance(review, dict) else ""
+    review_author_type = ""
+    if isinstance(review, dict):
+        review_author = review.get("user", {})
+        if isinstance(review_author, dict):
+            review_author_type = str(review_author.get("type", "")).strip().lower()
+    review_author_types = get_list_setting_or_env(
+        "GITHUB_ACTION_CONFIG.REVIEW_AUTHOR_TYPES",
+        get_settings().get("GITHUB_APP.REVIEW_AUTHOR_TYPES", ["User"]),
+    )
+    review_author_types = {
+        str(author_type).strip().lower() for author_type in review_author_types if str(author_type).strip()
+    }
+    if review_author_type not in review_author_types:
+        get_logger().info(
+            f"Skipping pull_request_review from {review_author_type=}: author type is not configured"
+        )
+        return
+    review_states = get_list_setting_or_env(
+        "GITHUB_ACTION_CONFIG.REVIEW_STATES",
+        get_settings().get("GITHUB_APP.REVIEW_STATES", ["changes_requested"]),
+    )
+    if not matches_review_state(review_state, review_states):
+        get_logger().info(f"Skipping pull_request_review with {review_state=}: state is not configured")
+        return
+
+    review_commands = get_list_setting_or_env(
+        "GITHUB_ACTION_CONFIG.REVIEW_COMMANDS",
+        get_settings().get("GITHUB_APP.REVIEW_COMMANDS", []),
+    )
+    if not review_commands:
+        get_logger().info("No review_commands configured, skipping pull_request_review")
+        return
+
+    feedback_on_draft = get_setting_or_env("GITHUB_ACTION_CONFIG.FEEDBACK_ON_DRAFT_PR", None)
+    if feedback_on_draft is None:
+        feedback_on_draft = get_settings().get("GITHUB_APP.FEEDBACK_ON_DRAFT_PR", False)
+    if pull_request.get("draft", True) and not is_true(feedback_on_draft):
+        get_logger().info(f"Skipping draft PR for pull_request_review: {pr_url=}")
+        return
+
+    disable_auto_feedback = get_setting_or_env("CONFIG.DISABLE_AUTO_FEEDBACK", None)
+    if disable_auto_feedback is None:
+        disable_auto_feedback = get_settings().get("CONFIG.DISABLE_AUTO_FEEDBACK", False)
+    if is_true(disable_auto_feedback):
+        get_logger().info(f"Auto feedback is disabled, skipping pull_request_review: {pr_url=}")
+        return
+
+    _inject_artifact_context()
+    get_settings().config.is_auto_command = True
+    get_settings().pr_description.final_update_message = False
+    get_logger().info(f"Running review commands: {review_commands}")
+    for command in review_commands:
+        await PRAgent().handle_request(pr_url, command)
 
 
 async def run_action():
@@ -242,6 +333,10 @@ async def run_action():
                     await PRCodeSuggestions(pr_url).run()
         else:
             get_logger().info(f"Skipping action: {action}")
+
+    # Handle submitted pull request review event
+    elif GITHUB_EVENT_NAME == "pull_request_review":
+        await _run_review_commands(event_payload)
 
     # Handle issue comment event
     elif GITHUB_EVENT_NAME == "issue_comment" or GITHUB_EVENT_NAME == "pull_request_review_comment":

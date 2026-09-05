@@ -31,9 +31,15 @@ from ..algo.utils import (
     get_pr_review_comment_identifiers,
     load_large_diff,
 )
-from ..config_loader import get_settings
+from ..config_loader import get_settings, get_verbosity_level
 from ..log import get_logger
-from .git_provider import MAX_FILES_ALLOWED_FULL, GitProvider, IncrementalPR, get_cached_global_settings
+from .git_provider import (
+    MAX_FILES_ALLOWED_FULL,
+    GitProvider,
+    IncrementalPR,
+    get_cached_global_settings,
+    redact_credentials,
+)
 
 
 class DiffNotFoundError(Exception):
@@ -908,8 +914,30 @@ class GitLabProvider(GitProvider):
     def should_publish_review_as_thread(self) -> bool:
         return bool(get_settings().get("GITLAB.PUBLISH_REVIEW_AS_THREAD", False))
 
+    def should_publish_improve_as_thread(self) -> bool:
+        return bool(get_settings().get("GITLAB.PUBLISH_IMPROVE_AS_THREAD", False))
+
     def supports_review_comment_identity(self) -> bool:
         return True
+
+    def supports_review_finding_state(self) -> bool:
+        return True
+
+    def is_comment_authored_by_pr_agent(self, comment) -> bool:
+        if isinstance(comment, dict):
+            author = comment.get("author") or comment.get("user")
+        else:
+            author = getattr(comment, "author", None) or getattr(comment, "user", None)
+        if isinstance(author, dict):
+            author_id = author.get("id")
+        else:
+            author_id = getattr(author, "id", None)
+        if author_id is None:
+            raise RuntimeError("GitLab comment author cannot be verified")
+        own_user_id = self._get_own_user_id()
+        if own_user_id is None:
+            raise RuntimeError("GitLab authenticated user cannot be verified")
+        return str(author_id) == str(own_user_id)
 
     def publish_persistent_comment(self, pr_comment: str,
                                    initial_header: str,
@@ -976,6 +1004,23 @@ class GitLabProvider(GitProvider):
                 return
         except Exception as e:
             get_logger().warning(f"Failed to reopen resolved review thread: {e}")
+
+    def resolve_comment_thread(self, comment_id) -> bool:
+        # Resolves by note id. /ask_line addresses threads by discussion id instead, so
+        # supports_thread_resolution() stays False and that path keeps skipping GitLab.
+        try:
+            for discussion in self.mr.discussions.list(get_all=True):
+                notes = discussion.attributes.get('notes', [])
+                if not any(note.get('id') == comment_id for note in notes):
+                    continue
+                if any(note.get('resolvable') and not note.get('resolved') for note in notes):
+                    discussion.resolved = True
+                    discussion.save()
+                    return True
+                return False
+        except Exception as e:
+            get_logger().warning(f"Failed to resolve comment thread: {e}")
+        return False
 
     def resolve_outdated_inline_threads(self):
         if not get_settings().get("GITLAB.RESOLVE_OUTDATED_INLINE_THREADS", False):
@@ -1227,7 +1272,13 @@ class GitLabProvider(GitProvider):
                     continue
                 range = relevant_lines_end - relevant_lines_start # no need to add 1
                 body = body.replace('```suggestion', f'```suggestion:-0+{range}')
-                lines = target_file.head_file.splitlines()
+                lines = target_file.head_file.splitlines() if target_file.head_file else []
+                if not 0 < relevant_lines_start <= len(lines):
+                    get_logger().warning(
+                        f"Skipping suggestion: line {relevant_lines_start} out of range "
+                        f"for '{relevant_file}' (head content has {len(lines)} lines)"
+                    )
+                    continue
                 relevant_line_in_file = lines[relevant_lines_start - 1]
 
                 # edit_type, found, source_line_no, target_file, target_line_no = self.find_in_file(target_file,
@@ -1380,6 +1431,9 @@ class GitLabProvider(GitProvider):
 
     def get_issue_comments(self):
         return self.mr.notes.list(get_all=True)[::-1]
+
+    def get_issue_comments_newest_first(self):
+        return list(reversed(self.get_issue_comments()))
 
     def get_repo_settings(self):
         settings_files = []
@@ -1620,7 +1674,7 @@ class GitLabProvider(GitProvider):
     def get_repo_labels(self):
         return self.gl.projects.get(self.id_project).labels.list()
 
-    def get_commit_messages(self):
+    def get_commit_messages(self) -> str:
         """
         Retrieves the commit messages of a pull request.
 
@@ -1655,6 +1709,9 @@ class GitLabProvider(GitProvider):
 
     def get_line_link(self, relevant_file: str, relevant_line_start: int, relevant_line_end: int = None) -> str:
         project_web_url = self._get_project_web_url()
+        relevant_line_start, relevant_line_end = self._normalize_line_range(
+            relevant_line_start, relevant_line_end
+        )
         if relevant_line_start == -1:
             link = f"{project_web_url}/-/blob/{self.mr.source_branch}/{relevant_file}?ref_type=heads"
         elif relevant_line_end:
@@ -1689,20 +1746,20 @@ class GitLabProvider(GitProvider):
                 # link = f"{self.pr.web_url}/diffs#{sha_file}_{absolute_position}_{absolute_position}"
                 return link
         except Exception as e:
-            if get_settings().config.verbosity_level >= 2:
+            if get_verbosity_level() >= 2:
                 get_logger().info(f"Failed adding line link, error: {e}")
 
         return ""
     #Clone related
     def _prepare_clone_url_with_token(self, repo_url_to_clone: str) -> str | None:
         if "gitlab." not in repo_url_to_clone:
-            get_logger().error(f"Repo URL: {repo_url_to_clone} is not a valid gitlab URL.")
+            get_logger().error(f"Repo URL: {redact_credentials(repo_url_to_clone)} is not a valid gitlab URL.")
             return None
         (scheme, base_url) = repo_url_to_clone.split("gitlab.")
         access_token = getattr(self.gl, 'oauth_token', None) or getattr(self.gl, 'private_token', None)
         if not all([scheme, access_token, base_url]):
-            get_logger().error(f"Either no access token found, or repo URL: {repo_url_to_clone} "
-                               f"is missing prefix: {scheme} and/or base URL: {base_url}.")
+            get_logger().error(f"Either no access token found, or repo URL: {redact_credentials(repo_url_to_clone)} "
+                               f"is missing prefix: {redact_credentials(scheme)} and/or base URL: {base_url}.")
             return None
 
         #Note that the ""official"" method found here:

@@ -26,7 +26,7 @@ def _label_name(label) -> str:
             if isinstance(label.get(key), str) and label[key].strip():
                 return label[key].strip()
         return ""
-    if label is None:
+    if isinstance(label, bool) or not isinstance(label, (str, int, float)):
         return ""
     return str(label).strip()
 
@@ -175,11 +175,11 @@ class PRGenerateLabels:
         pr_types = []
 
         # If the 'labels' key is present in the dictionary, split its value by comma and assign it to 'pr_types'
-        if 'labels' in self.data:
-            if type(self.data['labels']) == list:
-                pr_types = self.data['labels']
-            elif type(self.data['labels']) == str:
-                pr_types = self.data['labels'].split(',')
+        if "labels" in self.data:
+            if isinstance(self.data["labels"], list):
+                pr_types = self.data["labels"]
+            elif isinstance(self.data["labels"], str):
+                pr_types = self.data["labels"].split(",")
         pr_types = [name for name in (_label_name(label) for label in pr_types) if name]
 
         # convert lowercase labels to original case

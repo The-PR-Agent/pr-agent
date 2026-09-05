@@ -79,24 +79,42 @@ class TestParseUnifiedDiff:
 
 class TestProviderRegistration:
     def test_registry_has_mosaico_diff_and_originals_intact(self):
-        import pr_agent.mosaico.provider_registration  # noqa: F401 (triggers setdefault)
+        import pr_agent.mosaico.provider_registration  # noqa: F401 (registers mosaico_diff)
         from pr_agent.git_providers import _GIT_PROVIDERS
         assert _GIT_PROVIDERS.get("mosaico_diff") is DiffInputProvider
-        # original keys intact (setdefault did not clobber)
+        # original keys intact
         for key in ("github", "gitlab", "bitbucket", "azure", "local", "gerrit", "gitea"):
             assert key in _GIT_PROVIDERS
 
-    def test_setdefault_does_not_clobber(self):
+    def test_importing_the_registration_again_is_a_no_op(self):
+        import importlib
+
+        import pr_agent.mosaico.provider_registration as registration
         from pr_agent.git_providers import _GIT_PROVIDERS
-        sentinel = object()
-        original = _GIT_PROVIDERS.get("mosaico_diff")
+
+        importlib.reload(registration)
+
+        assert _GIT_PROVIDERS["mosaico_diff"] is DiffInputProvider
+
+    def test_a_foreign_mosaico_diff_provider_is_not_replaced_silently(self):
+        """Where setdefault kept a foreign class quietly, register_git_provider raises at import,
+        so the MOSAICO server cannot come up on a provider it did not register."""
+        import importlib
+
+        import pr_agent.mosaico.provider_registration as registration
+        from pr_agent.git_providers import _GIT_PROVIDERS
+
+        class ForeignProvider(DiffInputProvider):
+            pass
+
+        original = _GIT_PROVIDERS["mosaico_diff"]
+        _GIT_PROVIDERS["mosaico_diff"] = ForeignProvider
         try:
-            _GIT_PROVIDERS["mosaico_diff"] = sentinel
-            _GIT_PROVIDERS.setdefault("mosaico_diff", DiffInputProvider)
-            assert _GIT_PROVIDERS["mosaico_diff"] is sentinel
+            with pytest.raises(ValueError, match="already registered"):
+                importlib.reload(registration)
+            assert _GIT_PROVIDERS["mosaico_diff"] is ForeignProvider
         finally:
-            if original is not None:
-                _GIT_PROVIDERS["mosaico_diff"] = original
+            _GIT_PROVIDERS["mosaico_diff"] = original
 
 
 class TestDiffInputProviderBasics:

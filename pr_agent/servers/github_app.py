@@ -160,6 +160,79 @@ async def handle_new_pr_opened(body: Dict[str, Any],
         else:
             get_logger().info(f"User {sender=} is not eligible to process PR {api_url=}")
 
+
+def _normalise_setting_list(value):
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (list, tuple, set)):
+        return list(value)
+    return [value]
+
+
+def matches_review_state(review_state: Any, configured_states: Any) -> bool:
+    """Return whether a review state matches one of the configured states."""
+    if not isinstance(review_state, str) or not review_state.strip():
+        return False
+    configured_states = _normalise_setting_list(configured_states)
+    if not configured_states:
+        return False
+    normalized_state = review_state.strip().lower()
+    return any(
+        isinstance(state, str) and state.strip().lower() == normalized_state
+        for state in configured_states
+    )
+
+
+async def handle_pull_request_review_submitted(body: Dict[str, Any],
+                                               event: str,
+                                               sender: str,
+                                               sender_id: str,
+                                               sender_type: str,
+                                               action: str,
+                                               log_context: Dict[str, Any],
+                                               agent: PRAgent):
+    pull_request, api_url = _check_pull_request_event(action, body, log_context)
+    if not (pull_request and api_url):
+        get_logger().info(f"Invalid PR review event: {action=} {api_url=}")
+        return {}
+    if sender_type == "Bot":
+        get_logger().info(f"Skipping pull_request_review from bot sender: {sender=}")
+        return {}
+
+    apply_repo_settings(api_url)
+    review = body.get("review", {})
+    review_state = review.get("state", "") if isinstance(review, dict) else ""
+    review_author_type = ""
+    if isinstance(review, dict):
+        review_author = review.get("user", {})
+        if isinstance(review_author, dict):
+            review_author_type = str(review_author.get("type", "")).strip().lower()
+    review_author_types = {
+        str(author_type).strip().lower()
+        for author_type in _normalise_setting_list(
+            get_settings().get("GITHUB_APP.REVIEW_AUTHOR_TYPES", ["User"])
+        )
+        if str(author_type).strip()
+    }
+    if review_author_type not in review_author_types:
+        get_logger().info(
+            f"Skipping review submission from {review_author_type=}: author type is not configured"
+        )
+        return {}
+    if not matches_review_state(
+        review_state, get_settings().get("GITHUB_APP.REVIEW_STATES", ["changes_requested"])
+    ):
+        get_logger().info(f"Skipping review submission with {review_state=}: state is not configured")
+        return {}
+
+    if get_identity_provider().verify_eligibility("github", sender_id, api_url) is not Eligibility.NOT_ELIGIBLE:
+        await _perform_auto_commands_github("review_commands", agent, body, api_url, log_context)
+    else:
+        get_logger().info(f"User {sender=} is not eligible to process review on PR {api_url=}")
+
+
 async def handle_push_trigger_for_new_commits(body: Dict[str, Any],
                         event: str,
                         sender: str,
@@ -355,6 +428,12 @@ async def handle_request(body: Dict[str, Any], event: str):
     if 'check_run' in body:  # handle failed checks
         # get_logger().debug(f'Request body', artifact=body, event=event) # added inside handle_checks
         pass
+    # handle submitted pull request reviews
+    elif event == 'pull_request_review' and action == 'submitted':
+        get_logger().debug('Request body', artifact=body, event=event)
+        await handle_pull_request_review_submitted(
+            body, event, sender, sender_id, sender_type, action, log_context, agent
+        )
     # handle comments on PRs
     elif action == 'created':
         get_logger().debug('Request body', artifact=body, event=event)
@@ -436,14 +515,15 @@ async def _perform_auto_commands_github(commands_conf: str, agent: PRAgent, body
     if is_draft and not feedback_on_draft:
         get_logger().info(f"Skipping draft PR {api_url=}")
         return
-    if commands_conf == "pr_commands" and get_settings().config.disable_auto_feedback:  # auto commands for PR, and auto feedback is disabled
+    if commands_conf in ("pr_commands", "review_commands") and get_settings().config.disable_auto_feedback:
+        # auto commands for PR/review, and auto feedback is disabled
         get_logger().info(f"Auto feedback is disabled, skipping auto commands for PR {api_url=}")
         return
     if not should_process_pr_logic(body): # Here we already updated the configuration with the repo settings
         return {}
     commands = get_settings().get(f"github_app.{commands_conf}")
     if not commands:
-        get_logger().info("New PR, but no auto commands configured")
+        get_logger().info(f"No {commands_conf} configured, skipping auto commands")
         return
     get_settings().set("config.is_auto_command", True)
     for command in commands:
