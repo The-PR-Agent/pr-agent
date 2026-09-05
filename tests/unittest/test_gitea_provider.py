@@ -59,6 +59,21 @@ def test_gitea_edit_comment_returns_false_on_failure():
     assert provider.edit_comment({"id": 42}, "updated body") is False
 
 
+def test_gitea_publish_description_raises_when_update_returns_no_response():
+    provider = GiteaProvider.__new__(GiteaProvider)
+    provider.repo_api = MagicMock()
+    provider.repo_api.edit_pull_request.return_value = None
+    provider.owner = "owner"
+    provider.repo = "repo"
+    provider.pr_number = 1
+    provider.issue_number = None
+    provider.enabled_pr = True
+    provider.logger = MagicMock()
+
+    with pytest.raises(RuntimeError, match="Failed to publish PR description"):
+        provider.publish_description("AI title", "Updated description")
+
+
 def test_gitea_get_issue_comments_returns_empty_list_when_no_comments():
     provider = GiteaProvider.__new__(GiteaProvider)
     provider.enabled_issue = False

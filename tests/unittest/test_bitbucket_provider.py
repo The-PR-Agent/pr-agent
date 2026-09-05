@@ -68,6 +68,18 @@ class TestBitbucketProvider:
 
         assert provider.edit_comment(comment, "updated body") is False
 
+    def test_publish_description_raises_on_non_success_response(self):
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.bitbucket_pull_request_api_url = "https://api.bitbucket.org/pullrequests/1"
+        provider.headers = {"Authorization": "Bearer token"}
+        response = MagicMock(status_code=500)
+
+        with (
+            patch("pr_agent.git_providers.bitbucket_provider.requests.request", return_value=response),
+            pytest.raises(RuntimeError, match="error code: 500"),
+        ):
+            provider.publish_description("AI title", "Updated description")
+
     def test_parse_pr_url(self):
         url = "https://bitbucket.org/WORKSPACE_XYZ/MY_TEST_REPO/pull-requests/321"
         workspace_slug, repo_slug, pr_number = BitbucketProvider._parse_pr_url(url)

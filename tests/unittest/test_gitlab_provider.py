@@ -369,6 +369,14 @@ class TestGitLabProvider:
         assert gitlab_provider.mr.description == "Updated description"
         gitlab_provider.mr.save.assert_called_once()
 
+    def test_publish_description_propagates_save_failure(self, gitlab_provider):
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.save.side_effect = RuntimeError("permission denied")
+        gitlab_provider.id_mr = 1
+
+        with pytest.raises(RuntimeError, match="permission denied"):
+            gitlab_provider.publish_description("AI title", "Updated description")
+
     @pytest.mark.parametrize("configured", [True, False])
     def test_should_publish_review_as_thread_reflects_config(self, gitlab_provider, configured):
         with patch("pr_agent.git_providers.gitlab_provider.get_settings",

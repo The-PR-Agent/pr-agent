@@ -1013,7 +1013,7 @@ class AzureDevopsProvider(GitProvider):
             raise RuntimeError("Azure DevOps comment author cannot be verified")
         return any(value in stable_identities for value in values)
 
-    def publish_description(self, pr_title: str, pr_body: str):
+    def publish_description(self, pr_title: str, pr_body: str) -> None:
         if len(pr_body) > MAX_PR_DESCRIPTION_AZURE_LENGTH:
 
             usage_guide_text='<details> <summary><strong>✨ Describe tool usage guide:</strong></summary><hr>'
@@ -1046,6 +1046,7 @@ class AzureDevopsProvider(GitProvider):
             get_logger().exception(
                 f"Could not update pull request {self.pr_num} description: {e}"
             )
+            raise
 
     def remove_initial_comment(self):
         try:
