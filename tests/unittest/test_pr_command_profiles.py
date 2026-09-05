@@ -118,7 +118,7 @@ def test_explicit_pr_command_overrides_are_preserved(monkeypatch, override):
 
 def test_provider_sections_no_longer_duplicate_pr_command_defaults():
     configuration_path = Path(__file__).parents[2] / "pr_agent/settings/configuration.toml"
-    configuration = tomllib.loads(configuration_path.read_text())
+    configuration = tomllib.loads(configuration_path.read_text(encoding="utf-8"))
 
     for provider in DEFAULT_PR_COMMANDS:
         assert "pr_commands" not in configuration[provider]
