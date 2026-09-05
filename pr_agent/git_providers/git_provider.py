@@ -244,8 +244,7 @@ class GitProvider(ABC):
             get_logger().error("Clone failed: Could not clone url.",
                 artifact={"error": redact_credentials(e), "url": redact_credentials(clone_url),
                           "dest_folder": dest_folder})
-        finally:
-            return returned_obj
+        return returned_obj
 
     @abstractmethod
     def get_files(self) -> list:

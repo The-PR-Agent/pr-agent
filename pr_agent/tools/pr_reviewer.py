@@ -39,8 +39,6 @@ from pr_agent.algo.utils import (
     PRReviewHeader,
     PRReviewIdentity,
     add_pr_review_identity,
-    comment_carries_other_identity,
-    comment_matches_identity,
     convert_to_markdown_v2,
     get_pr_review_comment_identifiers,
     github_action_output,
