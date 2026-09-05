@@ -1,11 +1,14 @@
 import asyncio
+import copy
 import multiprocessing
 import traceback
 from collections import deque
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 import aiohttp
 import requests
+from starlette_context import request_cycle_context
 
 from pr_agent.agent.pr_agent import PRAgent
 from pr_agent.algo.ai_handlers.litellm_helpers import (
@@ -13,7 +16,7 @@ from pr_agent.algo.ai_handlers.litellm_helpers import (
     drain_litellm_callbacks,
     litellm_callbacks_registered,
 )
-from pr_agent.config_loader import get_settings
+from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import get_git_provider
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 
@@ -71,25 +74,56 @@ def run_handle_request(pr_url, rest_of_comment, comment_id, git_provider):
     return asyncio.run(_handle_request_and_drain(pr_url, rest_of_comment, comment_id, git_provider))
 
 
+def _polling_request_settings():
+    """Clone global settings with the polling-mode overrides applied.
+
+    Applying the overrides here instead of in ``polling_loop`` makes them reach
+    the task regardless of the multiprocessing start method: fork children
+    inherit the parent's globals, spawn/forkserver children do not - and
+    forkserver is the Linux default from Python 3.14.
+    """
+    settings = copy.deepcopy(global_settings)
+    settings.set("CONFIG.PUBLISH_OUTPUT_PROGRESS", False)
+    settings.set("pr_description.publish_description_as_comment", True)
+    return settings
+
+
+@contextmanager
+def _polling_settings_scope():
+    """request_cycle_context with a guaranteed reset: its bare yield (unfixed
+    upstream as of starlette-context 0.5.1) skips the ContextVar reset when an
+    exception crosses the with-body, so enter and exit are driven explicitly
+    and the reset runs on any exit, BaseException included.
+    """
+    cm = request_cycle_context({"settings": _polling_request_settings()})
+    cm.__enter__()
+    try:
+        yield
+    finally:
+        cm.__exit__(None, None, None)
+
+
 def process_comment_sync(pr_url, rest_of_comment, comment_id):
     try:
-        # Run the async handle_request in a separate function
-        git_provider = get_git_provider()(pr_url=pr_url)
-        success = run_handle_request(pr_url, rest_of_comment, comment_id, git_provider)
+        with _polling_settings_scope():
+            # Run the async handle_request in a separate function
+            git_provider = get_git_provider()(pr_url=pr_url)
+            run_handle_request(pr_url, rest_of_comment, comment_id, git_provider)
     except Exception as e:
         get_logger().error(f"Error processing comment: {e}", artifact={"traceback": traceback.format_exc()})
 
 
 async def process_comment(pr_url, rest_of_comment, comment_id):
     try:
-        git_provider = get_git_provider()(pr_url=pr_url)
-        git_provider.set_pr(pr_url)
-        agent = PRAgent()
-        success = await agent.handle_request(
-            pr_url,
-            rest_of_comment,
-            notify=lambda: git_provider.add_eyes_reaction(comment_id)
-        )
+        with _polling_settings_scope():
+            git_provider = get_git_provider()(pr_url=pr_url)
+            git_provider.set_pr(pr_url)
+            agent = PRAgent()
+            await agent.handle_request(
+                pr_url,
+                rest_of_comment,
+                notify=lambda: git_provider.add_eyes_reaction(comment_id)
+            )
         get_logger().info(f"Finished processing comment for PR: {pr_url}")
     except Exception as e:
         get_logger().error(f"Error processing comment: {e}", artifact={"traceback": traceback.format_exc()})
@@ -190,8 +224,6 @@ async def polling_loop():
     last_modified = [None]
     git_provider = get_git_provider()()
     user_id = git_provider.get_user_id()
-    get_settings().set("CONFIG.PUBLISH_OUTPUT_PROGRESS", False)
-    get_settings().set("pr_description.publish_description_as_comment", True)
 
     try:
         deployment_type = get_settings().github.deployment_type
