@@ -1992,7 +1992,7 @@ def format_todo_item(todo_item: TodoItem | str, git_provider, gfm_supported) -> 
     TODOs in prose instead of locating each one. Such an entry has no file to link to.
     """
     if not isinstance(todo_item, dict):
-        return str(todo_item).strip()
+        return str(todo_item).strip() if todo_item is not None else ""
     relevant_file = str(todo_item.get('relevant_file', '') or '').strip()
     line_number = todo_item.get('line_number', '')
     content = str(todo_item.get('content', '') or '')
