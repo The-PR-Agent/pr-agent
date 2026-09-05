@@ -78,9 +78,10 @@ def test_truncate_if_needed_keeps_short_code_unchanged():
     snapshot = snapshot_settings(TRUNCATION_SETTINGS)
     settings.set("pr_code_suggestions.max_code_suggestion_length", 1000)
     try:
-        suggestion = _valid_suggestion(improved_code="short()")
+        suggestion = _valid_suggestion(improved_code="short()", _is_truncated=True)
         result = PRCodeSuggestions._truncate_if_needed(suggestion)
         assert result["improved_code"] == "short()"
+        assert "_is_truncated" not in result
     finally:
         restore_settings(snapshot)
 

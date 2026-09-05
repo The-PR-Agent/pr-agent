@@ -131,7 +131,36 @@ class TestCodeCommitProvider:
         assert pr.title == "My PR"
         assert pr.description == "My PR description"
         assert len(pr.targets) == 1
+        assert pr.targets[0].repository_name == "my_test_repo"
         assert pr.targets[0].source_commit == "commit1"
         assert pr.targets[0].source_branch == "branch1"
         assert pr.targets[0].destination_commit == "commit2"
         assert pr.targets[0].destination_branch == "branch2"
+
+    def test_get_pr_preserves_all_target_repositories(self):
+        api = CodeCommitClient()
+        api.boto_client = MagicMock()
+        api.boto_client.get_pull_request.return_value = {
+            "pullRequest": {
+                "title": "Multi-target PR",
+                "pullRequestTargets": [
+                    {
+                        "repositoryName": "repo-one",
+                        "sourceCommit": "source-one",
+                        "destinationCommit": "destination-one",
+                    },
+                    {
+                        "repositoryName": "repo-two",
+                        "sourceCommit": "source-two",
+                        "destinationCommit": "destination-two",
+                    },
+                ],
+            }
+        }
+
+        pr = api.get_pr("repo-one", 321)
+
+        assert [(target.repository_name, target.source_commit, target.destination_commit) for target in pr.targets] == [
+            ("repo-one", "source-one", "destination-one"),
+            ("repo-two", "source-two", "destination-two"),
+        ]

@@ -22,10 +22,13 @@ global_settings = Dynaconf(
         "settings/ignore.toml",
         "settings/generated_code_ignore.toml",
         "settings/language_extensions.toml",
+        "settings/prompt_fragments.toml",
         "settings/pr_reviewer_prompts.toml",
         "settings/pr_questions_prompts.toml",
         "settings/pr_line_questions_prompts.toml",
         "settings/pr_description_prompts.toml",
+        "settings/pr_description_only_files_prompts.toml",
+        "settings/pr_description_only_description_prompts.toml",
         "settings/code_suggestions/pr_code_suggestions_prompts.toml",
         "settings/code_suggestions/pr_code_suggestions_prompts_not_decoupled.toml",
         "settings/code_suggestions/pr_code_suggestions_reflect_prompts.toml",
@@ -58,6 +61,21 @@ def get_settings(use_context=False):
         return context["settings"]
     except Exception:
         return global_settings
+
+
+def get_verbosity_level() -> int:
+    """Return config.verbosity_level as an int, falling back to the quietest level.
+
+    The value is compared with >= at many call sites, so a quoted number in a settings file
+    would otherwise raise in the middle of a command.
+    """
+    value = get_settings().config.get("verbosity_level", 0)
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        from pr_agent.log import get_logger
+        get_logger().warning(f"verbosity_level is not a number ({value!r}), using 0")
+        return 0
 
 
 # Add local configuration from pyproject.toml of the project being reviewed
