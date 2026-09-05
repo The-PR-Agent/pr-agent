@@ -1084,6 +1084,7 @@ def try_fix_yaml(response_text: str,
                         break
                     block_scalar_lines.append(previous_line)
                 if not should_indent:
+                    response_text_lines_copy[i] = ''
                     continue
             response_text_lines_copy[i] = '    ' + response_text_lines_copy[i].lstrip()
     try:

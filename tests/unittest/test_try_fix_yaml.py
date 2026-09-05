@@ -336,6 +336,27 @@ code_suggestions:
 
         assert try_fix_yaml(review_text, first_key='code_suggestions', last_key='improved_code') == expected_output
 
+    def test_stray_closing_brace_before_following_key_is_not_added_to_block_scalar(self):
+        review_text = '''\
+code_suggestions:
+- relevant_file: |
+    example.py
+  improved_code: |
+    return shared_helper(x)
+  }
+  label: |
+    maintainability
+'''
+        expected_output = {
+            'code_suggestions': [{
+                'relevant_file': 'example.py\n',
+                'improved_code': 'return shared_helper(x)\n',
+                'label': 'maintainability\n'
+            }]
+        }
+
+        assert try_fix_yaml(review_text, first_key='code_suggestions', last_key='improved_code') == expected_output
+
 
     def test_wrong_indentation_code_block_scalar(self):
         review_text = '''\
