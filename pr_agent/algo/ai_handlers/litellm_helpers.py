@@ -2,7 +2,9 @@ import asyncio
 import inspect
 import json
 import sys
+from math import isfinite
 
+import httpx
 import litellm
 import openai
 
@@ -93,10 +95,13 @@ async def _handle_streaming_response(response, model=None):
 
     if not full_response and finish_reason is None:
         get_logger().warning("Streaming response resulted in empty content with no finish reason")
-        raise openai.APIError("Empty streaming response received without proper completion")
+        raise openai.APIError("Empty streaming response received without proper completion",
+                              request=httpx.Request("POST", model or ""), body=None)
     elif not full_response and finish_reason:
         get_logger().debug(f"Streaming response resulted in empty content but completed with finish_reason: {finish_reason}")
-        raise openai.APIError(f"Streaming response completed with finish_reason '{finish_reason}' but no content received")
+        raise openai.APIError(
+            f"Streaming response completed with finish_reason '{finish_reason}' but no content received",
+            request=httpx.Request("POST", model or ""), body=None)
     return full_response, finish_reason, MockResponse(full_response, finish_reason, finalized_usage, model)
 
 
@@ -126,6 +131,25 @@ class MockResponse:
             else:
                 data["usage"] = vars(self.usage).copy()
         return data
+
+
+def get_repetition_penalty():
+    """Return huggingface.repetition_penalty as a float, or None when it is unusable.
+
+    The value is read in LiteLLMAIHandler.__init__, before any handler exists to turn a bad
+    setting into a readable error, so an unreadable value must not raise there.
+    """
+    value = get_settings().get("HUGGINGFACE.REPETITION_PENALTY", None)
+    if value is None:
+        return None
+    try:
+        penalty = float(value)
+    except (TypeError, ValueError, OverflowError):
+        penalty = None
+    if penalty is None or not isfinite(penalty):
+        get_logger().warning(f"huggingface.repetition_penalty is not a usable number ({value!r}); ignoring it")
+        return None
+    return penalty
 
 
 def _get_azure_ad_token():

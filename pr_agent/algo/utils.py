@@ -227,6 +227,22 @@ def get_setting(key: str) -> Any:
         return global_settings.get(key, None)
 
 
+def as_review_text(value) -> str:
+    """Flatten a review field the model returned as a list or mapping into readable text.
+
+    The prompt asks for a single string, but a model enumerating several findings commonly
+    answers with a list or a mapping. Rendering those is preferable to losing the review.
+    """
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        value = [f"{key}: {item}" for key, item in value.items()]
+    if isinstance(value, (list, tuple, set)):
+        entries = [as_review_text(item) for item in value]
+        return "\n".join(f"- {entry}" for entry in entries if entry)
+    return str(value).strip()
+
+
 def emphasize_header(text: str, only_markdown=False, reference_link=None) -> str:
     try:
         # Finding the position of the first occurrence of ": "
@@ -392,7 +408,7 @@ def convert_to_markdown_v2(output_data: dict,
                     markdown_text += f"{emoji}&nbsp;<strong>No security concerns identified</strong>"
                 else:
                     markdown_text += f"{emoji}&nbsp;<strong>Security concerns</strong><br><br>\n\n"
-                    value = emphasize_header(value.strip())
+                    value = emphasize_header(value.strip()) if isinstance(value, str) else as_review_text(value)
                     markdown_text += f"{value}"
                 markdown_text += "</td></tr>\n"
             else:
@@ -400,7 +416,7 @@ def convert_to_markdown_v2(output_data: dict,
                     markdown_text += f'### {emoji} No security concerns identified\n\n'
                 else:
                     markdown_text += f"### {emoji} Security concerns\n\n"
-                    value = emphasize_header(value.strip(), only_markdown=True)
+                    value = emphasize_header(value.strip(), only_markdown=True) if isinstance(value, str) else as_review_text(value)
                     markdown_text += f"{value}\n\n"
         elif 'risk level' in key_nice.lower():
             risk_value = str(value).strip().lower().replace("_", " ")
@@ -2005,10 +2021,19 @@ def set_file_languages(diff_files) -> List[FilePatchInfo]:
 
     return diff_files
 
-def format_todo_item(todo_item: TodoItem, git_provider, gfm_supported) -> str:
-    relevant_file = todo_item.get('relevant_file', '').strip()
+def format_todo_item(todo_item: TodoItem | str, git_provider, gfm_supported) -> str:
+    """Render one TODO entry, tolerating the free-text form the schema also allows.
+
+    todo_sections is declared as Union[List[TodoSection], str], so a model may summarise the
+    TODOs in prose instead of locating each one. Such an entry has no file to link to.
+    """
+    if not isinstance(todo_item, dict):
+        return str(todo_item).strip() if todo_item is not None else ""
+    relevant_file = str(todo_item.get('relevant_file', '') or '').strip()
     line_number = todo_item.get('line_number', '')
-    content = todo_item.get('content', '')
+    content = str(todo_item.get('content', '') or '')
+    if not relevant_file:
+        return content.strip()
     reference_link = git_provider.get_line_link(relevant_file, line_number, line_number)
     file_ref = f"{relevant_file} [{line_number}]"
     if reference_link:
@@ -2024,27 +2049,26 @@ def format_todo_item(todo_item: TodoItem, git_provider, gfm_supported) -> str:
         return file_ref
 
 
-def format_todo_items(value: list[TodoItem] | TodoItem, git_provider, gfm_supported) -> str:
+def format_todo_items(value: list[TodoItem] | TodoItem | str, git_provider, gfm_supported) -> str:
     markdown_text = ""
     MAX_ITEMS = 5 # limit the number of items to display
+    is_list = isinstance(value, list)
+    items = value if is_list else [value]
+    if len(items) > MAX_ITEMS:
+        get_logger().debug(f"Truncating todo items to {MAX_ITEMS} items")
+        items = items[:MAX_ITEMS]
+    entries = [format_todo_item(todo_item, git_provider, gfm_supported) for todo_item in items]
+    entries = [entry for entry in entries if entry]
+    if not entries:
+        return markdown_text
     if gfm_supported:
-        if isinstance(value, list):
-            markdown_text += "<ul>\n"
-            if len(value) > MAX_ITEMS:
-                get_logger().debug(f"Truncating todo items to {MAX_ITEMS} items")
-                value = value[:MAX_ITEMS]
-            for todo_item in value:
-                markdown_text += f"<li>{format_todo_item(todo_item, git_provider, gfm_supported)}</li>\n"
-            markdown_text += "</ul>\n"
-        else:
-            markdown_text += f"<p>{format_todo_item(value, git_provider, gfm_supported)}</p>\n"
+        if not is_list:
+            return f"<p>{entries[0]}</p>\n"
+        markdown_text += "<ul>\n"
+        for entry in entries:
+            markdown_text += f"<li>{entry}</li>\n"
+        markdown_text += "</ul>\n"
     else:
-        if isinstance(value, list):
-            if len(value) > MAX_ITEMS:
-                get_logger().debug(f"Truncating todo items to {MAX_ITEMS} items")
-                value = value[:MAX_ITEMS]
-            for todo_item in value:
-                markdown_text += f"- {format_todo_item(todo_item, git_provider, gfm_supported)}\n"
-        else:
-            markdown_text += f"- {format_todo_item(value, git_provider, gfm_supported)}\n"
+        for entry in entries:
+            markdown_text += f"- {entry}\n"
     return markdown_text

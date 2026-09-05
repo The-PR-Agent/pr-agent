@@ -26,6 +26,7 @@ from pr_agent.algo.ai_handlers.litellm_helpers import (
     _handle_streaming_response,
     _process_litellm_extra_body,
     _response_field,
+    get_repetition_penalty,
 )
 from pr_agent.algo.run_details import _as_decimal_cost, record_ai_call
 from pr_agent.algo.utils import ReasoningEffort, get_version
@@ -250,8 +251,9 @@ class LiteLLMAIHandler(BaseAiHandler):
             self.api_base = get_settings().ollama.api_base
         if get_settings().get("OLLAMA.API_KEY", None):
             litellm.api_key = get_settings().ollama.api_key
-        if get_settings().get("HUGGINGFACE.REPETITION_PENALTY", None):
-            self.repetition_penalty = float(get_settings().huggingface.repetition_penalty)
+        repetition_penalty = get_repetition_penalty()
+        if repetition_penalty is not None:
+            self.repetition_penalty = repetition_penalty
         if get_settings().get("VERTEXAI.VERTEX_PROJECT", None):
             litellm.vertex_project = get_settings().vertexai.vertex_project
             litellm.vertex_location = get_settings().get(
