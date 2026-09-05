@@ -37,6 +37,11 @@ For example, you can present suggestions with verified replacement ranges as com
 
 Suggestions whose replacement ranges cannot be verified remain regular comments without an apply action.
 
+If batch publication fails, `/improve` retries each suggestion individually. If every retry fails,
+it reports a failure instead of silently removing the progress comment. With
+`config.propagate_tool_errors=true`, the publication error is also raised to the caller.
+If any individual retry succeeds, the existing partial-recovery behavior is preserved.
+
 ![improve](https://codium.ai/images/pr_agent/improve.png){width=512}
 
 ### Automatic triggering

@@ -13,6 +13,7 @@ _TRACKED_SETTINGS = (
     "config.publish_output",
     "config.publish_output_progress",
     "config.is_auto_command",
+    "config.propagate_tool_errors",
     "pr_code_suggestions.commitable_code_suggestions",
     "pr_code_suggestions.dual_publishing_score_threshold",
     "pr_code_suggestions.persistent_comment",
@@ -391,5 +392,61 @@ async def test_run_retains_progress_handle_when_check_run_cleanup_fails(monkeypa
         provider.remove_comment.assert_called_once_with(progress_comment)
         # The handle is retained so a later cancellation or error handler can retry removal
         assert tool.progress_response is progress_comment
+    finally:
+        restore_settings(settings_snapshot)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("propagate_errors", [False, True])
+@pytest.mark.parametrize("show_progress", [False, True])
+@pytest.mark.parametrize("supports_artifact", [False, True])
+async def test_run_reports_exhausted_inline_publication_retries(
+    monkeypatch, propagate_errors, show_progress, supports_artifact
+):
+    settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
+    try:
+        provider = MagicMock()
+        provider.get_files.return_value = [object()]
+        provider.diff_files = []
+        provider.is_supported.return_value = False
+        provider.supports_code_suggestions_artifact.return_value = supports_artifact
+        provider.publish_code_suggestions_artifact.return_value = False
+        provider.publish_code_suggestions.return_value = False
+        tool = _make_tool(provider)
+        tool._validate_suggestion = MagicMock(return_value=(True, "", True))
+        tool.dedent_code = MagicMock(side_effect=lambda _file, _line, code: code)
+        suggestion = {
+            "relevant_file": "app.py",
+            "relevant_lines_start": 1,
+            "relevant_lines_end": 1,
+            "suggestion_content": "Use the helper.",
+            "existing_code": "old()",
+            "improved_code": "new()",
+            "label": "maintainability",
+        }
+        monkeypatch.setattr(
+            pr_code_suggestions_module,
+            "retry_with_fallback_models",
+            AsyncMock(return_value={"code_suggestions": [suggestion]}),
+        )
+        _configure_published_run()
+        settings = get_settings()
+        settings.config.publish_output_progress = show_progress
+        settings.config.propagate_tool_errors = propagate_errors
+        settings.pr_code_suggestions.commitable_code_suggestions = True
+
+        if propagate_errors:
+            with pytest.raises(RuntimeError, match="Failed to publish code suggestions"):
+                await tool.run()
+        else:
+            await tool.run()
+
+        assert provider.publish_code_suggestions.call_count == (1 if supports_artifact else 2)
+        assert tool._output_published is False
+        published_comments = [call.args[0] for call in provider.publish_comment.call_args_list]
+        assert published_comments[-1] == "Failed to generate code suggestions for PR"
+        if show_progress:
+            assert published_comments[0] == "Preparing suggestions..."
+            provider.remove_comment.assert_called_once_with(provider.publish_comment.return_value)
     finally:
         restore_settings(settings_snapshot)
