@@ -19,7 +19,7 @@ from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.identity_providers import get_identity_provider
 from pr_agent.identity_providers.identity_provider import Eligibility
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
-from pr_agent.servers.utils import DefaultDictWithTimeout, verify_signature
+from pr_agent.servers.utils import DefaultDictWithTimeout, get_pr_commands, verify_signature
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
 base_path = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
@@ -521,7 +521,11 @@ async def _perform_auto_commands_github(commands_conf: str, agent: PRAgent, body
         return
     if not should_process_pr_logic(body): # Here we already updated the configuration with the repo settings
         return {}
-    commands = get_settings().get(f"github_app.{commands_conf}")
+    commands = (
+        get_pr_commands("github_app")
+        if commands_conf == "pr_commands"
+        else get_settings().get(f"github_app.{commands_conf}")
+    )
     if not commands:
         get_logger().info(f"No {commands_conf} configured, skipping auto commands")
         return

@@ -27,7 +27,7 @@ from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.azuredevops_provider import AZURE_AGENT_RESPONSE_MARKER, AzureDevopsProvider
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
-from pr_agent.servers.utils import basic_auth_matches
+from pr_agent.servers.utils import basic_auth_matches, get_pr_commands
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
 security = HTTPBasic(auto_error=False)
@@ -209,7 +209,11 @@ async def _perform_commands_azure(commands_conf: str, agent: PRAgent, api_url: s
     if commands_conf == "pr_commands" and get_settings().config.disable_auto_feedback:  # auto commands for PR, and auto feedback is disabled
         get_logger().info(f"Auto feedback is disabled, skipping auto commands for PR {api_url=}", **log_context)
         return
-    commands = get_settings().get(f"azure_devops_server.{commands_conf}")
+    commands = (
+        get_pr_commands("azure_devops_server")
+        if commands_conf == "pr_commands"
+        else get_settings().get(f"azure_devops_server.{commands_conf}")
+    )
     if not commands:
         return
 

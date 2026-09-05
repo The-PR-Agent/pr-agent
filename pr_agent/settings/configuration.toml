@@ -308,11 +308,6 @@ override_deployment_type = true
 # settings for "pull_request" event
 handle_pr_actions = ['opened', 'reopened', 'ready_for_review']
 feedback_on_draft_pr = false
-pr_commands = [
-    "/describe --pr_description.final_update_message=false",
-    "/review",
-    "/improve",
-]
 # A submitted GitHub review can optionally trigger these commands. The empty default preserves current behavior.
 review_states = ["changes_requested"]
 review_author_types = ["User"]
@@ -343,11 +338,6 @@ publish_improve_as_thread = false
 publish_code_suggestions_as_review = false
 # Resolve the bot's own inline threads that a later push left on an outdated diff version.
 resolve_outdated_inline_threads = false
-pr_commands = [
-    "/describe --pr_description.final_update_message=false",
-    "/review",
-    "/improve",
-]
 handle_push_trigger = false
 push_commands = [
     "/describe",
@@ -370,22 +360,12 @@ url = "https://gitea.com"
 # above, else derived from the PR's html_url.
 # web_url = ""
 handle_push_trigger = false
-pr_commands = [
-    "/describe",
-    "/review",
-    "/improve",
-]
 push_commands = [
     "/describe",
     "/review",
 ]
 
 [bitbucket_app]
-pr_commands = [
-    "/describe --pr_description.final_update_message=false",
-    "/review",
-    "/improve --pr_code_suggestions.commitable_code_suggestions=true",
-]
 avoid_full_files = false
 request_timeout = 30 # positive seconds for connection and response-read inactivity timeouts
 
@@ -412,11 +392,6 @@ webhook_password = ""
 # URL to the BitBucket Server instance
 # url = "https://git.bitbucket.com"
 url = ""
-pr_commands = [
-    "/describe --pr_description.final_update_message=false",
-    "/review",
-    "/improve --pr_code_suggestions.commitable_code_suggestions=true",
-]
 
 [litellm]
 # use_client = false
@@ -551,11 +526,6 @@ default_comment_status = "closed"
 
 [azure_devops_server]
 agent_identity = "" # empty: discover the identity from earlier agent comments on the PR
-pr_commands = [
-    "/describe",
-    "/review",
-    "/improve",
-]
 
 [push_outputs] # push tool outputs to external sinks without calling git-provider APIs (disabled by default)
 enable = false
