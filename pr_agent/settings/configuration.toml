@@ -105,6 +105,15 @@ branch_issue_regex = ""
 
 
 [pr_reviewer] # /review #
+# Operator-controlled, global-only mapping for ephemeral `/review alias+effort`
+# selectors. This does not change permissions for the existing config.model path.
+enable_command_model_aliases=false
+command_model_aliases.fable = "anthropic/claude-fable-5"
+command_model_aliases.opus = "anthropic/claude-opus-5"
+command_model_aliases.sonnet = "anthropic/claude-sonnet-5"
+command_model_aliases.sol = "gpt-5.6-sol"
+command_model_aliases.terra = "gpt-5.6-terra"
+command_model_aliases.luna = "gpt-5.6-luna"
 # enable/disable features
 require_score_review=false
 require_tests_review=true

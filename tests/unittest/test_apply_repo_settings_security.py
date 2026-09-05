@@ -175,6 +175,60 @@ def test_repo_settings_cannot_override_prompt_fragments(monkeypatch, settings_sn
     assert _section(settings, "prompt_fragments").get("diff_hunk_format") == fragment_before
 
 
+def test_local_repo_settings_cannot_enable_or_define_command_model_overrides(monkeypatch, settings_snapshot):
+    provider = FakeGitProvider(
+        repo_settings_bytes=(
+            b"[pr_reviewer]\n"
+            b"enable_command_model_aliases = true\n"
+            b'command_model_aliases = { expensive = "provider/expensive-model" }\n'
+        )
+    )
+    _install_provider(monkeypatch, provider)
+    settings = get_settings()
+    settings.set("config.use_repo_settings_file", True)
+    enabled_before = settings.pr_reviewer.enable_command_model_aliases
+    aliases_before = dict(settings.pr_reviewer.command_model_aliases)
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    assert settings.pr_reviewer.enable_command_model_aliases == enabled_before
+    assert dict(settings.pr_reviewer.command_model_aliases) == aliases_before
+
+
+def test_global_alias_allowlist_wins_over_local_repo_attempt(monkeypatch, settings_snapshot):
+    provider = FakeGitProvider(
+        repo_settings_bytes=[
+            (
+                "global",
+                b"[pr_reviewer]\n"
+                b"enable_command_model_aliases = true\n"
+                b'command_model_aliases = { opus = "anthropic/claude-opus-5" }\n',
+            ),
+            (
+                "local",
+                b"[pr_reviewer]\n"
+                b"enable_command_model_aliases = false\n"
+                b'command_model_aliases = { cheap = "attacker/model" }\n',
+            ),
+        ]
+    )
+    _install_provider(monkeypatch, provider)
+    settings = get_settings()
+    settings.set("config.use_repo_settings_file", True)
+    pr_reviewer = copy.deepcopy(_section(settings, "pr_reviewer"))
+    pr_reviewer["enable_command_model_aliases"] = False
+    pr_reviewer["command_model_aliases"] = {}
+    settings.unset("PR_REVIEWER", force=True)
+    settings.set("PR_REVIEWER", pr_reviewer, merge=False)
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    assert settings.pr_reviewer.enable_command_model_aliases is True
+    assert dict(settings.pr_reviewer.command_model_aliases) == {
+        "opus": "anthropic/claude-opus-5"
+    }
+
+
 def test_invalid_toml_does_not_pollute_settings(monkeypatch, settings_snapshot):
     """
     Malformed TOML must never leak into the live settings. The custom loader

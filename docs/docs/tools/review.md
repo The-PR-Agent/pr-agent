@@ -30,6 +30,46 @@ If you want to edit [configurations](#configuration-options), add the relevant o
 /review --pr_reviewer.some_config1=... --pr_reviewer.some_config2=...
 ```
 
+### Per-command model and effort selection
+
+Operators can optionally let callers select a configured model alias and reasoning effort for one review:
+
+```
+/review fable+high
+```
+
+The selector sets the existing `config.model` and `config.reasoning_effort` values for that invocation. The normal
+configured fallback behavior is unchanged, repository defaults are not modified, and later commands use their normal
+configuration. A non-`none` effort also enables the existing adaptive-thinking path when the selected alias resolves to
+a supported Claude adaptive-thinking model.
+
+This feature is disabled by default. PR-Agent ships the following global alias mapping. An operator must enable the
+feature in trusted global configuration, such as
+environment/host configuration or the organization-level `pr-agent-settings` repository, and may replace the mapping
+there if needed:
+
+```toml
+[pr_reviewer]
+enable_command_model_aliases = true
+command_model_aliases.fable = "anthropic/claude-fable-5"
+command_model_aliases.opus = "anthropic/claude-opus-5"
+command_model_aliases.sonnet = "anthropic/claude-sonnet-5"
+command_model_aliases.sol = "gpt-5.6-sol"
+command_model_aliases.terra = "gpt-5.6-terra"
+command_model_aliases.luna = "gpt-5.6-luna"
+```
+
+The reviewed repository's `.pr_agent.toml` and command-line configuration in PR comments cannot enable this feature or
+change its aliases. Callers must use a configured alias; raw LiteLLM/provider model identifiers and unknown aliases are
+rejected. Supported efforts are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`. Each review accepts one
+selector.
+
+This shorthand does not change permissions for the existing `config.model` or `fallback_models` settings.
+
+When aliases are enabled, a token with a known effort is treated as a selector. When aliases are disabled, only a token
+whose alias part matches a configured alias produces the disabled-feature error. Other arguments that merely contain
+`+` — for example `cost+low` or `C++` in free-text review instructions — keep their historical meaning.
+
 ### Automatic triggering
 
 To run the `review` automatically when a PR is opened, define in a [configuration file](../usage-guide/configuration_options.md#local-configuration-file):
