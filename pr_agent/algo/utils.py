@@ -1080,7 +1080,7 @@ def try_fix_yaml(response_text: str,
                     if previous_space == initial_space:
                         if re.search(r':\s*\|[0-9+-]*\s*$', previous_line):
                             block_scalar = '\n'.join(reversed(block_scalar_lines))
-                            should_indent = block_scalar.count('{') > block_scalar.count('}')
+                            should_indent = '{' in block_scalar or '}' in block_scalar
                         break
                     block_scalar_lines.append(previous_line)
                 if not should_indent:
