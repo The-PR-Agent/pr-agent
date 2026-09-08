@@ -4,7 +4,7 @@ sidebar_position: 7
 ---
 
 The `[push_outputs]` feature routes finished tool output to external sinks — stdout, a JSONL file, a
-generic webhook, or Slack — without calling git-provider APIs. It is disabled by default, and is
+generic webhook, Slack, or Telegram — without calling git-provider APIs. It is disabled by default, and is
 additive to normal publishing: when a tool finishes, the same result that is posted as a PR comment
 is also emitted to the configured sinks.
 
@@ -42,10 +42,12 @@ The defaults are defined at the end of the
 ```toml
 [push_outputs]
 enable = false
-channels = []                          # any of: "stdout", "file", "webhook", "slack"
+channels = []                          # any of: "stdout", "file", "webhook", "slack", "telegram"
 file_path = "pr-agent-outputs/reviews.jsonl"
 webhook_url = ""                       # must be an absolute https:// URL
 slack_webhook_url = ""                 # Slack Incoming Webhook; must be an absolute https:// URL
+telegram_bot_token = ""                # Telegram bot token; host-only secret
+telegram_chat_id = ""                  # destination chat for the Telegram bot
 ```
 
 - `enable` — master switch (default `false`). When `false`, nothing is emitted.
@@ -53,6 +55,8 @@ slack_webhook_url = ""                 # Slack Incoming Webhook; must be an abso
 - `file_path` — the file the `file` channel appends to.
 - `webhook_url` — the endpoint the `webhook` channel POSTs the generic record to.
 - `slack_webhook_url` — a Slack Incoming Webhook URL that the `slack` channel posts a `{"text": ...}` payload to.
+- `telegram_bot_token` — the bot token used by the `telegram` channel. Keep it in host secrets, not a repository file.
+- `telegram_chat_id` — the chat that receives Telegram messages.
 
 :::danger[Host-only configuration]
 The whole `[push_outputs]` section is **host-only**. A repository cannot set these keys:
@@ -82,10 +86,31 @@ credential.
 | `file` | Appends one JSON line per run (JSONL) to `file_path`, creating parent directories as needed. |
 | `webhook` | POSTs the generic record as JSON to `webhook_url` (5-second timeout, redirects not followed). |
 | `slack` | POSTs `{"text": ...}` to a Slack Incoming Webhook; the text is the markdown, or the payload JSON when the tool produces no markdown. |
+| `telegram` | Sends the markdown, or the payload JSON when no markdown is present, as plain text to `telegram_chat_id`. Text is truncated to 4096 characters. |
 
-Local channels (`stdout`, `file`) run before network channels (`webhook`, `slack`), and network
+Local channels (`stdout`, `file`) run before network channels (`webhook`, `slack`, `telegram`), and network
 posts never follow redirects. Each configured destination is attempted independently, so one failure
 does not prevent later destinations from receiving the output.
+
+### Telegram
+
+Enable the channel in the host's settings and supply the bot token through the host environment:
+
+```toml
+[push_outputs]
+enable = true
+channels = ["telegram"]
+telegram_chat_id = "<destination-chat-id>"
+```
+
+Set `PUSH_OUTPUTS__TELEGRAM_BOT_TOKEN` to your bot token in the host's secret environment.
+The bot must be able to send messages to the destination chat. Missing credentials skip delivery
+with a warning that names only the missing setting.
+
+Requests use the fixed `https://api.telegram.org` host, a 5-second timeout, and no redirects.
+The token is URL-encoded in the request path and is never included in PR-Agent's warning messages.
+No Telegram parse mode is set: Markdown syntax is sent as plain text. Longer output is truncated,
+not split across messages; other configured channels still receive the complete output.
 
 ## Error handling
 
