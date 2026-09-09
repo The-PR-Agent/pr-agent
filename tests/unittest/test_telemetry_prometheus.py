@@ -62,8 +62,7 @@ def test_multiple_workers_aggregate_at_scrape_time():
         "from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader",
         "from pr_agent.telemetry.prometheus import PrometheusMetricExporter",
         "provider = MeterProvider(metric_readers=[PeriodicExportingMetricReader(PrometheusMetricExporter())])",
-        "counter = provider.get_meter('mp-test').create_counter("
-        "'pr_agent.commands', unit='{command}', description='PR-Agent commands executed')",
+        "counter = provider.get_meter('mp-test').create_counter('pr_agent.commands', unit='{command}', description='PR-Agent commands executed')",
         "counter.add(1, {'pr_agent.command': 'review'})",
         "provider.shutdown()",
     ])
