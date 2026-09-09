@@ -468,11 +468,12 @@ rules = [] # e.g. [{ max_hunks = 3, model = "gpt-5.6-luna" }, { max_hunks = 15, 
 [otel]
 # Keys map to settings.get("OTEL.*") via section-key dot notation.
 is_enabled = false # disabled by default; set to true to enable telemetry
-exporter_type = "console" # "console", "otlp", or "none"
+exporter_type = "console" # "console", "otlp", "prometheus", or "none"
 service_name = "pr-agent"
 environment = "development" # "development", "staging", "production", etc.
 otlp_timeout = 3 # seconds; hard deadline per OTLP export call (incl. retries). Bounds CLI-exit/request stalls when the collector is unreachable; batches slower than this are dropped.
 otlp_protocol = "http" # "http" (default; exporter ships with pr-agent) or "grpc" (requires the otel-grpc extra: pip install pr-agent[otel-grpc])
+prometheus_multiproc_dir = "/tmp/pr-agent-prometheus" # shared dir for the prometheus exporter's per-worker state files; required when exporter_type = "prometheus" (multiprocess gunicorn deployments)
 include_pr_url = false # set to true to attach PR URLs to spans (may expose private repo names)
 include_error_details = false # set to true to attach exception messages and rejected-command text to spans (may expose PR URLs, repo names, or other request content)
 

@@ -6,6 +6,7 @@ class ExporterType:
     """Canonical exporter type values for OTEL.EXPORTER_TYPE."""
     OTLP = "otlp"
     CONSOLE = "console"
+    PROMETHEUS = "prometheus"
     NONE = "none"
 
 
@@ -26,3 +27,4 @@ class TelemetryConfig:
     otlp_headers: Optional[Dict[str, str]] = None
     otlp_timeout: int = 3  # seconds; hard deadline per export call, retries included
     otlp_protocol: str = OtlpProtocol.HTTP
+    prometheus_multiproc_dir: Optional[str] = None  # shared dir for multiprocess metrics
