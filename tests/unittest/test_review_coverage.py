@@ -1,4 +1,9 @@
-from pr_agent.algo.review_coverage import CoverageLedger, FileCoverage, changed_lines_from_patch
+from pr_agent.algo.review_coverage import (
+    CoverageLedger,
+    FileCoverage,
+    changed_lines_from_patch,
+    patch_line_counts,
+)
 
 
 def _ledger():
@@ -49,3 +54,27 @@ def test_changed_lines_from_patch_counts_plus_and_minus_excluding_headers():
 def test_changed_lines_from_patch_handles_empty_patch():
     assert changed_lines_from_patch("") == 0
     assert changed_lines_from_patch(None) == 0
+
+
+def test_changed_lines_from_patch_does_not_mistake_sql_comment_lines_for_headers():
+    """A removed line whose text begins with `--` (an SQL comment) renders as a diff line
+    starting with `--- `, and an added counterpart can start with `+++`; both must still count
+    as real changes. Header exclusion must be positional (before the first `@@`), not by
+    matching the `+++`/`---` prefix, or these get silently dropped."""
+    patch = "--- a/x.sql\n+++ b/x.sql\n@@ -1,2 +1,2 @@\n--- old comment\n+++counter\n"
+    assert changed_lines_from_patch(patch) == 2
+
+
+def test_changed_lines_from_patch_ignores_no_newline_marker():
+    patch = "@@ -1,1 +1,1 @@\n-old\n+new\n\\ No newline at end of file\n"
+    assert changed_lines_from_patch(patch) == 2
+
+
+def test_patch_line_counts_returns_plus_and_minus_separately():
+    patch = "--- a/x.sql\n+++ b/x.sql\n@@ -1,2 +1,2 @@\n--- old comment\n+++counter\n"
+    assert patch_line_counts(patch) == (1, 1)
+
+
+def test_patch_line_counts_empty_patch_is_zero_zero():
+    assert patch_line_counts("") == (0, 0)
+    assert patch_line_counts(None) == (0, 0)

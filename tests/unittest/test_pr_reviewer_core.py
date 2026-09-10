@@ -235,6 +235,26 @@ async def test_prepare_prediction_derives_changed_lines_from_patch_when_counts_a
     assert reviewer.coverage.reviewed_ratio == pytest.approx(3 / 103)
 
 
+@pytest.mark.asyncio
+async def test_prepare_prediction_classifies_deletion_only_from_patch_when_counts_are_missing():
+    """A count-less provider (local/plain-diff, gerrit, bitbucket, codecommit) that deletes a
+    file entirely must still get deletion_only treatment -- not "reviewed" with a real line
+    count -- even though it never reports num_plus_lines/num_minus_lines to say so directly."""
+    deletion_patch = "--- a/old.py\n+++ /dev/null\n@@ -1,3 +0,0 @@\n-line one\n-line two\n-line three\n"
+    reviewer = _make_prediction_reviewer()
+    reviewer._get_prediction = AsyncMock(return_value=PARSABLE_REVIEW)
+    reviewer.git_provider.get_diff_files.return_value = [
+        FilePatchInfo(base_file="a", head_file="", patch=deletion_patch, filename="deleted.py"),
+    ]
+
+    with patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", [])):
+        await reviewer._prepare_prediction("model")
+
+    assert reviewer.coverage.files["deleted.py"].status == "deletion_only"
+    assert reviewer.coverage.files["deleted.py"].changed_lines == 0
+    assert reviewer.coverage.reviewed_ratio == 1.0
+
+
 def _render_review(reviewer, remaining_files, supports_gfm_markdown=False):
     reviewer.prediction = "review:\n  summary: test"
     reviewer.remaining_files_list = remaining_files

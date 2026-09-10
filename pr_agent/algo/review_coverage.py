@@ -20,23 +20,37 @@ STATUS_CREDIT = {
 FULL_STATUSES = {"reviewed", "deletion_only", "ignored"}
 
 
-def changed_lines_from_patch(patch: str) -> int:
-    """Count a unified diff patch's added/removed lines, for providers that never report
+def patch_line_counts(patch: str) -> tuple[int, int]:
+    """Count a unified diff patch's added and removed lines, for providers that never report
     num_plus_lines/num_minus_lines directly (local/plain-diff, gerrit, bitbucket, codecommit).
 
-    Skips the `+++`/`---` file-header lines, which start with the same characters as an
-    added/removed line but name the file rather than a change; `@@` hunk headers are excluded
-    for free since they start with neither `+` nor `-`.
+    Everything before the first `@@` hunk header - `diff --git`, `index`, and the
+    `--- a/file`/`+++ b/file` file-header lines - is skipped by position, not by matching the
+    `+++`/`---` prefix: a real removed or added line can itself start with those characters
+    (an SQL comment `-- old comment` renders as a diff line `--- old comment`) and must not be
+    mistaken for a header. A patch with no hunk header at all (already-stripped or malformed)
+    counts as empty.
     """
     if not patch:
-        return 0
-    count = 0
+        return 0, 0
+    plus = minus = 0
+    seen_hunk = False
     for line in patch.splitlines():
-        if line.startswith("+++") or line.startswith("---"):
+        if not seen_hunk:
+            if line.startswith("@@"):
+                seen_hunk = True
             continue
-        if line.startswith("+") or line.startswith("-"):
-            count += 1
-    return count
+        if line.startswith("+"):
+            plus += 1
+        elif line.startswith("-"):
+            minus += 1
+    return plus, minus
+
+
+def changed_lines_from_patch(patch: str) -> int:
+    """Total added+removed lines in a unified diff patch. See `patch_line_counts`."""
+    plus, minus = patch_line_counts(patch)
+    return plus + minus
 
 
 @dataclass

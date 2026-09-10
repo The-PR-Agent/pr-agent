@@ -26,7 +26,7 @@ from pr_agent.algo.pr_processing import (
 )
 from pr_agent.algo.prompt_fragments import render_diff_hunk_format
 from pr_agent.algo.repo_context import build_repo_context
-from pr_agent.algo.review_coverage import CoverageLedger, FileCoverage, changed_lines_from_patch
+from pr_agent.algo.review_coverage import CoverageLedger, FileCoverage, patch_line_counts
 from pr_agent.algo.review_finding_state import (
     append_review_state,
     parse_review_state,
@@ -881,21 +881,19 @@ class PRReviewer:
         for file in self.git_provider.get_diff_files():
             # FilePatchInfo defaults num_plus_lines/num_minus_lines to -1; several providers
             # (local/plain-diff, gerrit, bitbucket, codecommit) never populate them at all.
-            unpopulated = file.num_plus_lines < 0 or file.num_minus_lines < 0
-            plus_lines = max(file.num_plus_lines, 0)
-            minus_lines = max(file.num_minus_lines, 0)
-            status = "deletion_only" if plus_lines == 0 and minus_lines > 0 else "reviewed"
-            if status == "deletion_only":
-                # STATUS_CREDIT gives deletion_only 0.0 credit, so it must also carry 0 changed
-                # lines - otherwise it drags reviewed_ratio down as if those lines went unread.
-                changed_lines = 0
-            elif unpopulated:
-                # Last resort when the provider gave us nothing usable: count +/- lines in the
-                # patch text itself, rather than the -1 clamp silently zeroing this file out of
-                # the ratio (which would hide clipping/skips/failures on these providers).
-                changed_lines = changed_lines_from_patch(file.patch)
+            if file.num_plus_lines < 0 or file.num_minus_lines < 0:
+                # Last resort when the provider gave us nothing usable: derive both the counts
+                # and the deletion-only classification from the patch text itself, rather than a
+                # raw clamp that would silently zero this file out of the ratio (hiding
+                # clipping/skips/failures on these providers) or misclassify a real
+                # deletion-only file as fully reviewed.
+                plus_lines, minus_lines = patch_line_counts(file.patch)
             else:
-                changed_lines = plus_lines + minus_lines
+                plus_lines, minus_lines = file.num_plus_lines, file.num_minus_lines
+            status = "deletion_only" if plus_lines == 0 and minus_lines > 0 else "reviewed"
+            # STATUS_CREDIT gives deletion_only 0.0 credit, so it must also carry 0 changed
+            # lines - otherwise it drags reviewed_ratio down as if those lines went unread.
+            changed_lines = 0 if status == "deletion_only" else plus_lines + minus_lines
             ledger.add(FileCoverage(file.filename, changed_lines=changed_lines, status=status))
         for filename in remaining_files:
             ledger.mark(filename, "skipped_budget")
