@@ -12,11 +12,24 @@ class TestStoreSchema:
         assert {"runs", "run_model_costs", "provider_cache"} <= names
 
     def test_migrate_is_idempotent(self):
-        """Running the migration twice leaves the schema unchanged and raises nothing"""
+        """migrate() preserves existing data and schema across multiple invocations"""
         conn = store.connect(":memory:")
+        # Capture schema before second migrate
+        schema_before = conn.execute("PRAGMA table_info(runs)").fetchall()
+        # Insert a row to verify data preservation
+        run_id = store.start_run(
+            conn, provider="github", command="review", pr_url="https://github.com/o/r/pull/1",
+            repo_slug="o/r", pr_number=1, started_at="2026-09-10T10:00:00Z",
+        )
+        # Call migrate a second time (should be idempotent)
         store.migrate(conn)
-        store.migrate(conn)
-        assert conn.execute("SELECT count(*) AS n FROM runs").fetchone()["n"] == 0
+        # Verify row survived
+        row = store.get_run(conn, run_id)
+        assert row is not None, "Data was lost during second migrate call"
+        assert row["pr_number"] == 1
+        # Verify schema is unchanged
+        schema_after = conn.execute("PRAGMA table_info(runs)").fetchall()
+        assert schema_before == schema_after, "Schema changed during second migrate call"
 
 
 class TestRunLifecycle:
