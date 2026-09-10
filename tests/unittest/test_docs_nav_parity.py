@@ -20,11 +20,6 @@ SUMMARY = PAGES / "summary.md"
 NOT_IN_NAV = {
     # summary.md is a navigation file itself, not a page of the site.
     "summary.md",
-    # An example best_practices.md for a Qodo Merge feature this package does
-    # not implement. It ships as a sample for users to copy, not as a docs
-    # page, and pr_agent/tools/pr_help_message.py excludes it by name for the
-    # same reason.
-    "usage-guide/EXAMPLE_BEST_PRACTICE.md",
 }
 
 
