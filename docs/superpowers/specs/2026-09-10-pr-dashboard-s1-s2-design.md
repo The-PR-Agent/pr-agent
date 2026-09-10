@@ -257,10 +257,25 @@ produce rows with no LLM accounting, and the interface renders "not reported" ra
 `$0.00`. This mirrors the existing `_as_decimal_cost` behaviour, which rejects zero
 because litellm returns `0.0` both for unpriced models and for unbillable usage.
 
-**Edit footprint inside `pr_agent/`: one.** A `with record_run(pr_url, request):` around
-the dispatch in `pr_agent/agent/pr_agent.py`, with a lazy import so that `pr_dashboard`
-remains an optional component and PR-Agent runs unchanged when it is absent. Everything
-else in S1 and S2 is new files.
+**Recording is opt-in.** `record_run` is a no-op unless `pr_dashboard.record_runs` is
+true. The default in `configuration.toml` is `false`, because webhook and serverless
+deployments (`github_app`, `gitlab_webhook`, the Lambda entrypoints) must not start
+creating a SQLite file in a read-only or ephemeral filesystem because the package happens
+to be installed. A user enables it in `.pr_agent.toml` or through
+`PR_DASHBOARD__RECORD_RUNS=true`.
+
+**Edit footprint inside `pr_agent/`: two.**
+
+1. `pr_agent/agent/pr_agent.py` — one import, and `record_run(...)` added as a second
+   context manager on the existing `with get_logger().contextualize(...)` line at 279, so
+   the dispatch body is not re-indented. This placement covers the `answer`,
+   `auto_review`, and general branches with a single change, and it sits after the
+   unknown-action guard so that arbitrary input never reaches the store.
+2. `pr_agent/settings/configuration.toml` — a new `[pr_dashboard]` section with
+   `record_runs = false` and a comment, as required when introducing a configuration
+   section.
+
+Everything else in S1 and S2 is new files.
 
 ## F. Error handling
 
@@ -303,7 +318,8 @@ Tests live in `tests/unittest/test_pr_dashboard_*.py` and run with
 | A repository overrides `pr_reviewer.review_heading`, breaking heading-based matching | Identity markers are primary; heading matching is a labelled fallback for pre-marker comments only |
 | The `ContextVar` propagation assumption could be invalidated upstream | Dedicated test asserting it, so the break is loud |
 | Provider API rate limits during dashboard browsing | Short-TTL SQLite cache of provider responses; stale data labelled, not hidden |
-| Fork divergence from upstream | Single-line edit inside `pr_agent/`; all other code in `pr_dashboard/` |
+| Fork divergence from upstream | Two small edits inside `pr_agent/` (a `with` clause plus its import, and a config default); all other code in `pr_dashboard/` |
+| Recording writes a database in a serverless or read-only deployment | `pr_dashboard.record_runs` defaults to `false`; the store is only opened once recording is enabled |
 
 ## Out of scope
 
