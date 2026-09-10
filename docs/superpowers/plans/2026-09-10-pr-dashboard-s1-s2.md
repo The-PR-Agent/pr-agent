@@ -12,7 +12,8 @@
 
 ## Global Constraints
 
-- Python ≥ 3.12 as declared in `pyproject.toml`. The system `python3` on this machine is 3.9 — always run through `uv run`, never bare `python3`.
+- **Blocker to clear before Task 1.** `pyproject.toml:141` pins `required-version = "==0.12.10"` and the installed `uv` is `0.10.9`, so every `uv run` in this plan currently fails with `Required uv version ==0.12.10 does not match the running version 0.10.9`. Upgrade uv (`uv self update`, or reinstall) before starting. Do **not** relax the pin in `pyproject.toml` to work around it — that file is shared with CI.
+- Python ≥ 3.12 as declared in `pyproject.toml`. The system `python3` on this machine is 3.9 — always run through `uv run`, never bare `python3`. The project virtualenv interpreter is `.venv/bin/python` (3.12) if a one-off check is needed while uv is being fixed.
 - Run tests as `PYTHONPATH=. uv run pytest <path> -q`. Pytest config lives in `pyproject.toml` with `asyncio_mode = "auto"` and `testpaths = ["tests/unittest"]`.
 - Maximum line length 120 characters.
 - Prefer double quotes for Python strings.
@@ -697,12 +698,17 @@ class TestDispatchWiring:
         refactor to asyncio.gather or create_task around the tool would silently zero all
         usage, so assert the shape here rather than discovering it in the dashboard.
         """
-        source = (
-            __import__("pathlib").Path("pr_agent/agent/pr_agent.py").read_text(encoding="utf-8")
-        )
+        import inspect
+
+        from pr_agent.agent.pr_agent import PRAgent
+
+        source = inspect.getsource(PRAgent._handle_request)
         assert "record_run(" in source
         dispatch_line = next(line for line in source.splitlines() if "command2class[action](" in line)
         assert dispatch_line.strip().startswith("await ")
+        # Scoped to _handle_request on purpose: the module legitimately uses
+        # asyncio.to_thread elsewhere (flush_telemetry), so a whole-file assertion would be
+        # brittle and would tempt a future reader to weaken it.
         assert "gather" not in source
         assert "create_task" not in source
 ```
@@ -2182,7 +2188,21 @@ Add `from decimal import Decimal` to the module imports.
 
 **Route order note:** `/repos/{provider}/{slug:path}` must be registered *after* the
 literal `POST /repos` and `GET /repos` routes from Task 6, and the `{slug:path}` converter
-is required because a slug contains a slash. Verify with the 404 test in this task.
+is required because a slug contains a slash.
+
+`{slug:path}` followed by another segment is safe here — verified against the project's
+own starlette before this plan was written:
+
+```
+/pr/{provider}/{slug:path}/{number}
+  -> ^/pr/(?P<provider>[^/]+)/(?P<slug>.*)/(?P<number>[^/]+)$
+  /pr/github/samer2373/block_rush/1
+  -> {"provider": "github", "slug": "samer2373/block_rush", "number": "1"}
+```
+
+The `.*` is greedy but the trailing `[^/]+$` forces it to backtrack, so the number is
+captured correctly. Do not restructure these routes to avoid a problem that does not
+exist; the 404 test in this task covers the behaviour.
 
 - [ ] **Step 5: Run the test to verify it passes**
 
