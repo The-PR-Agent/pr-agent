@@ -234,6 +234,8 @@ def reconcile_review_findings(
     matched_previous_ids: set[str] = set(current_by_id) & set(previous_by_id)
 
     def _previous_match(current_finding: dict[str, Any]) -> dict[str, Any] | None:
+        # A finding without a line range (a file-level defect) never fuzzy-matches - see
+        # same_finding_across_runs - so it falls back to exact finding_id identity only.
         exact = previous_by_id.get(current_finding["finding_id"])
         if exact is not None:
             return exact
@@ -249,7 +251,7 @@ def reconcile_review_findings(
     reopened_ids: list[str] = []
     changed = previous_state is None and bool(current)
 
-    for finding_id, current_finding in current_by_id.items():
+    for _, current_finding in current_by_id.items():
         previous = _previous_match(current_finding)
         if previous is None:
             record = dict(current_finding)
