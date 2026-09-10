@@ -106,6 +106,19 @@ class TestParseFindings:
         assert finding.relevant_file == "src/config_loader.py"
         assert finding.line_range == (5, 9)
 
+    def test_locationless_finding_does_not_absorb_the_next_finding_s_location(self):
+        """A finding with no location must not steal one from a later finding's title text"""
+        body = (
+            f"{PRReviewIdentity.REGULAR.value}\n## PR Reviewer Guide\n\n"
+            "**Race condition on shared queue state**\n\n"
+            "**Update `config.py` to version 2 handling**\n"
+        )
+        first, second = comments.parse_findings(body)
+        assert first.title == "Race condition on shared queue state"
+        assert first.relevant_file is None
+        assert first.line_range is None
+        assert second.title == "Update `config.py` to version 2 handling"
+
     def test_single_line_finding_has_equal_start_and_end(self):
         """render_focus_area_issue omits the dash for a single-line finding; line_range still resolves"""
         body = (

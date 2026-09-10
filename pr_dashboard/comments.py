@@ -131,13 +131,13 @@ def parse_findings(body: str) -> list[Finding]:
         # Search past the title itself: a backtick-quoted dotted token inside the title (e.g.
         # "Handle `config.yml` parsing failure") would otherwise be read as the location.
         location = _FILE_AND_LINES.search(raw_line, title_match.end())
-        if not location:
-            # A non-gfm_supported "expanded" layout puts the location on the line right after
-            # the title (render_focus_area_issue joins them with a single "\n", not "<br>"); a
-            # "details" layout finding legitimately has no location anywhere.
-            for next_line in lines[index + 1:]:
-                if next_line.strip():
-                    location = _FILE_AND_LINES.search(next_line)
-                    break
+        if not location and index + 1 < len(lines):
+            # A non-gfm_supported "expanded" layout puts the location on the line immediately
+            # after the title (render_focus_area_issue joins them with a single "\n", not
+            # "<br>"), and that line is nothing but the location. Check only that one line, and
+            # require it to match in full: scanning further ahead, or merely searching within
+            # it, risks mistaking a later finding's title or content for this finding's
+            # location. A "details" layout finding legitimately has no location anywhere.
+            location = _FILE_AND_LINES.fullmatch(lines[index + 1].strip())
         findings.append(_finding_from_location(title, location) if location else Finding(title=title))
     return findings
