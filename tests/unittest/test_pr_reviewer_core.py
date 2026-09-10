@@ -179,6 +179,62 @@ async def test_prepare_prediction_clamps_unpopulated_line_counts_to_zero():
     assert reviewer.coverage.reviewed_ratio == 1.0
 
 
+@pytest.mark.asyncio
+async def test_prepare_prediction_deletion_only_files_do_not_count_against_the_ratio():
+    """STATUS_CREDIT gives deletion_only 0.0 credit; if its changed_lines were still counted,
+    deleting a large file would tank reviewed_ratio and trigger a false partial-review warning,
+    even though there was nothing left in that file for the model to review."""
+    reviewer = _make_prediction_reviewer()
+    reviewer._get_prediction = AsyncMock(return_value=PARSABLE_REVIEW)
+    reviewer.git_provider.get_diff_files.return_value = [
+        FilePatchInfo(base_file="a", head_file="a2", patch="p", filename="reviewed.py",
+                     num_plus_lines=10, num_minus_lines=0),
+        FilePatchInfo(base_file="b", head_file="", patch="p", filename="deleted.py",
+                     num_plus_lines=0, num_minus_lines=1000),
+    ]
+
+    with patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", [])):
+        await reviewer._prepare_prediction("model")
+
+    assert reviewer.coverage.files["deleted.py"].changed_lines == 0
+    assert reviewer.coverage.reviewed_ratio == 1.0
+    assert reviewer.coverage.render_footer() == "Reviewed 100% of changed lines"
+
+    reviewer.prediction = "review:\n  summary: test"
+    reviewer.remaining_files_list = []
+    reviewer.set_review_labels = MagicMock()
+    with (
+        patch("pr_agent.tools.pr_reviewer.load_yaml", return_value={"review": {"summary": "test"}}),
+        patch("pr_agent.tools.pr_reviewer.github_action_output"),
+        patch("pr_agent.tools.pr_reviewer.convert_to_markdown_v2",
+              return_value="## PR Reviewer Guide 🔍\n\nbody text"),
+    ):
+        review = reviewer._prepare_pr_review()
+
+    assert "Partial review" not in review
+
+
+@pytest.mark.asyncio
+async def test_prepare_prediction_derives_changed_lines_from_patch_when_counts_are_unpopulated():
+    """Providers that never report num_plus_lines/num_minus_lines (local/plain-diff, gerrit,
+    bitbucket, codecommit) must not silently zero the file out of the ratio: a skipped file on
+    top of one of these must still show up as a partial review."""
+    patch_text = "--- a/x.py\n+++ b/x.py\n@@ -1,2 +1,2 @@\n-old one\n-old two\n+new one\n"
+    reviewer = _make_prediction_reviewer()
+    reviewer._get_prediction = AsyncMock(return_value=PARSABLE_REVIEW)
+    reviewer.git_provider.get_diff_files.return_value = [
+        FilePatchInfo(base_file="a", head_file="a2", patch=patch_text, filename="unpopulated.py"),
+        FilePatchInfo(base_file="b", head_file="b2", patch="p", filename="skipped.py",
+                     num_plus_lines=100, num_minus_lines=0),
+    ]
+
+    with patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["skipped.py"])):
+        await reviewer._prepare_prediction("model")
+
+    assert reviewer.coverage.files["unpopulated.py"].changed_lines == 3
+    assert reviewer.coverage.reviewed_ratio == pytest.approx(3 / 103)
+
+
 def _render_review(reviewer, remaining_files, supports_gfm_markdown=False):
     reviewer.prediction = "review:\n  summary: test"
     reviewer.remaining_files_list = remaining_files
@@ -333,6 +389,44 @@ def test_prepare_pr_review_omits_partial_review_warning_when_fully_reviewed():
         review = reviewer._prepare_pr_review()
 
     assert "Partial review" not in review
+
+
+def test_prepare_pr_review_shows_coverage_footer_for_clipped_files_with_no_remaining_files():
+    """A PR with nothing skipped for budget but a clipped chunk must still get a coverage
+    signal - gating the standalone footer on remaining_files_list alone hides it whenever the
+    only gap is a clipped or chunk-failed file, not an outright-skipped one."""
+    reviewer = _make_prediction_reviewer()
+    reviewer.coverage = CoverageLedger()
+    reviewer.coverage.add(FileCoverage("clipped.py", changed_lines=100, status="clipped"))
+    settings = get_settings()
+    original = settings.pr_reviewer.enable_review_coverage_footer
+    try:
+        settings.pr_reviewer.enable_review_coverage_footer = True
+        review = _render_review(reviewer, [])
+    finally:
+        settings.pr_reviewer.enable_review_coverage_footer = original
+
+    assert "Reviewed 50% of changed lines" in review
+    assert "1 file(s) not fully reviewed" in review
+
+
+def test_prepare_pr_review_hides_clipped_only_coverage_footer_when_disabled():
+    """The standalone <hr>-wrapped coverage footer stays gated on enable_review_coverage_footer.
+    The unconditional partial-review warning (reviewed_ratio 0.5 < 0.95, per its own ruling)
+    still fires and embeds the footer text once -- that is not what this asserts against."""
+    reviewer = _make_prediction_reviewer()
+    reviewer.coverage = CoverageLedger()
+    reviewer.coverage.add(FileCoverage("clipped.py", changed_lines=100, status="clipped"))
+    settings = get_settings()
+    original = settings.pr_reviewer.enable_review_coverage_footer
+    try:
+        settings.pr_reviewer.enable_review_coverage_footer = False
+        review = _render_review(reviewer, [])
+    finally:
+        settings.pr_reviewer.enable_review_coverage_footer = original
+
+    assert review.count("Reviewed 50% of changed lines") == 1
+    assert "\n\n<hr>\n\nReviewed 50% of changed lines" not in review
 
 
 def _key_issue(**overrides):

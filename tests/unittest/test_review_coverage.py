@@ -1,4 +1,4 @@
-from pr_agent.algo.review_coverage import CoverageLedger, FileCoverage
+from pr_agent.algo.review_coverage import CoverageLedger, FileCoverage, changed_lines_from_patch
 
 
 def _ledger():
@@ -30,3 +30,22 @@ def test_mark_overrides_status():
     ledger = _ledger()
     ledger.mark("a.py", "chunk_failed")
     assert ledger.files["a.py"].status == "chunk_failed"
+
+
+def test_changed_lines_from_patch_counts_plus_and_minus_excluding_headers():
+    patch = (
+        "--- a/x.py\n"
+        "+++ b/x.py\n"
+        "@@ -1,3 +1,3 @@\n"
+        " unchanged\n"
+        "-old line one\n"
+        "-old line two\n"
+        "+new line one\n"
+        "\\ No newline at end of file\n"
+    )
+    assert changed_lines_from_patch(patch) == 3
+
+
+def test_changed_lines_from_patch_handles_empty_patch():
+    assert changed_lines_from_patch("") == 0
+    assert changed_lines_from_patch(None) == 0

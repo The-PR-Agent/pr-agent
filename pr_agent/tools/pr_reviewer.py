@@ -26,7 +26,7 @@ from pr_agent.algo.pr_processing import (
 )
 from pr_agent.algo.prompt_fragments import render_diff_hunk_format
 from pr_agent.algo.repo_context import build_repo_context
-from pr_agent.algo.review_coverage import CoverageLedger, FileCoverage
+from pr_agent.algo.review_coverage import CoverageLedger, FileCoverage, changed_lines_from_patch
 from pr_agent.algo.review_finding_state import (
     append_review_state,
     parse_review_state,
@@ -879,13 +879,23 @@ class PRReviewer:
         (clipped, skipped for budget, or lost to a failed chunk) on top of this base ledger."""
         ledger = CoverageLedger()
         for file in self.git_provider.get_diff_files():
-            # Several providers (local/plain-diff, gerrit, bitbucket, codecommit) never populate
-            # num_plus_lines/num_minus_lines, leaving FilePatchInfo's -1 default; clamp so those
-            # files contribute zero changed lines instead of corrupting the ratio with negatives.
+            # FilePatchInfo defaults num_plus_lines/num_minus_lines to -1; several providers
+            # (local/plain-diff, gerrit, bitbucket, codecommit) never populate them at all.
+            unpopulated = file.num_plus_lines < 0 or file.num_minus_lines < 0
             plus_lines = max(file.num_plus_lines, 0)
             minus_lines = max(file.num_minus_lines, 0)
-            changed_lines = plus_lines + minus_lines
             status = "deletion_only" if plus_lines == 0 and minus_lines > 0 else "reviewed"
+            if status == "deletion_only":
+                # STATUS_CREDIT gives deletion_only 0.0 credit, so it must also carry 0 changed
+                # lines - otherwise it drags reviewed_ratio down as if those lines went unread.
+                changed_lines = 0
+            elif unpopulated:
+                # Last resort when the provider gave us nothing usable: count +/- lines in the
+                # patch text itself, rather than the -1 clamp silently zeroing this file out of
+                # the ratio (which would hide clipping/skips/failures on these providers).
+                changed_lines = changed_lines_from_patch(file.patch)
+            else:
+                changed_lines = plus_lines + minus_lines
             ledger.add(FileCoverage(file.filename, changed_lines=changed_lines, status=status))
         for filename in remaining_files:
             ledger.mark(filename, "skipped_budget")
@@ -1191,7 +1201,8 @@ class PRReviewer:
                 "`pr_reviewer.num_max_findings`."
             )
 
-        if self.remaining_files_list and get_settings().pr_reviewer.enable_review_coverage_footer:
+        enable_coverage_footer = get_settings().pr_reviewer.enable_review_coverage_footer
+        if self.remaining_files_list and enable_coverage_footer:
             displayed_files = self.remaining_files_list[:MAX_REVIEW_COVERAGE_FILES]
             markdown_text += (
                 "\n\n<hr>\n\n"
@@ -1204,6 +1215,10 @@ class PRReviewer:
                 markdown_text += f"\n... and {remaining_count} more"
             if self.coverage is not None:
                 markdown_text += f"\n\n{self.coverage.render_footer()}"
+        elif enable_coverage_footer and self.coverage is not None and self.coverage.not_fully_reviewed():
+            # A PR whose only gaps are clipped/failed chunks (nothing skipped for budget) would
+            # otherwise show no coverage signal at all, since the block above never fires.
+            markdown_text += f"\n\n<hr>\n\n{self.coverage.render_footer()}"
 
         # Add help text if gfm_markdown is supported
         if self.git_provider.is_supported("gfm_markdown") and get_settings().pr_reviewer.enable_help_text:

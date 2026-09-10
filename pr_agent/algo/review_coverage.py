@@ -20,6 +20,25 @@ STATUS_CREDIT = {
 FULL_STATUSES = {"reviewed", "deletion_only", "ignored"}
 
 
+def changed_lines_from_patch(patch: str) -> int:
+    """Count a unified diff patch's added/removed lines, for providers that never report
+    num_plus_lines/num_minus_lines directly (local/plain-diff, gerrit, bitbucket, codecommit).
+
+    Skips the `+++`/`---` file-header lines, which start with the same characters as an
+    added/removed line but name the file rather than a change; `@@` hunk headers are excluded
+    for free since they start with neither `+` nor `-`.
+    """
+    if not patch:
+        return 0
+    count = 0
+    for line in patch.splitlines():
+        if line.startswith("+++") or line.startswith("---"):
+            continue
+        if line.startswith("+") or line.startswith("-"):
+            count += 1
+    return count
+
+
 @dataclass
 class FileCoverage:
     path: str
