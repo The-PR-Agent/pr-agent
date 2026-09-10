@@ -1051,8 +1051,9 @@ async def test_review_publish_uses_shared_full_signature_for_authorship(monkeypa
         GiteaProvider,
         BitbucketProvider,
         BitbucketServerProvider,
+        CodeCommitProvider,
     ],
-    ids=["github", "gitlab", "azure", "gitea", "bitbucket", "bitbucket-server"],
+    ids=["github", "gitlab", "azure", "gitea", "bitbucket", "bitbucket-server", "codecommit"],
 )
 def test_persistent_publish_signatures_accept_shared_arguments(provider_class):
     parameters = inspect.signature(
@@ -1067,7 +1068,6 @@ def test_persistent_publish_signatures_accept_shared_arguments(provider_class):
 
 
 def test_providers_without_override_inherit_persistent_comment_implementation():
-    assert CodeCommitProvider.publish_persistent_comment is GitProvider.publish_persistent_comment
     assert LocalGitProvider.publish_persistent_comment is GitProvider.publish_persistent_comment
 
 
