@@ -355,6 +355,7 @@ MAX_TOKENS = {
     'vertex_ai/gemini-3.1-flash': 1048576,
     'vertex_ai/gemini-3.1-pro': 1048576,
     'vertex_ai/gemini-3.5-pro': 1048576,
+    'vertex_ai/gemini-3.8-flash': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
     'vertex_ai/gemma2': 8200,
     'gemini/gemini-1.5-pro': 1048576,
     'gemini/gemini-1.5-flash': 1048576,
@@ -366,6 +367,7 @@ MAX_TOKENS = {
     'gemini/gemini-3.1-flash': 1048576,
     'gemini/gemini-3.1-pro': 1048576,
     'gemini/gemini-3.5-pro': 1048576,
+    'gemini/gemini-3.8-flash': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
     'codechat-bison': 6144,
     'codechat-bison-32k': 32000,
     # -- Anthropic Claude --------------------------------------------------
@@ -409,6 +411,9 @@ MAX_TOKENS = {
     'xai/grok-2-1212': 131072,
     'xai/grok-2-latest': 131072,
     'xai/grok-3-fast': 131072,
+    "xai/grok-build-latest": 500000,  # kept pinned: absent from LiteLLM's bundled cost map
+    "openrouter/x-ai/grok-4.5": 500000,  # kept pinned: absent from LiteLLM's bundled cost map
+    "openrouter/x-ai/grok-4.6": 500000,  # kept pinned: absent from LiteLLM's bundled cost map
     'ollama/llama3': 4096,
     'watsonx/meta-llama/llama-3-8b-instruct': 4096,
     "watsonx/meta-llama/llama-3-70b-instruct": 4096,
