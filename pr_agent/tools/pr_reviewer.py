@@ -18,6 +18,7 @@ from pr_agent.algo.inline_comment_dedup import (
     key_issue_location_fingerprint,
 )
 from pr_agent.algo.pr_processing import (
+    PreparedPRDiff,
     add_ai_metadata_to_diff_files,
     get_pr_diff,
     get_pr_multi_diffs,
@@ -765,21 +766,28 @@ class PRReviewer:
                 get_settings().pr_review_prompt.user,
                 model,
             )
-        output = get_pr_diff(self.git_provider,
-                             self.token_handler,
-                             model,
-                             add_line_numbers_to_hunks=True,
-                             disable_extra_lines=False,
-                             return_remaining_files=True,)
-        if isinstance(output, tuple):
+        chunking_enabled = get_settings().pr_reviewer.get("enable_large_pr_chunking", False)
+        diff_kwargs = {
+            "add_line_numbers_to_hunks": True,
+            "disable_extra_lines": False,
+            "return_remaining_files": True,
+        }
+        if chunking_enabled:
+            diff_kwargs["return_prepared"] = True
+        output = get_pr_diff(self.git_provider, self.token_handler, model, **diff_kwargs)
+        if isinstance(output, PreparedPRDiff):
+            self.patches_diff = output.diff
+            self.remaining_files_list = output.remaining_files_list
+        elif isinstance(output, tuple):
             self.patches_diff, self.remaining_files_list = output
         else:
             self.patches_diff = output
             self.remaining_files_list = []
 
         # a non-empty remaining_files_list means the token budget truncated the diff
-        if self.remaining_files_list and get_settings().pr_reviewer.get("enable_large_pr_chunking", False):
-            if await self._prepare_chunked_prediction(model):
+        if self.remaining_files_list and chunking_enabled:
+            prepared_diff = output if isinstance(output, PreparedPRDiff) else None
+            if await self._prepare_chunked_prediction(model, prepared_diff):
                 return
 
         if self.patches_diff:
@@ -789,18 +797,24 @@ class PRReviewer:
             get_logger().warning(f"Empty diff for PR: {self.pr_url}")
             self.prediction = None
 
-    async def _prepare_chunked_prediction(self, model: str) -> bool:
+    async def _prepare_chunked_prediction(self, model: str,
+                                          prepared_diff: PreparedPRDiff | None = None) -> bool:
         """Review a too-large diff in chunks and merge the per-chunk verdicts.
 
         Returns False when chunking does not apply, leaving the single-call flow in place.
         """
+        multi_diff_kwargs = {
+            "max_calls": get_settings().pr_reviewer.get("max_number_of_calls", 3),
+            "add_line_numbers": True,
+            "return_remaining_files": True,
+        }
+        if prepared_diff is not None:
+            multi_diff_kwargs["prepared_diff"] = prepared_diff
         patches_diff_list, remaining_files_list = get_pr_multi_diffs(
             self.git_provider,
             self.token_handler,
             model,
-            max_calls=get_settings().pr_reviewer.get("max_number_of_calls", 3),
-            add_line_numbers=True,
-            return_remaining_files=True)
+            **multi_diff_kwargs)
         if len(patches_diff_list) < 2:
             get_logger().info("Large-diff chunking produced a single chunk, reviewing the PR in one call")
             return False
