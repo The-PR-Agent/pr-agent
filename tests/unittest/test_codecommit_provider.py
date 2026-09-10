@@ -272,6 +272,44 @@ class TestCodeCommitProvider:
             ("two.py", "before two\n", "after two\n"),
         ]
 
+    def test_prepare_comment_body_caps_at_codecommit_limit(self):
+        # PostCommentForPullRequest rejects bodies above 10,240 characters and
+        # publish_comment raises instead of degrading (#3272). The cap must be
+        # measured AFTER the newline doubling, which grows the body.
+        provider = self._make_persistent_provider()
+        body = "\n".join(["x" * 100] * 120)  # 12,099 chars before doubling
+
+        prepared = provider._prepare_comment_body(body)
+
+        assert len(prepared) <= 10240
+        assert prepared.endswith("...")
+        assert "\n\n" in prepared
+
+    def test_prepare_comment_body_leaves_short_comment_alone(self):
+        provider = self._make_persistent_provider()
+
+        assert provider._prepare_comment_body("line one\nline two") == "line one\n\nline two"
+
+    def test_publish_comment_sends_capped_body(self):
+        provider = self._make_persistent_provider()
+        provider.codecommit_client.publish_comment.return_value = {"comment": {}}
+
+        provider.publish_comment("\n".join(["y" * 100] * 120))
+
+        sent = provider.codecommit_client.publish_comment.call_args.kwargs["comment"]
+        assert len(sent) <= 10240
+        assert sent.endswith("...")
+
+    def test_edit_comment_sends_capped_body(self):
+        provider = self._make_persistent_provider()
+        provider.codecommit_client.update_comment.return_value = {"comment": {}}
+
+        provider.edit_comment({"id": "comment-1"}, "\n".join(["z" * 100] * 120))
+
+        sent = provider.codecommit_client.update_comment.call_args.args[1]
+        assert len(sent) <= 10240
+        assert sent.endswith("...")
+
     def test_publish_comment_uses_every_pull_request_target(self):
         provider = object.__new__(CodeCommitProvider)
         provider.repo_name = "source-repository"

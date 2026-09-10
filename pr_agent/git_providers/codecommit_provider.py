@@ -65,6 +65,15 @@ class CodeCommitFile:
 
 
 class CodeCommitProvider(GitProvider):
+    # PostCommentForPullRequest / UpdateComment reject a body above 10,240
+    # characters and raise instead of degrading (#3272). Every outgoing body
+    # goes through _prepare_comment_body, which caps it AFTER the newline
+    # doubling and after any persistent-comment header has been added, so the
+    # cap is measured on what CodeCommit actually receives. Class-level, like
+    # the other providers' max_comment_length, minus the truncation marker
+    # limit_output_characters appends.
+    max_comment_length = 10240 - len("...")
+
     """
     This class implements the GitProvider interface for AWS CodeCommit repositories.
     """
@@ -677,10 +686,10 @@ class CodeCommitProvider(GitProvider):
         updated_anchor = f"{identity_marker}\n\n{update_message}"
         return pr_comment.replace(identity_marker, updated_anchor, 1)
 
-    @staticmethod
-    def _prepare_comment_body(pr_comment: str) -> str:
+    def _prepare_comment_body(self, pr_comment: str) -> str:
         pr_comment = CodeCommitProvider._remove_markdown_html(pr_comment)
-        return CodeCommitProvider._add_additional_newlines(pr_comment)
+        pr_comment = CodeCommitProvider._add_additional_newlines(pr_comment)
+        return self.limit_output_characters(pr_comment, self.max_comment_length)
 
     @staticmethod
     def _extract_issue_comments(comment_data: dict):
