@@ -132,15 +132,27 @@ def _bitbucket_headers() -> dict:
 
 
 def _bitbucket_get(path: str, params: Optional[dict] = None) -> dict:
-    response = requests.get(
-        f"{BITBUCKET_API}{path}", headers=_bitbucket_headers(), params=params or {}, timeout=30)
-    if response.status_code >= 400:
-        raise ProviderError(
-            f"bitbucket returned {response.status_code} for {path}",
-            status=response.status_code,
-            retry_after=response.headers.get("Retry-After"),
-        )
-    return response.json()
+    try:
+        response = requests.get(
+            f"{BITBUCKET_API}{path}", headers=_bitbucket_headers(), params=params or {}, timeout=30)
+        if response.status_code >= 400:
+            raise ProviderError(
+                f"bitbucket returned {response.status_code} for {path}",
+                status=response.status_code,
+                retry_after=response.headers.get("Retry-After"),
+            )
+        return response.json()
+    except ProviderError:
+        raise
+    except requests.RequestException as exc:
+        # Connection refused, DNS failure, timeout, etc. -- not an HTTP status, so it never
+        # reaches the status_code check above. Wrap it so an unreachable host degrades the
+        # same way GitHub's fetch functions do: as a ProviderError cached() can catch and
+        # fall back on, instead of a raw exception that defeats the stale-cache fallback.
+        raise ProviderError(f"bitbucket: {exc}") from exc
+    except ValueError as exc:
+        # response.json() raises ValueError (json.JSONDecodeError) on a malformed body.
+        raise ProviderError(f"bitbucket: invalid response body for {path}: {exc}") from exc
 
 
 def _fetch_github_pull_requests(repo: registry.Repo, state: str, limit: int) -> list[dict]:

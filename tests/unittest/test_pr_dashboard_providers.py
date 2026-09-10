@@ -1,6 +1,7 @@
 import json
 
 import pytest
+import requests
 
 from pr_agent.algo.utils import PRReviewIdentity
 from pr_dashboard import comments, providers, registry, store
@@ -147,3 +148,63 @@ class TestCommentFiltering:
         assert len(calls) == 1
         assert len(result) == 1
         assert stale is False
+
+
+class TestBitbucketGet:
+    """_bitbucket_get's own status-to-ProviderError and network-failure mapping.
+
+    Every other Bitbucket test substitutes _setting or _fetch_bitbucket_*, so without these
+    the real mapping in _bitbucket_get would ship unverified.
+    """
+
+    def _stub_credentials(self, monkeypatch):
+        monkeypatch.setattr(providers, "_setting", lambda key, default=None: {
+            "BITBUCKET.AUTH_TYPE": "bearer",
+            "BITBUCKET.BEARER_TOKEN": "t",
+        }.get(key, default))
+
+    def test_http_429_carries_status_and_retry_after(self, monkeypatch):
+        """A 429 response is turned into a ProviderError carrying its exact Retry-After value"""
+        self._stub_credentials(monkeypatch)
+
+        class FakeResponse:
+            status_code = 429
+            headers = {"Retry-After": "60"}
+
+            def json(self):
+                return {}
+
+        monkeypatch.setattr(providers.requests, "get", lambda *args, **kwargs: FakeResponse())
+        with pytest.raises(providers.ProviderError) as exc_info:
+            providers._bitbucket_get("/repositories/o/r/pullrequests")
+        assert exc_info.value.status == 429
+        assert exc_info.value.retry_after == "60"
+
+    def test_connection_error_is_wrapped_not_raw(self, monkeypatch):
+        """An unreachable host raises ProviderError, not the underlying requests exception"""
+        self._stub_credentials(monkeypatch)
+
+        def raise_connection_error(*args, **kwargs):
+            raise requests.ConnectionError("connection refused")
+
+        monkeypatch.setattr(providers.requests, "get", raise_connection_error)
+        with pytest.raises(providers.ProviderError):
+            providers._bitbucket_get("/repositories/o/r/pullrequests")
+
+    def test_unreachable_bitbucket_still_serves_stale_cache(self, tmp_path, monkeypatch):
+        """The stale-cache guarantee holds through a real connection failure, not just ProviderError"""
+        self._stub_credentials(monkeypatch)
+        conn = store.connect(tmp_path / "usage.db")
+        conn.execute(
+            "INSERT INTO provider_cache (key, fetched_at, expires_at, payload) VALUES (?, ?, ?, ?)",
+            ("k", "2020-01-01T00:00:00+00:00", "2020-01-01T00:01:00+00:00", json.dumps({"old": True})),
+        )
+
+        def raise_connection_error(*args, **kwargs):
+            raise requests.ConnectionError("connection refused")
+
+        monkeypatch.setattr(providers.requests, "get", raise_connection_error)
+        value, stale = providers.cached(
+            conn, "k", 60, lambda: providers._bitbucket_get("/repositories/o/r/pullrequests"))
+        assert value == {"old": True}
+        assert stale is True
