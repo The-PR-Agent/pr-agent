@@ -12,12 +12,12 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Literal
 
+from pr_agent.algo.review_merge import finding_line_range, line_ranges_overlap
 from tests.eval.scoring import _finding_text, _same_file
 
 Label = Literal["TP", "FP", "OVERSTATED", "MISSED", "CONTROL"]
 POSITIVE_LABELS = ("TP", "OVERSTATED", "MISSED")
 NEGATIVE_LABELS = ("FP", "CONTROL")
-LINE_TOLERANCE = 3
 
 
 @dataclass(frozen=True)
@@ -82,20 +82,11 @@ def load_labels(path: str | Path) -> LabelSet:
     return LabelSet(repo=raw["repo"], pr=int(raw["pr"]), head_sha=raw["head_sha"], findings=findings)
 
 
-def _finding_range(finding: dict) -> tuple[int, int] | None:
-    try:
-        start = int(finding.get("start_line") or 0)
-        end = int(finding.get("end_line") or start)
-    except (TypeError, ValueError):
-        return None
-    return (start, end) if start else None
-
-
 def _hits(label: LabeledFinding, finding: dict) -> bool:
     if not _same_file(str(finding.get("relevant_file", "")), (label.path,)):
         return False
-    rng = _finding_range(finding)
-    overlaps = rng is not None and rng[0] <= label.line_end + LINE_TOLERANCE and rng[1] >= label.line_start - LINE_TOLERANCE
+    rng = finding_line_range(finding)
+    overlaps = rng is not None and line_ranges_overlap(rng, (label.line_start, label.line_end))
     text = _finding_text(finding)
     signal = any(s in text for s in label.signals) if label.signals else False
     return overlaps and (signal or not label.signals)
