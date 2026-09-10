@@ -96,6 +96,7 @@ pr_agent = ["py.typed"]
 where = ["."]
 include = [
   "pr_agent*",
+  "pr_dashboard*",
 ] # include pr_agent and any sub-packages it finds under it.
 
 [project.optional-dependencies]
@@ -113,6 +114,7 @@ langchain = [
 
 [project.scripts]
 pr-agent = "pr_agent.cli:run"
+pr-dashboard = "pr_dashboard.app:main"
 
 [dependency-groups]
 # 'similar issue' tool. Install with: uv sync --group similar-issue.

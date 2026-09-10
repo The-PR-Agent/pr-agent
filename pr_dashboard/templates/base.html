@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}PR-Agent Dashboard{% endblock %}</title>
+  <script src="{{ url_for('static', path='/htmx.min.js') }}"></script>
+  <script defer src="{{ url_for('static', path='/alpine.min.js') }}"></script>
+  <style>
+    :root { color-scheme: light dark; --border: #8883; }
+    body { margin: 0; font: 14px/1.5 system-ui, sans-serif; }
+    header { display: flex; gap: 1.5rem; padding: 1rem 1.5rem; border-bottom: 1px solid var(--border); }
+    header a { text-decoration: none; }
+    main { padding: 1.5rem; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { text-align: left; padding: .5rem .75rem; border-bottom: 1px solid var(--border); }
+    .error { padding: .75rem 1rem; border: 1px solid #c0392b; border-radius: 4px; margin-bottom: 1rem; }
+    .stale { padding: .75rem 1rem; border: 1px solid #d68910; border-radius: 4px; margin-bottom: 1rem; }
+    .muted { opacity: .65; }
+  </style>
+</head>
+<body>
+  <header>
+    <a href="/">Overview</a>
+    <a href="/repos">Repositories</a>
+    <a href="/usage">Usage</a>
+  </header>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

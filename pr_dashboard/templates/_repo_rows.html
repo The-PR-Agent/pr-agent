@@ -1,0 +1,21 @@
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+{% if repos %}
+<table>
+  <thead><tr><th>Provider</th><th>Repository</th><th>Credentials</th><th></th></tr></thead>
+  <tbody>
+  {% for row in repos %}
+    <tr>
+      <td>{{ row.repo.provider }}</td>
+      <td><a href="/repos/{{ row.repo.provider }}/{{ row.repo.slug }}">{{ row.repo.slug }}</a></td>
+      <td class="{{ '' if row.credentials.configured else 'muted' }}">{{ row.credentials.detail }}</td>
+      <td>
+        <button hx-post="/repos/{{ row.repo.provider }}/{{ row.repo.slug }}/delete"
+                hx-target="#repo-list" hx-swap="innerHTML">Remove</button>
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">No repositories yet. Add a repository using the form above.</p>
+{% endif %}

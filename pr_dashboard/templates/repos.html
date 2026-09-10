@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Repositories{% endblock %}
+{% block content %}
+<h1>Repositories</h1>
+<form hx-post="/repos" hx-target="#repo-list" hx-swap="innerHTML">
+  <select name="provider">
+    <option value="github">github</option>
+    <option value="bitbucket">bitbucket</option>
+  </select>
+  <input name="slug" placeholder="owner/name" required>
+  <button type="submit">Add</button>
+</form>
+<p class="muted">Credentials are read from your existing .secrets.toml and environment. They are never stored here.</p>
+<div id="repo-list">
+  {% include "_repo_rows.html" %}
+</div>
+{% endblock %}
