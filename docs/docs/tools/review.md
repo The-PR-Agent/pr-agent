@@ -18,11 +18,11 @@ Note that the main purpose of the `review` tool is to provide the **PR reviewer*
 
 Invoke the tool manually by commenting `/review` on any PR:
 
-![review comment](https://codium.ai/images/pr_agent/review_comment.png){width=512}
+![review comment](../assets/review_comment.png){width=512}
 
 After ~30 seconds, the tool will generate a review for the PR:
 
-![review](https://codium.ai/images/pr_agent/review3.png){width=512}
+![review](../assets/review3.png){width=512}
 
 If you want to edit [configurations](#configuration-options), add the relevant ones to the command:
 

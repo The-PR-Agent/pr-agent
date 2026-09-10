@@ -9,11 +9,11 @@ It can be invoked manually by commenting on any PR:
 
 ## Example usage
 
-![similar_issue_original_issue](https://codium.ai/images/pr_agent/similar_issue_original_issue.png){width=768}
+![similar_issue_original_issue](../assets/similar_issue_original_issue.png){width=768}
 
-![similar_issue_comment](https://codium.ai/images/pr_agent/similar_issue_comment.png){width=768}
+![similar_issue_comment](../assets/similar_issue_comment.png){width=768}
 
-![similar_issue](https://codium.ai/images/pr_agent/similar_issue.png){width=768}
+![similar_issue](../assets/similar_issue.png){width=768}
 
 Note that to perform retrieval, the `similar_issue` tool indexes all the repo previous issues (once).
 
@@ -36,10 +36,25 @@ To use Pinecone with the `similar issue` tool, add these credentials to `.secret
 ```
 [pinecone]
 api_key = "..."
-environment = "..."
+cloud = "aws"
+region = "us-east-1"
 ```
 
-These parameters can be obtained by registering to [Pinecone](https://app.pinecone.io/?sessionType=signup/).
+The `cloud` value must be one of `aws`, `gcp` or `azure`, and `region` must be an
+availability region offered by that cloud. These parameters can be obtained by
+registering to [Pinecone](https://app.pinecone.io/?sessionType=signup/). Note that the
+tool uses Pinecone's serverless index API; the former `environment` setting from the
+gcp-starter pod tier is no longer supported.
+
+`cloud` and `region` are only used when the index does not exist yet and needs to be
+created. An existing index is opened by name and is never recreated, so moving an
+existing deployment to the new configuration does not lose the stored vectors.
+
+!!! note "Default vector database"
+
+    `vectordb` defaults to `lancedb`, which works with no external credentials. To use
+    qdrant or pinecone, set `vectordb = "qdrant"` or `vectordb = "pinecone"` under
+    `[pr_similar_issue]`.
 
 #### Qdrant Configuration
 

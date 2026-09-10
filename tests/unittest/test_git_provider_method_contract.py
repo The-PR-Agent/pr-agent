@@ -8,6 +8,7 @@ differ: a backend either supports the operation, has nothing to do, or declares 
 import inspect
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum
 from types import SimpleNamespace
 from typing import get_type_hints
@@ -63,6 +64,16 @@ class PredicateContract:
     name: str
     evidence: tuple[str, ...]
     deliberate_mismatches: dict[str, DeliberateMismatch]
+
+
+@dataclass(frozen=True)
+class SuggestionOutcomeContract:
+    provider_name: str
+    build_provider: Callable[..., GitProvider]
+    make_fail: Callable[..., None]
+    make_succeed: Callable[..., None]
+    payload: list[dict]
+    deliberate_mismatch: DeliberateMismatch | None = None
 
 
 def _github(monkeypatch) -> GithubProvider:
@@ -137,6 +148,7 @@ def _bitbucket_server(monkeypatch) -> BitbucketServerProvider:
     }]
     return provider
 
+
 def _bitbucket(monkeypatch) -> BitbucketProvider:
     provider = BitbucketProvider.__new__(BitbucketProvider)
     provider.pr = MagicMock()
@@ -145,6 +157,38 @@ def _bitbucket(monkeypatch) -> BitbucketProvider:
     comment.raw = COMMENT_BODY
     provider.pr.comments.return_value = [comment]
 
+    return provider
+
+
+def _codecommit(monkeypatch) -> CodeCommitProvider:
+    provider = CodeCommitProvider.__new__(CodeCommitProvider)
+    provider.repo_name = "repo"
+    provider.pr_num = 7
+    provider.pr_url = "https://us-east-1.console.aws.amazon.com/codesuite/codecommit/repositories/repo/pull-requests/7"
+    provider.pr = SimpleNamespace(
+        source_commit="source",
+        destination_commit="destination",
+        targets=[
+            SimpleNamespace(
+                repository_name="repo",
+                source_commit="source",
+                destination_commit="destination",
+            )
+        ],
+    )
+    provider.codecommit_client = MagicMock()
+    provider.codecommit_client.get_comments_for_pull_request.return_value = [
+        {
+            "repositoryName": "repo",
+            "beforeCommitId": "destination",
+            "afterCommitId": "source",
+            "comments": [{
+                "commentId": "comment-1",
+                "content": COMMENT_BODY,
+                "creationDate": datetime(2024, 1, 1, tzinfo=timezone.utc),
+            }],
+        }
+    ]
     return provider
 
 
@@ -161,7 +205,7 @@ PROVIDERS: dict[str, tuple[type[GitProvider], Callable[[pytest.MonkeyPatch], Git
     "azure-devops": (AzureDevopsProvider, _azure_devops),
     "bitbucket": (BitbucketProvider, _bitbucket),
     "bitbucket-server": (BitbucketServerProvider, _bitbucket_server),
-    "codecommit": (CodeCommitProvider, _bare(CodeCommitProvider)),
+    "codecommit": (CodeCommitProvider, _codecommit),
     "local": (LocalGitProvider, _bare(LocalGitProvider)),
     "plain-diff": (PlainDiffGitProvider, _bare(PlainDiffGitProvider)),
     "mosaico-diff": (DiffInputProvider, _bare(DiffInputProvider)),
@@ -233,8 +277,17 @@ METHOD_CONTRACTS = (
         noop_value=[],
         check_supported=_is_comment_sequence,
         tiers=_tiers(
-            supported=("github", "gitlab", "gitea", "gerrit", "azure-devops", "bitbucket-server", "bitbucket"),
-            not_implemented=("codecommit", "local"),
+            supported=(
+                "github",
+                "gitlab",
+                "gitea",
+                "gerrit",
+                "azure-devops",
+                "bitbucket-server",
+                "bitbucket",
+                "codecommit",
+            ),
+            not_implemented=("local",),
         ),
         # Implementations narrow the base `Iterable` (a paginated list, a list of SDK objects),
         # so the return annotation is checked by behaviour rather than by equality.
@@ -264,6 +317,175 @@ METHOD_CONTRACTS = (
         # requiring live backends or mock state for every provider.
         check_return_annotation=False,
         check_execution=False,
+    ),
+)
+
+
+SUGGESTION_PAYLOAD = [{
+    "body": "description\n```suggestion\nnew\n```",
+    "relevant_file": "app.py",
+    "relevant_lines_start": 1,
+    "relevant_lines_end": 1,
+}]
+
+
+def _build_github_suggestion_provider(monkeypatch, tmp_path) -> GithubProvider:
+    provider = _github(monkeypatch)
+    provider.validate_comments_inside_hunks = lambda suggestions: suggestions
+    return provider
+
+
+def _build_gitlab_suggestion_provider(monkeypatch, tmp_path) -> GitLabProvider:
+    provider = _gitlab(monkeypatch)
+    provider.resolve_outdated_inline_threads = MagicMock()
+    provider.get_diff_files = MagicMock(return_value=[SimpleNamespace(filename="app.py", head_file="orig\n")])
+    return provider
+
+
+def _build_gerrit_suggestion_provider(monkeypatch, tmp_path) -> GerritProvider:
+    provider = _gerrit(monkeypatch)
+    provider.repo_path = str(tmp_path)
+    (tmp_path / "app.py").write_text("orig\n")
+    monkeypatch.setattr("pr_agent.git_providers.gerrit_provider.upload_patch", lambda *_: "https://patch.example/1")
+    monkeypatch.setattr("pr_agent.git_providers.gerrit_provider.diff", lambda *_, **__: "patch")
+    monkeypatch.setattr("pr_agent.git_providers.gerrit_provider.reset_local_changes", lambda *_: None)
+    return provider
+
+
+def _build_azure_devops_suggestion_provider(monkeypatch, tmp_path) -> AzureDevopsProvider:
+    provider = _azure_devops(monkeypatch)
+    provider.workspace_slug = "project"
+    provider.repo_slug = "repo"
+    provider.pr_num = 7
+    provider.azure_devops_client = MagicMock()
+    provider._resolve_diff_file_path = MagicMock(return_value="/app.py")
+    provider._get_suggestion_end_offset = MagicMock(return_value=1)
+    return provider
+
+
+def _build_codecommit_suggestion_provider(monkeypatch, tmp_path) -> CodeCommitProvider:
+    provider = _codecommit(monkeypatch)
+    provider.pr_num = 123
+    provider.codecommit_client = MagicMock()
+    return provider
+
+
+def _succeed_codecommit_suggestions(provider: CodeCommitProvider, monkeypatch, tmp_path):
+    provider._get_target_contexts_for_file = MagicMock(return_value=[{
+        "repository_name": "repo",
+        "destination_commit": "dest",
+        "source_commit": "src",
+    }])
+
+
+def _build_local_suggestion_provider(monkeypatch, tmp_path) -> LocalGitProvider:
+    provider = _bare(LocalGitProvider)(monkeypatch)
+    provider.improve_path = str(tmp_path / "improve.md")
+    return provider
+
+
+def _build_plain_diff_suggestion_provider(monkeypatch, tmp_path) -> PlainDiffGitProvider:
+    provider = _bare(PlainDiffGitProvider)(monkeypatch)
+    provider.output_path = None
+    return provider
+
+
+SUGGESTION_OUTCOME_CONTRACTS = (
+    SuggestionOutcomeContract(
+        provider_name="github",
+        build_provider=_build_github_suggestion_provider,
+        make_fail=lambda p, mp, tmp: setattr(p, "publish_inline_comments", MagicMock(return_value=False)),
+        make_succeed=lambda p, mp, tmp: setattr(p, "publish_inline_comments", MagicMock(return_value=True)),
+        payload=SUGGESTION_PAYLOAD,
+    ),
+    SuggestionOutcomeContract(
+        provider_name="gitlab",
+        build_provider=_build_gitlab_suggestion_provider,
+        make_fail=lambda p, mp, tmp: setattr(
+            p, "send_inline_comment", MagicMock(side_effect=RuntimeError("network down"))
+        ),
+        make_succeed=lambda p, mp, tmp: setattr(p, "send_inline_comment", MagicMock(return_value=True)),
+        payload=SUGGESTION_PAYLOAD,
+        deliberate_mismatch=DeliberateMismatch(
+            "GitLab unconditionally returns True; issue #3129 owns reporting total failures."
+        ),
+    ),
+    SuggestionOutcomeContract(
+        provider_name="gitea",
+        build_provider=lambda mp, tmp: _gitea(mp),
+        make_fail=lambda p, mp, tmp: setattr(p, "publish_inline_comments", MagicMock(return_value=False)),
+        make_succeed=lambda p, mp, tmp: setattr(p, "publish_inline_comments", MagicMock(return_value=True)),
+        payload=SUGGESTION_PAYLOAD,
+    ),
+    SuggestionOutcomeContract(
+        provider_name="gerrit",
+        build_provider=_build_gerrit_suggestion_provider,
+        make_fail=lambda p, mp, tmp: mp.setattr(
+            "pr_agent.git_providers.gerrit_provider.add_comment",
+            MagicMock(side_effect=RuntimeError("network down")),
+        ),
+        make_succeed=lambda p, mp, tmp: mp.setattr(
+            "pr_agent.git_providers.gerrit_provider.add_comment", lambda *_: None
+        ),
+        payload=SUGGESTION_PAYLOAD,
+    ),
+    SuggestionOutcomeContract(
+        provider_name="azure-devops",
+        build_provider=_build_azure_devops_suggestion_provider,
+        make_fail=lambda p, mp, tmp: setattr(
+            p.azure_devops_client, "create_thread", MagicMock(side_effect=RuntimeError("network down"))
+        ),
+        make_succeed=lambda p, mp, tmp: setattr(p.azure_devops_client, "create_thread", MagicMock()),
+        payload=SUGGESTION_PAYLOAD,
+    ),
+    SuggestionOutcomeContract(
+        provider_name="bitbucket",
+        build_provider=lambda mp, tmp: _bitbucket(mp),
+        make_fail=lambda p, mp, tmp: setattr(p, "publish_inline_comments", MagicMock(return_value=False)),
+        make_succeed=lambda p, mp, tmp: setattr(p, "publish_inline_comments", MagicMock(return_value=True)),
+        payload=SUGGESTION_PAYLOAD,
+    ),
+    SuggestionOutcomeContract(
+        provider_name="bitbucket-server",
+        build_provider=lambda mp, tmp: _bitbucket_server(mp),
+        make_fail=lambda p, mp, tmp: setattr(p, "publish_inline_comments", MagicMock(return_value=False)),
+        make_succeed=lambda p, mp, tmp: setattr(p, "publish_inline_comments", MagicMock(return_value=True)),
+        payload=SUGGESTION_PAYLOAD,
+    ),
+    SuggestionOutcomeContract(
+        provider_name="codecommit",
+        build_provider=_build_codecommit_suggestion_provider,
+        make_fail=lambda p, mp, tmp: setattr(p, "_get_target_contexts_for_file", MagicMock(return_value=[])),
+        make_succeed=_succeed_codecommit_suggestions,
+        payload=SUGGESTION_PAYLOAD,
+    ),
+    SuggestionOutcomeContract(
+        provider_name="local",
+        build_provider=_build_local_suggestion_provider,
+        make_fail=lambda p, mp, tmp: None,
+        make_succeed=lambda p, mp, tmp: None,
+        payload=SUGGESTION_PAYLOAD,
+        deliberate_mismatch=DeliberateMismatch(
+            "Local git provider writes suggestions to a local artifact file and unconditionally returns True."
+        ),
+    ),
+    SuggestionOutcomeContract(
+        provider_name="plain-diff",
+        build_provider=_build_plain_diff_suggestion_provider,
+        make_fail=lambda p, mp, tmp: None,
+        make_succeed=lambda p, mp, tmp: None,
+        payload=SUGGESTION_PAYLOAD,
+        deliberate_mismatch=DeliberateMismatch(
+            "Plain-diff provider renders suggestions to stdout or output file and unconditionally returns True."
+        ),
+    ),
+    SuggestionOutcomeContract(
+        provider_name="mosaico-diff",
+        build_provider=lambda mp, tmp: _bare(DiffInputProvider)(mp),
+        make_fail=lambda p, mp, tmp: None,
+        make_succeed=lambda p, mp, tmp: None,
+        payload=SUGGESTION_PAYLOAD,
+        deliberate_mismatch=DeliberateMismatch("Mosaico diff is a no-op provider that unconditionally returns True."),
     ),
 )
 
@@ -407,102 +629,46 @@ def test_publish_code_suggestions_declares_bool_return(provider_name: str):
     assert hints.get("return") is bool
 
 
-def test_gerrit_publish_code_suggestions_returns_false_on_total_failure(monkeypatch, tmp_path):
-    provider = GerritProvider.__new__(GerritProvider)
-    provider.parsed_url = SimpleNamespace()
-    provider.refspec = "refs/changes/1"
-    provider.repo_path = str(tmp_path)
-    (tmp_path / "app.py").write_text("orig\n")
-
-    monkeypatch.setattr(
-        "pr_agent.git_providers.gerrit_provider.upload_patch",
-        lambda *_: "https://patch.example/1",
-    )
-    monkeypatch.setattr(
-        "pr_agent.git_providers.gerrit_provider.diff",
-        lambda *_, **__: "patch",
-    )
-    monkeypatch.setattr(
-        "pr_agent.git_providers.gerrit_provider.reset_local_changes",
-        lambda *_: None,
-    )
-
-    def _fail_comment(*_):
-        raise RuntimeError("network down")
-
-    monkeypatch.setattr("pr_agent.git_providers.gerrit_provider.add_comment", _fail_comment)
-
-    suggestions = [{
-        "relevant_file": "app.py",
-        "body": "description\n```suggestion\nnew\n```",
-        "relevant_lines_start": 1,
-        "relevant_lines_end": 1,
-    }]
-    assert provider.publish_code_suggestions(suggestions) is False
+def test_every_provider_overriding_publish_code_suggestions_has_a_contract_row():
+    overriding = {
+        name
+        for name, (cls, _) in PROVIDERS.items()
+        if "publish_code_suggestions" in cls.__dict__
+    }
+    contracted = {contract.provider_name for contract in SUGGESTION_OUTCOME_CONTRACTS}
+    assert len(contracted) == len(SUGGESTION_OUTCOME_CONTRACTS)
+    assert contracted == overriding
 
 
-def test_gerrit_publish_code_suggestions_returns_true_on_success(monkeypatch, tmp_path):
-    provider = GerritProvider.__new__(GerritProvider)
-    provider.parsed_url = SimpleNamespace()
-    provider.refspec = "refs/changes/1"
-    provider.repo_path = str(tmp_path)
-    (tmp_path / "app.py").write_text("orig\n")
-
-    monkeypatch.setattr(
-        "pr_agent.git_providers.gerrit_provider.upload_patch",
-        lambda *_: "https://patch.example/1",
-    )
-    monkeypatch.setattr(
-        "pr_agent.git_providers.gerrit_provider.diff",
-        lambda *_, **__: "patch",
-    )
-    monkeypatch.setattr(
-        "pr_agent.git_providers.gerrit_provider.reset_local_changes",
-        lambda *_: None,
-    )
-    monkeypatch.setattr(
-        "pr_agent.git_providers.gerrit_provider.add_comment",
-        lambda *_: None,
-    )
-
-    suggestions = [{
-        "relevant_file": "app.py",
-        "body": "description\n```suggestion\nnew\n```",
-        "relevant_lines_start": 1,
-        "relevant_lines_end": 1,
-    }]
-    assert provider.publish_code_suggestions(suggestions) is True
+@pytest.mark.parametrize(
+    "contract",
+    [
+        pytest.param(contract, id=f"{contract.provider_name}-publish_code_suggestions-failure")
+        for contract in SUGGESTION_OUTCOME_CONTRACTS
+    ],
+)
+def test_publish_code_suggestions_returns_false_on_total_failure(
+    contract: SuggestionOutcomeContract, monkeypatch, tmp_path
+):
+    provider = contract.build_provider(monkeypatch, tmp_path)
+    contract.make_fail(provider, monkeypatch, tmp_path)
+    if contract.deliberate_mismatch is not None:
+        assert contract.deliberate_mismatch.reason.strip()
+        assert provider.publish_code_suggestions(contract.payload) is True
+    else:
+        assert provider.publish_code_suggestions(contract.payload) is False
 
 
-def test_codecommit_publish_code_suggestions_returns_false_when_no_publishable_targets():
-    provider = CodeCommitProvider.__new__(CodeCommitProvider)
-    provider.pr_num = 123
-    provider.codecommit_client = MagicMock()
-    provider._get_target_contexts_for_file = MagicMock(return_value=[])
-
-    suggestions = [{
-        "body": "suggestion",
-        "relevant_file": "app.py",
-        "relevant_lines_start": 1,
-    }]
-    assert provider.publish_code_suggestions(suggestions) is False
-    provider.codecommit_client.publish_comment.assert_not_called()
-
-
-def test_codecommit_publish_code_suggestions_returns_true_on_success():
-    provider = CodeCommitProvider.__new__(CodeCommitProvider)
-    provider.pr_num = 123
-    provider.codecommit_client = MagicMock()
-    provider._get_target_contexts_for_file = MagicMock(return_value=[{
-        "repository_name": "repo",
-        "destination_commit": "dest",
-        "source_commit": "src",
-    }])
-
-    suggestions = [{
-        "body": "suggestion",
-        "relevant_file": "app.py",
-        "relevant_lines_start": 1,
-    }]
-    assert provider.publish_code_suggestions(suggestions) is True
-    provider.codecommit_client.publish_comment.assert_called_once()
+@pytest.mark.parametrize(
+    "contract",
+    [
+        pytest.param(contract, id=f"{contract.provider_name}-publish_code_suggestions-success")
+        for contract in SUGGESTION_OUTCOME_CONTRACTS
+    ],
+)
+def test_publish_code_suggestions_returns_true_on_success(
+    contract: SuggestionOutcomeContract, monkeypatch, tmp_path
+):
+    provider = contract.build_provider(monkeypatch, tmp_path)
+    contract.make_succeed(provider, monkeypatch, tmp_path)
+    assert provider.publish_code_suggestions(contract.payload) is True

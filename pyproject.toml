@@ -43,16 +43,18 @@ dependencies = [
   "starlette>=1.6.0,<2",
   "google-cloud-aiplatform==1.154.0",
   # google-cloud-aiplatform==1.154.0 requires storage <4,>=1.32.0 on py<3.13 and <4,>=3.10.0 on py>=3.13.
-  # Pin per-Python (exact, like the rest of this list) so existing installs are unchanged and py3.13 resolves. See #2480.
+  # Pin per-Python so existing installs are unchanged and py3.13 resolves. See #2480.
   "google-cloud-storage==2.10.0; python_version < '3.13'",
   "google-cloud-storage==3.12.0; python_version >= '3.13'",
-  "protobuf==6.33.6",  # grpcio-status 1.80.0 forces >=6.31.1,<7; pinned to lock the resolved transitive version
+  # Keep protobuf explicit to lock the transitive version resolved with the gRPC dependency stack.
+  # Revalidate compatibility when updating grpcio-status or related Google/gRPC dependencies.
+  "protobuf==6.33.6",
   "Jinja2==3.1.6",
   "litellm==1.100.0",
   "loguru==0.7.2",
   "msrest==0.7.1",
   "openai>=1.55.3",
-  "PyGithub==1.59.*",
+  "PyGithub>=2.10,<3",
   "PyJWT>=2.13.0,<3",
   "PyYAML==6.0.1",
   "python-gitlab==8.3.0",
@@ -116,13 +118,11 @@ pr-agent = "pr_agent.cli:run"
 
 [dependency-groups]
 # 'similar issue' tool. Install with: uv sync --group similar-issue.
-# Keep this a dependency group rather than a published extra: pinecone-datasets
-# resolves from a git fork, which wheel metadata cannot reference (PyPI rejects
-# direct URL deps), so a pip-installed extra would silently pull the wrong package.
+# Keep this a dependency group rather than a published extra so the vector
+# database drivers stay out of the base install.
 similar-issue = [
   "pandas",  # imported directly by the qdrant indexing path
-  "pinecone-client",
-  "pinecone-datasets @ git+https://github.com/mrT23/pinecone-datasets.git@main",
+  "pinecone==10.0.0",
   "lancedb==0.38.0",
   "qdrant-client==1.15.1",
 ]
@@ -144,7 +144,7 @@ required-version = "==0.12.10"
 line-length = 120
 
 lint.select = [
-  "E",    # Pyflakes
+  "E",    # pycodestyle
   "F",    # Pyflakes
   "B",    # flake8-bugbear
   "I",    # isort
@@ -162,19 +162,14 @@ lint.unfixable = [
 
 lint.exclude = ["api/code_completions"]
 
-# B008 is a long-standing ignore. Everything below it is a pre-existing
+# Everything below is a pre-existing
 # violation deferred so ruff runs green on adoption — fix the code and drop
 # the entry. TODO: burn this list down.
 lint.ignore = [
-  "B008", # function call in argument defaults
   "E402", # import not at top of file
   "E501", # line too long
-  "E711", # comparison to None
   "E722", # bare `except`
-  "F811", # redefinition of unused name
   "F841", # unused local variable
-  "B006", # mutable argument default
-  "B007", # unused loop control variable
   "B011", # `assert False`
   "B017", # assertRaises(Exception)
   "B023", # function definition uses loop variable

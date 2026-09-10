@@ -732,7 +732,7 @@ class GitLabProvider(GitProvider):
 
     def get_pr_file_content(self, file_path: str, branch: str) -> str:
         try:
-            file_obj = self.gl.projects.get(self.id_project).files.get(file_path, branch)
+            file_obj = self.gl.projects.get(self.id_project, lazy=True).files.get(file_path, branch)
             content = file_obj.decode()
             return decode_if_bytes(content)
         except GitlabGetError:

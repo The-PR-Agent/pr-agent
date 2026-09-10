@@ -9,7 +9,7 @@ To print all the available configurations as a comment on your PR, you can use t
 /config
 ```
 
-![possible_config1](https://codium.ai/images/pr_agent/possible_config1.png){width=512}
+![possible_config1](../assets/possible_config1.png){width=512}
 
 To view the **actual** configurations used for a specific tool, after all the user settings are applied, you can add for each tool a `--config.output_relevant_configurations=true` suffix.
 For example:
@@ -20,7 +20,7 @@ For example:
 
 Will output an additional field showing the actual configurations used for the `improve` tool.
 
-![possible_config2](https://codium.ai/images/pr_agent/possible_config2.png){width=512}
+![possible_config2](../assets/possible_config2.png){width=512}
 
 ### Showing the agent run details
 
