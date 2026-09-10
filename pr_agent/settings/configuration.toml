@@ -236,8 +236,6 @@ extra_instructions = ""
 add_pr_link=true
 skip_ci_on_push=true
 
-[pr_help] # /help #
-
 [pr_config] # /config #
 
 [pr_help_docs]

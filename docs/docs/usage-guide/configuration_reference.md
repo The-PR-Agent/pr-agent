@@ -286,10 +286,6 @@ to-do list.
 | `skip_ci_on_push` | true |  |
 
 
-## `[pr_help]` — /help
-
-_This section only documents commented-out examples; see the [TOML source](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) for details._
-
 ## `[pr_config]` — /config
 
 _This section only documents commented-out examples; see the [TOML source](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) for details._

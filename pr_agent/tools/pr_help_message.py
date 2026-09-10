@@ -184,7 +184,7 @@ class PRHelpMessage:
                     return
 
                 get_logger().info('Getting PR Help Message...')
-                relevant_configs = {'pr_help': dict(get_settings().pr_help),
+                relevant_configs = {'pr_help': dict(get_settings().get("pr_help", {})),
                                     'config': dict(get_settings().config)}
                 get_logger().debug("Relevant configs", artifacts=relevant_configs)
                 pr_comment = "## PR Agent Walkthrough 🤖\n\n"
