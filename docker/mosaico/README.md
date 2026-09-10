@@ -4,13 +4,13 @@ Deployment assets for running **PR-Agent** as a [MOSAICO](https://mosaico-projec
 *solution agent*. This directory contains no Python and no pr-agent source — it consumes
 PR-Agent as a published, version-pinned Docker image. The agent's source lives in
 [`The-PR-Agent/pr-agent`](https://github.com/The-PR-Agent/pr-agent), under `pr_agent/mosaico/`;
-it is merged into `main` and ships in every release wheel and image starting at `v0.37.0`.
+it is merged into `main` and ships in every release wheel and image starting at `v0.36.0`.
 
 ## Relationship to the PR-Agent repository
 
 This is not a fork and it never becomes one:
 
-- The MOSAICO A2A server is PR-Agent code, released in tags `v0.37.0` onwards. This bundle
+- The MOSAICO A2A server is PR-Agent code, released in tags `v0.36.0` onwards. This bundle
   holds zero Python — only a compose overlay, a registration template, an env template, a
   smoke test, and this README.
 - **Staying current is one line**: bump the pinned tag in `docker-compose.pr-agent.yml`, then

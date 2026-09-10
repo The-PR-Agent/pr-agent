@@ -214,12 +214,15 @@ class CodeCommitProvider(GitProvider):
 
     def publish_code_suggestions(self, code_suggestions: list) -> bool:
         counter = 1
+        publishable_count = 0
+        published_count = 0
         for suggestion in code_suggestions:
             # Verify that each suggestion has the required keys
             if not all(key in suggestion for key in ["body", "relevant_file", "relevant_lines_start"]):
                 get_logger().warning(f"Skipping code suggestion #{counter}: Each suggestion must have 'body', 'relevant_file', 'relevant_lines_start' keys")
                 continue
 
+            publishable_count += 1
             target_contexts = self._get_target_contexts_for_file(suggestion["relevant_file"])
             for target in target_contexts:
                 try:
@@ -236,15 +239,15 @@ class CodeCommitProvider(GitProvider):
                         annotation_file=suggestion["relevant_file"],
                         annotation_line=suggestion["relevant_lines_start"],
                     )
+                    published_count += 1
                 except Exception as e:
                     raise ValueError(f"CodeCommit Cannot publish code suggestions for PR: {self.pr_num}") from e
 
             counter += 1
 
-        # The calling function passes in a list of code suggestions, and this function publishes each suggestion one at a time.
-        # If we were to return False here, the calling function will attempt to publish the same list of code suggestions again, one at a time.
-        # Since this function publishes the suggestions one at a time anyway, we always return True here to avoid the retry.
-        return True
+        # A partial failure must not report failure: the caller republishes the whole
+        # list, which would post the already-accepted suggestions a second time.
+        return published_count > 0 or publishable_count == 0
 
     def publish_labels(self, labels):
         return [""]  # not implemented yet

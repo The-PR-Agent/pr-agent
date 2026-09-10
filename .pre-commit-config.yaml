@@ -41,11 +41,3 @@ repos:
         language: system
         types_or: [python, pyi]
         args: [--fix, --show-fixes]
-
-  # - repo: https://github.com/PyCQA/bandit
-  #   rev: 1.7.10
-  #   hooks:
-  #     - id: bandit
-  #       args: [
-  #         "-c", "pyproject.toml",
-  #       ]

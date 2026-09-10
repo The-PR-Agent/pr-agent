@@ -48,6 +48,14 @@ async def test_pr_help_table_uses_canonical_command_descriptions():
         def is_supported(_feature):
             return True
 
+        @staticmethod
+        def supports_checkbox_commands():
+            return False
+
+        @staticmethod
+        def supports_markdown_tables():
+            return False
+
         def publish_comment(self, comment):
             self.comment = comment
 

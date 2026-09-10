@@ -5,6 +5,7 @@ It includes information on how to adjust PR-Agent configurations, define which t
 
 - [Introduction](./introduction.md)
 - [Configuration File](./configuration_options.md)
+- [Configuration Reference](./configuration_reference.md)
 - [Usage and Automation](./automations_and_usage.md)
     - [Local Repo (CLI)](./automations_and_usage.md#local-repo-cli)
     - [Online Usage](./automations_and_usage.md#online-usage)

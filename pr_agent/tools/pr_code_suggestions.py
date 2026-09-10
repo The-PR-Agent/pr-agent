@@ -43,10 +43,7 @@ from pr_agent.algo.utils import (
     show_run_details,
 )
 from pr_agent.config_loader import get_settings, get_verbosity_level
-from pr_agent.git_providers import (
-    GithubProvider,
-    get_git_provider_with_context,
-)
+from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.git_provider import GitProvider, IncrementalPR, get_main_pr_language
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
@@ -329,7 +326,7 @@ class PRCodeSuggestions:
 
                     # add usage guide
                     if (get_settings().pr_code_suggestions.enable_chat_text and get_settings().config.is_auto_command
-                            and isinstance(self.git_provider, GithubProvider)):
+                            and self.git_provider.supports_pr_chat()):
                         pr_body += "\n\n>💡 Need additional feedback ? start a [PR chat](https://chromewebstore.google.com/detail/ephlnjeghhogofkifjloamocljapahnl) \n\n"
                     if get_settings().pr_code_suggestions.enable_help_text:
                         pr_body += "<hr>\n\n<details> <summary><strong>💡 Tool usage guide:</strong></summary><hr> \n\n"
@@ -786,15 +783,6 @@ class PRCodeSuggestions:
         else:
             new_comment = git_provider.publish_comment(pr_comment, **({"as_thread": True} if as_thread else {}))
         return new_comment
-
-    def extract_link(self, s):
-        r = re.compile(r"<!--.*?-->")
-        match = r.search(s)
-
-        up_to_commit_txt = ""
-        if match:
-            up_to_commit_txt = f" up to commit {match.group(0)[4:-3].strip()}"
-        return up_to_commit_txt
 
     async def _prepare_prediction(self, model: str) -> dict:
         self.patches_diff = get_pr_diff(self.git_provider,

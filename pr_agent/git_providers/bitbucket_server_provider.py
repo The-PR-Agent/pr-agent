@@ -222,6 +222,10 @@ class BitbucketServerProvider(GitProvider):
             return False
         return True
 
+    def supports_markdown_tables(self) -> bool:
+        # Bitbucket Data Center renders Markdown tables in comments, but not GFM.
+        return True
+
     def set_pr(self, pr_url: str):
         self.workspace_slug, self.repo_slug, self.pr_num = self._parse_pr_url(pr_url)
         self.pr = self._get_pr()

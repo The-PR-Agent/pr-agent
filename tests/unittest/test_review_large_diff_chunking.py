@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from pr_agent.algo.review_finding_state import ParsedReviewState, reconcile_review_findings
 from pr_agent.config_loader import get_settings
 from pr_agent.tools.pr_reviewer import PRReviewer
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
@@ -172,6 +173,41 @@ async def test_a_chunk_that_fails_does_not_lose_the_chunks_that_succeeded(chunki
     assert reviewer.prediction_data["review"]["score"] == "40"
     assert reviewer.review_chunk_count == 2
     assert reviewer.review_failed_chunk_count == 1
+
+
+@pytest.mark.asyncio
+async def test_a_failed_chunk_blocks_persistent_finding_resolution(chunking_enabled):
+    """A partial review must stay partial for the finding-state lifecycle too."""
+    reviewer = _make_reviewer()
+    reviewer._get_prediction = AsyncMock(side_effect=[RuntimeError("model refused"), CHUNK_B])
+
+    with (
+        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
+        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
+              return_value=(["chunk-a", "chunk-b"], [])),
+    ):
+        await reviewer._prepare_prediction("model")
+
+    previous_state = reconcile_review_findings(
+        None,
+        [{"path": "a.py", "body": "old finding", "line_start": 3, "line_end": 4}],
+        allow_resolution=False,
+        head_sha="head-1",
+        timestamp="2026-09-09T00:00:00+00:00",
+    ).state
+    reviewer._review_finding_state_enabled = lambda: True
+    reviewer._load_review_finding_state = lambda: ParsedReviewState(
+        previous_state, present=True, valid=True
+    )
+    reviewer._review_head_sha = lambda: "head-2"
+    reviewer._review_run_id = lambda: "run-2"
+
+    reviewer._prepare_review_finding_state(reviewer.prediction_data)
+
+    assert reviewer._review_state_result is not None
+    assert reviewer._review_state_result.resolved_ids == ()
+    assert reviewer._review_state_result.state["last_run"]["complete"] is False
+    assert reviewer._review_state_result.state["findings"][0]["state"] == "ACTIVE"
 
 
 @pytest.mark.asyncio

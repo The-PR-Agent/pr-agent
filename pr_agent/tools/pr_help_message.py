@@ -13,22 +13,9 @@ from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import ModelType, clip_tokens, get_max_tokens, load_yaml
 from pr_agent.command_descriptions import COMMAND_DESCRIPTIONS
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers import BitbucketServerProvider, GithubProvider, get_git_provider_with_context
+from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.log import get_logger
 
-
-def extract_header(snippet):
-    res = ''
-    lines = snippet.split('===Snippet content===')[0].split('\n')
-    highest_header = ''
-    highest_level = float('inf')
-    for line in lines[::-1]:
-        line = line.strip()
-        if line.startswith('Header '):
-            highest_header = line.split(': ')[1]
-    if highest_header:
-        res = f"#{highest_header.lower().replace(' ', '-')}"
-    return res
 
 class PRHelpMessage:
     def __init__(self, pr_url: str, args=None, ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler, return_as_string=False):
@@ -190,7 +177,8 @@ class PRHelpMessage:
                 else:
                     get_logger().info(f"Answer:\n{answer_str}")
             else:
-                if not isinstance(self.git_provider, BitbucketServerProvider) and not self.git_provider.is_supported("gfm_markdown"):
+                supports_gfm_markdown = self.git_provider.is_supported("gfm_markdown")
+                if not supports_gfm_markdown and not self.git_provider.supports_markdown_tables():
                     self.git_provider.publish_comment(
                         "The `Help` tool requires gfm markdown, which is not supported by your code platform.")
                     return
@@ -242,15 +230,16 @@ class PRHelpMessage:
                 checkbox_list.append("[*]")
                 checkbox_list.append("[*]")
 
-                if isinstance(self.git_provider, GithubProvider) and not get_settings().config.get('disable_checkboxes', False):
+                if (supports_gfm_markdown and self.git_provider.supports_checkbox_commands()
+                        and not get_settings().config.get('disable_checkboxes', False)):
                     pr_comment += "<table><tr align='left'><th align='left'>Tool</th><th align='left'>Description</th><th align='left'>Trigger Interactively :gem:</th></tr>"
                     for i in range(len(tool_names)):
                         pr_comment += f"\n<tr><td align='left'>\n\n<strong>{tool_names[i]}</strong></td>\n<td>{descriptions[i]}</td>\n<td>\n\n{checkbox_list[i]}\n</td></tr>"
                     pr_comment += "</table>\n\n"
                     pr_comment += """\n\n(1) Note that each tool can be [triggered automatically](https://pr-agent-docs.codium.ai/usage-guide/automations_and_usage/#github-app-automatic-tools-when-a-new-pr-is-opened) when a new PR is opened, or called manually by [commenting on a PR](https://pr-agent-docs.codium.ai/usage-guide/automations_and_usage/#online-usage)."""
                     pr_comment += """\n\n(2) Tools marked with [*] require additional parameters to be passed. For example, to invoke the `/ask` tool, you need to comment on a PR: `/ask "<question content>"`. See the relevant documentation for each tool for more details."""
-                elif isinstance(self.git_provider, BitbucketServerProvider):
-                    # only support basic commands in BBDC
+                elif not supports_gfm_markdown:
+                    # only basic commands, in a plain markdown table (e.g. BBDC)
                     pr_comment = generate_bbdc_table(tool_names[:4], descriptions[:4])
                 else:
                     pr_comment += "<table><tr align='left'><th align='left'>Tool</th><th align='left'>Command</th><th align='left'>Description</th></tr>"
@@ -264,26 +253,6 @@ class PRHelpMessage:
         except Exception as e:
             get_logger().exception(f"Error while running PRHelpMessage: {e}")
         return ""
-
-    async def prepare_relevant_snippets(self, sim_results):
-        # Get relevant snippets
-        relevant_snippets_full = []
-        relevant_pages_full = []
-        relevant_snippets_full_header = []
-        th = 0.75
-        for s in sim_results:
-            page = s[0].metadata['source']
-            content = s[0].page_content
-            score = s[1]
-            relevant_snippets_full.append(content)
-            relevant_snippets_full_header.append(extract_header(content))
-            relevant_pages_full.append(page)
-        # build the snippets string
-        relevant_snippets_str = ""
-        for i, s in enumerate(relevant_snippets_full):
-            relevant_snippets_str += f"Snippet {i+1}:\n\n{s}\n\n"
-            relevant_snippets_str += "-------------------\n\n"
-        return relevant_pages_full, relevant_snippets_full_header, relevant_snippets_str
 
 
 def generate_bbdc_table(column_arr_1, column_arr_2):

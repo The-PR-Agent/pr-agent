@@ -36,23 +36,25 @@ dependencies = [
   "azure-devops==7.1.0b4",
   "azure-identity==1.25.0",
   "boto3==1.43.78",
-  "certifi==2024.8.30",
+  "certifi>=2026.7.22",
   "dynaconf>=3.2.13,<4",
   "fastapi>=0.141.1,<1",
   "GitPython>=3.1.59,<4",
   "starlette>=1.6.0,<2",
   "google-cloud-aiplatform==1.154.0",
   # google-cloud-aiplatform==1.154.0 requires storage <4,>=1.32.0 on py<3.13 and <4,>=3.10.0 on py>=3.13.
-  # Pin per-Python (exact, like the rest of this list) so existing installs are unchanged and py3.13 resolves. See #2480.
+  # Pin per-Python so existing installs are unchanged and py3.13 resolves. See #2480.
   "google-cloud-storage==2.10.0; python_version < '3.13'",
   "google-cloud-storage==3.12.0; python_version >= '3.13'",
-  "protobuf==6.33.6",  # grpcio-status 1.80.0 forces >=6.31.1,<7; pinned to lock the resolved transitive version
+  # Keep protobuf explicit to lock the transitive version resolved with the gRPC dependency stack.
+  # Revalidate compatibility when updating grpcio-status or related Google/gRPC dependencies.
+  "protobuf==6.33.6",
   "Jinja2==3.1.6",
   "litellm==1.100.0",
   "loguru==0.7.2",
   "msrest==0.7.1",
   "openai>=1.55.3",
-  "PyGithub==1.59.*",
+  "PyGithub>=2.10,<3",
   "PyJWT>=2.13.0,<3",
   "PyYAML==6.0.1",
   "python-gitlab==8.3.0",
@@ -88,6 +90,9 @@ dependencies = [
 
 [tool.setuptools]
 include-package-data = true
+
+[tool.setuptools.package-data]
+pr_agent = ["py.typed"]
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -130,11 +135,16 @@ dev = [
   "ruff==0.16.5",
 ]
 
+[tool.uv]
+# Keep this exact pin in sync with docker/Dockerfile and docker/Dockerfile.lambda
+# so local, CI, release, and container builds use the same uv version.
+required-version = "==0.12.10"
+
 [tool.ruff]
 line-length = 120
 
 lint.select = [
-  "E",    # Pyflakes
+  "E",    # pycodestyle
   "F",    # Pyflakes
   "B",    # flake8-bugbear
   "I",    # isort
@@ -175,10 +185,6 @@ lint.ignore = [
 [tool.ruff.lint.per-file-ignores]
 # Ignore import-position and unused-import in __init__.py (re-export modules).
 "__init__.py" = ["E402", "F401"]
-[tool.bandit]
-exclude_dirs = ["tests"]
-skips = ["B101"]
-tests = []
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

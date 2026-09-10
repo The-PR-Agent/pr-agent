@@ -149,6 +149,40 @@ async def test_run_neutralizes_progress_comment_before_delete(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_run_appends_partial_description_coverage_to_output(monkeypatch):
+    settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
+    try:
+        provider = MagicMock()
+        provider.is_supported.return_value = False
+        description = _make_description(provider)
+        description.prediction = "generated"
+        description.description_failed_chunk_count = 1
+        description.description_total_chunk_count = 2
+        description.description_failed_files = ["src/file2.py"]
+        description._prepare_data = MagicMock()
+        description._prepare_pr_answer = MagicMock(return_value=("AI title", "Description", "", []))
+
+        monkeypatch.setattr(pr_description_module, "extract_and_cache_pr_tickets", AsyncMock())
+        monkeypatch.setattr(pr_description_module, "retry_with_fallback_models", AsyncMock())
+        settings = get_settings()
+        settings.config.publish_output = False
+        settings.pr_description.enable_help_comment = False
+        settings.pr_description.enable_help_text = False
+        settings.pr_description.enable_semantic_files_types = False
+        settings.pr_description.publish_labels = False
+        settings.pr_description.use_description_markers = False
+
+        await description.run()
+
+        artifact = get_settings().data["artifact"]
+        assert "Description coverage" in artifact
+        assert "1 of 2 file-description chunks failed" in artifact
+        assert "`src/file2.py`" in artifact
+    finally:
+        restore_settings(settings_snapshot)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("propagate_tool_errors", [False, True])
 async def test_run_reports_description_publication_failure(monkeypatch, propagate_tool_errors):
     settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)

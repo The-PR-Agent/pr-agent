@@ -13,6 +13,7 @@ from pr_agent.algo.utils import (
 )
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
+from pr_agent.git_providers.bitbucket_provider import BitbucketProvider
 from pr_agent.git_providers.gitea_provider import GiteaProvider
 from pr_agent.git_providers.github_provider import GithubProvider
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
@@ -196,6 +197,27 @@ def test_azure_comment_path_forwards_review_identity():
         "identity_marker": PRReviewIdentity.REGULAR.value,
         "legacy_initial_header": legacy_header,
     }
+
+
+def test_bitbucket_comment_path_forwards_review_identity():
+    provider = BitbucketProvider.__new__(BitbucketProvider)
+    provider.pr = MagicMock()
+    provider.pr.comments.return_value = []
+    provider.publish_comment = MagicMock()
+    review = "## Team Review 🔍\n\nbody"
+    legacy_header = "## PR Reviewer Guide 🔍"
+
+    provider.publish_persistent_comment(
+        review,
+        initial_header="## Team Review 🔍",
+        identity_marker=PRReviewIdentity.REGULAR.value,
+        legacy_initial_header=legacy_header,
+    )
+
+    assert provider.supports_review_comment_identity() is True
+    provider.publish_comment.assert_called_once_with(
+        "## Team Review 🔍\n\n<!-- pr-agent:review:full -->\n\nbody"
+    )
 
 
 def test_gitea_keeps_identity_inactive_but_preserves_wrapper_arguments():
