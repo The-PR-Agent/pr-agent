@@ -18,6 +18,27 @@ _run_details: ContextVar[Optional["RunDetails"]] = ContextVar(
 )
 
 
+@dataclass(frozen=True)
+class CallRecord:
+    """One successful model call, attributed to a stage, chunk and file set.
+
+    Kept alongside the aggregate counters on `RunDetails` rather than replacing them:
+    the aggregates answer "how much did this run cost", this answers "which call".
+    """
+
+    stage: str
+    model: str
+    prompt_tokens: int = 0
+    cached_tokens: int = 0
+    completion_tokens: int = 0
+    cost_usd: Optional[Decimal] = None
+    chunk_index: Optional[int] = None
+    sample_index: Optional[int] = None
+    files: tuple[str, ...] = ()
+    latency_ms: Optional[int] = None
+    findings_emitted: Optional[int] = None
+
+
 @dataclass
 class RunDetails:
     """Counters and identifiers accumulated over a single command run.
@@ -52,6 +73,9 @@ class RunDetails:
     total_cost_usd: Decimal = field(default_factory=lambda: Decimal("0"))
     known_cost_call_count: int = 0
     model_costs_usd: dict[str, Decimal] = field(default_factory=dict)
+    # Per-call attribution (stage, chunk, files, tokens, latency), in call order. Optional
+    # JSONL export of this list is what `run_ledger.write_ledger` writes out.
+    calls: list[CallRecord] = field(default_factory=list)
     # Monotonic reference taken when the collector is installed, i.e. at the top of the
     # tool's run(). Monotonic so that wall-clock adjustments cannot yield a negative duration.
     start_time: float = field(default_factory=time.monotonic)
@@ -143,8 +167,21 @@ def _as_decimal_cost(cost_usd) -> Optional[Decimal]:
     return cost
 
 
-def record_ai_call(usage=None, model: Optional[str] = None, cost_usd=None) -> None:
-    """Count one successful AI call and accumulate usage and known cost."""
+def _cached_tokens(usage) -> int:
+    """Read `usage.prompt_tokens_details.cached_tokens`, tolerating a dict at either level."""
+    if usage is None:
+        return 0
+    details = usage.get("prompt_tokens_details") if isinstance(usage, dict) else (
+        getattr(usage, "prompt_tokens_details", None)
+    )
+    return _read_token_field(details, "cached_tokens") if details is not None else 0
+
+
+def record_ai_call(usage=None, model: Optional[str] = None, cost_usd=None, *,
+                    stage: Optional[str] = None, chunk_index: Optional[int] = None,
+                    sample_index: Optional[int] = None, files=None, latency_ms: Optional[int] = None,
+                    findings_emitted: Optional[int] = None) -> None:
+    """Count one successful AI call, accumulate usage and known cost, and keep a per-call record."""
     details = get_run_details()
     if details is None:
         return
@@ -157,3 +194,16 @@ def record_ai_call(usage=None, model: Optional[str] = None, cost_usd=None) -> No
         details.known_cost_call_count += 1
         model_name = model or "unknown"
         details.model_costs_usd[model_name] = details.model_costs_usd.get(model_name, Decimal("0")) + cost
+    details.calls.append(CallRecord(
+        stage=stage or "unknown",
+        model=model or "unknown",
+        prompt_tokens=_read_token_field(usage, "prompt_tokens"),
+        cached_tokens=_cached_tokens(usage),
+        completion_tokens=_read_token_field(usage, "completion_tokens"),
+        cost_usd=cost,
+        chunk_index=chunk_index,
+        sample_index=sample_index,
+        files=tuple(files or ()),
+        latency_ms=latency_ms,
+        findings_emitted=findings_emitted,
+    ))

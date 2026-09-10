@@ -33,6 +33,7 @@ from pr_agent.algo.review_finding_state import (
 )
 from pr_agent.algo.review_merge import merge_review_chunks, vote_review_samples
 from pr_agent.algo.run_details import get_run_details, init_run_details
+from pr_agent.algo.run_ledger import write_ledger
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (
@@ -467,6 +468,14 @@ class PRReviewer:
                     self.git_provider.publish_comment(_review_failure_comment(review_error))
                 except Exception as e:
                     get_logger().exception(f"Failed to publish review failure result, error: {e}")
+            ledger_path = get_settings().config.get("run_ledger_path")
+            if ledger_path:
+                try:
+                    details = get_run_details()
+                    if details is not None:
+                        write_ledger(details, ledger_path, run_id=self._review_run_id(), tool="review")
+                except Exception as e:
+                    get_logger().exception(f"Failed to write run ledger, error: {e}")
 
     def _review_finding_state_enabled(self) -> bool:
         settings = get_settings()
@@ -879,7 +888,7 @@ class PRReviewer:
             if attempt:
                 get_logger().info(f"Retrying {len(pending_indices)} failed review chunk(s)")
             results = await asyncio.gather(
-                *[self._get_review_data(model, patches_diff_list[i]) for i in pending_indices],
+                *[self._get_review_data(model, patches_diff_list[i], chunk_index=i) for i in pending_indices],
                 return_exceptions=True)
 
             retry_indices = []
@@ -920,8 +929,8 @@ class PRReviewer:
         self.remaining_files_list = remaining_files_list
         return True
 
-    async def _get_review_data(self, model: str,
-                               patches_diff: Optional[str] = None) -> tuple[str, dict, int]:
+    async def _get_review_data(self, model: str, patches_diff: Optional[str] = None,
+                               chunk_index: Optional[int] = None) -> tuple[str, dict, int]:
         """Review the diff, returning `(raw response text, parsed review dict, findings dropped)`.
 
         With `pr_reviewer.num_samples` at its default of 1 this is one call, parsed once. With
@@ -947,7 +956,7 @@ class PRReviewer:
         if num_samples <= 1:
             # keep the one-argument call for the whole-diff case: patches_diff defaults to it
             prediction = await (self._get_prediction(model) if patches_diff is None
-                                else self._get_prediction(model, patches_diff))
+                                else self._get_prediction(model, patches_diff, chunk_index=chunk_index))
             data = self._load_review_yaml(prediction)
             if not self._is_parsable_review(data):
                 get_logger().warning(f"Unparsable review from {model}", artifact={"data": data})
@@ -959,7 +968,8 @@ class PRReviewer:
                                  "the samples will be identical and the vote is a no-op")
 
         responses = await asyncio.gather(
-            *[self._get_prediction(model, patches_diff) for _ in range(num_samples)],
+            *[self._get_prediction(model, patches_diff, chunk_index=chunk_index, sample_index=i)
+              for i in range(num_samples)],
             return_exceptions=True)
         parsed, raw, first_error = [], [], None
         for response in responses:
@@ -994,7 +1004,8 @@ class PRReviewer:
         consensus = vote_review_samples(parsed, min_votes, max_findings=max_findings)
         return "\n".join(raw), consensus.review, consensus.dropped
 
-    async def _get_prediction(self, model: str, patches_diff: Optional[str] = None) -> str:
+    async def _get_prediction(self, model: str, patches_diff: Optional[str] = None, *,
+                              chunk_index: Optional[int] = None, sample_index: Optional[int] = None) -> str:
         """
         Generate an AI prediction for the pull request review.
 
@@ -1002,6 +1013,10 @@ class PRReviewer:
             model: A string representing the AI model to be used for the prediction.
             patches_diff: The diff to review. Defaults to the whole prepared diff; the chunked
                 flow passes one chunk per call.
+            chunk_index: The diff chunk this call reviews, for run-ledger attribution. None
+                when the diff was not chunked.
+            sample_index: The consensus sample this call produces, for run-ledger attribution.
+                None when `pr_reviewer.num_samples` is 1.
 
         Returns:
             A string representing the AI prediction for the pull request review.
@@ -1019,7 +1034,11 @@ class PRReviewer:
                 model=model,
                 temperature=get_settings().config.temperature,
                 system=system_prompt,
-                user=user_prompt
+                user=user_prompt,
+                stage="review",
+                chunk_index=chunk_index,
+                sample_index=sample_index,
+                files=None,  # a later task supplies the chunk's file list
             )
 
         return response

@@ -83,7 +83,7 @@ class FakeAIHandler:
     response = REVIEW_YAML
     main_pr_language = None
 
-    async def chat_completion(self, model, system, user, temperature=0.2, img_path=None):
+    async def chat_completion(self, model, system, user, temperature=0.2, img_path=None, **_kwargs):
         return self.response, "stop"
 
 

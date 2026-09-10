@@ -68,7 +68,8 @@ class LangChainOpenAIHandler(BaseAiHandler):
         stop=stop_after_attempt(OPENAI_RETRIES),
     )
     async def chat_completion(
-            self, model: str, system: str, user: str, temperature: float = 0.2, img_path: str|None = None):
+            self, model: str, system: str, user: str, temperature: float = 0.2, img_path: str|None = None, *,
+            stage: str = None, chunk_index: int = None, sample_index: int = None, files=None):
         if img_path:
             get_logger().warning(
                 f"Image path is not supported for LangChainOpenAIHandler. Ignoring image path: {img_path}")
@@ -106,7 +107,7 @@ class LangChainOpenAIHandler(BaseAiHandler):
             # path stays cold: langchain is an optional extra (not installed by default) and no setting
             # selects this handler, so it is reachable only by injecting it into a tool
             # programmatically.
-            record_ai_call()
+            record_ai_call(stage=stage, chunk_index=chunk_index, sample_index=sample_index, files=files)
             return resp.content, finish_reason
 
         except openai.RateLimitError as e:

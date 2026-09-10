@@ -43,7 +43,9 @@ class OpenAIHandler(BaseAiHandler):
         retry=retry_if_exception_type(openai.APIError) & retry_if_not_exception_type(openai.RateLimitError),
         stop=stop_after_attempt(OPENAI_RETRIES),
     )
-    async def chat_completion(self, model: str, system: str, user: str, temperature: float = 0.2, img_path: str = None):
+    async def chat_completion(self, model: str, system: str, user: str, temperature: float = 0.2,
+                              img_path: str = None, *, stage: str = None, chunk_index: int = None,
+                              sample_index: int = None, files=None):
         try:
             if img_path:
                 get_logger().warning(f"Image path is not supported for OpenAIHandler. Ignoring image path: {img_path}")
@@ -65,7 +67,7 @@ class OpenAIHandler(BaseAiHandler):
             # source wired up, so with output_run_cost enabled its calls render as
             # unpriced. Left as-is while the path stays cold — no setting selects
             # this handler, it is reachable only by injecting it programmatically.
-            record_ai_call(usage)
+            record_ai_call(usage, stage=stage, chunk_index=chunk_index, sample_index=sample_index, files=files)
             return resp, finish_reason
         except openai.RateLimitError as e:
             get_logger().error(f"Rate limit error during LLM inference: {e}")
