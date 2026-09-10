@@ -839,12 +839,15 @@ class LiteLLMAIHandler(BaseAiHandler):
                         get_logger().info(f"GPT-6 Astra does not support reasoning_effort='{effort}'; using 'low'")
                         effort = ReasoningEffort.LOW.value
                     elif not is_gpt6_astra and effort == ReasoningEffort.MAX.value:
-                        # OpenAI's GPT-5 models name their top level 'xhigh' and reject 'max'
-                        # outright. 'max' is this project's own alias for "the most reasoning
-                        # available", already translated on the Grok and OpenRouter paths, so
-                        # translate it here too instead of forwarding a value the API refuses.
+                        # 'max' is this project's own alias for "the most reasoning available",
+                        # already translated on the Grok and OpenRouter paths. GPT-5.2 and later
+                        # name that level 'xhigh'; litellm reports supports_xhigh_reasoning_effort
+                        # false for gpt-5 and gpt-5.1, so those stay unsupported either way.
                         # GPT-6 Astra accepts 'max' natively and is left untouched.
-                        get_logger().info("GPT-5 models name their top reasoning level 'xhigh'; using 'xhigh' for reasoning_effort='max'")
+                        get_logger().info(
+                            "GPT-5 models name their top reasoning level 'xhigh'; "
+                            "using 'xhigh' for reasoning_effort='max'"
+                        )
                         effort = ReasoningEffort.XHIGH.value
 
                     thinking_kwargs_gpt5 = {
