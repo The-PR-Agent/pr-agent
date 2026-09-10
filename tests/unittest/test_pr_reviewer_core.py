@@ -161,6 +161,24 @@ async def test_prepare_prediction_builds_a_coverage_ledger_for_the_single_call_p
     assert reviewer.coverage.files["skipped.py"].status == "skipped_budget"
 
 
+@pytest.mark.asyncio
+async def test_prepare_prediction_clamps_unpopulated_line_counts_to_zero():
+    """Providers that never fill num_plus_lines/num_minus_lines (local/plain-diff, gerrit,
+    bitbucket, codecommit) leave FilePatchInfo's -1 default. That must not go negative and
+    corrupt reviewed_ratio -- an unpopulated file should contribute zero changed lines."""
+    reviewer = _make_prediction_reviewer()
+    reviewer._get_prediction = AsyncMock(return_value=PARSABLE_REVIEW)
+    reviewer.git_provider.get_diff_files.return_value = [
+        FilePatchInfo(base_file="a", head_file="a2", patch="p", filename="unpopulated.py"),
+    ]
+
+    with patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", [])):
+        await reviewer._prepare_prediction("model")
+
+    assert reviewer.coverage.files["unpopulated.py"].changed_lines == 0
+    assert reviewer.coverage.reviewed_ratio == 1.0
+
+
 def _render_review(reviewer, remaining_files, supports_gfm_markdown=False):
     reviewer.prediction = "review:\n  summary: test"
     reviewer.remaining_files_list = remaining_files

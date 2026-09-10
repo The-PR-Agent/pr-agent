@@ -871,8 +871,13 @@ class PRReviewer:
         (clipped, skipped for budget, or lost to a failed chunk) on top of this base ledger."""
         ledger = CoverageLedger()
         for file in self.git_provider.get_diff_files():
-            changed_lines = file.num_plus_lines + file.num_minus_lines
-            status = "deletion_only" if file.num_plus_lines == 0 and file.num_minus_lines > 0 else "reviewed"
+            # Several providers (local/plain-diff, gerrit, bitbucket, codecommit) never populate
+            # num_plus_lines/num_minus_lines, leaving FilePatchInfo's -1 default; clamp so those
+            # files contribute zero changed lines instead of corrupting the ratio with negatives.
+            plus_lines = max(file.num_plus_lines, 0)
+            minus_lines = max(file.num_minus_lines, 0)
+            changed_lines = plus_lines + minus_lines
+            status = "deletion_only" if plus_lines == 0 and minus_lines > 0 else "reviewed"
             ledger.add(FileCoverage(file.filename, changed_lines=changed_lines, status=status))
         for filename in remaining_files:
             ledger.mark(filename, "skipped_budget")
