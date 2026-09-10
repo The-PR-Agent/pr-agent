@@ -255,6 +255,8 @@ jobs:
         with:
           python-version: '3.12'
 
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
+
       - name: Flag missing PyPI publish
         if: needs.publish-pypi.result != 'success'
         env:
@@ -267,8 +269,10 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Bump pyproject.toml
-        run: python scripts/set_pyproject_version.py "${{ needs.prepare.outputs.version }}"
+      - name: Bump pyproject.toml and sync uv.lock
+        run: |
+          python scripts/set_pyproject_version.py "${{ needs.prepare.outputs.version }}"
+          uv lock
 
       - name: Commit & push bump (fast-forward only)
         id: commit
@@ -276,19 +280,19 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
           PUBLISHED_SHA: ${{ needs.prepare.outputs.sha }}
         run: |
-          if git diff --quiet pyproject.toml; then
-            echo "pyproject.toml already at $VERSION on $PUBLISHED_SHA; nothing to commit."
+          if git diff --quiet pyproject.toml uv.lock; then
+            echo "pyproject.toml and uv.lock already at $VERSION on $PUBLISHED_SHA; nothing to commit."
             echo "bumped=false" >> "$GITHUB_OUTPUT"
             echo "sha=$PUBLISHED_SHA" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          git add pyproject.toml
+          git add pyproject.toml uv.lock
           git commit -m "chore(release): bump version to $VERSION [skip ci]"
           if git push origin "HEAD:refs/heads/main"; then
             echo "bumped=true" >> "$GITHUB_OUTPUT"
             echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::main has moved past the published commit ($PUBLISHED_SHA); skipping the bump push rather than rebasing onto a commit that was not built. Bump pyproject.toml on main manually:  git checkout main && python scripts/set_pyproject_version.py $VERSION && git commit -am 'chore(release): bump version to $VERSION' && git push"
+            echo "::warning::main has moved past the published commit ($PUBLISHED_SHA); skipping the bump push rather than rebasing onto a commit that was not built. Bump pyproject.toml and uv.lock on main manually:  git checkout main && python scripts/set_pyproject_version.py $VERSION && uv lock && git commit -am 'chore(release): bump version to $VERSION' && git push"
             echo "bumped=false" >> "$GITHUB_OUTPUT"
             echo "sha=$PUBLISHED_SHA" >> "$GITHUB_OUTPUT"
           fi

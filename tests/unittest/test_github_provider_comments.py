@@ -312,6 +312,7 @@ def test_publish_code_suggestions_multi_line_payload_shape():
 
     def capture(comments, disable_fallback=False):
         captured["comments"] = comments
+        return True
 
     provider.publish_inline_comments = capture
 
@@ -414,6 +415,209 @@ def test_publish_code_suggestions_returns_false_on_publish_error():
         "relevant_lines_start": 1, "relevant_lines_end": 2,
     }])
     assert result is False
+
+
+def test_publish_code_suggestions_422_fallback_all_dropped_returns_false(monkeypatch):
+    """Regression test for #3223: When the 422 fallback drops all comments
+    (0 verified, 0 repaired), publish_code_suggestions must return False so caller
+    can trigger retry logic."""
+    fake_pr = _FakePR(raise_on_first=_FakeGithubException(status=422))
+    provider = _make_provider(pr=fake_pr)
+    _stub_validation_passthrough(provider)
+
+    # All comments are rejected during verification
+    monkeypatch.setattr(
+        provider,
+        "_verify_code_comments",
+        lambda comments: ([], [(c, Exception("invalid")) for c in comments]),
+    )
+    # No invalid comment can be repaired
+    monkeypatch.setattr(
+        provider,
+        "_try_fix_invalid_inline_comments",
+        lambda invalid_list: [],
+    )
+
+    suggestions = [{
+        "body": "```suggestion\nsuggestion\n```",
+        "relevant_file": "src/foo.py",
+        "relevant_lines_start": 10,
+        "relevant_lines_end": 12,
+    }]
+
+    result = provider.publish_code_suggestions(suggestions)
+    assert result is False
+    # Only the initial failing create_review call occurred; 0 fallback comments posted
+    assert len(fake_pr.create_review_calls) == 1
+
+
+def test_publish_code_suggestions_422_fallback_partial_success_returns_true(monkeypatch):
+    """When 422 fallback successfully publishes at least one comment, return True
+    to prevent duplicate comment creation by whole-batch retries."""
+    fake_pr = _FakePR(raise_on_first=_FakeGithubException(status=422))
+    provider = _make_provider(pr=fake_pr)
+    _stub_validation_passthrough(provider)
+
+    # 1 verified comment, 1 invalid comment
+    def fake_verify(comments):
+        return [comments[0]], [(comments[1], Exception("invalid"))]
+
+    monkeypatch.setattr(provider, "_verify_code_comments", fake_verify)
+    monkeypatch.setattr(provider, "_try_fix_invalid_inline_comments", lambda invalid_list: [])
+
+    suggestions = [
+        {
+            "body": "```suggestion\nfirst\n```",
+            "relevant_file": "src/foo.py",
+            "relevant_lines_start": 1,
+            "relevant_lines_end": 2,
+        },
+        {
+            "body": "```suggestion\nsecond\n```",
+            "relevant_file": "src/foo.py",
+            "relevant_lines_start": 5,
+            "relevant_lines_end": 6,
+        },
+    ]
+
+    result = provider.publish_code_suggestions(suggestions)
+    assert result is True
+    # 1 initial failed batch call, 1 successful fallback call with the verified comment
+    assert len(fake_pr.create_review_calls) == 2
+    assert len(fake_pr.create_review_calls[1]["comments"]) == 1
+
+
+def test_publish_code_suggestions_422_fallback_repaired_comment_success(monkeypatch):
+    """When initial batch gets 422, verification rejects, but repairing succeeds and
+    individual publish succeeds, return True."""
+    fake_pr = _FakePR(raise_on_first=_FakeGithubException(status=422))
+    provider = _make_provider(pr=fake_pr)
+    _stub_validation_passthrough(provider)
+
+    settings = SimpleNamespace(
+        github=SimpleNamespace(try_fix_invalid_inline_comments=True),
+        get=lambda key, default=None: default,
+    )
+    monkeypatch.setattr(gh_module, "get_settings", lambda: settings)
+
+    monkeypatch.setattr(
+        provider,
+        "_verify_code_comments",
+        lambda comments: ([], [(comments[0], Exception("invalid"))]),
+    )
+    repaired = [{"body": "fixed single line", "path": "src/foo.py", "line": 10, "side": "RIGHT"}]
+    monkeypatch.setattr(provider, "_try_fix_invalid_inline_comments", lambda invalid: repaired)
+
+    suggestions = [{
+        "body": "```suggestion\nmulti\nline\n```",
+        "relevant_file": "src/foo.py",
+        "relevant_lines_start": 10,
+        "relevant_lines_end": 12,
+    }]
+
+    result = provider.publish_code_suggestions(suggestions)
+    assert result is True
+    # Call 1: initial batch -> raises 422
+    # Call 2: repaired comment via publish_inline_comments([comment], disable_fallback=True) -> succeeds
+    assert len(fake_pr.create_review_calls) == 2
+    assert fake_pr.create_review_calls[1]["comments"] == repaired
+
+
+def test_publish_code_suggestions_422_fallback_repaired_comment_failure_returns_false(monkeypatch):
+    """When repaired payload is generated but publishing that repaired comment fails,
+    it must NOT count as published, and publish_code_suggestions must return False."""
+    fake_pr = _FakePR(raise_on_first=_FakeGithubException(status=422))
+    provider = _make_provider(pr=fake_pr)
+    _stub_validation_passthrough(provider)
+
+    settings = SimpleNamespace(
+        github=SimpleNamespace(try_fix_invalid_inline_comments=True),
+        get=lambda key, default=None: default,
+    )
+    monkeypatch.setattr(gh_module, "get_settings", lambda: settings)
+
+    monkeypatch.setattr(
+        provider,
+        "_verify_code_comments",
+        lambda comments: ([], [(comments[0], Exception("invalid"))]),
+    )
+    repaired = [{"body": "fixed single line", "path": "src/foo.py", "line": 10, "side": "RIGHT"}]
+    monkeypatch.setattr(provider, "_try_fix_invalid_inline_comments", lambda invalid: repaired)
+
+    calls = 0
+
+    def fail_repaired(commit=None, comments=None):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise _FakeGithubException(status=422)
+        # with disable_fallback=True, this re-raises from publish_inline_comments
+        raise _FakeGithubException(status=422)
+
+    fake_pr.create_review = fail_repaired
+
+    suggestions = [{
+        "body": "```suggestion\nmulti\nline\n```",
+        "relevant_file": "src/foo.py",
+        "relevant_lines_start": 10,
+        "relevant_lines_end": 12,
+    }]
+
+    result = provider.publish_code_suggestions(suggestions)
+    assert result is False
+    assert calls == 2
+
+
+def test_publish_code_suggestions_normal_success():
+    """Clean create_review call without 422 must return True."""
+    fake_pr = _FakePR()
+    provider = _make_provider(pr=fake_pr)
+    _stub_validation_passthrough(provider)
+
+    suggestions = [{
+        "body": "normal",
+        "relevant_file": "src/foo.py",
+        "relevant_lines_start": 1,
+        "relevant_lines_end": 1,
+    }]
+
+    result = provider.publish_code_suggestions(suggestions)
+    assert result is True
+    assert len(fake_pr.create_review_calls) == 1
+
+
+def test_persistent_dedup_all_skipped_returns_true(monkeypatch):
+    """When persistent_inline_comments is enabled and all comments are duplicates,
+    publish_inline_comments and publish_code_suggestions must return True without
+    calling create_review."""
+    fake_pr = _FakePR()
+    provider = _make_provider(pr=fake_pr)
+    _stub_validation_passthrough(provider)
+
+    settings = SimpleNamespace(
+        get=lambda key, default=None: True if key == "config.persistent_inline_comments" else default,
+        github=SimpleNamespace(try_fix_invalid_inline_comments=False),
+    )
+    monkeypatch.setattr(gh_module, "get_settings", lambda: settings)
+
+    store = MagicMock()
+    store.seen.return_value = True
+    monkeypatch.setattr(gh_module, "get_inline_comment_store", lambda prov: store)
+
+    comments = [{"path": "src/foo.py", "body": "already posted", "line": 5}]
+    res_inline = provider.publish_inline_comments(comments)
+    assert res_inline is True
+    assert len(fake_pr.create_review_calls) == 0
+
+    suggestions = [{
+        "body": "already posted",
+        "relevant_file": "src/foo.py",
+        "relevant_lines_start": 5,
+        "relevant_lines_end": 5,
+    }]
+    res_suggestions = provider.publish_code_suggestions(suggestions)
+    assert res_suggestions is True
+    assert len(fake_pr.create_review_calls) == 0
 
 
 # ---------------------------------------------------------------------------

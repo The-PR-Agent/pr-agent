@@ -512,7 +512,7 @@ class PRSimilarIssue:
         get_logger().info('Done')
 
         get_logger().info('Embedding...')
-        list_to_encode = list(df["text"].values)
+        list_to_encode = df["text"].to_list()
         embeds = _embed_with_fallback(list_to_encode)
         df["values"] = embeds
         meta = DatasetMetadata.empty()
@@ -598,7 +598,7 @@ class PRSimilarIssue:
         get_logger().info('Done')
 
         get_logger().info('Embedding...')
-        list_to_encode = list(df["text"].values)
+        list_to_encode = df["text"].to_list()
         embeds = _embed_with_fallback(list_to_encode)
         df["vector"] = embeds
         get_logger().info('Done')
@@ -685,7 +685,7 @@ class PRSimilarIssue:
         get_logger().info('Done')
 
         get_logger().info('Embedding...')
-        list_to_encode = list(df["text"].values)
+        list_to_encode = df["text"].to_list()
         embeds = _embed_with_fallback(list_to_encode)
         df["vector"] = embeds
         get_logger().info('Done')

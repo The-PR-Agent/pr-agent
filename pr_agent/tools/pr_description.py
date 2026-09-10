@@ -43,6 +43,8 @@ from pr_agent.tools.ticket_pr_compliance_check import (
     fit_related_tickets_to_prompt_budget,
 )
 
+MAX_DESCRIPTION_COVERAGE_FILES = 50
+
 
 class PRDescription:
     def __init__(self, pr_url: str, args: list = None,
@@ -149,6 +151,7 @@ class PRDescription:
                 if not self.git_provider.is_supported(
                         "publish_file_comments") or not get_settings().pr_description.inline_file_summary:
                     pr_body += "\n\n" + changes_walkthrough + "___\n\n"
+            pr_body += self._get_description_coverage_footer()
             get_logger().debug("PR output", artifact={"title": pr_title, "body": pr_body})
 
             # Add help text if gfm_markdown is supported
@@ -259,6 +262,9 @@ class PRDescription:
         return ""
 
     async def _prepare_prediction(self, model: str) -> None:
+        self.description_total_chunk_count = 0
+        self.description_failed_chunk_count = 0
+        self.description_failed_files = []
         if get_settings().pr_description.use_description_markers and 'pr_agent:' not in self.user_description:
             get_logger().info("Markers were enabled, but user description does not contain markers. Skipping AI prediction")
             return None
@@ -309,33 +315,87 @@ class PRDescription:
                 self.git_provider, token_handler_only_files_prompt, model)
 
             # get the files prediction for each patch
+            chunk_pairs = list(zip(patches_compressed_list, files_in_patches_list, strict=True))
+            self.description_total_chunk_count = len(chunk_pairs)
+            results = [None] * len(chunk_pairs)
             if not get_settings().pr_description.get("async_ai_calls", True):
-                results = []
-                for i, patches in enumerate(patches_compressed_list):  # sync calls
+                for i, (patches, _files_in_patch) in enumerate(chunk_pairs):  # sync calls
+                    if not patches:
+                        continue
                     patches_diff = "\n".join(patches)
                     get_logger().debug(f"PR diff number {i + 1} for describe files")
-                    prediction_files = await self._get_prediction(model, patches_diff,
-                                                                  prompt="pr_description_only_files_prompts")
-                    results.append(prediction_files)
+                    try:
+                        results[i] = await self._get_prediction(
+                            model, patches_diff, prompt="pr_description_only_files_prompts")
+                    except Exception as e:
+                        results[i] = e
             else:  # async calls
                 tasks = []
-                for i, patches in enumerate(patches_compressed_list):
+                task_indices = []
+                for i, (patches, _files_in_patch) in enumerate(chunk_pairs):
                     if patches:
                         patches_diff = "\n".join(patches)
                         get_logger().debug(f"PR diff number {i + 1} for describe files")
                         task = asyncio.create_task(
                             self._get_prediction(model, patches_diff, prompt="pr_description_only_files_prompts"))
                         tasks.append(task)
+                        task_indices.append(i)
                 # Wait for all tasks to complete
-                results = await asyncio.gather(*tasks)
+                task_results = await asyncio.gather(*tasks, return_exceptions=True)
+                for chunk_index, result in zip(task_indices, task_results, strict=True):
+                    results[chunk_index] = result
             file_description_str_list = []
-            for i, result in enumerate(results):
+            chunk_errors = []
+            failed_files = []
+            for i, (result, (_patches, files_in_patch)) in enumerate(zip(results, chunk_pairs, strict=True)):
+                if isinstance(result, Exception):
+                    chunk_errors.append(result)
+                    failed_files.extend(files_in_patch)
+                    get_logger().warning(
+                        f"Failed to generate description for chunk {i + 1}; retaining successful chunks",
+                        artifact={"error": result, "files": files_in_patch},
+                    )
+                    continue
+                if isinstance(result, BaseException):
+                    raise result
+                if not isinstance(result, str):
+                    chunk_errors.append(ValueError(f"Description chunk {i + 1} returned no prediction"))
+                    failed_files.extend(files_in_patch)
+                    get_logger().warning(
+                        f"Description chunk {i + 1} returned no prediction; retaining successful chunks",
+                        artifact={"files": files_in_patch},
+                    )
+                    continue
                 prediction_files = result.strip().removeprefix('```yaml').strip('`').strip()
-                if load_yaml(prediction_files, keys_fix_yaml=self.keys_fix) and prediction_files.startswith('pr_files'):
+                prediction_files_data = load_yaml(prediction_files, keys_fix_yaml=self.keys_fix)
+                file_descriptions = (prediction_files_data.get('pr_files')
+                                     if isinstance(prediction_files_data, dict) else None)
+                required_fields = ['filename', 'changes_title', 'label']
+                if self.vars.get('include_file_summary_changes', True):
+                    required_fields.append('changes_summary')
+                valid_file_descriptions = (
+                    isinstance(file_descriptions, list) and file_descriptions and
+                    any(isinstance(file_description, dict) and
+                        all(isinstance(file_description.get(field), str) and file_description[field].strip()
+                            for field in required_fields)
+                        for file_description in file_descriptions)
+                )
+                if (prediction_files.startswith('pr_files') and isinstance(prediction_files_data, dict) and
+                        valid_file_descriptions):
                     prediction_files = prediction_files.removeprefix('pr_files:').strip()
                     file_description_str_list.append(prediction_files)
                 else:
-                    get_logger().debug(f"failed to generate predictions in iteration {i + 1} for describe files")
+                    chunk_errors.append(ValueError(f"Description chunk {i + 1} returned invalid YAML"))
+                    failed_files.extend(files_in_patch)
+                    get_logger().warning(
+                        f"Failed to parse description chunk {i + 1}; retaining successful chunks",
+                        artifact={"files": files_in_patch},
+                    )
+
+            self.description_failed_chunk_count = len(chunk_pairs) - len(file_description_str_list)
+            self.description_failed_files = list(dict.fromkeys(failed_files))
+            if not file_description_str_list:
+                raise chunk_errors[0] if chunk_errors else ValueError("No description chunks were generated")
 
             # generate files_walkthrough string, with proper token handling
             self.vars, token_handler_only_description_prompt = fit_related_tickets_to_prompt_budget(
@@ -389,6 +449,27 @@ class PRDescription:
                 if load_yaml(prediction_headers, keys_fix_yaml=self.keys_fix):
                     get_logger().debug(f"Using only headers for describe {self.pr_id}")
                     self.prediction = prediction_headers
+
+    def _get_description_coverage_footer(self) -> str:
+        failed_chunk_count = getattr(self, "description_failed_chunk_count", 0)
+        if not failed_chunk_count:
+            return ""
+
+        total_chunk_count = getattr(self, "description_total_chunk_count", failed_chunk_count)
+        footer = (
+            f"\n\n⚠️ **Description coverage:** {failed_chunk_count} of {total_chunk_count} "
+            "file-description chunks failed; the description above is based on the successful chunks only."
+        )
+        failed_files = getattr(self, "description_failed_files", [])
+        if failed_files:
+            displayed_files = failed_files[:MAX_DESCRIPTION_COVERAGE_FILES]
+            footer += "\n\nFiles from failed chunks may not be covered:\n" + "\n".join(
+                f"- `{filename}`" for filename in displayed_files
+            )
+            remaining_count = len(failed_files) - len(displayed_files)
+            if remaining_count:
+                footer += f"\n... and {remaining_count} more"
+        return footer
 
     async def extend_uncovered_files(self, original_prediction: str) -> str:
         try:
@@ -461,35 +542,6 @@ class PRDescription:
             get_logger().exception(f"Error extending uncovered files {self.pr_id}", artifact={"error": e})
             return original_prediction
 
-
-    async def extend_additional_files(self, remaining_files_list) -> str:
-        prediction = self.prediction
-        try:
-            original_prediction_dict = load_yaml(self.prediction, keys_fix_yaml=self.keys_fix)
-            prediction_extra = "pr_files:"
-            for file in remaining_files_list:
-                extra_file_yaml = f"""\
-- filename: |
-    {file}
-  changes_summary: |
-    ...
-  changes_title: |
-    ...
-  label: |
-    additional files (token-limit)
-"""
-                prediction_extra = prediction_extra + "\n" + extra_file_yaml.strip()
-            prediction_extra_dict = load_yaml(prediction_extra, keys_fix_yaml=self.keys_fix)
-            # merge the two dictionaries
-            if isinstance(original_prediction_dict, dict) and isinstance(prediction_extra_dict, dict):
-                original_prediction_dict["pr_files"].extend(prediction_extra_dict["pr_files"])
-                new_yaml = yaml.dump(original_prediction_dict)
-                if load_yaml(new_yaml, keys_fix_yaml=self.keys_fix):
-                    prediction = new_yaml
-            return prediction
-        except Exception as e:
-            get_logger().error(f"Error extending additional files {self.pr_id}: {e}")
-            return self.prediction
 
     async def _get_prediction(self, model: str, patches_diff: str, prompt="pr_description_prompt") -> str:
         variables = copy.deepcopy(self.vars)

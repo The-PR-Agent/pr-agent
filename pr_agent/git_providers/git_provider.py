@@ -1,4 +1,3 @@
-# enum EDIT_TYPE (ADDED, DELETED, MODIFIED, RENAMED)
 import os
 import re
 import shutil
@@ -184,6 +183,25 @@ class GitProvider(ABC):
     def supports_line_question_history(self) -> bool:
         return False
 
+    def supports_checkbox_commands(self) -> bool:
+        """Whether a published comment renders command checkboxes as checkboxes.
+
+        Providers that render `- [ ]` as a tickable box override this; the default is no
+        support, so tools render commands as text instead."""
+        return False
+
+    def supports_pr_chat(self) -> bool:
+        """Whether this provider is compatible with the linked PR-Agent browser-extension chat experience."""
+        return False
+
+    def supports_markdown_tables(self) -> bool:
+        """Whether comments render pipe-table markdown.
+
+        Only consulted for providers without `gfm_markdown`, so that tools can degrade to
+        a plain table instead of refusing to render. Providers that render Markdown tables
+        but not GitHub-flavored markdown override this."""
+        return False
+
     #Given a url (issues or PR/MR) - get the .git repo url to which they belong. Needs to be implemented by the provider.
     def get_git_repo_url(self, issues_or_pr_url: str) -> str:
         get_logger().warning("Not implemented! Returning empty url")
@@ -217,13 +235,9 @@ class GitProvider(ABC):
         get_logger().warning("Not implemented! Returning None")
         return None
 
-    # Does a shallow clone, using a forked process to support a timeout guard.
-    # In case operation has failed, it is expected to throw an exception as this method does not return a value.
+    # Run a shallow, blob-filtered clone in a subprocess so the timeout can terminate the operation.
+    # Failures propagate to clone(), which handles and logs them.
     def _clone_inner(self, repo_url: str, dest_folder: str, operation_timeout_in_seconds: int=None) -> None:
-        #The following ought to be equivalent to:
-        # #Repo.clone_from(repo_url, dest_folder)
-        # , but with throwing an exception upon timeout.
-        # Note: This can only be used in context that supports using pipes.
         try:
             ssl_env = get_git_ssl_env()
         except Exception as e:

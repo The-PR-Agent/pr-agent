@@ -731,6 +731,9 @@ class PRReviewer:
         allow_resolution = (
             bool(self.prediction)
             and not bool(getattr(self.incremental, "is_incremental", False))
+            # A merged result with failed chunks is still partial, even when chunking left
+            # no additional token-budget files to report.
+            and not bool(self.review_failed_chunk_count)
             and not bool(self.remaining_files_list)
             and parsed.valid
             and current_findings is not None
@@ -1185,29 +1188,6 @@ class PRReviewer:
                     break
 
         return question_str, answer_str
-
-    def _get_previous_review_comment(self):
-        """
-        Get the previous review comment if it exists.
-        """
-        try:
-            if hasattr(self.git_provider, "get_previous_review"):
-                return self.git_provider.get_previous_review(
-                    full=not self.incremental.is_incremental,
-                    incremental=self.incremental.is_incremental,
-                )
-        except Exception as e:
-            get_logger().exception(f"Failed to get previous review comment, error: {e}")
-
-    def _remove_previous_review_comment(self, comment):
-        """
-        Remove the previous review comment if it exists.
-        """
-        try:
-            if comment:
-                self.git_provider.remove_comment(comment)
-        except Exception as e:
-            get_logger().exception(f"Failed to remove previous review comment, error: {e}")
 
     def _can_run_incremental_review(self) -> bool:
         """

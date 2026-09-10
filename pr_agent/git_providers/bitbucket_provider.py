@@ -375,6 +375,10 @@ class BitbucketProvider(GitProvider):
             return comment._cloud_comment
         return comment
 
+    def get_comment_url(self, comment):
+        comment = self._get_cloud_comment(comment)
+        return comment.data["links"]["html"]["href"]
+
     def supports_review_comment_identity(self) -> bool:
         return True
 

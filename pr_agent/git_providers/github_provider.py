@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Optional, Tuple
 from urllib.parse import urlparse
 
-from github import AppAuthentication, Auth, Github, GithubException, GithubIntegration
+from github import Auth, Github, GithubException, GithubIntegration, GithubRetry
 from github.Issue import Issue
 from retry.api import retry_call
 from starlette_context import context
@@ -123,6 +123,12 @@ class GithubProvider(GitProvider):
         return True
 
     def supports_line_question_history(self) -> bool:
+        return True
+
+    def supports_checkbox_commands(self) -> bool:
+        return True
+
+    def supports_pr_chat(self) -> bool:
         return True
 
     def _get_owner_and_repo_path(self, given_url: str) -> str:
@@ -460,8 +466,10 @@ class GithubProvider(GitProvider):
             return cached
         try:
             integration = GithubIntegration(
-                integration_id=str(get_settings().github.app_id),
-                private_key=get_settings().github.private_key,
+                auth=Auth.AppAuth(
+                    app_id=str(get_settings().github.app_id),
+                    private_key=get_settings().github.private_key,
+                ),
                 base_url=self.base_url,
             )
             slug = (getattr(integration.get_app(), "slug", "") or "").strip()
@@ -694,7 +702,7 @@ class GithubProvider(GitProvider):
                 get_logger().info(
                     f"Persistent inline comments: all {skipped} suggestion(s) "
                     f"already posted; nothing to publish")
-                return
+                return True
             comments = deduped
         else:
             comments = [
@@ -713,6 +721,7 @@ class GithubProvider(GitProvider):
                 for body_fp, code_fp in pending_fingerprints:
                     store.add(body_fp)
                     store.add(code_fp)
+            return True
         except Exception as e:
             get_logger().info("Initially failed to publish inline comments as committable")
 
@@ -722,7 +731,8 @@ class GithubProvider(GitProvider):
                 raise e # will end up with publishing the comments one by one
 
             try:
-                self._publish_inline_comments_fallback_with_verification(comments)
+                published_count = self._publish_inline_comments_fallback_with_verification(comments)
+                return bool(published_count)
             except Exception as e:
                 get_logger().error(f"Failed to publish inline code comments fallback, error: {e}")
                 raise
@@ -887,11 +897,13 @@ class GithubProvider(GitProvider):
         then publish all the remaining valid comments in a single review.
         For invalid comments, also try removing the suggestion part and posting the comment just on the first line.
         """
+        published_count = 0
         verified_comments, invalid_comments = self._verify_code_comments(comments)
 
         # publish as a group the verified comments
         if verified_comments:
             self.pr.create_review(commit=self.last_commit_id, comments=verified_comments)
+            published_count += len(verified_comments)
 
         # try to publish one by one the invalid comments as a one-line code comment
         if invalid_comments and get_settings().github.try_fix_invalid_inline_comments:
@@ -899,9 +911,10 @@ class GithubProvider(GitProvider):
             fixed_comments_as_one_liner = self._try_fix_invalid_inline_comments(invalid_comments_list)
             for comment in fixed_comments_as_one_liner:
                 try:
-                    self.publish_inline_comments([comment], disable_fallback=True)
-                    get_logger().info(f"Published invalid comment as a single line comment: {comment}")
-                except:
+                    if self.publish_inline_comments([comment], disable_fallback=True):
+                        published_count += 1
+                        get_logger().info(f"Published invalid comment as a single line comment: {comment}")
+                except Exception:
                     get_logger().error(f"Failed to publish invalid comment as a single line comment: {comment}")
 
             dropped_count = len(invalid_comments) - len(fixed_comments_as_one_liner)
@@ -920,6 +933,7 @@ class GithubProvider(GitProvider):
                 f"Dropped {len(invalid_comments)} invalid comments "
                 f"(try_fix_invalid_inline_comments is off). Paths: {dropped_paths}"
             )
+        return published_count
 
     def _verify_code_comment(self, comment: dict):
         is_verified = False
@@ -1029,8 +1043,7 @@ class GithubProvider(GitProvider):
             post_parameters_list.append(post_parameters)
 
         try:
-            self.publish_inline_comments(post_parameters_list)
-            return True
+            return bool(self.publish_inline_comments(post_parameters_list))
         except Exception as e:
             get_logger().error(f"Failed to publish code suggestion, error: {e}")
             return False
@@ -1368,15 +1381,18 @@ class GithubProvider(GitProvider):
         if self.deployment_type == 'app':
             try:
                 private_key = get_settings().github.private_key
-                # The app id is an integer in the settings toml, but PyJWT >=2.11 requires a
-                # string `iss` claim, and PyGithub 1.59 passes it through raw (#2955).
+                # The app id is an integer in the settings toml. PyJWT >=2.11 requires a
+                # string `iss` claim; PyGithub 2.7+ normalizes an int app id to a string
+                # upstream (#2955, PyGithub#3272), so the cast is harmless on the 2.10 pin.
                 app_id = str(get_settings().github.app_id)
             except AttributeError as e:
                 raise ValueError("GitHub app ID and private key are required when using GitHub app deployment") from e
             if not self.installation_id:
                 raise ValueError("GitHub app installation ID is required when using GitHub app deployment")
-            auth = AppAuthentication(app_id=app_id, private_key=private_key,
-                                     installation_id=self.installation_id)
+            auth = Auth.AppInstallationAuth(
+                Auth.AppAuth(app_id=app_id, private_key=private_key),
+                installation_id=self.installation_id,
+            )
             self.auth = auth
         elif self.deployment_type == 'user':
             try:
@@ -1387,7 +1403,21 @@ class GithubProvider(GitProvider):
                     "https://github.com/Codium-ai/pr-agent#method-2-run-from-source") from e
             self.auth = Auth.Token(token)
         if self.auth:
-            return Github(auth=self.auth, base_url=self.base_url)
+            github_config = get_settings().github
+            # PyGithub 2.x defaults to pacing and retries (0.25s between requests, 1s between
+            # writes, 10 retries); these had no equivalent on 1.59. The settings mirror the
+            # 1.59 behaviour, so the upgrade stays behaviour-neutral unless an operator opts in.
+            seconds_between_requests = github_config.get("seconds_between_requests", 0)
+            seconds_between_writes = github_config.get("seconds_between_writes", 0)
+            api_retries = github_config.get("api_retries", 0)
+            retry = GithubRetry(total=api_retries) if api_retries else None
+            return Github(
+                auth=self.auth,
+                base_url=self.base_url,
+                seconds_between_requests=seconds_between_requests,
+                seconds_between_writes=seconds_between_writes,
+                retry=retry,
+            )
         else:
             raise ValueError("Could not authenticate to GitHub")
 

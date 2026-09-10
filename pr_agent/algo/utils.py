@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import copy
 import difflib
-import hashlib
 import html
 import json
 import os
@@ -10,8 +9,6 @@ import re
 import string
 import sys
 import textwrap
-import time
-import traceback
 from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from enum import Enum
@@ -23,7 +20,6 @@ import html2text
 import requests
 import yaml
 from pydantic import BaseModel
-from starlette_context import context
 
 from pr_agent.algo import MAX_TOKENS
 from pr_agent.algo.git_patch_processing import (
@@ -34,7 +30,7 @@ from pr_agent.algo.git_patch_processing import (
 from pr_agent.algo.run_details import get_run_details
 from pr_agent.algo.token_handler import TokenEncoder
 from pr_agent.algo.types import FilePatchInfo
-from pr_agent.config_loader import get_settings, get_verbosity_level, global_settings
+from pr_agent.config_loader import get_settings, get_verbosity_level
 from pr_agent.log import get_logger
 
 _ENCODED_USER_TEXT_PREFIX = "__pr_agent_encoded_text__:"
@@ -223,14 +219,6 @@ class PRDescriptionHeader(str, Enum):
     FILE_WALKTHROUGH = "File Walkthrough"
 
 
-def get_setting(key: str) -> Any:
-    try:
-        key = key.upper()
-        return context.get("settings", global_settings).get(key, global_settings.get(key, None))
-    except Exception:
-        return global_settings.get(key, None)
-
-
 def as_review_text(value) -> str:
     """Flatten a review field the model returned as a list or mapping into readable text.
 
@@ -273,18 +261,6 @@ def emphasize_header(text: str, only_markdown=False, reference_link=None) -> str
     except Exception as e:
         get_logger().exception(f"Failed to emphasize header: {e}")
         return text
-
-
-def unique_strings(input_list: List[str]) -> List[str]:
-    if not input_list or not isinstance(input_list, list):
-        return input_list
-    seen = set()
-    unique_list = []
-    for item in input_list:
-        if item not in seen:
-            unique_list.append(item)
-            seen.add(item)
-    return unique_list
 
 
 def _expand_minute_suffix(text: str) -> str:
@@ -1645,64 +1621,6 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
                             break
     return position, absolute_position
 
-def get_rate_limit_status(github_token) -> dict:
-    GITHUB_API_URL = get_settings(use_context=False).get("GITHUB.BASE_URL", "https://api.github.com").rstrip("/")  # "https://api.github.com"
-    # GITHUB_API_URL = "https://api.github.com"
-    RATE_LIMIT_URL = f"{GITHUB_API_URL}/rate_limit"
-    HEADERS = {
-        "Accept": "application/vnd.github.v3+json",
-        "Authorization": f"token {github_token}"
-    }
-
-    response = requests.get(RATE_LIMIT_URL, headers=HEADERS)
-    try:
-        rate_limit_info = response.json()
-        if rate_limit_info.get('message') == 'Rate limiting is not enabled.':  # for github enterprise
-            return {'resources': {}}
-        response.raise_for_status()  # Check for HTTP errors
-    except:  # retry
-        time.sleep(0.1)
-        response = requests.get(RATE_LIMIT_URL, headers=HEADERS)
-        return response.json()
-    return rate_limit_info
-
-
-def validate_rate_limit_github(github_token, installation_id=None, threshold=0.1) -> bool:
-    try:
-        rate_limit_status = get_rate_limit_status(github_token)
-        if installation_id:
-            get_logger().debug(f"installation_id: {installation_id}, Rate limit status: {rate_limit_status['rate']}")
-    # validate that the rate limit is not exceeded
-        # validate that the rate limit is not exceeded
-        for key, value in rate_limit_status['resources'].items():
-            if value['remaining'] < value['limit'] * threshold:
-                get_logger().error(f"key: {key}, value: {value}")
-                return False
-        return True
-    except Exception as e:
-        get_logger().error(f"Error in rate limit {e}",
-                           artifact={"traceback": traceback.format_exc()})
-        return True
-
-
-def validate_and_await_rate_limit(github_token):
-    try:
-        rate_limit_status = get_rate_limit_status(github_token)
-        # validate that the rate limit is not exceeded
-        for key, value in rate_limit_status['resources'].items():
-            if value['remaining'] < value['limit'] // 80:
-                get_logger().error(f"key: {key}, value: {value}")
-                sleep_time_sec = value['reset'] - datetime.now().timestamp()
-                sleep_time_hour = sleep_time_sec / 3600.0
-                get_logger().error(f"Rate limit exceeded. Sleeping for {sleep_time_hour} hours")
-                if sleep_time_sec > 0:
-                    time.sleep(sleep_time_sec + 1)
-                rate_limit_status = get_rate_limit_status(github_token)
-        return rate_limit_status
-    except:
-        get_logger().error("Error in rate limit")
-        return None
-
 
 def github_action_output(output_data: dict, key_name: str):
     try:
@@ -1897,25 +1815,6 @@ def is_value_no(value):
     if value_str == 'no' or value_str == 'none' or value_str == 'false':
         return True
     return False
-
-
-def set_pr_string(repo_name, pr_number):
-    return f"{repo_name}#{pr_number}"
-
-
-def string_to_uniform_number(s: str) -> float:
-    """
-    Convert a string to a uniform number in the range [0, 1].
-    The uniform distribution is achieved by the nature of the SHA-256 hash function, which produces a uniformly distributed hash value over its output space.
-    """
-    # Generate a hash of the string
-    hash_object = hashlib.sha256(s.encode())
-    # Convert the hash to an integer
-    hash_int = int(hash_object.hexdigest(), 16)
-    # Normalize the integer to the range [0, 1]
-    max_hash_int = 2 ** 256 - 1
-    uniform_number = float(hash_int) / max_hash_int
-    return uniform_number
 
 
 def process_description(description_full: str) -> Tuple[str, List]:

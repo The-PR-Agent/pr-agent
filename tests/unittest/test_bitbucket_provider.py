@@ -651,6 +651,33 @@ not a valid hunk
         assert comments[0].body == "## PR Review\n\nreview body"
         assert comments[0]._cloud_comment is comment
 
+    def test_persistent_review_update_links_status_to_existing_cloud_comment(self):
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.pr = MagicMock()
+        provider.max_comment_length = 32_768
+        provider.get_latest_commit_url = MagicMock(return_value="https://bitbucket.org/acme/repo/commits/head")
+        provider.publish_comment = MagicMock(return_value={"id": 8})
+
+        header = "## PR Review"
+        identity = PRReviewIdentity.REGULAR.value
+        comment_url = "https://bitbucket.org/acme/repo/pull-requests/1#comment-7"
+        existing = MagicMock()
+        existing.raw = f"{header}\n\n{identity}\n\nprevious review"
+        existing.data = {"links": {"html": {"href": comment_url}}}
+        provider.pr.comments.return_value = [existing]
+
+        provider.publish_persistent_comment(
+            f"{header}\n\n{identity}\n\nupdated review",
+            initial_header=header,
+            final_update_message=True,
+            identity_marker=identity,
+        )
+
+        provider.publish_comment.assert_called_once_with(
+            f"**[Persistent review]({comment_url})** updated to latest commit "
+            "https://bitbucket.org/acme/repo/commits/head"
+        )
+
 class TestBitbucketServerProvider:
     @staticmethod
     def _code_suggestion(line: int):

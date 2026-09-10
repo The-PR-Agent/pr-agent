@@ -673,7 +673,3 @@ async def extract_and_cache_pr_tickets(git_provider, vars):
     else:
         get_logger().info("Using cached tickets", artifact={"tickets": related_tickets})
         vars['related_tickets'] = related_tickets
-
-
-def check_tickets_relevancy():
-    return True
