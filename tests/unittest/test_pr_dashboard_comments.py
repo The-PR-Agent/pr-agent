@@ -40,6 +40,11 @@ class TestClassify:
         body = f"{PRReviewIdentity.REGULAR.value}\n## Our Custom Review Title\n"
         assert comments.classify(body) is comments.CommentKind.REVIEW
 
+    def test_suggestions_summary_fixture_is_recognised(self):
+        """The only /improve fixture in the suite is classified against a real body, not an inline string"""
+        body = (FIXTURES / "suggestions_summary.md").read_text(encoding="utf-8")
+        assert comments.classify(body) is comments.CommentKind.SUGGESTIONS
+
     def test_human_comment_is_not_ours(self):
         """An ordinary human comment is not attributed to PR-Agent"""
         assert comments.classify("looks good to me") is comments.CommentKind.OTHER
@@ -52,16 +57,18 @@ class TestClassify:
 
 class TestParseFindings:
     def test_details_layout(self):
-        """Findings are extracted from the collapsed details layout"""
+        """Findings are extracted from the collapsed details layout with their exact titles"""
         findings = comments.parse_findings((FIXTURES / "review_details.md").read_text(encoding="utf-8"))
-        assert findings
-        assert all(f.title for f in findings)
+        titles = [f.title for f in findings]
+        assert titles == ["Race condition on shared queue state", "Missing null check before dereference"]
 
     def test_expanded_layout_exposes_file_and_lines(self):
-        """The expanded layout yields the file path and line range as text, not only links"""
+        """The expanded layout yields the exact file path and line range as text, not only links"""
         findings = comments.parse_findings((FIXTURES / "review_expanded.md").read_text(encoding="utf-8"))
-        assert findings
-        assert any(f.relevant_file and f.line_range for f in findings)
+        by_title = {f.title: f for f in findings}
+        finding = by_title["Race condition on shared queue state"]
+        assert finding.relevant_file == "src/worker/queue.py"
+        assert finding.line_range == (42, 58)
 
     def test_title_excludes_the_location_suffix(self):
         """The title is the bold run only; the file and line range never leak into it"""
