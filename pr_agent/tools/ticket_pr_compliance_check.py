@@ -15,7 +15,9 @@ from pr_agent.log import get_logger
 
 # Compile the regex pattern once, outside the function
 GITHUB_TICKET_PATTERN = re.compile(
-     r'(https://github[^/]+/[^/]+/[^/]+/issues/\d+)|(\b(\w+)/(\w+)#(\d+)\b)|(#\d+)'
+    r'(https://github[^/]+/[^/]+/[^/]+/issues/\d+)'
+    r'|((?<![\w./-])([A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)/([A-Za-z0-9._-]+)#(\d+)\b)'
+    r'|(#\d+)'
 )
 # Option A: issue number at start of branch or after /, followed by - or end (e.g. feature/1-test-issue, 123-fix)
 BRANCH_ISSUE_PATTERN = re.compile(r"(?:^|/)(\d{1,6})(?=-|$)")
@@ -673,7 +675,3 @@ async def extract_and_cache_pr_tickets(git_provider, vars):
     else:
         get_logger().info("Using cached tickets", artifact={"tickets": related_tickets})
         vars['related_tickets'] = related_tickets
-
-
-def check_tickets_relevancy():
-    return True

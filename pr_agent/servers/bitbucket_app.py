@@ -409,7 +409,7 @@ async def handle_github_webhooks(background_tasks: BackgroundTasks, request: Req
     return "OK"
 
 @router.get("/webhook")
-async def handle_github_webhooks(request: Request, response: Response):
+async def handle_webhook_health(request: Request, response: Response):
     return "Webhook server online!"
 
 @router.post("/installed")

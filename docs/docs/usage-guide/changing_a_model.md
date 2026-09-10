@@ -43,7 +43,7 @@ To reduce costs for non-urgent/background tasks, enable Flex Processing:
 
 ```toml
 [litellm]
-extra_body='{"processing_mode": "flex"}'
+extra_body='{"service_tier": "flex"}'
 ```
 
 See [OpenAI Flex Processing docs](https://platform.openai.com/docs/guides/flex-processing) for details.
@@ -105,7 +105,7 @@ duplicate_examples=true # will duplicate the examples in the prompt, to help the
 api_base = "http://localhost:11434" # or whatever port you're running Ollama on
 ```
 
-By default, Ollama uses a context window size of 2048 tokens. In most cases this is not enough to cover pr-agent prompt and pull-request diff. Context window size can be overridden with the `OLLAMA_CONTEXT_LENGTH` environment variable. For example, to set the default context length to 8K, use: `OLLAMA_CONTEXT_LENGTH=8192 ollama serve`. More information you can find on the [official ollama faq](https://github.com/ollama/ollama/blob/main/docs/faq.md#how-can-i-specify-the-context-window-size).
+By default, Ollama uses a context window size of 2048 tokens. In most cases this is not enough to cover pr-agent prompt and pull-request diff. Context window size can be overridden with the `OLLAMA_CONTEXT_LENGTH` environment variable. For example, to set the default context length to 8K, use: `OLLAMA_CONTEXT_LENGTH=8192 ollama serve`. More information you can find on the [official ollama faq](https://docs.ollama.com/faq#how-can-i-specify-the-context-window-size).
 
 Please note that the `custom_model_max_tokens` setting should be configured in accordance with the `OLLAMA_CONTEXT_LENGTH`. Failure to do so may result in unexpected model output.
 
@@ -343,6 +343,39 @@ model_id = "your-application-inference-profile-arn"
 
 The `litellm.model_id` parameter applies only to classic `bedrock/` calls made through the `bedrock-runtime` APIs. It does not apply to `bedrock_mantle/`; for cost allocation with the Mantle Chat Completions and Responses APIs, use [Amazon Bedrock Projects](https://docs.aws.amazon.com/bedrock/latest/userguide/cost-mgmt-projects.html).
 
+#### Claude 5 thinking with an application inference profile ARN
+
+Claude Sonnet 5 on Bedrock is invoked through an inference profile rather than a direct
+foundation-model id. When that profile is an application inference profile, its ARN is an
+opaque value that carries no model name. Thinking configuration in PR-Agent is gated on
+recognizing the model, so the opaque ARN can never match: `enable_claude_adaptive_thinking`
+requires a recognized Claude 5 model name in the id, and `enable_claude_extended_thinking`
+requires exact membership in `claude_extended_thinking_models`. PR-Agent logs a warning in
+that case, so the unconfigured state is no longer silent.
+
+Address the model by name and pass the profile ARN through `litellm.model_id`, which is what
+the invocation actually uses:
+
+```toml
+[config] # in configuration.toml
+model = "bedrock/converse/eu.anthropic.claude-sonnet-5"
+fallback_models = ["bedrock/converse/eu.anthropic.claude-sonnet-5"]
+enable_claude_adaptive_thinking = true # requires a recognizable claude 5 model name in `model`
+
+[litellm]
+model_id = "arn:aws:bedrock:eu-central-1:<account-id>:application-inference-profile/<profile-id>"
+```
+
+Cost attribution is preserved through the application inference profile, and because `model`
+is the named id, the adaptive-thinking payload is applied and kept intact.
+
+Two caveats. First, ARNs only fail the detection when the suffix is opaque: an ARN that
+embeds the model family, for example `...:inference-profile/us.anthropic.claude-sonnet-5`,
+normalises to a string the adaptive regex does match. The miss is specific to application
+inference profiles with an opaque hex suffix. Second, `litellm.model_id` is a single global
+value applied to every model whose id contains `bedrock/`, so this configuration cannot point
+different models at different profiles within one fallback chain without per-call handling.
+
 #### Using a Custom VPC Endpoint (PrivateLink)
 
 To route Bedrock traffic through a VPC interface endpoint instead of the public `bedrock-runtime` endpoint, set `AWS_BEDROCK_RUNTIME_ENDPOINT` either as an environment variable or in `[aws]`:
@@ -554,7 +587,7 @@ For `openrouter/...` models you can optionally restrict which upstream providers
 # max_tokens = 16000                   # hard cap on completion tokens for the request
 ```
 
-`provider_only` and `reasoning_effort = "none"` are useful to pin a specific provider and to bound the cost of reasoning models. Because Openrouter treats effort and token budgets as mutually exclusive, an explicit Openrouter-specific `"none"` keeps reasoning disabled when the model supports disabling it. Grok 4.5/4.6 clamp `"none"` before precedence is applied, so a positive budget wins there; otherwise a positive `reasoning_max_tokens` value takes precedence over the global effort and other Openrouter-specific values. Invalid Openrouter-specific effort values are warned about and treated as unset, so registered reasoning models fall back to `config.reasoning_effort`. Openrouter normalizes `"max"` to `"xhigh"` in this path to match LiteLLM 1.98.0. Supported effort values vary by model, and models whose metadata marks reasoning as mandatory reject `"none"`. For Anthropic models using a reasoning budget, set the effective output `max_tokens` higher than `reasoning_max_tokens` so the final answer has output headroom. See the Openrouter [provider routing](https://openrouter.ai/docs/guides/routing/provider-selection) and [reasoning tokens](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens) docs.
+`provider_only` and `reasoning_effort = "none"` are useful to pin a specific provider and to bound the cost of reasoning models. Because Openrouter treats effort and token budgets as mutually exclusive, an explicit Openrouter-specific `"none"` keeps reasoning disabled when the model supports disabling it. Grok 4.5/4.6 clamp `"none"` before precedence is applied, so a positive budget wins there; otherwise a positive `reasoning_max_tokens` value takes precedence over the global effort and other Openrouter-specific values. Invalid Openrouter-specific effort values are warned about and treated as unset, so registered reasoning models fall back to `config.reasoning_effort`. Openrouter normalizes `"max"` to `"xhigh"` in this path for LiteLLM/OpenRouter compatibility. Supported effort values vary by model, and models whose metadata marks reasoning as mandatory reject `"none"`. For Anthropic models using a reasoning budget, set the effective output `max_tokens` higher than `reasoning_max_tokens` so the final answer has output headroom. See the Openrouter [provider routing](https://openrouter.ai/docs/guides/routing/provider-selection) and [reasoning tokens](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens) docs.
 
 ### OrcaRouter
 
@@ -692,6 +725,11 @@ built-in defaults.
     `claude_extended_thinking_models_override` anyway, PR-Agent skips the extended-thinking payload
     for it and logs a warning rather than sending a request the provider would reject — use
     `enable_claude_adaptive_thinking` for those models instead.
+
+Both thinking gates only fire when the model id itself is recognizable: an opaque id such as a
+Bedrock application inference profile ARN matches neither gate, and PR-Agent logs a warning
+instead of silently sending nothing. See [Claude 5 thinking with an application inference
+profile ARN](#claude-5-thinking-with-an-application-inference-profile-arn).
 
 ## Output token limit
 

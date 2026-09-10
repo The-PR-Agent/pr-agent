@@ -1141,7 +1141,7 @@ class TestLiteLLMReasoningEffortGrok:
         ],
     )
     def test_xai_grok_litellm_reasoning_param_support(self, monkeypatch, model, effort, requires_allowlist):
-        """Pin LiteLLM 1.98 capability gaps so upgrades expose removable workarounds."""
+        """Pin LiteLLM capability gaps so upgrades expose removable workarounds."""
         monkeypatch.setattr(litellm, "drop_params", False)
         bundled_model_cost = GetModelCostMap.load_local_model_cost_map()
         pinned_model_cost = dict(litellm.model_cost)

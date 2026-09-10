@@ -1,9 +1,13 @@
+from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
 
 import pytest
 
 from pr_agent.algo.types import EDIT_TYPE
+from pr_agent.algo.utils import PRReviewHeader, PRReviewIdentity
 from pr_agent.git_providers.codecommit_provider import CodeCommitFile, CodeCommitProvider, PullRequestCCMimic
+from pr_agent.tools.pr_reviewer import PRReviewer
 
 
 class TestCodeCommitFile:
@@ -38,6 +42,74 @@ class TestCodeCommitProvider:
         provider.git_files = git_files
         provider.codecommit_client = MagicMock()
         return provider
+
+    @staticmethod
+    def _make_persistent_provider(targets=None):
+        provider = object.__new__(CodeCommitProvider)
+        provider.repo_name = "source-repository"
+        provider.pr_num = 321
+        provider.pr_url = (
+            "https://us-east-1.console.aws.amazon.com/codesuite/codecommit/"
+            "repositories/source-repository/pull-requests/321"
+        )
+        provider.diff_files = None
+        provider.git_files = []
+        provider.codecommit_client = MagicMock()
+        targets = targets or [
+            SimpleNamespace(
+                repository_name="source-repository",
+                source_commit="source-commit-1",
+                source_branch="refs/heads/feature",
+                destination_commit="destination-commit-1",
+                destination_branch="refs/heads/main",
+            )
+        ]
+        provider.pr = PullRequestCCMimic("Persistent PR", [], targets=targets)
+        provider.pr.source_commit = targets[0].source_commit
+        provider.pr.source_branch = targets[0].source_branch
+        provider.pr.destination_commit = targets[0].destination_commit
+        provider.pr.destination_branch = targets[0].destination_branch
+        return provider
+
+    @staticmethod
+    def _comment(
+        body,
+        comment_id="comment-1",
+        created_at=None,
+        last_modified_at=None,
+        **overrides,
+    ):
+        comment = {
+            "commentId": comment_id,
+            "content": body,
+            "creationDate": created_at or datetime(2024, 1, 1, tzinfo=timezone.utc),
+            "lastModifiedDate": last_modified_at or created_at or datetime(2024, 1, 1, tzinfo=timezone.utc),
+            "authorArn": "arn:aws:iam::123456789012:user/pr-agent",
+        }
+        comment.update(overrides)
+        return comment
+
+    @staticmethod
+    def _comment_group(
+        *comments,
+        repository_name="source-repository",
+        before_commit_id="old-destination-commit",
+        after_commit_id="old-source-commit",
+        location=None,
+    ):
+        group = {
+            "repositoryName": repository_name,
+            "beforeCommitId": before_commit_id,
+            "afterCommitId": after_commit_id,
+            "comments": list(comments),
+        }
+        if location is not None:
+            group["location"] = location
+        return group
+
+    @staticmethod
+    def _successful_update_response(comment_id, body):
+        return {"comment": {"commentId": comment_id, "content": body, "deleted": False}}
 
     def test_get_diff_files_includes_deleted_file(self):
         provider = object.__new__(CodeCommitProvider)
@@ -240,6 +312,477 @@ class TestCodeCommitProvider:
                 comment="Review\n\ncomment",
             ),
         ]
+
+    def test_persistent_review_creates_then_updates_each_pull_request_target(self):
+        targets = [
+            SimpleNamespace(
+                repository_name="source-repository",
+                source_commit="source-commit-1",
+                source_branch="refs/heads/feature",
+                destination_commit="destination-commit-1",
+                destination_branch="refs/heads/main",
+            ),
+            SimpleNamespace(
+                repository_name="source-repository",
+                source_commit="source-commit-2",
+                source_branch="refs/heads/feature",
+                destination_commit="destination-commit-2",
+                destination_branch="refs/heads/release",
+            ),
+        ]
+        provider = self._make_persistent_provider(targets=targets)
+        provider.codecommit_client.get_comments_for_pull_request.return_value = []
+
+        def publish_comment(**kwargs):
+            return {
+                "comment": self._comment(
+                    kwargs["comment"],
+                    comment_id=f"comment-{kwargs['source_commit']}",
+                )
+            }
+
+        provider.codecommit_client.publish_comment.side_effect = publish_comment
+        provider.codecommit_client.update_comment.side_effect = self._successful_update_response
+        header = "## Team Review"
+
+        created = provider.publish_persistent_comment(
+            f"{header}\n\nfirst review",
+            initial_header=header,
+            final_update_message=False,
+            identity_marker=PRReviewIdentity.REGULAR.value,
+            legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
+        )
+        first_bodies = {
+            call.kwargs["source_commit"]: call.kwargs["comment"]
+            for call in provider.codecommit_client.publish_comment.call_args_list
+        }
+        provider.codecommit_client.get_comments_for_pull_request.return_value = [
+            self._comment_group(
+                self._comment(first_bodies["source-commit-1"], comment_id="comment-source-commit-1"),
+                before_commit_id="destination-commit-1",
+                after_commit_id="source-commit-1",
+            ),
+            self._comment_group(
+                self._comment(first_bodies["source-commit-2"], comment_id="comment-source-commit-2"),
+                before_commit_id="destination-commit-2",
+                after_commit_id="source-commit-2",
+            ),
+        ]
+        provider.codecommit_client.publish_comment.reset_mock()
+
+        updated = provider.publish_persistent_comment(
+            f"{header}\n\nsecond review",
+            initial_header=header,
+            final_update_message=False,
+            identity_marker=PRReviewIdentity.REGULAR.value,
+            legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
+        )
+
+        assert [comment.id for comment in created] == ["comment-source-commit-1", "comment-source-commit-2"]
+        assert [comment.id for comment in updated] == ["comment-source-commit-1", "comment-source-commit-2"]
+        provider.codecommit_client.publish_comment.assert_not_called()
+        assert provider.codecommit_client.update_comment.call_count == 2
+        update_bodies = {
+            call.args[0]: call.args[1]
+            for call in provider.codecommit_client.update_comment.call_args_list
+        }
+        assert set(update_bodies) == {"comment-source-commit-1", "comment-source-commit-2"}
+        assert PRReviewIdentity.REGULAR.value in first_bodies["source-commit-1"]
+        assert PRReviewIdentity.REGULAR.value in update_bodies["comment-source-commit-1"]
+        assert PRReviewIdentity.REGULAR.value in update_bodies["comment-source-commit-2"]
+        assert "second review" in update_bodies["comment-source-commit-1"]
+        assert "Review updated until commit source-commit-1" in update_bodies["comment-source-commit-1"]
+        assert "Review updated until commit source-commit-2" in update_bodies["comment-source-commit-2"]
+
+    def test_persistent_review_updates_comment_from_older_commit_pair_for_single_target(self):
+        provider = self._make_persistent_provider()
+        existing_body = f"## Team Review\n\n{PRReviewIdentity.REGULAR.value}\n\nprevious review"
+        provider.codecommit_client.get_comments_for_pull_request.return_value = [
+            self._comment_group(
+                self._comment(existing_body, comment_id="older-commit-comment"),
+                before_commit_id="older-destination-commit",
+                after_commit_id="older-source-commit",
+            )
+        ]
+        provider.codecommit_client.update_comment.side_effect = self._successful_update_response
+
+        result = provider.publish_persistent_comment(
+            "## Team Review\n\nnew review",
+            initial_header="## Team Review",
+            final_update_message=False,
+            identity_marker=PRReviewIdentity.REGULAR.value,
+            legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
+        )
+
+        assert result.id == "older-commit-comment"
+        provider.codecommit_client.publish_comment.assert_not_called()
+        comment_id, updated_body = provider.codecommit_client.update_comment.call_args.args
+        assert comment_id == "older-commit-comment"
+        assert "Review updated until commit source-commit-1" in updated_body
+
+    def test_persistent_review_falls_back_to_new_comment_when_comment_listing_fails(self):
+        provider = self._make_persistent_provider()
+        provider.codecommit_client.get_comments_for_pull_request.side_effect = ValueError("AccessDenied")
+        provider.codecommit_client.publish_comment.return_value = {
+            "comment": self._comment("created body", comment_id="fallback-comment")
+        }
+
+        result = provider.publish_persistent_comment(
+            "## Team Review\n\nnew review",
+            initial_header="## Team Review",
+            final_update_message=False,
+            identity_marker=PRReviewIdentity.REGULAR.value,
+            legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
+        )
+
+        assert result.id == "fallback-comment"
+        provider.codecommit_client.update_comment.assert_not_called()
+        provider.codecommit_client.publish_comment.assert_called_once()
+        assert PRReviewIdentity.REGULAR.value in provider.codecommit_client.publish_comment.call_args.kwargs["comment"]
+
+    def test_persistent_review_does_not_use_repository_only_match_for_multiple_targets(self):
+        targets = [
+            SimpleNamespace(
+                repository_name="source-repository",
+                source_commit="source-commit-1",
+                source_branch="refs/heads/feature",
+                destination_commit="destination-commit-1",
+                destination_branch="refs/heads/main",
+            ),
+            SimpleNamespace(
+                repository_name="source-repository",
+                source_commit="source-commit-2",
+                source_branch="refs/heads/feature",
+                destination_commit="destination-commit-2",
+                destination_branch="refs/heads/release",
+            ),
+        ]
+        provider = self._make_persistent_provider(targets=targets)
+        existing_body = f"## Team Review\n\n{PRReviewIdentity.REGULAR.value}\n\nprevious review"
+        provider.codecommit_client.get_comments_for_pull_request.return_value = [
+            self._comment_group(
+                self._comment(existing_body, comment_id="unmatched-comment"),
+                before_commit_id="older-destination-commit",
+                after_commit_id="older-source-commit",
+            )
+        ]
+
+        provider.publish_persistent_comment(
+            "## Team Review\n\nnew review",
+            initial_header="## Team Review",
+            final_update_message=False,
+            identity_marker=PRReviewIdentity.REGULAR.value,
+            legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
+        )
+
+        provider.codecommit_client.update_comment.assert_not_called()
+        assert provider.codecommit_client.publish_comment.call_args_list == [
+            call(
+                repo_name="source-repository",
+                pr_number=321,
+                destination_commit="destination-commit-1",
+                source_commit="source-commit-1",
+                comment=provider.codecommit_client.publish_comment.call_args_list[0].kwargs["comment"],
+            ),
+            call(
+                repo_name="source-repository",
+                pr_number=321,
+                destination_commit="destination-commit-2",
+                source_commit="source-commit-2",
+                comment=provider.codecommit_client.publish_comment.call_args_list[1].kwargs["comment"],
+            ),
+        ]
+
+    def test_persistent_review_does_not_use_ambiguous_destination_match_for_multiple_targets(self):
+        targets = [
+            SimpleNamespace(
+                repository_name="source-repository",
+                source_commit="source-commit-a-new",
+                source_branch="refs/heads/feature-a",
+                destination_commit="shared-destination-commit",
+                destination_branch="refs/heads/main",
+            ),
+            SimpleNamespace(
+                repository_name="source-repository",
+                source_commit="source-commit-b-new",
+                source_branch="refs/heads/feature-b",
+                destination_commit="shared-destination-commit",
+                destination_branch="refs/heads/main",
+            ),
+        ]
+        provider = self._make_persistent_provider(targets=targets)
+        existing_body = f"## Team Review\n\n{PRReviewIdentity.REGULAR.value}\n\nprevious review"
+        provider.codecommit_client.get_comments_for_pull_request.return_value = [
+            self._comment_group(
+                self._comment(
+                    existing_body,
+                    comment_id="target-b-old",
+                    created_at=datetime(2024, 1, 2, tzinfo=timezone.utc),
+                ),
+                before_commit_id="shared-destination-commit",
+                after_commit_id="source-commit-b-old",
+            ),
+            self._comment_group(
+                self._comment(
+                    existing_body,
+                    comment_id="target-a-old",
+                    created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                ),
+                before_commit_id="shared-destination-commit",
+                after_commit_id="source-commit-a-old",
+            ),
+        ]
+
+        provider.publish_persistent_comment(
+            "## Team Review\n\nnew review",
+            initial_header="## Team Review",
+            final_update_message=False,
+            identity_marker=PRReviewIdentity.REGULAR.value,
+            legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
+        )
+
+        provider.codecommit_client.update_comment.assert_not_called()
+        assert [
+            call.kwargs["source_commit"]
+            for call in provider.codecommit_client.publish_comment.call_args_list
+        ] == ["source-commit-a-new", "source-commit-b-new"]
+
+    @pytest.mark.parametrize("raw_order", [("old", "new"), ("new", "old")])
+    def test_get_issue_comments_uses_oldest_first_creation_order_for_answer(self, raw_order):
+        provider = self._make_persistent_provider()
+        comments_by_name = {
+            "old": self._comment(
+                "older answer",
+                comment_id="old-comment",
+                created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                last_modified_at=datetime(2024, 1, 10, tzinfo=timezone.utc),
+            ),
+            "new": self._comment(
+                "newer answer",
+                comment_id="new-comment",
+                created_at=datetime(2024, 1, 2, tzinfo=timezone.utc),
+            ),
+        }
+        provider.codecommit_client.get_comments_for_pull_request.return_value = [
+            self._comment_group(*(comments_by_name[name] for name in raw_order))
+        ]
+
+        comments = provider.get_issue_comments()
+
+        assert provider.is_supported("get_issue_comments") is True
+        assert provider.supports_review_comment_identity() is True
+        assert [comment.id for comment in comments] == ["old-comment", "new-comment"]
+        assert comments[0].user.login == "arn:aws:iam::123456789012:user/pr-agent"
+        provider.codecommit_client.get_comments_for_pull_request.assert_called_once_with(321)
+
+    @pytest.mark.parametrize("raw_order", [("q-old", "a-old", "q-new", "a-new"), ("a-new", "q-new", "a-old", "q-old")])
+    def test_answer_mode_uses_newest_question_and_answer_after_oldest_first_sort(self, raw_order):
+        provider = self._make_persistent_provider()
+        bodies_by_name = {
+            "q-old": "Questions to better understand the PR:\n\nold question",
+            "a-old": "/answer old answer",
+            "q-new": "Questions to better understand the PR:\n\nnew question",
+            "a-new": "/answer new answer",
+        }
+        dates_by_name = {
+            "q-old": datetime(2024, 1, 1, tzinfo=timezone.utc),
+            "a-old": datetime(2024, 1, 2, tzinfo=timezone.utc),
+            "q-new": datetime(2024, 1, 3, tzinfo=timezone.utc),
+            "a-new": datetime(2024, 1, 4, tzinfo=timezone.utc),
+        }
+        provider.codecommit_client.get_comments_for_pull_request.return_value = [
+            self._comment_group(
+                *(
+                    self._comment(
+                        bodies_by_name[name],
+                        comment_id=name,
+                        created_at=dates_by_name[name],
+                    )
+                    for name in raw_order
+                )
+            )
+        ]
+        reviewer = PRReviewer.__new__(PRReviewer)
+        reviewer.is_answer = True
+        reviewer.git_provider = provider
+
+        question, answer = reviewer._get_user_answers()
+
+        assert question == bodies_by_name["q-new"]
+        assert answer == bodies_by_name["a-new"]
+
+    @pytest.mark.parametrize("raw_order", [("old", "new"), ("new", "old")])
+    def test_persistent_review_updates_newest_duplicate_under_both_api_feed_orders(self, raw_order):
+        provider = self._make_persistent_provider()
+        provider.codecommit_client.update_comment.side_effect = self._successful_update_response
+        body = f"## Team Review\n\n{PRReviewIdentity.REGULAR.value}\n\nprevious review"
+        comments_by_name = {
+            "old": self._comment(
+                body,
+                comment_id="old-comment",
+                created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                last_modified_at=datetime(2024, 1, 10, tzinfo=timezone.utc),
+            ),
+            "new": self._comment(
+                body,
+                comment_id="new-comment",
+                created_at=datetime(2024, 1, 2, tzinfo=timezone.utc),
+            ),
+        }
+        provider.codecommit_client.get_comments_for_pull_request.return_value = [
+            self._comment_group(*(comments_by_name[name] for name in raw_order))
+        ]
+
+        provider.publish_persistent_comment(
+            "## Team Review\n\nnew review",
+            initial_header="## Team Review",
+            final_update_message=False,
+            identity_marker=PRReviewIdentity.REGULAR.value,
+            legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
+        )
+
+        provider.codecommit_client.update_comment.assert_called_once()
+        assert provider.codecommit_client.update_comment.call_args.args[0] == "new-comment"
+        provider.codecommit_client.publish_comment.assert_not_called()
+
+    def test_get_issue_comments_filters_deleted_replies_inline_and_malformed_comments(self):
+        provider = self._make_persistent_provider()
+        provider.codecommit_client.get_comments_for_pull_request.return_value = [
+            "not a group",
+            self._comment_group(self._comment("valid old", comment_id="valid-old")),
+            self._comment_group(
+                self._comment("reply", comment_id="reply", inReplyTo="valid-old"),
+                self._comment("deleted", comment_id="deleted", deleted=True),
+                self._comment("missing id", commentId=None),
+                self._comment("", comment_id="empty-body"),
+                self._comment("bad timestamp", comment_id="bad-timestamp", creationDate="yesterday"),
+            ),
+            self._comment_group(
+                self._comment("inline", comment_id="inline"),
+                location={"filePath": "src/app.py", "filePosition": 7},
+            ),
+            self._comment_group(
+                self._comment(
+                    "valid new",
+                    comment_id="valid-new",
+                    created_at=datetime(2024, 1, 2, tzinfo=timezone.utc),
+                )
+            ),
+        ]
+
+        comments = provider.get_issue_comments()
+
+        assert [(comment.id, comment.body) for comment in comments] == [
+            ("valid-old", "valid old"),
+            ("valid-new", "valid new"),
+        ]
+
+    def test_persistent_review_migrates_legacy_heading_to_stable_identity(self):
+        provider = self._make_persistent_provider()
+        legacy_body = f"{PRReviewHeader.REGULAR.value} 🔍\n\nprevious review"
+        provider.codecommit_client.get_comments_for_pull_request.return_value = [
+            self._comment_group(self._comment(legacy_body, comment_id="legacy-comment"))
+        ]
+        provider.codecommit_client.update_comment.side_effect = self._successful_update_response
+
+        provider.publish_persistent_comment(
+            "## Custom Review\n\nnew review",
+            initial_header="## Custom Review",
+            final_update_message=False,
+            identity_marker=PRReviewIdentity.REGULAR.value,
+            legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
+        )
+
+        provider.codecommit_client.publish_comment.assert_not_called()
+        comment_id, updated_body = provider.codecommit_client.update_comment.call_args.args
+        assert comment_id == "legacy-comment"
+        assert updated_body.startswith("## Custom Review\n\n")
+        assert PRReviewIdentity.REGULAR.value in updated_body
+
+    def test_persistent_review_falls_back_to_new_comment_only_for_failed_target_update(self):
+        targets = [
+            SimpleNamespace(
+                repository_name="source-repository",
+                source_commit="source-commit-1",
+                source_branch="refs/heads/feature",
+                destination_commit="destination-commit-1",
+                destination_branch="refs/heads/main",
+            ),
+            SimpleNamespace(
+                repository_name="source-repository",
+                source_commit="source-commit-2",
+                source_branch="refs/heads/feature",
+                destination_commit="destination-commit-2",
+                destination_branch="refs/heads/release",
+            ),
+        ]
+        provider = self._make_persistent_provider(targets=targets)
+        existing_body = f"## Team Review\n\n{PRReviewIdentity.REGULAR.value}\n\nprevious review"
+        provider.codecommit_client.get_comments_for_pull_request.return_value = [
+            self._comment_group(
+                self._comment(existing_body, comment_id="comment-target-1"),
+                before_commit_id="destination-commit-1",
+                after_commit_id="source-commit-1",
+            ),
+            self._comment_group(
+                self._comment(existing_body, comment_id="comment-target-2"),
+                before_commit_id="destination-commit-2",
+                after_commit_id="source-commit-2",
+            ),
+        ]
+
+        def update_comment(comment_id, body):
+            if comment_id == "comment-target-2":
+                return {"comment": {"commentId": comment_id, "content": "unexpected body", "deleted": False}}
+            return self._successful_update_response(comment_id, body)
+
+        provider.codecommit_client.update_comment.side_effect = update_comment
+        provider.codecommit_client.publish_comment.return_value = {
+            "comment": self._comment("fallback body", comment_id="fallback-comment")
+        }
+
+        result = provider.publish_persistent_comment(
+            "## Team Review\n\nnew review",
+            initial_header="## Team Review",
+            final_update_message=False,
+            identity_marker=PRReviewIdentity.REGULAR.value,
+            legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
+        )
+
+        assert [comment.id for comment in result] == ["comment-target-1", "fallback-comment"]
+        assert provider.codecommit_client.update_comment.call_count == 2
+        provider.codecommit_client.publish_comment.assert_called_once()
+        assert provider.codecommit_client.publish_comment.call_args.kwargs["repo_name"] == "source-repository"
+        assert provider.codecommit_client.publish_comment.call_args.kwargs["destination_commit"] == "destination-commit-2"
+        assert provider.codecommit_client.publish_comment.call_args.kwargs["source_commit"] == "source-commit-2"
+
+    def test_unmarked_persistent_comment_remains_create_only(self):
+        provider = self._make_persistent_provider()
+        provider.codecommit_client.get_comments_for_pull_request.return_value = [
+            self._comment_group(self._comment("## Title\n\nold description", comment_id="describe-comment"))
+        ]
+        provider.codecommit_client.publish_comment.return_value = {
+            "comment": self._comment("## Title\n\nnew description", comment_id="new-describe-comment")
+        }
+
+        result = provider.publish_persistent_comment(
+            "## Title\n\nnew description",
+            initial_header="## Title",
+            update_header=True,
+            name="describe",
+            final_update_message=False,
+        )
+
+        assert result.id == "new-describe-comment"
+        provider.codecommit_client.get_comments_for_pull_request.assert_not_called()
+        provider.codecommit_client.update_comment.assert_not_called()
+        provider.codecommit_client.publish_comment.assert_called_once()
+
+    def test_get_issue_comments_support_does_not_enable_gfm_improve_history(self):
+        provider = self._make_persistent_provider()
+
+        assert provider.is_supported("get_issue_comments") is True
+        assert provider.is_supported("gfm_markdown") is False
 
     def test_publish_code_suggestion_uses_target_that_contains_file(self):
         provider = object.__new__(CodeCommitProvider)
