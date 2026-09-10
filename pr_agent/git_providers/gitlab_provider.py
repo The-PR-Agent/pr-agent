@@ -1450,6 +1450,55 @@ class GitLabProvider(GitProvider):
             get_logger().warning(f"Failed to load local .pr_agent.toml file, error: {e}")
         return settings_files if settings_files else ""
 
+    def get_repo_settings_tree(self, ref: str = "") -> tuple[list[str], str]:
+        """Recursively list every `.pr_agent.toml` at the repository default branch.
+
+        GitLab root config is always read from the project default branch; the
+        per-directory layer follows the same branch so nested configs cannot read
+        a branch that the root does not use.  ``ref`` is accepted for interface
+        compatibility but ignored — a future follow-up could add CONFIG_BRANCH
+        support here.
+        """
+        if not getattr(self, "gl", None) or not getattr(self, "id_project", None):
+            return [], ""
+        try:
+            project = self.gl.projects.get(self.id_project)
+            resolved_ref = project.default_branch
+            tree = project.repository_tree(ref=resolved_ref, recursive=True, all=True)
+            paths = [
+                item.get("path")
+                for item in tree
+                if item.get("type") == "blob"
+                and (item.get("path") or "").endswith(".pr_agent.toml")
+            ]
+            return paths, resolved_ref
+        except GitlabGetError as e:
+            if getattr(e, "response_code", None) == 404:
+                get_logger().debug("No repository tree found for per-directory settings; skipping")
+                return [], ""
+            raise
+
+    def get_repo_settings_contents(self, paths: list[str], ref: str) -> dict[str, bytes]:
+        """Fetch raw content of per-directory settings files at *ref*."""
+        if not getattr(self, "gl", None) or not getattr(self, "id_project", None):
+            return {}
+        project = self.gl.projects.get(self.id_project)
+        result: dict[str, bytes] = {}
+        for path in paths:
+            try:
+                content = project.files.get(file_path=path, ref=ref).decode()
+                if isinstance(content, str):
+                    content = content.encode("utf-8")
+                result[path] = content
+            except GitlabGetError as e:
+                if getattr(e, "response_code", None) == 404:
+                    get_logger().warning(
+                        f"Per-directory settings file '{path}' not found at ref '{ref}'; skipping"
+                    )
+                else:
+                    raise
+        return result
+
     def _get_global_settings_cache_key(self, group: str) -> str:
         return f"gitlab:{getattr(self, 'gitlab_url', '')}:{group}"
 

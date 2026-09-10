@@ -460,6 +460,21 @@ class GitProvider(ABC):
     def get_repo_settings(self):
         pass
 
+    def get_repo_settings_tree(self, ref: str = "") -> tuple[list[str], str]:
+        """Recursively list every `.pr_agent.toml` path at `ref` ("" = the repository
+        default branch) as `(paths, resolved_ref)`. Providers without per-directory
+        settings support return `([], "")` so the feature degrades to root-only
+        behavior. Implemented by GitHub and GitLab."""
+        return [], ""
+
+    def get_repo_settings_contents(self, paths: list[str], ref: str) -> dict[str, bytes]:
+        """Fetch the raw content of per-directory repo settings files at `ref`.
+
+        Only the entries whose content was fetched successfully are returned; a
+        missing file is skipped with a warning rather than failing the request.
+        Defaults to no per-directory support."""
+        return {}
+
     def get_owning_namespace(self) -> Optional[str]:
         """Return the org/group/workspace that owns this repository, or None when
         the provider has no organisation-level home for global settings.
