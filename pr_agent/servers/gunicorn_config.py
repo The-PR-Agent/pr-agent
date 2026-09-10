@@ -299,6 +299,10 @@ def _prepare_prometheus():
 
 def child_exit(server, worker):
     """Called in the master when a worker exits; drop the worker's stale state files."""
+    from pr_agent.telemetry.prometheus_multiproc import prometheus_multiproc_dir
+
+    if not prometheus_multiproc_dir():
+        return
     # Imported lazily: the master only ever sees prometheus_client at exit time, never
     # while importing the app under preload_app (which would break multiprocess mode in
     # the forked workers).
