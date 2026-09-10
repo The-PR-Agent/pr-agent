@@ -76,6 +76,15 @@ Both are off by default and both exist to be measured here, not assumed:
   reads it unchanged. This is the direct fix for `parse_fail_rate`. Expect some hosted providers
   to reject the parameter.
 
+## Labeled real PRs
+
+```bash
+tests/eval/fetch_pr_diff.sh samer2373/block_rush 1 /tmp/block_rush_pr1.diff
+PYTHONPATH=. uv run python tests/eval/run_eval.py --labels tests/eval/labels/block_rush_pr1.json --diff-file /tmp/block_rush_pr1.diff --out /tmp/labels.json
+```
+
+Reports precision, recall, severity-weighted recall, control false flags. Labels come from the 2026-09-10 audit.
+
 ## What it does not measure
 
 Every item is a single-site defect in one or two files. A model can score well here and still

@@ -18,6 +18,7 @@ import subprocess
 import tempfile
 import time
 from dataclasses import asdict
+from pathlib import Path
 
 from starlette_context import context, request_cycle_context
 
@@ -56,9 +57,13 @@ def _assert_patch_only(provider: PlainDiffGitProvider, defect: SeededDefect) -> 
         )
 
 
-async def run_one(defect: SeededDefect, repo_root: str,
-                  ai_handler=None) -> tuple[DefectResult, dict | None]:
-    diff = defect_diff(defect, repo_root)
+async def run_review_on_diff(diff: str, ai_handler=None, log_id: str = "eval",
+                             on_provider=None) -> dict | None:
+    """Drive one unified diff through PRReviewer via PlainDiffGitProvider; return the parsed review.
+
+    Shared by the seeded-defect runner (`run_one`) and the `--labels` real-PR path, so both
+    exercise the exact same reviewer construction and JSON read-back.
+    """
     with tempfile.TemporaryDirectory() as tmp:
         json_path = os.path.join(tmp, "review.json")
         settings = get_settings()
@@ -70,14 +75,15 @@ async def run_one(defect: SeededDefect, repo_root: str,
         # Let PRReviewer build the provider from settings rather than constructing a second
         # one: the token handler is built against whichever instance the reviewer holds.
         reviewer = PRReviewer("plain-diff", args=[], **({"ai_handler": ai_handler} if ai_handler else {}))
-        _assert_patch_only(reviewer.git_provider, defect)
+        if on_provider is not None:
+            on_provider(reviewer.git_provider)
         try:
             await reviewer.run()
         except Exception as e:
             # A raised review is a real outcome for this harness (it is what the fallback-chain
             # fix makes visible), not a harness bug - record it as a parse failure and continue,
             # so one bad item does not lose the whole run.
-            get_logger().warning(f"{defect.id}: review raised {type(e).__name__}: {e}")
+            get_logger().warning(f"{log_id}: review raised {type(e).__name__}: {e}")
 
         review = None
         if os.path.isfile(json_path):
@@ -85,7 +91,17 @@ async def run_one(defect: SeededDefect, repo_root: str,
                 with open(json_path, encoding="utf-8") as fh:
                     review = json.load(fh)
             except (OSError, ValueError) as e:
-                get_logger().warning(f"{defect.id}: unreadable structured review: {e}")
+                get_logger().warning(f"{log_id}: unreadable structured review: {e}")
+    return review
+
+
+async def run_one(defect: SeededDefect, repo_root: str,
+                  ai_handler=None) -> tuple[DefectResult, dict | None]:
+    diff = defect_diff(defect, repo_root)
+    review = await run_review_on_diff(
+        diff, ai_handler=ai_handler, log_id=defect.id,
+        on_provider=lambda provider: _assert_patch_only(provider, defect),
+    )
     return score_defect(defect, review, diff), review
 
 
@@ -158,6 +174,18 @@ def _run_metadata(args, overrides: dict) -> dict:
 
 async def main_async(args) -> int:
     overrides = _apply_overrides(args.set)
+    if args.labels:
+        if not args.diff_file:
+            raise SystemExit("--labels requires --diff-file")
+        from tests.eval.labels import load_labels, score_labels
+        label_set = load_labels(args.labels)
+        diff_text = Path(args.diff_file).read_text()
+        review = await run_review_on_diff(diff_text, log_id=f"labels:{label_set.repo}#{label_set.pr}")
+        report = score_labels(label_set, review)
+        print(json.dumps(report.as_dict(), indent=2))
+        if args.out:
+            Path(args.out).write_text(json.dumps({"labels": report.as_dict()}, indent=2))
+        return 0
     corpus = list(ALL_DEFECTS) if not args.no_curated else []
     if args.mutants:
         corpus += generate_mutants(args.repo_root, args.mutants, args.seed)
@@ -217,6 +245,8 @@ def main() -> int:
     parser.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
                         help="override any setting for this run, e.g. --set pr_reviewer.num_samples=3")
     parser.add_argument("--keep-reviews", action="store_true", help="include each raw review in the report")
+    parser.add_argument("--labels", help="path to a labeled real-PR JSON (tests/eval/labels/*.json)")
+    parser.add_argument("--diff-file", help="unified diff for --labels; fetch with tests/eval/fetch_pr_diff.sh")
     parser.add_argument("--log-level", default="WARNING")
     args = parser.parse_args()
     setup_logger(args.log_level)
