@@ -512,7 +512,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `skip_comments` | false |  |
 | `force_update_dataset` | false |  |
 | `max_issues_to_scan` | 500 |  |
-| `vectordb` | "pinecone" | options: "pinecone", "lancedb", "qdrant" |
+| `vectordb` | "lancedb" | options: "pinecone", "lancedb", "qdrant" |
 
 
 ## `[pr_find_similar_component]`
@@ -529,7 +529,11 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 ## `[pinecone]`
 
-_This section only documents commented-out examples; see the [TOML source](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) for details._
+| Key | Default | Description |
+| --- | --- | --- |
+| `cloud` | "aws" | Serverless index deployment for the modern SDK. `cloud` is one of "aws", "gcp" or "azure"; pick a `region` offered by that cloud. |
+| `region` | "us-east-1" |  |
+
 
 ## `[lancedb]`
 

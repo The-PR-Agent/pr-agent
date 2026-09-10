@@ -16,6 +16,9 @@ class _PandasSeries(list):
     def values(self):
         return list(self)
 
+    def to_list(self):
+        return list(self)
+
 
 class _PandasDataFrame:
     def __init__(self, records):
