@@ -591,3 +591,9 @@ channels = [] # any of: "stdout", "file", "webhook", "slack". Nothing is emitted
 file_path = "pr-agent-outputs/reviews.jsonl" # used by the "file" channel
 webhook_url = "" # used by the "webhook" channel: generic JSON POST target. Must be an absolute https:// URL
 slack_webhook_url = "" # used by the "slack" channel: a Slack Incoming Webhook URL. Must be an absolute https:// URL
+
+[pr_dashboard]
+# Record one row per command run (model, tokens, cost, duration) into the local dashboard
+# database at ~/.pr_dashboard/usage.db. Off by default: webhook and serverless deployments
+# must not start writing a database just because the dashboard package is installed.
+record_runs = false
