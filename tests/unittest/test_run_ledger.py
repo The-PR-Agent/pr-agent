@@ -35,16 +35,22 @@ def test_record_ai_call_appends_call_record():
     assert details.total_tokens == 120
 
 
-def test_call_record_total_tokens_matches_run_details_when_provider_total_diverges():
-    """The token-sum invariant: summing `CallRecord.total_tokens` over every call must equal
+def test_call_record_total_tokens_matches_run_details_when_provider_total_diverges(tmp_path):
+    """The token-sum invariant: summing `total_tokens` over every ledger row must equal
     `RunDetails.total_tokens` for the same run, even when a provider's reported total is not
-    prompt + completion."""
+    prompt + completion. Goes through the JSONL round trip, not just the in-memory records,
+    so a bug that dropped the field from `write_ledger` (leaving a reader to reconstruct it
+    as prompt + completion) would fail this the same way it would fail in production."""
     details = init_run_details()
     record_ai_call(_UsageWithMismatchedTotal(), model="m", stage="review")
     record_ai_call(_UsageWithMismatchedTotal(), model="m", stage="review")
 
     assert details.calls[0].total_tokens == 150  # the provider's total, not 100 + 20 = 120
-    assert sum(call.total_tokens for call in details.calls) == details.total_tokens
+
+    path = tmp_path / "ledger.jsonl"
+    write_ledger(details, str(path), run_id="r1", tool="review")
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    assert sum(row["total_tokens"] for row in rows) == details.total_tokens
 
 
 def test_write_ledger_returns_zero_and_creates_nothing_when_there_are_no_calls(tmp_path):

@@ -453,3 +453,8 @@ async def test_run_writes_a_run_ledger_row_per_chunk_with_stage_and_run_id(tmp_p
     assert all(row["tool"] == "review" for row in rows)
     # both rows belong to the one run() call, so they share a run_id
     assert len({row["run_id"] for row in rows}) == 1
+    # findings_emitted is populated from each chunk's own parsed review, matched by
+    # (stage, chunk_index, sample_index) rather than assumed from completion order
+    by_chunk = {row["chunk_index"]: row for row in rows}
+    assert by_chunk[0]["findings_emitted"] == 1  # CHUNK_A has one key issue
+    assert by_chunk[1]["findings_emitted"] == 0  # CHUNK_B has none
