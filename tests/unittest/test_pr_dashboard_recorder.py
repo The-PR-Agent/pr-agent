@@ -139,3 +139,57 @@ class TestDispatchWiring:
         assert "await self._run_command(" in outer
         assert "gather" not in outer
         assert "create_task" not in outer
+
+
+@pytest.fixture
+def dashboard_package_missing():
+    """Simulate a distribution that ships pr_agent without pr_dashboard.
+
+    pyproject.toml's ``[tool.setuptools.packages.find]`` includes only ``pr_agent*``, and
+    every Dockerfile stage copies only ``pr_agent``, so ``pr_dashboard.recorder`` may
+    genuinely be unimportable in a real install. This blocks that one import, forces a fresh
+    import of ``pr_agent.agent.pr_agent`` against the block, and restores both modules to
+    their real state afterwards so no other test observes the reload.
+    """
+    import importlib
+    import sys
+
+    class _BlockDashboardRecorder:
+        def find_spec(self, name, path, target=None):
+            if name == "pr_dashboard.recorder":
+                raise ImportError("pr_dashboard.recorder is unavailable in this test")
+            return None
+
+    real_pr_agent_module = sys.modules.get("pr_agent.agent.pr_agent")
+    real_recorder_module = sys.modules.get("pr_dashboard.recorder")
+    blocker = _BlockDashboardRecorder()
+
+    sys.modules.pop("pr_agent.agent.pr_agent", None)
+    sys.modules.pop("pr_dashboard.recorder", None)
+    sys.meta_path.insert(0, blocker)
+    try:
+        yield importlib.import_module("pr_agent.agent.pr_agent")
+    finally:
+        sys.meta_path.remove(blocker)
+        sys.modules.pop("pr_agent.agent.pr_agent", None)
+        sys.modules.pop("pr_dashboard.recorder", None)
+        if real_recorder_module is not None:
+            sys.modules["pr_dashboard.recorder"] = real_recorder_module
+        if real_pr_agent_module is not None:
+            sys.modules["pr_agent.agent.pr_agent"] = real_pr_agent_module
+            importlib.reload(real_pr_agent_module)
+        else:
+            importlib.import_module("pr_agent.agent.pr_agent")
+
+
+class TestMissingDashboardPackage:
+    def test_pr_agent_runs_without_pr_dashboard_installed(self, dashboard_package_missing):
+        """A distribution without pr_dashboard installed still imports and dispatches."""
+        reloaded = dashboard_package_missing
+        # Confirms the guard's fallback was actually exercised, not that some stale cached
+        # module slipped past the block.
+        assert reloaded.record_run.__doc__ == (
+            "No-op stand-in when pr_dashboard is not installed (wheel and Docker builds)."
+        )
+        with reloaded.record_run(pr_url="https://github.com/o/r/pull/7", command="review"):
+            pass

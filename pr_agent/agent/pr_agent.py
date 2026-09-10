@@ -26,7 +26,15 @@ from pr_agent.tools.pr_questions import PRQuestions
 from pr_agent.tools.pr_reviewer import PRReviewer
 from pr_agent.tools.pr_similar_issue import PRSimilarIssue
 from pr_agent.tools.pr_update_changelog import PRUpdateChangelog
-from pr_dashboard.recorder import record_run
+
+try:
+    from pr_dashboard.recorder import record_run
+except ImportError:  # dashboard package not installed in this distribution
+    from contextlib import nullcontext
+
+    def record_run(**_kwargs):
+        """No-op stand-in when pr_dashboard is not installed (wheel and Docker builds)."""
+        return nullcontext()
 
 command2class = {
     "auto_review": PRReviewer,
