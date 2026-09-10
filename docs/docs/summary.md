@@ -21,6 +21,7 @@
 * [Configuration File](usage-guide/configuration_options.md)
 * [Usage and Automation](usage-guide/automations_and_usage.md)
 * [Managing Mail Notifications](usage-guide/mail_notifications.md)
+* [Push Outputs](usage-guide/push_outputs.md)
 * [Changing a Model](usage-guide/changing_a_model.md)
 * [Extending PR-Agent](usage-guide/extending_pr_agent.md)
 * [Additional Configurations](usage-guide/additional_configurations.md)
