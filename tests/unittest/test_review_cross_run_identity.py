@@ -10,6 +10,16 @@ OTHER_NEARBY = {"path": "test/shell/themes_screen_test.dart", "line_start": 70, 
 DEBUG_C = {"path": "test/shell/themes_screen_test.dart", "line_start": 69, "line_end": 89,
            "body": "**Leftover Debug Statements**\n\nThe `tapSet` method still contains leftover debugging output, "
                    "including `debugDumpApp()` and several `print` calls."}
+# Hash-sorts *before* DEBUG_A's finding_id (unlike DEBUG_C), so it is processed first when a run
+# reports it alongside a byte-identical DEBUG_A - the ordering that exposes the exact-vs-fuzzy
+# collision below.
+DEBUG_D = dict(
+    DEBUG_A,
+    line_start=69,
+    line_end=89,
+    body="**Leftover Debug Statements**\n\nThe `tapSet` method still contains leftover debugging output, "
+         "including `debugDumpApp()` and several `print` calls. (1)",
+)
 
 
 def test_reworded_same_defect_matches():
@@ -40,6 +50,22 @@ def test_two_current_findings_do_not_both_claim_one_previous_finding():
     first = reconcile_review_findings(None, [DEBUG_A], allow_resolution=False, head_sha="s1", run_id="r1")
     second = reconcile_review_findings(
         first.state, [DEBUG_B, DEBUG_C], allow_resolution=False, head_sha="s2", run_id="r2"
+    )
+    active = [f for f in second.state["findings"] if f["state"] == "ACTIVE"]
+    assert len(active) == 2
+    assert len({f["finding_id"] for f in active}) == 2
+    original_id = first.state["findings"][0]["finding_id"]
+    assert original_id in {f["finding_id"] for f in active}
+
+
+def test_exact_and_fuzzy_match_do_not_collide_on_one_previous_finding():
+    # DEBUG_A recurs byte-for-byte (an exact-id match) in the same run as DEBUG_D, which only
+    # fuzzy-matches DEBUG_A. DEBUG_D's finding_id hash-sorts before DEBUG_A's, so it is processed
+    # first; it must not steal DEBUG_A's previous record and cause DEBUG_A's own exact match to
+    # overwrite it, silently dropping one finding.
+    first = reconcile_review_findings(None, [DEBUG_A], allow_resolution=False, head_sha="s1", run_id="r1")
+    second = reconcile_review_findings(
+        first.state, [DEBUG_A, DEBUG_D], allow_resolution=False, head_sha="s2", run_id="r2"
     )
     active = [f for f in second.state["findings"] if f["state"] == "ACTIVE"]
     assert len(active) == 2

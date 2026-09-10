@@ -226,7 +226,12 @@ def reconcile_review_findings(
 
     previous_by_id = {finding["finding_id"]: finding for finding in previous_findings}
     current_by_id = {finding["finding_id"]: finding for finding in current}
-    matched_previous_ids: set[str] = set()
+    # Pre-claim every id an exact match will need, before any fuzzy matching runs. Otherwise a
+    # fuzzy match processed first (current findings are iterated in sorted-hash order, not input
+    # order) could steal a previous finding that a *different*, exact-id current finding also
+    # matches - the two would then collide on the same retained id and one record would silently
+    # overwrite the other.
+    matched_previous_ids: set[str] = set(current_by_id) & set(previous_by_id)
 
     def _previous_match(current_finding: dict[str, Any]) -> dict[str, Any] | None:
         exact = previous_by_id.get(current_finding["finding_id"])
