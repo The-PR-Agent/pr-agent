@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, Callable, Hashable, List, Optional
+from typing import Any, Callable, Hashable, List, Mapping, Optional
 
 from pr_agent.algo.utils import as_review_text, is_value_no
 from pr_agent.log import get_logger
@@ -516,6 +516,15 @@ VOTE_TEXT_SIMILARITY = 0.5
 #: ("does not handle the error case") would otherwise merge into one.
 VOTE_MIN_DISTINCTIVE_WORDS = 4
 
+#: Word-overlap bar for `same_finding_across_runs`, deliberately looser than `VOTE_TEXT_SIMILARITY`.
+#: That bar is calibrated for same-run sample paraphrasing - one model, one temperature, one
+#: moment - where wording stays close. A finding reworded in a later run drifts further: the same
+#: defect renamed from "Debug Leftovers" to "Leftover Debug Code" and re-described measures ~0.29
+#: Jaccard on the full body text, while an unrelated neighbouring defect on the same file measures
+#: 0.0. Location (path + overlapping lines) is already the primary, strict filter here, so wording
+#: only needs to rule out a clearly different nearby finding, not prove near-identical phrasing.
+CROSS_RUN_TEXT_SIMILARITY = 0.2
+
 #: Words that carry no discriminating signal in a review finding.
 _STOP_WORDS = frozenset("""
 a an the this that these those it its is are was were be been being no not and or but if then
@@ -562,20 +571,24 @@ def _distinctive_words(issue: dict) -> set:
             if word not in _STOP_WORDS}
 
 
-def _similar_wording(a: dict, b: dict) -> bool:
+def _similar_wording(a: dict, b: dict, threshold: float = VOTE_TEXT_SIMILARITY) -> bool:
     """Do two findings on one file describe the same defect in different words?
 
     Only reached when neither finding named a usable line, which is the common shape for a
     file-level problem ("no tests for this module") and for the small models this vote exists to
     help. Requiring identical text there - the previous fallback - dropped a defect every sample
     independently found, because each worded it differently.
+
+    `threshold` defaults to `VOTE_TEXT_SIMILARITY`, calibrated for same-run sample paraphrasing
+    (one model, one temperature, one moment). `same_finding_across_runs` passes a lower bar:
+    wording reworded days apart, across runs, drifts further than that.
     """
     words_a, words_b = _distinctive_words(a), _distinctive_words(b)
     if (len(words_a) < VOTE_MIN_DISTINCTIVE_WORDS
             or len(words_b) < VOTE_MIN_DISTINCTIVE_WORDS):
         return _key_issue_identity(a) == _key_issue_identity(b)
     overlap = len(words_a & words_b) / len(words_a | words_b)
-    return overlap >= VOTE_TEXT_SIMILARITY
+    return overlap >= threshold
 
 
 def _same_finding(a: dict, b: dict) -> bool:
@@ -586,6 +599,47 @@ def _same_finding(a: dict, b: dict) -> bool:
     if lines_a and lines_b:
         return line_ranges_overlap(lines_a, lines_b)
     return _similar_wording(a, b)
+
+
+_HEADER_RE = re.compile(r"\*\*(.+?)\*\*")
+
+
+def normalized_header(body: str) -> str:
+    """The finding's bold header, lowercased and stripped of punctuation, or its first line."""
+    match = _HEADER_RE.search(body or "")
+    text = match.group(1) if match else ((body or "").splitlines()[0] if body else "")
+    return re.sub(r"[^a-z0-9 ]+", "", text.lower()).strip()
+
+
+def _state_range(record: Mapping) -> Optional[tuple[int, int]]:
+    start, end = record.get("line_start"), record.get("line_end")
+    if start is None:
+        return None
+    return int(start), int(end if end is not None else start)
+
+
+def same_finding_across_runs(a: Mapping, b: Mapping) -> bool:
+    """Is `b` a reworded restatement of the same defect `a` reported, in an earlier run?
+
+    Stricter than `_same_finding`: that matcher is overlap-first, which is fine for samples of
+    the *same* diff but would merge two distinct defects that happen to sit near each other in
+    neighbouring commits. Across runs the path must match exactly, the (possibly since-shifted)
+    line ranges must still overlap, and only then does wording decide - either the same bold
+    header, or `_similar_wording`'s Jaccard test on the rest of the text, at the looser
+    `CROSS_RUN_TEXT_SIMILARITY` bar (see its definition for why).
+    """
+    if normalize_finding_path(a.get("path")) != normalize_finding_path(b.get("path")):
+        return False
+    range_a, range_b = _state_range(a), _state_range(b)
+    if range_a is None or range_b is None or not line_ranges_overlap(range_a, range_b):
+        return False
+    body_a, body_b = a.get("body", ""), b.get("body", "")
+    header_a, header_b = normalized_header(body_a), normalized_header(body_b)
+    if header_a and header_a == header_b:
+        return True
+    return _similar_wording(
+        {"issue_content": body_a}, {"issue_content": body_b}, CROSS_RUN_TEXT_SIMILARITY
+    )
 
 
 @dataclass(frozen=True)

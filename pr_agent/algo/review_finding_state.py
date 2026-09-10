@@ -220,37 +220,56 @@ def reconcile_review_findings(
         and bool(head_sha.strip())
         and previous_head_sha != head_sha
     )
+    # Local import: review_merge.py does not import review_finding_state.py today, but importing
+    # inside the function avoids creating a module-load-order dependency between the two.
+    from pr_agent.algo.review_merge import same_finding_across_runs
+
     previous_by_id = {finding["finding_id"]: finding for finding in previous_findings}
     current_by_id = {finding["finding_id"]: finding for finding in current}
+    matched_previous_ids: set[str] = set()
+
+    def _previous_match(current_finding: dict[str, Any]) -> dict[str, Any] | None:
+        exact = previous_by_id.get(current_finding["finding_id"])
+        if exact is not None:
+            return exact
+        for candidate in previous_findings:
+            if candidate["finding_id"] in matched_previous_ids:
+                continue
+            if candidate.get("state") != "RESOLVED" and same_finding_across_runs(candidate, current_finding):
+                return candidate
+        return None
+
     reconciled: dict[str, dict[str, Any]] = {}
     resolved_ids: list[str] = []
     reopened_ids: list[str] = []
     changed = previous_state is None and bool(current)
 
     for finding_id, current_finding in current_by_id.items():
-        previous = previous_by_id.get(finding_id)
+        previous = _previous_match(current_finding)
         if previous is None:
             record = dict(current_finding)
             record.update(first_seen=now, last_seen=now)
             changed = True
         else:
+            matched_previous_ids.add(previous["finding_id"])
             record = copy.deepcopy(previous)
             old_state = record.get("state")
             record.update(current_finding)
+            record["finding_id"] = previous["finding_id"]
             record["state"] = "ACTIVE"
             record["last_seen"] = now
             if old_state == "RESOLVED":
                 record["reopened_at"] = now
                 record["reopened_count"] = int(record.get("reopened_count", 0)) + 1
-                reopened_ids.append(finding_id)
+                reopened_ids.append(previous["finding_id"])
             if record != previous:
                 changed = True
         if head_sha:
             record["last_seen_head_sha"] = head_sha
-        reconciled[finding_id] = record
+        reconciled[record["finding_id"]] = record
 
     for finding_id, previous in previous_by_id.items():
-        if finding_id in current_by_id:
+        if finding_id in matched_previous_ids:
             continue
         record = copy.deepcopy(previous)
         if record.get("state") == "ACTIVE" and resolution_allowed:
