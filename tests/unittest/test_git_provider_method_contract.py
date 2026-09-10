@@ -8,6 +8,7 @@ differ: a backend either supports the operation, has nothing to do, or declares 
 import inspect
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum
 from types import SimpleNamespace
 from typing import get_type_hints
@@ -137,6 +138,7 @@ def _bitbucket_server(monkeypatch) -> BitbucketServerProvider:
     }]
     return provider
 
+
 def _bitbucket(monkeypatch) -> BitbucketProvider:
     provider = BitbucketProvider.__new__(BitbucketProvider)
     provider.pr = MagicMock()
@@ -145,6 +147,38 @@ def _bitbucket(monkeypatch) -> BitbucketProvider:
     comment.raw = COMMENT_BODY
     provider.pr.comments.return_value = [comment]
 
+    return provider
+
+
+def _codecommit(monkeypatch) -> CodeCommitProvider:
+    provider = CodeCommitProvider.__new__(CodeCommitProvider)
+    provider.repo_name = "repo"
+    provider.pr_num = 7
+    provider.pr_url = "https://us-east-1.console.aws.amazon.com/codesuite/codecommit/repositories/repo/pull-requests/7"
+    provider.pr = SimpleNamespace(
+        source_commit="source",
+        destination_commit="destination",
+        targets=[
+            SimpleNamespace(
+                repository_name="repo",
+                source_commit="source",
+                destination_commit="destination",
+            )
+        ],
+    )
+    provider.codecommit_client = MagicMock()
+    provider.codecommit_client.get_comments_for_pull_request.return_value = [
+        {
+            "repositoryName": "repo",
+            "beforeCommitId": "destination",
+            "afterCommitId": "source",
+            "comments": [{
+                "commentId": "comment-1",
+                "content": COMMENT_BODY,
+                "creationDate": datetime(2024, 1, 1, tzinfo=timezone.utc),
+            }],
+        }
+    ]
     return provider
 
 
@@ -161,7 +195,7 @@ PROVIDERS: dict[str, tuple[type[GitProvider], Callable[[pytest.MonkeyPatch], Git
     "azure-devops": (AzureDevopsProvider, _azure_devops),
     "bitbucket": (BitbucketProvider, _bitbucket),
     "bitbucket-server": (BitbucketServerProvider, _bitbucket_server),
-    "codecommit": (CodeCommitProvider, _bare(CodeCommitProvider)),
+    "codecommit": (CodeCommitProvider, _codecommit),
     "local": (LocalGitProvider, _bare(LocalGitProvider)),
     "plain-diff": (PlainDiffGitProvider, _bare(PlainDiffGitProvider)),
     "mosaico-diff": (DiffInputProvider, _bare(DiffInputProvider)),
@@ -233,8 +267,17 @@ METHOD_CONTRACTS = (
         noop_value=[],
         check_supported=_is_comment_sequence,
         tiers=_tiers(
-            supported=("github", "gitlab", "gitea", "gerrit", "azure-devops", "bitbucket-server", "bitbucket"),
-            not_implemented=("codecommit", "local"),
+            supported=(
+                "github",
+                "gitlab",
+                "gitea",
+                "gerrit",
+                "azure-devops",
+                "bitbucket-server",
+                "bitbucket",
+                "codecommit",
+            ),
+            not_implemented=("local",),
         ),
         # Implementations narrow the base `Iterable` (a paginated list, a list of SDK objects),
         # so the return annotation is checked by behaviour rather than by equality.

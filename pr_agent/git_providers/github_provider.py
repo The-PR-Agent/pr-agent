@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Optional, Tuple
 from urllib.parse import urlparse
 
-from github import AppAuthentication, Auth, Github, GithubException, GithubIntegration
+from github import Auth, Github, GithubException, GithubIntegration, GithubRetry
 from github.Issue import Issue
 from retry.api import retry_call
 from starlette_context import context
@@ -128,7 +128,17 @@ class GithubProvider(GitProvider):
     def supports_checkbox_commands(self) -> bool:
         return True
 
+    def supports_inline_help_footer(self) -> bool:
+        return True
+
     def supports_pr_chat(self) -> bool:
+        return True
+
+    @classmethod
+    def supports_issue_indexing(cls) -> bool:
+        return True
+
+    def supports_changelog_update_review(self) -> bool:
         return True
 
     def supports_issue_url_tickets(self) -> bool:
@@ -469,8 +479,10 @@ class GithubProvider(GitProvider):
             return cached
         try:
             integration = GithubIntegration(
-                integration_id=str(get_settings().github.app_id),
-                private_key=get_settings().github.private_key,
+                auth=Auth.AppAuth(
+                    app_id=str(get_settings().github.app_id),
+                    private_key=get_settings().github.private_key,
+                ),
                 base_url=self.base_url,
             )
             slug = (getattr(integration.get_app(), "slug", "") or "").strip()
@@ -1382,15 +1394,18 @@ class GithubProvider(GitProvider):
         if self.deployment_type == 'app':
             try:
                 private_key = get_settings().github.private_key
-                # The app id is an integer in the settings toml, but PyJWT >=2.11 requires a
-                # string `iss` claim, and PyGithub 1.59 passes it through raw (#2955).
+                # The app id is an integer in the settings toml. PyJWT >=2.11 requires a
+                # string `iss` claim; PyGithub 2.7+ normalizes an int app id to a string
+                # upstream (#2955, PyGithub#3272), so the cast is harmless on the 2.10 pin.
                 app_id = str(get_settings().github.app_id)
             except AttributeError as e:
                 raise ValueError("GitHub app ID and private key are required when using GitHub app deployment") from e
             if not self.installation_id:
                 raise ValueError("GitHub app installation ID is required when using GitHub app deployment")
-            auth = AppAuthentication(app_id=app_id, private_key=private_key,
-                                     installation_id=self.installation_id)
+            auth = Auth.AppInstallationAuth(
+                Auth.AppAuth(app_id=app_id, private_key=private_key),
+                installation_id=self.installation_id,
+            )
             self.auth = auth
         elif self.deployment_type == 'user':
             try:
@@ -1401,7 +1416,21 @@ class GithubProvider(GitProvider):
                     "https://github.com/Codium-ai/pr-agent#method-2-run-from-source") from e
             self.auth = Auth.Token(token)
         if self.auth:
-            return Github(auth=self.auth, base_url=self.base_url)
+            github_config = get_settings().github
+            # PyGithub 2.x defaults to pacing and retries (0.25s between requests, 1s between
+            # writes, 10 retries); these had no equivalent on 1.59. The settings mirror the
+            # 1.59 behaviour, so the upgrade stays behaviour-neutral unless an operator opts in.
+            seconds_between_requests = github_config.get("seconds_between_requests", 0)
+            seconds_between_writes = github_config.get("seconds_between_writes", 0)
+            api_retries = github_config.get("api_retries", 0)
+            retry = GithubRetry(total=api_retries) if api_retries else None
+            return Github(
+                auth=self.auth,
+                base_url=self.base_url,
+                seconds_between_requests=seconds_between_requests,
+                seconds_between_writes=seconds_between_writes,
+                retry=retry,
+            )
         else:
             raise ValueError("Could not authenticate to GitHub")
 
@@ -1690,7 +1719,7 @@ class GithubProvider(GitProvider):
                         if not hasattr(file, 'patches_range'):
                             file.patches_range = []
                             patch_lines = patch_str.splitlines()
-                            for i, line in enumerate(patch_lines):
+                            for line in patch_lines:
                                 if line.startswith('@@'):
                                     match = RE_HUNK_HEADER.match(line)
                                     # identify hunk header
@@ -1710,7 +1739,7 @@ class GithubProvider(GitProvider):
                         min_distance = float('inf')
                         patch_range_min = None
                         # find the hunk that contains the comment, or the closest one
-                        for i, patch_range in enumerate(patches_range):
+                        for patch_range in patches_range:
                             d1 = comment_start_line - patch_range['start']
                             d2 = patch_range['end'] - comment_end_line
                             if d1 >= 0 and d2 >= 0:  # found a valid hunk

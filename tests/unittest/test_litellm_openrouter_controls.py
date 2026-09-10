@@ -339,7 +339,7 @@ class TestOpenRouterControls:
         assert kwargs["extra_body"]["reasoning"] == {"max_tokens": 2048}
 
     def test_litellm_requires_openrouter_reasoning_in_extra_body(self):
-        """Pin the LiteLLM 1.98.0 workaround boundary so upgrades expose when it can be removed."""
+        """Pin the LiteLLM compatibility boundary so upgrades expose when it can be removed."""
         with pytest.raises(litellm.UnsupportedParamsError):
             get_optional_params(
                 model="google/gemini-2.5-pro",
