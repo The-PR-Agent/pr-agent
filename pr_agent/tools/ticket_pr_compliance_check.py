@@ -10,6 +10,7 @@ from pr_agent.algo.pr_processing import OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import get_max_tokens
 from pr_agent.config_loader import get_settings
+from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.log import get_logger
 
 # Compile the regex pattern once, outside the function
@@ -468,10 +469,11 @@ def _provider_supports(git_provider, capability: str) -> bool:
     define the method at all; absence means the capability is not supported, which keeps
     the previous behaviour for providers that matched none of the concrete classes.
 
-    Two consequences of reading the capability by name: a permissive double such as a bare
-    MagicMock answers every capability truthily and so takes the first branch, and a
-    mistyped `capability` reads as unsupported rather than raising.
+    A permissive double such as a bare MagicMock answers every valid capability truthily and
+    so takes the first branch. Unknown capabilities raise to expose misspelled names.
     """
+    if not hasattr(GitProvider, capability):
+        raise AttributeError(f"unknown provider capability: {capability!r}")
     check = getattr(git_provider, capability, None)
     return bool(check()) if callable(check) else False
 

@@ -15,7 +15,7 @@ from pr_agent.git_providers import (
     LocalGitProvider,
     PlainDiffGitProvider,
 )
-from pr_agent.tools.ticket_pr_compliance_check import extract_tickets
+from pr_agent.tools.ticket_pr_compliance_check import _provider_supports, extract_tickets
 
 
 class _BaseStubProvider(GitProvider):
@@ -351,3 +351,35 @@ async def test_extract_tickets_catches_top_level_exception():
     provider.supports_issue_url_tickets = MagicMock(side_effect=RuntimeError("unexpected crash"))
     tickets = await extract_tickets(provider)
     assert tickets == []
+
+
+def test_provider_supports_raises_for_unknown_capability():
+    provider = _BaseStubProvider()
+    with pytest.raises(AttributeError, match="unknown provider capability: 'supports_nonexistent_capability'"):
+        _provider_supports(provider, "supports_nonexistent_capability")
+
+
+def test_provider_supports_returns_false_for_missing_method_on_duck_typed_provider():
+    duck_typed_provider = object()
+    assert _provider_supports(duck_typed_provider, "supports_issue_url_tickets") is False
+
+
+def test_provider_supports_returns_false_for_non_callable_attribute():
+    class AttributeProvider:
+        supports_issue_url_tickets = True
+
+    assert _provider_supports(AttributeProvider(), "supports_issue_url_tickets") is False
+
+
+def test_provider_supports_reads_callable_on_base_or_duck_typed_provider():
+    class TruthyProvider:
+        def supports_issue_url_tickets(self):
+            return 1
+
+    class FalsyProvider:
+        def supports_issue_url_tickets(self):
+            return 0
+
+    assert _provider_supports(TruthyProvider(), "supports_issue_url_tickets") is True
+    assert _provider_supports(FalsyProvider(), "supports_issue_url_tickets") is False
+    assert _provider_supports(_BaseStubProvider(), "supports_issue_url_tickets") is False
