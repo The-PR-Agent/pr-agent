@@ -11,6 +11,18 @@ class _Usage:
     prompt_tokens_details = type("D", (), {"cached_tokens": 60})()
 
 
+class _UsageWithMismatchedTotal:
+    """A provider that reports a `total_tokens` that is not prompt + completion (e.g. it
+    counts reasoning/tool tokens neither field reports). `add_token_usage` trusts the
+    provider's total in this case, so `CallRecord.total_tokens` must match it exactly,
+    not silently fall back to prompt + completion."""
+
+    prompt_tokens = 100
+    completion_tokens = 20
+    total_tokens = 150
+    prompt_tokens_details = type("D", (), {"cached_tokens": 0})()
+
+
 def test_record_ai_call_appends_call_record():
     details = init_run_details()
     record_ai_call(_Usage(), model="m", cost_usd="0.01", stage="review", chunk_index=2,
@@ -21,6 +33,29 @@ def test_record_ai_call_appends_call_record():
     assert (call.stage, call.chunk_index, call.files) == ("review", 2, ("a.py", "b.py"))
     assert (call.prompt_tokens, call.cached_tokens, call.completion_tokens) == (100, 60, 20)
     assert details.total_tokens == 120
+
+
+def test_call_record_total_tokens_matches_run_details_when_provider_total_diverges():
+    """The token-sum invariant: summing `CallRecord.total_tokens` over every call must equal
+    `RunDetails.total_tokens` for the same run, even when a provider's reported total is not
+    prompt + completion."""
+    details = init_run_details()
+    record_ai_call(_UsageWithMismatchedTotal(), model="m", stage="review")
+    record_ai_call(_UsageWithMismatchedTotal(), model="m", stage="review")
+
+    assert details.calls[0].total_tokens == 150  # the provider's total, not 100 + 20 = 120
+    assert sum(call.total_tokens for call in details.calls) == details.total_tokens
+
+
+def test_write_ledger_returns_zero_and_creates_nothing_when_there_are_no_calls(tmp_path):
+    details = init_run_details()
+    path = tmp_path / "subdir" / "ledger.jsonl"
+
+    rows = write_ledger(details, str(path), run_id="r1", tool="review")
+
+    assert rows == 0
+    assert not path.exists()
+    assert not path.parent.exists()
 
 
 def test_write_ledger_emits_one_jsonl_row_per_call(tmp_path):
@@ -35,5 +70,4 @@ def test_write_ledger_emits_one_jsonl_row_per_call(tmp_path):
     assert rows == 2 and len(lines) == 2
     first = json.loads(lines[0])
     assert first["run_id"] == "r1" and first["stage"] == "review" and first["prompt_tokens"] == 100
-    assert sum(json.loads(line)["prompt_tokens"] + json.loads(line)["completion_tokens"]
-               for line in lines) == details.total_tokens
+    assert sum(json.loads(line)["total_tokens"] for line in lines) == details.total_tokens

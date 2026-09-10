@@ -33,7 +33,7 @@ from pr_agent.algo.review_finding_state import (
     reconcile_review_findings,
 )
 from pr_agent.algo.review_merge import merge_review_chunks, vote_review_samples
-from pr_agent.algo.run_details import get_run_details, init_run_details
+from pr_agent.algo.run_details import get_run_details, init_run_details, set_call_findings
 from pr_agent.algo.run_ledger import write_ledger
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_handler import TokenHandler
@@ -143,6 +143,14 @@ _STATE_BLOCK_INVALID_MARKER = "invalid_marker"
 _STATE_BLOCK_READ_ERROR = "read_error"
 _STATE_BLOCK_REVIEW_DATA = "review_data"
 _STATE_BLOCK_SIZE = "state_size"
+
+
+def _review_findings_count(data: Any) -> int:
+    """How many key issues a parsed review dict reports, or 0 when the shape is missing/wrong."""
+    review = data.get("review") if isinstance(data, dict) else None
+    issues = review.get("key_issues_to_review") if isinstance(review, dict) else None
+    return len(issues) if isinstance(issues, list) else 0
+
 
 class UnparsableReview(ValueError):
     """The model answered, but nothing the YAML repair heuristics could rescue.
@@ -1001,6 +1009,7 @@ class PRReviewer:
                                 else self._get_prediction(model, patches_diff, chunk_index=chunk_index,
                                                           files=files))
             data = self._load_review_yaml(prediction)
+            set_call_findings("review", chunk_index, None, _review_findings_count(data))
             if not self._is_parsable_review(data):
                 get_logger().warning(f"Unparsable review from {model}", artifact={"data": data})
                 raise UnparsableReview(f"Failed to parse the review produced by {model}")
@@ -1015,7 +1024,7 @@ class PRReviewer:
               for i in range(num_samples)],
             return_exceptions=True)
         parsed, raw, first_error = [], [], None
-        for response in responses:
+        for sample_index, response in enumerate(responses):
             if isinstance(response, BaseException):
                 if not isinstance(response, Exception):
                     raise response
@@ -1023,6 +1032,7 @@ class PRReviewer:
                 get_logger().warning(f"Review sample failed: {response}")
                 continue
             data = self._load_review_yaml(response)
+            set_call_findings("review", chunk_index, sample_index, _review_findings_count(data))
             if self._is_parsable_review(data):
                 parsed.append(data)
                 raw.append(response)

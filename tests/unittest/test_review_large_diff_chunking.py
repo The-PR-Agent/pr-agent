@@ -5,17 +5,31 @@ covered here is when chunking runs at all, what it does with a chunk that fails,
 the published review says about having been assembled from several calls.
 """
 
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.pr_processing import ChunkPlan
 from pr_agent.algo.review_finding_state import ParsedReviewState, reconcile_review_findings
+from pr_agent.algo.run_details import record_ai_call
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import get_settings
 from pr_agent.tools.pr_reviewer import PRReviewer
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
+
+_LEDGER_DIFF = """diff --git a/foo.py b/foo.py
+index 1111111..2222222 100644
+--- a/foo.py
++++ b/foo.py
+@@ -1,3 +1,3 @@
+ line1
+-line2
++line2-changed
+ line3
+"""
 
 
 def _plans(*diffs):
@@ -380,3 +394,62 @@ def test_the_chunk_note_comes_before_the_review_coverage_footer():
 
     assert review.index("Chunked review:") < review.index("⚠️ **Review coverage:**")
     assert "- `left_out.py`" in review
+
+
+_LEDGER_TRACKED_KEYS = _TRACKED_KEYS + (
+    "config.git_provider", "plain_diff.content", "plain_diff.output_path",
+    "config.publish_output", "config.run_ledger_path",
+)
+
+
+@pytest.mark.asyncio
+async def test_run_writes_a_run_ledger_row_per_chunk_with_stage_and_run_id(tmp_path):
+    """Reviewer-level wiring: PRReviewer.run(), driven end-to-end through a real diff
+    provider and a fake AI handler that records each call the way a real handler does,
+    must leave one JSONL ledger row per chunk, tagged with the review stage, its chunk
+    index, and the run's id and tool name."""
+
+    class RecordingAiHandler(BaseAiHandler):
+        def __init__(self):
+            self.main_pr_language = None
+
+        @property
+        def deployment_id(self):
+            return "fake"
+
+        async def chat_completion(self, model, system, user, temperature=0.2, img_path=None, *,
+                                  stage=None, chunk_index=None, sample_index=None, files=None):
+            record_ai_call(model=model, stage=stage, chunk_index=chunk_index,
+                           sample_index=sample_index, files=files, latency_ms=1)
+            body = CHUNK_A if chunk_index == 0 else CHUNK_B
+            return body, "stop"
+
+    snapshot = snapshot_settings(_LEDGER_TRACKED_KEYS)
+    ledger_path = tmp_path / "ledger.jsonl"
+    try:
+        get_settings().set("pr_reviewer.enable_large_pr_chunking", True)
+        get_settings().set("pr_reviewer.max_number_of_calls", 3)
+        get_settings().set("config.git_provider", "plain-diff")
+        get_settings().set("plain_diff.content", _LEDGER_DIFF)
+        get_settings().set("plain_diff.output_path", None)
+        get_settings().set("config.publish_output", False)
+        get_settings().set("config.run_ledger_path", str(ledger_path))
+
+        with (
+            patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("full diff", ["b.py"])),
+            patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs_with_files",
+                  return_value=(_plans("chunk-a", "chunk-b"), [])),
+        ):
+            reviewer = PRReviewer("local_diff", ai_handler=RecordingAiHandler, args=[])
+            await reviewer.run()
+    finally:
+        restore_settings(snapshot)
+
+    assert ledger_path.exists()
+    rows = [json.loads(line) for line in ledger_path.read_text().splitlines()]
+    assert len(rows) == 2
+    assert {row["chunk_index"] for row in rows} == {0, 1}
+    assert all(row["stage"] == "review" for row in rows)
+    assert all(row["tool"] == "review" for row in rows)
+    # both rows belong to the one run() call, so they share a run_id
+    assert len({row["run_id"] for row in rows}) == 1

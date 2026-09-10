@@ -10,7 +10,14 @@ from pr_agent.algo.run_details import RunDetails
 
 
 def write_ledger(details: RunDetails, path: str, *, run_id: str, tool: str) -> int:
-    """Append one JSON line per recorded call in `details.calls` to `path`. Returns rows written."""
+    """Append one JSON line per recorded call in `details.calls` to `path`. Returns rows written.
+
+    Creates neither the file nor its parent directories when there are no calls to write:
+    every early return in a tool's `run()` reaches this with `run_ledger_path` set, and none
+    of them should leave behind an empty file (or an empty directory) on disk.
+    """
+    if not details.calls:
+        return 0
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     rows = 0

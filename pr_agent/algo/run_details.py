@@ -18,12 +18,15 @@ _run_details: ContextVar[Optional["RunDetails"]] = ContextVar(
 )
 
 
-@dataclass(frozen=True)
+@dataclass
 class CallRecord:
     """One successful model call, attributed to a stage, chunk and file set.
 
     Kept alongside the aggregate counters on `RunDetails` rather than replacing them:
     the aggregates answer "how much did this run cost", this answers "which call".
+
+    Not frozen: `set_call_findings` mutates `findings_emitted` in place once the caller
+    has parsed the call's response, since the record is created before that parse happens.
     """
 
     stage: str
@@ -31,6 +34,10 @@ class CallRecord:
     prompt_tokens: int = 0
     cached_tokens: int = 0
     completion_tokens: int = 0
+    # Same derivation `add_token_usage` uses: provider-reported total when present,
+    # else prompt + completion. Kept in lockstep with it so that summing this field
+    # over `details.calls` always equals `RunDetails.total_tokens` for the same run.
+    total_tokens: int = 0
     cost_usd: Optional[Decimal] = None
     chunk_index: Optional[int] = None
     sample_index: Optional[int] = None
@@ -194,12 +201,18 @@ def record_ai_call(usage=None, model: Optional[str] = None, cost_usd=None, *,
         details.known_cost_call_count += 1
         model_name = model or "unknown"
         details.model_costs_usd[model_name] = details.model_costs_usd.get(model_name, Decimal("0")) + cost
+    prompt_tokens = _read_token_field(usage, "prompt_tokens")
+    completion_tokens = _read_token_field(usage, "completion_tokens")
+    # Mirror add_token_usage's derivation exactly, so summing this field over
+    # details.calls always equals details.total_tokens for the same run.
+    call_total_tokens = _read_token_field(usage, "total_tokens") or (prompt_tokens + completion_tokens)
     details.calls.append(CallRecord(
         stage=stage or "unknown",
         model=model or "unknown",
-        prompt_tokens=_read_token_field(usage, "prompt_tokens"),
+        prompt_tokens=prompt_tokens,
         cached_tokens=_cached_tokens(usage),
-        completion_tokens=_read_token_field(usage, "completion_tokens"),
+        completion_tokens=completion_tokens,
+        total_tokens=call_total_tokens,
         cost_usd=cost,
         chunk_index=chunk_index,
         sample_index=sample_index,
@@ -207,3 +220,31 @@ def record_ai_call(usage=None, model: Optional[str] = None, cost_usd=None, *,
         latency_ms=latency_ms,
         findings_emitted=findings_emitted,
     ))
+
+
+def set_call_findings(stage: str, chunk_index: Optional[int], sample_index: Optional[int], count: int) -> bool:
+    """Set `findings_emitted` on the call matching `(stage, chunk_index, sample_index)`.
+
+    Matches by identity fields, not "the last call": chunked/sampled calls run under
+    `asyncio.gather`, so completion order does not follow chunk/sample order and the
+    last-appended record is not reliably the one the caller just parsed.
+
+    Only the first matching record with `findings_emitted is None` is updated, so a
+    retried chunk that reuses the same (stage, chunk_index, sample_index) triple does
+    not silently overwrite an earlier attempt's count.
+
+    Returns True if a matching record was found and set, False otherwise.
+    """
+    details = get_run_details()
+    if details is None:
+        return False
+    for call in details.calls:
+        if (
+            call.stage == stage
+            and call.chunk_index == chunk_index
+            and call.sample_index == sample_index
+            and call.findings_emitted is None
+        ):
+            call.findings_emitted = count
+            return True
+    return False
