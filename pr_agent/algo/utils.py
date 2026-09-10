@@ -1020,7 +1020,7 @@ def drop_sign_off_after_wrapper_fence(text: str) -> str:
     """
     lines = text.split('\n')
     for i in range(len(lines) - 1, -1, -1):
-        if lines[i] != '```':
+        if lines[i].rstrip() != '```':
             continue
         if not ''.join(lines[i + 1:]).strip():
             return text
