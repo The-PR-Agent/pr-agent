@@ -8,6 +8,7 @@ from pr_agent.algo.inline_comment_dedup import (
     get_inline_comment_store,
     key_issue_fingerprint,
 )
+from pr_agent.algo.review_coverage import CoverageLedger, FileCoverage
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import PRReviewHeader, PRReviewIdentity
 from pr_agent.config_loader import get_settings
@@ -139,6 +140,27 @@ async def test_prepare_prediction_keeps_incremental_review_compatible_with_tuple
     assert reviewer.prediction == PARSABLE_REVIEW
 
 
+@pytest.mark.asyncio
+async def test_prepare_prediction_builds_a_coverage_ledger_for_the_single_call_path():
+    reviewer = _make_prediction_reviewer()
+    reviewer._get_prediction = AsyncMock(return_value=PARSABLE_REVIEW)
+    reviewer.git_provider.get_diff_files.return_value = [
+        FilePatchInfo(base_file="a", head_file="a2", patch="p", filename="reviewed.py",
+                     num_plus_lines=10, num_minus_lines=2),
+        FilePatchInfo(base_file="b", head_file="", patch="p", filename="deleted.py",
+                     num_plus_lines=0, num_minus_lines=8),
+        FilePatchInfo(base_file="c", head_file="c2", patch="p", filename="skipped.py",
+                     num_plus_lines=5, num_minus_lines=1),
+    ]
+
+    with patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["skipped.py"])):
+        await reviewer._prepare_prediction("model")
+
+    assert reviewer.coverage.files["reviewed.py"].status == "reviewed"
+    assert reviewer.coverage.files["deleted.py"].status == "deletion_only"
+    assert reviewer.coverage.files["skipped.py"].status == "skipped_budget"
+
+
 def _render_review(reviewer, remaining_files, supports_gfm_markdown=False):
     reviewer.prediction = "review:\n  summary: test"
     reviewer.remaining_files_list = remaining_files
@@ -235,6 +257,64 @@ def test_prepare_pr_review_reports_number_of_files_beyond_coverage_limit():
 
     assert "... and 3 more" in review
     assert "- `file_50.py`" not in review
+
+
+def test_prepare_pr_review_appends_coverage_ledger_footer_when_enabled():
+    reviewer = _make_prediction_reviewer()
+    reviewer.coverage = CoverageLedger()
+    reviewer.coverage.add(FileCoverage("skipped.py", changed_lines=100, status="skipped_budget"))
+    settings = get_settings()
+    original = settings.pr_reviewer.enable_review_coverage_footer
+    try:
+        settings.pr_reviewer.enable_review_coverage_footer = True
+        review = _render_review(reviewer, ["skipped.py"])
+    finally:
+        settings.pr_reviewer.enable_review_coverage_footer = original
+
+    assert "Reviewed 0% of changed lines" in review
+
+
+def test_prepare_pr_review_prepends_partial_review_warning_after_heading():
+    reviewer = _make_prediction_reviewer()
+    reviewer.coverage = CoverageLedger()
+    reviewer.coverage.add(FileCoverage("a.py", changed_lines=100, status="clipped"))
+    reviewer.prediction = "review:\n  summary: test"
+    reviewer.remaining_files_list = []
+    reviewer.git_provider.get_diff_files.return_value = []
+    reviewer.git_provider.is_supported.return_value = False
+    reviewer.set_review_labels = MagicMock()
+
+    with (
+        patch("pr_agent.tools.pr_reviewer.load_yaml", return_value={"review": {"summary": "test"}}),
+        patch("pr_agent.tools.pr_reviewer.github_action_output"),
+        patch("pr_agent.tools.pr_reviewer.convert_to_markdown_v2",
+              return_value="## PR Reviewer Guide 🔍\n\nbody text"),
+    ):
+        review = reviewer._prepare_pr_review()
+
+    assert review.startswith("## PR Reviewer Guide 🔍\n\n> ⚠️ **Partial review.**")
+    assert review.index("Partial review") < review.index("body text")
+
+
+def test_prepare_pr_review_omits_partial_review_warning_when_fully_reviewed():
+    reviewer = _make_prediction_reviewer()
+    reviewer.coverage = CoverageLedger()
+    reviewer.coverage.add(FileCoverage("a.py", changed_lines=100, status="reviewed"))
+    reviewer.prediction = "review:\n  summary: test"
+    reviewer.remaining_files_list = []
+    reviewer.git_provider.get_diff_files.return_value = []
+    reviewer.git_provider.is_supported.return_value = False
+    reviewer.set_review_labels = MagicMock()
+
+    with (
+        patch("pr_agent.tools.pr_reviewer.load_yaml", return_value={"review": {"summary": "test"}}),
+        patch("pr_agent.tools.pr_reviewer.github_action_output"),
+        patch("pr_agent.tools.pr_reviewer.convert_to_markdown_v2",
+              return_value="## PR Reviewer Guide 🔍\n\nbody text"),
+    ):
+        review = reviewer._prepare_pr_review()
+
+    assert "Partial review" not in review
 
 
 def _key_issue(**overrides):

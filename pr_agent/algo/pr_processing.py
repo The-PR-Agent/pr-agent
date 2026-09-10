@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import traceback
+from dataclasses import dataclass
 from typing import Callable, List, Tuple
 
 from pr_agent.algo.git_patch_processing import (
@@ -167,7 +168,15 @@ def pr_generate_extended_diff(pr_languages: list,
                               token_handler: TokenHandler,
                               add_line_numbers_to_hunks: bool,
                               patch_extra_lines_before: int = 0,
-                              patch_extra_lines_after: int = 0) -> Tuple[list, int, list]:
+                              patch_extra_lines_after: int = 0,
+                              included_files: list = None) -> Tuple[list, int, list]:
+    """
+    Args:
+        included_files: when given, the filename of every patch that made it into
+            `patches_extended` is appended here, in the same order. Callers that need to know
+            which files a single-chunk diff actually covers (the review coverage ledger) pass a
+            list in; callers that only need the diff strings leave it as None.
+    """
     total_tokens = token_handler.prompt_tokens  # initial tokens
     patches_extended = []
     patches_extended_tokens = []
@@ -202,6 +211,8 @@ def pr_generate_extended_diff(pr_languages: list,
             total_tokens += patch_tokens
             patches_extended_tokens.append(patch_tokens)
             patches_extended.append(full_extended_patch)
+            if included_files is not None:
+                included_files.append(file.filename)
 
     return patches_extended, total_tokens, patches_extended_tokens
 
@@ -394,29 +405,25 @@ def _get_all_deployments(all_models: List[str]) -> List[str]:
     return all_deployments
 
 
-def get_pr_multi_diffs(git_provider: GitProvider,
-                       token_handler: TokenHandler,
-                       model: str,
-                       max_calls: int = 5,
-                       add_line_numbers: bool = True,
-                       return_remaining_files: bool = False):
-    """
-    Retrieves the diff files from a Git provider, sorts them by main language, and generates patches for each file.
-    The patches are split into multiple groups based on the maximum number of tokens allowed for the given model.
+@dataclass(frozen=True)
+class ChunkPlan:
+    """One chunk of `get_pr_multi_diffs_with_files`'s output: the diff string sent to the model,
+    plus which files it contains and which of those were clipped to fit the token budget."""
+    diff: str
+    files: tuple[str, ...]
+    clipped: tuple[str, ...]
 
-    Args:
-        git_provider (GitProvider): An object that provides access to Git provider APIs.
-        token_handler (TokenHandler): An object that handles tokens in the context of a pull request.
-        model (str): The name of the model.
-        max_calls (int, optional): The maximum number of calls to retrieve diff files. Defaults to 5.
-        return_remaining_files (bool, optional): Also return the files the token budget left out, in the
-            same shape as `get_pr_diff`. Files without a patch, and delete-only files, are not reported:
-            nothing was omitted for them. Defaults to False.
+
+def get_pr_multi_diffs_with_files(git_provider: GitProvider,
+                                  token_handler: TokenHandler,
+                                  model: str,
+                                  max_calls: int = 5,
+                                  add_line_numbers: bool = True) -> tuple[list[ChunkPlan], list[str]]:
+    """Same chunking as get_pr_multi_diffs, but each chunk also names its files and which were clipped.
 
     Returns:
-        List[str]: A list of final diff strings, split into multiple groups based on the maximum number of tokens allowed for the given model.
-        With `return_remaining_files`, a tuple of that list and the list of omitted file names.
-
+        A tuple of the list of `ChunkPlan`s (one per model call) and the list of files the token
+        budget left out entirely (in the same shape as `get_pr_diff`'s `remaining_files_list`).
     """
     diff_files = git_provider.get_diff_files()
 
@@ -430,16 +437,20 @@ def get_pr_multi_diffs(git_provider: GitProvider,
     PATCH_EXTRA_LINES_AFTER = cap_and_log_extra_lines(PATCH_EXTRA_LINES_AFTER, "after")
 
     # try first a single run with standard diff string, with patch extension, and no deletions
+    full_diff_files: list[str] = []
     patches_extended, total_tokens, patches_extended_tokens = pr_generate_extended_diff(
         pr_languages, token_handler,
         add_line_numbers_to_hunks=add_line_numbers,
         patch_extra_lines_before=PATCH_EXTRA_LINES_BEFORE,
-        patch_extra_lines_after=PATCH_EXTRA_LINES_AFTER)
+        patch_extra_lines_after=PATCH_EXTRA_LINES_AFTER,
+        included_files=full_diff_files)
 
     # if we are under the limit, return the full diff
     if total_tokens + OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD < get_max_tokens(model):
-        full_diff_list = ["\n".join(patches_extended)] if patches_extended else []
-        return (full_diff_list, []) if return_remaining_files else full_diff_list
+        if not patches_extended:
+            return [], []
+        plan = ChunkPlan(diff="\n".join(patches_extended), files=tuple(full_diff_files), clipped=())
+        return [plan], []
 
     # Sort files within each language group by tokens in descending order
     sorted_files = []
@@ -447,7 +458,9 @@ def get_pr_multi_diffs(git_provider: GitProvider,
         sorted_files.extend(sorted(lang['files'], key=lambda x: x.tokens, reverse=True))
 
     patches = []
-    final_diff_list = []
+    chunk_files: list[str] = []
+    chunk_clipped: list[str] = []
+    plans: list[ChunkPlan] = []
     files_in_patches = set()  # files that made it into a chunk
     total_tokens = token_handler.prompt_tokens
     call_number = 1
@@ -479,6 +492,7 @@ def get_pr_multi_diffs(git_provider: GitProvider,
             patch = add_ai_summary_top_patch(file, patch)
         new_patch_tokens = token_handler.count_tokens(patch)
 
+        clipped_this_file = False
         if patch and (token_handler.prompt_tokens + new_patch_tokens) > get_max_tokens(
                 model) - OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD:
             if get_settings().config.get('large_patch_policy', 'skip') == 'skip':
@@ -495,14 +509,17 @@ def get_pr_multi_diffs(git_provider: GitProvider,
                 else:
                     get_logger().info(f"Clipped large patch for file: {file.filename}")
                     patch = patch_clipped
+                    clipped_this_file = True
             else:
                 get_logger().warning(f"Patch too large, skipping: {file.filename}")
                 continue
 
         if patch and (total_tokens + new_patch_tokens > get_max_tokens(model) - OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD):
             final_diff = "\n".join(patches)
-            final_diff_list.append(final_diff)
+            plans.append(ChunkPlan(diff=final_diff, files=tuple(chunk_files), clipped=tuple(chunk_clipped)))
             patches = []
+            chunk_files = []
+            chunk_clipped = []
             total_tokens = token_handler.prompt_tokens
             call_number += 1
             if call_number > max_calls: # avoid creating new patches
@@ -514,6 +531,9 @@ def get_pr_multi_diffs(git_provider: GitProvider,
 
         if patch:
             patches.append(patch)
+            chunk_files.append(file.filename)
+            if clipped_this_file:
+                chunk_clipped.append(file.filename)
             files_in_patches.add(file.filename)
             total_tokens += new_patch_tokens
             if get_verbosity_level() >= 2:
@@ -522,10 +542,7 @@ def get_pr_multi_diffs(git_provider: GitProvider,
     # Add the last chunk
     if patches:
         final_diff = "\n".join(patches)
-        final_diff_list.append(final_diff.strip())
-
-    if not return_remaining_files:
-        return final_diff_list
+        plans.append(ChunkPlan(diff=final_diff.strip(), files=tuple(chunk_files), clipped=tuple(chunk_clipped)))
 
     remaining_files_list = []
     for file in sorted_files:
@@ -537,6 +554,38 @@ def get_pr_multi_diffs(git_provider: GitProvider,
                                                     file.filename, file.edit_type) is None:
             continue
         remaining_files_list.append(file.filename)
+    return plans, remaining_files_list
+
+
+def get_pr_multi_diffs(git_provider: GitProvider,
+                       token_handler: TokenHandler,
+                       model: str,
+                       max_calls: int = 5,
+                       add_line_numbers: bool = True,
+                       return_remaining_files: bool = False):
+    """
+    Retrieves the diff files from a Git provider, sorts them by main language, and generates patches for each file.
+    The patches are split into multiple groups based on the maximum number of tokens allowed for the given model.
+
+    Args:
+        git_provider (GitProvider): An object that provides access to Git provider APIs.
+        token_handler (TokenHandler): An object that handles tokens in the context of a pull request.
+        model (str): The name of the model.
+        max_calls (int, optional): The maximum number of calls to retrieve diff files. Defaults to 5.
+        return_remaining_files (bool, optional): Also return the files the token budget left out, in the
+            same shape as `get_pr_diff`. Files without a patch, and delete-only files, are not reported:
+            nothing was omitted for them. Defaults to False.
+
+    Returns:
+        List[str]: A list of final diff strings, split into multiple groups based on the maximum number of tokens allowed for the given model.
+        With `return_remaining_files`, a tuple of that list and the list of omitted file names.
+
+    """
+    plans, remaining_files_list = get_pr_multi_diffs_with_files(
+        git_provider, token_handler, model, max_calls=max_calls, add_line_numbers=add_line_numbers)
+    final_diff_list = [plan.diff for plan in plans]
+    if not return_remaining_files:
+        return final_diff_list
     return final_diff_list, remaining_files_list
 
 

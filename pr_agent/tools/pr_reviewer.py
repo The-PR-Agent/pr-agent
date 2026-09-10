@@ -21,11 +21,12 @@ from pr_agent.algo.inline_comment_dedup import (
 from pr_agent.algo.pr_processing import (
     add_ai_metadata_to_diff_files,
     get_pr_diff,
-    get_pr_multi_diffs,
+    get_pr_multi_diffs_with_files,
     retry_with_fallback_models,
 )
 from pr_agent.algo.prompt_fragments import render_diff_hunk_format
 from pr_agent.algo.repo_context import build_repo_context
+from pr_agent.algo.review_coverage import CoverageLedger, FileCoverage
 from pr_agent.algo.review_finding_state import (
     append_review_state,
     parse_review_state,
@@ -170,6 +171,12 @@ class PRReviewer:
     # num_max_findings. Non-zero means this review is partial in the same way a failed chunk
     # makes it partial.
     review_vote_dropped_count = 0
+    # Line-weighted record of what the review actually looked at, built once _prepare_prediction
+    # has a diff to review. None means the run never got that far (parsing/plumbing tests that
+    # exercise _prepare_pr_review directly, without going through _prepare_prediction first).
+    coverage: Optional[CoverageLedger] = None
+    # Per-chunk file/clip breakdown from the chunked flow; empty when the diff was not chunked.
+    chunk_plans: list = None
 
     def __init__(self, pr_url: str, is_answer: bool = False, is_auto: bool = False, args: list = None,
                  ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
@@ -202,6 +209,8 @@ class PRReviewer:
         self.ai_handler.main_pr_language = self.main_language
         self.patches_diff = None
         self.remaining_files_list = []
+        self.coverage = None
+        self.chunk_plans = []
         self.prediction = None
         self._review_state_result = None
         self._review_state_blocked = False
@@ -805,6 +814,9 @@ class PRReviewer:
         else:
             self.patches_diff = output
             self.remaining_files_list = []
+        # The single-call ledger. _prepare_chunked_prediction below replaces this with a more
+        # granular one (clipped/chunk_failed per file) when chunking actually runs.
+        self.coverage = self._build_coverage_ledger(self.remaining_files_list)
 
         # retry_with_fallback_models calls this once per model, so clear the previous attempt's
         # merged verdict; otherwise a chunked run that failed on model A would be read back as
@@ -854,22 +866,35 @@ class PRReviewer:
         """Is this parsed output a review the rest of the tool can render?"""
         return isinstance(data, dict) and isinstance(data.get("review"), dict) and bool(data["review"])
 
+    def _build_coverage_ledger(self, remaining_files: list) -> CoverageLedger:
+        """A file the model saw whole is reviewed by default; the caller marks the exceptions
+        (clipped, skipped for budget, or lost to a failed chunk) on top of this base ledger."""
+        ledger = CoverageLedger()
+        for file in self.git_provider.get_diff_files():
+            changed_lines = file.num_plus_lines + file.num_minus_lines
+            status = "deletion_only" if file.num_plus_lines == 0 and file.num_minus_lines > 0 else "reviewed"
+            ledger.add(FileCoverage(file.filename, changed_lines=changed_lines, status=status))
+        for filename in remaining_files:
+            ledger.mark(filename, "skipped_budget")
+        return ledger
+
     async def _prepare_chunked_prediction(self, model: str) -> bool:
         """Review a too-large diff in chunks and merge the per-chunk verdicts.
 
         Returns False when chunking does not apply, leaving the single-call flow in place.
         """
-        patches_diff_list, remaining_files_list = get_pr_multi_diffs(
+        plans, remaining_files_list = get_pr_multi_diffs_with_files(
             self.git_provider,
             self.token_handler,
             model,
             max_calls=get_settings().pr_reviewer.get("max_number_of_calls", 3),
-            add_line_numbers=True,
-            return_remaining_files=True)
+            add_line_numbers=True)
+        patches_diff_list = [plan.diff for plan in plans]
         if len(patches_diff_list) < 2:
             get_logger().info("Large-diff chunking produced a single chunk, reviewing the PR in one call")
             return False
 
+        self.chunk_plans = plans
         get_logger().info(f"Number of PR chunk calls: {len(patches_diff_list)}")
         get_logger().debug("PR diff chunks", artifact=patches_diff_list)
         # A dropped chunk loses every finding in its slice of the diff, and both failure modes
@@ -888,7 +913,8 @@ class PRReviewer:
             if attempt:
                 get_logger().info(f"Retrying {len(pending_indices)} failed review chunk(s)")
             results = await asyncio.gather(
-                *[self._get_review_data(model, patches_diff_list[i], chunk_index=i) for i in pending_indices],
+                *[self._get_review_data(model, patches_diff_list[i], chunk_index=i,
+                                        files=list(plans[i].files)) for i in pending_indices],
                 return_exceptions=True)
 
             retry_indices = []
@@ -927,10 +953,21 @@ class PRReviewer:
         self.review_failed_chunk_count = len(patches_diff_list) - len(chunk_outputs)
         self.review_vote_dropped_count = sum(chunk_dropped.values())
         self.remaining_files_list = remaining_files_list
+
+        coverage = self._build_coverage_ledger(remaining_files_list)
+        for plan in plans:
+            for filename in plan.clipped:
+                coverage.mark(filename, "clipped")
+        for chunk_index, plan in enumerate(plans):
+            if chunk_index not in chunk_results:
+                for filename in plan.files:
+                    coverage.mark(filename, "chunk_failed")
+        self.coverage = coverage
         return True
 
     async def _get_review_data(self, model: str, patches_diff: Optional[str] = None,
-                               chunk_index: Optional[int] = None) -> tuple[str, dict, int]:
+                               chunk_index: Optional[int] = None,
+                               files: Optional[list] = None) -> tuple[str, dict, int]:
         """Review the diff, returning `(raw response text, parsed review dict, findings dropped)`.
 
         With `pr_reviewer.num_samples` at its default of 1 this is one call, parsed once. With
@@ -956,7 +993,8 @@ class PRReviewer:
         if num_samples <= 1:
             # keep the one-argument call for the whole-diff case: patches_diff defaults to it
             prediction = await (self._get_prediction(model) if patches_diff is None
-                                else self._get_prediction(model, patches_diff, chunk_index=chunk_index))
+                                else self._get_prediction(model, patches_diff, chunk_index=chunk_index,
+                                                          files=files))
             data = self._load_review_yaml(prediction)
             if not self._is_parsable_review(data):
                 get_logger().warning(f"Unparsable review from {model}", artifact={"data": data})
@@ -968,7 +1006,7 @@ class PRReviewer:
                                  "the samples will be identical and the vote is a no-op")
 
         responses = await asyncio.gather(
-            *[self._get_prediction(model, patches_diff, chunk_index=chunk_index, sample_index=i)
+            *[self._get_prediction(model, patches_diff, chunk_index=chunk_index, sample_index=i, files=files)
               for i in range(num_samples)],
             return_exceptions=True)
         parsed, raw, first_error = [], [], None
@@ -1005,7 +1043,8 @@ class PRReviewer:
         return "\n".join(raw), consensus.review, consensus.dropped
 
     async def _get_prediction(self, model: str, patches_diff: Optional[str] = None, *,
-                              chunk_index: Optional[int] = None, sample_index: Optional[int] = None) -> str:
+                              chunk_index: Optional[int] = None, sample_index: Optional[int] = None,
+                              files: Optional[list] = None) -> str:
         """
         Generate an AI prediction for the pull request review.
 
@@ -1017,6 +1056,8 @@ class PRReviewer:
                 when the diff was not chunked.
             sample_index: The consensus sample this call produces, for run-ledger attribution.
                 None when `pr_reviewer.num_samples` is 1.
+            files: The files this call's diff covers, for run-ledger attribution. None when the
+                diff was not chunked (the whole-diff case does not narrow it down further).
 
         Returns:
             A string representing the AI prediction for the pull request review.
@@ -1038,7 +1079,7 @@ class PRReviewer:
                 stage="review",
                 chunk_index=chunk_index,
                 sample_index=sample_index,
-                files=None,  # a later task supplies the chunk's file list
+                files=files,
             )
 
         return response
@@ -1106,6 +1147,14 @@ class PRReviewer:
                                                git_provider=self.git_provider,
                                                files=self.git_provider.get_diff_files())
 
+        if self.coverage is not None and self.coverage.reviewed_ratio < 0.95:
+            # A partial review must say so before the findings, not after: a reader who stops at
+            # the findings list would otherwise take a partial pass for a complete one.
+            warning = (f"> ⚠️ **Partial review.** {self.coverage.render_footer()}. "
+                      "Findings below cover only the reviewed lines; a follow-up run is needed.")
+            heading, separator, rest = markdown_text.partition("\n\n")
+            markdown_text = f"{heading}{separator}{warning}\n\n{rest}"
+
         if self.review_chunk_count > 1:
             markdown_text += (
                 "\n\n<hr>\n\n"
@@ -1138,6 +1187,8 @@ class PRReviewer:
             remaining_count = len(self.remaining_files_list) - len(displayed_files)
             if remaining_count:
                 markdown_text += f"\n... and {remaining_count} more"
+            if self.coverage is not None:
+                markdown_text += f"\n\n{self.coverage.render_footer()}"
 
         # Add help text if gfm_markdown is supported
         if self.git_provider.is_supported("gfm_markdown") and get_settings().pr_reviewer.enable_help_text:
