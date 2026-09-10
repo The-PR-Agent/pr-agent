@@ -145,6 +145,12 @@ persistent_finding_state=true # Persist review finding state across complete rev
 inline_key_issues=false
 extra_instructions = ""
 num_max_findings = 3
+# Layout of the key-issues section of the review comment.
+#   "details"  - each finding is a collapsed <details> block whose title carries the diff link
+#   "expanded" - the file path and line range are shown as text and the code snippet is always
+#                visible, so a finding can be read without clicking into it
+# An unrecognised value falls back to "details".
+findings_layout = "details"
 # Consensus sampling. With num_samples > 1 the review runs that many times concurrently (needs
 # config.temperature > 0) and keeps only the key issues that recur in at least min_votes samples,
 # matched by file and overlapping lines rather than wording. Raises recall on small models, which

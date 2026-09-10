@@ -3,6 +3,7 @@ import textwrap
 from unittest.mock import Mock
 
 from pr_agent.algo.utils import PRReviewHeader, _expand_minute_suffix, convert_to_markdown_v2
+from pr_agent.config_loader import get_settings
 from pr_agent.tools.pr_description import insert_br_after_x_chars
 
 """
@@ -383,3 +384,80 @@ class TestExpandMinuteSuffix:
     def test_minute_suffix_in_compound_estimate(self):
         """'2h 30m' becomes '2h 30 minutes' (only the minute part is replaced)."""
         assert _expand_minute_suffix("2h 30m") == "2h 30 minutes"
+
+
+class TestFindingsLayout:
+    """pr_reviewer.findings_layout switches how key_issues_to_review is rendered."""
+
+    ISSUE = {
+        'relevant_file': 'src/utils.py',
+        'issue_header': 'Code Smell',
+        'issue_content': 'The function is too long and complex.',
+        'start_line': 30,
+        'end_line': 50,
+    }
+    REFERENCE_LINK = 'https://github.com/qodo/pr-agent/pull/1/files#diff-hashvalue-R174'
+
+    def _git_provider(self):
+        provider = Mock()
+        provider.get_line_link.return_value = self.REFERENCE_LINK
+        return provider
+
+    def test_details_layout_is_the_default(self, monkeypatch):
+        """The default must stay byte-identical to the pre-existing output."""
+        settings = get_settings()
+        assert settings.pr_reviewer.findings_layout == "details"
+
+        input_data = {'review': {'key_issues_to_review': [self.ISSUE]}}
+        rendered = convert_to_markdown_v2(input_data, git_provider=self._git_provider())
+
+        assert f"<a href='{self.REFERENCE_LINK}'><strong>Code Smell</strong></a><br>" in rendered
+        assert "src/utils.py" not in rendered
+        assert "L30-50" not in rendered
+
+    def test_expanded_layout_shows_file_and_line_range(self, monkeypatch):
+        monkeypatch.setattr(get_settings().pr_reviewer, "findings_layout", "expanded")
+
+        input_data = {'review': {'key_issues_to_review': [self.ISSUE]}}
+        rendered = convert_to_markdown_v2(input_data, git_provider=self._git_provider())
+
+        assert f"<a href='{self.REFERENCE_LINK}'><strong>Code Smell</strong></a>" in rendered
+        assert "<code>src/utils.py</code>" in rendered
+        assert "L30-50" in rendered
+        assert "The function is too long and complex." in rendered
+        # nothing is hidden behind a disclosure triangle
+        assert "<details>" not in rendered
+
+    def test_expanded_layout_separates_multiple_findings(self, monkeypatch):
+        monkeypatch.setattr(get_settings().pr_reviewer, "findings_layout", "expanded")
+
+        second = dict(self.ISSUE, issue_header='Timer Leak', relevant_file='src/audio.py',
+                      start_line=5, end_line=9)
+        input_data = {'review': {'key_issues_to_review': [self.ISSUE, second]}}
+        rendered = convert_to_markdown_v2(input_data, git_provider=self._git_provider())
+
+        assert "<code>src/utils.py</code>" in rendered
+        assert "<code>src/audio.py</code>" in rendered
+        # one separator between two findings, none trailing after the last
+        assert rendered.count("<hr>") == 1
+
+    def test_expanded_layout_without_gfm(self, monkeypatch):
+        """Providers without gfm_markdown still get the file and line range as plain markdown."""
+        monkeypatch.setattr(get_settings().pr_reviewer, "findings_layout", "expanded")
+
+        input_data = {'review': {'key_issues_to_review': [self.ISSUE]}}
+        rendered = convert_to_markdown_v2(input_data, gfm_supported=False,
+                                          git_provider=self._git_provider())
+
+        assert "`src/utils.py` L30-50" in rendered
+        assert "<code>" not in rendered
+        assert "<details>" not in rendered
+
+    def test_unknown_layout_falls_back_to_details(self, monkeypatch):
+        monkeypatch.setattr(get_settings().pr_reviewer, "findings_layout", "nonsense")
+
+        input_data = {'review': {'key_issues_to_review': [self.ISSUE]}}
+        rendered = convert_to_markdown_v2(input_data, git_provider=self._git_provider())
+
+        assert f"<a href='{self.REFERENCE_LINK}'><strong>Code Smell</strong></a><br>" in rendered
+        assert "<code>src/utils.py</code>" not in rendered

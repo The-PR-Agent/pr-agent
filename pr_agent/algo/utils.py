@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from enum import Enum
 from importlib.metadata import PackageNotFoundError, version
-from typing import Any, Iterable, List, Tuple, TypedDict
+from typing import Any, Iterable, List, Optional, Tuple, TypedDict
 from urllib.parse import quote, unquote, urlparse
 
 import html2text
@@ -502,6 +502,8 @@ def convert_to_markdown_v2(output_data: dict,
                     markdown_text += f"{emoji}&nbsp;<strong>Recommended focus areas for review</strong><br><br>\n\n"
                 else:
                     markdown_text += f"### {emoji} Recommended focus areas for review\n\n#### \n"
+                layout = get_findings_layout()
+                issue_strs = []
                 for i, issue in enumerate(issues):
                     try:
                         if not issue or not isinstance(issue, dict):
@@ -520,22 +522,24 @@ def convert_to_markdown_v2(output_data: dict,
                         else:
                             reference_link = None
 
-                        if gfm_supported:
-                            if reference_link is not None and len(reference_link) > 0:
-                                if relevant_lines_str:
-                                    issue_str = f"<details><summary><a href='{reference_link}'><strong>{issue_header}</strong></a>\n\n{issue_content}\n</summary>\n\n{relevant_lines_str}\n\n</details>"
-                                else:
-                                    issue_str = f"<a href='{reference_link}'><strong>{issue_header}</strong></a><br>{issue_content}"
-                            else:
-                                issue_str = f"<strong>{issue_header}</strong><br>{issue_content}"
-                        else:
-                            if reference_link is not None and len(reference_link) > 0:
-                                issue_str = f"[**{issue_header}**]({reference_link})\n\n{issue_content}\n\n"
-                            else:
-                                issue_str = f"**{issue_header}**\n\n{issue_content}\n\n"
-                        markdown_text += f"{issue_str}\n\n"
+                        issue_strs.append(render_focus_area_issue(
+                            issue_header=issue_header,
+                            issue_content=issue_content,
+                            relevant_file=relevant_file,
+                            start_line=start_line,
+                            end_line=end_line,
+                            reference_link=reference_link,
+                            relevant_lines_str=relevant_lines_str,
+                            layout=layout,
+                            gfm_supported=gfm_supported,
+                        ))
                     except Exception as e:
                         get_logger().exception(f"Failed to process 'Recommended focus areas for review': {e}")
+                # "expanded" findings run together without the disclosure triangle to separate
+                # them, so draw a rule between neighbours - but never after the last one.
+                separator = "\n\n<hr>\n\n" if (layout == "expanded" and gfm_supported) else "\n\n"
+                if issue_strs:
+                    markdown_text += separator.join(issue_strs) + "\n\n"
                 if gfm_supported:
                     markdown_text += "</td></tr>\n"
         else:
@@ -550,6 +554,64 @@ def convert_to_markdown_v2(output_data: dict,
         markdown_text += "</table>\n"
 
     return markdown_text
+
+
+def get_findings_layout() -> str:
+    """Resolve pr_reviewer.findings_layout, falling back to the historical 'details' rendering."""
+    layout = str(get_settings().get("pr_reviewer.findings_layout", "details") or "details").strip().lower()
+    if layout not in ("details", "expanded"):
+        get_logger().warning(f"Unknown pr_reviewer.findings_layout '{layout}'; using 'details'")
+        return "details"
+    return layout
+
+
+def render_focus_area_issue(issue_header: str,
+                            issue_content: str,
+                            relevant_file: str,
+                            start_line: int,
+                            end_line: int,
+                            reference_link: Optional[str],
+                            relevant_lines_str: str,
+                            layout: str,
+                            gfm_supported: bool) -> str:
+    """Render a single key issue for the review comment's focus-area section.
+
+    'details' keeps the finding collapsed behind its title. 'expanded' spells out where the
+    finding lives and leaves the snippet open, so the section can be read without clicking.
+    """
+    linked = bool(reference_link)
+    if layout == "expanded":
+        location = ""
+        if relevant_file:
+            line_range = f"L{start_line}-{end_line}" if end_line != start_line else f"L{start_line}"
+            if gfm_supported:
+                location = f"<code>{relevant_file}</code> {line_range}"
+            else:
+                location = f"`{relevant_file}` {line_range}"
+        if gfm_supported:
+            title = f"<a href='{reference_link}'><strong>{issue_header}</strong></a>" if linked \
+                else f"<strong>{issue_header}</strong>"
+            parts = [f"{title}<br>{location}" if location else title]
+        else:
+            title = f"[**{issue_header}**]({reference_link})" if linked else f"**{issue_header}**"
+            parts = [f"{title}\n{location}" if location else title]
+        if issue_content:
+            parts.append(issue_content)
+        if relevant_lines_str:
+            parts.append(relevant_lines_str)
+        return "\n\n".join(parts)
+
+    # "details": unchanged from the original rendering.
+    if gfm_supported:
+        if linked:
+            if relevant_lines_str:
+                return (f"<details><summary><a href='{reference_link}'><strong>{issue_header}</strong></a>"
+                        f"\n\n{issue_content}\n</summary>\n\n{relevant_lines_str}\n\n</details>")
+            return f"<a href='{reference_link}'><strong>{issue_header}</strong></a><br>{issue_content}"
+        return f"<strong>{issue_header}</strong><br>{issue_content}"
+    if linked:
+        return f"[**{issue_header}**]({reference_link})\n\n{issue_content}\n\n"
+    return f"**{issue_header}**\n\n{issue_content}\n\n"
 
 
 def extract_relevant_lines_str(end_line, files, relevant_file, start_line, dedent=False) -> str:
