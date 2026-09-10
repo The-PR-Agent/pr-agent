@@ -70,6 +70,20 @@ class TestParseFindings:
         assert finding.relevant_file == "src/worker/queue.py"
         assert finding.line_range == (42, 58)
 
+    def test_details_layout_non_gfm(self):
+        """A non-gfm_supported provider's (e.g. Bitbucket) collapsed layout still yields exact titles"""
+        body = (FIXTURES / "review_details_bitbucket.md").read_text(encoding="utf-8")
+        titles = [f.title for f in comments.parse_findings(body)]
+        assert titles == ["Race condition on shared queue state", "Missing null check before dereference"]
+
+    def test_expanded_layout_non_gfm_exposes_file_and_lines(self):
+        """A non-gfm_supported provider puts the location on the line after the title, not inline"""
+        body = (FIXTURES / "review_expanded_bitbucket.md").read_text(encoding="utf-8")
+        by_title = {f.title: f for f in comments.parse_findings(body)}
+        finding = by_title["Missing null check before dereference"]
+        assert finding.relevant_file == "src/auth/session.py"
+        assert finding.line_range == (10, 12)
+
     def test_title_excludes_the_location_suffix(self):
         """The title is the bold run only; the file and line range never leak into it"""
         body = (
@@ -81,7 +95,32 @@ class TestParseFindings:
         assert finding.relevant_file == "lib/profile.dart"
         assert finding.line_range == (120, 134)
 
+    def test_backtick_in_title_does_not_steal_the_file_span(self):
+        """A backtick-quoted dotted token inside the title itself is not read as the location"""
+        body = (
+            f"{PRReviewIdentity.REGULAR.value}\n## PR Reviewer Guide\n\n"
+            "- **Handle `config.yml` parsing failure** `src/config_loader.py` [5-9]\n"
+        )
+        finding = comments.parse_findings(body)[0]
+        assert finding.title == "Handle `config.yml` parsing failure"
+        assert finding.relevant_file == "src/config_loader.py"
+        assert finding.line_range == (5, 9)
+
+    def test_single_line_finding_has_equal_start_and_end(self):
+        """render_focus_area_issue omits the dash for a single-line finding; line_range still resolves"""
+        body = (
+            f"{PRReviewIdentity.REGULAR.value}\n## PR Reviewer Guide\n\n"
+            "<strong>Off-by-one when slicing the buffer</strong><br><code>src/buffer.py</code> L77\n"
+        )
+        finding = comments.parse_findings(body)[0]
+        assert finding.relevant_file == "src/buffer.py"
+        assert finding.line_range == (77, 77)
+
     def test_no_findings_returns_empty(self):
-        """A review with no findings yields an empty list, not an error"""
-        body = f"{PRReviewIdentity.REGULAR.value}\n## PR Reviewer Guide\n\nNo key issues to review\n"
+        """A "no major issues" review yields no findings while classify still recognises the review"""
+        body = (
+            f"{PRReviewIdentity.REGULAR.value}\n## PR Reviewer Guide 🔍\n\n"
+            "<table>\n<tr><td>⚡&nbsp;<strong>No major issues detected</strong></td></tr>\n</table>\n"
+        )
         assert comments.parse_findings(body) == []
+        assert comments.classify(body) is comments.CommentKind.REVIEW
