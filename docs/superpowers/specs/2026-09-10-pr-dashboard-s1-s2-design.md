@@ -124,6 +124,14 @@ provider = "github"      # github | bitbucket
 slug = "samer2373/block_rush"
 ```
 
+The registry is read with the standard-library `tomllib` and written by regenerating the
+whole file, which is safe because the file is entirely machine-owned — it has no user
+comments or ordering to preserve, unlike the `pr_agent/settings/` files that S4 will need
+`tomlkit` for. Values are validated before writing so that quoting can never be an issue:
+`provider` must be `github` or `bitbucket`, and `slug` must match
+`^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`. Anything else is rejected with a message naming the
+offending value.
+
 Credentials are **not** stored in this file. `providers.py` resolves tokens through the
 existing `get_settings()` accessor, reading `.secrets.toml` and environment variables
 unchanged. The add-repository flow validates a slug by fetching it and reports a missing
@@ -155,11 +163,37 @@ the usage page.
 
 ### Identifying PR-Agent's comments
 
-Matching is done on section markers — `## PR Reviewer Guide`, `## PR Code Suggestions`,
-and the findings blocks introduced by commit `208aec46` — and **not** on comment author. A
-self-hosted fork frequently posts under a human personal access token, so author matching
-is unreliable. The marker set lives in one table in `comments.py` so that a prompt change
-is a single edit.
+Matching is done on the hidden identity markers PR-Agent already embeds in every comment
+it posts, imported from `pr_agent/algo/utils.py` rather than re-declared:
+
+```python
+from pr_agent.algo.utils import (
+    PRCodeSuggestionsIdentity,
+    PRReviewIdentity,
+    _ALL_COMMENT_IDENTITIES,
+)
+```
+
+These are HTML comments such as `<!-- pr-agent:review:full -->`,
+`<!-- pr-agent:review:incremental -->`, `<!-- pr-agent:improve:summary -->`,
+`<!-- pr-agent:improve:no-suggestions -->`, and `<!-- pr-agent:improve:unanchored -->`.
+
+Two things are explicitly **not** used for identification:
+
+- **Comment author.** A self-hosted fork frequently posts under a human personal access
+  token, so author matching is unreliable.
+- **Visible headings.** `## PR Reviewer Guide` and `## PR Code Suggestions ✨` are
+  defaults that a repository can override through `pr_reviewer.review_heading`, resolved
+  by `_get_configured_heading`. Matching on them would miss any repository that renamed
+  its heading.
+
+Heading matching survives only as a fallback for comments posted before identity markers
+existed, and is labelled as such in the code. Because `_ALL_COMMENT_IDENTITIES` is a
+private name in `pr_agent.algo.utils`, the import is covered by a test that fails if it
+is renamed upstream.
+
+`/describe` is not in this set: it rewrites the pull request body rather than posting a
+comment, so the pull request detail view reads the body separately.
 
 ## D. S2 usage store
 
@@ -248,8 +282,10 @@ Tests live in `tests/unittest/test_pr_dashboard_*.py` and run with
 `PYTHONPATH=. uv run pytest`:
 
 - `registry`: TOML round-trip, duplicate slug rejection, unknown provider rejection.
-- `comments`: marker parsing against captured fixtures from block_rush pull request 1,
-  covering both the `details` and `expanded` findings layouts.
+- `comments`: identity-marker detection and findings parsing against captured fixtures
+  from block_rush pull request 1, covering both the `details` and `expanded` findings
+  layouts; plus an import-contract test asserting that `_ALL_COMMENT_IDENTITIES` and the
+  identity enums still exist in `pr_agent.algo.utils` with the expected values.
 - `store`: schema creation, migration idempotence, `Decimal` cost round-trip, aggregation
   by repository/model/command.
 - `recorder`: `ContextVar` propagation through a direct await — asserts the assumption
@@ -263,7 +299,8 @@ Tests live in `tests/unittest/test_pr_dashboard_*.py` and run with
 
 | Risk | Mitigation |
 | --- | --- |
-| Comment identification is heuristic and breaks when prompts change | Single marker table in `comments.py`; fixture-based tests over real captured comments |
+| Comment identification relies on `_ALL_COMMENT_IDENTITIES`, a private name upstream | Import it in one place; a test asserts the import and the marker values, so an upstream rename fails loudly |
+| A repository overrides `pr_reviewer.review_heading`, breaking heading-based matching | Identity markers are primary; heading matching is a labelled fallback for pre-marker comments only |
 | The `ContextVar` propagation assumption could be invalidated upstream | Dedicated test asserting it, so the break is loud |
 | Provider API rate limits during dashboard browsing | Short-TTL SQLite cache of provider responses; stale data labelled, not hidden |
 | Fork divergence from upstream | Single-line edit inside `pr_agent/`; all other code in `pr_dashboard/` |
