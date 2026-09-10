@@ -1001,6 +1001,17 @@ class TestParseFindings:
         assert findings
         assert any(f.relevant_file and f.line_range for f in findings)
 
+    def test_title_excludes_the_location_suffix(self):
+        """The title is the bold run only; the file and line range never leak into it"""
+        body = (
+            f"{PRReviewIdentity.REGULAR.value}\n## PR Reviewer Guide\n\n"
+            "- **Race on profile write** `lib/profile.dart` [120-134]\n"
+        )
+        finding = comments.parse_findings(body)[0]
+        assert finding.title == "Race on profile write"
+        assert finding.relevant_file == "lib/profile.dart"
+        assert finding.line_range == (120, 134)
+
     def test_no_findings_returns_empty(self):
         """A review with no findings yields an empty list, not an error"""
         body = f"{PRReviewIdentity.REGULAR.value}\n## PR Reviewer Guide\n\nNo key issues to review\n"
@@ -1064,7 +1075,11 @@ _LEGACY_HEADINGS = {
 }
 
 _FILE_AND_LINES = re.compile(r"`?(?P<file>[\w./\-]+\.\w+)`?[^\n]*?\[?(?P<start>\d+)\s*[-–]\s*(?P<end>\d+)\]?")
-_BULLET_TITLE = re.compile(r"^\s*(?:[-*]|\d+\.)\s+(?:\*\*)?(?P<title>[^*\n][^\n]*?)(?:\*\*)?\s*$")
+# Bold-delimited title first: a findings line is "- **Title** `file` [a-b]", so an
+# unanchored capture would swallow the location into the title. The plain-bullet fallback
+# only applies to lines with no bold run at all.
+_BOLD_TITLE = re.compile(r"^\s*(?:[-*]|\d+\.)\s+\*\*(?P<title>[^*]+?)\*\*")
+_PLAIN_TITLE = re.compile(r"^\s*(?:[-*]|\d+\.)\s+(?P<title>[^*\n][^\n]*?)\s*$")
 
 
 class CommentKind(str, Enum):
@@ -1113,7 +1128,7 @@ def parse_findings(body: str) -> list[Finding]:
         line = raw_line.strip()
         if not line or line.startswith("<!--"):
             continue
-        title_match = _BULLET_TITLE.match(raw_line)
+        title_match = _BOLD_TITLE.match(raw_line) or _PLAIN_TITLE.match(raw_line)
         if not title_match:
             continue
         title = title_match.group("title").strip()
@@ -1135,10 +1150,12 @@ def parse_findings(body: str) -> list[Finding]:
 
 Run: `PYTHONPATH=. uv run pytest tests/unittest/test_pr_dashboard_comments.py -q`
 
-Expected: PASS, 10 tests. The two regexes are written against the layouts produced by
+Expected: PASS, 11 tests. The three patterns are written against the layouts produced by
 `render_focus_area_issue` in `pr_agent/algo/utils.py`; if a fixture assertion fails, read
-that function and the failing fixture and adjust `_FILE_AND_LINES` or `_BULLET_TITLE` —
-do not weaken the assertions.
+that function and the failing fixture and adjust `_FILE_AND_LINES`, `_BOLD_TITLE`, or
+`_PLAIN_TITLE` — do not weaken the assertions. In particular
+`test_title_excludes_the_location_suffix` is the guard against a title capture that
+swallows the file path and line range; never relax it.
 
 - [ ] **Step 6: Lint and commit**
 
@@ -1165,9 +1182,13 @@ git commit -m "feat(dashboard): identify PR-Agent comments by identity marker an
   - `class PullRequestSummary` — frozen dataclass `number: int`, `title: str`, `author: str`, `state: str`, `url: str`, `updated_at: str`
   - `class ReviewComment` — frozen dataclass `kind: comments.CommentKind`, `body: str`, `created_at: str`, `url: str`
   - `class ProviderError(RuntimeError)` with attributes `status: int | None`, `retry_after: str | None`
-  - `list_pull_requests(repo: registry.Repo, state: str = "open", limit: int = 50) -> list[PullRequestSummary]`
-  - `list_pr_agent_comments(repo: registry.Repo, number: int) -> list[ReviewComment]`
+  - `list_pull_requests(repo, state="open", limit=50, conn=None) -> tuple[list[PullRequestSummary], bool]`
+  - `list_pr_agent_comments(repo, number, conn=None) -> tuple[list[ReviewComment], bool]`
   - `cached(conn, key: str, ttl_seconds: int, fetch: Callable[[], object]) -> tuple[object, bool]` returning `(payload, is_stale)`
+
+Both list functions return `(items, is_stale)`. Caching wraps the raw `_fetch_*` dict layer
+rather than the dataclasses, because only JSON-serialisable values can go in the cache
+table. Passing `conn=None` skips the cache entirely, which is what the unit tests do.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1285,9 +1306,29 @@ class TestCommentFiltering:
              "created_at": "2026-09-02T00:00:00Z", "html_url": "u2"},
         ]
         monkeypatch.setattr(providers, "_fetch_github_issue_comments", lambda repo, number: raw)
-        result = providers.list_pr_agent_comments(registry.Repo("github", "o/r"), 1)
+        result, stale = providers.list_pr_agent_comments(registry.Repo("github", "o/r"), 1)
         assert [c.url for c in result] == ["u2"]
         assert result[0].kind is comments.CommentKind.REVIEW
+        assert stale is False
+
+    def test_cached_fetch_is_reused(self, tmp_path, monkeypatch):
+        """Passing a connection caches the raw fetch, so a second call does not refetch"""
+        calls = []
+        raw = [{"body": f"{PRReviewIdentity.REGULAR.value}\n## PR Reviewer Guide\n- **Bug** `a.py` [1-2]",
+                "created_at": "2026-09-02T00:00:00Z", "html_url": "u2"}]
+
+        def fake_fetch(repo, number):
+            calls.append(1)
+            return raw
+
+        monkeypatch.setattr(providers, "_fetch_github_issue_comments", fake_fetch)
+        conn = store.connect(tmp_path / "usage.db")
+        repo = registry.Repo("github", "o/r")
+        providers.list_pr_agent_comments(repo, 1, conn=conn)
+        result, stale = providers.list_pr_agent_comments(repo, 1, conn=conn)
+        assert len(calls) == 1
+        assert len(result) == 1
+        assert stale is False
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -1486,15 +1527,27 @@ def _fetch_bitbucket_pull_requests(repo: registry.Repo, state: str, limit: int) 
     ]
 
 
-def list_pull_requests(repo: registry.Repo, state: str = "open", limit: int = 50) -> list[PullRequestSummary]:
-    """Return a repository's pull requests, newest update first."""
+def _maybe_cached(conn, key: str, fetch) -> tuple[object, bool]:
+    """Apply the provider cache when a connection is available, else fetch directly."""
+    if conn is None:
+        return fetch(), False
+    return cached(conn, key, DEFAULT_TTL_SECONDS, fetch)
+
+
+def list_pull_requests(repo: registry.Repo, state: str = "open", limit: int = 50,
+                       conn=None) -> tuple[list[PullRequestSummary], bool]:
+    """Return (pull requests, is_stale), newest update first."""
     if repo.provider == "github":
-        raw = _fetch_github_pull_requests(repo, state, limit)
+        def fetch():
+            return _fetch_github_pull_requests(repo, state, limit)
     elif repo.provider == "bitbucket":
-        raw = _fetch_bitbucket_pull_requests(repo, state, limit)
+        def fetch():
+            return _fetch_bitbucket_pull_requests(repo, state, limit)
     else:
         raise ProviderError(f"unsupported provider {repo.provider!r}")
-    return [PullRequestSummary(**item) for item in raw]
+
+    raw, stale = _maybe_cached(conn, f"{repo.key}:pulls:{state}:{limit}", fetch)
+    return [PullRequestSummary(**item) for item in raw], stale
 
 
 def _fetch_github_issue_comments(repo: registry.Repo, number: int) -> list[dict]:
@@ -1523,15 +1576,18 @@ def _fetch_bitbucket_comments(repo: registry.Repo, number: int) -> list[dict]:
     ]
 
 
-def list_pr_agent_comments(repo: registry.Repo, number: int) -> list[ReviewComment]:
-    """Return only the comments PR-Agent published on a pull request."""
+def list_pr_agent_comments(repo: registry.Repo, number: int, conn=None) -> tuple[list[ReviewComment], bool]:
+    """Return (PR-Agent's comments on a pull request, is_stale)."""
     if repo.provider == "github":
-        raw = _fetch_github_issue_comments(repo, number)
+        def fetch():
+            return _fetch_github_issue_comments(repo, number)
     elif repo.provider == "bitbucket":
-        raw = _fetch_bitbucket_comments(repo, number)
+        def fetch():
+            return _fetch_bitbucket_comments(repo, number)
     else:
         raise ProviderError(f"unsupported provider {repo.provider!r}")
 
+    raw, stale = _maybe_cached(conn, f"{repo.key}:comments:{number}", fetch)
     result = []
     for item in raw:
         kind = comments_module.classify(item["body"])
@@ -1539,14 +1595,14 @@ def list_pr_agent_comments(repo: registry.Repo, number: int) -> list[ReviewComme
             continue
         result.append(ReviewComment(
             kind=kind, body=item["body"], created_at=item["created_at"], url=item["html_url"]))
-    return result
+    return result, stale
 ```
 
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `PYTHONPATH=. uv run pytest tests/unittest/test_pr_dashboard_providers.py -q`
 
-Expected: PASS, 10 tests
+Expected: PASS, 11 tests
 
 - [ ] **Step 5: Lint and commit**
 
@@ -1891,15 +1947,15 @@ def _client(tmp_path, monkeypatch, *, pulls=None, review_comments=None, error=No
     monkeypatch.setattr(providers, "credential_status", lambda provider: providers.CredentialStatus(
         provider, True, "configured"))
 
-    def fake_pulls(repo, state="open", limit=50):
+    def fake_pulls(repo, state="open", limit=50, conn=None):
         if error:
             raise error
-        return pulls or []
+        return pulls or [], False
 
-    def fake_comments(repo, number):
+    def fake_comments(repo, number, conn=None):
         if error:
             raise error
-        return review_comments or []
+        return review_comments or [], False
 
     monkeypatch.setattr(providers, "list_pull_requests", fake_pulls)
     monkeypatch.setattr(providers, "list_pr_agent_comments", fake_comments)
@@ -1930,6 +1986,19 @@ class TestOverview:
         assert response.status_code == 200
         assert "429" in response.text
         assert "Traceback" not in response.text
+
+    def test_stale_cache_is_labelled(self, tmp_path, monkeypatch):
+        """Data served from an expired cache is shown with a stale banner, not silently"""
+        monkeypatch.setattr(providers, "credential_status", lambda provider: providers.CredentialStatus(
+            provider, True, "configured"))
+        application = app_module.create_app(
+            registry_path=tmp_path / "pr_dashboard.toml", db_path=tmp_path / "usage.db")
+        client = TestClient(application)
+        client.post("/repos", data={"provider": "github", "slug": "o/r"})
+        monkeypatch.setattr(providers, "list_pull_requests",
+                            lambda repo, state="open", limit=50, conn=None: ([], True))
+        response = client.get("/")
+        assert "cached data" in response.text.lower()
 
 
 class TestRepoDetail:
@@ -2049,6 +2118,7 @@ Create `pr_dashboard/templates/pr_detail.html`:
 {% block content %}
 <h1>{{ repo.slug }} #{{ number }}</h1>
 {% if error %}<div class="error">{{ error }}</div>{% endif %}
+{% if stale %}<div class="stale">Showing cached data; the provider was unreachable.</div>{% endif %}
 
 <h2>Findings</h2>
 {% if not findings %}<p class="muted">No findings parsed from PR-Agent's comments.</p>{% endif %}
@@ -2143,8 +2213,9 @@ Then add inside `create_app`, before `return application`:
         for repo in registry.load(application.state.registry_path):
             card = repo_summary(conn, repo)
             try:
-                pulls = providers.list_pull_requests(repo, state="open", limit=50)
+                pulls, repo_stale = providers.list_pull_requests(repo, state="open", limit=50, conn=conn)
                 card["open_prs"] = len(pulls)
+                stale = stale or repo_stale
             except providers.ProviderError as exc:
                 error = str(exc)
             cards.append(card)
@@ -2154,25 +2225,26 @@ Then add inside `create_app`, before `return application`:
     @application.get("/repos/{provider}/{slug:path}", response_class=HTMLResponse)
     def repo_detail(request: Request, provider: str, slug: str):
         repo = find_repo(provider, slug)
-        pulls, error = [], None
+        conn = store.connect(application.state.db_path)
+        pulls, error, stale = [], None, False
         try:
-            pulls = providers.list_pull_requests(repo, state="open", limit=50)
+            pulls, stale = providers.list_pull_requests(repo, state="open", limit=50, conn=conn)
         except providers.ProviderError as exc:
             error = str(exc)
         return templates.TemplateResponse(
-            request, "repo_detail.html", {"repo": repo, "pulls": pulls, "error": error, "stale": False})
+            request, "repo_detail.html", {"repo": repo, "pulls": pulls, "error": error, "stale": stale})
 
     @application.get("/pr/{provider}/{slug:path}/{number}", response_class=HTMLResponse)
     def pr_detail(request: Request, provider: str, slug: str, number: int):
         repo = find_repo(provider, slug)
-        review_comments, findings, error = [], [], None
+        conn = store.connect(application.state.db_path)
+        review_comments, findings, error, stale = [], [], None, False
         try:
-            review_comments = providers.list_pr_agent_comments(repo, number)
+            review_comments, stale = providers.list_pr_agent_comments(repo, number, conn=conn)
             for comment in review_comments:
                 findings.extend(comments_module.parse_findings(comment.body))
         except providers.ProviderError as exc:
             error = str(exc)
-        conn = store.connect(application.state.db_path)
         runs = conn.execute(
             "SELECT * FROM runs WHERE provider = ? AND repo_slug = ? AND pr_number = ? "
             "ORDER BY started_at DESC",
@@ -2180,7 +2252,7 @@ Then add inside `create_app`, before `return application`:
         ).fetchall()
         return templates.TemplateResponse(request, "pr_detail.html", {
             "repo": repo, "number": number, "findings": findings,
-            "review_comments": review_comments, "runs": runs, "error": error,
+            "review_comments": review_comments, "runs": runs, "error": error, "stale": stale,
         })
 ```
 
@@ -2208,13 +2280,13 @@ exist; the 404 test in this task covers the behaviour.
 
 Run: `PYTHONPATH=. uv run pytest tests/unittest/test_pr_dashboard_views.py -q`
 
-Expected: PASS, 6 tests
+Expected: PASS, 7 tests
 
 - [ ] **Step 6: Confirm the repository page still works**
 
 Run: `PYTHONPATH=. uv run pytest tests/unittest/test_pr_dashboard_app.py tests/unittest/test_pr_dashboard_views.py -q`
 
-Expected: PASS, 11 tests. If `/repos` now resolves to `repo_detail`, move the
+Expected: PASS, 12 tests. If `/repos` now resolves to `repo_detail`, move the
 `{slug:path}` route below the literal routes.
 
 - [ ] **Step 7: Lint and commit**
@@ -2643,8 +2715,8 @@ git commit -m "feat(dashboard): add usage aggregation, consumption page, and doc
 ## Verification before declaring S1 + S2 done
 
 - [ ] `PYTHONPATH=. uv run pytest tests/unittest -q` passes, with the new
-  `test_pr_dashboard_*.py` files contributing 66 tests
-  (6 store, 10 registry, 10 recorder, 10 comments, 10 providers, 5 app, 6 views, 9 usage).
+  `test_pr_dashboard_*.py` files contributing 69 tests
+  (6 store, 10 registry, 10 recorder, 11 comments, 11 providers, 5 app, 7 views, 9 usage).
 - [ ] `uv run ruff check pr_dashboard tests/unittest/test_pr_dashboard_*.py` is clean.
 - [ ] `awk 'length > 120 {print FILENAME":"NR}' pr_dashboard/*.py pr_agent/agent/pr_agent.py` prints nothing.
 - [ ] `git diff main --stat -- pr_agent/` shows changes in exactly two files:
