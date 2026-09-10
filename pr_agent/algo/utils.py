@@ -1007,6 +1007,22 @@ def sanitize_yaml_control_chars(text: str, log: bool = True) -> str:
     return sanitized
 
 
+def _looks_like_more_answer(tail: str) -> bool:
+    """Whether the text after the fence is more of the answer rather than a sign-off.
+
+    Two signals, because each alone has a blind spot: a tail that parses as a mapping or a
+    list is structured, but one that continues into prose does not parse at all and is
+    only recognisable from the shape of its first line.
+    """
+    first_line = next((line for line in tail.split('\n') if line.strip()), '')
+    if re.match(r'^[A-Za-z_][A-Za-z0-9_]*:(\s|$)', first_line):
+        return True
+    try:
+        return isinstance(yaml.safe_load(tail), (dict, list))
+    except Exception:
+        return False
+
+
 def drop_sign_off_after_wrapper_fence(text: str) -> str:
     """Drop a closing remark the model added after the wrapper's closing fence.
 
@@ -1022,7 +1038,12 @@ def drop_sign_off_after_wrapper_fence(text: str) -> str:
     for i in range(len(lines) - 1, -1, -1):
         if lines[i].rstrip() != '```':
             continue
-        if not ''.join(lines[i + 1:]).strip():
+        tail = '\n'.join(lines[i + 1:])
+        if not tail.strip():
+            return text
+        if _looks_like_more_answer(tail):
+            # Dropping it would publish a partial answer, where the parse failure it
+            # replaces at least triggers a retry.
             return text
         candidate = '\n'.join(lines[:i])
         try:
