@@ -1499,11 +1499,15 @@ class GitLabProvider(GitProvider):
     def get_repo_context_ref(self, from_default_branch: bool = False) -> Optional[str]:
         # The MR target branch (the branch being merged into) is the cached revision; the
         # project default branch is consulted when from_default_branch is requested or no MR
-        # target exists, mirroring get_repo_file_content.
-        project = self.gl.projects.get(self.id_project)
-        if from_default_branch:
-            return project.default_branch
-        return getattr(self.mr, "target_branch", None) or project.default_branch
+        # target exists, mirroring get_repo_file_content. Both are branch names, so the project
+        # is fetched at most once per provider rather than on every repo-context read.
+        if not from_default_branch:
+            target_branch = getattr(self.mr, "target_branch", None)
+            if target_branch:
+                return target_branch
+        if not hasattr(self, "_repo_context_default_branch"):
+            self._repo_context_default_branch = self.gl.projects.get(self.id_project).default_branch
+        return self._repo_context_default_branch
 
     def get_workspace_name(self):
         return self.id_project.split('/')[0]
