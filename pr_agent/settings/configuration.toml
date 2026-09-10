@@ -146,7 +146,7 @@ require_all_thresholds_for_incremental_review=false
 minimal_commits_for_incremental_review=0
 minimal_minutes_for_incremental_review=0
 enable_intro_text=true
-enable_help_text=false # Determines whether to include help text in the PR review. Enabled by default.
+enable_help_text=false # Determines whether to include help text in the PR review.
 enable_review_coverage_footer=true
 # large-diff chunking (opt-in). When the token budget leaves files out of the review, split the diff
 # into chunks, review each chunk, and merge the per-chunk results into one review.
@@ -290,6 +290,13 @@ enable_help_text=false
 # The type of deployment to create. Valid values are 'app' or 'user'.
 deployment_type = "user"
 ratelimit_retries = 5
+# PyGithub 2.x enables request pacing and transient retries by default (0.25s
+# between requests, 1s between writes, 10 retries); PyGithub 1.59 applied none.
+# The defaults below mirror the 1.59 behaviour, so the 2.x upgrade stays neutral
+# unless an operator opts in. Raise them to throttle or retry on the GitHub API.
+seconds_between_requests = 0 # seconds between API requests; 0 = no pacing (1.59 behaviour)
+seconds_between_writes = 0 # seconds between write calls; 0 = no pacing (1.59 behaviour)
+api_retries = 0 # max retries per request with backoff; 0 = no retries (1.59 behaviour)
 polling_request_timeout = 10 # total seconds for comment-history fallback; positive values capped at 60
 base_url = "https://api.github.com"
 publish_inline_comments_fallback_with_verification = true
@@ -399,9 +406,8 @@ webhook_password = ""
 # patch_server_token = ""
 
 [bitbucket_server]
-# URL to the BitBucket Server instance
 # url = "https://git.bitbucket.com"
-url = ""
+url = "" # URL to the BitBucket Server instance
 
 [litellm]
 # use_client = false
@@ -438,7 +444,7 @@ allow_fallbacks = true # when provider_order is set, allow routing beyond the li
 # Invalid reasoning_effort values are warned about and treated as unset.
 # Empty inherits config.reasoning_effort for models in SUPPORT_REASONING_EFFORT_MODELS.
 # Valid values: "none", "minimal", "low", "medium", "high", "xhigh", "max".
-# OpenRouter normalizes "max" to "xhigh" to match LiteLLM 1.98.0.
+# OpenRouter normalizes "max" to "xhigh" for LiteLLM/OpenRouter compatibility.
 # Model-specific support varies; mandatory reasoning models reject "none".
 reasoning_effort = ""
 # A positive value overrides global effort and non-none OpenRouter-specific efforts.
@@ -474,7 +480,7 @@ include_error_details = false # set to true to attach exception messages and rej
 skip_comments = false
 force_update_dataset = false
 max_issues_to_scan = 500
-vectordb = "pinecone" # options: "pinecone", "lancedb", "qdrant"
+vectordb = "lancedb" # options: "pinecone", "lancedb", "qdrant"
 
 [pr_find_similar_component]
 class_name = ""
@@ -487,7 +493,10 @@ number_of_results = 5
 [pinecone]
 # fill and place in .secrets.toml
 #api_key = ...
-# environment = "gcp-starter"
+# Serverless index deployment for the modern SDK. `cloud` is one of "aws",
+# "gcp" or "azure"; pick a `region` offered by that cloud.
+cloud = "aws"
+region = "us-east-1"
 
 [lancedb]
 uri = "./lancedb"
@@ -531,9 +540,9 @@ enable = false
 artifact_path = ""
 # Custom instructions appended after the artifact content (leave empty for a sensible default)
 artifact_instructions = ""
-# Label shown to the AI — defaults to the filename when empty
+# Label shown to the AI — defaults to the filename when empty.
 artifact_label = ""
-# Which tools receive artifact context
+# Which tools receive artifact context.
 target_tools = ["pr_reviewer", "pr_description", "pr_code_suggestions"]
 # Max artifact size in characters (content is truncated if exceeded)
 max_artifact_size = 50000

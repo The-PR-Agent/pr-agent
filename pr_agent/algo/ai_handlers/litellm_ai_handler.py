@@ -82,17 +82,10 @@ def _should_retry_same_model(exc: BaseException) -> bool:
 
 
 class LiteLLMAIHandler(BaseAiHandler):
-    """
-    This class handles interactions with the OpenAI API for chat completions.
-    It initializes the API key and other settings from a configuration file,
-    and provides a method for performing chat completions using the OpenAI ChatCompletion API.
-    """
+    """Handle chat completions across supported providers through LiteLLM."""
 
     def __init__(self):
-        """
-        Initializes the OpenAI API key and other settings from a configuration file.
-        Raises a ValueError if the OpenAI key is missing.
-        """
+        """Initialize provider credentials and request settings from configuration."""
         self.azure = False
         self.api_base = None
         self.repetition_penalty = None
@@ -626,7 +619,7 @@ class LiteLLMAIHandler(BaseAiHandler):
             if extra.get("pr_url") is not None:
                 log_entry.update({"pr_url": extra["pr_url"]})
 
-            # Append the log entry to the captured_logs list
+            # Append the captured request context.
             captured_extra.append(log_entry)
 
         # Adding the custom sink to Loguru
@@ -932,9 +925,9 @@ class LiteLLMAIHandler(BaseAiHandler):
                         reasoning_effort = clamped_effort
 
                     if model.startswith("openrouter/"):
-                        # LiteLLM 1.98.0 rejects top-level reasoning_effort for some
-                        # OpenRouter model IDs it does not mark as reasoning-capable;
-                        # defer to OpenRouter's unified reasoning object below.
+                        # LiteLLM rejects top-level reasoning_effort for some OpenRouter
+                        # model IDs it does not mark as reasoning-capable; defer to
+                        # OpenRouter's unified reasoning object below.
                         openrouter_reasoning_effort = reasoning_effort
                     else:
                         get_logger().info(f"Adding reasoning_effort with value {reasoning_effort} to model {model}.")
@@ -947,18 +940,21 @@ class LiteLLMAIHandler(BaseAiHandler):
                                 ) or []
                             except Exception:
                                 supported_params = []
-                            # LiteLLM 1.98.0 omits reasoning_effort for grok-build-latest
+                            # LiteLLM may omit reasoning_effort for grok-build-latest
                             # and OpenAI-compatible gateway-prefixed Grok IDs.
                             if "reasoning_effort" not in supported_params:
                                 kwargs["allowed_openai_params"] = ["reasoning_effort"]
 
                 # https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking
-                if self._is_claude_adaptive_thinking_model(model) and get_settings().config.get(
-                        "enable_claude_adaptive_thinking", False):
+                adaptive_thinking_enabled = get_settings().config.get(
+                    "enable_claude_adaptive_thinking", False)
+                extended_thinking_enabled = get_settings().config.get(
+                    "enable_claude_extended_thinking", False)
+                if self._is_claude_adaptive_thinking_model(model) and adaptive_thinking_enabled:
                     kwargs = self._configure_claude_adaptive_thinking(model, kwargs)
                 elif (
                     model in self.claude_extended_thinking_models
-                    and get_settings().config.get("enable_claude_extended_thinking", False)
+                    and extended_thinking_enabled
                 ):
                     if self._is_claude_adaptive_thinking_model(model):
                         get_logger().warning(
@@ -967,6 +963,18 @@ class LiteLLMAIHandler(BaseAiHandler):
                         )
                     else:
                         kwargs = self._configure_claude_extended_thinking(model, kwargs)
+                elif adaptive_thinking_enabled or extended_thinking_enabled:
+                    message = (
+                        f"No thinking configuration applied for model {model}: adaptive thinking "
+                        f"requires a recognized claude 5 model name in the id and extended "
+                        f"thinking requires exact membership in claude_extended_thinking_models."
+                    )
+                    if "arn:aws:bedrock:" in model:
+                        message += (
+                            " For a Bedrock inference profile, address the model by name and pass "
+                            "the ARN with litellm.model_id."
+                        )
+                    get_logger().warning(message)
 
                 # Optional output token limit; 0 = unset. Without max_tokens some
                 # providers apply a low service-side default (Bedrock Converse: 4096,

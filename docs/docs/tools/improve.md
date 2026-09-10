@@ -122,25 +122,20 @@ Use triple quotes to write multi-line instructions. Use bullet points or numbers
 
 ### Best practices
 
-`Platforms supported: GitHub, GitLab, Bitbucket`
+`Repository context files supported: GitHub, GitLab, Gitea, Bitbucket, Azure DevOps`
 
-!!! warning "Open-source PR-Agent"
+The open-source PR-Agent package does not load `best_practices.md` automatically. To use a best-practices file,
+add it to `config.repo_context_files`:
 
-    Automatic loading of `best_practices.md` is a Qodo Merge feature and is not available in the open-source
-    PR-Agent package. In the open-source package, add the file to `config.repo_context_files` instead:
+```toml
+[config]
+repo_context_files = ["AGENTS.md", "best_practices.md"]
+```
 
-    ```toml
-    [config]
-    repo_context_files = ["AGENTS.md", "best_practices.md"]
-    ```
-
-    This fallback supports GitHub, GitLab, Gitea, Bitbucket, and Azure DevOps. Repository context files are read
-    from the default branch by default and are limited by
-    `config.repo_context_max_lines` (500 lines by default). Set `config.repo_context_from_default_branch = false`
-    to read them from the pull request's target branch instead. Providers without repository file fetching log a
-    warning and skip this context.
-
-Qodo Merge supports both simple and hierarchical best practices configurations to provide guidance to the AI model for generating relevant code suggestions.
+This fallback supports GitHub, GitLab, Gitea, Bitbucket, and Azure DevOps. Repository context files are read
+from the default branch by default and are limited by `config.repo_context_max_lines` (500 lines by default).
+Set `config.repo_context_from_default_branch = false` to read them from the pull request's target branch instead.
+Providers without repository file fetching log a warning and skip this context.
 
 ???- tip "Writing effective best practices files"
 
@@ -149,10 +144,11 @@ Qodo Merge supports both simple and hierarchical best practices configurations t
     - Write clearly and concisely
     - Include brief code examples when helpful with before/after patterns
     - Focus on project-specific guidelines that will result in relevant suggestions you actually want to get
-    - Keep each file relatively short, under 800 lines, since:
+    - Keep each file short and focused, since:
         - AI models may not process effectively very long documents
         - Long files tend to contain generic guidelines already known to AI
-        - Maximum multiple file accumulated content is limited to 2000 lines.
+        - `config.repo_context_max_lines` limits the total rendered repository context, including wrapper and
+          truncation lines.
     - Use pattern-based structure rather than simple bullet points for better clarity
 
 ???- tip "Example of a best practices file"
@@ -198,17 +194,11 @@ Qodo Merge supports both simple and hierarchical best practices configurations t
         return ""
     ```
 
-#### Local best practices in Qodo Merge
-
-For basic usage, create a `best_practices.md` file in your repository's root directory containing a list of best practices, coding standards, and guidelines specific to your repository.
-
-The AI model will use this `best_practices.md` file as a reference, and in case the PR code violates any of the guidelines, it will create additional suggestions, with a dedicated label: `Organization best practice`.
-
 ### Combining 'extra instructions' and 'best practices'
 
 The `extra instructions` configuration is more related to the `improve` tool prompt. It can be used, for example, to avoid specific suggestions ("Don't suggest to add try-except block", "Ignore changes in toml files", ...) or to emphasize specific aspects or formats ("Answer in Japanese", "Give only short suggestions", ...)
 
-In contrast, the `best_practices.md` file is a general guideline for the way code should be written in the repo.
+In contrast, a `best_practices.md` file is a general guideline for the way code should be written in the repo.
 
 Using a combination of both can help the AI model to provide relevant and tailored suggestions.
 
