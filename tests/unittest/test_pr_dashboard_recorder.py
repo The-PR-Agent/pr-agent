@@ -1,5 +1,6 @@
 import asyncio
 import sqlite3
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -89,11 +90,16 @@ class TestRecordRun:
     def test_disabled_recording_writes_nothing(self, tmp_path, monkeypatch):
         """With pr_dashboard.record_runs off, no database is opened at all"""
         monkeypatch.setattr(recorder, "recording_enabled", lambda: False)
-        def explode():
-            raise AssertionError("the store must not be opened when recording is disabled")
-        monkeypatch.setattr(recorder, "_open_store", explode)
+        # A tracking stub, not an exploding one: record_run's own broad `except Exception`
+        # (see test_store_failure_never_breaks_the_run) would swallow an AssertionError
+        # raised from inside _open_store just as readily as a real store error, so a call
+        # made and then caught would pass silently. Assert the absence of a call instead,
+        # from the test body, after the with-block, where nothing in record_run can catch it.
+        open_store = MagicMock()
+        monkeypatch.setattr(recorder, "_open_store", open_store)
         with recorder.record_run(pr_url="https://github.com/o/r/pull/7", command="review"):
             pass
+        open_store.assert_not_called()
 
     def test_store_failure_never_breaks_the_run(self, monkeypatch):
         """A recorder error is swallowed, because a dashboard write must not fail a review"""
@@ -109,22 +115,20 @@ class TestRecordRun:
 
 class TestDispatchWiring:
     def test_pr_agent_wraps_dispatch_with_record_run(self):
-        """pr_agent's dispatch is wrapped, and the tool is still awaited directly.
-
-        The recorder relies on ContextVar propagation through a direct await. An upstream
-        refactor to asyncio.gather or create_task around the tool would silently zero all
-        usage, so assert the shape here rather than discovering it in the dashboard.
-
-        _handle_request dispatches to _run_command, which holds the record_run(...) wrapper
-        and the actual tool dispatch, so both are checked: _run_command for the wrapper and
-        the direct await onto the tool, and _handle_request for the direct await onto
-        _run_command (a gather/create_task on that hop would zero usage just as surely as
-        one around the tool itself).
-        """
+        """pr_agent's dispatch is wrapped, and the tool is still awaited directly."""
         import inspect
 
         from pr_agent.agent.pr_agent import PRAgent
 
+        # The recorder relies on ContextVar propagation through a direct await. An upstream
+        # refactor to asyncio.gather or create_task around the tool would silently zero all
+        # usage, so assert the shape here rather than discovering it in the dashboard.
+        #
+        # _handle_request dispatches to _run_command, which holds the record_run(...) wrapper
+        # and the actual tool dispatch, so both are checked: _run_command for the wrapper and
+        # the direct await onto the tool, and _handle_request for the direct await onto
+        # _run_command (a gather/create_task on that hop would zero usage just as surely as
+        # one around the tool itself).
         source = inspect.getsource(PRAgent._run_command)
         assert "record_run(" in source
         dispatch_line = next(line for line in source.splitlines() if "command2class[action](" in line)
