@@ -105,6 +105,8 @@ async def test_description_help_rendering_follows_html_list_capability(
     assert provider.html_lists_queries == 1
     assert expected in body
     assert unexpected not in body
+    assert "https://docs.pr-agent.ai/usage-guide/" in body
+    assert "qodo-merge-docs.qodo.ai" not in body
     if not html_lists:
         assert PLAIN_BREAK_MARKER in body
 

@@ -16,6 +16,8 @@ from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.log import get_logger
 
+DOCS_SITE_URL = "https://docs.pr-agent.ai"
+
 
 class PRHelpMessage:
     def __init__(self, pr_url: str, args=None, ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler, return_as_string=False):
@@ -79,6 +81,20 @@ class PRHelpMessage:
         except Exception:
             get_logger().exception("Error while formatting markdown header", artifacts={'header': header})
             return ""
+
+    def format_docs_url(self, file_name: str, header: str) -> str:
+        relative_path = file_name.strip().lstrip('/').removesuffix('.md')
+        if relative_path == 'index':
+            relative_path = ''
+        elif relative_path.endswith('/index'):
+            relative_path = relative_path.removesuffix('index')
+        elif relative_path:
+            relative_path += '/'
+
+        docs_url = f"{DOCS_SITE_URL}/{relative_path}"
+        if str(header).strip():
+            docs_url += f"#{self.format_markdown_header(header)}"
+        return docs_url
 
 
     async def run(self):
@@ -161,14 +177,12 @@ class PRHelpMessage:
                     answer_str += f"### Question: \n{self.question_str}\n\n"
                     answer_str += f"### Answer:\n{response_str.strip()}\n\n"
                     answer_str += "#### Relevant Sources:\n\n"
-                    base_path = "https://qodo-merge-docs.qodo.ai/"
                     for section in relevant_sections:
-                        file = section.get('file_name').strip().removesuffix('.md')
-                        if str(section['relevant_section_header_string']).strip():
-                            markdown_header = self.format_markdown_header(section['relevant_section_header_string'])
-                            answer_str += f"> - {base_path}{file}#{markdown_header}\n"
-                        else:
-                            answer_str += f"> - {base_path}{file}\n"
+                        docs_url = self.format_docs_url(
+                            section.get('file_name'),
+                            section['relevant_section_header_string'],
+                        )
+                        answer_str += f"> - {docs_url}\n"
 
 
                 # publish the answer
@@ -190,7 +204,7 @@ class PRHelpMessage:
                 pr_comment = "## PR Agent Walkthrough 🤖\n\n"
                 pr_comment += "Welcome to the PR Agent, an AI-powered tool for automated pull request analysis, feedback, suggestions and more."""
                 pr_comment += "\n\nHere is a list of tools you can use to interact with the PR Agent:\n"
-                base_path = "https://pr-agent-docs.codium.ai/tools"
+                base_path = f"{DOCS_SITE_URL}/tools"
 
                 tool_names = []
                 tool_names.append(f"[DESCRIBE]({base_path}/describe/)")
@@ -236,7 +250,7 @@ class PRHelpMessage:
                     for i in range(len(tool_names)):
                         pr_comment += f"\n<tr><td align='left'>\n\n<strong>{tool_names[i]}</strong></td>\n<td>{descriptions[i]}</td>\n<td>\n\n{checkbox_list[i]}\n</td></tr>"
                     pr_comment += "</table>\n\n"
-                    pr_comment += """\n\n(1) Note that each tool can be [triggered automatically](https://pr-agent-docs.codium.ai/usage-guide/automations_and_usage/#github-app-automatic-tools-when-a-new-pr-is-opened) when a new PR is opened, or called manually by [commenting on a PR](https://pr-agent-docs.codium.ai/usage-guide/automations_and_usage/#online-usage)."""
+                    pr_comment += """\n\n(1) Note that each tool can be [triggered automatically](https://docs.pr-agent.ai/usage-guide/automations_and_usage/#github-app-automatic-tools-when-a-new-pr-is-opened) when a new PR is opened, or called manually by [commenting on a PR](https://docs.pr-agent.ai/usage-guide/automations_and_usage/#online-usage)."""
                     pr_comment += """\n\n(2) Tools marked with [*] require additional parameters to be passed. For example, to invoke the `/ask` tool, you need to comment on a PR: `/ask "<question content>"`. See the relevant documentation for each tool for more details."""
                 elif not supports_gfm_markdown:
                     # only basic commands, in a plain markdown table (e.g. BBDC)
@@ -246,7 +260,7 @@ class PRHelpMessage:
                     for i in range(len(tool_names)):
                         pr_comment += f"\n<tr><td align='left'>\n\n<strong>{tool_names[i]}</strong></td><td>{commands[i]}</td><td>{descriptions[i]}</td></tr>"
                     pr_comment += "</table>\n\n"
-                    pr_comment += """\n\nNote that each tool can be [invoked automatically](https://pr-agent-docs.codium.ai/usage-guide/automations_and_usage/) when a new PR is opened, or called manually by [commenting on a PR](https://pr-agent-docs.codium.ai/usage-guide/automations_and_usage/#online-usage)."""
+                    pr_comment += """\n\nNote that each tool can be [invoked automatically](https://docs.pr-agent.ai/usage-guide/automations_and_usage/) when a new PR is opened, or called manually by [commenting on a PR](https://docs.pr-agent.ai/usage-guide/automations_and_usage/#online-usage)."""
 
                 if get_settings().config.publish_output:
                     self.git_provider.publish_comment(pr_comment)

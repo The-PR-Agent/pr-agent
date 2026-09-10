@@ -163,12 +163,12 @@ class PRDescription:
                 if self.git_provider.supports_inline_help_footer():
                     pr_body += ('\n\n___\n\n> <details> <summary>  Need help?</summary><li>Type <code>/help how to ...</code> '
                                 'in the comments thread for any questions about PR-Agent usage.</li><li>Check out the '
-                                '<a href="https://qodo-merge-docs.qodo.ai/usage-guide/">documentation</a> '
+                                '<a href="https://docs.pr-agent.ai/usage-guide/">documentation</a> '
                                 'for more information.</li></details>')
                 else:  # bullets separated by <br>, for providers whose footer cannot inline a list
                     pr_body += ("\n\n___\n\n<details><summary>Need help?</summary>- Type <code>/help how to ...</code> in the comments "
                                 "thread for any questions about PR-Agent usage.<br>- Check out the "
-                                "<a href='https://qodo-merge-docs.qodo.ai/usage-guide/'>documentation</a> for more information.</details>")
+                                "<a href='https://docs.pr-agent.ai/usage-guide/'>documentation</a> for more information.</details>")
             # elif get_settings().pr_description.enable_help_comment:
             #     pr_body += '\n\n___\n\n> 💡 **PR-Agent usage**: Comment `/help "your question"` on any pull request to receive relevant information'
 
