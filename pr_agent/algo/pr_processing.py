@@ -264,7 +264,7 @@ def pr_generate_compressed_diff(top_langs: list, token_handler: TokenHandler, mo
     # additional iterations (if needed)
     if large_pr_handling:
         NUMBER_OF_ALLOWED_ITERATIONS = get_settings().pr_description.get("max_ai_calls", 4) - 1 # one more call is to summarize
-        for i in range(NUMBER_OF_ALLOWED_ITERATIONS-1):
+        for _ in range(NUMBER_OF_ALLOWED_ITERATIONS-1):
             if remaining_files_list:
                 total_tokens, patches, remaining_files_list, files_in_patch_list = generate_full_patch(convert_hunks_to_line_numbers,
                                                                                  file_dict,
@@ -308,7 +308,7 @@ def generate_full_patch(convert_hunks_to_line_numbers, file_dict, max_tokens_mod
             patch_final = ""
             new_patch_tokens = 0
 
-        # If the patch is too large, just show the file name
+        # If the patch is too large, leave the file in the remaining-files list.
         if total_tokens + new_patch_tokens > max_tokens_model - OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD:
             # Current logic is to skip the patch if it's too large
             # TODO: Option for alternative logic to remove hunks from the patch to reduce the number of tokens
@@ -405,7 +405,7 @@ def get_pr_multi_diffs(git_provider: GitProvider,
         git_provider (GitProvider): An object that provides access to Git provider APIs.
         token_handler (TokenHandler): An object that handles tokens in the context of a pull request.
         model (str): The name of the model.
-        max_calls (int, optional): The maximum number of calls to retrieve diff files. Defaults to 5.
+        max_calls (int, optional): Maximum number of groups for split diffs; the full-diff fast path may still return one group. Defaults to 5.
         return_remaining_files (bool, optional): Also return the files the token budget left out, in the
             same shape as `get_pr_diff`. Files without a patch, and delete-only files, are not reported:
             nothing was omitted for them. Defaults to False.
@@ -426,7 +426,7 @@ def get_pr_multi_diffs(git_provider: GitProvider,
     PATCH_EXTRA_LINES_BEFORE = cap_and_log_extra_lines(PATCH_EXTRA_LINES_BEFORE, "before")
     PATCH_EXTRA_LINES_AFTER = cap_and_log_extra_lines(PATCH_EXTRA_LINES_AFTER, "after")
 
-    # try first a single run with standard diff string, with patch extension, and no deletions
+    # First try a single run with the full diff and extended patch context.
     patches_extended, total_tokens, patches_extended_tokens = pr_generate_extended_diff(
         pr_languages, token_handler,
         add_line_numbers_to_hunks=add_line_numbers,

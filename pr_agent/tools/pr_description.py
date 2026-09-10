@@ -543,35 +543,6 @@ class PRDescription:
             return original_prediction
 
 
-    async def extend_additional_files(self, remaining_files_list) -> str:
-        prediction = self.prediction
-        try:
-            original_prediction_dict = load_yaml(self.prediction, keys_fix_yaml=self.keys_fix)
-            prediction_extra = "pr_files:"
-            for file in remaining_files_list:
-                extra_file_yaml = f"""\
-- filename: |
-    {file}
-  changes_summary: |
-    ...
-  changes_title: |
-    ...
-  label: |
-    additional files (token-limit)
-"""
-                prediction_extra = prediction_extra + "\n" + extra_file_yaml.strip()
-            prediction_extra_dict = load_yaml(prediction_extra, keys_fix_yaml=self.keys_fix)
-            # merge the two dictionaries
-            if isinstance(original_prediction_dict, dict) and isinstance(prediction_extra_dict, dict):
-                original_prediction_dict["pr_files"].extend(prediction_extra_dict["pr_files"])
-                new_yaml = yaml.dump(original_prediction_dict)
-                if load_yaml(new_yaml, keys_fix_yaml=self.keys_fix):
-                    prediction = new_yaml
-            return prediction
-        except Exception as e:
-            get_logger().error(f"Error extending additional files {self.pr_id}: {e}")
-            return self.prediction
-
     async def _get_prediction(self, model: str, patches_diff: str, prompt="pr_description_prompt") -> str:
         variables = copy.deepcopy(self.vars)
         variables["diff"] = patches_diff  # update diff

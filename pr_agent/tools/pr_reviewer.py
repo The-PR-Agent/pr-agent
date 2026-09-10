@@ -1010,7 +1010,7 @@ class PRReviewer:
         # Add custom labels from the review prediction (effort, security)
         self.set_review_labels(data)
 
-        if markdown_text == None or len(markdown_text) == 0:
+        if markdown_text is None or len(markdown_text) == 0:
             markdown_text = ""
 
         return markdown_text
@@ -1188,29 +1188,6 @@ class PRReviewer:
                     break
 
         return question_str, answer_str
-
-    def _get_previous_review_comment(self):
-        """
-        Get the previous review comment if it exists.
-        """
-        try:
-            if hasattr(self.git_provider, "get_previous_review"):
-                return self.git_provider.get_previous_review(
-                    full=not self.incremental.is_incremental,
-                    incremental=self.incremental.is_incremental,
-                )
-        except Exception as e:
-            get_logger().exception(f"Failed to get previous review comment, error: {e}")
-
-    def _remove_previous_review_comment(self, comment):
-        """
-        Remove the previous review comment if it exists.
-        """
-        try:
-            if comment:
-                self.git_provider.remove_comment(comment)
-        except Exception as e:
-            get_logger().exception(f"Failed to remove previous review comment, error: {e}")
 
     def _can_run_incremental_review(self) -> bool:
         """
