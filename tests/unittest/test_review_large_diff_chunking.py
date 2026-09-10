@@ -73,8 +73,7 @@ async def test_chunking_is_off_by_default_even_when_the_token_budget_truncated_t
 
     get_pr_multi_diffs.assert_not_called()
     assert reviewer.prediction == CHUNK_A
-    assert reviewer.prediction_data is None
-    assert reviewer.review_chunk_count == 1
+    assert reviewer.review_chunk_count == 1  # the single-call flow, not a merge
 
 
 @pytest.mark.asyncio
@@ -153,8 +152,7 @@ async def test_a_diff_that_fits_in_one_chunk_is_reviewed_by_the_single_call_flow
 
     reviewer._get_prediction.assert_awaited_once_with("model")
     assert reviewer.prediction == CHUNK_A
-    assert reviewer.prediction_data is None
-    assert reviewer.review_chunk_count == 1
+    assert reviewer.review_chunk_count == 1  # the single-call flow, not a merge
     assert reviewer.remaining_files_list == ["b.py"]
 
 
@@ -213,7 +211,8 @@ async def test_a_failed_chunk_blocks_persistent_finding_resolution(chunking_enab
 @pytest.mark.asyncio
 async def test_an_empty_chunk_does_not_lose_a_valid_sibling_or_trigger_fallback(chunking_enabled):
     reviewer = _make_reviewer()
-    reviewer._get_prediction = AsyncMock(side_effect=["review: {}", CHUNK_B])
+    # the empty chunk is retried once, and stays failed when the retry is empty too
+    reviewer._get_prediction = AsyncMock(side_effect=["review: {}", CHUNK_B, "review: {}"])
 
     with (
         patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
@@ -222,17 +221,42 @@ async def test_an_empty_chunk_does_not_lose_a_valid_sibling_or_trigger_fallback(
     ):
         await reviewer._prepare_prediction("model")
 
-    assert reviewer._get_prediction.await_count == 2
+    assert reviewer._get_prediction.await_count == 3
     assert reviewer.prediction_data["review"]["score"] == "40"
     assert reviewer.review_chunk_count == 2
     assert reviewer.review_failed_chunk_count == 1
 
 
 @pytest.mark.asyncio
+async def test_a_chunk_that_fails_once_is_retried_and_its_findings_are_kept(chunking_enabled):
+    """A chunk failure costs every finding in its slice of the diff, so it gets a second pass."""
+    reviewer = _make_reviewer()
+    reviewer._get_prediction = AsyncMock(side_effect=[RuntimeError("model refused"), CHUNK_B, CHUNK_A])
+
+    with (
+        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
+        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
+              return_value=(["chunk-a", "chunk-b"], [])),
+    ):
+        await reviewer._prepare_prediction("model")
+
+    assert reviewer._get_prediction.await_count == 3
+    review = reviewer.prediction_data["review"]
+    # the retried chunk's finding survives, and the merge still takes the worst score
+    assert [issue["relevant_file"].strip() for issue in review["key_issues_to_review"]] == ["a.py"]
+    assert review["score"] == "40"
+    assert reviewer.review_chunk_count == 2
+    assert reviewer.review_failed_chunk_count == 0
+
+
+@pytest.mark.asyncio
 async def test_a_review_where_every_chunk_failed_raises_so_a_fallback_model_is_tried(chunking_enabled):
     reviewer = _make_reviewer()
+    # every chunk fails on both attempts; the first error is the one reported
     reviewer._get_prediction = AsyncMock(side_effect=[RuntimeError("model refused"),
-                                                      RuntimeError("model refused again")])
+                                                      RuntimeError("model refused again"),
+                                                      RuntimeError("still refusing"),
+                                                      RuntimeError("still refusing")])
 
     with (
         patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
@@ -251,7 +275,8 @@ async def test_a_review_where_every_chunk_failed_raises_so_a_fallback_model_is_t
 async def test_chunks_without_nonempty_reviews_fall_back_to_a_single_call_review(chunking_enabled,
                                                                                  chunk_predictions):
     reviewer = _make_reviewer()
-    reviewer._get_prediction = AsyncMock(side_effect=[*chunk_predictions, CHUNK_A])
+    # both chunks are attempted twice before the flow gives up and reviews the diff in one call
+    reviewer._get_prediction = AsyncMock(side_effect=[*chunk_predictions, *chunk_predictions, CHUNK_A])
 
     with (
         patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
@@ -260,9 +285,9 @@ async def test_chunks_without_nonempty_reviews_fall_back_to_a_single_call_review
     ):
         await reviewer._prepare_prediction("model")
 
-    assert reviewer._get_prediction.await_count == 3
+    assert reviewer._get_prediction.await_count == 5
     assert reviewer.prediction == CHUNK_A
-    assert reviewer.prediction_data is None
+    assert reviewer.review_chunk_count == 1
 
 
 def _render_review(reviewer):

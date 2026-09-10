@@ -41,6 +41,14 @@ custom_model_max_tokens=-1 # for models not in the default list
 # Sent as max_completion_tokens for GPT-6 Astra, otherwise max_tokens; use a limit supported by the model.
 max_output_tokens = 0 # 0 = unset (the provider's own default applies)
 model_token_count_estimate_factor=0.3 # factor to increase the token count estimate, in order to reduce likelihood of model failure due to too many tokens - applicable only when requesting an accurate estimate.
+# Diff budgeting does not request an accurate estimate, so the factor above does not apply there.
+# Instead, when a model has no tiktoken encoding of its own its counts come from the o200k_base
+# fallback, and this factor is added to those counts as headroom - a model whose vocabulary is
+# denser than o200k_base would otherwise be under-counted, and some self-hosted servers truncate
+# an oversized prompt silently rather than rejecting it, which loses findings with no error.
+# Applies only to the fallback encoder; a model counted by its own tokenizer is left exact.
+# 0 disables it, restoring the raw encoder count.
+approximate_token_count_safety_factor=0.1
 # patch extension logic
 patch_extension_skip_types =[".md",".txt"]
 allow_dynamic_context=true
@@ -137,6 +145,26 @@ persistent_finding_state=true # Persist review finding state across complete rev
 inline_key_issues=false
 extra_instructions = ""
 num_max_findings = 3
+# Consensus sampling. With num_samples > 1 the review runs that many times concurrently (needs
+# config.temperature > 0) and keeps only the key issues that recur in at least min_votes samples,
+# matched by file and overlapping lines rather than wording. Raises recall on small models, which
+# report a different subset of the real defects on every run; min_votes is what keeps precision.
+# The kept findings are truncated to num_max_findings, and the remaining fields take the samples'
+# median or majority rather than their worst case. When the vote discards a finding the review
+# says so in a footer and cannot resolve anything in the persistent finding state: a finding that
+# lost the vote is not a finding that was fixed.
+# min_votes = 0 means a majority of the samples that parsed - so 1 of 2, 2 of 3, 3 of 5. An
+# explicit value is honoured, clamped to the samples that parsed. Note that at num_samples = 2 a
+# majority is 1, i.e. the union of both samples: recall first, since demanding unanimity from two
+# samples empties the review whenever they place one defect a few lines apart.
+# Each sample is a full model call. Total calls per model attempt are bounded by
+# max_concurrent_calls concurrently and, with chunking and its one retry, by
+# 2 x max_number_of_calls x num_samples overall.
+num_samples = 1
+min_votes = 0
+# Maximum model calls a single review keeps in flight, across chunk and sample fan-out together.
+# 0 disables the cap. Raise only if the provider tolerates the burst; a 429 is not retried.
+max_concurrent_calls = 4
 final_update_message = true
 # review labels
 enable_review_labels_security=true
@@ -424,6 +452,10 @@ callback_timeout_seconds = 30 # max seconds to wait for pending litellm callback
 # Application inference profile ARN for classic `bedrock/` calls through the `bedrock-runtime` APIs.
 # Not used by `bedrock_mantle/`, which uses Projects for cost allocation.
 # model_id = ""
+# Optional constrained decoding: "json_object" asks the server to enforce a JSON grammar on the
+# response. Useful for small self-hosted models whose failure mode is malformed output; JSON is
+# valid YAML, so nothing downstream changes. Leave empty for providers that reject the parameter.
+response_format = ""
 cache_control_injection_points = [] # Optional: enable Anthropic prompt caching via LiteLLM, e.g. [{location = "message", role = "system"}] (https://docs.litellm.ai/docs/tutorials/prompt_caching)
 
 [openrouter]

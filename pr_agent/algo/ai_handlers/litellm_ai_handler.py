@@ -747,6 +747,26 @@ class LiteLLMAIHandler(BaseAiHandler):
             raise ValueError("LITELLM.CACHE_CONTROL_INJECTION_POINTS must be a JSON/TOML array")
         return cache_control_injection_points
 
+    @staticmethod
+    def _resolve_response_format():
+        """Read and validate LITELLM.RESPONSE_FORMAT, the opt-in constrained-decoding switch.
+
+        OpenAI-compatible local servers (llama-server, vLLM, Ollama) enforce a JSON grammar for
+        response_format json_object, which removes the "unparsable output" failure outright; JSON
+        is valid YAML, so load_yaml reads it unchanged. Off by default: some hosted providers
+        reject the parameter, and the prompts' worked examples are YAML.
+
+        Returns the OpenAI-shaped dict, or None when unset. Raises ValueError on an unsupported
+        value so the caller surfaces it as a configuration error rather than retrying it.
+        """
+        response_format = str(getattr(get_settings().litellm, "response_format", "") or "").strip()
+        if not response_format:
+            return None
+        if response_format != "json_object":
+            raise ValueError(f"litellm.response_format must be 'json_object' or empty, "
+                             f"got {response_format!r}")
+        return {"type": response_format}
+
     @retry(
         retry=retry_if_exception(_should_retry_same_model),
         stop=stop_after_attempt(MODEL_RETRIES),
@@ -758,6 +778,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         # Validate config-derived kwargs before the try/except below, so a malformed value raises a
         # ValueError config error instead of being wrapped as openai.APIError and retried.
         cache_control_injection_points = self._resolve_cache_control_injection_points()
+        response_format = self._resolve_response_format()
         client_retries = _configured_client_retries()
         _bedrock_imds = self._aws_imds_mode and any(
             provider in model for provider in ("bedrock/", "bedrock_mantle/")
@@ -895,6 +916,11 @@ class LiteLLMAIHandler(BaseAiHandler):
                     kwargs.update(thinking_kwargs_gpt5)
                     if 'temperature' in kwargs:
                         del kwargs['temperature']
+
+                # Opt-in constrained decoding, validated above the try so a typo fails fast as a
+                # config error instead of being retried on every model as a provider error.
+                if response_format:
+                    kwargs["response_format"] = response_format
 
                 custom_llm_provider = str(
                     getattr(get_settings().litellm, "custom_llm_provider", "") or ""

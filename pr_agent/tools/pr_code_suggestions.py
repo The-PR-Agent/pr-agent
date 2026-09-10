@@ -53,6 +53,12 @@ from pr_agent.servers.help import HelpMessage
 from pr_agent.tools.pr_description import insert_br_after_x_chars
 from pr_agent.tools.progress_comment import build_progress_comment
 
+# Score given to every suggestion when self-reflection fails outright. Kept as-is so a
+# reflection outage does not silently discard real findings; SELF_REFLECTION_UNAVAILABLE_REASON
+# is what makes the missing score visible rather than passing it off as a real verdict.
+SELF_REFLECTION_FALLBACK_SCORE = 7
+SELF_REFLECTION_UNAVAILABLE_REASON = "score unavailable: self-reflection failed"
+
 
 def _as_threshold(setting_name: str, default: int, minimum: int) -> int:
     """Read a score threshold as an int, so a quoted or unusable value cannot fail the run."""
@@ -836,10 +842,16 @@ class PRCodeSuggestions:
         if response_reflect:
             await self.analyze_self_reflection_response(data, response_reflect)
         else:
-            # get_logger().error(f"Could not self-reflect on suggestions. using default score 7")
-            for i, suggestion in enumerate(data["code_suggestions"]):
-                suggestion["score"] = 7
-                suggestion["score_why"] = ""
+            # Reflection is what scores suggestions, so when the whole reasoning chain fails every
+            # suggestion inherits a passing score and the failure looks exactly like "all of these
+            # are fine". Keep the suggestions - dropping them would lose real findings - but record
+            # the failure instead of swallowing it, and mark each one so the gap is visible.
+            get_logger().error(
+                f"Could not self-reflect on suggestions, using default score {SELF_REFLECTION_FALLBACK_SCORE}",
+                artifact={"suggestions": len(data["code_suggestions"])})
+            for suggestion in data["code_suggestions"]:
+                suggestion["score"] = SELF_REFLECTION_FALLBACK_SCORE
+                suggestion["score_why"] = SELF_REFLECTION_UNAVAILABLE_REASON
 
         return data
 

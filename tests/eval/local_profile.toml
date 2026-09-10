@@ -1,0 +1,57 @@
+# Local-model review profile - NOT a repository default.
+#
+# This repository IS pr-agent, so its own .pr_agent.toml drives Qodo's hosted bot rather than
+# the OSS engine (see that file's header). Putting these values there would change behaviour for
+# every consumer of this repo. Copy this into the .pr_agent.toml of a repository you want
+# reviewed locally, or point CONFIG.CONFIG_FILE at it.
+#
+# Every value here is a hypothesis, not a recommendation. Run tests/eval/run_eval.py before and
+# after each one - see README.md "Baseline order". The rationale for each is in
+# ACCURACY_PLAN.md section 4.
+#
+# Key names were validated against pr_agent/settings/configuration.toml; [openai] comes from
+# .secrets_template.toml instead. An unrecognised key here would silently do nothing.
+[config]
+model = "openai/local-review"
+fallback_models = []                 # no cloud fallback in local-only mode
+custom_model_max_tokens = 20000      # model not in MAX_TOKENS registry -> this supplies it
+max_model_tokens = 20000             # global clamp; ACCURACY_PLAN.md sec.4 budget note
+temperature = 0.1                    # raise to 0.3-0.5 when num_samples > 1
+duplicate_prompt_examples = true     # costs diff budget; redundant once grammar decoding lands
+
+[openai]
+api_base = "http://127.0.0.1:8080/v1"
+# LiteLLM requires a non-empty key even though llama-server ignores it. Supply it via the
+# OPENAI__KEY env var or .secrets.toml - never commit one, per AGENTS.md.
+
+[litellm]
+drop_params = true                   # llama-server rejects some OpenAI-style params
+                                     # (read at litellm_ai_handler.py:205)
+# Grammar-enforced JSON from llama-server / vLLM / Ollama. Removes the parse-failure class
+# outright; JSON is valid YAML so nothing downstream changes. A/B it against parse_fail_rate.
+# response_format = "json_object"
+
+[pr_reviewer]
+num_max_findings = 12                # §2.0 — THE recall cap. Default 3 hides everything past #3.
+# Consensus sampling: review N times, keep findings that recur in >= min_votes samples, matched by
+# file + overlapping lines. Needs temperature > 0. Multiplies model calls by N - use in the "deep"
+# tier, and A/B it: run_eval.py --set pr_reviewer.num_samples=3 --set config.temperature=0.4
+num_samples = 1
+min_votes = 0  # 0 = a majority of the samples that parsed
+enable_large_pr_chunking = true      # §2.3 — overflow becomes calls, not dropped files
+max_number_of_calls = 5
+require_score_review = false         # fewer schema fields = fewer parse failures
+require_tests_review = false
+require_can_be_split_review = false
+require_security_review = true
+extra_instructions = """
+Report ONLY defects that would change runtime behaviour or security posture.
+For each: exact file and line, the concrete failing input or state, and the consequence.
+Do not report style, naming, formatting, or missing comments — other tools own those.
+If you are not confident a finding is a real defect, omit it.
+"""
+
+[pr_code_suggestions]
+suggestions_score_threshold = 2      # §2.5 — recall-first; monitor reflection failure instead
+num_code_suggestions_per_chunk = 6
+parallel_calls = false               # 16GB: serialise, don't thrash memory

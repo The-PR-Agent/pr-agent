@@ -310,9 +310,12 @@ def generate_full_patch(convert_hunks_to_line_numbers, file_dict, max_tokens_mod
 
         # If the patch is too large, just show the file name
         if total_tokens + new_patch_tokens > max_tokens_model - OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD:
-            # Current logic is to skip the patch if it's too large
-            # TODO: Option for alternative logic to remove hunks from the patch to reduce the number of tokens
-            #  until we meet the requirements
+            # Skipping, not clipping, is deliberate: this loop walks files largest-first, so
+            # clipping an oversized patch to the remaining budget would consume the room every
+            # smaller file after it still needs (see
+            # test_generate_full_patch_records_too_large_patch_files). The file stays in
+            # remaining_files_list, where the chunked flow can still pick it up whole. Exclude
+            # generated/vendored files via settings/ignore.toml so they never reach this branch.
             if get_verbosity_level() >= 2:
                 get_logger().warning(f"Patch too large, skipping it: '{filename}'")
             remaining_files_list_new.append(filename)

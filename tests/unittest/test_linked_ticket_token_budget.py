@@ -204,7 +204,8 @@ async def test_tools_use_the_same_bounded_ticket_vars_for_packing_and_rendering(
 
     async def get_prediction(_model, *_args, **_kwargs):
         rendered_vars.append(tool.vars)
-        return "prediction"
+        # /review validates that the prediction parses, so this has to be a real review payload
+        return 'review:\n  score: "90"\n'
 
     monkeypatch.setattr(module, "fit_related_tickets_to_prompt_budget", fit_payload)
     monkeypatch.setattr(module, "get_pr_diff", get_diff)

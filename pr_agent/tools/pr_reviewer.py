@@ -1,9 +1,10 @@
 import asyncio
+import contextlib
 import copy
 import datetime
 import re
 from functools import partial
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 from jinja2 import Environment, StrictUndefined
 
@@ -30,7 +31,7 @@ from pr_agent.algo.review_finding_state import (
     parse_review_state,
     reconcile_review_findings,
 )
-from pr_agent.algo.review_merge import merge_review_chunks
+from pr_agent.algo.review_merge import merge_review_chunks, vote_review_samples
 from pr_agent.algo.run_details import get_run_details, init_run_details
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_handler import TokenHandler
@@ -141,17 +142,33 @@ _STATE_BLOCK_READ_ERROR = "read_error"
 _STATE_BLOCK_REVIEW_DATA = "review_data"
 _STATE_BLOCK_SIZE = "state_size"
 
+class UnparsableReview(ValueError):
+    """The model answered, but nothing the YAML repair heuristics could rescue.
+
+    Distinct from a call that failed: the chunked flow retries an unparsable chunk and then falls
+    back to a single review call, where a transport failure is re-raised as the run's error.
+    """
+
+
+# One retry per failed chunk. Chunk failures cost findings, and both an unanswered call and
+# unparsable YAML are usually transient; more attempts would multiply latency on a large PR.
+CHUNK_REVIEW_ATTEMPTS = 2
+
 
 class PRReviewer:
     """
     The PRReviewer class is responsible for reviewing a pull request and generating feedback using an AI model.
     """
 
-    # State of the chunked flow, rebound by _prepare_chunked_prediction. Class-level immutable
-    # defaults, so the single-call flow carries no bookkeeping.
-    prediction_data = None  # merged review dict; None means "parse self.prediction instead"
+    # State of the chunked and sampled flows, rebound by _prepare_prediction. Class-level
+    # immutable defaults, so a partially built instance still reads consistently.
+    prediction_data = None  # parsed review dict; None means "parse self.prediction instead"
     review_chunk_count = 1
     review_failed_chunk_count = 0
+    # Findings that the consensus vote discarded for lack of agreement, or trimmed at
+    # num_max_findings. Non-zero means this review is partial in the same way a failed chunk
+    # makes it partial.
+    review_vote_dropped_count = 0
 
     def __init__(self, pr_url: str, is_answer: bool = False, is_auto: bool = False, args: list = None,
                  ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
@@ -732,8 +749,11 @@ class PRReviewer:
             bool(self.prediction)
             and not bool(getattr(self.incremental, "is_incremental", False))
             # A merged result with failed chunks is still partial, even when chunking left
-            # no additional token-budget files to report.
+            # no additional token-budget files to report. A finding the consensus vote discarded
+            # is partial in exactly the same way: it is absent from this review without having
+            # been fixed, and resolving it here would mark a live bug as done.
             and not bool(self.review_failed_chunk_count)
+            and not bool(self.review_vote_dropped_count)
             and not bool(self.remaining_files_list)
             and parsed.valid
             and current_findings is not None
@@ -777,6 +797,17 @@ class PRReviewer:
             self.patches_diff = output
             self.remaining_files_list = []
 
+        # retry_with_fallback_models calls this once per model, so clear the previous attempt's
+        # merged verdict; otherwise a chunked run that failed on model A would be read back as
+        # model B's result.
+        self.prediction_data = None
+        self.review_chunk_count = 1  # the single-call default; the chunked flow rebinds it
+        self.review_failed_chunk_count = 0
+        self.review_vote_dropped_count = 0
+        # One cap for the whole run, so nested fan-out (chunks x samples) cannot burst past it.
+        # Rebuilt per model attempt: a semaphore is not reusable across event loops.
+        self._call_semaphore = self._build_call_semaphore()
+
         # a non-empty remaining_files_list means the token budget truncated the diff
         if self.remaining_files_list and get_settings().pr_reviewer.get("enable_large_pr_chunking", False):
             if await self._prepare_chunked_prediction(model):
@@ -784,10 +815,35 @@ class PRReviewer:
 
         if self.patches_diff:
             get_logger().debug("PR diff", diff=self.patches_diff)
-            self.prediction = await self._get_prediction(model)
+            # Parse here rather than in _prepare_pr_review: an unparsable review must raise while
+            # retry_with_fallback_models is still on the stack, or the run ends without any other
+            # model being tried. load_yaml returns {} for output its repair heuristics cannot
+            # rescue, and models that struggle with structured output fail that way rather than by
+            # erroring, which is why the transport-level retry never covered it.
+            (self.prediction, self.prediction_data,
+             self.review_vote_dropped_count) = await self._get_review_data(model)
         else:
             get_logger().warning(f"Empty diff for PR: {self.pr_url}")
             self.prediction = None
+
+    @staticmethod
+    def _build_call_semaphore() -> Optional[asyncio.Semaphore]:
+        """Bound the concurrent model calls one review may have in flight, or None for unbounded.
+
+        Chunk fan-out nests sample fan-out, so the peak is max_number_of_calls x num_samples per
+        model attempt - enough to trip a per-key rate limit, whose 429 is not retried. The default
+        is above the shipped defaults' peak, so it changes nothing until either knob is raised.
+        """
+        try:
+            limit = int(get_settings().pr_reviewer.get("max_concurrent_calls", 4))
+        except (TypeError, ValueError):
+            limit = 4
+        return asyncio.Semaphore(limit) if limit > 0 else None
+
+    @staticmethod
+    def _is_parsable_review(data: Any) -> bool:
+        """Is this parsed output a review the rest of the tool can render?"""
+        return isinstance(data, dict) and isinstance(data.get("review"), dict) and bool(data["review"])
 
     async def _prepare_chunked_prediction(self, model: str) -> bool:
         """Review a too-large diff in chunks and merge the per-chunk verdicts.
@@ -807,30 +863,51 @@ class PRReviewer:
 
         get_logger().info(f"Number of PR chunk calls: {len(patches_diff_list)}")
         get_logger().debug("PR diff chunks", artifact=patches_diff_list)
-        predictions = await asyncio.gather(
-            *[self._get_prediction(model, patches_diff) for patches_diff in patches_diff_list],
-            return_exceptions=True)
+        # A dropped chunk loses every finding in its slice of the diff, and both failure modes
+        # here (no answer, or an answer whose YAML cannot be repaired) are usually transient, so
+        # give the failures one more pass before giving up on them.
+        chunk_results: dict[int, tuple[str, dict]] = {}
+        # Per chunk index, not a running total: a chunk that is retried, or a model attempt that
+        # fails after a later one succeeds, must not add its drops twice.
+        chunk_dropped: dict[int, int] = {}
+        pending_indices = list(range(len(patches_diff_list)))
+        # The first failure is the one worth reporting; a retry's error is usually a repeat.
+        first_chunk_error: Exception | None = None
+        for attempt in range(CHUNK_REVIEW_ATTEMPTS):
+            if not pending_indices:
+                break
+            if attempt:
+                get_logger().info(f"Retrying {len(pending_indices)} failed review chunk(s)")
+            results = await asyncio.gather(
+                *[self._get_review_data(model, patches_diff_list[i]) for i in pending_indices],
+                return_exceptions=True)
 
-        raw_predictions, chunk_outputs, chunk_errors = [], [], []
-        for chunk_index, prediction in enumerate(predictions):
-            if isinstance(prediction, Exception):
-                chunk_errors.append(prediction)
-                get_logger().warning(f"Failed to review chunk {chunk_index + 1}; retaining successful chunks",
-                                     artifact={"error": prediction})
-                continue
-            if isinstance(prediction, BaseException):
-                raise prediction
-            data = self._load_review_yaml(prediction)
-            if not isinstance(data, dict) or not isinstance(data.get("review"), dict) or not data["review"]:
-                get_logger().warning(f"Failed to parse the review of chunk {chunk_index + 1}",
-                                     artifact={"data": data})
-                continue
-            raw_predictions.append(prediction)
-            chunk_outputs.append(data)
+            retry_indices = []
+            for chunk_index, result in zip(pending_indices, results, strict=True):
+                if isinstance(result, Exception):
+                    # An unparsable chunk is not a failed call: if every chunk ends up unparsable
+                    # the single-call flow still gets its turn, whereas a transport error is the
+                    # run's error and is re-raised below.
+                    if first_chunk_error is None and not isinstance(result, UnparsableReview):
+                        first_chunk_error = result
+                    get_logger().warning(f"Failed to review chunk {chunk_index + 1}; retaining successful chunks",
+                                         artifact={"error": result})
+                    retry_indices.append(chunk_index)
+                    continue
+                if isinstance(result, BaseException):
+                    raise result
+                prediction, data, dropped = result
+                chunk_results[chunk_index] = (prediction, data)
+                chunk_dropped[chunk_index] = dropped
+            pending_indices = retry_indices
+
+        # keep the chunks in diff order, not completion order
+        raw_predictions = [chunk_results[i][0] for i in sorted(chunk_results)]
+        chunk_outputs = [chunk_results[i][1] for i in sorted(chunk_results)]
 
         if not chunk_outputs:
-            if chunk_errors:
-                raise chunk_errors[0]
+            if first_chunk_error is not None:
+                raise first_chunk_error
             get_logger().warning("No chunk produced a parsable review, falling back to a single review call")
             return False
 
@@ -839,8 +916,83 @@ class PRReviewer:
         self.prediction_data = merge_review_chunks(chunk_outputs)
         self.review_chunk_count = len(patches_diff_list)
         self.review_failed_chunk_count = len(patches_diff_list) - len(chunk_outputs)
+        self.review_vote_dropped_count = sum(chunk_dropped.values())
         self.remaining_files_list = remaining_files_list
         return True
+
+    async def _get_review_data(self, model: str,
+                               patches_diff: Optional[str] = None) -> tuple[str, dict, int]:
+        """Review the diff, returning `(raw response text, parsed review dict, findings dropped)`.
+
+        With `pr_reviewer.num_samples` at its default of 1 this is one call, parsed once. With
+        more, the samples run concurrently, each is parsed, and `vote_review_samples` keeps the
+        findings that recur in at least `pr_reviewer.min_votes` of them (0 = a majority) before
+        reducing the rest of the fields to the samples' central tendency. Either way the caller
+        gets the dict directly, so the merged verdict never has to be re-serialised and re-parsed.
+
+        The dropped count is returned rather than accumulated on the instance: the chunked flow
+        awaits several of these concurrently, so an instance attribute would only hold whichever
+        chunk finished last.
+
+        Raises when nothing parsable came back, so the fallback chain gets its turn. A single
+        sample that fails or does not parse is dropped, not fatal: the vote threshold clamps to
+        the samples that survived.
+        """
+        settings = get_settings().pr_reviewer
+        try:
+            num_samples = int(settings.get("num_samples", 1))
+        except (TypeError, ValueError):
+            num_samples = 1
+
+        if num_samples <= 1:
+            # keep the one-argument call for the whole-diff case: patches_diff defaults to it
+            prediction = await (self._get_prediction(model) if patches_diff is None
+                                else self._get_prediction(model, patches_diff))
+            data = self._load_review_yaml(prediction)
+            if not self._is_parsable_review(data):
+                get_logger().warning(f"Unparsable review from {model}", artifact={"data": data})
+                raise UnparsableReview(f"Failed to parse the review produced by {model}")
+            return prediction, data, 0
+
+        if not get_settings().config.temperature:
+            get_logger().warning("pr_reviewer.num_samples > 1 with config.temperature = 0: "
+                                 "the samples will be identical and the vote is a no-op")
+
+        responses = await asyncio.gather(
+            *[self._get_prediction(model, patches_diff) for _ in range(num_samples)],
+            return_exceptions=True)
+        parsed, raw, first_error = [], [], None
+        for response in responses:
+            if isinstance(response, BaseException):
+                if not isinstance(response, Exception):
+                    raise response
+                first_error = first_error or response
+                get_logger().warning(f"Review sample failed: {response}")
+                continue
+            data = self._load_review_yaml(response)
+            if self._is_parsable_review(data):
+                parsed.append(data)
+                raw.append(response)
+            else:
+                get_logger().warning("Review sample could not be parsed", artifact={"response": response})
+        if not parsed:
+            if first_error is not None:
+                raise first_error
+            raise UnparsableReview(
+                f"None of the {num_samples} review samples from {model} could be parsed")
+        if len(parsed) < num_samples:
+            get_logger().info(f"{len(parsed)} of {num_samples} review samples usable")
+
+        try:
+            min_votes = int(settings.get("min_votes", 0))
+        except (TypeError, ValueError):
+            min_votes = 0
+        try:
+            max_findings = int(settings.get("num_max_findings", 0))
+        except (TypeError, ValueError):
+            max_findings = 0
+        consensus = vote_review_samples(parsed, min_votes, max_findings=max_findings)
+        return "\n".join(raw), consensus.review, consensus.dropped
 
     async def _get_prediction(self, model: str, patches_diff: Optional[str] = None) -> str:
         """
@@ -861,12 +1013,14 @@ class PRReviewer:
         system_prompt = environment.from_string(get_settings().pr_review_prompt.system).render(variables)
         user_prompt = environment.from_string(get_settings().pr_review_prompt.user).render(variables)
 
-        response, finish_reason = await self.ai_handler.chat_completion(
-            model=model,
-            temperature=get_settings().config.temperature,
-            system=system_prompt,
-            user=user_prompt
-        )
+        semaphore = getattr(self, "_call_semaphore", None)
+        async with (semaphore if semaphore is not None else contextlib.nullcontext()):
+            response, finish_reason = await self.ai_handler.chat_completion(
+                model=model,
+                temperature=get_settings().config.temperature,
+                system=system_prompt,
+                user=user_prompt
+            )
 
         return response
 
@@ -886,7 +1040,7 @@ class PRReviewer:
         data = self.prediction_data if self.prediction_data is not None else self._load_review_yaml(self.prediction)
         github_action_output(data, 'review')
 
-        if not isinstance(data, dict) or not isinstance(data.get('review'), dict) or not data['review']:
+        if not self._is_parsable_review(data):
             if self._review_finding_state_enabled():
                 self._review_state_blocked = True
                 self._review_state_block_reason = _STATE_BLOCK_REVIEW_DATA
@@ -942,6 +1096,17 @@ class PRReviewer:
             if self.review_failed_chunk_count:
                 markdown_text += (f" {self.review_failed_chunk_count} chunk(s) failed and are not covered "
                                   "by this review.")
+
+        if self.review_vote_dropped_count:
+            # Without this the reader cannot tell a clean PR from a filtered one: a vote that
+            # discards every candidate publishes the same "no major issues" as a real pass.
+            markdown_text += (
+                "\n\n<hr>\n\n"
+                f"ℹ️ **Consensus review:** {self.review_vote_dropped_count} candidate finding(s) were "
+                "not reported, because too few samples agreed on them "
+                "(`pr_reviewer.min_votes`) or the review was already at "
+                "`pr_reviewer.num_max_findings`."
+            )
 
         if self.remaining_files_list and get_settings().pr_reviewer.enable_review_coverage_footer:
             displayed_files = self.remaining_files_list[:MAX_REVIEW_COVERAGE_FILES]

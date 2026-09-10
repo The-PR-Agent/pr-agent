@@ -109,6 +109,17 @@ By default, Ollama uses a context window size of 2048 tokens. In most cases this
 
 Please note that the `custom_model_max_tokens` setting should be configured in accordance with the `OLLAMA_CONTEXT_LENGTH`. Failure to do so may result in unexpected model output.
 
+If the model returns output PR-Agent cannot parse, OpenAI-compatible local servers (llama-server, vLLM, Ollama) can be asked to enforce a JSON grammar instead:
+
+```toml
+[litellm]
+response_format = "json_object"
+```
+
+JSON is valid YAML, so nothing downstream changes. `json_object` is the only accepted value, and it is off by default because some hosted providers reject the parameter.
+
+A model with no tiktoken encoding of its own is counted with the `o200k_base` tokenizer, which can under-count a denser vocabulary and let an oversized prompt through - some servers then truncate it silently rather than rejecting it. The diff budget adds `config.approximate_token_count_safety_factor` of headroom on those models; raise it, or lower `config.max_model_tokens`, if a prompt is still rejected or truncated.
+
 !!! note "Local models vs commercial models"
     PR-Agent is compatible with almost any AI model, but analyzing complex code repositories and pull requests requires a model specifically optimized for code analysis.
 

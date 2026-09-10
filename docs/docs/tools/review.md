@@ -115,6 +115,18 @@ for the authoritative default values.
         <td>Maximum number of returned findings.</td>
       </tr>
       <tr>
+        <td><b>num_samples</b></td>
+        <td>Number of independent review calls to run over the same diff, keeping only the findings the samples agree on. Requires <code>config.temperature</code> above 0. See <a href="#raising-recall-on-a-small-model">Raising recall on a small model</a>. Default is 1 (off).</td>
+      </tr>
+      <tr>
+        <td><b>min_votes</b></td>
+        <td>How many of the samples must report a finding for it to be published, used only when <code>num_samples</code> is above 1. 0 means a majority of the samples that parsed. Default is 0.</td>
+      </tr>
+      <tr>
+        <td><b>max_concurrent_calls</b></td>
+        <td>Maximum model calls one review keeps in flight, across chunk and sample fan-out together. 0 disables the cap. Default is 4.</td>
+      </tr>
+      <tr>
         <td><b>inline_key_issues</b></td>
         <td>Azure DevOps only. If set to true, each key issue is published as an inline thread. A finding leaves the review summary when a matching thread exists or Azure accepts the new thread. Findings that cannot be anchored or published stay in the summary.</td>
       </tr>
@@ -282,3 +294,33 @@ for the authoritative default values.
 
     The merged verdict is deliberately never less alarming than the worst chunk: a clean chunk
     cannot raise a score, clear a security concern, or soften a risk level set by another chunk.
+
+### Raising recall on a small model
+
+!!! tip ""
+
+    A small model at a non-zero temperature reports a different subset of the real defects on
+    every run. Setting `num_samples` above 1 reviews the same diff that many times concurrently
+    and keeps the key issues that recur in at least `min_votes` of the samples, matched by file
+    and overlapping lines rather than by wording. The union raises recall; the vote is what keeps
+    precision.
+
+    `min_votes = 0` (the default) means a majority of the samples that parsed - 1 of 2, 2 of 3,
+    3 of 5. An explicit value is honoured and clamped to the samples that parsed, so losing a
+    sample lowers the bar instead of emptying the review. Note that at `num_samples = 2` a
+    majority is 1, i.e. the union of both samples.
+
+    The samples all describe the same diff, so unlike chunks they are reduced by their central
+    tendency, not their worst case: `score` and `estimated_effort_to_review_[1-5]` take the
+    median, `risk_level` and `merge_recommendation` the majority (a tie going to the more
+    conservative value), and `security_concerns`, `relevant_tests` and `review_priority_files`
+    are published only when more than half the samples reported them. The kept findings are
+    truncated to `num_max_findings`.
+
+    When the vote discards a candidate finding, the review says so in a footer, and the run does
+    not resolve anything in the persistent finding state (`persistent_finding_state`): a finding
+    that lost the vote is absent from the review without having been fixed.
+
+    Each sample is a full model call. Sampling multiplies with chunking, so the total is bounded
+    by `2 x max_number_of_calls x num_samples` per model attempt, and `max_concurrent_calls`
+    bounds how many of those are in flight at once.
