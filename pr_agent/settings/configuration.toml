@@ -62,6 +62,9 @@ output_run_details=false # if true, append an agent run details section (model, 
 output_run_cost=false # if true, collect estimated LiteLLM API cost and include it inside the enabled run details section
 # When set, append one JSON line per model call (stage, chunk, files, tokens, cost, latency) to this file.
 run_ledger_path = ""
+# Identity stamped on ledger rows. Defaults to the latest commit URL; set this when the
+# provider has none (plain diff, local) to attribute rows to a job or eval run.
+run_ledger_run_id = ""
 large_patch_policy = "clip" # "clip", "skip"
 duplicate_prompt_examples = false
 # Persistent inline comments (issue #2037): when true, the GitHub, GitLab, and Azure DevOps providers

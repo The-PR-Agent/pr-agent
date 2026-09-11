@@ -3,6 +3,7 @@ import contextlib
 import copy
 import datetime
 import re
+import uuid
 from functools import partial
 from typing import Any, List, Optional, Tuple
 
@@ -551,7 +552,7 @@ class PRReviewer:
                 try:
                     details = get_run_details()
                     if details is not None:
-                        write_ledger(details, ledger_path, run_id=self._review_run_id(), tool="review")
+                        write_ledger(details, ledger_path, run_id=self._ledger_run_id(), tool="review")
                 except Exception as e:
                     get_logger().exception(f"Failed to write run ledger, error: {e}")
 
@@ -810,6 +811,24 @@ class PRReviewer:
         except Exception:
             return ""
         return value if isinstance(value, str) else ""
+
+    def _ledger_run_id(self) -> str:
+        """Identity stamped on every ledger row for this run.
+
+        Providers without a hosting platform (plain diff, local) have no commit URL, so
+        `_review_run_id()` is empty there and every row would be unattributable. Prefer an
+        explicit `config.run_ledger_run_id` when the caller sets one (eval harness, CI job
+        id), otherwise mint one id per reviewer instance so a run's rows stay correlatable.
+        """
+        commit_url = self._review_run_id()
+        if commit_url:
+            return commit_url
+        configured = get_settings().config.get("run_ledger_run_id", "")
+        if isinstance(configured, str) and configured.strip():
+            return configured.strip()
+        if not getattr(self, "_ledger_fallback_run_id", None):
+            self._ledger_fallback_run_id = f"local-{uuid.uuid4().hex[:12]}"
+        return self._ledger_fallback_run_id
 
     def _review_comment_max_chars(self) -> int | None:
         for attribute in ("max_comment_chars", "max_comment_length"):

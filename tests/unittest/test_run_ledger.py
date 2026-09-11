@@ -2,6 +2,8 @@ import json
 
 from pr_agent.algo.run_details import init_run_details, record_ai_call
 from pr_agent.algo.run_ledger import write_ledger
+from pr_agent.config_loader import get_settings
+from pr_agent.tools.pr_reviewer import PRReviewer
 
 
 class _Usage:
@@ -77,3 +79,26 @@ def test_write_ledger_emits_one_jsonl_row_per_call(tmp_path):
     first = json.loads(lines[0])
     assert first["run_id"] == "r1" and first["stage"] == "review" and first["prompt_tokens"] == 100
     assert sum(json.loads(line)["total_tokens"] for line in lines) == details.total_tokens
+
+
+def test_ledger_run_id_prefers_commit_url_then_config_then_minted_fallback():
+    """Ledger rows must be attributable even without a hosting platform. Plain-diff and
+    local providers return no commit URL, so `_ledger_run_id` falls back to an explicit
+    `config.run_ledger_run_id`, and failing that mints one stable id per reviewer."""
+    reviewer = PRReviewer.__new__(PRReviewer)
+
+    reviewer._review_run_id = lambda: "https://host/org/repo/commit/abc"
+    assert reviewer._ledger_run_id() == "https://host/org/repo/commit/abc"
+
+    reviewer._review_run_id = lambda: ""
+    get_settings().set("config.run_ledger_run_id", "  eval-block-rush-1  ")
+    assert reviewer._ledger_run_id() == "eval-block-rush-1"
+
+    get_settings().set("config.run_ledger_run_id", "")
+    minted = reviewer._ledger_run_id()
+    assert minted.startswith("local-") and len(minted) > len("local-")
+    assert reviewer._ledger_run_id() == minted
+
+    other = PRReviewer.__new__(PRReviewer)
+    other._review_run_id = lambda: ""
+    assert other._ledger_run_id() != minted

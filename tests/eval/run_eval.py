@@ -12,6 +12,7 @@ the model, and the structured review lands in a JSON file the scorer reads.
 import argparse
 import asyncio
 import copy
+import datetime
 import json
 import os
 import subprocess
@@ -172,8 +173,26 @@ def _run_metadata(args, overrides: dict) -> dict:
     }
 
 
+def _default_ledger_run_id(args) -> None:
+    """Name the ledger rows this eval produces.
+
+    No PR URL exists under the harness, so the reviewer would otherwise mint an opaque
+    `local-<hex>` id, leaving two rows of the same baseline indistinguishable
+    after the fact. Only fills a run id the caller did not set.
+    """
+    settings = get_settings()
+    if not settings.config.get("run_ledger_path"):
+        return
+    if str(settings.config.get("run_ledger_run_id", "") or "").strip():
+        return
+    stem = Path(args.labels).stem if args.labels else "corpus"
+    settings.set("config.run_ledger_run_id",
+                 f"eval:{stem}:{datetime.datetime.now(datetime.timezone.utc):%Y%m%dT%H%M%SZ}")
+
+
 async def main_async(args) -> int:
     overrides = _apply_overrides(args.set)
+    _default_ledger_run_id(args)
     if args.labels:
         if not args.diff_file:
             raise SystemExit("--labels requires --diff-file")
