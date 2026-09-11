@@ -30,7 +30,11 @@ MAX_SHORTHAND_ISSUE_DIGITS = 6
 # Cap on the total tickets analysed per PR, enforced at the Jira step (see add_jira_tickets).
 # The provider-native lookups keep their own budgets (MAX_GITHUB_TICKETS, MAX_GITLAB_TICKETS,
 # MAX_ASANA_TICKETS).
-MAX_TICKETS = 3
+MAX_TICKETS = 5
+# Upper bound on Jira lookups per PR. The key pattern also matches strings like "SHA-256"
+# and "UTF-8", so candidates are tried until MAX_TICKETS resolve rather than truncated up
+# front; this bounds the cost of a PR whose text is mostly key-shaped noise.
+MAX_JIRA_FETCH_ATTEMPTS = 10
 # Max characters kept from any ticket body or requirements field.
 MAX_TICKET_CHARACTERS = 10000
 
@@ -136,11 +140,16 @@ def _get_jira_client():
         return None
 
 
-def extract_jira_tickets(text, max_characters=MAX_TICKET_CHARACTERS):
+def extract_jira_tickets(text, max_characters=MAX_TICKET_CHARACTERS, max_tickets=MAX_TICKETS):
     """
     Find Jira ticket keys in the given text and fetch their content. Returns a list of
     ticket dicts in the same shape used by the rest of the ticket-analysis flow. Returns
     an empty list when no keys are found or when Jira is not configured.
+
+    Candidates are tried in first-seen order until max_tickets resolve or
+    MAX_JIRA_FETCH_ATTEMPTS lookups have been made. Counting resolved tickets rather than
+    truncating the candidate list keeps key-shaped noise ("SHA-256", "UTF-8") from
+    displacing a real ticket that appears later in the text.
     """
     # Look for keys before building a client: most PRs have none, and building the
     # client first would do needless work (and log a noisy init failure if Jira is
@@ -158,12 +167,15 @@ def extract_jira_tickets(text, max_characters=MAX_TICKET_CHARACTERS):
     # instance-specific (e.g. "customfield_10127"), so it must be configured; empty
     # means no requirements are extracted.
     requirements_field = get_settings().get("JIRA.JIRA_REQUIREMENTS_FIELD", "") or ""
-    if len(keys) > MAX_TICKETS:
-        get_logger().info(f"Too many Jira tickets found: {len(keys)}; limiting to {MAX_TICKETS}")
-        keys = keys[:MAX_TICKETS]
-
     tickets_content = []
-    for key in keys:
+    for attempt, key in enumerate(keys, start=1):
+        if len(tickets_content) >= max_tickets:
+            get_logger().info(f"Reached the cap of {max_tickets} Jira tickets; skipping remaining keys")
+            break
+        if attempt > MAX_JIRA_FETCH_ATTEMPTS:
+            get_logger().info(
+                f"Stopped after {MAX_JIRA_FETCH_ATTEMPTS} Jira lookups; skipping remaining keys")
+            break
         try:
             issue = jira_client.issue(key)
         except Exception as e:
@@ -220,8 +232,8 @@ def add_jira_tickets(git_provider, tickets_content):
     only relies on get_user_description() and get_pr_branch().
 
     MAX_TICKETS is the overall per-PR cap, so any provider-native tickets already in
-    tickets_content count against it: Jira tickets are appended only until the combined
-    total reaches MAX_TICKETS, keeping the existing tickets first.
+    tickets_content count against it: only the remaining budget is offered to the Jira
+    lookup, keeping the existing tickets first.
     """
     try:
         if len(tickets_content) >= MAX_TICKETS:
@@ -232,11 +244,8 @@ def add_jira_tickets(git_provider, tickets_content):
             git_provider.get_pr_branch() or "",
         ]))
         existing_urls = {t.get("ticket_url") for t in tickets_content}
-        for jira_ticket in extract_jira_tickets(jira_context, MAX_TICKET_CHARACTERS):
-            if len(tickets_content) >= MAX_TICKETS:
-                get_logger().info(
-                    f"Reached the per-PR cap of {MAX_TICKETS} tickets; skipping remaining Jira tickets")
-                break
+        remaining = MAX_TICKETS - len(tickets_content)
+        for jira_ticket in extract_jira_tickets(jira_context, MAX_TICKET_CHARACTERS, remaining):
             if jira_ticket.get("ticket_url") not in existing_urls:
                 tickets_content.append(jira_ticket)
     except Exception as e:

@@ -6,6 +6,7 @@ import pytest
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import AzureDevopsProvider
 from pr_agent.tools.ticket_pr_compliance_check import (
+    MAX_JIRA_FETCH_ATTEMPTS,
     MAX_TICKET_CHARACTERS,
     MAX_TICKETS,
     _get_jira_client,
@@ -184,14 +185,62 @@ class TestExtractJiraTickets:
         assert fetched == {"ABC-1", "DEF-2", "GHI-3"}
         assert len(result) == 3
 
-    def test_caps_candidate_keys_at_three(self):
-        """No more than three candidate keys are fetched (matches the GitHub branch)."""
+    def test_caps_resolved_tickets_not_candidates(self):
+        """The cap counts tickets that resolve, so it stops the fetch loop rather than
+        truncating the candidate list."""
         self._configure_jira()
         client = self._fake_client()
+        keys = " ".join(f"ABC-{i}" for i in range(1, MAX_TICKETS + 3))
         with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client):
-            result = extract_jira_tickets("ABC-1 ABC-2 ABC-3 ABC-4 ABC-5")
-        assert client.issue.call_count == 3
-        assert len(result) == 3
+            result = extract_jira_tickets(keys)
+        assert client.issue.call_count == MAX_TICKETS
+        assert len(result) == MAX_TICKETS
+
+    def test_noise_keys_do_not_displace_a_real_ticket(self):
+        """SHA-1, SHA-256, UTF-8 and AES-256 all match the key pattern. Capping candidates
+        before the fetch spends the budget on them and drops the ticket the PR names."""
+        self._configure_jira()
+
+        def fake_issue(key):
+            if key == "PROJ-4242":
+                return {"fields": {"summary": "Real", "description": "Body", "labels": []}}
+            raise Exception("404 not found")
+
+        client = MagicMock()
+        client.issue.side_effect = fake_issue
+        text = ("Switch the digest from SHA-1 to SHA-256, normalise to UTF-8 and rotate "
+                "the AES-256 key. Implements PROJ-4242")
+        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client):
+            result = extract_jira_tickets(text)
+        assert [t["ticket_id"] for t in result] == ["PROJ-4242"]
+
+    def test_real_ticket_reached_past_more_noise_than_the_cap(self):
+        """The same property with more noise keys than MAX_TICKETS, so it holds whatever
+        the cap is set to."""
+        self._configure_jira()
+
+        def fake_issue(key):
+            if key == "PROJ-4242":
+                return {"fields": {"summary": "Real", "description": "Body", "labels": []}}
+            raise Exception("404 not found")
+
+        client = MagicMock()
+        client.issue.side_effect = fake_issue
+        noise = " ".join(f"AES-{i}" for i in range(1, MAX_TICKETS + 3))
+        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client):
+            result = extract_jira_tickets(f"{noise} PROJ-4242")
+        assert [t["ticket_id"] for t in result] == ["PROJ-4242"]
+
+    def test_fetch_attempts_are_bounded(self):
+        """Key-shaped noise cannot make one PR pay unbounded authenticated Jira calls."""
+        self._configure_jira()
+        client = MagicMock()
+        client.issue.side_effect = Exception("404 not found")
+        keys = " ".join(f"ABC-{i}" for i in range(1, MAX_JIRA_FETCH_ATTEMPTS + 6))
+        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client):
+            result = extract_jira_tickets(keys)
+        assert client.issue.call_count == MAX_JIRA_FETCH_ATTEMPTS
+        assert result == []
 
     def test_skips_ticket_on_fetch_error(self):
         """A failed fetch for one key does not abort the others."""
