@@ -20,10 +20,12 @@ from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
 from pr_agent.git_providers.bitbucket_provider import BitbucketProvider
 from pr_agent.git_providers.bitbucket_server_provider import BitbucketServerProvider
+from pr_agent.git_providers.codecommit_provider import CodeCommitProvider
 from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.git_providers.gitea_provider import GiteaProvider
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
+from pr_agent.git_providers.local_git_provider import LocalGitProvider
 from pr_agent.tools.pr_reviewer import PRReviewer
 
 
@@ -1049,18 +1051,24 @@ async def test_review_publish_uses_shared_full_signature_for_authorship(monkeypa
         GiteaProvider,
         BitbucketProvider,
         BitbucketServerProvider,
+        CodeCommitProvider,
     ],
-    ids=["github", "gitlab", "azure", "gitea", "bitbucket", "bitbucket-server"],
+    ids=["github", "gitlab", "azure", "gitea", "bitbucket", "bitbucket-server", "codecommit"],
 )
-def test_legacy_persistent_publish_overrides_accept_shared_arguments(provider_class):
+def test_persistent_publish_signatures_accept_shared_arguments(provider_class):
     parameters = inspect.signature(
         provider_class.publish_persistent_comment
     ).parameters
 
+    assert "as_thread" in parameters
     assert "identity_marker" in parameters
     assert "legacy_initial_header" in parameters
     assert "require_agent_authorship" not in parameters
     assert "fallback_on_error" not in parameters
+
+
+def test_providers_without_override_inherit_persistent_comment_implementation():
+    assert LocalGitProvider.publish_persistent_comment is GitProvider.publish_persistent_comment
 
 
 def test_oversized_state_degradation_is_safe_on_the_next_run(monkeypatch):

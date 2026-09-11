@@ -269,6 +269,12 @@ _claude_tokens, _claude_no_temp, _claude_extended_thinking = (
 )
 
 
+# MAX_TOKENS holds only entries that deliberately deviate from (or are absent
+# from) LiteLLM's model registry. Exact LiteLLM duplicates were removed because
+# get_max_tokens() already falls back to litellm.get_model_info() with the same
+# value; generator-expanded Claude families (see _CLAUDE_MODEL_FAMILIES) remain
+# because they also drive the no-temperature / extended-thinking registries and
+# their 1M-context handling is a separate, deliberate judgement (issue #3196).
 MAX_TOKENS = {
     'text-embedding-ada-002': 8000,
     'gpt-3.5-turbo': 16000,
@@ -280,25 +286,8 @@ MAX_TOKENS = {
     'gpt-4': 8000,
     'gpt-4-0613': 8000,
     'gpt-4-32k': 32000,
-    'gpt-4-1106-preview': 128000,  # 128K, but may be limited by config.max_model_tokens
-    'gpt-4-0125-preview': 128000,  # 128K, but may be limited by config.max_model_tokens
-    'gpt-4o': 128000,  # 128K, but may be limited by config.max_model_tokens
-    'gpt-4o-2024-05-13': 128000,  # 128K, but may be limited by config.max_model_tokens
-    'gpt-4-turbo-preview': 128000,  # 128K, but may be limited by config.max_model_tokens
-    'gpt-4-turbo-2024-04-09': 128000,  # 128K, but may be limited by config.max_model_tokens
-    'gpt-4-turbo': 128000,  # 128K, but may be limited by config.max_model_tokens
-    'gpt-4o-mini': 128000,  # 128K, but may be limited by config.max_model_tokens
-    'gpt-4o-mini-2024-07-18': 128000,  # 128K, but may be limited by config.max_model_tokens
-    'gpt-4o-2024-08-06': 128000,  # 128K, but may be limited by config.max_model_tokens
-    'gpt-4o-2024-11-20': 128000,  # 128K, but may be limited by config.max_model_tokens
     'gpt-4.5-preview': 128000,  # 128K, but may be limited by config.max_model_tokens
     'gpt-4.5-preview-2025-02-27': 128000,  # 128K, but may be limited by config.max_model_tokens
-    'gpt-4.1': 1047576,
-    'gpt-4.1-2025-04-14': 1047576,
-    'gpt-4.1-mini': 1047576,
-    'gpt-4.1-mini-2025-04-14': 1047576,
-    'gpt-4.1-nano': 1047576,
-    'gpt-4.1-nano-2025-04-14': 1047576,
     'gpt-5-nano': 200000,  # 200K, but may be limited by config.max_model_tokens
     'gpt-5-mini': 200000,  # 200K, but may be limited by config.max_model_tokens
     'gpt-5': 200000,
@@ -310,7 +299,6 @@ MAX_TOKENS = {
     'gpt-5.1-codex-mini': 200000,
     'gpt-5.2': 400000,  # 400K, but may be limited by config.max_model_tokens
     'gpt-5.2-2025-12-11': 400000,  # 400K, but may be limited by config.max_model_tokens
-    'gpt-5.2-chat-latest': 128000,  # 128K, but may be limited by config.max_model_tokens
     'gpt-5.2-codex': 400000,  # 400K, but may be limited by config.max_model_tokens
     'gpt-5.3-codex': 400000,  # 400K, but may be limited by config.max_model_tokens
     'gpt-5.3-chat': 128000,  # 128K, but may be limited by config.max_model_tokens
@@ -320,8 +308,6 @@ MAX_TOKENS = {
     'gpt-5.4-mini-2026-03-17': 400000,  # 400K, but may be limited by config.max_model_tokens
     'gpt-5.4-nano': 400000,  # 400K, but may be limited by config.max_model_tokens
     'gpt-5.4-nano-2026-03-17': 400000,  # 400K, but may be limited by config.max_model_tokens
-    'gpt-5.5': 1050000,  # 1.05M, but may be limited by config.max_model_tokens
-    'gpt-5.5-2026-04-23': 1050000,  # 1.05M, but may be limited by config.max_model_tokens
     'gpt-5.6': 1050000,  # 1.05M, but may be limited by config.max_model_tokens
     'gpt-5.6-sol': 1050000,  # 1.05M, but may be limited by config.max_model_tokens
     'gpt-5.6-terra': 1050000,  # 1.05M, but may be limited by config.max_model_tokens
@@ -335,17 +321,10 @@ MAX_TOKENS = {
     'o1': 204800,  # 200K, but may be limited by config.max_model_tokens
     'o3-mini': 204800,  # 200K, but may be limited by config.max_model_tokens
     'o3-mini-2025-01-31': 204800,  # 200K, but may be limited by config.max_model_tokens
-    'o3': 200000,  # 200K, but may be limited by config.max_model_tokens
-    'o3-2025-04-16': 200000,  # 200K, but may be limited by config.max_model_tokens
-    'o4-mini': 200000, # 200K, but may be limited by config.max_model_tokens
-    'o4-mini-2025-04-16': 200000, # 200K, but may be limited by config.max_model_tokens
     'claude-instant-1': 100000,
     'claude-2': 100000,
-    'command-nightly': 4096,
     'deepseek/deepseek-chat': 128000,  # 128K, but may be limited by config.max_model_tokens
     'deepseek/deepseek-reasoner': 64000,  # 64K, but may be limited by config.max_model_tokens
-    'deepseek/deepseek-v4-pro': 1000000,  # 1M, but may be limited by config.max_model_tokens
-    'deepseek/deepseek-v4-flash': 1000000,  # 1M, but may be limited by config.max_model_tokens
     'zai/glm-5.2': 200000,  # 200K, matching the Z.AI GLM-5/5.1 lineage, but may be limited by config.max_model_tokens
     'moonshot/kimi-k3': 262144,  # 256K, matching the Moonshot Kimi-k2.5/k2.6 lineage, but may be limited by config.max_model_tokens
     'openai/qwq-plus': 131072,  # 131K context length, but may be limited by config.max_model_tokens
@@ -362,8 +341,6 @@ MAX_TOKENS = {
     'vertex_ai/claude-3-5-haiku@20241022': 100000,
     'vertex_ai/claude-3-sonnet@20240229': 100000,
     'vertex_ai/claude-3-opus@20240229': 100000,
-    'vertex_ai/claude-opus-4@20250514': 200000,
-    'vertex_ai/claude-opus-4-1@20250805': 200000,
     'vertex_ai/claude-3-5-sonnet@20240620': 100000,
     'vertex_ai/claude-3-5-sonnet-v2@20241022': 100000,
     'vertex_ai/claude-sonnet-4@20250514': 200000,
@@ -372,78 +349,45 @@ MAX_TOKENS = {
     'vertex_ai/gemini-2.5-pro-preview-03-25': 1048576,
     'vertex_ai/gemini-2.5-pro-preview-05-06': 1048576,
     'vertex_ai/gemini-2.5-pro-preview-06-05': 1048576,
-    'vertex_ai/gemini-2.5-pro': 1048576,
     'vertex_ai/gemini-1.5-flash': 1048576,
-    'vertex_ai/gemini-2.0-flash': 1048576,
     'vertex_ai/gemini-2.5-flash-preview-04-17': 1048576,
     'vertex_ai/gemini-2.5-flash-preview-05-20': 1048576,
-    'vertex_ai/gemini-2.5-flash': 1048576,
-    'vertex_ai/gemini-3-flash-preview': 1048576,
-    'vertex_ai/gemini-3-pro-preview': 1048576,
     'vertex_ai/gemini-3.1-flash': 1048576,
     'vertex_ai/gemini-3.1-pro': 1048576,
-    'vertex_ai/gemini-3.1-flash-lite-preview': 1048576,
-    'vertex_ai/gemini-3.1-pro-preview': 1048576,
-    'vertex_ai/gemini-3.5-flash': 1048576,
-    'vertex_ai/gemini-3.5-flash-lite': 1048576,
     'vertex_ai/gemini-3.5-pro': 1048576,
-    'vertex_ai/gemini-3.6-flash': 1048576,
-    'vertex_ai/gemini-3.7-flash': 1048576,
-    'vertex_ai/gemini-3.8-flash': 1048576,
+    'vertex_ai/gemini-3.8-flash': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
     'vertex_ai/gemma2': 8200,
     'gemini/gemini-1.5-pro': 1048576,
     'gemini/gemini-1.5-flash': 1048576,
-    'gemini/gemini-2.0-flash': 1048576,
     'gemini/gemini-2.5-flash-preview-04-17': 1048576,
     'gemini/gemini-2.5-flash-preview-05-20': 1048576,
-    'gemini/gemini-2.5-flash': 1048576,
     'gemini/gemini-2.5-pro-preview-03-25': 1048576,
     'gemini/gemini-2.5-pro-preview-05-06': 1048576,
     'gemini/gemini-2.5-pro-preview-06-05': 1048576,
-    'gemini/gemini-2.5-pro': 1048576,
-    'gemini/gemini-3-flash-preview': 1048576,
-    'gemini/gemini-3-pro-preview': 1048576,
     'gemini/gemini-3.1-flash': 1048576,
     'gemini/gemini-3.1-pro': 1048576,
-    'gemini/gemini-3.1-flash-lite-preview': 1048576,
-    'gemini/gemini-3.1-pro-preview': 1048576,
-    'gemini/gemini-3.5-flash': 1048576,
-    'gemini/gemini-3.5-flash-lite': 1048576,
     'gemini/gemini-3.5-pro': 1048576,
-    'gemini/gemini-3.6-flash': 1048576,
-    'gemini/gemini-3.7-flash': 1048576,
-    'gemini/gemini-3.8-flash': 1048576,
+    'gemini/gemini-3.8-flash': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
     'codechat-bison': 6144,
     'codechat-bison-32k': 32000,
     # -- Anthropic Claude --------------------------------------------------
-    'anthropic.claude-instant-v1': 100000,
-    'anthropic.claude-v1': 100000,
     'anthropic.claude-v2': 100000,
     'anthropic/claude-3-opus-20240229': 100000,
-    'anthropic/claude-opus-4-20250514': 200000,
-    'anthropic/claude-opus-4-1-20250805': 200000,
     'anthropic/claude-3-5-sonnet-20240620': 100000,
     'anthropic/claude-3-5-sonnet-20241022': 100000,
     'anthropic/claude-sonnet-4-20250514': 200000,
     # -- Bare Claude -------------------------------------------------------
-    'claude-opus-4-1-20250805': 200000,
     # -- Haiku -------------------------------------------------------------
     'anthropic/claude-3-5-haiku-20241022': 100000,
     # -- Bedrock Claude ----------------------------------------------------
-    'bedrock/anthropic.claude-instant-v1': 100000,
     'bedrock/anthropic.claude-v2': 100000,
-    'bedrock/anthropic.claude-v2:1': 100000,
     'bedrock/anthropic.claude-3-sonnet-20240229-v1:0': 100000,
-    'bedrock/anthropic.claude-opus-4-20250514-v1:0': 200000,
-    'bedrock/anthropic.claude-opus-4-1-20250805-v1:0': 200000,
     'bedrock/anthropic.claude-3-haiku-20240307-v1:0': 100000,
     'bedrock/anthropic.claude-3-5-haiku-20241022-v1:0': 100000,
     'bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0': 100000,
     'bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0': 100000,
     'bedrock/anthropic.claude-sonnet-4-20250514-v1:0': 200000,
     # -- Bedrock Claude (cross-region) -------------------------------------
-    "bedrock/us.anthropic.claude-opus-4-20250514-v1:0": 200000,
-    "bedrock/us.anthropic.claude-opus-4-1-20250805-v1:0": 200000,
     "bedrock/us.anthropic.claude-3-5-sonnet-20241022-v2:0": 100000,
     "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0": 200000,
     "bedrock/global.anthropic.claude-sonnet-4-20250514-v1:0": 200000,
@@ -451,17 +395,10 @@ MAX_TOKENS = {
     "bedrock/apac.anthropic.claude-sonnet-4-20250514-v1:0": 200000,
     'claude-3-5-sonnet': 100000,
     # -- Non-Claude models -------------------------------------------------
-    'bedrock/us.meta.llama4-scout-17b-instruct-v1:0': 128000,
-    'bedrock/us.meta.llama4-maverick-17b-instruct-v1:0': 128000,
     "bedrock_mantle/xai.grok-4.3": 1000000,  # 1M context, but may be limited by config.max_model_tokens
-    'groq/openai/gpt-oss-120b': 131072,
-    'groq/openai/gpt-oss-20b': 131072,
-    'groq/qwen/qwen3-32b': 131000,
     'dashscope/qwen3.8-max': 1000000,  # 1M, qwen3.8-max is the actual DashScope model id (context_window 1M per QwenCode metadata), but may be limited by config.max_model_tokens
     'groq/moonshotai/kimi-k2-instruct': 131072,
     'groq/deepseek-r1-distill-llama-70b': 128000,
-    'groq/meta-llama/llama-4-maverick-17b-128e-instruct': 131072,
-    'groq/meta-llama/llama-4-scout-17b-16e-instruct': 131072,
     'groq/llama-3.3-70b-versatile': 128000,
     'groq/llama-3.1-8b-instant': 128000,
     'sambanova/MiniMax-M3': 192000,
@@ -473,20 +410,10 @@ MAX_TOKENS = {
     'xai/grok-2': 131072,
     'xai/grok-2-1212': 131072,
     'xai/grok-2-latest': 131072,
-    'xai/grok-3': 131072,
-    'xai/grok-3-beta': 131072,
     'xai/grok-3-fast': 131072,
-    'xai/grok-3-fast-beta': 131072,
-    'xai/grok-3-mini': 131072,
-    'xai/grok-3-mini-beta': 131072,
-    'xai/grok-3-mini-fast': 131072,
-    'xai/grok-3-mini-fast-beta': 131072,
-    "xai/grok-4.5": 500000,  # 500K context, but may be limited by config.max_model_tokens
-    "xai/grok-4.5-latest": 500000,
-    "xai/grok-build-latest": 500000,
-    "xai/grok-4.6": 500000,  # 500K context, but may be limited by config.max_model_tokens
-    "openrouter/x-ai/grok-4.5": 500000,
-    "openrouter/x-ai/grok-4.6": 500000,
+    "xai/grok-build-latest": 500000,  # kept pinned: absent from LiteLLM's bundled cost map
+    "openrouter/x-ai/grok-4.5": 500000,  # kept pinned: absent from LiteLLM's bundled cost map
+    "openrouter/x-ai/grok-4.6": 500000,  # kept pinned: absent from LiteLLM's bundled cost map
     'ollama/llama3': 4096,
     'watsonx/meta-llama/llama-3-8b-instruct': 4096,
     "watsonx/meta-llama/llama-3-70b-instruct": 4096,
@@ -499,16 +426,11 @@ MAX_TOKENS = {
     "deepinfra/deepseek-ai/DeepSeek-R1": 128000,
     "mistral/mistral-small-latest": 8191,
     "mistral/mistral-medium-latest": 8191,
-    "mistral/mistral-large-2407": 128000,
     "mistral/mistral-large-latest": 128000,
     "mistral/open-mistral-7b": 8191,
     "mistral/open-mixtral-8x7b": 8191,
     "mistral/open-mixtral-8x22b": 8191,
     "mistral/codestral-latest": 8191,
-    "mistral/open-mistral-nemo": 128000,
-    "mistral/open-mistral-nemo-2407": 128000,
-    "mistral/open-codestral-mamba": 256000,
-    "mistral/codestral-mamba-latest": 256000,
     "codestral/codestral-latest": 8191,
     "codestral/codestral-2405": 8191,
     'xiaomi_mimo/mimo-v2.5': 1048576,  # 1M, matching the LiteLLM registry for mimo-v2.5, xiaomi_mimo/ is the native LiteLLM Xiaomi provider, but may be limited by config.max_model_tokens

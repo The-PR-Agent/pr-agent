@@ -31,6 +31,9 @@ skip_keys = []
 custom_reasoning_model = false # when true, disables system messages and temperature controls for models that don't support chat-style inputs
 response_language="en-US" # Language locales code for PR responses in ISO 3166 and ISO 639 format (e.g., "en-US", "it-IT", "zh-CN", ...)
 repo_context_files = ["AGENTS.md"] # Repository-relative files (e.g. AGENTS.md, CLAUDE.md) to include as AI prompt context; set to [] to disable
+# The repo-context cache is keyed on the revision read: the PR target commit for target-branch
+# reads, and the resolved default branch head on GitHub, so a default-branch push invalidates
+# cached content within the TTL. Providers without commit resolution key on a branch name or None.
 repo_context_from_default_branch = true # Read repo context files from the repository default branch (trusts only default-branch content). Set to false to read from the PR target branch instead.
 repo_context_max_lines = 500 # Maximum total rendered lines for repo context, including wrapper tags
 # token limits
@@ -425,11 +428,12 @@ rules = [] # e.g. [{ max_hunks = 3, model = "gpt-5.6-luna" }, { max_hunks = 15, 
 [otel]
 # Keys map to settings.get("OTEL.*") via section-key dot notation.
 is_enabled = false # disabled by default; set to true to enable telemetry
-exporter_type = "console" # "console", "otlp", or "none"
+exporter_type = "console" # "console", "otlp", "prometheus", or "none"
 service_name = "pr-agent"
 environment = "development" # "development", "staging", "production", etc.
 otlp_timeout = 3 # seconds; hard deadline per OTLP export call (incl. retries). Bounds CLI-exit/request stalls when the collector is unreachable; batches slower than this are dropped.
 otlp_protocol = "http" # "http" (default; exporter ships with pr-agent) or "grpc" (requires the otel-grpc extra: pip install pr-agent[otel-grpc])
+prometheus_multiproc_dir = "/tmp/pr-agent-prometheus" # shared dir for the prometheus exporter's per-worker state files; required when exporter_type = "prometheus" (multiprocess gunicorn deployments); created 0700 and must stay owned by the run user (symlink or foreign-owner paths are refused)
 include_pr_url = false # set to true to attach PR URLs to spans (may expose private repo names)
 include_error_details = false # set to true to attach exception messages and rejected-command text to spans (may expose PR URLs, repo names, or other request content)
 

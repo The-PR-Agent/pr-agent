@@ -336,7 +336,7 @@ Telemetry is disabled by default. To enable it, set in `configuration.toml`:
 ```toml
 [otel]
 is_enabled = true
-exporter_type = "console" # "console", "otlp", or "none"
+exporter_type = "console" # "console", "otlp", "prometheus", or "none"
 service_name = "pr-agent"
 environment = "development" # e.g. "development", "staging", "production"
 ```
@@ -362,6 +362,29 @@ otlp_protocol = "grpc" # default: "http"
 
 This is the recommended topology for fleets: point every PR-Agent instance at the same collector and aggregate there. Each process creates its own exporter connection; use the `service_name` and `environment` resource attributes to slice instances apart on the backend.
 
+### Exposing native Prometheus metrics
+
+Instead of pushing to a collector, set `exporter_type = "prometheus"` to expose a native `GET /metrics` scrape endpoint on the gunicorn-served apps (`github_app`, `gitlab_webhook`, `azuredevops_server_webhook`, `gitea_app`). The command counter is translated into the Prometheus text format, and every gunicorn worker's values are merged at scrape time, so counters stay correct across the process workers:
+
+```toml
+[otel]
+exporter_type = "prometheus"
+prometheus_multiproc_dir = "/tmp/pr-agent-prometheus" # shared, writable by every worker
+```
+
+1. The exporter is metrics-only: command spans are not exported in this mode.
+2. `/metrics` is mounted only when this exporter is selected, so nothing is exposed by default. It does not depend on an OTLP collector or endpoint.
+3. gunicorn registers and deregisters workers' state files automatically (`when_ready`/`child_exit`); a worker that dies mid-scrape leaves only a stale file, which is ignored once it is marked dead.
+4. Metric families are created from the first data point's label set. Later attributes that do not fit the family are dropped, and missing ones are back-filled with an empty string, so a scrape never breaks on drifting label cardinality.
+5. The exporter ships with PR-Agent (it depends on `prometheus-client`); no extra package is required. Scrape it like any exporter:
+
+```yaml
+scrape_configs:
+  - job_name: pr-agent
+    static_configs:
+      - targets: ["pr-agent:3000"]
+```
+
 Privacy controls (both off by default):
 
 - `include_pr_url = true` attaches PR URLs to spans. Off by default because URLs expose private repo names.
@@ -373,6 +396,7 @@ Notes:
 - PR-Agent keeps its own OpenTelemetry providers and never registers the process-global one, so embedding PR-Agent in an application that already uses OpenTelemetry will not interfere with the host's telemetry. Pending spans and metrics are flushed automatically on process exit.
 - Each OTLP export call is bounded by `otlp_timeout` (default 3 seconds, retries included), so an unreachable collector cannot hang CLI exit or request completion. Raise it for slow collectors at the cost of longer worst-case stalls.
 - If `exporter_type = "otlp"` is set but no endpoint is configured, telemetry is disabled entirely (fail closed) — it never falls back to another exporter, so a missing secret cannot redirect telemetry into process logs.
+- With `exporter_type = "prometheus"`, `prometheus_multiproc_dir` must be a shared directory writable by every worker; it defaults to `/tmp/pr-agent-prometheus`. In non-gunicorn (single-process) deployments the exporter works without it and simply serves the process's own registry.
 - **Serverless deployments** (e.g. the AWS Lambda webhooks) are supported: buffered spans and metrics are force-flushed at the end of every handled request, because frozen execution environments stop background export threads and are reaped without running exit handlers. No extra configuration is needed.
 
 ## Bringing per-repo context files to PR-Agent

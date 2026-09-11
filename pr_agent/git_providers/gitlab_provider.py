@@ -424,6 +424,9 @@ class GitLabProvider(GitProvider):
     def supports_incremental_kind(self, kind: str) -> bool:
         return kind in self._INCREMENTAL_ANCHOR_PREFIXES
 
+    def supports_issue_reference_tickets(self) -> bool:
+        return True
+
     def _get_project_path_from_pr_or_issue_url(self, pr_or_issue_url: str) -> str:
         repo_project_path = None
         if 'issues' in pr_or_issue_url:
@@ -938,25 +941,6 @@ class GitLabProvider(GitProvider):
         if own_user_id is None:
             raise RuntimeError("GitLab authenticated user cannot be verified")
         return str(author_id) == str(own_user_id)
-
-    def publish_persistent_comment(self, pr_comment: str,
-                                   initial_header: str,
-                                   update_header: bool = True,
-                                   name='review',
-                                   final_update_message=True,
-                                   as_thread: bool = False,
-                                   identity_marker: str | None = None,
-                                   legacy_initial_header: str | None = None):
-        self.publish_persistent_comment_full(
-            pr_comment,
-            initial_header,
-            update_header,
-            name,
-            final_update_message,
-            as_thread=as_thread,
-            identity_marker=identity_marker,
-            legacy_initial_header=legacy_initial_header,
-        )
 
     def publish_comment(self, mr_comment: str, is_temporary: bool = False, as_thread: bool = False):
         if is_temporary and not get_settings().config.publish_output_progress:
@@ -1480,6 +1464,19 @@ class GitLabProvider(GitProvider):
             if getattr(e, "response_code", None) == 404:
                 return ""
             raise
+
+    def get_repo_context_ref(self, from_default_branch: bool = False) -> Optional[str]:
+        # The MR target branch (the branch being merged into) is the cached revision; the
+        # project default branch is consulted when from_default_branch is requested or no MR
+        # target exists, mirroring get_repo_file_content. Both are branch names, so the project
+        # is fetched at most once per provider rather than on every repo-context read.
+        if not from_default_branch:
+            target_branch = getattr(self.mr, "target_branch", None)
+            if target_branch:
+                return target_branch
+        if not hasattr(self, "_repo_context_default_branch"):
+            self._repo_context_default_branch = self.gl.projects.get(self.id_project).default_branch
+        return self._repo_context_default_branch
 
     def get_workspace_name(self):
         return self.id_project.split('/')[0]

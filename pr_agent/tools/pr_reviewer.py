@@ -462,10 +462,6 @@ class PRReviewer:
         provider = getattr(self, "git_provider", None)
         if provider is None:
             return False
-        publisher = getattr(provider, "publish_persistent_comment", None)
-        if getattr(publisher, "__func__", None) is GitProvider.publish_persistent_comment:
-            # Skip generic publishers; they only create comments and cannot safely carry lifecycle state.
-            return False
         if (
             getattr(getattr(settings, "github", None), "publish_as_check_run", False)
             and callable(getattr(provider, "_publish_check_run", None))

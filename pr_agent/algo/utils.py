@@ -1381,7 +1381,7 @@ def _as_int(value, default: int = 0) -> int:
         return default
 
 
-def get_max_tokens(model):
+def get_max_tokens(model, ignore_max_model_tokens=False):
     """
     Get the maximum number of tokens allowed for a model.
     logic:
@@ -1393,6 +1393,8 @@ def get_max_tokens(model):
 
     For all cases, we further limit the number of tokens to 'config.max_model_tokens' if it is set.
     This aims to improve the algorithmic quality, as the AI model degrades in performance when the input is too long.
+    Pass ignore_max_model_tokens=True to keep the unreduced value, for sites that deliberately use the
+    raw model context size rather than the conservative clamp.
     """
     settings = get_settings()
     custom_max_tokens = _as_int(settings.config.custom_model_max_tokens)
@@ -1466,7 +1468,7 @@ def get_max_tokens(model):
             )
 
     max_model_tokens = _as_int(settings.config.max_model_tokens) if settings.config.max_model_tokens else 0
-    if max_model_tokens > 0:
+    if max_model_tokens > 0 and not ignore_max_model_tokens:
         max_tokens_model = min(max_model_tokens, max_tokens_model)
     return max_tokens_model
 

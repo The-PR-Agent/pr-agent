@@ -10,7 +10,7 @@ from pr_agent.algo.pr_processing import OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import get_max_tokens
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers import AzureDevopsProvider, GithubProvider, GitLabProvider
+from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.log import get_logger
 
 # Compile the regex pattern once, outside the function
@@ -462,6 +462,22 @@ def _get_repo_obj_for_ticket(git_provider, ticket_url, repo_name, repo_obj_cache
     return repo_obj
 
 
+def _provider_supports(git_provider, capability: str) -> bool:
+    """Read an opt-in ticket capability from a provider.
+
+    Objects outside the GitProvider hierarchy (test doubles, minimal adapters) may not
+    define the method at all; absence means the capability is not supported, which keeps
+    the previous behaviour for providers that matched none of the concrete classes.
+
+    A permissive double such as a bare MagicMock answers every valid capability truthily and
+    so takes the first branch. Unknown capabilities raise to expose misspelled names.
+    """
+    if not hasattr(GitProvider, capability):
+        raise AttributeError(f"unknown provider capability: {capability!r}")
+    check = getattr(git_provider, capability, None)
+    return bool(check()) if callable(check) else False
+
+
 async def extract_tickets(git_provider):
     MAX_TICKET_CHARACTERS = 10000
     try:
@@ -477,7 +493,7 @@ async def extract_tickets(git_provider):
             get_logger().warning(f"Failed to initialize Asana task fetching: {e}")
             asana_tickets_content = []
 
-        if isinstance(git_provider, GithubProvider):
+        if _provider_supports(git_provider, "supports_issue_url_tickets"):
             description_tickets = extract_ticket_links_from_pr_description(
                 user_description, git_provider.repo, git_provider.base_url_html
             )
@@ -574,7 +590,7 @@ async def extract_tickets(git_provider):
             tickets_content.extend(asana_tickets_content)
             return tickets_content
 
-        elif isinstance(git_provider, GitLabProvider):
+        elif _provider_supports(git_provider, "supports_issue_reference_tickets"):
             references = extract_gitlab_ticket_references(
                 user_description,
                 git_provider.id_project,
@@ -609,7 +625,7 @@ async def extract_tickets(git_provider):
             tickets_content.extend(asana_tickets_content)
             return tickets_content
 
-        elif isinstance(git_provider, AzureDevopsProvider):
+        elif _provider_supports(git_provider, "supports_linked_work_item_tickets"):
             tickets_info = git_provider.get_linked_work_items()
             tickets_content = []
             for ticket in tickets_info:
