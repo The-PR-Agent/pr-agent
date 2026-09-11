@@ -4,7 +4,7 @@ When PR-Agent runs behind a corporate TLS-inspecting proxy or against servers us
 
 ### Environment variables for CA trust
 
-PR-Agent reads three environment variables when building the git clone environment. They are tried in the following order, and the first one that points to an existing file wins:
+PR-Agent reads three environment variables when building the git clone environment, in the order below. The first one that is **set** wins, and if it points to a file that does not exist PR-Agent logs a warning and configures no bundle for git rather than falling through to the next variable:
 
 | Variable | Scope | Notes |
 |---|---|---|
@@ -20,16 +20,11 @@ Example (runner environment or shell profile):
 export SSL_CERT_FILE=/etc/ssl/certs/corporate-ca-bundle.crt
 ```
 
-Or in `.secrets.toml` (loaded once at startup):
-
-```toml
-[env]
-SSL_CERT_FILE = "/etc/ssl/certs/corporate-ca-bundle.crt"
-```
+These variables are read from the process environment, so they must be exported in the runner or shell profile; a `.secrets.toml` `[env]` section does **not** reach `os.environ` and cannot set them.
 
 ### LiteLLM transport fallback
 
-By default LiteLLM uses aiohttp for HTTP calls. aiohttp does not honour the standard `SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE` variables. Setting `litellm.disable_aiohttp` makes LiteLLM fall back to the `requests`-based transport, which does.
+By default LiteLLM uses aiohttp for HTTP calls, and aiohttp does not honour the standard CA environment variables. Setting `litellm.disable_aiohttp` makes LiteLLM fall back to httpx, which reads `SSL_CERT_FILE` (and `SSL_CERT_DIR`). httpx does not read `REQUESTS_CA_BUNDLE`, so the LLM call needs `SSL_CERT_FILE` specifically.
 
 ```toml
 [litellm]
@@ -46,6 +41,6 @@ The `gitlab.ssl_verify` setting (or `gitlab__SSL_VERIFY` environment variable) i
 
 For a runner behind a corporate proxy with a custom CA:
 
-1. Export `SSL_CERT_FILE` (or `REQUESTS_CA_BUNDLE` / `GIT_SSL_CAINFO`) pointing to your CA bundle.
+1. Export `SSL_CERT_FILE` pointing to your CA bundle. `REQUESTS_CA_BUNDLE` and `GIT_SSL_CAINFO` cover git clone only.
 2. Set `litellm.disable_aiohttp = true` in your configuration.
 3. If you also use the GitLab API, keep `gitlab.ssl_verify` pointed at the same bundle for the python-gitlab client.
