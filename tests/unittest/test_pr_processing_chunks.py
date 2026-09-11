@@ -170,6 +170,40 @@ def test_preserve_order_packs_priority_list_without_token_resort(monkeypatch):
             setattr(settings.config, key, value)
 
 
+def test_preserve_order_still_filters_bad_extensions(monkeypatch):
+    """Skipping the language sort must not skip its bad-extension filter: lockfiles and assets
+    stay out of the chunks exactly as they do on the sorted path."""
+    settings = get_settings()
+    original = {
+        "patch_extra_lines_before": settings.config.patch_extra_lines_before,
+        "patch_extra_lines_after": settings.config.patch_extra_lines_after,
+        "verbosity_level": settings.config.verbosity_level,
+    }
+    settings.config.patch_extra_lines_before = 0
+    settings.config.patch_extra_lines_after = 0
+    settings.config.verbosity_level = 0
+
+    lock = _file("uv.lock", "@@ -1 +1 @@\n-old\n+" + ("lock " * 20))
+    png = _file("assets/logo.png", "@@ -1 +1 @@\n-old\n+binary")
+    lib_a = _file("lib/a.dart", "@@ -1 +1 @@\n-old\n+" + ("alpha " * 20))
+    provider = FakeProvider([lock, png, lib_a])
+    token_handler = FakeTokenHandler(prompt_tokens=100)
+    monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: 100000)
+
+    try:
+        plans, remaining_files = pr_processing.get_pr_multi_diffs_with_files(
+            provider, token_handler, "tiny-model", max_calls=3, add_line_numbers=False,
+            diff_files=[lock, png, lib_a], preserve_order=True,
+        )
+        packed = [name for plan in plans for name in plan.files]
+        assert packed == ["lib/a.dart"]
+        assert "uv.lock" not in packed + remaining_files
+        assert "assets/logo.png" not in packed + remaining_files
+    finally:
+        for key, value in original.items():
+            setattr(settings.config, key, value)
+
+
 def test_preserve_order_false_still_sorts_by_tokens_descending(monkeypatch):
     """Default packing is unchanged: largest patch first regardless of input order."""
     settings = get_settings()

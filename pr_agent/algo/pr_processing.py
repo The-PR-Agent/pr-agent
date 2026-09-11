@@ -9,7 +9,7 @@ from pr_agent.algo.git_patch_processing import (
     extend_patch,
     handle_patch_deletions,
 )
-from pr_agent.algo.language_handler import sort_files_by_main_languages
+from pr_agent.algo.language_handler import filter_bad_extensions, sort_files_by_main_languages
 from pr_agent.algo.model_routing import route_primary_model
 from pr_agent.algo.run_details import record_model_used
 from pr_agent.algo.token_handler import TokenHandler
@@ -440,7 +440,8 @@ def get_pr_multi_diffs_with_files(git_provider: GitProvider,
 
     if preserve_order:
         # Single group so the early full-diff fit check still runs; packing uses `diff_files` as-is.
-        pr_languages = [{"language": "Other", "files": list(diff_files)}]
+        # The language sort is skipped, so apply the bad-extension filter it would have applied.
+        pr_languages = [{"language": "Other", "files": filter_bad_extensions(list(diff_files))}]
     else:
         # Sort files by main language
         pr_languages = sort_files_by_main_languages(git_provider.get_languages(), diff_files)
