@@ -27,8 +27,9 @@ async def _form_values(request: Request) -> dict[str, str]:
     dependencies.
     """
     body = await request.body()
-    # errors="replace": a non-UTF-8 body is malformed input, and it must surface as the
-    # page's own validation error rather than a 500 from UnicodeDecodeError.
+    # errors="replace" so a non-UTF-8 body cannot 500 on UnicodeDecodeError. Replacement
+    # characters do not satisfy SLUG_PATTERN, so a mangled slug is still rejected by
+    # validation rather than mangled through; a bad byte in a field nobody reads is inert.
     parsed = parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=True)
     return {key: values[0] for key, values in parsed.items()}
 
