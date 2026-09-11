@@ -1,6 +1,6 @@
 ## Overview
 
-> **Note**: `/similar_issue` is an **experimental** feature. It works only on GitHub, carries a disproportionately large share of the project's dependency and configuration surface for a single-provider tool, and is therefore excluded from the v1 stability guarantees. Its backends are not equally exercised: the pinecone flow is the least-tested, followed by lancedb, with qdrant receiving the most coverage.
+> **Note**: `/similar_issue` is an **experimental** feature. It works only on GitHub, carries a disproportionately large share of the project's dependency and configuration surface for a single-provider tool, and is therefore excluded from the v1 stability guarantees. Its backends are not equally exercised: the lancedb flow has no tests of its own, and no backend is tested against its real driver.
 
 The similar issue tool retrieves the most similar issues to the current issue.
 It can be invoked manually by commenting on any PR:
@@ -52,10 +52,11 @@ gcp-starter pod tier is no longer supported.
 created. An existing index is opened by name and is never recreated, so moving an
 existing deployment to the new configuration does not lose the stored vectors.
 
-!!! note "Pinecone is the least-tested backend"
+!!! note "Backend coverage is uneven"
 
-    The pinecone indexing path depends on the forked `pinecone-datasets` dependency and has no
-    regression tests that run in CI. Expect it to be more brittle than the qdrant or lancedb flows.
+    No backend is exercised against its real driver: the `similar-issue` dependency group is
+    not installed in CI, so the pinecone tests run against a faked module and the qdrant tests
+    never construct a client. The lancedb flow has no tests of its own at all.
 
 !!! note "Default vector database"
 
