@@ -147,7 +147,7 @@ async def test_question_uses_configured_handler_error_path_without_openai_key(
     await tool.run()
 
     assert [call["model"] for call in handler.calls] == ["anthropic/claude-3-5-sonnet-20240620"]
-    assert all("requires an OpenAI API key" not in comment for comment in tool.git_provider.published)
+    assert tool.git_provider.published == []
 
 
 @pytest.mark.parametrize(
