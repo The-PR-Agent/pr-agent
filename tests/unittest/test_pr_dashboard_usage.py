@@ -244,3 +244,44 @@ class TestUsagePage:
         assert table_exists == 1
         surviving = probe.execute("SELECT count(*) AS n FROM runs").fetchone()["n"]
         assert surviving == 4
+
+
+class TestCorruptCost:
+    def test_corrupt_stored_cost_is_unpriced_not_zero(self, tmp_path):
+        """A non-NULL unparseable total_cost_usd reads as unpriced, never as a known $0"""
+        connection = store.connect(tmp_path / "corrupt.db")
+        connection.execute(
+            "INSERT INTO runs (started_at, status, provider, repo_slug, pr_number, command, model_used, "
+            "fallback_used, total_tokens, total_cost_usd, cost_status) "
+            "VALUES ('2026-09-10T09:00:00+00:00', 'ok', 'github', 'o/bad', 1, 'review', 'flash', "
+            "0, 100, 'bad', 'complete')"
+        )
+        result = usage.totals(connection)
+        assert result["runs"] == 1
+        assert result["unpriced_runs"] == 1
+        assert result["cost"] == Decimal("0")
+        rows = usage.by_dimension(connection, "repo")
+        assert rows[0]["cost"] is None
+        series = usage.daily_tokens(connection, days=3650)
+        assert series[0]["cost"] is None
+
+    def test_corrupt_cost_on_usage_page_is_not_reported(self, tmp_path):
+        """The usage page shows not reported when the only stored cost is corrupt TEXT"""
+        from fastapi.testclient import TestClient
+
+        from pr_dashboard import app as app_module
+
+        db_path = tmp_path / "usage.db"
+        connection = store.connect(db_path)
+        connection.execute(
+            "INSERT INTO runs (started_at, status, provider, repo_slug, pr_number, command, model_used, "
+            "fallback_used, total_tokens, total_cost_usd, cost_status) "
+            "VALUES ('2026-09-10T09:00:00+00:00', 'ok', 'github', 'o/bad', 1, 'review', 'flash', "
+            "0, 100, 'bad', 'complete')"
+        )
+        application = app_module.create_app(
+            registry_path=tmp_path / "pr_dashboard.toml", db_path=db_path)
+        response = TestClient(application).get("/usage")
+        assert response.status_code == 200
+        assert "cost not reported" in response.text.lower()
+        assert "cost 0 usd" not in response.text.lower()

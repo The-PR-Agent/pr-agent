@@ -107,11 +107,12 @@ def create_app(*, registry_path: Optional[Path] = None, db_path: Optional[Path] 
             "WHERE provider = ? AND lower(repo_slug) = lower(?) AND started_at >= ? AND total_cost_usd IS NOT NULL",
             (repo.provider, repo.slug, since),
         ).fetchall()
-        # Guarded the same way usage._decimal is: one corrupt cost row must not 500 the page.
-        total_cost = (
-            sum((usage_module._decimal(r["total_cost_usd"]) for r in costs), Decimal("0"))
-            if costs else None
-        )
+        # Corrupt TEXT is unpriced (None), never a known free zero — same rule as usage._decimal.
+        parsed_costs = [
+            amount for amount in (usage_module._decimal(r["total_cost_usd"]) for r in costs)
+            if amount is not None
+        ]
+        total_cost = sum(parsed_costs, Decimal("0")) if parsed_costs else None
         reviewed_row = conn.execute(
             "SELECT count(DISTINCT pr_number) AS reviewed FROM runs "
             "WHERE provider = ? AND lower(repo_slug) = lower(?) AND started_at >= ? AND pr_number IS NOT NULL",

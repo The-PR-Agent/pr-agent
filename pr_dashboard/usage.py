@@ -19,18 +19,14 @@ DIMENSIONS = {
 }
 
 
-def _decimal(raw) -> Decimal:
-    # Both fallbacks are defence against a corrupt database, not a normal path: store.py
-    # writes either str(Decimal) or NULL, and every caller here already filters NULLs out
-    # or skips empty group_concat entries. They return 0 so one bad row cannot take the
-    # whole usage page down; the cost is that such a row reads as free rather than as
-    # unknown, so if malformed costs ever become reachable this needs a third state.
+def _decimal(raw) -> Optional[Decimal]:
+    """Parse a stored cost. None/invalid means unpriced — never a known free zero."""
     if raw is None:
-        return Decimal("0")
+        return None
     try:
         return Decimal(raw)
     except InvalidOperation:
-        return Decimal("0")
+        return None
 
 
 def _since_clause(since: Optional[str]) -> tuple[str, tuple]:
@@ -57,13 +53,21 @@ def totals(conn: sqlite3.Connection, since: Optional[str] = None) -> dict:
         f"SELECT total_cost_usd FROM runs{cost_clause} total_cost_usd IS NOT NULL",
         params,
     ).fetchall()
+    parsed = []
+    corrupt = 0
+    for cost_row in costs:
+        amount = _decimal(cost_row["total_cost_usd"])
+        if amount is None:
+            corrupt += 1
+        else:
+            parsed.append(amount)
     return {
         "runs": row["runs"] or 0,
         "ok": row["ok"] or 0,
         "failed": row["failed"] or 0,
         "tokens": row["tokens"] or 0,
-        "cost": sum((_decimal(r["total_cost_usd"]) for r in costs), Decimal("0")),
-        "unpriced_runs": row["unpriced_runs"] or 0,
+        "cost": sum(parsed, Decimal("0")),
+        "unpriced_runs": (row["unpriced_runs"] or 0) + corrupt,
         "fallback_runs": row["fallback_runs"] or 0,
     }
 
@@ -90,14 +94,11 @@ def by_dimension(conn: sqlite3.Connection, dimension: str, since: Optional[str] 
     for row in rows:
         if row["label"] is None:
             continue
-        # A group with zero priced rows (every run local/unavailable/failed before pricing)
-        # must read as "not reported", not as a real, known cost of 0 -- otherwise an entirely
-        # unpriced group (e.g. a local model) reads as free.
-        if not row["priced_runs"]:
-            cost = None
-        else:
-            raw_costs = (row["costs"] or "").split(",") if row["costs"] else []
-            cost = sum((_decimal(value) for value in raw_costs if value), Decimal("0"))
+        # Only costs that actually parse count as priced. NULL and corrupt TEXT both mean
+        # unpriced; a group of only-unparseable values must read as "not reported", never $0.
+        raw_costs = (row["costs"] or "").split(",") if row["costs"] else []
+        parsed = [amount for amount in (_decimal(value) for value in raw_costs if value) if amount is not None]
+        cost = sum(parsed, Decimal("0")) if parsed else None
         result.append({
             "label": row["label"],
             "runs": row["runs"],
@@ -119,11 +120,9 @@ def daily_tokens(conn: sqlite3.Connection, days: int = 30) -> list[dict]:
     ).fetchall()
     result = []
     for row in rows:
-        # Same exposure as by_dimension: a day with no priced runs must read as unreported.
-        if not row["priced_runs"]:
-            cost = None
-        else:
-            cost = sum(
-                (_decimal(value) for value in (row["costs"] or "").split(",") if value), Decimal("0"))
+        # Same rule as by_dimension: only parseable costs count; corrupt TEXT is unpriced.
+        raw_costs = (row["costs"] or "").split(",") if row["costs"] else []
+        parsed = [amount for amount in (_decimal(value) for value in raw_costs if value) if amount is not None]
+        cost = sum(parsed, Decimal("0")) if parsed else None
         result.append({"day": row["day"], "tokens": row["tokens"] or 0, "cost": cost})
     return result
