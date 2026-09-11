@@ -27,7 +27,7 @@ python -m pr_agent.cli --diff-file changes.diff --output review.md review
 | `--stdin` | Read a unified diff from stdin |
 | `--diff-file <path>` | Read a unified diff from a file |
 | `--output <path>` | Write Markdown produced by a compatible Plain Diff command to a file in addition to stdout |
-| `--json-output <path>` | Write the parsed review and token usage to a JSON file (`review` only) |
+| `--json-output <path>` | Write the parsed review and token usage to a JSON file (`review` or `review_pr` only) |
 
 `--stdin` and `--diff-file` are mutually exclusive. At least one must be provided to
 enter plain-diff mode; omitting both falls back to the normal `--pr_url` flow.
@@ -63,9 +63,10 @@ the input is a standalone diff.
    for that file. The review still runs; it simply has less context.
 
 4. **Output** — the result is written to stdout. If `--output <path>` is given, it is
-   also written to that file (UTF-8, overwritten on each run). For `review`, if
-   `--json-output <path>` is given, the parsed review plus a `usage` object with the
-   run's accumulated token counts is also written to that file as JSON.
+   also written to that file (UTF-8, overwritten on each run). For `review` or
+   `review_pr`, if `--json-output <path>` is given, the parsed review plus a
+   `usage` object with the run's accumulated token counts is also written to that
+   file as JSON.
 
 No platform token, no PR URL, and no internet access are required for the diff processing
 step itself. An LLM API key is still needed unless you configure a local model.
