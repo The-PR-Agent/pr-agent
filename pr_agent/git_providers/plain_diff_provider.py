@@ -89,6 +89,23 @@ class PlainDiffGitProvider(GitProvider):
         self.diff_files = files
         return files
 
+    def get_pr_file_content(self, file_path: str, branch: str = "") -> str:
+        """Head-side content of one PR file, for premise verification.
+
+        Prefer the working-tree file when enrichment found one; otherwise rebuild the head side
+        from the patch (added and context lines), which is the complete file for added files.
+        """
+        for diff_file in self.get_diff_files():
+            if diff_file.filename != file_path:
+                continue
+            if diff_file.head_file:
+                return diff_file.head_file
+            return head_side_from_patch(diff_file.patch or "")
+        return ""
+
+    def get_repo_file_content(self, file_path: str, branch: str = "") -> str:
+        return self.get_pr_file_content(file_path, branch)
+
     def get_files(self) -> List[str]:
         return [f.filename for f in self.get_diff_files()]
 
@@ -238,3 +255,16 @@ class PlainDiffGitProvider(GitProvider):
 
     def get_pr_labels(self, update=False):
         return []
+
+
+def head_side_from_patch(patch: str) -> str:
+    """Return the post-change text a hunk-only patch describes: '+' and ' ' lines, minus their prefix."""
+    lines = []
+    for line in patch.splitlines():
+        if line.startswith("@@") or line.startswith("-") or line.startswith("\\"):
+            continue
+        if line.startswith("+") or line.startswith(" "):
+            lines.append(line[1:])
+        elif line == "":
+            lines.append("")
+    return "\n".join(lines)

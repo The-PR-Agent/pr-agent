@@ -319,3 +319,18 @@ def test_get_issue_comments_returns_empty(cfg):
     cfg("plain_diff.output_path", None)
     provider = PlainDiffGitProvider(None)
     assert list(provider.get_issue_comments()) == []
+
+
+def test_get_pr_file_content_rebuilds_added_file_from_patch():
+    from pr_agent.git_providers.plain_diff_provider import head_side_from_patch
+
+    patch = "@@ -0,0 +1,3 @@\n+void main() {\n+  print('x');\n+}\n"
+    assert head_side_from_patch(patch) == "void main() {\n  print('x');\n}"
+
+
+def test_get_pr_file_content_drops_removed_lines_and_keeps_context():
+    from pr_agent.git_providers.plain_diff_provider import head_side_from_patch
+
+    patch = "@@ -1,3 +1,3 @@\n a\n-old\n+new\n c\n"
+    assert head_side_from_patch(patch) == "a\nnew\nc"
+
