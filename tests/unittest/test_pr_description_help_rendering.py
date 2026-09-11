@@ -77,7 +77,7 @@ async def render_description_help(provider, monkeypatch) -> str:
     description.data = None
     description.file_label_dict = None
     description._prepare_data = MagicMock()
-    description._prepare_pr_answer = MagicMock(return_value=("AI title", "Description", "", []))
+    description._prepare_pr_answer = MagicMock(return_value=("AI title", "Description", ""))
 
     monkeypatch.setattr(pr_description_module, "extract_and_cache_pr_tickets", AsyncMock())
     monkeypatch.setattr(pr_description_module, "retry_with_fallback_models", AsyncMock())

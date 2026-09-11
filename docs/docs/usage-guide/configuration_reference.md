@@ -204,7 +204,6 @@ to-do list.
 | `collapsible_file_list` | "adaptive" | true, false, 'adaptive' |
 | `collapsible_file_list_threshold` | 6 |  |
 | `file_table_collapsible_open_by_default` | false |  |
-| `inline_file_summary` | false | false, true, 'table' |
 **markers**
 
 | Key | Default | Description |
