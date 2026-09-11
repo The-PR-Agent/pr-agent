@@ -7,6 +7,11 @@ used through variable indirection (e.g. a settings section assigned to a local
 variable and then indexed) are recorded in the allowlist with a note pointing
 at the reading site.
 
+A whole-section read (settings.get("SECTION", ...)) does not count as reading
+its keys: each key must be matched through an attribute chain, a quoted
+dotted path, or a section-level .get("KEY") / getattr() call, or it must be
+allowlisted.
+
 Adding a key without a reader - or leaving a config-only key in the TOML -
 fails this test, so the "dead key ledger" cannot silently regrow.
 """
@@ -22,6 +27,55 @@ PR_AGENT_SOURCE = ROOT / "pr_agent"
 # Keys read through a settings section stored in a local variable, so the
 # static dotted-path scan cannot see them. Each entry documents the reader.
 _ALLOWLIST = {
+    # [artifacts] read as artifacts_settings = get_settings().get("ARTIFACTS", {})
+    (
+        "artifacts",
+        "max_artifact_size",
+    ): "artifacts_settings.get('max_artifact_size', 50000) in pr_agent/algo/artifacts.py",
+    (
+        "artifacts",
+        "artifact_label",
+    ): "artifacts_settings.get('artifact_label', '') in pr_agent/algo/artifacts.py",
+    # [config] helpers that re-index the section from a variable or expression
+    (
+        "config",
+        "reaction_on_failure",
+    ): "get_reaction_setting('reaction_on_success' if succeeded else 'reaction_on_failure') "
+    "reads get_settings().config.get(name) in pr_agent/git_providers/git_provider.py",
+    (
+        "config",
+        "output_relevant_configurations",
+    ): "get_settings().get('config', {}).get('output_relevant_configurations', False) in "
+    "pr_agent/tools/pr_description.py",
+    (
+        "config",
+        "enable_claude_adaptive_thinking",
+    ): "settings.config.get(key, default) in the thinking-controls loop in "
+    "pr_agent/algo/ai_handlers/litellm_ai_handler.py",
+    (
+        "config",
+        "enable_claude_extended_thinking",
+    ): "settings.config.get(key, default) in the thinking-controls loop in "
+    "pr_agent/algo/ai_handlers/litellm_ai_handler.py",
+    (
+        "config",
+        "extended_thinking_budget_tokens",
+    ): "settings.config.get(key, default) in the thinking-controls loop in "
+    "pr_agent/algo/ai_handlers/litellm_ai_handler.py",
+    (
+        "config",
+        "extended_thinking_max_output_tokens",
+    ): "settings.config.get(key, default) in the thinking-controls loop in "
+    "pr_agent/algo/ai_handlers/litellm_ai_handler.py",
+    # [gerrit] read as gerrit_settings = get_settings().get("gerrit", {})
+    (
+        "gerrit",
+        "webhook_username",
+    ): "gerrit_settings.get('webhook_username', None) in pr_agent/servers/gerrit_server.py",
+    (
+        "gerrit",
+        "webhook_password",
+    ): "gerrit_settings.get('webhook_password', None) in pr_agent/servers/gerrit_server.py",
     (
         "github",
         "api_retries",
@@ -35,6 +89,31 @@ _ALLOWLIST = {
         "github",
         "seconds_between_writes",
     ): "github_config.get('seconds_between_writes') in pr_agent/git_providers/github_provider.py",
+    # [openrouter] read as openrouter_settings = settings.get("openrouter", {}) or {}
+    (
+        "openrouter",
+        "provider_only",
+    ): "openrouter_settings.get('provider_only', []) in pr_agent/algo/ai_handlers/litellm_ai_handler.py",
+    (
+        "openrouter",
+        "provider_order",
+    ): "openrouter_settings.get('provider_order', []) in pr_agent/algo/ai_handlers/litellm_ai_handler.py",
+    (
+        "openrouter",
+        "allow_fallbacks",
+    ): "openrouter_settings.get('allow_fallbacks', True) in pr_agent/algo/ai_handlers/litellm_ai_handler.py",
+    (
+        "openrouter",
+        "reasoning_effort",
+    ): "openrouter_settings.get('reasoning_effort', '') in pr_agent/algo/ai_handlers/litellm_ai_handler.py",
+    (
+        "openrouter",
+        "reasoning_max_tokens",
+    ): "openrouter_settings.get('reasoning_max_tokens', 0) in pr_agent/algo/ai_handlers/litellm_ai_handler.py",
+    (
+        "openrouter",
+        "max_tokens",
+    ): "openrouter_settings.get('max_tokens', 0) in pr_agent/algo/ai_handlers/litellm_ai_handler.py",
     (
         "pr_description",
         "pr_diagram_direction",
@@ -44,13 +123,34 @@ _ALLOWLIST = {
         "pr_description",
         "pr_diagram_direction_threshold",
     ): "description_settings.pr_diagram_direction_threshold in pr_agent/tools/pr_description.py",
+    # [push_outputs] read as cfg = get_settings().get('push_outputs', {}) or {}
+    (
+        "push_outputs",
+        "enable",
+    ): "cfg.get('enable', False) in pr_agent/algo/utils.py",
+    (
+        "push_outputs",
+        "channels",
+    ): "cfg.get('channels', []) in pr_agent/algo/utils.py",
+    (
+        "push_outputs",
+        "file_path",
+    ): "cfg.get('file_path', 'pr-agent-outputs/reviews.jsonl') in pr_agent/algo/utils.py",
+    (
+        "push_outputs",
+        "webhook_url",
+    ): "_push_outputs_sink_url(cfg, 'webhook_url') in pr_agent/algo/utils.py",
+    (
+        "push_outputs",
+        "slack_webhook_url",
+    ): "_push_outputs_sink_url(cfg, 'slack_webhook_url') in pr_agent/algo/utils.py",
 }
 
 
 def _read_sources() -> str:
     return "\n".join(
         p.read_text(encoding="utf-8") for p in sorted(PR_AGENT_SOURCE.rglob("*.py"))
-    )
+    ).lower()
 
 
 def _key_is_read(section: str, key: str, sources: str) -> bool:
@@ -63,7 +163,6 @@ def _key_is_read(section: str, key: str, sources: str) -> bool:
     if re.search(
         settings_prefix + r"\s*\.\s*" + section_name + r"\s*\.\s*" + key_name + r"\b",
         sources,
-        re.IGNORECASE,
     ):
         return True
     # 2. quoted dotted paths: "SECTION.KEY" or "section.key"
@@ -75,7 +174,6 @@ def _key_is_read(section: str, key: str, sources: str) -> bool:
         settings_prefix + r"\s*\.\s*" + section_name + r"\s*\.\s*get\s*\(\s*['\"]"
         + key_name + r"['\"]",
         sources,
-        re.IGNORECASE,
     ):
         return True
     # 4. getattr(settings.<section>, "KEY", ...)
@@ -83,18 +181,9 @@ def _key_is_read(section: str, key: str, sources: str) -> bool:
         r"getattr\s*\(\s*" + settings_prefix + r"\s*\.\s*" + section_name
         + r"\s*,\s*['\"]" + key_name + r"['\"]",
         sources,
-        re.IGNORECASE,
     ):
         return True
-    # 5. whole-section retrieval: settings.get("SECTION", ...) - every key in
-    # the section is consumed through the returned dict.
-    if re.search(
-        settings_prefix + r"\s*\.\s*get\s*\(\s*['\"]" + re.escape(section) + r"['\"]",
-        sources,
-        re.IGNORECASE,
-    ):
-        return True
-    # 6. helper indirection for the [config] section: _read_bool_setting("key")
+    # 5. helper indirection for the [config] section: _read_bool_setting("key")
     #    and get_reaction_setting("key") both read get_settings().config.get(key).
     if section == "config":
         for helper in ("_read_bool_setting", "get_reaction_setting"):
