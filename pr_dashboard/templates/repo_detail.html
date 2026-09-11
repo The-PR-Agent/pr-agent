@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}{{ repo.slug }}{% endblock %}
+{% block content %}
+<h1>{{ repo.slug }} <span class="muted">{{ repo.provider }}</span></h1>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+{% if stale %}<div class="stale">Showing cached data; the provider was unreachable.</div>{% endif %}
+<table>
+  <thead><tr><th>#</th><th>Title</th><th>Author</th><th>State</th><th>Updated</th></tr></thead>
+  <tbody>
+  {% for pull in pulls %}
+    <tr>
+      <td><a href="/pr/{{ repo.provider }}/{{ repo.slug }}/{{ pull.number }}">{{ pull.number }}</a></td>
+      <td>{{ pull.title }}</td>
+      <td>{{ pull.author }}</td>
+      <td>{{ pull.state }}</td>
+      <td>{{ pull.updated_at }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

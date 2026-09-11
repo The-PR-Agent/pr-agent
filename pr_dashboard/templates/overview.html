@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Overview{% endblock %}
+{% block content %}
+<h1>Overview</h1>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+{% if stale %}<div class="stale">Showing cached data; the provider was unreachable.</div>{% endif %}
+{% if not cards %}<p class="muted">No repositories yet. <a href="/repos">Add one</a>.</p>{% endif %}
+<table>
+  <thead><tr><th>Repository</th><th>Open PRs</th><th>Reviewed</th><th>Last run</th>
+    <th>Tokens (7d)</th><th>Cost (7d)</th></tr></thead>
+  <tbody>
+  {% for card in cards %}
+    <tr>
+      <td><a href="/repos/{{ card.repo.provider }}/{{ card.repo.slug }}">{{ card.repo.slug }}</a></td>
+      <td>{{ card.open_prs if card.open_prs is not none else "—" }}</td>
+      <td>{{ card.reviewed_prs if card.reviewed_prs is not none else "—" }}</td>
+      <td>{{ card.last_run or "—" }}</td>
+      <td>{{ card.tokens_7d or "—" }}</td>
+      <td>{{ card.cost_7d if card.cost_7d is not none else "not reported" }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

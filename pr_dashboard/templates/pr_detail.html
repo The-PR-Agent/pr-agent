@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}{{ repo.slug }} #{{ number }}{% endblock %}
+{% block content %}
+<h1>{{ repo.slug }} #{{ number }}</h1>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+{% if stale %}<div class="stale">Showing cached data; the provider was unreachable.</div>{% endif %}
+
+<h2>Findings</h2>
+{% if not findings %}<p class="muted">No findings parsed from PR-Agent's comments.</p>{% endif %}
+<table>
+  <thead><tr><th>Finding</th><th>File</th><th>Lines</th></tr></thead>
+  <tbody>
+  {% for finding in findings %}
+    <tr>
+      <td>{{ finding.title }}</td>
+      <td>{{ finding.relevant_file or "—" }}</td>
+      <td>{% if finding.line_range %}{{ finding.line_range[0] }}–{{ finding.line_range[1] }}{% else %}—{% endif %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<h2>Runs</h2>
+{% if not runs %}<p class="muted">No recorded runs. Set pr_dashboard.record_runs = true to collect usage.</p>{% endif %}
+<table>
+  <thead><tr><th>Started</th><th>Command</th><th>Status</th><th>Model</th><th>Tokens</th><th>Cost</th></tr></thead>
+  <tbody>
+  {% for run in runs %}
+    <tr>
+      <td>{{ run["started_at"] }}</td>
+      <td>{{ run["command"] }}</td>
+      <td>{{ run["status"] }}</td>
+      <td>{{ run["model_used"] or "—" }}</td>
+      <td>{{ run["total_tokens"] if run["total_tokens"] is not none else "not reported" }}</td>
+      <td>{{ run["total_cost_usd"] or "not reported" }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<h2>Comments</h2>
+{% for comment in review_comments %}
+  <details>
+    <summary>{{ comment.kind.value }} — {{ comment.created_at }}</summary>
+    <pre>{{ comment.body }}</pre>
+  </details>
+{% endfor %}
+{% endblock %}
