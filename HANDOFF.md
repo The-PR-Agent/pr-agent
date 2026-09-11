@@ -6,7 +6,7 @@ Written 2026-09-11 by the session that executed the P0 plan. Read this first, th
 
 | What | Where |
 |---|---|
-| Worktree with ALL the work | `/Users/samer/dev/pr-agent-p0`, branch `fix/review-p0`, HEAD `bbb14015`, 29 commits on top of `208aec46` (= `fix/review-finding-loss`) |
+| Worktree with ALL the work | `/Users/samer/dev/pr-agent-p0`, branch `fix/review-p0`, HEAD `49857ec2`, 31 commits on top of `208aec46` (= `fix/review-finding-loss`) |
 | Main checkout | `/Users/samer/dev/pr-agent` — used by another session for `feature/pr-dashboard`. Do not switch its branch. |
 | Spec (binding) | `docs/superpowers/specs/2026-09-10-review-quality-requirements.md` — weaknesses W1–W12, requirements R-1…R-25, P0 = R-1…R-9 |
 | Plan (executed) | `docs/superpowers/plans/2026-09-10-p0-measure-and-fix-review-loop.md` |
@@ -46,13 +46,24 @@ Model `gemini/gemini-3.5-flash`, shared budget `enable_large_pr_chunking=true ma
 
 Caveats that the next session must not paper over: verification was never exercised live (Google quota exhausted mid-run); the two rows differ in chunk packing so the recall delta is noise until repeated; stock defaults (32k clamp, chunking off) reviewed 5/294 files and scored 0 — that is the real out-of-box experience today.
 
+## Session 2 (2026-09-11 16:15-16:40) — what changed
+
+Tests: 4689 pass, ruff clean; the one failure is still the worktree-only `test_eval_harness.py::test_a_reverted_fix_run_from_inside_the_checkout_is_refused`.
+
+- **Item 4 done** (`00fcd5f1`): ledger rows get a run id even without a commit URL — `config.run_ledger_run_id`, else a per-reviewer `local-<hex>`; `run_eval.py` fills `eval:<labels-stem>:<utc-timestamp>` on its own. Verified live: the one call that got through wrote `run_id=baseline:rep1:default`.
+- **Items 2 and 3 done** (`49857ec2`), as the user's call, with spec amendments R-9a/R-9b: `config.max_model_tokens` 32000→200000, `pr_reviewer.enable_large_pr_chunking` false→true, and a new `pr_reviewer.low_priority_max_tokens_per_file` (3000) that summarizes an oversized low-priority file regardless of budget on **both** the single-call and chunked paths (`get_pr_diff` now takes `diff_files`). Docs and the chunking-default tests were updated with them.
+- **Item 1 still blocked, and now with the exact reason.** Four rows (rep1/rep2 × default/p0) ran at 16:25 and died on `429 RESOURCE_EXHAUSTED — generate_content_free_tier_requests, limit: 20` after a single model call. They are quarantined with the error text and a README in `.delegate/runs/task-10/failed-quota/` — **they are not data**. `run_baseline_rep.sh <model> <rep>` (new, next to `run_baseline.sh`) runs one repetition to `baseline_<rep>_{default,p0}.json` and now tees a full `row_<rep>_*.log`; the old runner's `| tail -15` is what hid the 429s for four rows.
+- **BASELINE.md** carries all of this: the two existing rows are stale as a description of stock behavior, and neither new change has a row.
+
+Repeating the baseline needs a paid Google key or another provider — nothing else blocks it.
+
 ## Open items, in priority order
 
-1. **Re-run the baseline when quota resets** (or with another key/model): `.delegate/runs/task-10/run_baseline.sh <model>` runs both rows and writes `baseline_default.json` / `baseline_p0.json` + ledgers into `.delegate/runs/task-10/`. Run each row twice; R-1 wants ±1 finding agreement. Then update BASELINE.md. Adjudicate the 4 "unknown" findings from the saved raw review (they may be new TPs → add labels).
-2. **Stock defaults starve large PRs.** Decide whether `enable_large_pr_chunking` and a higher `max_model_tokens` should default on for models with big contexts; that's a product decision, spec-worthy (would change every user's call count).
-3. **R-9 target not met**: design/** still 44–53% of tokens because the budget never bound. Options: summarize low-priority files when they exceed N tokens regardless of budget, or make `[ignore]` acceptance one click. Needs a spec line.
-4. **Ledger `run_id` empty under the eval harness** (no PR URL). Small fix in `run_eval.py`/`_review_run_id`.
-5. **Merge**: branch `fix/review-p0` → `fix/review-finding-loss` or `main` — user decision. Two docs commits (spec+plan) are on the branch too.
+1. **Re-run the baseline with a key that has quota** (free tier is spent; see Session 2) (or with another key/model): `.delegate/runs/task-10/run_baseline.sh <model>` runs both rows and writes `baseline_default.json` / `baseline_p0.json` + ledgers into `.delegate/runs/task-10/`. Run each row twice; R-1 wants ±1 finding agreement. Then update BASELINE.md. The 4 "unknown" findings from the first baseline **cannot** be adjudicated offline: those runs predate `--keep-reviews` on the labels path, so `baseline_*.json` holds only the count. Re-run with `--keep-reviews` (both runners pass it) and adjudicate from `review` in the `--out` JSON before scoring, so labels are not added after the run they are scored against.
+2. ~~**Stock defaults starve large PRs.**~~ **Done** (`49857ec2`) — needs a BASELINE row on the new defaults.
+3. ~~**R-9 target not met**~~ **Partly done** (`49857ec2`, the per-file cap) — the < 5% design/** target is still unmeasured.
+4. ~~**Ledger `run_id` empty under the eval harness**~~ **Done** (`00fcd5f1`).
+5. **Merge**: held until the baseline is verified (user's call, 2026-09-11). Then `fix/review-p0` → `fix/review-finding-loss` or `main`. Two docs commits (spec+plan) are on the branch too.
 6. **Next tiers** per spec: P1 `/setup` repo profile (R-10…R-15), P2 symbol retrieval (R-16…R-18), P3 lenses/PR-level assessment (R-19…R-22), P4 self-tune (R-23/24), P5 sandbox (R-25). Each needs its own plan, and a BASELINE.md row before merge.
 
 ## How the work was run (repeat this)
