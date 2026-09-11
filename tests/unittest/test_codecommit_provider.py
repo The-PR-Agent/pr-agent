@@ -285,6 +285,38 @@ class TestCodeCommitProvider:
         assert prepared.endswith("...")
         assert "\n\n" in prepared
 
+    def test_prepare_comment_body_keeps_review_state_marker_parseable(self):
+        # The reviewer budgets the hidden state marker before the newline
+        # doubling; once doubled, the body can exceed the cap. Only the human
+        # text may be truncated, or the next run cannot read the state.
+        from pr_agent.algo.review_finding_state import append_review_state, parse_review_state
+
+        provider = self._make_persistent_provider()
+        state = {
+            "schema_version": 1,
+            "last_run": {"commit": "abc123"},
+            "findings": [
+                {"finding_id": f"f{i}", "state": "ACTIVE", "path": "a.py", "body": "x" * 40}
+                for i in range(20)
+            ],
+        }
+        review = "\n".join(["r" * 24] * 400)
+        body = append_review_state(review, state, max_chars=10240 - 3)
+        assert len(body) <= 10240 - 3
+
+        prepared = provider._prepare_comment_body(body)
+
+        assert len(prepared) <= 10240
+        parsed = parse_review_state(prepared)
+        assert parsed.valid
+        assert [f["finding_id"] for f in parsed.state["findings"]] == [f"f{i}" for i in range(20)]
+        assert prepared.rstrip().endswith("-->")
+        assert "..." in prepared
+
+    def test_class_docstring_survives_the_comment_limit_attribute(self):
+        assert CodeCommitProvider.__doc__ is not None
+        assert "CodeCommit" in CodeCommitProvider.__doc__
+
     def test_prepare_comment_body_leaves_short_comment_alone(self):
         provider = self._make_persistent_provider()
 
