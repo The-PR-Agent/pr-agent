@@ -192,6 +192,11 @@ max_number_of_calls=3 # maximum number of chunk review calls, used only when ena
 # and only then mark its files as not reviewed.
 chunk_split_on_failure = true
 chunk_fallback_model_on_failure = true
+# Verify each finding's premise against the full content of its file and any PR file it references,
+# using a cheap model; refuted findings are dropped (logged with evidence), unverified ones are tagged.
+enable_finding_verification = false
+verify_max_findings = 10
+verification_model = ""   # empty = config.model_weak, else config.model
 
 [pr_description] # /describe #
 publish_labels=false
