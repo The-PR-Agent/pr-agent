@@ -476,6 +476,60 @@ Watch `ads-show-timeout` and `iap-starter-coin-loss` specifically. If Opus finds
 single most informative event in this whole sequence: both are multi-step reasoning defects, and
 their absence is what has made every mechanism look dead.
 
+## 2026-09-11: the ceiling is the model. Result, and it reframes everything above.
+
+Two rows, `.delegate/runs/task-17/`, run id `ceiling:20260911T204412Z:*`. Same six-file subset, same
+flags, same diff; the model is the only difference.
+
+| Row | Model | Findings | Matched/10 | Precision | Control FPs | Recall | Severity-weighted |
+|---|---|---|---|---|---|---|---|
+| claude-opus | Opus via `claude` CLI | 7 | **6** | 1.0 | 0 | **0.60** | 0.63 |
+| cursor-flash | gemini-3.7-flash-high | 1 | **0** | - | 0 | 0.00 | 0.00 |
+
+**Opus matched:** `ads-show-timeout` (sev 4), `iap-starter-coin-loss` (sev 4), `iap-dup-grant` (3),
+`shop-nonnotifying-provider` (3), `iap-starter-guard-shape` (2), `store-flow-triplicated` (1).
+**Opus missed:** `iap-unhandled-listen`, `profile-save-atomicity`, `iap-no-verification`,
+`run-identity-seed`.
+
+**Both severity-4 labels were found by Opus in a single call.** No configuration of any mechanism
+had ever found either one, across 14 rows. Precision was 1.0 with zero false flags on the control and
+the FP-trap, so this is not recall bought by lowering the bar.
+
+The pre-registered rule said Opus >= 4 of 11 with flash <= 2 means the ceiling is the model. The
+result is 6 against 0 on the same bytes.
+
+### What this does to every result above it
+
+The five nulls stand as measurements and are now interpretable in a way they were not this morning:
+**wording, chunking, coverage, sampling diversity and cross-file retrieval were all evaluated against
+a model that could not do the task at any setting.** They were not wrong; they were measured under a
+binding constraint nobody had tested, because every row from the first baseline onward used one model
+line. That is the methodological lesson worth keeping: *fix the model line first, then tune the
+harness* - the reverse order costs a day and produces five true but uninformative nulls.
+
+It also means every mechanism in the tree is now **untested where it matters**. Retrieval may well
+help Opus, whose four misses (`profile-save-atomicity`, `iap-no-verification`, `run-identity-seed`,
+`iap-unhandled-listen`) are exactly the cross-file and whole-flow kind that R-16 exists to serve. Each
+mechanism deserves one re-test on this model line before it is judged.
+
+### Caveats that must travel with these numbers
+
+- **n = 1 per model.** No repetition yet; the prior line's rep-to-rep spread was +/-2 findings.
+- **Denominator is 10, not 23.** A subset score and a full-corpus score are not comparable.
+- Opus ran **one** review call against flash's one; token accounting through the `claude` CLI shim
+  reports 0 (the CLI does not return usage in the envelope the shim reads), so cost per finding is
+  not measured here.
+- The Claude side had file and shell tools **disabled** with an empty working directory, so it
+  answered from the prompt alone.
+
+### The next three things, in order
+
+1. Repeat both rows (2 more reps each) so the headline is not n=1.
+2. Re-run the full 23-label corpus on Opus to get a real baseline; the 1/23 number describes a model
+  line we would no longer choose.
+3. Re-test retrieval, verification and lenses **on Opus**, cheapest first. Each is currently a null
+  measured under the wrong constraint.
+
 ## Reproduce
 
 To reproduce the Cursor rows, start the shim first and point the run at it instead of Gemini:
