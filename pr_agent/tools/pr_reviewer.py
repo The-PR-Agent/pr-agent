@@ -11,6 +11,7 @@ from jinja2 import Environment, StrictUndefined
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
+from pr_agent.algo.diff_ordering import permute_patch_for_sample
 from pr_agent.algo.finding_verifier import UNVERIFIED_HEADER_SUFFIX, verify_findings
 from pr_agent.algo.inline_comment_dedup import (
     InlineCommentStore,
@@ -1374,12 +1375,18 @@ class PRReviewer:
                 raise UnparsableReview(f"Failed to parse the review produced by {model}")
             return prediction, data, 0
 
-        if not get_settings().config.temperature:
-            get_logger().warning("pr_reviewer.num_samples > 1 with config.temperature = 0: "
-                                 "the samples will be identical and the vote is a no-op")
+        permute = bool(settings.get("permute_diff_order_across_samples", False))
+        if not get_settings().config.temperature and not permute:
+            get_logger().warning("pr_reviewer.num_samples > 1 with config.temperature = 0 and no diff-order "
+                                 "permutation: the samples will be identical and the vote is a no-op")
 
+        base_diff = self.patches_diff if patches_diff is None else patches_diff
+        sample_diffs = [
+            permute_patch_for_sample(base_diff, i, seed=(chunk_index or 0) + 1) if permute else patches_diff
+            for i in range(num_samples)
+        ]
         responses = await asyncio.gather(
-            *[self._get_prediction(model, patches_diff, chunk_index=chunk_index, sample_index=i, files=files)
+            *[self._get_prediction(model, sample_diffs[i], chunk_index=chunk_index, sample_index=i, files=files)
               for i in range(num_samples)],
             return_exceptions=True)
         parsed, raw, first_error = [], [], None

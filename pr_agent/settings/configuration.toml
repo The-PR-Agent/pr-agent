@@ -154,6 +154,12 @@ persistent_finding_state=true # Persist review finding state across complete rev
 inline_key_issues=false
 extra_instructions = ""
 num_max_findings = 3
+# With num_samples > 1, send each sample the same diff with its per-file blocks in a different
+# order. Sample 0 keeps the original order, so a single-sample run is unaffected. This is a source
+# of sample diversity that does not need config.temperature > 0, and it targets findings the model
+# drops when a file sits deep in a long prompt. Cursor's BugBot credits differently ordered passes
+# plus a vote for a large part of its measured improvement.
+permute_diff_order_across_samples = false
 # Layout of the key-issues section of the review comment.
 #   "details"  - each finding is a collapsed <details> block whose title carries the diff link
 #   "expanded" - the file path and line range are shown as text and the code snippet is always
