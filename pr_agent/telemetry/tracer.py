@@ -72,4 +72,9 @@ def _create_exporter(config):
         if config.otlp_headers:
             kwargs['headers'] = config.otlp_headers
         return OTLPSpanExporter(**kwargs)
+    elif config.exporter_type == ExporterType.PROMETHEUS:
+        get_logger().warning(
+            "OTEL.EXPORTER_TYPE is 'prometheus' (metrics only); spans are not exported."
+        )
+        return None
     return None

@@ -18,6 +18,7 @@ from pr_agent.algo.inline_comment_dedup import (
     key_issue_location_fingerprint,
 )
 from pr_agent.algo.pr_processing import (
+    PreparedPRDiff,
     add_ai_metadata_to_diff_files,
     get_pr_diff,
     get_pr_multi_diffs,
@@ -462,10 +463,6 @@ class PRReviewer:
         provider = getattr(self, "git_provider", None)
         if provider is None:
             return False
-        publisher = getattr(provider, "publish_persistent_comment", None)
-        if getattr(publisher, "__func__", None) is GitProvider.publish_persistent_comment:
-            # Skip generic publishers; they only create comments and cannot safely carry lifecycle state.
-            return False
         if (
             getattr(getattr(settings, "github", None), "publish_as_check_run", False)
             and callable(getattr(provider, "_publish_check_run", None))
@@ -765,21 +762,28 @@ class PRReviewer:
                 get_settings().pr_review_prompt.user,
                 model,
             )
-        output = get_pr_diff(self.git_provider,
-                             self.token_handler,
-                             model,
-                             add_line_numbers_to_hunks=True,
-                             disable_extra_lines=False,
-                             return_remaining_files=True,)
-        if isinstance(output, tuple):
+        chunking_enabled = get_settings().pr_reviewer.get("enable_large_pr_chunking", False)
+        diff_kwargs = {
+            "add_line_numbers_to_hunks": True,
+            "disable_extra_lines": False,
+            "return_remaining_files": True,
+        }
+        if chunking_enabled:
+            diff_kwargs["return_prepared"] = True
+        output = get_pr_diff(self.git_provider, self.token_handler, model, **diff_kwargs)
+        if isinstance(output, PreparedPRDiff):
+            self.patches_diff = output.diff
+            self.remaining_files_list = output.remaining_files_list
+        elif isinstance(output, tuple):
             self.patches_diff, self.remaining_files_list = output
         else:
             self.patches_diff = output
             self.remaining_files_list = []
 
         # a non-empty remaining_files_list means the token budget truncated the diff
-        if self.remaining_files_list and get_settings().pr_reviewer.get("enable_large_pr_chunking", False):
-            if await self._prepare_chunked_prediction(model):
+        if self.remaining_files_list and chunking_enabled:
+            prepared_diff = output if isinstance(output, PreparedPRDiff) else None
+            if await self._prepare_chunked_prediction(model, prepared_diff):
                 return
 
         if self.patches_diff:
@@ -789,18 +793,24 @@ class PRReviewer:
             get_logger().warning(f"Empty diff for PR: {self.pr_url}")
             self.prediction = None
 
-    async def _prepare_chunked_prediction(self, model: str) -> bool:
+    async def _prepare_chunked_prediction(self, model: str,
+                                          prepared_diff: PreparedPRDiff | None = None) -> bool:
         """Review a too-large diff in chunks and merge the per-chunk verdicts.
 
         Returns False when chunking does not apply, leaving the single-call flow in place.
         """
+        multi_diff_kwargs = {
+            "max_calls": get_settings().pr_reviewer.get("max_number_of_calls", 3),
+            "add_line_numbers": True,
+            "return_remaining_files": True,
+        }
+        if prepared_diff is not None:
+            multi_diff_kwargs["prepared_diff"] = prepared_diff
         patches_diff_list, remaining_files_list = get_pr_multi_diffs(
             self.git_provider,
             self.token_handler,
             model,
-            max_calls=get_settings().pr_reviewer.get("max_number_of_calls", 3),
-            add_line_numbers=True,
-            return_remaining_files=True)
+            **multi_diff_kwargs)
         if len(patches_diff_list) < 2:
             get_logger().info("Large-diff chunking produced a single chunk, reviewing the PR in one call")
             return False
@@ -1010,7 +1020,7 @@ class PRReviewer:
         # Add custom labels from the review prediction (effort, security)
         self.set_review_labels(data)
 
-        if markdown_text == None or len(markdown_text) == 0:
+        if markdown_text is None or len(markdown_text) == 0:
             markdown_text = ""
 
         return markdown_text
@@ -1188,29 +1198,6 @@ class PRReviewer:
                     break
 
         return question_str, answer_str
-
-    def _get_previous_review_comment(self):
-        """
-        Get the previous review comment if it exists.
-        """
-        try:
-            if hasattr(self.git_provider, "get_previous_review"):
-                return self.git_provider.get_previous_review(
-                    full=not self.incremental.is_incremental,
-                    incremental=self.incremental.is_incremental,
-                )
-        except Exception as e:
-            get_logger().exception(f"Failed to get previous review comment, error: {e}")
-
-    def _remove_previous_review_comment(self, comment):
-        """
-        Remove the previous review comment if it exists.
-        """
-        try:
-            if comment:
-                self.git_provider.remove_comment(comment)
-        except Exception as e:
-            get_logger().exception(f"Failed to remove previous review comment, error: {e}")
 
     def _can_run_incremental_review(self) -> bool:
         """

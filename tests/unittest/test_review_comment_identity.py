@@ -175,8 +175,32 @@ def test_github_comment_path_forwards_review_identity():
         restore_settings(snapshot)
 
     assert provider.publish_persistent_comment_full.call_args.kwargs == {
+        "as_thread": False,
         "identity_marker": PRReviewIdentity.REGULAR.value,
         "legacy_initial_header": legacy_header,
+    }
+
+
+def test_github_comment_path_forwards_as_thread():
+    snapshot = snapshot_settings(["github.publish_as_check_run"])
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.publish_persistent_comment_full = MagicMock()
+    review = "## Team Review 🔍\n\nbody"
+    try:
+        get_settings().set("github.publish_as_check_run", False)
+
+        provider.publish_persistent_comment(
+            review,
+            initial_header="## Team Review 🔍",
+            as_thread=True,
+        )
+    finally:
+        restore_settings(snapshot)
+
+    assert provider.publish_persistent_comment_full.call_args.kwargs == {
+        "as_thread": True,
+        "identity_marker": None,
+        "legacy_initial_header": None,
     }
 
 
@@ -194,6 +218,7 @@ def test_azure_comment_path_forwards_review_identity():
     )
 
     assert provider.publish_persistent_comment_full.call_args.kwargs == {
+        "as_thread": False,
         "identity_marker": PRReviewIdentity.REGULAR.value,
         "legacy_initial_header": legacy_header,
     }
@@ -237,6 +262,7 @@ def test_gitea_keeps_identity_inactive_but_preserves_wrapper_arguments():
     assert provider.supports_review_comment_identity() is False
     assert result is published
     assert provider.publish_persistent_comment_full.call_args.kwargs == {
+        "as_thread": False,
         "identity_marker": PRReviewIdentity.REGULAR.value,
         "legacy_initial_header": legacy_header,
     }

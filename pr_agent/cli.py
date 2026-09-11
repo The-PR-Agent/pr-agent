@@ -18,6 +18,61 @@ from pr_agent.log import get_logger, setup_logger
 log_level = os.environ.get("LOG_LEVEL", "INFO")
 setup_logger(log_level)
 
+_PLAIN_DIFF_MARKDOWN_COMMANDS = frozenset({
+    "review", "review_pr", "auto_review",
+    "describe", "describe_pr",
+    "improve", "improve_code",
+    "ask", "ask_question",
+    "config", "settings", "help",
+})
+_PLAIN_DIFF_JSON_COMMANDS = frozenset({"review", "review_pr"})
+_OUTPUT_OPTIONS = ("--output", "--json-output")
+
+
+def _resolve_output_option(parser, arg):
+    option_text = arg.partition("=")[0]
+    if option_text in _OUTPUT_OPTIONS:
+        return option_text
+    if not option_text.startswith("--") or not parser.allow_abbrev:
+        return None
+
+    # argparse has no public API for resolving one option spelling. Reuse its
+    # own option table so misplaced options follow the parser's abbreviation
+    # rules and future ambiguous prefixes are left untouched.
+    matches = parser._get_option_tuples(option_text)
+    if len(matches) == 1 and matches[0][1] in _OUTPUT_OPTIONS:
+        return matches[0][1]
+    return None
+
+
+def _validate_output_options(parser, args, diff_mode):
+    for arg in getattr(args, "rest", []):
+        option = _resolve_output_option(parser, arg)
+        if option:
+            parser.error(
+                f"{option} must appear before the command "
+                f"(for example: --stdin {option} result review)"
+            )
+
+    output = getattr(args, "output", None)
+    json_output = getattr(args, "json_output", None)
+    for option, value in (("--output", output), ("--json-output", json_output)):
+        if value is not None and not value:
+            parser.error(f"{option} requires a non-empty path")
+
+    command = args.command.lstrip("/").lower()
+    if output is not None:
+        if not diff_mode:
+            parser.error("--output is only supported in plain-diff mode (--stdin or --diff-file)")
+        if command not in _PLAIN_DIFF_MARKDOWN_COMMANDS:
+            parser.error(f"--output is not supported for plain-diff command '{command}'")
+
+    if json_output is not None:
+        if not diff_mode:
+            parser.error("--json-output is only supported in plain-diff mode (--stdin or --diff-file)")
+        if command not in _PLAIN_DIFF_JSON_COMMANDS:
+            parser.error("--json-output is only supported for plain-diff review commands (review or review_pr)")
+
 
 def set_parser():
     parser = argparse.ArgumentParser(description='AI based pull request analyzer', usage=
@@ -71,9 +126,11 @@ def set_parser():
     parser.add_argument("--stdin", action="store_true", default=False,
                         help="Read a unified diff from stdin (plain-diff local mode)")
     parser.add_argument("--output", dest="output", type=str, default=None,
-                        help="Write the result to this file (in addition to stdout)")
+                        help=("Write Plain Diff Markdown output to this file "
+                              "(place before the command)"))
     parser.add_argument("--json-output", dest="json_output", type=str, default=None,
-                        help="Write the parsed review and token usage to this JSON file")
+                        help=("Write a Plain Diff review and token usage to this JSON file "
+                              "(place before the review command)"))
     parser.add_argument('command', type=str, help='The', choices=commands, default='review')
     parser.add_argument('rest', nargs=argparse.REMAINDER, default=[])
     return parser
@@ -93,11 +150,10 @@ def run(inargs=None, args=None):
     if not args:
         args = parser.parse_args(inargs)
     diff_mode = getattr(args, "stdin", False) or getattr(args, "diff_file", None)
-    if getattr(args, "json_output", None) and not diff_mode:
-        parser.error("--json-output is only supported in plain-diff mode (--stdin or --diff-file)")
+    if diff_mode and args.stdin and args.diff_file:
+        parser.error("--stdin and --diff-file are mutually exclusive")
+    _validate_output_options(parser, args, diff_mode)
     if diff_mode:
-        if args.stdin and args.diff_file:
-            parser.error("--stdin and --diff-file are mutually exclusive")
         if args.diff_file:
             try:
                 with open(args.diff_file, "r", encoding="utf-8") as fh:

@@ -1,3 +1,5 @@
+from unittest.mock import MagicMock
+
 import jwt
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -8,10 +10,12 @@ from pr_agent.git_providers.github_provider import GithubProvider
 
 class TestGithubAppAuth:
     def test_integer_app_id_produces_valid_jwt(self):
-        """GitHub App ids are integers in the settings toml, but PyJWT >=2.11 rejects a
-        non-string `iss` claim and PyGithub 1.59 passes the id through raw (#2955,
-        previously #2210; fixed upstream in PyGithub#3272, which we don't ship yet).
-        The provider must cast to str before building the authentication.
+        """GitHub App ids are integers in the settings toml. PyJWT >=2.11 rejects a
+        non string `iss` claim and PyGithub 1.59 passed the id through raw (#2955,
+        previously #2210; upstream fixed the pass through in PyGithub#3272, which
+        landed in 2.7.0, so the 2.10 pin ships it). The provider keeps casting to
+        str before building the authentication, which is thus harmless on the 2.10
+        pin while it stays a hard requirement for the older 1.59 behaviour.
         """
         key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         private_key_pem = key.private_bytes(
@@ -45,6 +49,74 @@ class TestGithubAppAuth:
         finally:
             for name, value in original.items():
                 settings.set(name, value)
+
+    def test_client_defaults_to_no_pacing_and_no_retry(self, monkeypatch):
+        """PyGithub 2.x turns on pacing and 10 retries by default; PR-Agent must
+        stay behaviour-neutral unless configured. The [github] settings mirror the
+        1.59 defaults and the client constructor applies them explicitly
+        (https://github.com/The-PR-Agent/pr-agent/pull/3240)."""
+        settings = get_settings()
+        original = {
+            "GITHUB.DEPLOYMENT_TYPE": settings.get("GITHUB.DEPLOYMENT_TYPE", None),
+            "GITHUB.USER_TOKEN": settings.get("GITHUB.USER_TOKEN", None),
+        }
+        settings.set("GITHUB.DEPLOYMENT_TYPE", "user")
+        settings.set("GITHUB.USER_TOKEN", "stub-token")
+        captured = {}
+
+        def fake_github(**kwargs):
+            captured.update(kwargs)
+            return MagicMock()
+
+        monkeypatch.setattr("pr_agent.git_providers.github_provider.Github", fake_github)
+        provider = GithubProvider.__new__(GithubProvider)
+        provider.installation_id = None
+        provider.base_url = "https://api.github.com"
+        try:
+            provider._get_github_client()
+        finally:
+            for name, value in original.items():
+                settings.set(name, value)
+
+        assert captured["seconds_between_requests"] == 0
+        assert captured["seconds_between_writes"] == 0
+        assert captured["retry"] is None
+
+    def test_pacing_and_retry_settings_reach_the_client(self, monkeypatch):
+        """Operators may opt into PyGithub 2.x throttling and backoff via the
+        [github] settings; each knob must land on the constructor (PR #3240)."""
+        settings = get_settings()
+        original = {
+            "GITHUB.DEPLOYMENT_TYPE": settings.get("GITHUB.DEPLOYMENT_TYPE", None),
+            "GITHUB.USER_TOKEN": settings.get("GITHUB.USER_TOKEN", None),
+            "GITHUB.SECONDS_BETWEEN_REQUESTS": settings.get("GITHUB.SECONDS_BETWEEN_REQUESTS", None),
+            "GITHUB.SECONDS_BETWEEN_WRITES": settings.get("GITHUB.SECONDS_BETWEEN_WRITES", None),
+            "GITHUB.API_RETRIES": settings.get("GITHUB.API_RETRIES", None),
+        }
+        settings.set("GITHUB.DEPLOYMENT_TYPE", "user")
+        settings.set("GITHUB.USER_TOKEN", "stub-token")
+        settings.set("GITHUB.SECONDS_BETWEEN_REQUESTS", 0.25)
+        settings.set("GITHUB.SECONDS_BETWEEN_WRITES", 1.0)
+        settings.set("GITHUB.API_RETRIES", 4)
+        captured = {}
+
+        def fake_github(**kwargs):
+            captured.update(kwargs)
+            return MagicMock()
+
+        monkeypatch.setattr("pr_agent.git_providers.github_provider.Github", fake_github)
+        provider = GithubProvider.__new__(GithubProvider)
+        provider.installation_id = None
+        provider.base_url = "https://api.github.com"
+        try:
+            provider._get_github_client()
+        finally:
+            for name, value in original.items():
+                settings.set(name, value)
+
+        assert captured["seconds_between_requests"] == 0.25
+        assert captured["seconds_between_writes"] == 1.0
+        assert captured["retry"].total == 4
 
     def test_is_bot_user_reads_github_section_setting(self):
         """is_bot_user must honor `ignore_bot_pr` from the [github] section
