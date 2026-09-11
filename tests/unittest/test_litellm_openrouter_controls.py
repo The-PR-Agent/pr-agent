@@ -14,7 +14,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import litellm
 import openai
 import pytest
-from litellm.utils import get_optional_params
+from dynaconf.utils.boxing import DynaBox
+from litellm.llms.openrouter.chat.transformation import OpenrouterConfig
+from litellm.utils import get_llm_provider, get_optional_params
 
 import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_handler
 
@@ -59,7 +61,7 @@ def _restore_litellm_globals():
                 os.environ[name] = value
 
 
-def _make_settings(openrouter=None, reasoning_effort="medium"):
+def _make_settings(openrouter=None, reasoning_effort="medium", custom_llm_provider=""):
     """Minimal settings whose `.get("openrouter", ...)` returns the given dict."""
     openrouter = openrouter or {}
     return type("Settings", (), {
@@ -73,6 +75,7 @@ def _make_settings(openrouter=None, reasoning_effort="medium"):
             "get": lambda self, key, default=None: default,
         })(),
         "litellm": type("LiteLLM", (), {
+            "custom_llm_provider": custom_llm_provider,
             "get": lambda self, key, default=None: default,
         })(),
         "get": lambda self, key, default=None: (openrouter if key == "openrouter" else default),
@@ -87,11 +90,11 @@ def _mock_response():
     return mock
 
 
-async def _run(monkeypatch, model, openrouter, reasoning_effort="medium"):
+async def _run(monkeypatch, model, openrouter, reasoning_effort="medium", custom_llm_provider=""):
     monkeypatch.setattr(
         litellm_handler,
         "get_settings",
-        lambda: _make_settings(openrouter, reasoning_effort),
+        lambda: _make_settings(openrouter, reasoning_effort, custom_llm_provider),
     )
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion",
                new_callable=AsyncMock) as mock_call:
@@ -130,6 +133,119 @@ class TestOpenRouterControls:
         assert kwargs["extra_body"]["provider"] == {"only": ["z-ai"]}
 
     @pytest.mark.asyncio
+    async def test_controls_are_isolated_between_handlers(self, monkeypatch):
+        first_controls = {
+            "provider_only": ["z-ai"],
+            "reasoning_max_tokens": 1024,
+            "max_tokens": 4096,
+            "key": "first-secret",
+        }
+        active_settings = _make_settings(first_controls, reasoning_effort="low")
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: active_settings)
+        first_handler = litellm_handler.LiteLLMAIHandler()
+
+        first_controls["provider_only"][0] = "mutated"
+        active_settings = _make_settings(DynaBox({
+            "PROVIDER_ONLY": ["novita"],
+            "REASONING_EFFORT": "high",
+            "MAX_TOKENS": 2048,
+        }), reasoning_effort="high")
+        second_handler = litellm_handler.LiteLLMAIHandler()
+
+        with patch(
+            "pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion",
+            new_callable=AsyncMock,
+        ) as mock_call:
+            mock_call.return_value = _mock_response()
+            await first_handler.chat_completion(
+                model="openrouter/google/gemini-2.5-pro", system="sys", user="first"
+            )
+            first_kwargs = mock_call.call_args.kwargs
+            await second_handler.chat_completion(
+                model="openrouter/google/gemini-2.5-pro", system="sys", user="second"
+            )
+            second_kwargs = mock_call.call_args.kwargs
+
+        assert first_kwargs["extra_body"]["provider"] == {"only": ["z-ai"]}
+        assert first_kwargs["extra_body"]["reasoning"] == {"max_tokens": 1024}
+        assert first_kwargs["max_tokens"] == 4096
+        assert second_kwargs["extra_body"]["provider"] == {"only": ["novita"]}
+        assert second_kwargs["extra_body"]["reasoning"] == {"effort": "high"}
+        assert second_kwargs["max_tokens"] == 2048
+        assert set(first_handler._openrouter_controls) == {
+            "provider_only",
+            "provider_order",
+            "allow_fallbacks",
+            "reasoning_effort",
+            "reasoning_max_tokens",
+            "max_tokens",
+        }
+
+    @pytest.mark.asyncio
+    async def test_inherited_reasoning_effort_is_isolated_between_handlers(self, monkeypatch):
+        active_settings = _make_settings(reasoning_effort="low")
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: active_settings)
+        first_handler = litellm_handler.LiteLLMAIHandler()
+
+        active_settings = _make_settings(reasoning_effort="high")
+        second_handler = litellm_handler.LiteLLMAIHandler()
+
+        with patch(
+            "pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion",
+            new_callable=AsyncMock,
+        ) as mock_call:
+            mock_call.return_value = _mock_response()
+            await first_handler.chat_completion(
+                model="openrouter/google/gemini-2.5-pro", system="sys", user="first"
+            )
+            first_kwargs = mock_call.call_args.kwargs
+            await second_handler.chat_completion(
+                model="openrouter/google/gemini-2.5-pro", system="sys", user="second"
+            )
+            second_kwargs = mock_call.call_args.kwargs
+
+        assert first_kwargs["extra_body"]["reasoning"] == {"effort": "low"}
+        assert second_kwargs["extra_body"]["reasoning"] == {"effort": "high"}
+
+    @pytest.mark.asyncio
+    async def test_gpt5_inherited_reasoning_effort_is_isolated_from_later_settings(self, monkeypatch):
+        active_settings = _make_settings(reasoning_effort="low")
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: active_settings)
+        handler = litellm_handler.LiteLLMAIHandler()
+
+        active_settings = _make_settings(reasoning_effort="high")
+
+        with patch(
+            "pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion",
+            new_callable=AsyncMock,
+        ) as mock_call:
+            mock_call.return_value = _mock_response()
+            await handler.chat_completion(
+                model="openrouter/openai/gpt-5.1", system="sys", user="usr"
+            )
+
+        kwargs = mock_call.call_args.kwargs
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "low"}
+
+    @pytest.mark.parametrize("model", ("openai/gpt-5.1", "gemini/gemini-2.5-pro"))
+    @pytest.mark.asyncio
+    async def test_direct_reasoning_effort_is_isolated_from_later_settings(self, monkeypatch, model):
+        active_settings = _make_settings(reasoning_effort="low")
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: active_settings)
+        handler = litellm_handler.LiteLLMAIHandler()
+
+        active_settings = _make_settings(reasoning_effort="high")
+
+        with patch(
+            "pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion",
+            new_callable=AsyncMock,
+        ) as mock_call:
+            mock_call.return_value = _mock_response()
+            await handler.chat_completion(model=model, system="sys", user="usr")
+
+        assert mock_call.call_args.kwargs["reasoning_effort"] == "low"
+
+    @pytest.mark.asyncio
     async def test_reasoning_none_disables(self, monkeypatch):
         kwargs = await _run(monkeypatch, "openrouter/z-ai/glm-5.2", {"reasoning_effort": "none"})
         assert kwargs["extra_body"]["reasoning"] == {"enabled": False}
@@ -148,6 +264,69 @@ class TestOpenRouterControls:
         kwargs = await _run(monkeypatch, "openrouter/z-ai/glm-5.2", {})
         assert "extra_body" not in kwargs
         assert "max_tokens" not in kwargs
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("model", "routed_model"),
+        [
+            ("openrouter/auto", "openrouter/openrouter/auto"),
+            ("openrouter/free", "openrouter/openrouter/free"),
+            ("openrouter/fusion", "openrouter/openrouter/fusion"),
+            ("openrouter/pareto-code", "openrouter/openrouter/pareto-code"),
+        ],
+    )
+    async def test_router_model_uses_openrouter_defaults(self, monkeypatch, model, routed_model):
+        kwargs = await _run(monkeypatch, model, {})
+        assert kwargs["model"] == routed_model
+        assert "extra_body" not in kwargs
+        assert "max_tokens" not in kwargs
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("custom_llm_provider", "expected_model", "expected_provider"),
+        [
+            (" OpenRouter ", "openrouter/openrouter/auto", "openrouter"),
+            (" OpenAI ", "openrouter/auto", "openai"),
+        ],
+    )
+    async def test_router_model_respects_custom_llm_provider(
+        self,
+        monkeypatch,
+        custom_llm_provider,
+        expected_model,
+        expected_provider,
+    ):
+        kwargs = await _run(monkeypatch, "openrouter/auto", {}, custom_llm_provider=custom_llm_provider)
+        assert kwargs["model"] == expected_model
+        assert kwargs["custom_llm_provider"] == expected_provider
+
+    @pytest.mark.parametrize(
+        ("model", "routed_model"),
+        [
+            ("openrouter/auto", "openrouter/openrouter/auto"),
+            ("openrouter/free", "openrouter/openrouter/free"),
+            ("openrouter/fusion", "openrouter/openrouter/fusion"),
+            ("openrouter/pareto-code", "openrouter/openrouter/pareto-code"),
+        ],
+    )
+    def test_router_model_preserves_openrouter_slug(self, model, routed_model):
+        resolved_model, provider, _, _ = get_llm_provider(routed_model)
+        assert resolved_model == model
+        assert provider == "openrouter"
+        explicit_model, explicit_provider, _, _ = get_llm_provider(
+            routed_model,
+            custom_llm_provider="openrouter",
+        )
+        assert explicit_model == model
+        assert explicit_provider == "openrouter"
+        request = OpenrouterConfig().transform_request(
+            model=resolved_model,
+            messages=[{"role": "user", "content": "test"}],
+            optional_params={},
+            litellm_params={},
+            headers={},
+        )
+        assert request["model"] == model
 
     @pytest.mark.asyncio
     async def test_non_openrouter_model_unaffected(self, monkeypatch):
@@ -207,6 +386,68 @@ class TestOpenRouterControls:
         assert "reasoning_effort" not in kwargs
         assert kwargs["extra_body"]["reasoning"] == {"effort": "low"}
         assert kwargs["model"] == model
+
+    @pytest.mark.asyncio
+    async def test_custom_provider_raw_model_uses_openrouter_controls(self, monkeypatch):
+        kwargs = await _run(
+            monkeypatch,
+            "google/gemini-2.5-pro",
+            {"provider_only": ["google"], "max_tokens": 16000},
+            reasoning_effort="low",
+            custom_llm_provider="openrouter",
+        )
+
+        assert kwargs["model"] == "google/gemini-2.5-pro"
+        assert kwargs["custom_llm_provider"] == "openrouter"
+        assert "reasoning_effort" not in kwargs
+        assert kwargs["extra_body"] == {
+            "provider": {"only": ["google"]},
+            "reasoning": {"effort": "low"},
+        }
+        assert kwargs["max_tokens"] == 16000
+
+    @pytest.mark.asyncio
+    async def test_custom_provider_raw_gpt5_model_uses_only_openrouter_reasoning(self, monkeypatch):
+        kwargs = await _run(
+            monkeypatch,
+            "openai/gpt-5.1",
+            {"reasoning_max_tokens": 2048},
+            custom_llm_provider="openrouter",
+        )
+
+        assert kwargs["extra_body"]["reasoning"] == {"max_tokens": 2048}
+        assert "reasoning_effort" not in kwargs
+        assert "allowed_openai_params" not in kwargs
+        assert "temperature" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_custom_provider_raw_gpt5_model_inherits_reasoning_effort(self, monkeypatch):
+        kwargs = await _run(
+            monkeypatch,
+            "openai/gpt-5.1",
+            {},
+            reasoning_effort="low",
+            custom_llm_provider="openrouter",
+        )
+
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "low"}
+        assert "reasoning_effort" not in kwargs
+        assert "allowed_openai_params" not in kwargs
+        assert "temperature" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_prefixed_openrouter_gpt5_model_uses_only_openrouter_reasoning(self, monkeypatch):
+        kwargs = await _run(
+            monkeypatch,
+            "openrouter/openai/gpt-5.1",
+            {},
+            reasoning_effort="low",
+        )
+
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "low"}
+        assert "reasoning_effort" not in kwargs
+        assert "allowed_openai_params" not in kwargs
+        assert "temperature" not in kwargs
 
     @pytest.mark.asyncio
     async def test_openrouter_effort_overrides_global_effort(self, monkeypatch):
@@ -274,7 +515,7 @@ class TestOpenRouterControls:
         assert kwargs["extra_body"]["reasoning"] == {"max_tokens": 2048}
 
     def test_litellm_requires_openrouter_reasoning_in_extra_body(self):
-        """Pin the LiteLLM 1.98.0 workaround boundary so upgrades expose when it can be removed."""
+        """Pin the LiteLLM compatibility boundary so upgrades expose when it can be removed."""
         with pytest.raises(litellm.UnsupportedParamsError):
             get_optional_params(
                 model="google/gemini-2.5-pro",
@@ -308,7 +549,23 @@ class TestOpenRouterControls:
         assert kwargs["extra_body"]["reasoning"] == {"max_tokens": 2048}
         assert kwargs["max_tokens"] == 1024
         assert any(
-            "must be greater than reasoning_max_tokens" in call.args[0]
+            "must be greater than the reasoning budget" in call.args[0]
+            for call in logger.warning.call_args_list
+        )
+
+    @pytest.mark.asyncio
+    async def test_anthropic_reasoning_effort_warns_without_minimum_output_headroom(self, monkeypatch):
+        logger = MagicMock()
+        monkeypatch.setattr(litellm_handler, "get_logger", lambda: logger)
+        kwargs = await _run(
+            monkeypatch,
+            "openrouter/anthropic/claude-3.7-sonnet",
+            {"reasoning_effort": "high", "max_tokens": 1024},
+        )
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "high"}
+        assert kwargs["max_tokens"] == 1024
+        assert any(
+            "must be greater than the reasoning budget (1024)" in call.args[0]
             for call in logger.warning.call_args_list
         )
 

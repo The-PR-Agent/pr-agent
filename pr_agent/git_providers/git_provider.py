@@ -1,18 +1,50 @@
-# enum EDIT_TYPE (ADDED, DELETED, MODIFIED, RENAMED)
 import os
+import re
 import shutil
 import subprocess
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from typing import Optional, Tuple
 
 from pr_agent.algo.types import FilePatchInfo
-from pr_agent.algo.utils import (Range, add_pr_review_identity,
-                                 comment_matches_identity, process_description)
+from pr_agent.algo.utils import (
+    Range,
+    add_pr_review_identity,
+    comment_carries_other_identity,
+    comment_matches_identity,
+    process_description,
+)
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
 MAX_FILES_ALLOWED_FULL = 50
+
+_URL_USERINFO_RE = re.compile(r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.\-]{0,30}://)[^/@\s]+@")
+_AUTH_HEADER_RE = re.compile(r"(?i)(authorization\s*:\s*(?:bearer|basic|token)\s+)\S+")
+
+
+# The reaction PR-Agent has always added when it picks a comment command up. Used as the
+# fallback for `reaction_on_start` so that a deployment whose configuration.toml predates
+# these settings keeps acknowledging comments instead of silently going quiet.
+DEFAULT_START_REACTION = "eyes"
+
+
+def get_reaction_setting(name: str, default: str = "") -> str:
+    """Read one `config.reaction_*` setting as a stripped string.
+
+    `default` applies only when the key is absent. A key that is present but unusable - empty,
+    or not a string - means the operator asked for no reaction, so "" is returned.
+    """
+    value = get_settings().config.get(name, default)
+    return value.strip() if isinstance(value, str) else ""
+
+
+def redact_credentials(text) -> str:
+    if not text:
+        return ""
+    redacted = _URL_USERINFO_RE.sub(lambda m: m.group("scheme"), str(text))
+    return _AUTH_HEADER_RE.sub(lambda m: m.group(1) + "<redacted>", redacted)
 
 _GLOBAL_SETTINGS_CACHE: dict = {}
 _GLOBAL_SETTINGS_CACHE_TTL_SECONDS = 15 * 60
@@ -73,12 +105,12 @@ def get_git_ssl_env() -> dict[str, str]:
         if os.path.exists(ssl_cert_file):
             if ((requests_ca_bundle and requests_ca_bundle != ssl_cert_file)
                     or (git_ssl_ca_info and git_ssl_ca_info != ssl_cert_file)):
-                get_logger().warning(f"Found mismatch among: SSL_CERT_FILE, REQUESTS_CA_BUNDLE, GIT_SSL_CAINFO. "
-                                     f"Using the SSL_CERT_FILE to resolve ambiguity.",
+                get_logger().warning("Found mismatch among: SSL_CERT_FILE, REQUESTS_CA_BUNDLE, GIT_SSL_CAINFO. "
+                                     "Using the SSL_CERT_FILE to resolve ambiguity.",
                                   artifact={"ssl_cert_file": ssl_cert_file, "requests_ca_bundle": requests_ca_bundle,
                                             'git_ssl_ca_info': git_ssl_ca_info})
             else:
-                get_logger().info(f"Using SSL certificate bundle for git operations", artifact={"ssl_cert_file": ssl_cert_file})
+                get_logger().info("Using SSL certificate bundle for git operations", artifact={"ssl_cert_file": ssl_cert_file})
             chosen_cert_file = ssl_cert_file
         else:
             get_logger().warning("SSL certificate bundle not found for git operations", artifact={"ssl_cert_file": ssl_cert_file})
@@ -87,8 +119,8 @@ def get_git_ssl_env() -> dict[str, str]:
     elif requests_ca_bundle:
         if os.path.exists(requests_ca_bundle):
             if (git_ssl_ca_info and git_ssl_ca_info != requests_ca_bundle):
-                get_logger().warning(f"Found mismatch between: REQUESTS_CA_BUNDLE, GIT_SSL_CAINFO. "
-                                     f"Using the REQUESTS_CA_BUNDLE to resolve ambiguity.",
+                get_logger().warning("Found mismatch between: REQUESTS_CA_BUNDLE, GIT_SSL_CAINFO. "
+                                     "Using the REQUESTS_CA_BUNDLE to resolve ambiguity.",
                 artifact = {"requests_ca_bundle": requests_ca_bundle, 'git_ssl_ca_info': git_ssl_ca_info})
             else:
                 get_logger().info("Using SSL certificate bundle from REQUESTS_CA_BUNDLE for git operations",
@@ -142,6 +174,76 @@ class GitProvider(ABC):
         """
         return self.publish_code_suggestions(code_suggestions)
 
+    def supports_code_suggestion_state(self) -> bool:
+        return False
+
+    def supports_threaded_pr_questions(self) -> bool:
+        return False
+
+    def supports_line_question_history(self) -> bool:
+        return False
+
+    def supports_checkbox_commands(self) -> bool:
+        """Whether a published comment renders command checkboxes as checkboxes.
+
+        Providers that render `- [ ]` as a tickable box override this; the default is no
+        support, so tools render commands as text instead."""
+        return False
+
+    def supports_pr_chat(self) -> bool:
+        """Whether this provider is compatible with the linked PR-Agent browser-extension chat experience."""
+        return False
+
+    @classmethod
+    def supports_issue_indexing(cls) -> bool:
+        """Whether `/similar_issue` can read and index this provider's issues.
+
+        Declared on the class rather than on an instance because the tool consults it before
+        constructing a provider: `PRSimilarIssue` needs to know whether to build one at all.
+        The indexing path relies on issue listing, issue bodies and issue comments, so a
+        provider that exposes those overrides this; the default is no support, so the tool
+        reports the command as unsupported instead of failing part-way through.
+        """
+        return False
+
+    def supports_inline_help_footer(self) -> bool:
+        """Whether the `/describe` help footer is rendered as an inline `<li>` list.
+
+        Scoped to that footer's layout, not to HTML lists in general: the changes
+        walkthrough already emits `<ul>` and `<li>` for every provider that passes the
+        `gfm_markdown` gate. Providers whose `<details>` summary renders a sibling `<li>`
+        inline override this; the default falls back to `<br>`-separated bullets."""
+        return False
+
+    def supports_changelog_update_review(self) -> bool:
+        """Whether a pushed CHANGELOG.md commit can be annotated with a PR review.
+
+        `/update_changelog --push_changelog_changes=true` posts its summary as a review on the
+        commit it just pushed. Providers exposing a commit-scoped review API override this;
+        the default is no support, so the review is simply skipped.
+        """
+        return False
+
+    def supports_markdown_tables(self) -> bool:
+        """Whether comments render pipe-table markdown.
+
+        Only consulted for providers without `gfm_markdown`, so that tools can degrade to
+        a plain table instead of refusing to render. Providers that render Markdown tables
+        but not GitHub-flavored markdown override this."""
+        return False
+
+    def supports_issue_url_tickets(self) -> bool:
+        """Tickets are linked as issue URLs in the PR description or branch name."""
+        return False
+
+    def supports_issue_reference_tickets(self) -> bool:
+        """Tickets are linked as project-scoped issue references (e.g. group/project#12)."""
+        return False
+
+    def supports_linked_work_item_tickets(self) -> bool:
+        """Tickets come from work items the platform links to the PR itself."""
+        return False
+
     #Given a url (issues or PR/MR) - get the .git repo url to which they belong. Needs to be implemented by the provider.
     def get_git_repo_url(self, issues_or_pr_url: str) -> str:
         get_logger().warning("Not implemented! Returning empty url")
@@ -175,13 +277,9 @@ class GitProvider(ABC):
         get_logger().warning("Not implemented! Returning None")
         return None
 
-    # Does a shallow clone, using a forked process to support a timeout guard.
-    # In case operation has failed, it is expected to throw an exception as this method does not return a value.
+    # Run a shallow, blob-filtered clone in a subprocess so the timeout can terminate the operation.
+    # Failures propagate to clone(), which handles and logs them.
     def _clone_inner(self, repo_url: str, dest_folder: str, operation_timeout_in_seconds: int=None) -> None:
-        #The following ought to be equivalent to:
-        # #Repo.clone_from(repo_url, dest_folder)
-        # , but with throwing an exception upon timeout.
-        # Note: This can only be used in context that supports using pipes.
         try:
             ssl_env = get_git_ssl_env()
         except Exception as e:
@@ -215,10 +313,10 @@ class GitProvider(ABC):
             self._clone_inner(clone_url, dest_folder, operation_timeout_in_seconds)
             returned_obj = GitProvider.ScopedClonedRepo(dest_folder)
         except Exception as e:
-            get_logger().exception(f"Clone failed: Could not clone url.",
-                artifact={"error": str(e), "url": clone_url, "dest_folder": dest_folder})
-        finally:
-            return returned_obj
+            get_logger().error("Clone failed: Could not clone url.",
+                artifact={"error": redact_credentials(e), "url": redact_credentials(clone_url),
+                          "dest_folder": dest_folder})
+        return returned_obj
 
     @abstractmethod
     def get_files(self) -> list:
@@ -232,7 +330,12 @@ class GitProvider(ABC):
         pass
 
     @abstractmethod
-    def publish_description(self, pr_title: str, pr_body: str):
+    def publish_description(self, pr_title: str, pr_body: str) -> None:
+        """Publish the pull request title and description.
+
+        Implementations must raise when the remote update fails so callers do
+        not continue through a false-success path.
+        """
         # pr_title may be None, which means "leave the existing title unchanged"
         # and update only the description. Implementations must not write the
         # title in that case.
@@ -286,16 +389,16 @@ class GitProvider(ABC):
             return description
 
     def get_user_description(self) -> str:
-        if hasattr(self, 'user_description') and not (self.user_description is None):
+        if hasattr(self, "user_description") and (self.user_description is not None):
             return self.user_description
 
         description = (self.get_pr_description_full() or "").strip()
         description_lowercase = description.lower()
-        get_logger().debug(f"Existing description", description=description_lowercase)
+        get_logger().debug("Existing description", description=description_lowercase)
 
         # if the existing description wasn't generated by the pr-agent, just return it as-is
         if not self._is_generated_by_pr_agent(description_lowercase):
-            get_logger().info(f"Existing description was not generated by the pr-agent")
+            get_logger().info("Existing description was not generated by the pr-agent")
             self.user_description = description
             return description
 
@@ -303,7 +406,7 @@ class GitProvider(ABC):
         # return nothing (empty string) because it means there is no user description
         user_description_header = "### **user description**"
         if user_description_header not in description_lowercase:
-            get_logger().info(f"Existing description was generated by the pr-agent, but it doesn't contain a user description")
+            get_logger().info("Existing description was generated by the pr-agent, but it doesn't contain a user description")
             return ""
 
         # otherwise, extract the original user description from the existing pr-agent description and return it
@@ -326,7 +429,7 @@ class GitProvider(ABC):
             if original_user_description.lower().startswith(user_description_header):
                 original_user_description = original_user_description[len(user_description_header):].strip()
 
-        get_logger().info(f"Extracted user description from existing description",
+        get_logger().info("Extracted user description from existing description",
                           description=original_user_description)
         self.user_description = original_user_description
         return original_user_description
@@ -369,14 +472,80 @@ class GitProvider(ABC):
     def get_repo_settings(self):
         pass
 
+    def get_owning_namespace(self) -> Optional[str]:
+        """Return the org/group/workspace that owns this repository, or None when
+        the provider has no organisation-level home for global settings.
+
+        This is the hook that `_get_global_repo_settings` uses to decide which
+        namespace's `pr-agent-settings` repository (or equivalent) to consult.
+        Providers that support global settings override this; the default is None,
+        which disables global settings for the provider.
+        """
+        return None
+
+    def _get_global_repo_settings(self):
+        """Load the namespace-wide `pr-agent-settings` .pr_agent.toml, if enabled.
+
+        This is a concrete template: it gates on `use_global_settings_file`, resolves
+        the owning namespace via `get_owning_namespace()`, and delegates the actual
+        provider API call (and its 403/404 mapping) to `_fetch_global_repo_settings`,
+        all behind the shared TTL cache. Providers build the cache key through
+        `_get_global_settings_cache_key` so instance-specific keys (e.g. GitHub
+        enterprise hosts) stay distinct.
+        """
+        if not get_settings().config.use_global_settings_file:
+            return ""
+        namespace = self.get_owning_namespace()
+        if not namespace:
+            return ""
+        return get_cached_global_settings(
+            self._get_global_settings_cache_key(namespace),
+            lambda: self._fetch_global_repo_settings(namespace))
+
+    def _get_global_settings_cache_key(self, namespace: str) -> str:
+        """Cache key for a namespace's global settings.
+
+        Override to scope the key beyond the provider type (e.g. include a
+        self-hosted base URL so two instances hosting the same org don't collide).
+        """
+        return f"{type(self).__name__}:{namespace}"
+
+    def _fetch_global_repo_settings(self, namespace: str):
+        """Fetch the raw `.pr_agent.toml` from the namespace's `pr-agent-settings`
+        repository. Return "" for an expected "not found"/no-access result (so it is
+        cached) and let transient/unexpected errors propagate. Overridden per provider."""
+        return ""
+
     def get_repo_file_content(self, file_path: str, from_default_branch: bool = False):
         return ""
+
+    def get_repo_context_ref(self, from_default_branch: bool = False) -> Optional[str]:
+        """Return the ref (commit SHA or branch name) that repo-context files are read from.
+
+        The repo-context cache key (pr_agent/algo/repo_context.py) includes this ref so a
+        rebase or a push to the base branch invalidates cached file content instead of serving
+        it from a commit that has since moved. Providers that override get_repo_file_content
+        should return the same ref they fetch from; the default None covers providers with no
+        repo-context support at all.
+        """
+        return None
 
     def get_workspace_name(self):
         return ""
 
     def get_pr_id(self):
         return ""
+
+    @staticmethod
+    def _normalize_line_range(relevant_line_start: int, relevant_line_end: int = None) -> tuple[int, int | None]:
+        """Clamp inverted ranges and discard malformed end lines before building an anchor."""
+        if relevant_line_end is not None and relevant_line_start is not None:
+            try:
+                if int(relevant_line_end) < int(relevant_line_start):
+                    relevant_line_end = relevant_line_start
+            except (TypeError, ValueError):
+                relevant_line_end = None
+        return relevant_line_start, relevant_line_end
 
     def get_line_link(self, relevant_file: str, relevant_line_start: int, relevant_line_end: int = None) -> str:
         return ""
@@ -392,7 +561,18 @@ class GitProvider(ABC):
     def should_publish_review_as_thread(self) -> bool:
         return False
 
+    def should_publish_improve_as_thread(self) -> bool:
+        return False
+
     def supports_review_comment_identity(self) -> bool:
+        return False
+
+    def supports_review_finding_state(self) -> bool:
+        """Return whether this provider can verify PR-Agent-authored review comments."""
+        return False
+
+    def is_comment_authored_by_pr_agent(self, comment) -> bool:
+        """Return whether a provider comment was authored by this PR-Agent identity."""
         return False
 
     def unresolve_comment_thread(self, comment):  # noqa: B027 - intentional no-op
@@ -408,6 +588,16 @@ class GitProvider(ABC):
     def resolve_outdated_inline_threads(self):  # noqa: B027 - intentional no-op
         pass
 
+    def supports_comment_editing(self) -> bool:
+        """Whether this provider can actually edit an existing comment.
+
+        The base ``edit_comment`` is a no-op that returns ``None``, which
+        ``publish_persistent_comment_full`` cannot distinguish from a successful
+        edit. A provider that has not implemented it therefore cannot persist,
+        and must create a new comment instead of silently discarding the body.
+        """
+        return type(self).edit_comment is not GitProvider.edit_comment
+
     def publish_persistent_comment(self, pr_comment: str,
                                    initial_header: str,
                                    update_header: bool = True,
@@ -416,7 +606,51 @@ class GitProvider(ABC):
                                    as_thread: bool = False,
                                    identity_marker: str | None = None,
                                    legacy_initial_header: str | None = None):
-        return self.publish_comment(pr_comment, **({'as_thread': True} if as_thread else {}))
+        if not self.supports_comment_editing():
+            return self.publish_comment(pr_comment, **({'as_thread': True} if as_thread else {}))
+        return self.publish_persistent_comment_full(
+            pr_comment,
+            initial_header,
+            update_header,
+            name,
+            final_update_message,
+            as_thread=as_thread,
+            identity_marker=identity_marker,
+            legacy_initial_header=legacy_initial_header,
+        )
+
+    @staticmethod
+    def _get_comment_body(comment) -> str:
+        """Return a comment body for object- and mapping-shaped provider payloads."""
+        if isinstance(comment, dict):
+            return comment.get("body", "")
+        return getattr(comment, "body", "")
+
+    def get_issue_comments_newest_first(self):
+        """Return issue comments newest first; providers override known API ordering."""
+        return list(reversed(list(self.get_issue_comments())))
+
+    def _iter_persistent_comments(
+        self,
+        identifiers,
+        *,
+        identity_marker: str | None = None,
+        require_agent_authorship: bool = False,
+    ):
+        """Yield matching comments in identity-priority and newest-first order."""
+        comments = self.get_issue_comments_newest_first()
+        for identifier in identifiers:
+            if not identifier:
+                continue
+            for comment in comments:
+                body = GitProvider._get_comment_body(comment)
+                if not comment_matches_identity(body, identifier):
+                    continue
+                if comment_carries_other_identity(body, identity_marker):
+                    continue
+                if require_agent_authorship and not self.is_comment_authored_by_pr_agent(comment):
+                    continue
+                yield comment, body
 
     def publish_persistent_comment_full(self, pr_comment: str,
                                    initial_header: str,
@@ -425,25 +659,25 @@ class GitProvider(ABC):
                                    final_update_message=True,
                                    as_thread: bool = False,
                                    identity_marker: str | None = None,
-                                   legacy_initial_header: str | None = None):
+                                   legacy_initial_header: str | None = None,
+                                   require_agent_authorship: bool = False,
+                                   fallback_on_error: bool = True):
         try:
             pr_comment = add_pr_review_identity(pr_comment, identity_marker)
-            prev_comments = list(self.get_issue_comments())
             identifiers = (
                 [identity_marker, legacy_initial_header]
                 if identity_marker
                 else [initial_header]
             )
-            comment_to_update = next(
-                (
-                    comment
-                    for identifier in identifiers
-                    if identifier
-                    for comment in prev_comments
-                    if comment_matches_identity(comment.body, identifier)
-                ),
-                None,
-            )
+            comment_to_update = None
+            for comment, _body in GitProvider._iter_persistent_comments(
+                self,
+                identifiers,
+                identity_marker=identity_marker,
+                require_agent_authorship=require_agent_authorship,
+            ):
+                comment_to_update = comment
+                break
             if comment_to_update is not None:
                 comment = comment_to_update
                 latest_commit_url = self.get_latest_commit_url()
@@ -456,30 +690,33 @@ class GitProvider(ABC):
                 else:
                     pr_comment_updated = pr_comment
                 get_logger().info(f"Persistent mode - updating comment {comment_url} to latest {name} message")
-                # response = self.mr.notes.update(comment.id, {'body': pr_comment_updated})
-                self.edit_comment(comment, pr_comment_updated)
+                if self.edit_comment(comment, pr_comment_updated) is False:
+                    raise RuntimeError("Failed to update persistent comment")
                 if as_thread:
                     try:
-                        # Reopen the thread if it was resolved, so the developer revisits the updated review.
                         self.unresolve_comment_thread(comment)
                     except Exception as e:
-                        # The review was already updated in place; a reopen failure must not reach the
-                        # outer except, whose fallback publish would duplicate the review.
                         get_logger().warning(f"Failed to reopen review thread: {e}")
                 if final_update_message:
                     try:
-                        return self.publish_comment(
+                        status_comment = self.publish_comment(
                             f"**[Persistent {name}]({comment_url})** updated to latest commit {latest_commit_url}")
+                        if status_comment is None or status_comment is False:
+                            get_logger().warning(
+                                "Persistent review update message was not published; "
+                                "review was already updated"
+                            )
+                            return comment
+                        return status_comment
                     except Exception:
-                        # The review was already updated in place; a notification failure must not reach
-                        # the outer except, whose fallback publish would duplicate the review.
                         get_logger().opt(exception=True).warning(
                             "Failed to publish persistent review update message; review was already updated")
                         return comment
                 return comment
         except Exception as e:
             get_logger().exception(f"Failed to update persistent review, error: {e}")
-            pass
+            if not fallback_on_error:
+                return None
         return self.publish_comment(pr_comment, **({'as_thread': True} if as_thread else {}))
 
     @abstractmethod
@@ -503,7 +740,8 @@ class GitProvider(ABC):
         pass
 
     @abstractmethod
-    def get_issue_comments(self):
+    def get_issue_comments(self) -> Iterable:
+        """Comments on the PR; every item exposes the comment text as `.body`."""
         pass
 
     def get_comment_url(self, comment) -> str:
@@ -524,9 +762,55 @@ class GitProvider(ABC):
     def get_repo_labels(self):
         pass
 
-    @abstractmethod
+    def add_reaction(self, issue_comment_id: int, reaction: str) -> Optional[int]:
+        """Add a named reaction to a comment, returning its id.
+
+        Returns None when the provider has no reaction API, when the name is empty, or when
+        the call failed. Providers that support reactions override this; `add_eyes_reaction`
+        and `react_to_outcome` are built on top of it.
+        """
+        return None
+
     def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
-        pass
+        """Acknowledge a comment command with the configured start reaction."""
+        if disable_eyes:
+            return None
+        reaction = get_reaction_setting("reaction_on_start", DEFAULT_START_REACTION)
+        if not reaction:
+            return None
+        reaction_id = self.add_reaction(issue_comment_id, reaction)
+        if reaction_id is not None:
+            # Remembered so that `react_to_outcome` can take it down again. Nothing else removes
+            # it, so without this the start reaction would sit next to the outcome one forever.
+            self._start_reaction = (issue_comment_id, reaction_id)
+        return reaction_id
+
+    def react_to_outcome(self, issue_comment_id: int, succeeded: bool) -> Optional[int]:
+        """Replace the start reaction with the configured outcome reaction.
+
+        Both outcome reactions are unset by default, so nothing changes unless an operator asks
+        for it. When one is configured the start reaction is removed first, so the comment ends
+        up carrying the outcome rather than both.
+        """
+        reaction = get_reaction_setting(
+            "reaction_on_success" if succeeded else "reaction_on_failure"
+        )
+        if not reaction or issue_comment_id is None:
+            return None
+        self._remove_start_reaction(issue_comment_id)
+        return self.add_reaction(issue_comment_id, reaction)
+
+    def _remove_start_reaction(self, issue_comment_id: int) -> None:
+        """Take down the start reaction this provider added to `issue_comment_id`, if any."""
+        pending = getattr(self, "_start_reaction", None)
+        if not pending or pending[0] != issue_comment_id:
+            return
+        self._start_reaction = None
+        try:
+            self.remove_reaction(issue_comment_id, pending[1])
+        except Exception as e:
+            # Losing the start reaction is cosmetic; never let it fail the command that succeeded.
+            get_logger().warning("Failed to remove the start reaction", artifact={"error": e})
 
     @abstractmethod
     def remove_reaction(self, issue_comment_id: int, reaction_id: int) -> bool:
@@ -534,7 +818,7 @@ class GitProvider(ABC):
 
     #### commits operations ####
     @abstractmethod
-    def get_commit_messages(self):
+    def get_commit_messages(self) -> str:
         pass
 
     def get_pr_url(self) -> str:
@@ -558,7 +842,14 @@ class GitProvider(ABC):
             return -1
 
     def limit_output_characters(self, output: str, max_chars: int):
-        return output[:max_chars] + '...' if len(output) > max_chars else output
+        """Truncate output to max_chars, including the truncation suffix."""
+        if len(output) <= max_chars:
+            return output
+        if max_chars <= 0:
+            return ""
+        suffix = "..."
+        suffix = suffix[:max_chars]
+        return output[:max_chars - len(suffix)] + suffix
 
 
 def get_main_pr_language(languages, files) -> str:

@@ -36,10 +36,11 @@ class CodeCommitPullRequestResponse:
     class CodeCommitPullRequestTarget:
         """
         CodeCommitPullRequestTarget is a subclass of CodeCommitPullRequestResponse that
-        holds details about an individual target commit.
+        holds details about an individual target repository and commit comparison.
         """
 
         def __init__(self, json: dict):
+            self.repository_name = json.get("repositoryName", "")
             self.source_commit = json.get("sourceCommit", "")
             self.source_branch = json.get("sourceReference", "")
             self.destination_commit = json.get("destinationCommit", "")
@@ -53,6 +54,7 @@ class CodeCommitClient:
 
     def __init__(self):
         self.boto_client = None
+        self.comments_page_size = 100
 
     def is_supported(self, capability: str) -> bool:
         if capability in ["gfm_markdown"]:
@@ -212,9 +214,9 @@ class CodeCommitClient:
                 raise ValueError(f"Invalid description for PR number: {pr_number}") from e
             if e.response["Error"]["Code"] == 'PullRequestAlreadyClosedException':
                 raise ValueError(f"PR is already closed: PR number: {pr_number}") from e
-            raise ValueError(f"Boto3 client error calling publish_description") from e
+            raise ValueError("Boto3 client error calling publish_description") from e
         except Exception as e:
-            raise ValueError(f"Error calling publish_description") from e
+            raise ValueError("Error calling publish_description") from e
 
     def publish_comment(self, repo_name: str, pr_number: int, destination_commit: str, source_commit: str, comment: str, annotation_file: str = None, annotation_line: int = None):
         """
@@ -234,7 +236,7 @@ class CodeCommitClient:
         It does not support the ending line number to highlight a range of lines.
 
         Returns:
-        - None
+        - The boto3 post_comment_for_pull_request response
 
         Boto3 Documentation:
         - aws codecommit post_comment_for_pull_request
@@ -247,7 +249,7 @@ class CodeCommitClient:
             # If the comment has code annotations,
             # then set the file path and line number in the location dictionary
             if annotation_file and annotation_line:
-                self.boto_client.post_comment_for_pull_request(
+                return self.boto_client.post_comment_for_pull_request(
                     pullRequestId=str(pr_number),
                     repositoryName=repo_name,
                     beforeCommitId=destination_commit,
@@ -261,7 +263,7 @@ class CodeCommitClient:
                 )
             else:
                 # The comment does not have code annotations
-                self.boto_client.post_comment_for_pull_request(
+                return self.boto_client.post_comment_for_pull_request(
                     pullRequestId=str(pr_number),
                     repositoryName=repo_name,
                     beforeCommitId=destination_commit,
@@ -273,6 +275,69 @@ class CodeCommitClient:
                 raise ValueError(f"Repository does not exist: {repo_name}") from e
             if e.response["Error"]["Code"] == 'PullRequestDoesNotExistException':
                 raise ValueError(f"PR number does not exist: {pr_number}") from e
-            raise ValueError(f"Boto3 client error calling post_comment_for_pull_request") from e
+            raise ValueError("Boto3 client error calling post_comment_for_pull_request") from e
         except Exception as e:
-            raise ValueError(f"Error calling post_comment_for_pull_request") from e
+            raise ValueError("Error calling post_comment_for_pull_request") from e
+
+    def get_comments_for_pull_request(self, pr_number: int):
+        """
+        Retrieve all comments for a pull request.
+
+        Args:
+        - pr_number: The AWS CodeCommit pull request number
+
+        Returns:
+        - The flattened commentsForPullRequestData entries from all result pages
+
+        Boto3 Documentation:
+        - aws codecommit get_comments_for_pull_request
+        - https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/codecommit/client/get_comments_for_pull_request.html
+        """
+        if self.boto_client is None:
+            self._connect_boto_client()
+
+        comments_for_pull_request = []
+        try:
+            paginator = self.boto_client.get_paginator("get_comments_for_pull_request")
+            for page in paginator.paginate(
+                pullRequestId=str(pr_number),
+                PaginationConfig={"PageSize": self.comments_page_size},
+            ):
+                comments_for_pull_request.extend(page.get("commentsForPullRequestData", []))
+        except botocore.exceptions.ClientError as e:
+            if e.response["Error"]["Code"] == 'PullRequestDoesNotExistException':
+                raise ValueError(f"PR number does not exist: {pr_number}") from e
+            raise ValueError("Boto3 client error calling get_comments_for_pull_request") from e
+        except Exception as e:
+            raise ValueError("Error calling get_comments_for_pull_request") from e
+
+        return comments_for_pull_request
+
+    def update_comment(self, comment_id: str, comment: str):
+        """
+        Update an existing pull request comment.
+
+        Args:
+        - comment_id: The system-generated CodeCommit comment identifier
+        - comment: The replacement comment body
+
+        Returns:
+        - The boto3 update_comment response
+
+        Boto3 Documentation:
+        - aws codecommit update_comment
+        - https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/codecommit/client/update_comment.html
+        """
+        if self.boto_client is None:
+            self._connect_boto_client()
+
+        try:
+            return self.boto_client.update_comment(commentId=str(comment_id), content=comment)
+        except botocore.exceptions.ClientError as e:
+            if e.response["Error"]["Code"] == 'CommentDoesNotExistException':
+                raise ValueError(f"CodeCommit comment does not exist: {comment_id}") from e
+            if e.response["Error"]["Code"] == 'CommentDeletedException':
+                raise ValueError(f"CodeCommit comment has been deleted: {comment_id}") from e
+            raise ValueError("Boto3 client error calling update_comment") from e
+        except Exception as e:
+            raise ValueError("Error calling update_comment") from e

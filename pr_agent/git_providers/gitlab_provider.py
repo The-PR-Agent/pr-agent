@@ -1,36 +1,44 @@
 import difflib
-import hashlib
 import re
 import urllib.parse
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from typing import Any, Optional, Tuple, Union
-from urllib.parse import parse_qs, urlparse
+from typing import Optional, Tuple
+from urllib.parse import urlparse
 
 import gitlab
-import requests
-from gitlab import (GitlabAuthenticationError, GitlabCreateError,
-                    GitlabGetError, GitlabUpdateError)
+from gitlab import GitlabAuthenticationError, GitlabCreateError, GitlabGetError, GitlabUpdateError
 
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 
 from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import decode_if_bytes
-from ..algo.inline_comment_dedup import (body_fingerprint, body_with_markers,
-                                         code_fingerprint,
-                                         get_inline_comment_store,
-                                         is_agent_inline_comment,
-                                         marker_fingerprints)
+from ..algo.inline_comment_dedup import (
+    body_fingerprint,
+    body_with_markers,
+    code_fingerprint,
+    get_inline_comment_store,
+    is_agent_inline_comment,
+    marker_fingerprints,
+)
 from ..algo.language_handler import is_valid_file
-from ..algo.utils import (PRCodeSuggestionsHeader,
-                          PRCodeSuggestionsIdentity, clip_tokens,
-                          comment_matches_any_identity,
-                          find_line_number_of_relevant_line_in_file,
-                          get_pr_review_comment_identifiers, load_large_diff)
-from ..config_loader import get_settings
+from ..algo.utils import (
+    PRCodeSuggestionsHeader,
+    PRCodeSuggestionsIdentity,
+    clip_tokens,
+    comment_matches_any_identity,
+    find_line_number_of_relevant_line_in_file,
+    get_pr_review_comment_identifiers,
+    load_large_diff,
+)
+from ..config_loader import get_settings, get_verbosity_level
 from ..log import get_logger
-from .git_provider import (MAX_FILES_ALLOWED_FULL, GitProvider, IncrementalPR,
-                           get_cached_global_settings)
+from .git_provider import (
+    MAX_FILES_ALLOWED_FULL,
+    GitProvider,
+    IncrementalPR,
+    redact_credentials,
+)
 
 
 class DiffNotFoundError(Exception):
@@ -416,6 +424,9 @@ class GitLabProvider(GitProvider):
     def supports_incremental_kind(self, kind: str) -> bool:
         return kind in self._INCREMENTAL_ANCHOR_PREFIXES
 
+    def supports_issue_reference_tickets(self) -> bool:
+        return True
+
     def _get_project_path_from_pr_or_issue_url(self, pr_or_issue_url: str) -> str:
         repo_project_path = None
         if 'issues' in pr_or_issue_url:
@@ -724,7 +735,7 @@ class GitLabProvider(GitProvider):
 
     def get_pr_file_content(self, file_path: str, branch: str) -> str:
         try:
-            file_obj = self.gl.projects.get(self.id_project).files.get(file_path, branch)
+            file_obj = self.gl.projects.get(self.id_project, lazy=True).files.get(file_path, branch)
             content = file_obj.decode()
             return decode_if_bytes(content)
         except GitlabGetError:
@@ -830,7 +841,7 @@ class GitLabProvider(GitProvider):
                 new_file_content_str = self.get_pr_file_content(diff['new_path'], head_sha_for_content)
             else:
                 if counter_valid == MAX_FILES_ALLOWED_FULL:
-                    get_logger().info(f"Too many files in PR, will avoid loading full content for rest of files")
+                    get_logger().info("Too many files in PR, will avoid loading full content for rest of files")
                 original_file_content_str = ''
                 new_file_content_str = ''
 
@@ -881,7 +892,7 @@ class GitLabProvider(GitProvider):
             self.git_files = [c.get('new_path') for c in raw_changes if c.get('new_path')]
         return self.git_files
 
-    def publish_description(self, pr_title: str, pr_body: str):
+    def publish_description(self, pr_title: str, pr_body: str) -> None:
         try:
             if pr_title is not None:
                 self.mr.title = pr_title
@@ -889,6 +900,7 @@ class GitLabProvider(GitProvider):
             self.mr.save()
         except Exception as e:
             get_logger().exception(f"Could not update merge request {self.id_mr} description: {e}")
+            raise
 
     def get_latest_commit_url(self):
         try:
@@ -905,27 +917,30 @@ class GitLabProvider(GitProvider):
     def should_publish_review_as_thread(self) -> bool:
         return bool(get_settings().get("GITLAB.PUBLISH_REVIEW_AS_THREAD", False))
 
+    def should_publish_improve_as_thread(self) -> bool:
+        return bool(get_settings().get("GITLAB.PUBLISH_IMPROVE_AS_THREAD", False))
+
     def supports_review_comment_identity(self) -> bool:
         return True
 
-    def publish_persistent_comment(self, pr_comment: str,
-                                   initial_header: str,
-                                   update_header: bool = True,
-                                   name='review',
-                                   final_update_message=True,
-                                   as_thread: bool = False,
-                                   identity_marker: str | None = None,
-                                   legacy_initial_header: str | None = None):
-        self.publish_persistent_comment_full(
-            pr_comment,
-            initial_header,
-            update_header,
-            name,
-            final_update_message,
-            as_thread=as_thread,
-            identity_marker=identity_marker,
-            legacy_initial_header=legacy_initial_header,
-        )
+    def supports_review_finding_state(self) -> bool:
+        return True
+
+    def is_comment_authored_by_pr_agent(self, comment) -> bool:
+        if isinstance(comment, dict):
+            author = comment.get("author") or comment.get("user")
+        else:
+            author = getattr(comment, "author", None) or getattr(comment, "user", None)
+        if isinstance(author, dict):
+            author_id = author.get("id")
+        else:
+            author_id = getattr(author, "id", None)
+        if author_id is None:
+            raise RuntimeError("GitLab comment author cannot be verified")
+        own_user_id = self._get_own_user_id()
+        if own_user_id is None:
+            raise RuntimeError("GitLab authenticated user cannot be verified")
+        return str(author_id) == str(own_user_id)
 
     def publish_comment(self, mr_comment: str, is_temporary: bool = False, as_thread: bool = False):
         if is_temporary and not get_settings().config.publish_output_progress:
@@ -973,6 +988,23 @@ class GitLabProvider(GitProvider):
                 return
         except Exception as e:
             get_logger().warning(f"Failed to reopen resolved review thread: {e}")
+
+    def resolve_comment_thread(self, comment_id) -> bool:
+        # Resolves by note id. /ask_line addresses threads by discussion id instead, so
+        # supports_thread_resolution() stays False and that path keeps skipping GitLab.
+        try:
+            for discussion in self.mr.discussions.list(get_all=True):
+                notes = discussion.attributes.get('notes', [])
+                if not any(note.get('id') == comment_id for note in notes):
+                    continue
+                if any(note.get('resolvable') and not note.get('resolved') for note in notes):
+                    discussion.resolved = True
+                    discussion.save()
+                    return True
+                return False
+        except Exception as e:
+            get_logger().warning(f"Failed to resolve comment thread: {e}")
+        return False
 
     def resolve_outdated_inline_threads(self):
         if not get_settings().get("GITLAB.RESOLVE_OUTDATED_INLINE_THREADS", False):
@@ -1033,10 +1065,10 @@ class GitLabProvider(GitProvider):
                                  target_file, target_line_no, original_suggestion)
 
     def create_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str, absolute_position: int = None):
-        raise NotImplementedError("Gitlab provider does not support creating inline comments yet")
+        raise NotImplementedError("GitLab provider does not support creating inline comments yet")
 
     def create_inline_comments(self, comments: list[dict]):
-        raise NotImplementedError("Gitlab provider does not support publishing inline comments yet")
+        raise NotImplementedError("GitLab provider does not support publishing inline comments yet")
 
     def get_comment_body_from_comment_id(self, comment_id: int):
         comment = self.mr.notes.get(comment_id).body
@@ -1143,7 +1175,7 @@ class GitLabProvider(GitProvider):
                 link = self.get_line_link(relevant_file, line_start, line_end)
                 body_fallback =f"**Suggestion:** {content} [{label}, importance: {score}]\n\n"
                 body_fallback +=f"\n\n<details><summary>[{target_file.filename} [{line_start}-{line_end}]]({link}):</summary>\n\n"
-                body_fallback += f"\n\n___\n\n`(Cannot implement directly - GitLab API allows committable suggestions strictly on MR diff lines)`"
+                body_fallback += "\n\n___\n\n`(Cannot implement directly - GitLab API allows committable suggestions strictly on MR diff lines)`"
                 body_fallback+="</details>\n\n"
                 diff_patch = difflib.unified_diff(old_code_snippet.split('\n'),
                                             new_code_snippet.split('\n'), n=999)
@@ -1224,7 +1256,13 @@ class GitLabProvider(GitProvider):
                     continue
                 range = relevant_lines_end - relevant_lines_start # no need to add 1
                 body = body.replace('```suggestion', f'```suggestion:-0+{range}')
-                lines = target_file.head_file.splitlines()
+                lines = target_file.head_file.splitlines() if target_file.head_file else []
+                if not 0 < relevant_lines_start <= len(lines):
+                    get_logger().warning(
+                        f"Skipping suggestion: line {relevant_lines_start} out of range "
+                        f"for '{relevant_file}' (head content has {len(lines)} lines)"
+                    )
+                    continue
                 relevant_line_in_file = lines[relevant_lines_start - 1]
 
                 # edit_type, found, source_line_no, target_file, target_line_no = self.find_in_file(target_file,
@@ -1353,30 +1391,32 @@ class GitLabProvider(GitProvider):
     def get_pr_branch(self):
         return self.mr.source_branch
 
-    def get_pr_owner_id(self) -> str | None:
-        if not self.gitlab_url or 'gitlab.com' in self.gitlab_url:
-            if not self.id_project:
+    def get_owning_namespace(self) -> str | None:
+        # The top-level group of the project's path_with_namespace works on any host
+        # (gitlab.com or self-hosted) with no extra round trip: numeric project IDs are
+        # resolved to their canonical path first so the group name is still available.
+        if not getattr(self, "gl", None) or not getattr(self, "id_project", None):
+            return None
+        project_id = str(self.id_project)
+        if project_id.isascii() and project_id.isdigit():
+            try:
+                project_path = self.gl.projects.get(project_id).path_with_namespace
+            except Exception as e:
+                get_logger().warning(f"Failed to resolve canonical GitLab project path, error: {e}")
                 return None
-            project_id = str(self.id_project)
-            if project_id.isascii() and project_id.isdigit():
-                try:
-                    project_path = self.gl.projects.get(project_id).path_with_namespace
-                except Exception as e:
-                    get_logger().warning(f"Failed to resolve canonical GitLab project path, error: {e}")
-                    return None
-                if not project_path:
-                    return None
-                return project_path.split('/')[0]
-            return project_id.split('/')[0]
-        # extract host name
-        host = urlparse(self.gitlab_url).hostname
-        return host
+            if not project_path:
+                return None
+            return project_path.split('/')[0]
+        return project_id.split('/')[0]
 
     def get_pr_description_full(self):
         return self.mr.description
 
     def get_issue_comments(self):
         return self.mr.notes.list(get_all=True)[::-1]
+
+    def get_issue_comments_newest_first(self):
+        return list(reversed(self.get_issue_comments()))
 
     def get_repo_settings(self):
         settings_files = []
@@ -1394,21 +1434,8 @@ class GitLabProvider(GitProvider):
             get_logger().warning(f"Failed to load local .pr_agent.toml file, error: {e}")
         return settings_files if settings_files else ""
 
-    def _get_global_repo_settings(self):
-        # Load an org-wide <group>/pr-agent-settings/.pr_agent.toml (GitLab.com groups only).
-        if not get_settings().config.use_global_settings_file:
-            return ""
-        if not getattr(self, "gl", None) or not getattr(self, "id_project", None):
-            return ""
-        # Group-level global settings are GitLab.com only. Match the host exactly so a self-hosted
-        # instance whose hostname merely contains "gitlab.com" (e.g. "mygitlab.com") is not treated
-        # as GitLab.com. get_pr_owner_id returns the top-level group on gitlab.com.
-        host = (urlparse(self.gitlab_url).hostname or "").lower() if self.gitlab_url else ""
-        group = self.get_pr_owner_id()
-        if not group or host != "gitlab.com":
-            return ""
-        return get_cached_global_settings(
-            f"gitlab:{group}", lambda: self._fetch_global_repo_settings(group))
+    def _get_global_settings_cache_key(self, group: str) -> str:
+        return f"gitlab:{getattr(self, 'gitlab_url', '')}:{group}"
 
     def _fetch_global_repo_settings(self, group):
         try:
@@ -1438,15 +1465,26 @@ class GitLabProvider(GitProvider):
                 return ""
             raise
 
+    def get_repo_context_ref(self, from_default_branch: bool = False) -> Optional[str]:
+        # The MR target branch (the branch being merged into) is the cached revision; the
+        # project default branch is consulted when from_default_branch is requested or no MR
+        # target exists, mirroring get_repo_file_content. Both are branch names, so the project
+        # is fetched at most once per provider rather than on every repo-context read.
+        if not from_default_branch:
+            target_branch = getattr(self.mr, "target_branch", None)
+            if target_branch:
+                return target_branch
+        if not hasattr(self, "_repo_context_default_branch"):
+            self._repo_context_default_branch = self.gl.projects.get(self.id_project).default_branch
+        return self._repo_context_default_branch
+
     def get_workspace_name(self):
         return self.id_project.split('/')[0]
 
-    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
-        if disable_eyes:
-            return None
+    def add_reaction(self, issue_comment_id: int, reaction: str) -> Optional[int]:
         try:
             if not self.id_mr:
-                get_logger().warning("Cannot add eyes reaction: merge request ID is not set.")
+                get_logger().warning("Cannot add a reaction: merge request ID is not set.")
                 return None
 
             mr = self.gl.projects.get(self.id_project).mergerequests.get(self.id_mr)
@@ -1457,11 +1495,11 @@ class GitLabProvider(GitProvider):
                 return None
 
             award_emoji = comment.awardemojis.create({
-                'name': 'eyes'
+                'name': reaction
             })
             return award_emoji.id
         except Exception as e:
-            get_logger().warning(f"Failed to add eyes reaction, error: {e}")
+            get_logger().warning(f"Failed to add the {reaction} reaction, error: {e}")
             return None
 
     def remove_reaction(self, issue_comment_id: int, reaction_id: str) -> bool:
@@ -1617,7 +1655,7 @@ class GitLabProvider(GitProvider):
     def get_repo_labels(self):
         return self.gl.projects.get(self.id_project).labels.list()
 
-    def get_commit_messages(self):
+    def get_commit_messages(self) -> str:
         """
         Retrieves the commit messages of a pull request.
 
@@ -1652,6 +1690,9 @@ class GitLabProvider(GitProvider):
 
     def get_line_link(self, relevant_file: str, relevant_line_start: int, relevant_line_end: int = None) -> str:
         project_web_url = self._get_project_web_url()
+        relevant_line_start, relevant_line_end = self._normalize_line_range(
+            relevant_line_start, relevant_line_end
+        )
         if relevant_line_start == -1:
             link = f"{project_web_url}/-/blob/{self.mr.source_branch}/{relevant_file}?ref_type=heads"
         elif relevant_line_end:
@@ -1686,20 +1727,20 @@ class GitLabProvider(GitProvider):
                 # link = f"{self.pr.web_url}/diffs#{sha_file}_{absolute_position}_{absolute_position}"
                 return link
         except Exception as e:
-            if get_settings().config.verbosity_level >= 2:
+            if get_verbosity_level() >= 2:
                 get_logger().info(f"Failed adding line link, error: {e}")
 
         return ""
     #Clone related
     def _prepare_clone_url_with_token(self, repo_url_to_clone: str) -> str | None:
         if "gitlab." not in repo_url_to_clone:
-            get_logger().error(f"Repo URL: {repo_url_to_clone} is not a valid gitlab URL.")
+            get_logger().error(f"Repo URL: {redact_credentials(repo_url_to_clone)} is not a valid gitlab URL.")
             return None
         (scheme, base_url) = repo_url_to_clone.split("gitlab.")
         access_token = getattr(self.gl, 'oauth_token', None) or getattr(self.gl, 'private_token', None)
         if not all([scheme, access_token, base_url]):
-            get_logger().error(f"Either no access token found, or repo URL: {repo_url_to_clone} "
-                               f"is missing prefix: {scheme} and/or base URL: {base_url}.")
+            get_logger().error(f"Either no access token found, or repo URL: {redact_credentials(repo_url_to_clone)} "
+                               f"is missing prefix: {redact_credentials(scheme)} and/or base URL: {base_url}.")
             return None
 
         #Note that the ""official"" method found here:

@@ -9,6 +9,7 @@ import uuid
 from collections import Counter, namedtuple
 from pathlib import Path
 from tempfile import NamedTemporaryFile, mkdtemp
+from typing import Optional
 
 import requests
 import urllib3.util
@@ -107,9 +108,19 @@ def prepare_repo(url: urllib3.util.Url, project, refspec):
     repo_url = (f"{url.scheme}://{url.auth}@{url.host}:{url.port}/{project}")
 
     directory = pathlib.Path(mkdtemp())
-    clone(repo_url, directory)
-    fetch(repo_url, refspec, cwd=directory)
-    checkout(cwd=directory)
+    try:
+        clone(repo_url, directory)
+        fetch(repo_url, refspec, cwd=directory)
+        checkout(cwd=directory)
+    except BaseException:
+        try:
+            shutil.rmtree(directory)
+        except OSError as cleanup_error:
+            get_logger().warning(
+                "Failed to clean up temp repo at {} after setup failed: {}",
+                directory, cleanup_error
+            )
+        raise
     return directory
 
 
@@ -231,26 +242,24 @@ class GerritProvider(GitProvider):
         """
         return self.repo.branches[0].name
 
-    def get_issue_comments(self):
-        comments = list_comments(self.parsed_url, self.refspec)
-        Comments = namedtuple('Comments', ['reversed'])
+    def get_issue_comments(self) -> list:
         Comment = namedtuple('Comment', ['body'])
-        return Comments([Comment(c['message']) for c in reversed(comments)])
+        return [Comment(c['message']) for c in list_comments(self.parsed_url, self.refspec)]
 
     def get_pr_labels(self, update=False):
         raise NotImplementedError(
             'Getting labels is not implemented for the gerrit provider')
 
-    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False):
+    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
         raise NotImplementedError(
             'Adding reactions is not implemented for the gerrit provider')
 
-    def remove_reaction(self, issue_comment_id: int, reaction_id: int):
+    def remove_reaction(self, issue_comment_id: int, reaction_id: int) -> bool:
         raise NotImplementedError(
             'Removing reactions is not implemented for the gerrit provider')
 
-    def get_commit_messages(self):
-        return [self.repo.head.commit.message]
+    def get_commit_messages(self) -> str:
+        return self.repo.head.commit.message
 
     def get_repo_settings(self):
         try:
@@ -272,17 +281,20 @@ class GerritProvider(GitProvider):
 
         diff_files = []
         for diff_item in diffs:
-            if diff_item.a_blob is not None:
-                original_file_content_str = (
-                    diff_item.a_blob.data_stream.read().decode('utf-8')
-                )
-            else:
-                original_file_content_str = ""  # empty file
-            if diff_item.b_blob is not None:
-                new_file_content_str = diff_item.b_blob.data_stream.read(). \
-                    decode('utf-8')
-            else:
-                new_file_content_str = ""  # empty file
+            filename = diff_item.b_path or diff_item.a_path
+            try:
+                if diff_item.a_blob is not None:
+                    original_file_content_str = diff_item.a_blob.data_stream.read().decode("utf-8")
+                else:
+                    original_file_content_str = ""  # empty file
+                if diff_item.b_blob is not None:
+                    new_file_content_str = diff_item.b_blob.data_stream.read().decode("utf-8")
+                else:
+                    new_file_content_str = ""  # empty file
+                patch = diff_item.diff.decode("utf-8")
+            except UnicodeDecodeError as e:
+                get_logger().warning(f"Skipping non-UTF-8 file in Gerrit diff: {filename!r} ({e})")
+                continue
             edit_type = EDIT_TYPE.MODIFIED
             if diff_item.new_file:
                 edit_type = EDIT_TYPE.ADDED
@@ -294,8 +306,8 @@ class GerritProvider(GitProvider):
                 FilePatchInfo(
                     original_file_content_str,
                     new_file_content_str,
-                    diff_item.diff.decode('utf-8'),
-                    diff_item.b_path or diff_item.a_path,
+                    patch,
+                    filename,
                     edit_type=edit_type,
                     old_filename=None
                     if diff_item.a_path == diff_item.b_path
@@ -375,8 +387,10 @@ class GerritProvider(GitProvider):
             '\n'.join(context) + '\n' if context else ''
         )
 
-    def publish_code_suggestions(self, code_suggestions: list):
+    def publish_code_suggestions(self, code_suggestions: list) -> bool:
         msg = []
+        publishable_count = 0
+        published_count = 0
         repo_root = pathlib.Path(self.repo_path).resolve()
         for suggestion in code_suggestions:
             # Validate suggestion structure before accessing keys
@@ -390,6 +404,8 @@ class GerritProvider(GitProvider):
             except ValueError:
                 get_logger().warning(f"Skipping suggestion with path traversal: {suggestion['relevant_file']}")
                 continue
+
+            publishable_count += 1
             description, code = self.split_suggestion(suggestion['body'])
             add_suggestion(
                 target_path,
@@ -405,8 +421,13 @@ class GerritProvider(GitProvider):
             msg.append(f'* {description}\n{full_path}')
 
         if msg:
-            add_comment(self.parsed_url, self.refspec, "\n".join(msg))
-            return True
+            try:
+                add_comment(self.parsed_url, self.refspec, "\n".join(msg))
+                published_count += 1
+            except Exception as e:
+                get_logger().exception("Failed to publish Gerrit code suggestions: {}", e)
+
+        return published_count > 0 or publishable_count == 0
 
     def publish_comment(self, pr_comment: str, is_temporary: bool = False):
         if not is_temporary:
@@ -435,9 +456,36 @@ class GerritProvider(GitProvider):
         # but required by the interface
         pass
 
+    def cleanup(self):
+        """Remove the temporary cloned repository from disk."""
+        if self.repo_path and pathlib.Path(self.repo_path).exists():
+            try:
+                shutil.rmtree(self.repo_path)
+                get_logger().info("Cleaned up temp repo at {}", self.repo_path)
+            except (OSError, PermissionError) as e:
+                get_logger().warning(
+                    "Failed to clean up temp repo at {}: {}",
+                    self.repo_path, e
+                )
+
+    def __del__(self):
+        """Safety net: clean up temp repo if cleanup() was not called.
+
+        The server's finally block can only reach providers stored in
+        starlette_context. PRQuestions builds its own provider with
+        get_git_provider(), so an /ask request never registers there and
+        would leak its clone without this.
+        """
+        try:
+            self.cleanup()
+        except Exception as e:
+            get_logger().debug("Temp repo cleanup failed during __del__: {}", e)
+
     def remove_initial_comment(self):
-        # remove repo, cloned in previous steps
-        # shutil.rmtree(self.repo_path)
+        # Do NOT call cleanup() here — this method is invoked during the
+        # request lifecycle while the cloned repo is still needed by
+        # subsequent commands.  Actual cleanup happens in the server's
+        # finally block and in __del__ as a safety net.
         pass
 
     def remove_comment(self, comment):

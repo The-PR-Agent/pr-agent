@@ -3,9 +3,14 @@ from decimal import Decimal
 
 import pytest
 
-from pr_agent.algo.run_details import (RunDetails, add_token_usage,
-                                       get_run_details, init_run_details,
-                                       record_ai_call, record_model_used)
+from pr_agent.algo.run_details import (
+    RunDetails,
+    add_token_usage,
+    get_run_details,
+    init_run_details,
+    record_ai_call,
+    record_model_used,
+)
 
 
 class _Usage:

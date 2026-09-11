@@ -26,7 +26,6 @@ from starlette_context.middleware import RawContextMiddleware
 # that chain completes before any get_settings() call below, avoiding a partial-init
 # circular import when server.py is the first module loaded (e.g. at test collection).
 import pr_agent.config_loader  # noqa: F401  (import-order load; do not remove)
-
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.mosaico.card import build_agent_card
 from pr_agent.mosaico.env_bridge import apply_mosaico_env, langfuse_env_present
@@ -57,7 +56,7 @@ def _configure_runtime() -> None:
     The JSON logger is configured in start() instead (real runtime), where the config is
     already loaded. build_app() does not depend on the JSON sink."""
     apply_mosaico_env()
-    # Idempotent registry insert (_GIT_PROVIDERS.setdefault("mosaico_diff", ...)).
+    # Idempotent registration (register_git_provider("mosaico_diff", ...)).
     import pr_agent.mosaico.provider_registration  # noqa: F401
     _configure_langfuse()
 

@@ -1,6 +1,6 @@
 ## Overview
 
-The `improve` tool scans the PR code changes, and automatically generates meaningful suggestions for improving the PR code.
+Generate actionable code suggestions for improving the PR.
 The tool can be triggered automatically every time a new PR is [opened](../usage-guide/automations_and_usage.md#github-app-automatic-tools-when-a-new-pr-is-opened), or it can be invoked manually by commenting on any PR:
 
 ```toml
@@ -10,10 +10,10 @@ The tool can be triggered automatically every time a new PR is [opened](../usage
 ## How it looks
 
 === "Suggestions Overview"
-    ![code_suggestions_as_comment_closed](https://codium.ai/images/pr_agent/code_suggestions_as_comment_closed.png){width=512}
+    ![code_suggestions_as_comment_closed](../assets/code_suggestions_as_comment_closed.png){width=512}
 
 === "Selecting a specific suggestion"
-    ![code_suggestions_as_comment_open](https://codium.ai/images/pr_agent/code_suggestions_as_comment_open.png){width=512}
+    ![code_suggestions_as_comment_open](../assets/code_suggestions_as_comment_open.png){width=512}
 
 ___
 
@@ -37,7 +37,15 @@ For example, you can present suggestions with verified replacement ranges as com
 
 Suggestions whose replacement ranges cannot be verified remain regular comments without an apply action.
 
-![improve](https://codium.ai/images/pr_agent/improve.png){width=512}
+If batch publication fails, `/improve` retries each suggestion individually. If every retry fails,
+it reports a failure instead of silently removing the progress comment. With
+`config.propagate_tool_errors=true`, the publication error is also raised to the caller.
+Regular fallback comments and coverage notices are published before the error is reported.
+When this fallback output succeeds, it is retained without an additional failure banner;
+error propagation still follows `config.propagate_tool_errors`.
+If any individual retry succeeds, the existing partial-recovery behavior is preserved.
+
+![improve](../assets/improve.png){width=512}
 
 ### Automatic triggering
 
@@ -58,13 +66,19 @@ num_code_suggestions_per_chunk = ...
 - The `pr_commands` lists commands that will be executed automatically when a PR is opened.
 - The `[pr_code_suggestions]` section contains the configurations for the `improve` tool you want to edit (if any)
 
+### Incremental suggestions
+
+On Azure DevOps, run `/improve -i` to analyze only changes made after the latest code-suggestions pass. The first
+incremental run analyzes the full pull request when no earlier suggestions comment exists. A later run with no new
+changes exits without calling the model.
+
 ### Table vs Committable code comments
 
 PR-Agent supports two modes for presenting code suggestions:
 
-1) [Table](https://codium.ai/images/pr_agent/code_suggestions_as_comment_closed.png) mode
+1) [Table](../assets/code_suggestions_as_comment_closed.png) mode
 
-2) [Inline Committable](https://codium.ai/images/pr_agent/improve.png) code comments mode.
+2) [Inline Committable](../assets/improve.png) code comments mode.
 
 The table format offers several key advantages:
 
@@ -76,7 +90,7 @@ The table format offers several key advantages:
 
 Table mode is the default of PR-Agent, and is recommended approach for most users due to these benefits.
 
-![code_suggestions_as_comment_closed.png](https://codium.ai/images/pr_agent/code_suggestions_as_comment_closed.png){width=512}
+![code_suggestions_as_comment_closed.png](../assets/code_suggestions_as_comment_closed.png){width=512}
 
 Teams with specific preferences can enable committable code comments mode in their local configuration, or use [dual publishing mode](#dual-publishing-mode).
 
@@ -108,9 +122,20 @@ Use triple quotes to write multi-line instructions. Use bullet points or numbers
 
 ### Best practices
 
-`Platforms supported: GitHub, GitLab, Bitbucket`
+`Repository context files supported: GitHub, GitLab, Gitea, Bitbucket, Azure DevOps`
 
-PR-Agent supports both simple and hierarchical best practices configurations to provide guidance to the AI model for generating relevant code suggestions.
+The open-source PR-Agent package does not load `best_practices.md` automatically. To use a best-practices file,
+add it to `config.repo_context_files`:
+
+```toml
+[config]
+repo_context_files = ["AGENTS.md", "best_practices.md"]
+```
+
+This fallback supports GitHub, GitLab, Gitea, Bitbucket, and Azure DevOps. Repository context files are read
+from the default branch by default and are limited by `config.repo_context_max_lines` (500 lines by default).
+Set `config.repo_context_from_default_branch = false` to read them from the pull request's target branch instead.
+Providers without repository file fetching log a warning and skip this context.
 
 ???- tip "Writing effective best practices files"
 
@@ -119,10 +144,11 @@ PR-Agent supports both simple and hierarchical best practices configurations to 
     - Write clearly and concisely
     - Include brief code examples when helpful with before/after patterns
     - Focus on project-specific guidelines that will result in relevant suggestions you actually want to get
-    - Keep each file relatively short, under 800 lines, since:
+    - Keep each file short and focused, since:
         - AI models may not process effectively very long documents
         - Long files tend to contain generic guidelines already known to AI
-        - Maximum multiple file accumulated content is limited to 2000 lines.
+        - `config.repo_context_max_lines` limits the total rendered repository context, including wrapper and
+          truncation lines.
     - Use pattern-based structure rather than simple bullet points for better clarity
 
 ???- tip "Example of a best practices file"
@@ -168,17 +194,11 @@ PR-Agent supports both simple and hierarchical best practices configurations to 
         return ""
     ```
 
-#### Local best practices
-
-For basic usage, create a `best_practices.md` file in your repository's root directory containing a list of best practices, coding standards, and guidelines specific to your repository.
-
-The AI model will use this `best_practices.md` file as a reference, and in case the PR code violates any of the guidelines, it will create additional suggestions, with a dedicated label: `Organization best practice`.
-
 ### Combining 'extra instructions' and 'best practices'
 
 The `extra instructions` configuration is more related to the `improve` tool prompt. It can be used, for example, to avoid specific suggestions ("Don't suggest to add try-except block", "Ignore changes in toml files", ...) or to emphasize specific aspects or formats ("Answer in Japanese", "Give only short suggestions", ...)
 
-In contrast, the `best_practices.md` file is a general guideline for the way code should be written in the repo.
+In contrast, a `best_practices.md` file is a general guideline for the way code should be written in the repo.
 
 Using a combination of both can help the AI model to provide relevant and tailored suggestions.
 
@@ -217,7 +237,21 @@ Where x represents the minimum score threshold (>=) for suggestions to be presen
 
 By default, PR-Agent re-posts identical inline code comments on every run, which clutters the discussion, particularly on GitLab. The persistent inline comments feature prevents this by skipping the re-posting of comments that are already present from an earlier run. This is achieved by embedding a hidden HTML-comment marker with a short fingerprint in each posted comment, allowing PR-Agent to scan existing comment bodies on later runs to identify and skip duplicates.
 
-Two fingerprints are used and matched with OR logic: one over the comment text (file, line, normalised text) and one over the proposed code block when present. This approach catches a re-emitted finding even when the model rephrases the prose or slightly changes the code. The feature is opt-in and off by default, and is implemented for the GitHub and GitLab providers; other providers are unaffected.
+Two fingerprints are used and matched with OR logic: one over the comment text (file, line, normalised text) and one
+over the proposed code block when present. This approach catches a re-emitted finding even when the model rephrases
+the prose or slightly changes the code. The feature is opt-in and off by default, and is implemented for the GitHub,
+GitLab, and Azure DevOps providers.
+
+Azure DevOps fingerprints include the complete line range and normalized finding text, so the same issue at another
+location remains eligible. Active suggestion threads are marked as fixed when their proposed code exactly matches the
+current file. Existing terminal statuses are preserved.
+
+Azure DevOps also includes earlier suggestion threads and their replies as context on the next suggestions pass. A
+regular `/improve` reviews the full current pull request while avoiding issues that were already raised, addressed,
+rejected, or deferred. Use `/improve -i` to review only changes since the previous suggestions pass.
+
+Duplicate suppression and applied-suggestion reconciliation require `persistent_inline_comments`. Discussion context
+and threaded questions remain available without it.
 
 To enable it, use the following setting:
 
@@ -258,7 +292,7 @@ You can set the content of the checkbox text via:
 code_suggestions_self_review_text = "... (your text here) ..."
 ```
 
-![self_review_1](https://codium.ai/images/pr_agent/self_review_1.png){width=512}
+![self_review_1](../assets/self_review_1.webp){width=512}
 
 !!! note "The checkbox is a visual marker only"
 
@@ -276,6 +310,9 @@ PR-Agent uses a dynamic strategy to generate code suggestions based on the size 
 #### 2. Generating suggestions
 
 - For each chunk, PR-Agent generates up to `pr_code_suggestions.num_code_suggestions_per_chunk` suggestions (default: 3).
+- To bound output from large or chunked PRs, set `pr_code_suggestions.max_suggestions_per_file` to a positive integer.
+  After all chunks are merged, the highest-scored suggestions are retained per file; ties keep their original order.
+  The default value `0` disables this cap.
 
 This approach has two main benefits:
 
@@ -285,6 +322,10 @@ This approach has two main benefits:
 Note: Chunking is primarily relevant for large PRs. For most PRs (up to 600 lines of code), PR-Agent will be able to process the entire code in a single call.
 
 ## Configuration options
+
+The descriptions below explain each option's behavior. See the relevant sections in
+[`configuration.toml`](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml)
+for the authoritative default values.
 
 ???+ example "General options"
 
@@ -301,47 +342,47 @@ Note: Chunking is primarily relevant for large PRs. For most PRs (up to 600 line
           <code>## Guideline Improvement Suggestions ✨</code>. On GitHub, GitLab, and Azure DevOps,
           changing this value updates the same persistent suggestions comment; it does not create a separate
           suggestions channel. LocalGit uses the same visible heading in <code>improve.md</code>, without a
-          hidden identity marker. The setting does not affect committable inline suggestions. Default is
-          <code>PR Code Suggestions</code>.
+          hidden identity marker. The setting does not affect committable inline suggestions.
         </td>
       </tr>
       <tr>
         <td><b>commitable_code_suggestions</b></td>
-        <td>If set to true, the tool will display the suggestions as committable code comments. Default is false.</td>
+        <td>If set to true, the tool will display the suggestions as committable code comments.</td>
       </tr>
       <tr>
         <td><b>dual_publishing_score_threshold</b></td>
-        <td>Minimum score threshold for suggestions to be presented as committable PR comments in addition to the table. Default is -1 (disabled).</td>
+        <td>Minimum score threshold for suggestions to be presented as committable PR comments in addition to the table.</td>
       </tr>
       <tr>
         <td><b>focus_only_on_problems</b></td>
-        <td>If set to true, suggestions will focus primarily on identifying and fixing code problems, and less on style considerations like best practices, maintainability, or readability. Default is true.</td>
+        <td>If set to true, suggestions will focus primarily on identifying and fixing code problems, and less on
+        style considerations like best practices, maintainability, or readability.</td>
       </tr>
       <tr>
         <td><b>persistent_comment</b></td>
-        <td>If set to true, the improve comment will be persistent, meaning that every new improve request will edit the previous one. Default is true.</td>
+        <td>If set to true, the improve comment will be persistent, meaning that every new improve request will edit the previous one.</td>
       </tr>
       <tr>
         <td><b>suggestions_score_threshold</b></td>
-        <td> Any suggestion with importance score less than this threshold will be removed. Default is 0. Highly recommend not to set this value above 7-8, since above it may clip relevant suggestions that can be useful. </td>
+        <td>Any suggestion with importance score less than this threshold will be removed. Values above 7-8 may clip relevant suggestions.</td>
       </tr>
       <tr>
         <td><b>enable_help_text</b></td>
-        <td>If set to true, the tool will display a help text in the comment. Default is false.</td>
+        <td>If set to true, the tool will display a help text in the comment.</td>
       </tr>
       <tr>
         <td><b>enable_chat_text</b></td>
-        <td>If set to true, the tool will display a reference to the PR chat in the comment. Default is false.</td>
+        <td>If set to true, the tool will display a reference to the PR chat in the comment.</td>
       </tr>
       <tr>
         <td><b>publish_output_no_suggestions</b></td>
-        <td>If set to true, the tool will publish a comment even if no suggestions were found. Default is true.</td>
+        <td>If set to true, the tool will publish a comment even if no suggestions were found.</td>
       </tr>
       <tr>
         <td><b>enable_suggestions_coverage_footer</b></td>
         <td>
           If set to true, the tool will display a coverage notice when failed analysis chunks make the
-          suggestions incomplete. Default is true.
+          suggestions incomplete.
         </td>
       </tr>
     </table>
@@ -351,11 +392,18 @@ Note: Chunking is primarily relevant for large PRs. For most PRs (up to 600 line
     <table>
       <tr>
         <td><b>num_code_suggestions_per_chunk</b></td>
-        <td>Number of code suggestions provided by the 'improve' tool, per chunk. Default is 3.</td>
+        <td>Number of code suggestions provided by the 'improve' tool, per chunk.</td>
+      </tr>
+      <tr>
+        <td><b>max_suggestions_per_file</b></td>
+        <td>
+          Maximum number of suggestions retained for each file after chunk results are combined. The highest-scored
+          suggestions are retained. Set to <code>0</code> to preserve the uncapped behavior.
+        </td>
       </tr>
       <tr>
         <td><b>max_number_of_calls</b></td>
-        <td>Maximum number of chunks. Default is 3.</td>
+        <td>Maximum number of chunks.</td>
       </tr>
     </table>
 

@@ -81,3 +81,16 @@ class TestAzureDevopsProviderCommitUrl(unittest.TestCase):
 
             assert url == "https://dev.azure.com/org/Dev%20Project/_git/repo%20name/commit/abc123"
             assert " " not in url
+
+    def test_get_latest_commit_url_empty_commit_list(self):
+        # a PR force-pushed back onto its base has zero commits; the provider must not
+        # index an empty list, and should fall back to the base-class empty-string contract
+        with patch.object(AzureDevopsProvider, "_get_azure_devops_client", return_value=(MagicMock(), MagicMock())):
+            provider = AzureDevopsProvider()
+            provider.workspace_slug = "ws"
+            provider.repo_slug = "repo"
+            provider.pr_num = 1234
+
+            provider.azure_devops_client.get_pull_request_commits.return_value = []
+
+            assert provider.get_latest_commit_url() == ""

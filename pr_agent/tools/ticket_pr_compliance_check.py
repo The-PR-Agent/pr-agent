@@ -1,3 +1,4 @@
+import copy
 import math
 import re
 import traceback
@@ -6,16 +7,25 @@ from urllib.parse import urlparse
 import aiohttp
 from atlassian import Jira
 
+from pr_agent.algo.pr_processing import OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD
+from pr_agent.algo.token_handler import TokenHandler
+from pr_agent.algo.utils import get_max_tokens
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers import AzureDevopsProvider, GithubProvider, GitLabProvider
+from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.log import get_logger
 
 # Compile the regex pattern once, outside the function
 GITHUB_TICKET_PATTERN = re.compile(
-     r'(https://github[^/]+/[^/]+/[^/]+/issues/\d+)|(\b(\w+)/(\w+)#(\d+)\b)|(#\d+)'
+    r'(https://github[^/]+/[^/]+/[^/]+/issues/\d+)'
+    r'|((?<![\w./-])([A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)/([A-Za-z0-9._-]+)#(\d+)\b)'
+    r'|(#\d+)'
 )
 # Option A: issue number at start of branch or after /, followed by - or end (e.g. feature/1-test-issue, 123-fix)
 BRANCH_ISSUE_PATTERN = re.compile(r"(?:^|/)(\d{1,6})(?=-|$)")
+# A bare "#12345" is as likely to be an error code as an issue, so a shorthand reference is
+# only followed up to this many digits. The bound matches BRANCH_ISSUE_PATTERN above: the same
+# number written in a branch name and in the description should resolve the same way.
+MAX_SHORTHAND_ISSUE_DIGITS = 6
 
 # Cap on the total tickets analysed per PR, enforced at the Jira step (see add_jira_tickets).
 # The provider-native lookups keep their own budgets (MAX_GITHUB_TICKETS, MAX_GITLAB_TICKETS,
@@ -257,6 +267,73 @@ GITLAB_TICKET_PATTERN = re.compile(
 GITLAB_ISSUE_PATH_PATTERN = re.compile(r"/-/issues/(?P<iid>\d+)(?=/|$)")
 
 
+def fit_related_tickets_to_prompt_budget(
+    pr,
+    raw_vars: dict,
+    system_prompt: str,
+    user_prompt: str,
+    model: str,
+) -> tuple[dict, TokenHandler]:
+    """Fit complete related-ticket records while preserving room for the PR diff."""
+    prompt_vars = copy.deepcopy(raw_vars)
+    related_tickets = prompt_vars.get("related_tickets")
+    if not isinstance(related_tickets, list) or not related_tickets:
+        return prompt_vars, TokenHandler(
+            pr,
+            prompt_vars,
+            system_prompt,
+            user_prompt,
+            model=model,
+        )
+
+    raw_tickets = copy.deepcopy(related_tickets)
+    prompt_vars["related_tickets"] = []
+    token_handler = TokenHandler(
+        pr,
+        prompt_vars,
+        system_prompt,
+        user_prompt,
+        model=model,
+    )
+    prompt_token_limit = max(
+        token_handler.prompt_tokens,
+        get_max_tokens(model) - 2 * OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+    )
+
+    lower_bound = 1
+    upper_bound = len(raw_tickets)
+    while lower_bound <= upper_bound:
+        prefix_size = (lower_bound + upper_bound) // 2
+        candidate_vars = copy.deepcopy(prompt_vars)
+        candidate_vars["related_tickets"] = copy.deepcopy(raw_tickets[:prefix_size])
+        candidate_handler = TokenHandler(
+            pr,
+            candidate_vars,
+            system_prompt,
+            user_prompt,
+            model=model,
+        )
+        if candidate_handler.prompt_tokens > prompt_token_limit:
+            upper_bound = prefix_size - 1
+        else:
+            prompt_vars = candidate_vars
+            token_handler = candidate_handler
+            lower_bound = prefix_size + 1
+
+    included_tickets = len(prompt_vars["related_tickets"])
+    if included_tickets < len(raw_tickets):
+        get_logger().info(
+            "Clipped related tickets to preserve the prompt token budget",
+            artifact={
+                "included_tickets": included_tickets,
+                "omitted_tickets": len(raw_tickets) - included_tickets,
+                "model": model,
+            },
+        )
+
+    return prompt_vars, token_handler
+
+
 def find_asana_tickets(text: str | None) -> list:
     """Extract Asana task references from text.
 
@@ -461,7 +538,8 @@ def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url
                 _add(f"{base_url_html.strip('/')}/{owner}/{repo}/issues/{issue_number}")
             else:  # #123 format
                 issue_number = match[5][1:]  # remove #
-                if issue_number.isdigit() and len(issue_number) < 5 and repo_path:
+                if (issue_number.isdigit() and repo_path
+                        and len(issue_number) <= MAX_SHORTHAND_ISSUE_DIGITS):
                     _add(f"{base_url_html.strip('/')}/{repo_path}/issues/{issue_number}")
 
         if len(github_tickets) > MAX_GITHUB_TICKETS:
@@ -580,6 +658,22 @@ def _get_repo_obj_for_ticket(git_provider, ticket_url, repo_name, repo_obj_cache
     return repo_obj
 
 
+def _provider_supports(git_provider, capability: str) -> bool:
+    """Read an opt-in ticket capability from a provider.
+
+    Objects outside the GitProvider hierarchy (test doubles, minimal adapters) may not
+    define the method at all; absence means the capability is not supported, which keeps
+    the previous behaviour for providers that matched none of the concrete classes.
+
+    A permissive double such as a bare MagicMock answers every valid capability truthily and
+    so takes the first branch. Unknown capabilities raise to expose misspelled names.
+    """
+    if not hasattr(GitProvider, capability):
+        raise AttributeError(f"unknown provider capability: {capability!r}")
+    check = getattr(git_provider, capability, None)
+    return bool(check()) if callable(check) else False
+
+
 async def extract_tickets(git_provider):
     try:
         user_description = _get_user_description_for_asana(git_provider)
@@ -594,7 +688,7 @@ async def extract_tickets(git_provider):
             get_logger().warning(f"Failed to initialize Asana task fetching: {e}")
             asana_tickets_content = []
 
-        if isinstance(git_provider, GithubProvider):
+        if _provider_supports(git_provider, "supports_issue_url_tickets"):
             description_tickets = extract_ticket_links_from_pr_description(
                 user_description, git_provider.repo, git_provider.base_url_html
             )
@@ -693,7 +787,7 @@ async def extract_tickets(git_provider):
             add_jira_tickets(git_provider, tickets_content)
             return tickets_content
 
-        elif isinstance(git_provider, GitLabProvider):
+        elif _provider_supports(git_provider, "supports_issue_reference_tickets"):
             references = extract_gitlab_ticket_references(
                 user_description,
                 git_provider.id_project,
@@ -730,7 +824,7 @@ async def extract_tickets(git_provider):
             add_jira_tickets(git_provider, tickets_content)
             return tickets_content
 
-        elif isinstance(git_provider, AzureDevopsProvider):
+        elif _provider_supports(git_provider, "supports_linked_work_item_tickets"):
             tickets_info = git_provider.get_linked_work_items()
             tickets_content = []
             for ticket in tickets_info:
@@ -811,7 +905,3 @@ async def extract_and_cache_pr_tickets(git_provider, vars):
     else:
         get_logger().info("Using cached tickets", artifact={"tickets": related_tickets})
         vars['related_tickets'] = related_tickets
-
-
-def check_tickets_relevancy():
-    return True

@@ -6,8 +6,9 @@ from jinja2 import Environment, StrictUndefined
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.pr_processing import get_pr_diff, retry_with_fallback_models
+from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_handler import TokenHandler
-from pr_agent.algo.utils import ModelType, format_pr_questions_header
+from pr_agent.algo.utils import ModelType, decode_user_text_args, format_pr_questions_header
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.git_provider import get_main_pr_language
@@ -27,6 +28,12 @@ class PRQuestions:
         self.ai_handler.main_pr_language = self.main_pr_language
 
         self.question_str = question_str
+        settings = get_settings()
+        skills_context = (
+            get_skills_context()
+            if settings.skills.get("enabled", False)
+            else ""
+        )
         self.vars = {
             "title": self.git_provider.pr.title,
             "branch": self.git_provider.get_pr_branch(),
@@ -34,8 +41,10 @@ class PRQuestions:
             "language": self.main_pr_language,
             "diff": "",  # empty diff for initial calculation
             "questions": self.question_str,
+            "conversation_history": self._load_conversation_history(),
             "commit_messages_str": self.git_provider.get_commit_messages(),
-            "extra_instructions": get_settings().pr_questions.extra_instructions,
+            "extra_instructions": settings.pr_questions.extra_instructions,
+            "skills_context": skills_context,
         }
         self.token_handler = TokenHandler(self.git_provider.pr,
                                           self.vars,
@@ -45,11 +54,7 @@ class PRQuestions:
         self.prediction = None
 
     def parse_args(self, args):
-        if args and len(args) > 0:
-            question_str = " ".join(args)
-        else:
-            question_str = ""
-        return question_str
+        return decode_user_text_args(args)
 
     async def run(self):
         get_logger().info(f'Answering a PR question about the PR {self.pr_url} ')
@@ -62,12 +67,12 @@ class PRQuestions:
         # identify image
         img_path = self.identify_image_in_comment()
         if img_path:
-            get_logger().debug(f"Image path identified", artifact=img_path)
+            get_logger().debug("Image path identified", artifact=img_path)
 
         await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.WEAK)
 
         pr_comment = self._prepare_pr_answer()
-        get_logger().debug(f"PR output", artifact=pr_comment)
+        get_logger().debug("PR output", artifact=pr_comment)
 
         if self.git_provider.is_supported("gfm_markdown") and get_settings().pr_questions.enable_help_text:
             pr_comment += "<hr>\n\n<details> <summary><strong>💡 Tool usage guide:</strong></summary><hr> \n\n"
@@ -75,9 +80,39 @@ class PRQuestions:
             pr_comment += "\n</details>\n"
 
         if get_settings().config.publish_output:
-            self.git_provider.publish_comment(pr_comment)
+            self._publish_answer(pr_comment)
             self.git_provider.remove_initial_comment()
         return ""
+
+    def _publish_answer(self, answer: str):
+        comment_id = get_settings().get("comment_id", "")
+        if comment_id and self.git_provider.supports_threaded_pr_questions():
+            return self.git_provider.reply_to_comment_from_comment_id(comment_id, answer)
+        return self.git_provider.publish_comment(answer)
+
+    def _load_conversation_history(self) -> str:
+        if (not self.git_provider.supports_threaded_pr_questions()
+                or not get_settings().pr_questions.use_conversation_history):
+            return ""
+        comment_id = get_settings().get("comment_id", "")
+        if not comment_id:
+            return ""
+        origin_comment_id = get_settings().get("origin_comment_id", comment_id)
+        try:
+            comments = self.git_provider.get_review_thread_comments(comment_id)
+        except Exception as e:
+            get_logger().warning(f"Failed to load question thread: {e}")
+            return ""
+        history = []
+        for comment in comments:
+            body = getattr(comment, "body", "")
+            if (not isinstance(body, str) or not body.strip()
+                    or getattr(comment, "id", None) == origin_comment_id):
+                continue
+            user = getattr(comment, "user", None)
+            author = getattr(user, "login", "Unknown")
+            history.append(f"{len(history) + 1}. {author}: {body}")
+        return "\n".join(history)
 
     def identify_image_in_comment(self):
         img_path = ''
@@ -95,10 +130,10 @@ class PRQuestions:
     async def _prepare_prediction(self, model: str):
         self.patches_diff = get_pr_diff(self.git_provider, self.token_handler, model)
         if self.patches_diff:
-            get_logger().debug(f"PR diff", artifact=self.patches_diff)
+            get_logger().debug("PR diff", artifact=self.patches_diff)
             self.prediction = await self._get_prediction(model)
         else:
-            get_logger().error(f"Error getting PR diff")
+            get_logger().error("Error getting PR diff")
             self.prediction = ""
 
     async def _get_prediction(self, model: str):
@@ -126,7 +161,7 @@ class PRQuestions:
         if model_answer_sanitized.startswith("/"):
             model_answer_sanitized = " " + model_answer_sanitized
         if model_answer_sanitized != model_answer:
-            get_logger().debug(f"Sanitized model answer",
+            get_logger().debug("Sanitized model answer",
                                artifact={"model_answer": model_answer, "sanitized_answer": model_answer_sanitized})
         answer_header = format_pr_questions_header(
             escape_markdown=self.git_provider.is_supported("markdown_backslash_escapes")

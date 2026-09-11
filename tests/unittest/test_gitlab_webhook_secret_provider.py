@@ -1,5 +1,6 @@
 import os
 
+import httpx
 import pytest
 
 os.environ.setdefault("GITLAB__URL", "https://gitlab.example.com")
@@ -87,36 +88,42 @@ def gitlab_webhook_settings():
         settings.set("GITLAB", original)
 
 
-def _post_webhook(token=None):
+async def _post_webhook(token=None):
     from fastapi import FastAPI
     from starlette.middleware import Middleware
-    from starlette.testclient import TestClient
     from starlette_context.middleware import RawContextMiddleware
 
     app = FastAPI(middleware=[Middleware(RawContextMiddleware)])
     app.include_router(gitlab_webhook.router)
     headers = {"X-Gitlab-Token": token} if token is not None else {}
-    return TestClient(app, raise_server_exceptions=False).post(
-        "/webhook", json={"object_kind": "note", "event_type": "note"}, headers=headers)
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        return await client.post(
+            "/webhook", json={"object_kind": "note", "event_type": "note"}, headers=headers
+        )
 
 
-def test_answer_a_wrong_shared_secret_with_401(gitlab_webhook_settings):
+@pytest.mark.asyncio
+async def test_answer_a_wrong_shared_secret_with_401(gitlab_webhook_settings):
     """Answer a rejected delivery with 401 instead of the unconditional 200 that made a
     misconfigured token look healthy."""
-    assert _post_webhook("wrong-secret").status_code == 401
+    assert (await _post_webhook("wrong-secret")).status_code == 401
 
 
-def test_answer_a_missing_token_with_401(gitlab_webhook_settings):
+@pytest.mark.asyncio
+async def test_answer_a_missing_token_with_401(gitlab_webhook_settings):
     """Answer a delivery that carries no token at all with 401."""
-    assert _post_webhook().status_code == 401
+    assert (await _post_webhook()).status_code == 401
 
 
-def test_accept_the_correct_shared_secret(gitlab_webhook_settings):
+@pytest.mark.asyncio
+async def test_accept_the_correct_shared_secret(gitlab_webhook_settings):
     """Accept a correctly authenticated delivery and dispatch it as before."""
-    assert _post_webhook("topsecret").status_code == 200
+    assert (await _post_webhook("topsecret")).status_code == 200
 
 
-def test_compare_the_shared_secret_in_constant_time(monkeypatch, gitlab_webhook_settings):
+@pytest.mark.asyncio
+async def test_compare_the_shared_secret_in_constant_time(monkeypatch, gitlab_webhook_settings):
     """Compare the shared secret with a constant-time primitive, as every other webhook
     auth path in the project already does."""
     calls = []
@@ -128,19 +135,20 @@ def test_compare_the_shared_secret_in_constant_time(monkeypatch, gitlab_webhook_
 
     monkeypatch.setattr(gitlab_webhook.hmac, "compare_digest", recording_compare)
 
-    _post_webhook("wrong-secret")
+    await _post_webhook("wrong-secret")
 
     assert calls, "hmac.compare_digest was not used to compare the shared secret"
 
 
-def test_keep_the_webhook_token_out_of_the_logs(gitlab_webhook_settings):
+@pytest.mark.asyncio
+async def test_keep_the_webhook_token_out_of_the_logs(gitlab_webhook_settings):
     """Keep a rejected token out of the logs, where it would otherwise be shipped to a log
     aggregator in cleartext."""
     records = []
     handler_id = gitlab_webhook.get_logger().add(lambda m: records.append(str(m)))
     secret_token = "super-secret-webhook-token"
     try:
-        _post_webhook(secret_token)
+        await _post_webhook(secret_token)
     finally:
         gitlab_webhook.get_logger().remove(handler_id)
 

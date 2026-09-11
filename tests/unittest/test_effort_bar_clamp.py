@@ -50,6 +50,7 @@ def test_the_review_label_matches_the_rendered_bar(score, expected):
     reviewer.git_provider = type("P", (), {
         "publish_labels": lambda _self, labels: published.append(labels) or True,
         "get_pr_labels": lambda _self, update=False: [],
+        "is_supported": lambda _self, feature: feature == "get_labels",
     })()
 
     settings = get_settings(use_context=False)

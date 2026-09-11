@@ -1,8 +1,11 @@
 import pytest
 
-from pr_agent.algo.git_patch_processing import (RE_HUNK_HEADER, extend_patch,
-                                                extract_hunk_headers,
-                                                extract_hunk_lines_from_patch)
+from pr_agent.algo.git_patch_processing import (
+    RE_HUNK_HEADER,
+    extend_patch,
+    extract_hunk_headers,
+    extract_hunk_lines_from_patch,
+)
 from pr_agent.algo.pr_processing import pr_generate_extended_diff
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import load_large_diff
@@ -180,8 +183,6 @@ class TestLoadLargeDiff:
                                 old content 2""")
 
         patch_expected="""\
---- 
-+++ 
 @@ -1,3 +1,3 @@
 -
                                  old content 1
@@ -195,7 +196,7 @@ class TestLoadLargeDiff:
         assert load_large_diff("test.py", "", "") == ""
         assert load_large_diff("test.py", None, None) == ""
         assert (load_large_diff("test.py", "content\n", "") ==
-                '--- \n+++ \n@@ -1 +1 @@\n-\n+content\n')
+                '@@ -1 +1 @@\n-\n+content\n')
 
 class TestOmittedHunkCount:
     def test_omitted_count_is_parsed_as_one(self):

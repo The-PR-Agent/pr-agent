@@ -1,26 +1,26 @@
 # Tools
 
-Here is a list of PR-Agent tools, each with a dedicated page that explains how to use it:
+Each PR-Agent tool has a dedicated page that explains its behavior and usage:
 
-| Tool                                                                                     | Description                                                                                                                                 |
-|------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------|
-| **[PR Description (`/describe`)](./describe.md)**                                        | Automatically generating PR description - title, type, summary, code walkthrough and labels                                                 |
-| **[PR Review (`/review`)](./review.md)**                                                 | Adjustable feedback about the PR, possible issues, security concerns, review effort and more                                                |
-| **[Code Suggestions (`/improve`)](./improve.md)**                                        | Code suggestions for improving the PR                                                                                                       |
-| **[Question Answering (`/ask ...`)](./ask.md)**                                          | Answering free-text questions about the PR, or on specific code lines                                                                       |
-| **[Add Documentation (`/add_docs`)](./add_docs.md)**                                     | Generate documentation for code components that are missing it                                                                              |
-| **[Generate Labels (`/generate_labels`)](./generate_labels.md)**                         | Generate custom labels for the PR based on the code changes                                                                                 |
-| **[Similar Issues (`/similar_issue`)](./similar_issues.md)**                             | Find similar issues in the repository based on the current issue                                                                            |
-| **[Help (`/help`)](./help.md)**                                                          | Provides a list of all the available tools                                                                                                  |
-| **[Help Docs (`/help_docs`)](./help_docs.md)**                                           | Answer a free-text question based on a git documentation folder                                                                             |
-| **[Update Changelog (`/update_changelog`)](./update_changelog.md)**                      | Automatically updating the CHANGELOG.md file with the PR changes                                                                            |
+| Tool | Description |
+|------|-------------|
+| **[PR Description (`/describe`)](./describe.md)** | Generate a PR title, type, summary, code walkthrough and labels. |
+| **[PR Review (`/review`)](./review.md)** | Generate a PR review with feedback on possible issues, security concerns, tests and review effort. |
+| **[Code Suggestions (`/improve`)](./improve.md)** | Generate actionable code suggestions for improving the PR. |
+| **[Question Answering (`/ask ...`)](./ask.md)** | Answering free-text questions about the PR, or on specific code lines |
+| **[Add Documentation (`/add_docs`)](./add_docs.md)** | Generate documentation for code components that are missing it |
+| **[Generate Labels (`/generate_labels`)](./generate_labels.md)** | Generate custom labels for the PR based on the code changes |
+| **[Similar Issues (`/similar_issue`)](./similar_issues.md)** | Find similar issues in the repository based on the current issue |
+| **[Help (`/help`)](./help.md)** | Provides a list of all the available tools |
+| **[Help Docs (`/help_docs`)](./help_docs.md)** | Answer a free-text question based on a git documentation folder |
+| **[Update Changelog (`/update_changelog`)](./update_changelog.md)** | Automatically updating the CHANGELOG.md file with the PR changes |
 
 ## Usage examples
 
 Each tool can be triggered in two ways:
 
 - **As a comment** — write the command (e.g. `/review`) as a comment, and PR-Agent replies. Most tools are commented on a PR; issue-scoped tools such as `similar_issue` are commented on an issue.
-- **From the [CLI](../usage-guide/automations_and_usage.md#local-repo-cli)** — run `python -m pr_agent.cli --pr_url=<PR_URL> <tool>`. Issue-scoped tools take `--issue_url=<ISSUE_URL>` instead of `--pr_url`.
+- **From the [CLI](../usage-guide/automations_and_usage.md#local-repo-cli)** — run `python -m pr_agent.cli --pr_url=<PR_URL> <tool>`. Issue-scoped tools take `--issue_url=<ISSUE_URL>` instead of `--pr_url`. The module form works only from an environment where the `pr_agent` package is importable (for example, the venv created by `uv sync`). If `pr-agent` is on your `PATH`, run it directly.
 
 Both accept the same tool arguments and [configuration overrides](../usage-guide/configuration_options.md).
 

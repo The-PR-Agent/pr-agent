@@ -5,8 +5,7 @@ from pr_agent.algo.types import EDIT_TYPE
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.local_git_provider import LocalGitProvider
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
-from tests.unittest._settings_helpers import (restore_settings,
-                                              snapshot_settings)
+from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 
 def _make_repo(tmp_path, filenames):
@@ -62,6 +61,14 @@ def test_get_languages_matches_full_names_and_multipart_extensions(tmp_path):
     assert all(abs(v - 100 / 3) < 1e-6 for v in languages.values())
 
 
+def test_get_languages_preserves_case_sensitive_extensions(tmp_path):
+    repo = _make_repo(tmp_path, ["lower.c", "upper.C"])
+    provider = object.__new__(LocalGitProvider)
+    provider.repo = repo
+
+    assert provider.get_languages() == {"C": 50.0, "C++": 50.0}
+
+
 def test_get_diff_files_deleted_file_falls_back_to_old_path(tmp_path):
     # A plain deletion has no "new side": GitPython sets diff_item.b_path to None.
     # The filename must fall back to a_path (the old path) instead of None, or
@@ -86,6 +93,52 @@ def test_get_diff_files_deleted_file_falls_back_to_old_path(tmp_path):
     assert deleted[0].filename == "gone.py"
     # every diff file exposes a usable filename for downstream consumers.
     assert all(f.filename is not None for f in diff_files)
+
+
+@pytest.mark.parametrize("change_type", ["added", "modified", "deleted"])
+def test_get_diff_files_skips_non_utf8_file_and_keeps_utf8_sibling(tmp_path, monkeypatch, change_type):
+    repo = git.Repo.init(tmp_path)
+    good_file = tmp_path / "good.py"
+    non_utf8_file = tmp_path / "non_utf8.py"
+    good_file.write_text("before\n", encoding="utf-8")
+    files_to_add = ["good.py"]
+    if change_type in {"modified", "deleted"}:
+        non_utf8_file.write_bytes(b"\xffbefore\n")
+        files_to_add.append("non_utf8.py")
+    repo.index.add(files_to_add)
+    repo.index.commit("base")
+    target_branch_name = repo.active_branch.name
+
+    repo.git.checkout("-b", "feature")
+    good_file.write_text("after\n", encoding="utf-8")
+    repo.index.add(["good.py"])
+    if change_type == "added":
+        non_utf8_file.write_bytes(b"\xffafter\n")
+        repo.index.add(["non_utf8.py"])
+    elif change_type == "modified":
+        non_utf8_file.write_bytes(b"\xfeafter\n")
+        repo.index.add(["non_utf8.py"])
+    else:
+        non_utf8_file.unlink()
+        repo.index.remove(["non_utf8.py"])
+    repo.index.commit(f"{change_type} non-UTF-8 file")
+
+    snapshot = snapshot_settings(["pr_reviewer.inline_code_comments"])
+    try:
+        monkeypatch.chdir(tmp_path)
+        provider = LocalGitProvider(target_branch_name)
+    finally:
+        restore_settings(snapshot)
+
+    diff_files = provider.pr.diff_files
+
+    assert [file.filename for file in diff_files] == ["good.py"]
+    assert diff_files[0].base_file == "before\n"
+    assert diff_files[0].head_file == "after\n"
+    assert "-before" in diff_files[0].patch
+    assert "+after" in diff_files[0].patch
+    assert diff_files[0].edit_type == EDIT_TYPE.MODIFIED
+    assert provider.diff_files is diff_files
 
 
 def test_publish_code_suggestions_writes_improve_file(tmp_path):

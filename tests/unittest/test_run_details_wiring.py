@@ -3,14 +3,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from pr_agent.algo.run_details import (init_run_details, record_ai_call,
-                                       record_model_used)
+from pr_agent.algo.run_details import init_run_details, record_ai_call, record_model_used
 from pr_agent.config_loader import get_settings
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.tools.pr_description import PRDescription
 from pr_agent.tools.pr_reviewer import PRReviewer
-from tests.unittest._settings_helpers import (restore_settings,
-                                              snapshot_settings)
+from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 _TRACKED_KEYS_REVIEW = (
     "config.output_run_details",

@@ -1,10 +1,12 @@
 from unittest.mock import MagicMock, patch
 
-from pr_agent.tools.progress_comment import (DEFAULT_PROGRESS_GIF_URL,
-                                             DEFAULT_PROGRESS_GIF_WIDTH,
-                                             build_progress_comment,
-                                             get_progress_gif_url,
-                                             get_progress_gif_width)
+from pr_agent.tools.progress_comment import (
+    DEFAULT_PROGRESS_GIF_URL,
+    DEFAULT_PROGRESS_GIF_WIDTH,
+    build_progress_comment,
+    get_progress_gif_url,
+    get_progress_gif_width,
+)
 
 
 def _mock_settings(mock_get_settings, values):

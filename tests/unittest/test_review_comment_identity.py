@@ -3,17 +3,20 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from pr_agent.algo.utils import (PRReviewIdentity, add_pr_review_identity,
-                                 comment_matches_identity,
-                                 convert_to_markdown_v2,
-                                 format_pr_review_header,
-                                 get_pr_review_comment_identifiers)
+from pr_agent.algo.utils import (
+    PRReviewIdentity,
+    add_pr_review_identity,
+    comment_matches_identity,
+    convert_to_markdown_v2,
+    format_pr_review_header,
+    get_pr_review_comment_identifiers,
+)
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
+from pr_agent.git_providers.bitbucket_provider import BitbucketProvider
 from pr_agent.git_providers.gitea_provider import GiteaProvider
 from pr_agent.git_providers.github_provider import GithubProvider
-from tests.unittest._settings_helpers import (restore_settings,
-                                              snapshot_settings)
+from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 
 def _review_data():
@@ -172,8 +175,32 @@ def test_github_comment_path_forwards_review_identity():
         restore_settings(snapshot)
 
     assert provider.publish_persistent_comment_full.call_args.kwargs == {
+        "as_thread": False,
         "identity_marker": PRReviewIdentity.REGULAR.value,
         "legacy_initial_header": legacy_header,
+    }
+
+
+def test_github_comment_path_forwards_as_thread():
+    snapshot = snapshot_settings(["github.publish_as_check_run"])
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.publish_persistent_comment_full = MagicMock()
+    review = "## Team Review 🔍\n\nbody"
+    try:
+        get_settings().set("github.publish_as_check_run", False)
+
+        provider.publish_persistent_comment(
+            review,
+            initial_header="## Team Review 🔍",
+            as_thread=True,
+        )
+    finally:
+        restore_settings(snapshot)
+
+    assert provider.publish_persistent_comment_full.call_args.kwargs == {
+        "as_thread": True,
+        "identity_marker": None,
+        "legacy_initial_header": None,
     }
 
 
@@ -191,21 +218,51 @@ def test_azure_comment_path_forwards_review_identity():
     )
 
     assert provider.publish_persistent_comment_full.call_args.kwargs == {
+        "as_thread": False,
         "identity_marker": PRReviewIdentity.REGULAR.value,
         "legacy_initial_header": legacy_header,
     }
 
 
-def test_gitea_keeps_identity_inactive_until_comment_payloads_are_normalized():
-    provider = GiteaProvider.__new__(GiteaProvider)
-    provider.publish_persistent_comment_full = MagicMock()
+def test_bitbucket_comment_path_forwards_review_identity():
+    provider = BitbucketProvider.__new__(BitbucketProvider)
+    provider.pr = MagicMock()
+    provider.pr.comments.return_value = []
+    provider.publish_comment = MagicMock()
     review = "## Team Review 🔍\n\nbody"
+    legacy_header = "## PR Reviewer Guide 🔍"
 
     provider.publish_persistent_comment(
         review,
         initial_header="## Team Review 🔍",
         identity_marker=PRReviewIdentity.REGULAR.value,
-        legacy_initial_header="## PR Reviewer Guide 🔍",
+        legacy_initial_header=legacy_header,
     )
 
-    assert provider.publish_persistent_comment_full.call_args.kwargs == {}
+    assert provider.supports_review_comment_identity() is True
+    provider.publish_comment.assert_called_once_with(
+        "## Team Review 🔍\n\n<!-- pr-agent:review:full -->\n\nbody"
+    )
+
+
+def test_gitea_keeps_identity_inactive_but_preserves_wrapper_arguments():
+    provider = GiteaProvider.__new__(GiteaProvider)
+    published = object()
+    provider.publish_persistent_comment_full = MagicMock(return_value=published)
+    review = "## Team Review 🔍\n\nbody"
+    legacy_header = "## PR Reviewer Guide 🔍"
+
+    result = provider.publish_persistent_comment(
+        review,
+        initial_header="## Team Review 🔍",
+        identity_marker=PRReviewIdentity.REGULAR.value,
+        legacy_initial_header=legacy_header,
+    )
+
+    assert provider.supports_review_comment_identity() is False
+    assert result is published
+    assert provider.publish_persistent_comment_full.call_args.kwargs == {
+        "as_thread": False,
+        "identity_marker": PRReviewIdentity.REGULAR.value,
+        "legacy_initial_header": legacy_header,
+    }

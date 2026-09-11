@@ -1,7 +1,6 @@
 import pytest
 
-from pr_agent.algo.pr_processing import (MAX_EXTRA_LINES,
-                                         cap_and_log_extra_lines)
+from pr_agent.algo.pr_processing import MAX_EXTRA_LINES, cap_and_log_extra_lines
 
 
 def test_accept_a_quoted_number():

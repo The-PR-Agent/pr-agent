@@ -5,8 +5,7 @@ import pytest
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import get_settings
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
-from tests.unittest._settings_helpers import (restore_settings,
-                                              snapshot_settings)
+from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 TRUNCATION_SETTINGS = (
     "pr_code_suggestions.max_code_suggestion_length",
@@ -187,8 +186,9 @@ async def test_push_inline_publishes_no_suggestions_comment_when_empty():
     git_provider = MagicMock()
     tool = _make_tool(git_provider)
 
-    await tool.push_inline_code_suggestions({"code_suggestions": []})
+    result = await tool.push_inline_code_suggestions({"code_suggestions": []})
 
+    assert result is None
     git_provider.publish_comment.assert_called_once_with(
         "No suggestions found to improve this PR."
     )
@@ -208,6 +208,89 @@ async def test_push_inline_qualifies_empty_partial_results():
     assert "successfully analyzed chunks" in body
     assert "1 of 3 analysis chunks failed" in body
     assert "could not be analyzed" in body
+
+
+# ---------------------------------------------------------------------------
+# publish_no_suggestions
+# ---------------------------------------------------------------------------
+
+NO_SUGGESTIONS_SETTINGS = (
+    "config.publish_output",
+    "pr_code_suggestions.publish_output_no_suggestions",
+    "config.output_run_details",
+)
+
+
+@pytest.mark.asyncio
+async def test_publish_no_suggestions_resolves_thread_instead_of_replacing_it():
+    # The progress comment was published as a resolvable thread; the no-suggestions
+    # status isn't actionable, so the thread should be resolved rather than dropped.
+    snapshot = snapshot_settings(NO_SUGGESTIONS_SETTINGS)
+    try:
+        get_settings().set("config.publish_output", True)
+        get_settings().pr_code_suggestions.publish_output_no_suggestions = True
+        get_settings().set("config.output_run_details", False)
+
+        git_provider = MagicMock()
+        git_provider.should_publish_improve_as_thread.return_value = True
+        progress_comment = MagicMock(id=7)
+        tool = _make_tool(git_provider)
+        tool.progress_response = progress_comment
+
+        await tool.publish_no_suggestions()
+
+        git_provider.edit_comment.assert_called_once()
+        assert git_provider.edit_comment.call_args.args[0] is progress_comment
+        git_provider.remove_comment.assert_not_called()
+        git_provider.resolve_comment_thread.assert_called_once_with(7)
+    finally:
+        restore_settings(snapshot)
+
+
+@pytest.mark.asyncio
+async def test_publish_no_suggestions_does_not_resolve_when_not_threaded():
+    snapshot = snapshot_settings(NO_SUGGESTIONS_SETTINGS)
+    try:
+        get_settings().set("config.publish_output", True)
+        get_settings().pr_code_suggestions.publish_output_no_suggestions = True
+        get_settings().set("config.output_run_details", False)
+
+        git_provider = MagicMock()
+        git_provider.should_publish_improve_as_thread.return_value = False
+        tool = _make_tool(git_provider)
+        tool.progress_response = MagicMock(id=7)
+
+        await tool.publish_no_suggestions()
+
+        git_provider.edit_comment.assert_called_once()
+        git_provider.resolve_comment_thread.assert_not_called()
+    finally:
+        restore_settings(snapshot)
+
+
+@pytest.mark.asyncio
+async def test_publish_no_suggestions_resolves_freshly_published_thread():
+    # No progress comment was published (publish_output_progress is off); the
+    # no-suggestions note is published directly as a thread and must be resolved too.
+    snapshot = snapshot_settings(NO_SUGGESTIONS_SETTINGS)
+    try:
+        get_settings().set("config.publish_output", True)
+        get_settings().pr_code_suggestions.publish_output_no_suggestions = True
+        get_settings().set("config.output_run_details", False)
+
+        git_provider = MagicMock()
+        git_provider.should_publish_improve_as_thread.return_value = True
+        git_provider.publish_comment.return_value = MagicMock(id=11)
+        tool = _make_tool(git_provider)
+        tool.progress_response = None
+
+        await tool.publish_no_suggestions()
+
+        git_provider.publish_comment.assert_called_once()
+        assert git_provider.publish_comment.call_args.kwargs.get("as_thread") is True
+        git_provider.resolve_comment_thread.assert_called_once_with(11)
+    finally:
+        restore_settings(snapshot)
 
 
 # ---------------------------------------------------------------------------

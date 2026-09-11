@@ -1,9 +1,13 @@
+import ast
+from pathlib import Path
+
 import pytest
 
 import pr_agent.algo.pr_processing as pr_processing
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.algo.utils import ModelType
 from pr_agent.config_loader import get_settings
+from pr_agent.servers.utils import RateLimitExceeded
 
 
 class FakeTokenHandler:
@@ -25,6 +29,34 @@ class FakeProvider:
         return {"Python": 100}
 
 
+@pytest.mark.parametrize(
+    "call_diff",
+    [
+        lambda provider, token_handler: pr_processing.get_pr_diff(provider, token_handler, "model"),
+        lambda provider, token_handler: pr_processing.get_pr_diff_multiple_patchs(provider, token_handler, "model"),
+        lambda provider, token_handler: pr_processing.get_pr_multi_diffs(provider, token_handler, "model"),
+    ],
+)
+def test_shared_diff_paths_propagate_project_rate_limit(call_diff):
+    class RateLimitedProvider(FakeProvider):
+        def get_diff_files(self):
+            raise RateLimitExceeded("rate limit exceeded")
+
+    with pytest.raises(RateLimitExceeded, match="rate limit exceeded"):
+        call_diff(RateLimitedProvider([]), FakeTokenHandler())
+
+
+def test_shared_diff_processing_does_not_import_pygithub_rate_limit_exception():
+    tree = ast.parse(Path(pr_processing.__file__).read_text())
+
+    assert not any(
+        isinstance(node, ast.ImportFrom)
+        and node.module == "github"
+        and any(alias.name == "RateLimitExceededException" for alias in node.names)
+        for node in ast.walk(tree)
+    )
+
+
 def test_generate_full_patch_keeps_remaining_files_when_patch_exceeds_soft_budget():
     settings = get_settings()
     original_verbosity_level = settings.config.verbosity_level
@@ -35,12 +67,19 @@ def test_generate_full_patch_keeps_remaining_files_when_patch_exceeds_soft_budge
         "large.py": {"patch": "+ " + "large " * 80, "tokens": 250, "edit_type": EDIT_TYPE.MODIFIED},
         "second_small.py": {"patch": "+ second change", "tokens": 10, "edit_type": EDIT_TYPE.MODIFIED},
     }
+    included_tokens = sum(
+        token_handler.count_tokens(f"\n\n## File: '{filename}'\n\n{file_dict[filename]['patch'].strip()}\n")
+        for filename in ("small.py", "second_small.py")
+    )
+    max_tokens_model = (
+        pr_processing.OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD + token_handler.prompt_tokens + included_tokens
+    )
 
     try:
         total_tokens, patches, remaining_files, files_in_patch = pr_processing.generate_full_patch(
             convert_hunks_to_line_numbers=False,
             file_dict=file_dict,
-            max_tokens_model=1800,
+            max_tokens_model=max_tokens_model,
             remaining_files_list_prev=list(file_dict),
             token_handler=token_handler,
         )
@@ -57,11 +96,9 @@ def test_generate_full_patch_keeps_remaining_files_when_patch_exceeds_soft_budge
 def test_generate_full_patch_records_files_after_hard_token_stop():
     class HardStopTokenHandler(FakeTokenHandler):
         def count_tokens(self, patch):
-            if "first.py" in patch:
-                return 2_000
-            return super().count_tokens(patch)
+            raise AssertionError("hard-stopped patches must not be counted")
 
-    token_handler = HardStopTokenHandler(prompt_tokens=100)
+    token_handler = HardStopTokenHandler(prompt_tokens=2_001)
     file_dict = {
         "first.py": {"patch": "+ first change", "tokens": 1, "edit_type": EDIT_TYPE.MODIFIED},
         "hard_stop.py": {"patch": "+ hard stop change", "tokens": 1, "edit_type": EDIT_TYPE.MODIFIED},
@@ -77,16 +114,16 @@ def test_generate_full_patch_records_files_after_hard_token_stop():
     )
 
     assert total_tokens > 3_000 - pr_processing.OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD
-    assert files_in_patch == ["first.py"]
-    assert remaining_files == ["hard_stop.py", "after_stop.py"]
-    assert len(patches) == 1
+    assert files_in_patch == []
+    assert remaining_files == list(file_dict)
+    assert patches == []
 
 
 def test_generate_full_patch_records_too_large_patch_files():
     token_handler = FakeTokenHandler(prompt_tokens=100)
     file_dict = {
         "included.py": {"patch": "+ included change", "tokens": 5, "edit_type": EDIT_TYPE.MODIFIED},
-        "too_large.py": {"patch": "+ too large change", "tokens": 5_000, "edit_type": EDIT_TYPE.MODIFIED},
+        "too_large.py": {"patch": "+ " + "large " * 5_000, "tokens": 5_000, "edit_type": EDIT_TYPE.MODIFIED},
         "after_large.py": {"patch": "+ after large change", "tokens": 5, "edit_type": EDIT_TYPE.MODIFIED},
     }
 
@@ -181,6 +218,78 @@ def test_get_pr_multi_diffs_clips_large_patch_when_policy_is_clip(monkeypatch):
         settings.config.patch_extra_lines_after = original["patch_extra_lines_after"]
         settings.config.large_patch_policy = original["large_patch_policy"]
         settings.config.verbosity_level = original["verbosity_level"]
+
+
+def test_get_pr_multi_diffs_reports_the_files_the_token_budget_left_out(monkeypatch):
+    # /review needs the same coverage list get_pr_diff returns, so the review footer can name
+    # the files that were dropped even when the diff was reviewed in chunks.
+    settings = get_settings()
+    original = {
+        "patch_extra_lines_before": settings.config.patch_extra_lines_before,
+        "patch_extra_lines_after": settings.config.patch_extra_lines_after,
+        "large_patch_policy": settings.config.get("large_patch_policy", "skip"),
+        "verbosity_level": settings.config.verbosity_level,
+    }
+    settings.config.patch_extra_lines_before = 0
+    settings.config.patch_extra_lines_after = 0
+    settings.config.large_patch_policy = "skip"
+    settings.config.verbosity_level = 0
+
+    def _file(filename, patch):
+        return FilePatchInfo(base_file="old\n", head_file="new\n", patch=patch,
+                             filename=filename, edit_type=EDIT_TYPE.MODIFIED)
+
+    hunk = "@@ -1 +1 @@\n-old\n+" + ("alpha " * 60)
+    deleted = FilePatchInfo(base_file="old\n", head_file="", patch="@@ -1 +0,0 @@\n-old",
+                            filename="deleted.py", edit_type=EDIT_TYPE.DELETED)
+    files = [_file("first.py", hunk), _file("second.py", hunk), _file("no_patch.py", ""), deleted]
+    provider = FakeProvider(files)
+    token_handler = FakeTokenHandler(prompt_tokens=100)
+
+    monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda languages, files: [{"files": files}])
+    monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: 1700)
+
+    try:
+        diffs, remaining_files = pr_processing.get_pr_multi_diffs(
+            provider, token_handler, "tiny-model", max_calls=1, add_line_numbers=False,
+            return_remaining_files=True
+        )
+
+        assert len(diffs) == 1
+        assert "first.py" in diffs[0]
+        # second.py did not fit within max_calls; no_patch.py and deleted.py have nothing to
+        # review, so they are not something the token budget left out
+        assert remaining_files == ["second.py"]
+    finally:
+        for key, value in original.items():
+            setattr(settings.config, key, value)
+
+
+def test_get_pr_multi_diffs_reports_no_remaining_files_when_the_whole_diff_fits(monkeypatch):
+    settings = get_settings()
+    original_before = settings.config.patch_extra_lines_before
+    original_after = settings.config.patch_extra_lines_after
+    settings.config.patch_extra_lines_before = 0
+    settings.config.patch_extra_lines_after = 0
+
+    file_info = FilePatchInfo(base_file="old\n", head_file="new\n", patch="@@ -1 +1 @@\n-old\n+new",
+                              filename="small.py", edit_type=EDIT_TYPE.MODIFIED)
+    provider = FakeProvider([file_info])
+    token_handler = FakeTokenHandler(prompt_tokens=100)
+
+    monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda languages, files: [{"files": files}])
+    monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: 100000)
+
+    try:
+        diffs, remaining_files = pr_processing.get_pr_multi_diffs(
+            provider, token_handler, "big-model", add_line_numbers=False, return_remaining_files=True
+        )
+
+        assert len(diffs) == 1
+        assert remaining_files == []
+    finally:
+        settings.config.patch_extra_lines_before = original_before
+        settings.config.patch_extra_lines_after = original_after
 
 
 def test_pr_description_reads_fall_back_when_keys_missing():

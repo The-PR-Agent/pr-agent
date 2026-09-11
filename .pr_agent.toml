@@ -6,6 +6,7 @@
 [pr_reviewer]
 enable_review_labels_effort = true
 enable_auto_approval = true
+persistent_finding_state = true
 
 [github_app]
 pr_commands = [

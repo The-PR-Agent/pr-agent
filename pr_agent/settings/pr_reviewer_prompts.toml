@@ -5,43 +5,7 @@ The review should focus on new code added in the PR code diff (lines starting wi
 
 
 The format we will use to present the PR code diff:
-======
-## File: 'src/file1.py'
-{%- if is_ai_metadata %}
-### AI-generated changes summary:
-* ...
-* ...
-{%- endif %}
-
-
-@@ ... @@ def func1():
-__new hunk__
-11  unchanged code line0
-12  unchanged code line1
-13 +new code line2 added
-14  unchanged code line3
-__old hunk__
- unchanged code line0
- unchanged code line1
--old code line2 removed
- unchanged code line3
-
-@@ ... @@ def func2():
-__new hunk__
- unchanged code line4
-+new code line5 added
- unchanged code line6
-
-## File: 'src/file2.py'
-...
-======
-
-- In the format above, the diff is organized into separate '__new hunk__' and '__old hunk__' sections for each code chunk. '__new hunk__' contains the updated code, while '__old hunk__' shows the removed code. If no code was removed in a specific chunk, the __old hunk__ section will be omitted.
-- We also added line numbers for the '__new hunk__' code, to help you refer to the code lines in your suggestions. These line numbers are not part of the actual code, and should only be used for reference.
-- Code lines are prefixed with symbols ('+', '-', ' '). The '+' symbol indicates new code added in the PR, the '-' symbol indicates code removed in the PR, and the ' ' symbol indicates unchanged code.
-{%- if is_ai_metadata %}
-- If available, an AI-generated summary will appear and provide a high-level overview of the file changes. Note that this summary may not be fully accurate or complete.
-{%- endif %}
+{{ diff_hunk_format }}
 - When quoting variables, names or file paths from the code, use backticks (`) instead of single quote (').
 - Note that you only see changed code segments (diff hunks in a PR), not the entire codebase. Avoid suggestions that might duplicate existing functionality or questioning code elements (like variables declarations or import statements) that may be defined elsewhere in the codebase.
 - Also note that if the code ends at an opening brace or statement that begins a new scope (like 'if', 'for', 'try'), don't treat it as incomplete. Instead, acknowledge the visible scope boundary and analyze only the code shown.
@@ -135,6 +99,15 @@ class Review(BaseModel):
 {%- if require_estimate_effort_to_review %}
     estimated_effort_to_review_[1-5]: int = Field(description="Estimate, on a scale of 1-5 (inclusive), the time and effort required to review this PR by an experienced and knowledgeable developer. 1 means short and easy review, 5 means long and hard review. Take into account the size, complexity, quality, and the needed changes of the PR code diff.")
 {%- endif %}
+{%- if require_risk_assessment %}
+    risk_level: str = Field(description="Overall risk level of this PR. Answer with exactly one of: low, medium, high. Use high only when the PR introduces a clear bug, security concern, or major logic risk. Use medium when the PR is not clearly broken but contains non-trivial areas that require careful human verification. Use low when the PR is small, low-impact, and no important issues are identified.")
+{%- endif %}
+{%- if require_merge_recommendation %}
+    merge_recommendation: str = Field(description="Overall merge recommendation for this PR. Answer with exactly one of: safe_to_merge, merge_with_caution, changes_required. Use changes_required when there are clear issues that should be fixed before merge. Use merge_with_caution when the PR seems acceptable but still deserves focused reviewer attention. Use safe_to_merge when no important blockers or risks are identified.")
+{%- endif %}
+{%- if require_priority_files %}
+    review_priority_files: List[str] = Field(description="A short list of the most important files a human reviewer should inspect first. Return an empty list if the PR is too small or no file deserves special attention.")
+{%- endif %}
 {%- if require_estimate_contribution_time_cost %}
     contribution_time_cost_estimate: ContributionTimeCostEstimate = Field(description="An estimate of the time required to implement the changes, based on the quantity, quality, and complexity of the contribution, as well as the context from the PR description and commit messages.")
 {%- endif %}
@@ -183,6 +156,19 @@ review:
   estimated_effort_to_review_[1-5]: |
     3
 {%- endif %}
+{%- if require_risk_assessment %}
+  risk_level: |
+    low
+{%- endif %}
+{%- if require_merge_recommendation %}
+  merge_recommendation: |
+    safe_to_merge
+{%- endif %}
+{%- if require_priority_files %}
+  review_priority_files:
+    - |
+      src/example.py
+{%- endif %}
 {%- if require_score %}
   score: 89
 {%- endif %}
@@ -203,7 +189,7 @@ review:
 {%- if require_todo_scan %}
   todo_sections: |
     No
-{%- endif %} 
+{%- endif %}
 {%- if require_can_be_split_review %}
   can_be_split:
   - relevant_files:
@@ -320,6 +306,19 @@ review:
 {%- if require_estimate_effort_to_review %}
   estimated_effort_to_review_[1-5]: |
     3
+{%- endif %}
+{%- if require_risk_assessment %}
+  risk_level: |
+    low
+{%- endif %}
+{%- if require_merge_recommendation %}
+  merge_recommendation: |
+    safe_to_merge
+{%- endif %}
+{%- if require_priority_files %}
+  review_priority_files:
+    - |
+      src/example.py
 {%- endif %}
 {%- if require_score %}
   score: 89

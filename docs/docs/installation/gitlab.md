@@ -34,6 +34,26 @@ pr_agent_job:
 This script runs PR-Agent when a merge request pipeline is created, including when a merge request is opened and when new commits are pushed to its source branch. You can modify the `rules` section to run PR-Agent on different events.
 You can also modify the `script` section to run different PR-Agent commands, or with different parameters by exporting different environment variables.
 
+### CI artifact context
+
+A file produced by an earlier job — a test report, a coverage summary, a linter or SAST output — can be handed to `/review`, `/describe` and `/improve` as extra context, so the model reviews the merge request with your pipeline's own findings in hand. Save the file as a job artifact, make the PR-Agent job depend on that job with `needs:`, and point PR-Agent at it with `ARTIFACT_PATH`. The job above runs from `/app`, so give the path in full:
+
+```yaml
+pr_agent_job:
+  stage: pr_agent
+  needs: ["test_job"]
+  image:
+    name: pragent/pr-agent:latest
+    entrypoint: [""]
+  script:
+    - cd /app
+    - export ARTIFACT_PATH="$CI_PROJECT_DIR/reports/pytest.xml"
+    - export ARTIFACT_INSTRUCTIONS="These are the failing tests from this MR's pipeline. Call out any suggestion that would not fix them."
+    - python -m pr_agent.cli --pr_url="$MR_URL" review
+```
+
+Setting `ARTIFACT_PATH` turns the feature on by itself. The remaining knobs — which tools receive the context, the label, the size limit — are the `[artifacts]` settings described under [CI artifact context](./github.md#ci-artifact-context) for the GitHub Action, and they apply to the CLI in the same way.
+
 ### Ignore bot-created merge requests
 
 Dependency update bots usually use predictable source branch prefixes. Add a higher-priority `when: never` rule before the general merge request rule to skip those branches:

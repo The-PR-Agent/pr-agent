@@ -39,13 +39,25 @@ class TestParseUnifiedDiff:
         assert added.filename == "added.py"
         assert added.edit_type == EDIT_TYPE.ADDED
         assert "def hello():" in added.patch
-        assert added.patch.startswith("diff --git a/added.py b/added.py")
+        assert added.patch.startswith("@@")
 
         assert existing.filename == "existing.py"
         assert existing.edit_type == EDIT_TYPE.MODIFIED
-        # patch preserved verbatim for the section
+        assert existing.patch.startswith("@@")
         assert "-x = 1" in existing.patch
         assert "+x = 2" in existing.patch
+        for diff_file in files:
+            assert "diff --git" not in diff_file.patch
+            assert "--- " not in diff_file.patch
+            assert "+++ " not in diff_file.patch
+
+    def test_crlf_input_stores_hunk_only_patch(self):
+        files = parse_unified_diff(TWO_FILE_DIFF.replace("\n", "\r\n"))
+
+        assert len(files) == 2
+        assert all(diff_file.patch.startswith("@@") for diff_file in files)
+        assert all("\r\n" in diff_file.patch for diff_file in files)
+        assert all("diff --git" not in diff_file.patch for diff_file in files)
 
     def test_head_base_reconstruction(self):
         files = parse_unified_diff(TWO_FILE_DIFF)
@@ -75,28 +87,66 @@ class TestParseUnifiedDiff:
         assert files[0].edit_type == EDIT_TYPE.RENAMED
         assert files[0].filename == "new.py"
         assert files[0].old_filename == "old.py"
+        assert files[0].patch == ""
+
+    def test_paths_with_spaces_are_read_from_file_headers(self):
+        diff = (
+            "diff --git a/src/a b/file.py b/src/a b/file.py\n"
+            "index 1111111..2222222 100644\n"
+            "--- a/src/a b/file.py\n"
+            "+++ b/src/a b/file.py\n"
+            "@@ -1 +1 @@\n"
+            "-old\n"
+            "+new\n"
+        )
+
+        files = parse_unified_diff(diff)
+
+        assert len(files) == 1
+        assert files[0].filename == "src/a b/file.py"
+        assert files[0].old_filename is None
+        assert "-old" in files[0].patch
+        assert "+new" in files[0].patch
 
 
 class TestProviderRegistration:
     def test_registry_has_mosaico_diff_and_originals_intact(self):
-        import pr_agent.mosaico.provider_registration  # noqa: F401 (triggers setdefault)
+        import pr_agent.mosaico.provider_registration  # noqa: F401 (registers mosaico_diff)
         from pr_agent.git_providers import _GIT_PROVIDERS
         assert _GIT_PROVIDERS.get("mosaico_diff") is DiffInputProvider
-        # original keys intact (setdefault did not clobber)
+        # original keys intact
         for key in ("github", "gitlab", "bitbucket", "azure", "local", "gerrit", "gitea"):
             assert key in _GIT_PROVIDERS
 
-    def test_setdefault_does_not_clobber(self):
+    def test_importing_the_registration_again_is_a_no_op(self):
+        import importlib
+
+        import pr_agent.mosaico.provider_registration as registration
         from pr_agent.git_providers import _GIT_PROVIDERS
-        sentinel = object()
-        original = _GIT_PROVIDERS.get("mosaico_diff")
+
+        importlib.reload(registration)
+
+        assert _GIT_PROVIDERS["mosaico_diff"] is DiffInputProvider
+
+    def test_a_foreign_mosaico_diff_provider_is_not_replaced_silently(self):
+        """Where setdefault kept a foreign class quietly, register_git_provider raises at import,
+        so the MOSAICO server cannot come up on a provider it did not register."""
+        import importlib
+
+        import pr_agent.mosaico.provider_registration as registration
+        from pr_agent.git_providers import _GIT_PROVIDERS
+
+        class ForeignProvider(DiffInputProvider):
+            pass
+
+        original = _GIT_PROVIDERS["mosaico_diff"]
+        _GIT_PROVIDERS["mosaico_diff"] = ForeignProvider
         try:
-            _GIT_PROVIDERS["mosaico_diff"] = sentinel
-            _GIT_PROVIDERS.setdefault("mosaico_diff", DiffInputProvider)
-            assert _GIT_PROVIDERS["mosaico_diff"] is sentinel
+            with pytest.raises(ValueError, match="already registered"):
+                importlib.reload(registration)
+            assert _GIT_PROVIDERS["mosaico_diff"] is ForeignProvider
         finally:
-            if original is not None:
-                _GIT_PROVIDERS["mosaico_diff"] = original
+            _GIT_PROVIDERS["mosaico_diff"] = original
 
 
 class TestDiffInputProviderBasics:
@@ -253,8 +303,8 @@ def isolated_settings():
 async def _run_tool_via_spy(monkeypatch, isolated_settings, verb, canned_yaml, second_yaml=""):
     """Patch the provider registry to a spy subclass, mock the LLM, run the tool with
     publish_output=False, and return (captured_artifact, incremental_accessed_list)."""
-    from pr_agent.git_providers import _GIT_PROVIDERS
     import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_mod
+    from pr_agent.git_providers import _GIT_PROVIDERS
 
     files = parse_unified_diff(TWO_FILE_DIFF)
     provider_input = {"files": files, "languages": {"Python": 100}, "title": "spike PR"}

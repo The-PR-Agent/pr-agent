@@ -405,7 +405,7 @@ class TestResourceGathering:
             "Repo settings must not be able to inject skills.paths"
 
     def test_repo_settings_can_override_safe_skills_keys(self, monkeypatch):
-        """Safe per-repo preferences (enabled, max_skills_tokens) may be set from a
+        """Safe per-repo preferences may be set from a
         repo's .pr_agent.toml; only the host-only skills.paths is refused.
         """
         repo_toml = b'[skills]\nenabled = true\nmax_skills_tokens = 1234\n'

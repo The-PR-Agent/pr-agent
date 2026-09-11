@@ -67,14 +67,14 @@ ___
     #### Answer:<span style="display:none;">7</span>
 
     Yes, you can customize review effort estimates using the `extra_instructions` configuration option (see [documentation](../tools/review.md#configuration-options)).
-    
+
     Example mapping:
 
     - Effort 1: < 30 minutes review time
     - Effort 2: 30-60 minutes review time
     - Effort 3: 60-90 minutes review time
     - ...
-    
+
     Note: The effort levels (1-5) are primarily meant for _comparative_ purposes, helping teams prioritize reviewing smaller PRs first. The actual review duration may vary, as the focus is on providing consistent relative effort estimates.
 
 ___
@@ -88,14 +88,14 @@ ___
     - Suggestions are presented in a table format rather than as committable comments, which are far noisier
     - The 'File Walkthrough' section is folded by default, as it tends to be verbose
     - Intermediate comments are avoided when creating new PRs (like "PR-Agent is now reviewing your PR..."), which would generate email noise
-    
+
     From our experience, especially in large teams or organizations, complaints about "noise" sometimes stem from the following issues:
 
     - **Feedback from multiple bots**: When multiple bots provide feedback on the same PR, it creates confusion and noise. We recommend using PR-Agent as the primary feedback tool to streamline the process and reduce redundancy.
     - **Getting familiar with the tool**: Unlike many tools that provide feedback only on demand, PR-Agent automatically analyzes and suggests improvements for every code change. While this proactive approach can feel intimidating at first, it's designed to continuously enhance code quality and catch bugs and problems when they occur. We recommend reviewing [this guide](../tools/improve.md#understanding-ai-code-suggestions) to help align expectations and maximize the value of PR-Agent's auto-feedback.
 
     Therefore, at a global configuration level, we recommend using the default configuration, which is designed to reduce noise while providing valuable feedback.
-    
+
     However, if you still find the feedback too noisy, you can adjust the configuration. Since each user and team has different needs, it's definitely possible - and even recommended - to adjust configurations for specific repos as needed.
     Ways to adjust the configuration for noise reduction include for example:
 

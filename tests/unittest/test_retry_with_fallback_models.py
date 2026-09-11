@@ -132,6 +132,57 @@ def test_deployment_id_updated_per_attempt():
         _restore_settings(snapshot)
 
 
+def test_fallback_deployment_does_not_poison_the_next_retry():
+    snapshot = _snapshot_settings()
+    try:
+        get_settings().set("config.model", "primary-model")
+        get_settings().set("config.fallback_models", ["fallback-1"])
+        get_settings().set("openai.deployment_id", "deployment-primary")
+        get_settings().set("openai.fallback_deployments", ["deployment-fallback"])
+
+        observed = []
+
+        async def fake_f(model):
+            observed.append((model, get_settings().get("openai.deployment_id", None)))
+            if model == "primary-model":
+                raise RuntimeError("primary failed")
+            return "fallback-ok"
+
+        assert asyncio.run(retry_with_fallback_models(fake_f)) == "fallback-ok"
+        assert get_settings().get("openai.deployment_id") == "deployment-primary"
+        assert asyncio.run(retry_with_fallback_models(fake_f)) == "fallback-ok"
+
+        assert observed == [
+            ("primary-model", "deployment-primary"),
+            ("fallback-1", "deployment-fallback"),
+            ("primary-model", "deployment-primary"),
+            ("fallback-1", "deployment-fallback"),
+        ]
+    finally:
+        _restore_settings(snapshot)
+
+
+def test_deployment_id_is_restored_when_retry_is_cancelled():
+    snapshot = _snapshot_settings()
+    try:
+        get_settings().set("config.model", "primary-model")
+        get_settings().set("config.fallback_models", ["fallback-1"])
+        get_settings().set("openai.deployment_id", "deployment-primary")
+        get_settings().set("openai.fallback_deployments", ["deployment-fallback"])
+
+        async def fake_f(model):
+            if model == "primary-model":
+                raise RuntimeError("primary failed")
+            raise asyncio.CancelledError
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(retry_with_fallback_models(fake_f))
+
+        assert get_settings().get("openai.deployment_id") == "deployment-primary"
+    finally:
+        _restore_settings(snapshot)
+
+
 def test_weak_model_type_uses_weak_setting_and_forwards_identifier():
     snapshot = _snapshot_settings()
     try:

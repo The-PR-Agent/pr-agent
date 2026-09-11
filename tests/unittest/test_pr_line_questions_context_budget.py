@@ -7,8 +7,7 @@ from litellm import token_counter
 
 import pr_agent.tools.pr_line_questions as plq
 from pr_agent.config_loader import get_settings
-from tests.unittest._settings_helpers import (restore_settings,
-                                              snapshot_settings)
+from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 
 class _FakeGithubProvider:
@@ -19,6 +18,12 @@ class _FakeGithubProvider:
 
     def get_review_thread_comments(self, comment_id):
         return self.comments
+
+    def supports_line_question_history(self):
+        return True
+
+    def supports_threaded_pr_questions(self):
+        return False
 
     def reply_to_comment_from_comment_id(self, comment_id, body):
         self.replies.append((comment_id, body))
@@ -102,6 +107,7 @@ async def test_ask_line_keeps_final_prompt_within_budget_after_loading_history(
         "selected_lines": "",
         "conversation_history": "",
         "resolve_threads": False,
+        "is_azure_devops": False,
         "extra_instructions": "",
     }
 
@@ -120,8 +126,6 @@ async def test_ask_line_keeps_final_prompt_within_budget_after_loading_history(
         settings.set("side", "RIGHT")
         settings.set("file_name", "src/example.py")
         settings.set("comment_id", 100)
-        monkeypatch.setattr(plq, "GithubProvider", _FakeGithubProvider)
-
         await question.run()
 
         assert len(ai_handler.requests) == 1 + len(fail_models)
@@ -193,6 +197,7 @@ async def test_ask_line_uses_attempted_model_for_non_gpt_prompt_budget(monkeypat
         "selected_lines": "",
         "conversation_history": "",
         "resolve_threads": False,
+        "is_azure_devops": False,
         "extra_instructions": "",
     }
 
@@ -217,7 +222,6 @@ async def test_ask_line_uses_attempted_model_for_non_gpt_prompt_budget(monkeypat
         settings.set("side", "RIGHT")
         settings.set("file_name", "src/example.py")
         settings.set("comment_id", 100)
-        monkeypatch.setattr(plq, "GithubProvider", _FakeGithubProvider)
         monkeypatch.setattr(plq, "token_counter", model_aware_counter, raising=False)
 
         await question.run()
