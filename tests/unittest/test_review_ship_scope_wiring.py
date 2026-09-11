@@ -59,8 +59,22 @@ def _make_reviewer(files):
     reviewer.review_failed_chunk_count = 0
     reviewer.review_vote_dropped_count = 0
     reviewer._review_state_result = None
+    reviewer._ship_scope_summary_paths = []
+    reviewer._ship_scope_ignore_footer = ""
     reviewer.set_review_labels = MagicMock()
     return reviewer
+
+
+def _render_review(reviewer):
+    with (
+        patch("pr_agent.tools.pr_reviewer.load_yaml", return_value={"review": {"summary": "test"}}),
+        patch("pr_agent.tools.pr_reviewer.github_action_output"),
+        patch(
+            "pr_agent.tools.pr_reviewer.convert_to_markdown_v2",
+            return_value="## PR Reviewer Guide 🔍\n\nbody text",
+        ),
+    ):
+        return reviewer._prepare_pr_review()
 
 
 @pytest.fixture
@@ -79,21 +93,20 @@ def ship_scope_settings():
 
 
 @pytest.mark.asyncio
-async def test_chunked_review_orders_high_priority_first_and_summarizes_low_priority_remaining(
+async def test_chunked_review_orders_high_priority_first_and_summarizes_without_ignore(
     ship_scope_settings,
 ):
+    """Summarized-only remaining low-priority files get a one-line list, not an [ignore] snippet."""
     design = _file("design/a.html")
     lib = _file("lib/a.dart")
     reviewer = _make_reviewer([design, lib])
-    reviewer._get_prediction = AsyncMock(return_value="review:\n  score: \"80\"\n  key_issues_to_review: []\n")
     reviewer._get_review_data = AsyncMock(
         return_value=("raw", {"review": {"score": "80", "key_issues_to_review": []}}, 0)
     )
 
-    # Chunking only engages when there are at least two plans.
     plans = [
-        ChunkPlan(diff="lib-diff", files=("lib/a.dart",), clipped=()),
-        ChunkPlan(diff="other-diff", files=("lib/a.dart",), clipped=()),
+        ChunkPlan(diff="lib-diff-a", files=("lib/a.dart",), clipped=()),
+        ChunkPlan(diff="lib-diff-b", files=("lib/a.dart",), clipped=()),
     ]
 
     with (
@@ -105,21 +118,43 @@ async def test_chunked_review_orders_high_priority_first_and_summarizes_low_prio
     ):
         await reviewer._prepare_prediction("model")
 
+    assert get_multi.call_args.kwargs.get("preserve_order") is True
     passed = get_multi.call_args.kwargs.get("diff_files")
-    assert passed is not None
     assert [f.filename for f in passed] == ["lib/a.dart", "design/a.html"]
     assert reviewer.coverage.files["design/a.html"].status == "low_priority_summary"
 
+    review = _render_review(reviewer)
+    assert "design/a.html" in review
+    assert "(low-priority file, not reviewed)" in review
+    assert "[ignore]" not in review
+
+
+@pytest.mark.asyncio
+async def test_ignore_proposal_only_when_low_priority_file_was_in_a_reviewed_chunk(
+    ship_scope_settings,
+):
+    design = _file("design/a.html")
+    lib = _file("lib/a.dart")
+    reviewer = _make_reviewer([design, lib])
+    reviewer._get_review_data = AsyncMock(
+        return_value=("raw", {"review": {"score": "80", "key_issues_to_review": []}}, 0)
+    )
+
+    plans = [
+        ChunkPlan(diff="lib-diff", files=("lib/a.dart",), clipped=()),
+        ChunkPlan(diff="design-diff", files=("design/a.html",), clipped=()),
+    ]
+
     with (
-        patch("pr_agent.tools.pr_reviewer.load_yaml", return_value={"review": {"summary": "test"}}),
-        patch("pr_agent.tools.pr_reviewer.github_action_output"),
+        # Non-empty remaining from the single-call probe is what opens the chunked path.
+        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["design/a.html"])),
         patch(
-            "pr_agent.tools.pr_reviewer.convert_to_markdown_v2",
-            return_value="## PR Reviewer Guide 🔍\n\nbody text",
+            "pr_agent.tools.pr_reviewer.get_pr_multi_diffs_with_files",
+            return_value=(plans, []),
         ),
     ):
-        review = reviewer._prepare_pr_review()
+        await reviewer._prepare_prediction("model")
 
-    assert "design/a.html" in review
-    assert "(mockup, not reviewed)" in review
+    review = _render_review(reviewer)
     assert "[ignore]" in review
+    assert 'glob = ["design/**"]' in review

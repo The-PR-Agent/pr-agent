@@ -974,7 +974,8 @@ class PRReviewer:
             model,
             max_calls=get_settings().pr_reviewer.get("max_number_of_calls", 3),
             add_line_numbers=True,
-            diff_files=diff_files)
+            diff_files=diff_files,
+            preserve_order=True)
         if len(plans) < 2:
             get_logger().info("Large-diff chunking produced a single chunk, reviewing the PR in one call")
             return False
@@ -1029,19 +1030,17 @@ class PRReviewer:
         self._ship_scope_summary_paths = summary_paths
         reviewed_paths = {path for plan in plans for path in plan.files}
         low_in_chunks = [path for path in reviewed_paths if is_low_priority(path, globs)]
-        # Propose ignore when low-priority files burned tokens in a chunk, or when they were
-        # summarized under budget (so a human can skip them next time).
-        if not low_in_chunks and not summary_paths:
+        # Only propose ignore for low-priority files that actually burned tokens in a reviewed chunk.
+        if not low_in_chunks:
             self._ship_scope_ignore_footer = ""
             return
-        low_paths = list(dict.fromkeys([*low_in_chunks, *summary_paths]))
         tokens_by_file = {
             f.filename: self.token_handler.count_tokens(f.patch or "")
             for f in self.git_provider.get_diff_files()
-            if f.filename in low_paths
+            if f.filename in low_in_chunks
         }
         self._ship_scope_ignore_footer = render_ignore_proposal(
-            propose_ignore_globs(low_paths, tokens_by_file)
+            propose_ignore_globs(low_in_chunks, tokens_by_file)
         )
 
     async def _review_chunk_plans(self, model: str, fallback_models: list) -> bool:
@@ -1534,14 +1533,15 @@ class PRReviewer:
             # otherwise show no coverage signal at all, since the block above never fires.
             markdown_text += f"\n\n<hr>\n\n{self.coverage.render_footer()}"
 
-        summary_paths = getattr(self, "_ship_scope_summary_paths", None) or []
-        if summary_paths:
-            markdown_text += "\n" + "\n".join(
-                f"- `{path}` (mockup, not reviewed)" for path in summary_paths
-            )
-        ignore_footer = getattr(self, "_ship_scope_ignore_footer", "") or ""
-        if ignore_footer:
-            markdown_text += f"\n\n{ignore_footer}"
+        if enable_coverage_footer:
+            summary_paths = getattr(self, "_ship_scope_summary_paths", None) or []
+            if summary_paths:
+                markdown_text += "\n" + "\n".join(
+                    f"- `{path}` (low-priority file, not reviewed)" for path in summary_paths
+                )
+            ignore_footer = getattr(self, "_ship_scope_ignore_footer", "") or ""
+            if ignore_footer:
+                markdown_text += f"\n\n{ignore_footer}"
 
         # Add help text if gfm_markdown is supported
         if self.git_provider.is_supported("gfm_markdown") and get_settings().pr_reviewer.enable_help_text:

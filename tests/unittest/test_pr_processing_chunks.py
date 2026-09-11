@@ -125,3 +125,87 @@ def test_get_pr_multi_diffs_delegates_to_with_files(monkeypatch):
     )
     assert diffs_with_remaining == ["diff-one", "diff-two"]
     assert remaining == ["left_out.py"]
+
+
+def test_preserve_order_packs_priority_list_without_token_resort(monkeypatch):
+    """Ship-scope passes an already-ordered list; preserve_order=True must not put the large
+    design file ahead of the smaller lib/ files."""
+    settings = get_settings()
+    original = {
+        "patch_extra_lines_before": settings.config.patch_extra_lines_before,
+        "patch_extra_lines_after": settings.config.patch_extra_lines_after,
+        "large_patch_policy": settings.config.get("large_patch_policy", "skip"),
+        "verbosity_level": settings.config.verbosity_level,
+    }
+    settings.config.patch_extra_lines_before = 0
+    settings.config.patch_extra_lines_after = 0
+    settings.config.large_patch_policy = "skip"
+    settings.config.verbosity_level = 0
+
+    from pr_agent.algo.ship_scope import DEFAULT_LOW_PRIORITY_GLOBS, order_files_by_priority
+
+    design = _file("design/a.html", "@@ -1 +1 @@\n-old\n+" + ("design " * 50))
+    lib_a = _file("lib/a.dart", "@@ -1 +1 @@\n-old\n+" + ("alpha " * 20))
+    docs = _file("docs/b.md", "@@ -1 +1 @@\n-old\n+" + ("docs " * 15))
+    lib_b = _file("lib/b.dart", "@@ -1 +1 @@\n-old\n+" + ("beta " * 20))
+    mixed = [design, lib_a, docs, lib_b]
+    ordered = order_files_by_priority(mixed, DEFAULT_LOW_PRIORITY_GLOBS)
+    provider = FakeProvider(mixed)
+    token_handler = FakeTokenHandler(prompt_tokens=100)
+
+    monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: 1700)
+
+    try:
+        plans, remaining_files = pr_processing.get_pr_multi_diffs_with_files(
+            provider, token_handler, "tiny-model", max_calls=3, add_line_numbers=False,
+            diff_files=ordered, preserve_order=True,
+        )
+        assert len(plans) >= 2
+        assert plans[0].files == ("lib/a.dart", "lib/b.dart")
+        later = [name for plan in plans[1:] for name in plan.files] + remaining_files
+        assert "design/a.html" in later
+        assert "docs/b.md" in later
+    finally:
+        for key, value in original.items():
+            setattr(settings.config, key, value)
+
+
+def test_preserve_order_false_still_sorts_by_tokens_descending(monkeypatch):
+    """Default packing is unchanged: largest patch first regardless of input order."""
+    settings = get_settings()
+    original = {
+        "patch_extra_lines_before": settings.config.patch_extra_lines_before,
+        "patch_extra_lines_after": settings.config.patch_extra_lines_after,
+        "large_patch_policy": settings.config.get("large_patch_policy", "skip"),
+        "verbosity_level": settings.config.verbosity_level,
+    }
+    settings.config.patch_extra_lines_before = 0
+    settings.config.patch_extra_lines_after = 0
+    settings.config.large_patch_policy = "skip"
+    settings.config.verbosity_level = 0
+
+    design = _file("design/a.html", "@@ -1 +1 @@\n-old\n+" + ("design " * 50))
+    lib_a = _file("lib/a.dart", "@@ -1 +1 @@\n-old\n+" + ("alpha " * 20))
+    docs = _file("docs/b.md", "@@ -1 +1 @@\n-old\n+" + ("docs " * 15))
+    lib_b = _file("lib/b.dart", "@@ -1 +1 @@\n-old\n+" + ("beta " * 20))
+    mixed = [design, lib_a, docs, lib_b]
+    provider = FakeProvider(mixed)
+    token_handler = FakeTokenHandler(prompt_tokens=100)
+
+    monkeypatch.setattr(
+        pr_processing, "sort_files_by_main_languages",
+        lambda languages, files: [{"files": list(files)}],
+    )
+    monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: 1700)
+
+    try:
+        plans, remaining_files = pr_processing.get_pr_multi_diffs_with_files(
+            provider, token_handler, "tiny-model", max_calls=3, add_line_numbers=False,
+            diff_files=mixed, preserve_order=False,
+        )
+        assert len(plans) >= 2
+        assert plans[0].files[0] == "design/a.html"
+        assert remaining_files == []
+    finally:
+        for key, value in original.items():
+            setattr(settings.config, key, value)

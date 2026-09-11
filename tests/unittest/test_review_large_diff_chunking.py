@@ -133,6 +133,7 @@ async def test_a_truncated_diff_is_reviewed_chunk_by_chunk_and_merged(chunking_e
         max_calls=3,
         add_line_numbers=True,
         diff_files=[],
+        preserve_order=True,
     )
     assert [call.args[1] for call in reviewer._get_prediction.await_args_list] == ["chunk-a", "chunk-b"]
 

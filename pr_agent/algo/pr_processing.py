@@ -419,13 +419,17 @@ def get_pr_multi_diffs_with_files(git_provider: GitProvider,
                                   model: str,
                                   max_calls: int = 5,
                                   add_line_numbers: bool = True,
-                                  diff_files: list = None) -> tuple[list[ChunkPlan], list[str]]:
+                                  diff_files: list = None,
+                                  preserve_order: bool = False) -> tuple[list[ChunkPlan], list[str]]:
     """Same chunking as get_pr_multi_diffs, but each chunk also names its files and which were clipped.
 
     Args:
         diff_files: override the files considered, instead of calling `git_provider.get_diff_files()`.
             Used by `split_chunk_plan` (pr_reviewer.py) to regenerate a diff for just one half of a
             failed chunk's files, without needing a stub `GitProvider`.
+        preserve_order: when True, pack `diff_files` in the given order instead of regrouping by
+            language and sorting by tokens. Callers that already prioritized the list (ship-scope)
+            pass True; the default keeps today's language/token packing.
 
     Returns:
         A tuple of the list of `ChunkPlan`s (one per model call) and the list of files the token
@@ -434,8 +438,12 @@ def get_pr_multi_diffs_with_files(git_provider: GitProvider,
     if diff_files is None:
         diff_files = git_provider.get_diff_files()
 
-    # Sort files by main language
-    pr_languages = sort_files_by_main_languages(git_provider.get_languages(), diff_files)
+    if preserve_order:
+        # Single group so the early full-diff fit check still runs; packing uses `diff_files` as-is.
+        pr_languages = [{"language": "Other", "files": list(diff_files)}]
+    else:
+        # Sort files by main language
+        pr_languages = sort_files_by_main_languages(git_provider.get_languages(), diff_files)
 
     # Get the maximum number of extra lines before and after the patch
     PATCH_EXTRA_LINES_BEFORE = get_settings().config.patch_extra_lines_before
@@ -459,10 +467,13 @@ def get_pr_multi_diffs_with_files(git_provider: GitProvider,
         plan = ChunkPlan(diff="\n".join(patches_extended), files=tuple(full_diff_files), clipped=())
         return [plan], []
 
-    # Sort files within each language group by tokens in descending order
-    sorted_files = []
-    for lang in pr_languages:
-        sorted_files.extend(sorted(lang['files'], key=lambda x: x.tokens, reverse=True))
+    if preserve_order:
+        sorted_files = list(diff_files)
+    else:
+        # Sort files within each language group by tokens in descending order
+        sorted_files = []
+        for lang in pr_languages:
+            sorted_files.extend(sorted(lang['files'], key=lambda x: x.tokens, reverse=True))
 
     patches = []
     chunk_files: list[str] = []
