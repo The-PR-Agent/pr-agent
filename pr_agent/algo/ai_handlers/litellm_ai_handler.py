@@ -3780,7 +3780,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                     timeout=_IMAGE_HEAD_TIMEOUT_SECONDS,
                 )
                 if r.status_code == 404:
-                    error_msg = "The image link is not [alive](img_path).\nPlease repost the original image as a comment, and send the question again with 'quote reply' (see [instructions](https://pr-agent-docs.codium.ai/tools/ask/#ask-on-images-using-the-pr-code-as-context))."
+                    error_msg = "The image link is not [alive](img_path).\nPlease repost the original image as a comment, and send the question again with 'quote reply' (see [instructions](https://docs.pr-agent.ai/tools/ask/#ask-on-images))."
                     get_logger().error(error_msg)
                     return f"{error_msg}", "error"
             except Exception as e:

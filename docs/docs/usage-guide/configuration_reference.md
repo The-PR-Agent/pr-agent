@@ -203,7 +203,6 @@ to-do list.
 | `collapsible_file_list` | "adaptive" | true, false, 'adaptive' |
 | `collapsible_file_list_threshold` | 6 |  |
 | `file_table_collapsible_open_by_default` | false |  |
-| `inline_file_summary` | false | false, true, 'table' |
 **markers**
 
 | Key | Default | Description |
@@ -395,6 +394,13 @@ _This section only documents commented-out examples; see the [TOML source](https
 | Key | Default | Description |
 | --- | --- | --- |
 | `url` | "" | URL to the BitBucket Server instance |
+
+
+## `[jira]`
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `jira_requirements_field` | "" | Custom field id holding acceptance criteria / requirements, mapped to the ticket "requirements" section. Instance-specific (e.g. "customfield_10127"); empty disables it. |
 
 
 ## `[litellm]`

@@ -138,19 +138,17 @@ class PRDescription:
             if get_settings().pr_description.enable_semantic_files_types:
                 self.file_label_dict = self._prepare_file_labels()
 
-            pr_labels, pr_file_changes = [], []
+            pr_labels = []
             if get_settings().pr_description.publish_labels:
                 pr_labels = self._prepare_labels()
             else:
                 get_logger().debug("Publishing labels disabled")
 
             if get_settings().pr_description.use_description_markers:
-                pr_title, pr_body, changes_walkthrough, pr_file_changes = self._prepare_pr_answer_with_markers()
+                pr_title, pr_body = self._prepare_pr_answer_with_markers()
             else:
-                pr_title, pr_body, changes_walkthrough, pr_file_changes = self._prepare_pr_answer()
-                if not self.git_provider.is_supported(
-                        "publish_file_comments") or not get_settings().pr_description.inline_file_summary:
-                    pr_body += "\n\n" + changes_walkthrough + "___\n\n"
+                pr_title, pr_body, changes_walkthrough = self._prepare_pr_answer()
+                pr_body += "\n\n" + changes_walkthrough + "___\n\n"
             pr_body += self._get_description_coverage_footer()
             get_logger().debug("PR output", artifact={"title": pr_title, "body": pr_body})
 
@@ -163,12 +161,12 @@ class PRDescription:
                 if self.git_provider.supports_inline_help_footer():
                     pr_body += ('\n\n___\n\n> <details> <summary>  Need help?</summary><li>Type <code>/help how to ...</code> '
                                 'in the comments thread for any questions about PR-Agent usage.</li><li>Check out the '
-                                '<a href="https://qodo-merge-docs.qodo.ai/usage-guide/">documentation</a> '
+                                '<a href="https://docs.pr-agent.ai/usage-guide/">documentation</a> '
                                 'for more information.</li></details>')
                 else:  # bullets separated by <br>, for providers whose footer cannot inline a list
                     pr_body += ("\n\n___\n\n<details><summary>Need help?</summary>- Type <code>/help how to ...</code> in the comments "
                                 "thread for any questions about PR-Agent usage.<br>- Check out the "
-                                "<a href='https://qodo-merge-docs.qodo.ai/usage-guide/'>documentation</a> for more information.</details>")
+                                "<a href='https://docs.pr-agent.ai/usage-guide/'>documentation</a> for more information.</details>")
             # elif get_settings().pr_description.enable_help_comment:
             #     pr_body += '\n\n___\n\n> 💡 **PR-Agent usage**: Comment `/help "your question"` on any pull request to receive relevant information'
 
@@ -620,7 +618,7 @@ class PRDescription:
             get_logger().error(f"Error converting labels to original case {self.pr_id}: {e}")
         return pr_labels
 
-    def _prepare_pr_answer_with_markers(self) -> Tuple[str, str, str, List[dict]]:
+    def _prepare_pr_answer_with_markers(self) -> Tuple[str, str]:
         get_logger().info(f"Using description marker replacements {self.pr_id}")
 
         # Remove the 'PR Title' key from the dictionary
@@ -661,11 +659,9 @@ class PRDescription:
 
         ai_walkthrough = self.data.get('pr_files')
         walkthrough_gfm = ""
-        pr_file_changes = []
         if ai_walkthrough and not re.search(r'<!--\s*pr_agent:walkthrough\s*-->', body):
             try:
-                walkthrough_gfm, pr_file_changes = self.process_pr_files_prediction(walkthrough_gfm,
-                                                                                    self.file_label_dict)
+                walkthrough_gfm = self.process_pr_files_prediction(walkthrough_gfm, self.file_label_dict)
                 body = body.replace('pr_agent:walkthrough', walkthrough_gfm)
             except Exception as e:
                 get_logger().error(f"Failing to process walkthrough {self.pr_id}: {e}")
@@ -676,9 +672,9 @@ class PRDescription:
         if ai_diagram:
             body = re.sub(r'<!--\s*pr_agent:diagram\s*-->|pr_agent:diagram', ai_diagram, body)
 
-        return title, body, walkthrough_gfm, pr_file_changes
+        return title, body
 
-    def _prepare_pr_answer(self) -> Tuple[str, str, str, List[dict]]:
+    def _prepare_pr_answer(self) -> Tuple[str, str, str]:
         """
         Prepare the PR description based on the AI prediction data.
 
@@ -708,7 +704,6 @@ class PRDescription:
         # Iterate over the remaining dictionary items and append the key and value to 'pr_body' in a markdown format,
         # except for the items containing the word 'walkthrough'
         pr_body, changes_walkthrough = "", ""
-        pr_file_changes = []
         for idx, (key, value) in enumerate(self.data.items()):
             if key == 'changes_diagram':
                 pr_body += f"### {PRDescriptionHeader.DIAGRAM_WALKTHROUGH.value}\n\n"
@@ -733,7 +728,7 @@ class PRDescription:
                 if self.git_provider.is_supported("gfm_markdown"):
                     pr_body += "</details>\n"
             elif 'pr_files' in key.lower() and get_settings().pr_description.enable_semantic_files_types: # 'File Walkthrough' section
-                changes_walkthrough_table, pr_file_changes = self.process_pr_files_prediction(changes_walkthrough, value)
+                changes_walkthrough_table = self.process_pr_files_prediction(changes_walkthrough, value)
                 if get_settings().pr_description.get('file_table_collapsible_open_by_default', False):
                     initial_status = " open"
                 else:
@@ -754,7 +749,7 @@ class PRDescription:
             if idx < len(self.data) - 1:
                 pr_body += "\n\n___\n\n"
 
-        return title, pr_body, changes_walkthrough, pr_file_changes,
+        return title, pr_body, changes_walkthrough
 
     def _prepare_file_labels(self):
         file_label_dict = {}
@@ -791,7 +786,6 @@ class PRDescription:
         return file_label_dict
 
     def process_pr_files_prediction(self, pr_body, value):
-        pr_comments = []
         # logic for using collapsible file list
         use_collapsible_file_list = get_settings().pr_description.collapsible_file_list
         num_files = 0
@@ -802,7 +796,7 @@ class PRDescription:
             use_collapsible_file_list = num_files > self.COLLAPSIBLE_FILE_LIST_THRESHOLD
 
         if not self.git_provider.is_supported("gfm_markdown"):
-            return pr_body, pr_comments
+            return pr_body
         try:
             pr_body += "<table>"
             header = "Relevant files"
@@ -868,7 +862,7 @@ class PRDescription:
         except Exception as e:
             get_logger().error(f"Error processing pr files to markdown {self.pr_id}: {str(e)}")
             pass
-        return pr_body, pr_comments
+        return pr_body
 
     def add_file_data(self, delta_nbsp, diff_plus_minus, file_change_description_br, filename, filename_publish, link,
                       pr_body) -> str:

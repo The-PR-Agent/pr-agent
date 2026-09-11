@@ -26,19 +26,27 @@ python -m pr_agent.cli --diff-file changes.diff --output review.md review
 |---|---|
 | `--stdin` | Read a unified diff from stdin |
 | `--diff-file <path>` | Read a unified diff from a file |
-| `--output <path>` | Write the result to a file in addition to stdout |
-| `--json-output <path>` | Write the parsed review and token usage to a JSON file (`review` command) |
+| `--output <path>` | Write Markdown produced by a compatible Plain Diff command to a file in addition to stdout |
+| `--json-output <path>` | Write the parsed review and token usage to a JSON file (`review` or `review_pr` only) |
 
 `--stdin` and `--diff-file` are mutually exclusive. At least one must be provided to
 enter plain-diff mode; omitting both falls back to the normal `--pr_url` flow.
+Output options must appear before the command. For example, use
+`--stdin --output result.md review`, not `--stdin review --output result.md`.
 
 ### Supported commands
 
-`review`, `improve`, `describe`, and `ask` are supported. Because there is no hosting
+`review`, `improve`, `describe`, and `ask` are supported, along with their
+`review_pr`, `improve_code`, `describe_pr`, and `ask_question` aliases. Because there is no hosting
 platform to push to, `improve` renders its code suggestions as a single markdown
 document to stdout (and to `--output`, if given) instead of as committable inline
 suggestions. Commands that require live platform interaction (such as
 `update_changelog` or `similar_issue`) are not meaningful in this mode.
+
+Existing command variants that publish Markdown without additional platform
+state (`auto_review`, `config`, `settings`, and `help`) also honor `--output`.
+`answer` does not: it requires issue-comment history, which is unavailable when
+the input is a standalone diff.
 
 ## How it works
 
@@ -55,9 +63,10 @@ suggestions. Commands that require live platform interaction (such as
    for that file. The review still runs; it simply has less context.
 
 4. **Output** — the result is written to stdout. If `--output <path>` is given, it is
-   also written to that file (UTF-8, overwritten on each run). For `review`, if
-   `--json-output <path>` is given, the parsed review plus a `usage` object with the
-   run's accumulated token counts is also written to that file as JSON.
+   also written to that file (UTF-8, overwritten on each run). For `review` or
+   `review_pr`, if `--json-output <path>` is given, the parsed review plus a
+   `usage` object with the run's accumulated token counts is also written to that
+   file as JSON.
 
 No platform token, no PR URL, and no internet access are required for the diff processing
 step itself. An LLM API key is still needed unless you configure a local model.

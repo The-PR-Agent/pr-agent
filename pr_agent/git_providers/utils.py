@@ -393,7 +393,7 @@ def handle_configurations_errors(config_errors, git_provider):
                 header = f"❌ **PR-Agent failed to apply '{config_type}' repo settings**"
                 body = (
                     f"{header}\n\nThe configuration file needs to be a valid "
-                    "[TOML](https://qodo-merge-docs.qodo.ai/usage-guide/configuration_options/), please fix it.\n\n"
+                    "[TOML](https://docs.pr-agent.ai/usage-guide/configuration_options/), please fix it.\n\n"
                 )
                 body += f"___\n\n**Error message:**\n`{err_message}`\n\n"
                 if config_type == "global":
