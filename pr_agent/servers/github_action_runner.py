@@ -3,6 +3,8 @@ import json
 import os
 from typing import Union
 
+import dynaconf
+
 from pr_agent.agent.pr_agent import PRAgent
 from pr_agent.algo.ai_handlers.litellm_helpers import (
     DEFAULT_CALLBACK_TIMEOUT_SECONDS,
@@ -190,7 +192,7 @@ async def run_action():
 
             for key in get_settings():
                 setting = get_settings().get(key)
-                if str(type(setting)) == "<class 'dynaconf.utils.boxing.DynaBox'>":
+                if isinstance(setting, dynaconf.DataDict):
                     if key.lower() in ['pr_description', 'pr_code_suggestions', 'pr_reviewer']:
                         if hasattr(setting, 'extra_instructions'):
                             extra_instructions = setting.extra_instructions
@@ -328,8 +330,8 @@ async def run_action():
 
                 if url:
                     # handle_line_comments returns an argv list for /ask line
-                    # comments to bypass shell-style tokenisation; otherwise it
-                    # returns the raw comment string. Only normalise when the
+                    # comments to bypass shell-style tokenization; otherwise it
+                    # returns the raw comment string. Only normalize when the
                     # payload is a string, otherwise the argv list would be
                     # passed through .strip().lower() and raise AttributeError.
                     if isinstance(comment_body, str):
@@ -430,7 +432,7 @@ def _inject_ci_conclusion(conclusion):
     target_tools = {str(t).lower() for t in target_tools}
     for key in get_settings():
         setting = get_settings().get(key)
-        if str(type(setting)) == "<class 'dynaconf.utils.boxing.DynaBox'>":
+        if isinstance(setting, dynaconf.DataDict):
             if key.lower() in target_tools:
                 if hasattr(setting, "extra_instructions"):
                     extra_instructions = str(setting.extra_instructions or "")
