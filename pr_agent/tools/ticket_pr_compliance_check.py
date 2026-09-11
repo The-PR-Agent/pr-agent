@@ -84,14 +84,24 @@ def _jira_project_keys():
     Return the configured jira.project_keys allowlist as a set of upper-case project keys,
     or None when the option is unset or empty (look up every key found). Entries that are
     not plain project keys are ignored with a warning. An allowlist that was configured but
-    has no valid entry left yields an empty set, which drops every key: a typo fails closed
+    has no valid entry left, or that is not a list at all (a boolean or number from a YAML
+    or CLI override), yields an empty set, which drops every key: a typo fails closed
     instead of silently widening the lookup to every key-shaped string. Accepts a list or a
     comma-separated string, the latter for environment-variable overrides
     (jira__project_keys="PROJ,OPS").
     """
-    configured = get_settings().get("JIRA.PROJECT_KEYS", None) or []
+    configured = get_settings().get("JIRA.PROJECT_KEYS", None)
+    if configured is None:
+        return None
     if isinstance(configured, str):
         configured = configured.split(",")
+    elif not isinstance(configured, (list, tuple)):
+        # A YAML/CLI override such as `project_keys=true` or `=false` is neither
+        # "unset" nor a list; fail closed rather than guess what it meant.
+        get_logger().warning(
+            f"jira.project_keys must be a list of project keys, got {type(configured).__name__}; "
+            "skipping Jira ticket lookup until it is fixed")
+        return set()
     # Only strings are candidates: a TOML/YAML boolean or null in the list must not
     # be stringified into a key-shaped label ("TRUE", "NONE") that then filters.
     entries = [item for item in configured if not isinstance(item, str) or item.strip()]

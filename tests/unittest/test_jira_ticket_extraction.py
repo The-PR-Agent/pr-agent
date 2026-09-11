@@ -338,6 +338,20 @@ class TestExtractJiraTickets:
         warning_calls = [str(c) for c in get_logger.return_value.warning.call_args_list]
         assert any("no valid entry" in c for c in warning_calls)
 
+    @pytest.mark.parametrize("value", [True, False, 0, 1, 1.5, {"PROJ": True}])
+    def test_project_keys_of_an_unsupported_type_fail_closed(self, value):
+        """`project_keys=true` / `=false` from a YAML or CLI override is neither unset nor a
+        list; it must not raise and must not re-enable lookups for every key."""
+        self._configure_jira()
+        _set_project_keys(value)
+        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira") as jira_cls, \
+                patch("pr_agent.tools.ticket_pr_compliance_check.get_logger") as get_logger:
+            result = extract_jira_tickets("PROJ-1 SHA-256")
+        assert result == []
+        jira_cls.assert_not_called()
+        warning_calls = [str(c) for c in get_logger.return_value.warning.call_args_list]
+        assert any("must be a list" in c for c in warning_calls)
+
     @pytest.mark.parametrize("bad_entry", [True, False, None, 0])
     def test_non_string_project_keys_are_not_stringified_into_labels(self, bad_entry):
         """A boolean or null in the list must not become a key-shaped label ("TRUE",
