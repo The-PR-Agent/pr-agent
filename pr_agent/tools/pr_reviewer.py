@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import copy
 import datetime
+import os
 import re
 import uuid
 from functools import partial
@@ -11,7 +12,7 @@ from jinja2 import Environment, StrictUndefined
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
-from pr_agent.algo.diff_ordering import permute_patch_for_sample
+from pr_agent.algo.diff_ordering import permute_patch_for_sample, split_patch_by_file
 from pr_agent.algo.finding_verifier import UNVERIFIED_HEADER_SUFFIX, verify_findings
 from pr_agent.algo.inline_comment_dedup import (
     InlineCommentStore,
@@ -51,6 +52,7 @@ from pr_agent.algo.ship_scope import (
     render_ignore_proposal,
 )
 from pr_agent.algo.skills_loader import get_skills_context
+from pr_agent.algo.symbol_retrieval import build_repo_symbol_index, retrieve_context_for_files
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (
     ModelType,
@@ -300,6 +302,10 @@ class PRReviewer:
             "num_max_findings": get_settings().pr_reviewer.num_max_findings,
             "findings_field_instruction": render_findings_field_instruction(
                 num_max_findings=get_settings().pr_reviewer.num_max_findings),
+            # Filled per call in _get_prediction: retrieval is computed against the chunk actually
+            # being reviewed, not against the whole PR.
+            "retrieved_context": "",
+            "has_retrieved_context": False,
             "require_score": get_settings().pr_reviewer.require_score_review,
             "require_tests": get_settings().pr_reviewer.require_tests_review,
             "require_estimate_effort_to_review": get_settings().pr_reviewer.require_estimate_effort_to_review,
@@ -1423,6 +1429,52 @@ class PRReviewer:
         consensus = vote_review_samples(parsed, min_votes, max_findings=max_findings)
         return "\n".join(raw), consensus.review, consensus.dropped
 
+    def _symbol_index(self):
+        """Build the checkout's symbol index once per reviewer, or None when retrieval is off.
+
+        Indexing walks the whole checkout, so a per-chunk rebuild would multiply that by the number
+        of calls. The cached value is deliberately also cached when it is None.
+        """
+        if hasattr(self, "_symbol_index_cache"):
+            return self._symbol_index_cache
+
+        settings = get_settings().pr_reviewer
+        index = None
+        if settings.get("enable_symbol_retrieval", False):
+            checkout = str(settings.get("repo_checkout_path", "") or "").strip()
+            if not checkout or not os.path.isdir(checkout):
+                get_logger().warning(
+                    "pr_reviewer.enable_symbol_retrieval is on but repo_checkout_path is not a "
+                    f"directory ({checkout!r}); reviewing without retrieved context")
+            else:
+                try:
+                    index = build_repo_symbol_index(checkout)
+                except OSError as exc:
+                    get_logger().warning(f"symbol index could not be built: {exc}")
+        self._symbol_index_cache = index
+        return index
+
+    def _retrieved_context_for(self, diff: str) -> str:
+        """Cross-file context for the files in this call's diff, or "" when retrieval is off."""
+        index = self._symbol_index()
+        if index is None or not diff:
+            return ""
+
+        preamble, blocks = split_patch_by_file(diff)
+        changed_files = {}
+        for block in blocks:
+            match = re.match(r"^## [Ff]ile: '([^']+)'", block)
+            if match:
+                changed_files[match.group(1).strip()] = block
+        if not changed_files:
+            return ""
+
+        try:
+            max_chars = int(get_settings().pr_reviewer.get("symbol_retrieval_max_chars", 40000))
+        except (TypeError, ValueError):
+            max_chars = 40000
+        return retrieve_context_for_files(index, changed_files, max_chars=max_chars)
+
     async def _get_prediction(self, model: str, patches_diff: Optional[str] = None, *,
                               chunk_index: Optional[int] = None, sample_index: Optional[int] = None,
                               files: Optional[list] = None) -> str:
@@ -1445,6 +1497,9 @@ class PRReviewer:
         """
         variables = copy.deepcopy(self.vars)
         variables["diff"] = self.patches_diff if patches_diff is None else patches_diff  # update diff
+        retrieved = self._retrieved_context_for(variables["diff"])
+        variables["retrieved_context"] = retrieved
+        variables["has_retrieved_context"] = bool(retrieved)
 
         environment = Environment(undefined=StrictUndefined)
         system_prompt = environment.from_string(get_settings().pr_review_prompt.system).render(variables)

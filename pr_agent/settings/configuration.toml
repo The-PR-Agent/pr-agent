@@ -160,6 +160,13 @@ num_max_findings = 3
 # drops when a file sits deep in a long prompt. Cursor's BugBot credits differently ordered passes
 # plus a vote for a large part of its measured improvement.
 permute_diff_order_across_samples = false
+# R-16 cross-file symbol retrieval. Needs a local checkout of the PR head: for each identifier a
+# hunk changes, the reviewer retrieves that identifier's definition and its callers from files the
+# diff does not touch, so a defect that is only visible next to the code it mirrors (a timeout on
+# one path and not the other) is in the prompt at all. Off by default because it needs the checkout.
+enable_symbol_retrieval = false
+repo_checkout_path = ""
+symbol_retrieval_max_chars = 40000
 # Layout of the key-issues section of the review comment.
 #   "details"  - each finding is a collapsed <details> block whose title carries the diff link
 #   "expanded" - the file path and line range are shown as text and the code snippet is always

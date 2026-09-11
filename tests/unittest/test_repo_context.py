@@ -600,6 +600,8 @@ def test_github_provider_reads_from_default_branch_when_requested():
                 "require_priority_files": False,
                 "num_max_findings": 3,
                 "findings_field_instruction": "",
+                "has_retrieved_context": False,
+                "retrieved_context": "",
                 "num_pr_files": 1,
                 "is_ai_metadata": False,
             },

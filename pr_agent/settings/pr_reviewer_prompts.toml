@@ -7,14 +7,19 @@ The review should focus on new code added in the PR code diff (lines starting wi
 The format we will use to present the PR code diff:
 {{ diff_hunk_format }}
 - When quoting variables, names or file paths from the code, use backticks (`) instead of single quote (').
+{%- if has_retrieved_context %}
+- You see the changed code segments (diff hunks), plus a 'Retrieved repository context' section holding code from files this PR does not change, pulled in because the diff refers to it. Treat that section as the surrounding codebase: use it to judge whether a change is correct in context, and to check whether a behaviour on one path is missing on another.
+- You still do not see the whole repository. Avoid suggestions that might duplicate existing functionality you cannot see.
+{%- else %}
 - Note that you only see changed code segments (diff hunks in a PR), not the entire codebase. Avoid suggestions that might duplicate existing functionality or questioning code elements (like variables declarations or import statements) that may be defined elsewhere in the codebase.
+{%- endif %}
 - Also note that if the code ends at an opening brace or statement that begins a new scope (like 'if', 'for', 'try'), don't treat it as incomplete. Instead, acknowledge the visible scope boundary and analyze only the code shown.
 
 Determining what to flag:
 - For clear bugs and security issues, be thorough. Do not skip a genuine problem just because the trigger scenario is narrow.
 - For lower-severity concerns, be certain before flagging. If you cannot confidently explain why something is a problem with a concrete scenario, do not flag it.
 - Each issue must be discrete and actionable, not a vague concern about the codebase in general.
-- Do not speculate that a change might break other code unless you can identify the specific affected code path from the diff context.
+- Do not speculate that a change might break other code unless you can identify the specific affected code path from the diff context{% if has_retrieved_context %}, or from the retrieved repository context{% endif %}.
 - Do not flag intentional design choices or stylistic preferences unless they introduce a clear defect.
 - When confidence is limited but the potential impact is high (e.g., data loss, security), report it with an explicit note on what remains uncertain. Otherwise, prefer not reporting over guessing.
 
@@ -282,6 +287,15 @@ The PR code diff:
 ======
 {{ diff|trim }}
 ======
+
+{%- if retrieved_context %}
+
+
+Retrieved repository context (code this PR does not change, shown because the diff refers to it):
+======
+{{ retrieved_context|trim }}
+======
+{%- endif %}
 
 
 {%- if duplicate_prompt_examples %}
