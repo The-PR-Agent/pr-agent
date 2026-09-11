@@ -357,6 +357,41 @@ A practical constraint worth recording: `dart analyze` on a checkout without `fl
 reports one `URI_DOES_NOT_EXIST` per import and nothing else. `run_dart_analyze` treats that state
 as "analyzer unavailable" rather than passing the noise into a prompt.
 
+## 2026-09-11: R-16 cross-file retrieval - pre-registration
+
+**Written before the rows ran.** Four mechanisms are now dead with rows - coverage, chunk size,
+prompt wording, sampling diversity - and every one of them changed how the *same* bytes were
+presented. This is the first experiment that changes **which bytes** reach the model.
+
+**Mechanism.** `pr_reviewer.enable_symbol_retrieval` with a local checkout at the labeled head
+(`6e61389`). For each identifier a hunk changes, the reviewer retrieves that identifier's definition
+and its callers from files the diff does not touch (`4f59665b`). The index over this repo: 1,358
+defined symbols, 4,409 referenced, built in 0.4s.
+
+The prompt changes too, and that is deliberate: the system prompt otherwise says "you only see
+changed code segments, not the entire codebase" and forbids speculating about other code "unless you
+can identify the specific affected code path from the diff context". Both are conditioned on
+retrieval being present; the off-state wording is byte-identical to the control rows.
+
+**Rows.** Two reps, flags identical to the Step 1 A rows plus the three retrieval flags.
+Control: A rep1/rep2 = 1 and 0 of 23.
+
+**Decision rule (pre-registered).**
+- **Win:** >= 4 of 23 on both reps, zero control false flags. Same bar as Step 1; the literature puts
+  a real effect at +3 to +5 true positives on n=23.
+- **Promising, needs 3 more reps:** >= 3 on both reps.
+- **No signal:** at or below 2, which is inside the spread the control itself shows.
+
+**The specific thing to look for**, beyond the count: `ads-show-timeout` (severity 4) is a timeout
+present on the load path and missing on the show path. If retrieval works at all, that is the label
+it should catch, because the two paths are in the same file's neighbours and the asymmetry is only
+visible with both in front of the model. A win on count without that label would be luck; that label
+without a win on count would still be evidence the mechanism is right and the budget is wrong.
+
+**If this is null too**, the remaining explanation is not context volume but the model line itself,
+and the next move is a stronger model on a subset rather than more retrieval - a conclusion worth
+writing down before the rows rather than after.
+
 ## Reproduce
 
 To reproduce the Cursor rows, start the shim first and point the run at it instead of Gemini:
