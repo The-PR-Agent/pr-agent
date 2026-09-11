@@ -291,6 +291,48 @@ corpus and the next move is retrieval (R-16/R-17), not more sampling.
 **What it cannot show.** Whether ordering or sheer repetition produced any gain - three samples in
 the *same* order would separate those, and is the row to add if this one moves.
 
+## 2026-09-11: diff-order permutation + vote - result. No signal.
+
+Four rows, `.delegate/runs/task-12/`, run id `permute:20260911T155*:*`. Read against the rule
+pre-registered above.
+
+| Row | Samples | min_votes | Findings | Matched/23 | Control FPs | Review calls | Prompt tokens |
+|---|---|---|---|---|---|---|---|
+| union rep1 | 3 | 1 | 2 | 1 (`test-debug-leftovers`) | 0 | 6 | 1,323k |
+| union rep2 | 3 | 1 | 3 | **2** (`+ store-flow-triplicated`) | 0 | 6 | 1,316k |
+| vote rep1 | 3 | 2 | 2 | 1 | 0 | 6 | 1,303k |
+| vote rep2 | 3 | 2 | 1 | 1 | 0 | 6 | 1,296k |
+
+Control (Step 1's A rows, 1 sample): 1 and 0 of 23 at ~440k tokens.
+
+**Verdict: no signal.** The union rows are 1 and 2 of 23; the pre-registered "promising" band was
+>= 3 on *both* reps and the win band >= 4. Three times the budget (1.3M prompt tokens against 440k)
+bought at most one extra label, and not reproducibly.
+
+**The permutation itself worked** - verified from the raw prompt dumps, where the three samples of a
+chunk lead with different files (`profile_store.dart`, `piece_director_ramp_test.dart`,
+`music_tier.dart`) at an identical payload size. This is a real test of the mechanism, not a no-op
+flag.
+
+**What that buys us is a negative with teeth.** In rep1 the vote row returned *exactly* the union
+row's findings: three passes with the labeled files in completely different prompt positions
+produced the same two findings. The model is not missing these defects because they sat deep in a
+long prompt - position bias / "lost in the middle" is not the mechanism here. It is not finding them
+at all.
+
+**`store-flow-triplicated` (severity 1) is new** - the first time any row matched a second label, and
+it appeared in only one of two reps. Both severity-4 labels remain unfound by every row of every
+configuration run to date.
+
+**Consequence.** Sampling is dead on this corpus, as the pre-registration said it would be if union
+gained nothing: *the next move is retrieval (R-16/R-17), not more passes over the same text.* Three
+mechanisms are now eliminated with rows - coverage, chunk size, prompt wording, and sampling
+diversity - and all of them were about how the *same* bytes are presented. What is left is changing
+which bytes the model sees.
+
+`pr_reviewer.permute_diff_order_across_samples` stays in the tree, default off: it costs nothing
+when unused, and it is the honest way to re-test this once retrieval changes what a sample contains.
+
 ## Reproduce
 
 To reproduce the Cursor rows, start the shim first and point the run at it instead of Gemini:
