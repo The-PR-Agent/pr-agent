@@ -7,9 +7,9 @@ from typing import List, Optional, Tuple
 from urllib.parse import urlparse
 
 from pr_agent.algo.language_handler import is_valid_file
+from pr_agent.algo.review_finding_state import split_review_state_marker
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.git_providers.codecommit_client import CodeCommitClient
-from pr_agent.algo.review_finding_state import split_review_state_marker
 
 from ..algo.utils import (
     add_pr_review_identity,
