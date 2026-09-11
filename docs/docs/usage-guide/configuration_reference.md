@@ -155,6 +155,10 @@ to-do list.
 | `inline_key_issues` | false |  |
 | `extra_instructions` | "" |  |
 | `num_max_findings` | 3 |  |
+| `permute_diff_order_across_samples` | false | With num_samples > 1, send each sample the same diff with its per-file blocks in a different order. Sample 0 keeps the original order, so a single-sample run is unaffected. This is a source of sample diversity that does not need config.temperature > 0, and it targets findings the model drops when a file sits deep in a long prompt. Cursor's BugBot credits differently ordered passes plus a vote for a large part of its measured improvement. |
+| `enable_symbol_retrieval` | false | R-16 cross-file symbol retrieval. Needs a local checkout of the PR head: for each identifier a hunk changes, the reviewer retrieves that identifier's definition and its callers from files the diff does not touch, so a defect that is only visible next to the code it mirrors (a timeout on one path and not the other) is in the prompt at all. Off by default because it needs the checkout. |
+| `repo_checkout_path` | "" |  |
+| `symbol_retrieval_max_chars` | 40000 |  |
 **visible, so a finding can be read without clicking into it**
 
 | Key | Default | Description |
