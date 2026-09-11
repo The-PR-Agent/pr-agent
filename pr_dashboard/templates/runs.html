@@ -1,29 +1,41 @@
 {% extends "base.html" %}
+{% set nav = "runs" %}
 {% block title %}Runs{% endblock %}
 {% block content %}
-<h1>Runs</h1>
+<div class="page-head">
+  <h1>Run the reviewer</h1>
+  <p>Each run is a subprocess with a reduced environment: an exported shell variable does not
+    reach it. At most two run at once.</p>
+</div>
+
 {% if error %}<div class="error">{{ error }}</div>{% endif %}
-<form hx-post="/runs" hx-target="body" hx-select="body" hx-swap="outerHTML">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <select name="provider">
-    {% for repo in repos %}
-      <option value="{{ repo.provider }}">{{ repo.provider }}</option>
-    {% endfor %}
-  </select>
-  <select name="slug">
-    {% for repo in repos %}
-      <option value="{{ repo.slug }}">{{ repo.slug }} ({{ repo.provider }})</option>
-    {% endfor %}
-  </select>
-  <input name="number" type="number" min="1" placeholder="PR number" required>
-  <select name="command">
-    {% for command in commands %}
-      <option value="{{ command }}">{{ command }}</option>
-    {% endfor %}
-  </select>
-  <input name="question" placeholder="question (ask only)">
-  <button type="submit">Start run</button>
-</form>
+
+<div class="panel">
+  <div class="panel-body">
+    <form class="form-row" hx-post="/runs" hx-target="body" hx-select="body" hx-swap="outerHTML">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <select name="provider" aria-label="Provider">
+        {% for repo in repos %}
+          <option value="{{ repo.provider }}">{{ repo.provider }}</option>
+        {% endfor %}
+      </select>
+      <select name="slug" aria-label="Repository">
+        {% for repo in repos %}
+          <option value="{{ repo.slug }}">{{ repo.slug }} ({{ repo.provider }})</option>
+        {% endfor %}
+      </select>
+      <input name="number" type="number" min="1" placeholder="PR number" size="10" required aria-label="Pull request number">
+      <select name="command" aria-label="Command">
+        {% for command in commands %}
+          <option value="{{ command }}">{{ command }}</option>
+        {% endfor %}
+      </select>
+      <input name="question" placeholder="question (ask only)" size="30" aria-label="Question for ask">
+      <button type="submit">Start run</button>
+    </form>
+  </div>
+</div>
+
 <div id="run-list">
   {% include "_run_rows.html" %}
 </div>

@@ -167,11 +167,11 @@ class TestAccountingStates:
         )
         detail = client.get(f"/runs/{token}")
         assert "Tokens:" in detail.text
-        assert "accounting not enabled for this run" not in detail.text
-        assert "the run ended before accounting started" not in detail.text
+        assert "Accounting is off for this run" not in detail.text
+        assert "The run ended before accounting started" not in detail.text
 
     def test_accounting_disabled_shows_not_enabled_message(self, tmp_path, monkeypatch):
-        """No accounting row, and recording is off: 'accounting not enabled for this run'"""
+        """No accounting row, and recording is off: 'Accounting is off for this run'"""
         client = _client(tmp_path, monkeypatch, record_runs=False)
         _fake_popen(monkeypatch, poll_result=0)
         response = _post_runs(
@@ -179,12 +179,12 @@ class TestAccountingStates:
         )
         token = _TOKEN_RE.search(response.text).group(1)
         detail = client.get(f"/runs/{token}")
-        assert "accounting not enabled for this run" in detail.text
+        assert "Accounting is off for this run" in detail.text
         assert "Tokens:" not in detail.text
-        assert "the run ended before accounting started" not in detail.text
+        assert "The run ended before accounting started" not in detail.text
 
     def test_accounting_enabled_but_no_row_shows_ended_before_message(self, tmp_path, monkeypatch):
-        """No accounting row, but recording is on: 'the run ended before accounting started'"""
+        """No accounting row, but recording is on: 'The run ended before accounting started'"""
         client = _client(tmp_path, monkeypatch, record_runs=True)
         _fake_popen(monkeypatch, poll_result=0)
         response = _post_runs(
@@ -192,9 +192,9 @@ class TestAccountingStates:
         )
         token = _TOKEN_RE.search(response.text).group(1)
         detail = client.get(f"/runs/{token}")
-        assert "the run ended before accounting started" in detail.text
+        assert "The run ended before accounting started" in detail.text
         assert "Tokens:" not in detail.text
-        assert "accounting not enabled for this run" not in detail.text
+        assert "Accounting is off for this run" not in detail.text
 
 
 class TestCancelRun:

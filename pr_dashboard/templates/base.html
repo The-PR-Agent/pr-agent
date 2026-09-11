@@ -6,31 +6,36 @@
   <title>{% block title %}PR-Agent Dashboard{% endblock %}</title>
   <script src="{{ url_for('static', path='/htmx.min.js') }}"></script>
   <script defer src="{{ url_for('static', path='/alpine.min.js') }}"></script>
-  <style>
-    :root { color-scheme: light dark; --border: #8883; }
-    body { margin: 0; font: 14px/1.5 system-ui, sans-serif; }
-    header { display: flex; gap: 1.5rem; padding: 1rem 1.5rem; border-bottom: 1px solid var(--border); }
-    header a { text-decoration: none; }
-    main { padding: 1.5rem; }
-    table { border-collapse: collapse; width: 100%; }
-    th, td { text-align: left; padding: .5rem .75rem; border-bottom: 1px solid var(--border); }
-    .error { padding: .75rem 1rem; border: 1px solid #c0392b; border-radius: 4px; margin-bottom: 1rem; }
-    .stale { padding: .75rem 1rem; border: 1px solid #d68910; border-radius: 4px; margin-bottom: 1rem; }
-    .muted { opacity: .65; }
-  </style>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  {# Plex is requested over the network but every rule falls back to a real local stack, so
+     the dashboard still reads correctly offline -- which a localhost tool often is. #}
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="{{ url_for('static', path='/dashboard.css') }}">
 </head>
 <!-- Forms must include: <input type="hidden" name="csrf_token" value="{{ csrf_token }}"> -->
 <body>
-  <header>
-    <a href="/">Overview</a>
-    <a href="/repos">Repositories</a>
-    <a href="/usage">Usage</a>
-    <a href="/runs">Runs</a>
-    <a href="/config">Config</a>
-    <a href="/findings">Findings</a>
-  </header>
-  <main>
-    {% block content %}{% endblock %}
-  </main>
+  <div class="shell">
+    <nav class="rail">
+      <a class="rail-mark" href="/">PR-Agent <span>dashboard</span></a>
+
+      <div class="rail-group">Watching</div>
+      <a class="nav" href="/" {% if nav == "overview" %}aria-current="page"{% endif %}>Overview</a>
+      <a class="nav" href="/repos" {% if nav == "repos" %}aria-current="page"{% endif %}>Repositories</a>
+      <a class="nav" href="/findings" {% if nav == "findings" %}aria-current="page"{% endif %}>Findings</a>
+
+      <div class="rail-group">Running</div>
+      <a class="nav" href="/runs" {% if nav == "runs" %}aria-current="page"{% endif %}>Runs</a>
+      <a class="nav" href="/usage" {% if nav == "usage" %}aria-current="page"{% endif %}>Usage</a>
+
+      <div class="rail-group">Settings</div>
+      <a class="nav" href="/config" {% if nav == "config" %}aria-current="page"{% endif %}>Configuration</a>
+      <a class="nav" href="/config/backups" {% if nav == "backups" %}aria-current="page"{% endif %}>Backups</a>
+    </nav>
+
+    <main class="content">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
 </body>
 </html>

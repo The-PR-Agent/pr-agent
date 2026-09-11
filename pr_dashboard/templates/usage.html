@@ -1,22 +1,29 @@
 {% extends "base.html" %}
+{% set nav = "usage" %}
 {% block title %}Usage{% endblock %}
 {% block content %}
-<h1>Usage</h1>
-<p>
-  {{ totals.runs }} runs — {{ totals.ok }} ok, {{ totals.failed }} failed.
-  {{ totals.tokens }} tokens.
-  {% if totals.runs > 0 and totals.unpriced_runs == totals.runs %}
-    Cost not reported (no run in this window could be priced).
-  {% else %}
-    Cost {{ totals.cost }} USD.
-  {% endif %}
-</p>
-<p class="muted">
-  {{ totals.unpriced_runs }} runs could not be priced (local models, or usage the provider did not report).
-  {{ totals.fallback_runs }} runs used a fallback model.
-</p>
+<div class="page-head">
+  <h1>What the reviewer spent</h1>
+  <p>
+    {{ totals.runs }} runs — {{ totals.ok }} ok, {{ totals.failed }} failed.
+    {{ totals.tokens }} tokens.
+    {% if totals.runs > 0 and totals.unpriced_runs == totals.runs %}
+      Cost not reported (no run in this window could be priced).
+    {% else %}
+      Cost {{ totals.cost }} USD.
+    {% endif %}
+  </p>
+  <p class="muted">
+    {{ totals.unpriced_runs }} runs could not be priced (local models, or usage the provider did not report).
+    {{ totals.fallback_runs }} runs used a fallback model.
+  </p>
+</div>
 
-<canvas id="daily" height="90"></canvas>
+<div class="panel">
+  <div class="panel-body">
+    <canvas id="daily" height="90"></canvas>
+  </div>
+</div>
 <script src="{{ url_for('static', path='/chart.umd.js') }}"></script>
 <script>
   {# tojson, not plain interpolation: it escapes the </script> breakout sequence, which
@@ -24,13 +31,27 @@
      server-computed date, an int, and str(Decimal) — add a provider-derived field (a model
      name, a repo slug) only after re-checking that this stays safe. #}
   const daily = {{ daily | tojson }};
+  const ink = getComputedStyle(document.documentElement).getPropertyValue("--live").trim();
+  const rule = getComputedStyle(document.documentElement).getPropertyValue("--rule-soft").trim();
+  const slate = getComputedStyle(document.documentElement).getPropertyValue("--slate").trim();
   new Chart(document.getElementById("daily"), {
     type: "line",
     data: {
       labels: daily.map(d => d.day),
-      datasets: [{ label: "tokens", data: daily.map(d => d.tokens) }]
+      datasets: [{
+        label: "tokens", data: daily.map(d => d.tokens),
+        borderColor: ink, backgroundColor: ink, borderWidth: 2,
+        pointRadius: 0, pointHoverRadius: 4, tension: 0.25,
+      }]
     },
-    options: { responsive: true, scales: { y: { beginAtZero: true } } }
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        y: { beginAtZero: true, grid: { color: rule }, ticks: { color: slate } },
+        x: { grid: { display: false }, ticks: { color: slate, maxRotation: 0, autoSkipPadding: 16 } }
+      }
+    }
   });
 </script>
 
@@ -41,14 +62,18 @@
       the model it finished with, not split across every model it actually called.
       {{ totals.fallback_runs }} runs in this window used a fallback.</p>
   {% endif %}
-  <table>
-    <thead><tr><th>{{ group.name }}</th><th>Runs</th><th>Tokens</th><th>Cost (USD)</th></tr></thead>
-    <tbody>
-    {% for row in group.rows %}
-      <tr><td>{{ row.label }}</td><td>{{ row.runs }}</td><td>{{ row.tokens }}</td>
-        <td>{{ row.cost if row.cost is not none else "not reported" }}</td></tr>
-    {% endfor %}
-    </tbody>
-  </table>
+  <div class="panel table-scroll">
+    <table class="nums-2">
+      <thead><tr><th>{{ group.name }}</th><th>Runs</th><th>Tokens</th><th>Cost (USD)</th></tr></thead>
+      <tbody>
+      {% for row in group.rows %}
+        <tr><td>{{ row.label }}</td><td>{{ row.runs }}</td><td>{{ row.tokens }}</td>
+          {% if row.cost is not none %}<td>{{ row.cost }}</td>
+          {% else %}<td><span class="unknown" title="the provider reported no usage to price">not reported</span></td>{% endif %}
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
 {% endfor %}
 {% endblock %}

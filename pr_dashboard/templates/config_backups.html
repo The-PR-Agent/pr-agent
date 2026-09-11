@@ -1,34 +1,36 @@
 {% extends "base.html" %}
+{% set nav = "backups" %}
 {% block title %}Configuration backups{% endblock %}
 {% block content %}
-<h1>Configuration backups</h1>
-<p><a href="/config">Back to configuration list</a></p>
+<div class="page-head">
+  <h1>Configuration backups</h1>
+  <p>Every write saves the previous content first. Restoring verifies the recorded hash, and
+    takes its own backup of whatever it replaces.</p>
+</div>
+
 {% if error %}<div class="error">{{ error }}</div>{% endif %}
+
 {% if backups %}
-  <table>
-    <thead>
-      <tr>
-        <th>Backup</th>
-        <th>Target</th>
-        <th></th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for backup in backups %}
-        <tr>
-          <td>{{ backup.backup_id }}</td>
-          <td>{{ backup.relative }}</td>
-          <td>
-            <form method="post" action="/config/backups/{{ backup.backup_id }}/restore">
-              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-              <button type="submit">Restore</button>
-            </form>
-          </td>
-        </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+  <div class="panel table-scroll">
+    <table>
+      <thead><tr><th>Backup</th><th>Target</th><th></th></tr></thead>
+      <tbody>
+        {% for backup in backups %}
+          <tr>
+            <td><span class="path">{{ backup.backup_id }}</span></td>
+            <td><span class="path">{{ backup.relative }}</span></td>
+            <td style="text-align: right;">
+              <form method="post" action="/config/backups/{{ backup.backup_id }}/restore">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button class="quiet" type="submit">Restore this version</button>
+              </form>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
 {% else %}
-  <p class="muted">No backups yet.</p>
+  <div class="panel"><p class="empty">No backups yet. One is written the first time you save a change.</p></div>
 {% endif %}
 {% endblock %}

@@ -68,6 +68,23 @@ def create_app(
     application.state.templates = templates
     application.state.csrf_sessions = {}
 
+    def _repo_relative(path) -> str:
+        """Name a config file the way an operator says it: relative to the checkout.
+
+        The absolute path is still the tooltip -- it is the unambiguous identity -- but as the
+        visible string it is mostly the same prefix repeated on every row, which buries the part
+        that differs.
+        """
+        # Resolve both sides: on macOS a temp checkout is handed in as /var/... while the
+        # discovered entry carries the /private/var/... realpath, and an unresolved compare
+        # silently falls through to the absolute string.
+        try:
+            return str(Path(path).resolve().relative_to(Path(application.state.repo_root).resolve()))
+        except (ValueError, OSError):
+            return str(path)
+
+    templates.env.filters["repo_relative"] = _repo_relative
+
     def html(request: Request, name: str, context: dict) -> HTMLResponse:
         context = {**context, "csrf_token": websec.csrf_token(request)}
         response = templates.TemplateResponse(request, name, context)
@@ -394,11 +411,20 @@ def create_app(
             return html(request, "config_edit.html", config_edit_context(config_file, "", error=str(exc)))
         return html(request, "config_edit.html", config_edit_context(config_file, content))
 
+    def submitted_config_text(values: dict[str, str]) -> str:
+        """Return the posted editor text with browser CRLF line endings normalised to LF.
+
+        A textarea posts \r\n per the HTML form spec, so without this every write through the
+        UI would rewrite the whole file with CRLF endings and the diff would show every line as
+        changed. Preview and apply must normalise identically or the token hash stops matching.
+        """
+        return values.get("content", "").replace("\r\n", "\n").replace("\r", "\n")
+
     @application.post("/config/{index}/preview", response_class=HTMLResponse)
     async def config_preview_route(request: Request, index: int):
         values = await _form_values(request)
         websec.require_safe_request(request, values)
-        submitted = values.get("content", "")
+        submitted = submitted_config_text(values)
         try:
             discover_config_files()
             config_file = config_files.resolve(index)
@@ -422,7 +448,7 @@ def create_app(
     async def config_apply_route(request: Request, index: int):
         values = await _form_values(request)
         websec.require_safe_request(request, values)
-        submitted = values.get("content", "")
+        submitted = submitted_config_text(values)
         token_value = values.get("preview_token", "")
         try:
             discover_config_files()

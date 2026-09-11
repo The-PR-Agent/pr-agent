@@ -1,48 +1,71 @@
 {% extends "base.html" %}
+{% set nav = "repos" %}
 {% block title %}{{ repo.slug }} #{{ number }}{% endblock %}
 {% block content %}
-<h1>{{ repo.slug }} #{{ number }}</h1>
+<div class="page-head">
+  <h1>{{ repo.slug }} #{{ number }}</h1>
+  <p>What PR-Agent reported on this pull request, and what each run cost.</p>
+</div>
+
 {% if error %}<div class="error">{{ error }}</div>{% endif %}
 {% if stale %}<div class="stale">Showing cached data; the provider was unreachable.</div>{% endif %}
 
 <h2>Findings</h2>
-{% if not findings %}<p class="muted">No findings parsed from PR-Agent's comments.</p>{% endif %}
-<table>
-  <thead><tr><th>Finding</th><th>File</th><th>Lines</th></tr></thead>
-  <tbody>
-  {% for finding in findings %}
-    <tr>
-      <td>{{ finding.title }}</td>
-      <td>{{ finding.relevant_file or "—" }}</td>
-      <td>{% if finding.line_range %}{{ finding.line_range[0] }}–{{ finding.line_range[1] }}{% else %}—{% endif %}</td>
-    </tr>
-  {% endfor %}
-  </tbody>
-</table>
+{% if not findings %}
+  <div class="panel"><p class="empty">No findings parsed from PR-Agent's comments.</p></div>
+{% else %}
+<div class="panel table-scroll">
+  <table>
+    <thead><tr><th>Finding</th><th>File</th><th>Lines</th></tr></thead>
+    <tbody>
+    {% for finding in findings %}
+      <tr>
+        <td>{{ finding.title }}</td>
+        <td>{% if finding.relevant_file %}<span class="path">{{ finding.relevant_file }}</span>
+            {% else %}<span class="unknown" title="the finding names no file">—</span>{% endif %}</td>
+        <td class="mono">{% if finding.line_range %}{{ finding.line_range[0] }}–{{ finding.line_range[1] }}
+            {% else %}<span class="unknown" title="the finding names no line range">—</span>{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
 
 <h2>Runs</h2>
-{% if not runs %}<p class="muted">No recorded runs. Set pr_dashboard.record_runs = true to collect usage.</p>{% endif %}
-<table>
-  <thead><tr><th>Started</th><th>Command</th><th>Status</th><th>Model</th><th>Tokens</th><th>Cost</th></tr></thead>
-  <tbody>
-  {% for run in runs %}
-    <tr>
-      <td>{{ run["started_at"] }}</td>
-      <td>{{ run["command"] }}</td>
-      <td>{{ run["status"] }}</td>
-      <td>{{ run["model_used"] or "—" }}</td>
-      <td>{{ run["total_tokens"] if run["total_tokens"] is not none else "not reported" }}</td>
-      <td>{{ run["total_cost_usd"] or "not reported" }}</td>
-    </tr>
-  {% endfor %}
-  </tbody>
-</table>
+{% if not runs %}
+  <div class="panel"><p class="empty">No recorded runs. Set <code>pr_dashboard.record_runs = true</code> to collect usage.</p></div>
+{% else %}
+<div class="panel table-scroll">
+  <table>
+    <thead><tr><th>Started</th><th>Command</th><th>Status</th><th>Model</th><th>Tokens</th><th>Cost</th></tr></thead>
+    <tbody>
+    {% for run in runs %}
+      <tr>
+        <td class="muted">{{ run["started_at"][:16].replace("T", " ") }}</td>
+        <td><code>{{ run["command"] }}</code></td>
+        <td><span class="state {{ 'state-ok' if run['status'] == 'ok' else 'state-fail' }}">{{ run["status"] }}</span></td>
+        <td>{% if run["model_used"] %}{{ run["model_used"] }}{% else %}<span class="unknown">—</span>{% endif %}</td>
+        {# "not reported" is not zero: a local model reports no usage to price. #}
+        <td>{% if run["total_tokens"] is not none %}{{ run["total_tokens"] }}
+            {% else %}<span class="unknown" title="the provider reported no usage">not reported</span>{% endif %}</td>
+        <td>{% if run["total_cost_usd"] %}{{ run["total_cost_usd"] }}
+            {% else %}<span class="unknown" title="the provider reported no usage to price">not reported</span>{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
 
 <h2>Comments</h2>
+{% if not review_comments %}
+  <div class="panel"><p class="empty">PR-Agent has not commented on this pull request.</p></div>
+{% endif %}
 {% for comment in review_comments %}
-  <details>
-    <summary>{{ comment.kind.value }} — {{ comment.created_at }}</summary>
-    <pre>{{ comment.body }}</pre>
+  <details class="panel">
+    <summary class="panel-body" style="cursor: pointer;">{{ comment.kind.value }} — {{ comment.created_at }}</summary>
+    <pre class="log">{{ comment.body }}</pre>
   </details>
 {% endfor %}
 {% endblock %}

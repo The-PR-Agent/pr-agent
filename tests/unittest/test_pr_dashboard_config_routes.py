@@ -236,3 +236,35 @@ class TestApplyConfirmation:
         # banner would pass an assertion that only looked for success wording.
         assert backups[0]["backup_path"] in response.text
         assert "Nothing was staged or committed" in response.text
+
+
+class TestBrowserLineEndings:
+    """A real textarea posts CRLF; the file on disk must not inherit it."""
+
+    def test_crlf_from_the_editor_is_written_as_lf(self, tmp_path, monkeypatch):
+        """Content posted with \r\n lands on disk with \n and no stray carriage returns"""
+        client, repo_root = _client(tmp_path, monkeypatch)
+        index = _config_index(repo_root, "configuration.toml")
+        submitted = "[config]\r\nkey = 42\r\n\r\n[other]\r\nvalue = 2\r\n"
+
+        preview = _post_preview(client, index, submitted)
+        token = _PREVIEW_TOKEN_RE.search(preview.text).group(1)
+        response = _post_apply(client, index, submitted, token)
+
+        assert response.status_code == 200
+        written = (repo_root / "pr_agent" / "settings" / "configuration.toml").read_bytes()
+        assert b"\r" not in written
+        assert written.decode("utf-8") == "[config]\nkey = 42\n\n[other]\nvalue = 2\n"
+
+    def test_a_crlf_only_change_still_diffs_as_no_change(self, tmp_path, monkeypatch):
+        """Re-posting the on-disk text with CRLF endings produces an empty diff, not a rewrite"""
+        client, repo_root = _client(tmp_path, monkeypatch)
+        index = _config_index(repo_root, "configuration.toml")
+        target = repo_root / "pr_agent" / "settings" / "configuration.toml"
+        as_crlf = target.read_text(encoding="utf-8").replace("\n", "\r\n")
+
+        response = _post_preview(client, index, as_crlf)
+
+        assert response.status_code == 200
+        # Unchanged content cannot produce a confirmation token: there is nothing to write.
+        assert "Confirm and write" not in response.text
