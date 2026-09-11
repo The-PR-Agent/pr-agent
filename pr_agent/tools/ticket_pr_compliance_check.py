@@ -874,11 +874,12 @@ async def extract_tickets(git_provider):
 
         # Providers with no ticket integration of their own still reach Jira: keys are
         # usually referenced in the PR title, description or branch name rather than by a
-        # provider-native link. Returning None when nothing at all was found keeps the
-        # "provider unsupported" contract intact.
-        jira_tickets_content = add_jira_tickets(git_provider, [])
-        if asana_ticket_urls or jira_tickets_content:
-            return asana_tickets_content + jira_tickets_content
+        # provider-native link. The Asana results seed the list so they count against
+        # MAX_TICKETS, as on the provider-specific paths. Returning None when nothing at
+        # all was found keeps the "provider unsupported" contract intact.
+        tickets_content = add_jira_tickets(git_provider, list(asana_tickets_content))
+        if asana_ticket_urls or tickets_content:
+            return tickets_content
 
     except Exception as e:
         get_logger().error(f"Error extracting tickets error= {e}",

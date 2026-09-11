@@ -361,6 +361,41 @@ class TestFindAsanaTickets:
         )
 
     @pytest.mark.asyncio
+    async def test_fallback_asana_tickets_count_against_jira_budget(self, monkeypatch):
+        """The fallback path shares MAX_TICKETS between Asana and Jira results,
+        matching the provider-specific paths that pass their existing tickets in."""
+        jira_keys = ["jira.jira_site", "jira.jira_api_email", "jira.jira_api_token"]
+        snapshot = _settings_helpers.snapshot_settings(jira_keys)
+        try:
+            get_settings().set("jira.jira_site", "example")
+            get_settings().set("jira.jira_api_email", "user@example.com")
+            get_settings().set("jira.jira_api_token", "test-token")
+
+            class _FakeJira:
+                def issue(self, key):
+                    return {"fields": {"summary": f"Ticket {key}", "description": "body",
+                                       "labels": []}}
+
+            monkeypatch.setattr(tpc, "Jira", lambda **kwargs: _FakeJira())
+            provider = _GenericProvider(
+                "Related Asana tasks: "
+                "https://app.asana.com/0/99/111111111111 "
+                "https://app.asana.com/0/99/222222222222 "
+                "https://app.asana.com/0/99/333333333333 "
+                "Also PROJ-1 PROJ-2 PROJ-3 PROJ-4 PROJ-5"
+            )
+
+            tickets = await tpc.extract_tickets(provider)
+
+            assert len(tickets) == tpc.MAX_TICKETS
+            assert [t["ticket_id"] for t in tickets[:3]] == [
+                "111111111111", "222222222222", "333333333333"
+            ]
+            assert [t["ticket_id"] for t in tickets[3:]] == ["PROJ-1", "PROJ-2"]
+        finally:
+            _settings_helpers.restore_settings(snapshot)
+
+    @pytest.mark.asyncio
     async def test_extract_tickets_adds_asana_without_truncating_azure(self):
         """Azure work items remain intact while Asana additions keep their own cap."""
         provider = _make_azure_provider(
