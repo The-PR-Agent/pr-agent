@@ -10,7 +10,7 @@ from jinja2 import Environment, StrictUndefined
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
-from pr_agent.algo.finding_verifier import verify_findings
+from pr_agent.algo.finding_verifier import UNVERIFIED_HEADER_SUFFIX, verify_findings
 from pr_agent.algo.inline_comment_dedup import (
     InlineCommentStore,
     can_verify_inline_comment_publication,
@@ -704,6 +704,8 @@ class PRReviewer:
         raw_content = issue.get("issue_content") or issue.get("body") or ""
         content = _SUGGESTION_FENCE_RE.sub("```text", str(raw_content).strip())
         header = str(issue.get("issue_header") or "").strip()
+        if header.endswith(UNVERIFIED_HEADER_SUFFIX):
+            header = header[: -len(UNVERIFIED_HEADER_SUFFIX)].rstrip()
         if header.lower() == "possible bug":
             header = "Possible Issue"
         if not path or not content:
@@ -1329,77 +1331,105 @@ class PRReviewer:
         if not get_settings().pr_reviewer.get("enable_finding_verification", False):
             return
 
-        data = self.prediction_data if self.prediction_data is not None else self._load_review_yaml(self.prediction)
-        if not isinstance(data, dict) or not isinstance(data.get("review"), dict):
-            return
-        issues = list(data["review"].get("key_issues_to_review") or [])
-        if not issues:
-            self.prediction_data = data
-            return
-
-        pr_files = [f.filename for f in self.git_provider.get_diff_files()]
-        model = (
-            get_settings().pr_reviewer.get("verification_model")
-            or get_settings().config.get("model_weak")
-            or get_settings().config.model
-        )
-        head_sha = self._review_head_sha()
-        system_text = get_settings().pr_finding_verifier_prompt.system
-        user_text = get_settings().pr_finding_verifier_prompt.user
-
-        async def fetch(path: str) -> str:
-            if not path:
-                return ""
-            try:
-                get_pr = getattr(self.git_provider, "get_pr_file_content", None)
-                if callable(get_pr):
-                    return get_pr(path, head_sha) or ""
-                get_repo = getattr(self.git_provider, "get_repo_file_content", None)
-                if callable(get_repo):
-                    return get_repo(path) or ""
-            except Exception:
-                return ""
-            return ""
-
-        async def call_model(system: str, user: str, files=None) -> str:
-            response, _ = await self.ai_handler.chat_completion(
-                model=model,
-                system=system,
-                user=user,
-                temperature=0.0,
-                stage="verify",
-                files=files,
+        # Snapshot before any mutation so a whole-pass failure leaves findings untouched.
+        original_prediction_data = self.prediction_data
+        try:
+            data = (
+                self.prediction_data
+                if self.prediction_data is not None
+                else self._load_review_yaml(self.prediction)
             )
-            return response
+            if not isinstance(data, dict) or not isinstance(data.get("review"), dict):
+                return
+            # Work on a deep copy so failures never partially mutate prediction_data.
+            data = copy.deepcopy(data)
+            issues = list(data["review"].get("key_issues_to_review") or [])
+            if not issues:
+                self.prediction_data = data
+                return
 
-        verified = await verify_findings(
-            issues,
-            fetch,
-            pr_files,
-            call_model,
-            max_findings=int(get_settings().pr_reviewer.get("verify_max_findings", 10)),
-            system_prompt=system_text,
-            user_template=user_text,
-        )
-        kept = []
-        refuted = 0
-        unverified = 0
-        for issue, verdict in verified:
-            if verdict.status == "refuted":
-                refuted += 1
-                get_logger().info(
-                    "Dropping refuted finding",
-                    artifact={"issue": issue, "evidence": verdict.evidence, "reason": verdict.reason},
+            pr_files = [f.filename for f in self.git_provider.get_diff_files()]
+            model = (
+                get_settings().pr_reviewer.get("verification_model")
+                or get_settings().config.get("model_weak")
+                or get_settings().config.model
+            )
+            head_sha = self._review_head_sha()
+            system_text = get_settings().pr_finding_verifier_prompt.system
+            user_text = get_settings().pr_finding_verifier_prompt.user
+            try:
+                max_chars = int(get_settings().pr_reviewer.get("verify_max_context_chars", 200000))
+            except (TypeError, ValueError):
+                max_chars = 200000
+
+            async def fetch(path: str) -> str:
+                if not path:
+                    return ""
+                try:
+                    get_pr = getattr(self.git_provider, "get_pr_file_content", None)
+                    if callable(get_pr):
+                        return get_pr(path, head_sha) or ""
+                    get_repo = getattr(self.git_provider, "get_repo_file_content", None)
+                    if callable(get_repo):
+                        return get_repo(path) or ""
+                except Exception:
+                    return ""
+                return ""
+
+            async def call_model(system: str, user: str, files: list[str]) -> str:
+                response, _ = await self.ai_handler.chat_completion(
+                    model=model,
+                    system=system,
+                    user=user,
+                    temperature=0.0,
+                    stage="verify",
+                    files=files,
                 )
-                continue
-            if verdict.status == "unverified":
-                unverified += 1
-                issue["issue_header"] = f"{issue.get('issue_header', '')} (unverified)".strip()
-            kept.append(issue)
-        data["review"]["key_issues_to_review"] = kept
-        self.prediction_data = data
-        self.review_refuted_count = refuted
-        self.review_unverified_count = unverified
+                return response
+
+            verified = await verify_findings(
+                issues,
+                fetch,
+                pr_files,
+                call_model,
+                max_findings=int(get_settings().pr_reviewer.get("verify_max_findings", 10)),
+                system_prompt=system_text,
+                user_template=user_text,
+                max_chars=max_chars,
+            )
+            kept = []
+            refuted = 0
+            unverified = 0
+            for issue, verdict in verified:
+                if verdict.status == "refuted":
+                    refuted += 1
+                    get_logger().info(
+                        "Dropping refuted finding",
+                        artifact={
+                            "issue": issue,
+                            "evidence": verdict.evidence,
+                            "reason": verdict.reason,
+                        },
+                    )
+                    continue
+                issue["verification"] = verdict.status
+                if verdict.status == "unverified":
+                    unverified += 1
+                    header = str(issue.get("issue_header", "") or "")
+                    if not header.endswith(UNVERIFIED_HEADER_SUFFIX):
+                        issue["issue_header"] = f"{header}{UNVERIFIED_HEADER_SUFFIX}".strip()
+                kept.append(issue)
+            data["review"]["key_issues_to_review"] = kept
+            self.prediction_data = data
+            self.review_refuted_count = refuted
+            self.review_unverified_count = unverified
+        except Exception as exc:
+            get_logger().warning(
+                f"Finding verification pass failed ({type(exc).__name__}); keeping all findings"
+            )
+            self.prediction_data = original_prediction_data
+            self.review_refuted_count = 0
+            self.review_unverified_count = 0
 
     def _prepare_pr_review(self) -> str:
         """

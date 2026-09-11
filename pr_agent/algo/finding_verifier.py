@@ -22,6 +22,8 @@ HEDGE_RE = re.compile(
 _FILE_REF_RE = re.compile(r"`?([\w./-]+\.(?:dart|py|ts|tsx|js|kt|swift|go|java|rb|rs))`?")
 _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 _DEFAULT_USER_TEMPLATE = "{{ finding }}\n\n{{ context }}"
+UNVERIFIED_HEADER_SUFFIX = " (unverified)"
+DEFAULT_MAX_CONTEXT_CHARS = 200000
 
 Status = Literal["confirmed", "refuted", "unverified"]
 
@@ -41,15 +43,23 @@ def referenced_pr_files(issue: dict, pr_files: Iterable[str]) -> list[str]:
 
 
 def build_verification_context(
-    issue: dict, own_file_text: str, other_files: dict[str, str], max_chars: int = 40000
-) -> str:
+    issue: dict,
+    own_file_text: str,
+    other_files: dict[str, str],
+    max_chars: int = DEFAULT_MAX_CONTEXT_CHARS,
+) -> tuple[str, bool]:
     sections = [(str(issue.get("relevant_file", "")), own_file_text)] + list(other_files.items())
     budget_each = max(200, max_chars // max(1, len(sections)))
     parts = []
+    truncated = False
     for path, text in sections:
-        body = text if len(text) <= budget_each else text[:budget_each] + "\n... [truncated]"
+        if len(text) <= budget_each:
+            body = text
+        else:
+            body = text[:budget_each] + "\n... [truncated]"
+            truncated = True
         parts.append(f"### {path}\n```\n{body}\n```")
-    return "\n\n".join(parts)
+    return "\n\n".join(parts), truncated
 
 
 def parse_verdict(text: str) -> Verdict:
@@ -63,26 +73,34 @@ def parse_verdict(text: str) -> Verdict:
     status = str(data.get("status", "")).lower()
     if status not in ("confirmed", "refuted", "unverified"):
         status = "unverified"
-    return Verdict(
-        status,  # type: ignore[arg-type]
-        evidence=str(data.get("evidence", ""))[:500],
-        reason=str(data.get("reason", ""))[:500],
-    )
+    evidence = str(data.get("evidence", ""))[:500]
+    reason = str(data.get("reason", ""))[:500]
+    if status in ("confirmed", "refuted") and not evidence.strip():
+        return Verdict("unverified", evidence=evidence, reason="no evidence quoted")
+    return Verdict(status, evidence=evidence, reason=reason)  # type: ignore[arg-type]
 
 
 async def verify_findings(
     issues: list[dict],
     fetch_file: Callable[[str], Awaitable[str]],
     pr_files: Iterable[str],
-    call_model: Callable[..., Awaitable[str]],
+    call_model: Callable[[str, str, list[str]], Awaitable[str]],
     max_findings: int,
     system_prompt: str = "",
     user_template: str = "",
+    max_chars: int = DEFAULT_MAX_CONTEXT_CHARS,
 ) -> list[tuple[dict, Verdict]]:
     pr_files = list(pr_files)
     results: list[tuple[dict, Verdict]] = []
     env = Environment(undefined=StrictUndefined)
     template = env.from_string(user_template or _DEFAULT_USER_TEMPLATE)
+    file_cache: dict[str, str] = {}
+
+    async def cached_fetch(path: str) -> str:
+        if path not in file_cache:
+            file_cache[path] = await fetch_file(path)
+        return file_cache[path]
+
     for index, issue in enumerate(issues):
         if index >= max_findings:
             results.append((issue, Verdict("unverified", reason="verification budget exhausted")))
@@ -92,10 +110,12 @@ async def verify_findings(
         get_logger().info(
             f"Verifying finding hedged={hedged} header={issue.get('issue_header', '')}"
         )
-        own = await fetch_file(own_path)
+        own = await cached_fetch(own_path) if own_path else ""
         referenced = referenced_pr_files(issue, pr_files)
-        others = {p: await fetch_file(p) for p in referenced}
-        context = build_verification_context(issue, own or "", others)
+        others = {p: await cached_fetch(p) for p in referenced}
+        context, truncated = build_verification_context(
+            issue, own or "", others, max_chars=max_chars
+        )
         user = template.render(
             finding=json.dumps(issue, ensure_ascii=False),
             context=context,
@@ -103,11 +123,14 @@ async def verify_findings(
         )
         files = [p for p in [own_path, *referenced] if p]
         try:
-            try:
-                raw = await call_model(system_prompt, user, files=files)
-            except TypeError:
-                raw = await call_model(system_prompt, user)
+            raw = await call_model(system_prompt, user, files)
             verdict = parse_verdict(raw)
+            if truncated and verdict.status == "refuted":
+                get_logger().info(
+                    "Downgrading refuted verdict because verification context was truncated",
+                    artifact={"issue": issue, "evidence": verdict.evidence},
+                )
+                verdict = Verdict("unverified", evidence=verdict.evidence, reason="context truncated")
         except Exception as exc:  # a verifier failure must never lose a finding
             verdict = Verdict("unverified", reason=f"verifier error: {type(exc).__name__}")
         results.append((issue, verdict))

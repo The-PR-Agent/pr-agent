@@ -201,6 +201,10 @@ chunk_fallback_model_on_failure = true
 enable_finding_verification = false
 verify_max_findings = 10
 verification_model = ""   # empty = config.model_weak, else config.model
+# Max characters of file content packed into one verification prompt (own file + referenced).
+# If any file is truncated, a refuted verdict is downgraded to unverified so findings are never
+# dropped on partial evidence.
+verify_max_context_chars = 200000
 
 [pr_description] # /describe #
 publish_labels=false
