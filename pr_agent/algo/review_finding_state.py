@@ -11,7 +11,7 @@ from typing import Any, Iterable, Mapping
 
 from pr_agent.algo.inline_comment_dedup import key_issue_fingerprint
 
-STATE_SCHEMA_VERSION = 1
+STATE_SCHEMA_VERSION = 2
 DEFAULT_MAX_RESOLVED_FINDINGS = 20
 _STATE_MARKER_RE = re.compile(
     r"<!-- pr-agent-review-state:v(?P<version>\d+)\n(?P<payload>.*?)\n-->",
@@ -19,7 +19,8 @@ _STATE_MARKER_RE = re.compile(
 )
 _STATE_MARKER_NAMESPACE = "<!-- pr-agent-review-state"
 _WHITESPACE_RE = re.compile(r"\s+")
-_VALID_STATES = {"ACTIVE", "RESOLVED"}
+_VALID_STATES = {"ACTIVE", "UNCONFIRMED", "RESOLVED"}
+_VALID_SCHEMA_VERSIONS = (1, 2)
 
 
 @dataclass(frozen=True)
@@ -111,7 +112,7 @@ def normalize_findings(findings: Iterable[Mapping[str, Any]]) -> list[dict[str, 
 def _is_valid_state(state: Any) -> bool:
     if not isinstance(state, dict):
         return False
-    if state.get("schema_version") != STATE_SCHEMA_VERSION:
+    if state.get("schema_version") not in _VALID_SCHEMA_VERSIONS:
         return False
     if not isinstance(state.get("findings"), list) or not isinstance(state.get("last_run"), dict):
         return False
@@ -150,7 +151,7 @@ def parse_review_state(comment_body: str) -> ParsedReviewState:
         state = json.loads(match.group("payload"))
     except (TypeError, ValueError, json.JSONDecodeError):
         return ParsedReviewState(None, present=True, valid=False)
-    if version != STATE_SCHEMA_VERSION or not _is_valid_state(state):
+    if version not in _VALID_SCHEMA_VERSIONS or not _is_valid_state(state):
         return ParsedReviewState(None, present=True, valid=False)
     return ParsedReviewState(state, present=True, valid=True)
 
@@ -171,7 +172,7 @@ def _retained_findings(
     findings: Iterable[dict[str, Any]],
     max_resolved_findings: int,
 ) -> list[dict[str, Any]]:
-    active = [finding for finding in findings if finding["state"] == "ACTIVE"]
+    active = [finding for finding in findings if finding["state"] in ("ACTIVE", "UNCONFIRMED")]
     resolved = [finding for finding in findings if finding["state"] == "RESOLVED"]
     resolved.sort(
         key=lambda finding: (
@@ -192,6 +193,7 @@ def reconcile_review_findings(
     *,
     allow_resolution: bool,
     excluded_files: Iterable[str] | None = None,
+    fully_reviewed_files: Iterable[str] | None = None,
     head_sha: str = "",
     run_id: str = "",
     timestamp: str | None = None,
@@ -202,6 +204,9 @@ def reconcile_review_findings(
     Resolution is deliberately conservative. The caller must only pass
     allow_resolution=True for a successful, complete full review, and the
     previous and current reviewed HEADs must both be known and different.
+    An absent finding only resolves when its file was itself fully reviewed
+    this run (per fully_reviewed_files); otherwise it becomes UNCONFIRMED,
+    since the absence carries no evidence the underlying line was re-checked.
     """
     now = _timestamp(timestamp)
     current = normalize_findings(current_findings)
@@ -222,8 +227,9 @@ def reconcile_review_findings(
     )
     # Local import: review_merge.py does not import review_finding_state.py today, but importing
     # inside the function avoids creating a module-load-order dependency between the two.
-    from pr_agent.algo.review_merge import same_finding_across_runs
+    from pr_agent.algo.review_merge import normalize_finding_path, same_finding_across_runs
 
+    reviewed_paths = {normalize_finding_path(p) for p in (fully_reviewed_files or []) if p}
     previous_by_id = {finding["finding_id"]: finding for finding in previous_findings}
     current_by_id = {finding["finding_id"]: finding for finding in current}
     # Pre-claim every id an exact match will need, before any fuzzy matching runs. Otherwise a
@@ -269,6 +275,8 @@ def reconcile_review_findings(
                 record["reopened_at"] = now
                 record["reopened_count"] = int(record.get("reopened_count", 0)) + 1
                 reopened_ids.append(previous["finding_id"])
+            elif old_state == "UNCONFIRMED":
+                record.pop("unconfirmed_at", None)
             if record != previous:
                 changed = True
         if head_sha:
@@ -279,14 +287,21 @@ def reconcile_review_findings(
         if finding_id in matched_previous_ids:
             continue
         record = copy.deepcopy(previous)
-        if record.get("state") == "ACTIVE" and resolution_allowed:
+        state_now = record.get("state")
+        file_reviewed = normalize_finding_path(record.get("path")) in reviewed_paths
+        if state_now in ("ACTIVE", "UNCONFIRMED") and resolution_allowed and file_reviewed:
             record["state"] = "RESOLVED"
             record["resolved_at"] = now
+            record.pop("unconfirmed_at", None)
             if head_sha:
                 record["resolved_head_sha"] = head_sha
             if run_id:
                 record["resolution_run_id"] = run_id
             resolved_ids.append(finding_id)
+            changed = True
+        elif state_now == "ACTIVE":
+            record["state"] = "UNCONFIRMED"
+            record["unconfirmed_at"] = now
             changed = True
         reconciled[finding_id] = record
 

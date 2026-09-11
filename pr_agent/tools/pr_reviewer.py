@@ -751,6 +751,9 @@ class PRReviewer:
             self._review_state_block_reason = _STATE_BLOCK_REVIEW_DATA
             get_logger().warning("Review finding data is invalid; skipping persistent state update")
             return
+        coverage = getattr(self, "coverage", None) or CoverageLedger()
+        fully_reviewed = [path for path, file_coverage in coverage.files.items()
+                          if file_coverage.status == "reviewed"]
         if self._review_state_blocked:
             if self._review_state_block_reason == _STATE_BLOCK_INVALID_MARKER:
                 self._review_state_result = reconcile_review_findings(
@@ -758,6 +761,7 @@ class PRReviewer:
                     current_findings,
                     allow_resolution=False,
                     excluded_files=self.remaining_files_list,
+                    fully_reviewed_files=fully_reviewed,
                     head_sha=self._review_head_sha(),
                     run_id=self._review_run_id(),
                 )
@@ -792,6 +796,7 @@ class PRReviewer:
             current_findings,
             allow_resolution=allow_resolution,
             excluded_files=self.remaining_files_list,
+            fully_reviewed_files=fully_reviewed,
             head_sha=self._review_head_sha(),
             run_id=self._review_run_id(),
         )

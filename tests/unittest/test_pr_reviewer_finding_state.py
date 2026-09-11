@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from pr_agent.algo.review_coverage import CoverageLedger
 from pr_agent.algo.review_finding_state import (
     parse_review_state,
     reconcile_review_findings,
@@ -33,6 +34,7 @@ def _reviewer(provider):
     reviewer.pr_url = "https://example.test/pull/1"
     reviewer.incremental = SimpleNamespace(is_incremental=False)
     reviewer.remaining_files_list = []
+    reviewer.coverage = CoverageLedger()
     reviewer.prediction = "review: {}"
     reviewer.set_review_labels = MagicMock()
     reviewer._review_state_block_reason = None
@@ -86,6 +88,7 @@ def test_prepare_review_reconciles_previous_state_and_renders_resolved_section(m
     provider.get_diff_files.return_value = []
     provider.is_supported.side_effect = lambda capability: capability == "get_issue_comments"
     reviewer = _reviewer(provider)
+    reviewer.coverage.mark("app.py", "reviewed")
 
     with (
         patch("pr_agent.tools.pr_reviewer.load_yaml", return_value={"review": {"key_issues_to_review": []}}),
@@ -127,7 +130,7 @@ def test_prepare_review_same_head_absence_preserves_active_finding(monkeypatch):
     )
 
     finding = reviewer._review_state_result.state["findings"][0]
-    assert finding["state"] == "ACTIVE"
+    assert finding["state"] == "UNCONFIRMED"
     assert reviewer._review_state_result.resolved_ids == ()
     assert "resolved_at" not in finding
     assert "resolved_head_sha" not in finding
@@ -151,6 +154,7 @@ def test_prepare_review_pushes_final_markdown_with_lifecycle_state(monkeypatch):
     provider.get_diff_files.return_value = []
     provider.is_supported.side_effect = lambda capability: capability == "get_issue_comments"
     reviewer = _reviewer(provider)
+    reviewer.coverage.mark("app.py", "reviewed")
 
     with (
         patch("pr_agent.tools.pr_reviewer.load_yaml", return_value={"review": {"key_issues_to_review": []}}),
@@ -515,6 +519,7 @@ def test_prepare_and_persisted_state_round_trip_preserves_marker_and_history(mon
 
     provider.edit_comment.side_effect = edit_comment
     reviewer = _reviewer(provider)
+    reviewer.coverage.mark("b.py", "reviewed")
     reviewer._review_finding_state_enabled = MagicMock(return_value=True)
     issue = {
         "relevant_file": "a.py",
@@ -592,7 +597,7 @@ def test_missing_findings_resolve_only_after_complete_successful_review(
 
     assert reviewer._review_state_result is not None
     finding = reviewer._review_state_result.state["findings"][0]
-    assert finding["state"] == "ACTIVE"
+    assert finding["state"] == "UNCONFIRMED"
     assert reviewer._review_state_result.state["last_run"]["complete"] is False
 
 
@@ -626,9 +631,9 @@ def test_finding_limit_prevents_resolution_of_missing_active_findings(monkeypatc
 
     states = {finding["path"]: finding["state"] for finding in reviewer._review_state_result.state["findings"]}
     assert states == {
-        "a.py": "ACTIVE",
-        "b.py": "ACTIVE",
-        "c.py": "ACTIVE",
+        "a.py": "UNCONFIRMED",
+        "b.py": "UNCONFIRMED",
+        "c.py": "UNCONFIRMED",
         "d.py": "ACTIVE",
         "e.py": "ACTIVE",
         "f.py": "ACTIVE",

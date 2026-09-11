@@ -254,7 +254,7 @@ async def test_a_failed_chunk_blocks_persistent_finding_resolution(chunking_enab
     assert reviewer._review_state_result is not None
     assert reviewer._review_state_result.resolved_ids == ()
     assert reviewer._review_state_result.state["last_run"]["complete"] is False
-    assert reviewer._review_state_result.state["findings"][0]["state"] == "ACTIVE"
+    assert reviewer._review_state_result.state["findings"][0]["state"] == "UNCONFIRMED"
 
 
 @pytest.mark.asyncio
