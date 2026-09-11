@@ -5,7 +5,10 @@ from unittest.mock import MagicMock
 import pytest
 
 from pr_agent.algo.run_details import init_run_details, record_ai_call, record_model_used
+from pr_agent.config_loader import get_settings
 from pr_dashboard import recorder, store
+
+_RECORD_RUNS_KEY = "pr_dashboard.record_runs"
 
 
 class _Usage:
@@ -40,6 +43,44 @@ class TestParsePrUrl:
     def test_none_url(self):
         """A missing URL yields no identity"""
         assert recorder.parse_pr_url(None) == (None, None)
+
+
+class TestRecordingEnabled:
+    """recording_enabled() itself, with no monkeypatch of it.
+
+    Every TestRecordRun test below monkeypatches recording_enabled to True, so a
+    recording_enabled() gutted to `return True` would leave the whole module's tests green --
+    a typo'd setting key, or a flipped default in configuration.toml, would be invisible. This
+    exercises the real property against the repo's normal settings mechanism instead, and
+    restores the previous value afterwards so no other test observes the override.
+    """
+
+    def test_absent_setting_falls_back_to_the_configured_default(self):
+        """With no override, configuration.toml's baked-in default (false) applies"""
+        previous = get_settings().get(_RECORD_RUNS_KEY, False)
+        try:
+            get_settings().unset(_RECORD_RUNS_KEY)
+            assert recorder.recording_enabled() is False
+        finally:
+            get_settings().set(_RECORD_RUNS_KEY, previous)
+
+    def test_explicit_false_is_disabled(self):
+        """An explicit false disables recording"""
+        previous = get_settings().get(_RECORD_RUNS_KEY, False)
+        try:
+            get_settings().set(_RECORD_RUNS_KEY, False)
+            assert recorder.recording_enabled() is False
+        finally:
+            get_settings().set(_RECORD_RUNS_KEY, previous)
+
+    def test_explicit_true_is_enabled(self):
+        """An explicit true enables recording, proving this is the real gate, not a stub"""
+        previous = get_settings().get(_RECORD_RUNS_KEY, False)
+        try:
+            get_settings().set(_RECORD_RUNS_KEY, True)
+            assert recorder.recording_enabled() is True
+        finally:
+            get_settings().set(_RECORD_RUNS_KEY, previous)
 
 
 class TestRecordRun:
