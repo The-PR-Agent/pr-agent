@@ -91,6 +91,7 @@ include-package-data = true
 
 [tool.setuptools.package-data]
 pr_agent = ["py.typed"]
+pr_dashboard = ["templates/*.html", "static/*"]
 
 [tool.setuptools.packages.find]
 where = ["."]

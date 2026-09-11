@@ -1,7 +1,15 @@
+import shutil
+import subprocess
+import zipfile
+from pathlib import Path
+
+import pytest
 from fastapi.testclient import TestClient
 
 from pr_dashboard import app as app_module
 from pr_dashboard import providers
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _client(tmp_path, monkeypatch):
@@ -125,3 +133,36 @@ class TestCreateApp:
         client_a.post("/repos", data={"provider": "github", "slug": "only/inA"})
         assert "only/inA" in client_a.get("/repos").text
         assert "only/inA" not in client_b.get("/repos").text
+
+
+class TestWheelPackaging:
+    def test_wheel_ships_templates_and_static(self, tmp_path):
+        """A built wheel actually contains the templates and static assets create_app() needs.
+
+        This is the packaging failure class from Task 3: packages.find only discovers Python
+        packages, so templates/*.html and static/* silently disappear from a real install unless
+        [tool.setuptools.package-data] names them. A test that only re-reads pyproject.toml would
+        assert a string equals itself; this builds the actual wheel and inspects its contents.
+        """
+        if shutil.which("uv") is None:
+            pytest.skip("uv is not on PATH; cannot build a wheel to inspect")
+
+        result = subprocess.run(
+            ["uv", "build", "--wheel", "--out-dir", str(tmp_path)],
+            cwd=_REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if result.returncode != 0:
+            pytest.skip(f"uv build failed in this environment, cannot verify wheel contents: {result.stderr[-500:]}")
+
+        wheels = list(tmp_path.glob("*.whl"))
+        assert wheels, "uv build reported success but produced no .whl file"
+
+        with zipfile.ZipFile(wheels[0]) as archive:
+            names = archive.namelist()
+
+        assert "pr_dashboard/templates/base.html" in names
+        assert "pr_dashboard/templates/repos.html" in names
+        assert "pr_dashboard/static/htmx.min.js" in names
