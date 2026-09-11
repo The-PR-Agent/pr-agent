@@ -392,6 +392,50 @@ without a win on count would still be evidence the mechanism is right and the bu
 and the next move is a stronger model on a subset rather than more retrieval - a conclusion worth
 writing down before the rows rather than after.
 
+## 2026-09-11: R-16 cross-file retrieval - result. No signal, and it is the fifth.
+
+Two rows, `.delegate/runs/task-16/`, run id `retrieval:20260911T202947Z:*`.
+
+| Row | Findings | Matched/23 | Unknown | Control FPs | Review calls | Files | Prompt tokens |
+|---|---|---|---|---|---|---|---|
+| retrieval rep1 | 1 | 1 (`test-debug-leftovers`) | 0 | 0 | 2 | 172 | 488k |
+| retrieval rep2 | 1 | 0 | 1 | 0 | 2 | 172 | 463k |
+
+Control (Step 1 A rows, retrieval off): 1 and 0 of 23 at 452k and 426k.
+
+**Verdict: no signal.** Identical to the control, within the control's own spread. `ads-show-timeout`
+- the label pre-registered as the one retrieval should catch - was not found in either rep.
+
+**The mechanism fired; this is not a dead flag.** Of the five prompts sent in rep1, four carried the
+`Retrieved repository context` block and **zero** carried the old "you only see changed code
+segments" caveat, so the conditional prompt flipped as designed. Retrieval added ~36k tokens
+(488k against the control's 452k).
+
+**What is now eliminated, all with rows:** coverage, chunk size, prompt wording, sampling diversity
+over permuted orders, and cross-file symbol retrieval. Four of those changed how the same bytes were
+presented; this one changed which bytes were sent, and it moved nothing.
+
+**Two readings, and they are not equally likely.**
+
+1. *The context was too thin or too unfocused.* 36k of grep-selected snippets on a 450k prompt, chosen
+   by identifier match rather than by relevance to the change. A definition-plus-callers dump is not
+   the same as putting the load path next to the show path.
+2. *The model line cannot do this task.* Every configuration tested - 6 wordings, 3 samplings, 2
+   retrievals, 14 rows in total - returns 0 to 3 findings and matches at most 2 labels, and the one
+   label it reliably finds (`print`/`debugDumpApp` in a test helper) is the one requiring no reasoning
+   at all. Both severity-4 labels have never been found by any configuration.
+
+Reading 2 is the one the evidence supports. Fourteen rows across five mechanisms is a lot of
+independent variation to produce the same answer, and the failures are concentrated in exactly the
+findings that need multi-step reasoning rather than pattern matching.
+
+**Consequence, as pre-registered:** the next experiment is a stronger model over a subset of the
+corpus, not more retrieval engineering. Until a row shows that *some* model finds more than 2 of
+these labels, every mechanism measured here is being evaluated against a ceiling it cannot move, and
+tuning below that ceiling optimises noise. Retrieval stays in the tree, default off - it is cheap
+(0.4s to index 1,358 symbols) and is the right thing to re-test once a model line is chosen that can
+use it.
+
 ## Reproduce
 
 To reproduce the Cursor rows, start the shim first and point the run at it instead of Gemini:
