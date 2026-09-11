@@ -199,6 +199,11 @@ is the schema: R-22 server-side structured output, promoted ahead of P1. Note th
 R-22 at all - it concatenates system+user onto stdin and has no `response_format` - so that branch
 needs a provider key, not this one.
 
+**Schedule.** Rows run A,B,C then a second A,B,C pass - the same schedule task-10 used when
+it measured the +/-2 rep-to-rep spread this rule is calibrated against, so provider drift is
+spread the same way across both. `--set` reaching the model is not assumed: the runner greps
+the shim's raw prompt dumps for each variant's wording and marks a row invalid if absent.
+
 **Caveat carried from the rows above.** Same model line as the four Cursor rows (`cursor-agent`,
 `gemini-3.7-flash-high`), flags identical to `p0-cap`, so variant A doubles as a replication of the
 1-of-23 row. Not comparable to the `gemini-3.5-flash` rows at the top of this file.
