@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% set nav = "config" %}
+{% block title %}Configuration{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>Configuration</h1>
+  <p>Edits go to your working tree only — nothing is staged or committed. Every write keeps a
+    backup. Secrets are excluded from this list and cannot be opened here.</p>
+</div>
+
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+
+{% for group, files in groups %}
+  <h2>{{ group }}</h2>
+  <div class="panel table-scroll">
+    <table>
+      <tbody>
+        {% for entry in files %}
+          <tr>
+            <td style="width: 15rem;"><a href="/config/{{ entry.index }}">{{ entry.path.name }}</a>
+              {% if entry.is_prompt %}<span class="muted"> prompt</span>{% endif %}</td>
+            <td><span class="path" title="{{ entry.path }}">{{ entry.path | repo_relative }}</span></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endfor %}
+{% endblock %}

@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import stat
+import time
 from contextvars import ContextVar
 from functools import lru_cache, wraps
 from types import FunctionType, SimpleNamespace
@@ -3277,7 +3278,9 @@ class LiteLLMAIHandler(BaseAiHandler):
         return response_log
 
     @staticmethod
-    def _record_completion_metadata(response, model=None, display_model=None) -> None:
+    def _record_completion_metadata(response, model=None, display_model=None, *, stage=None,
+                                     chunk_index=None, sample_index=None, files=None,
+                                     latency_ms=None) -> None:
         """Count a successful call and synchronously collect usage-based cost when possible."""
         usage = _response_field(response, "usage")
 
@@ -3303,7 +3306,9 @@ class LiteLLMAIHandler(BaseAiHandler):
                 get_logger().debug(f"Unable to estimate API cost for model {model}: {type(e).__name__}")
 
         recorded_model = display_model if display_model is not None else model
-        record_ai_call(usage, model=recorded_model, cost_usd=cost_usd)
+        record_ai_call(usage, model=recorded_model, cost_usd=cost_usd, stage=stage,
+                       chunk_index=chunk_index, sample_index=sample_index, files=files,
+                       latency_ms=latency_ms)
 
     @staticmethod
     def _read_positive_response_cost(response, usage):
@@ -3726,7 +3731,29 @@ class LiteLLMAIHandler(BaseAiHandler):
             raise ValueError("LITELLM.CACHE_CONTROL_INJECTION_POINTS must be a JSON/TOML array")
         return cache_control_injection_points
 
-    async def chat_completion(self, model: str, system: str, user: str, temperature: float = 0.2, img_path: str = None):
+    @staticmethod
+    def _resolve_response_format():
+        """Read and validate LITELLM.RESPONSE_FORMAT, the opt-in constrained-decoding switch.
+
+        OpenAI-compatible local servers (llama-server, vLLM, Ollama) enforce a JSON grammar for
+        response_format json_object, which removes the "unparsable output" failure outright; JSON
+        is valid YAML, so load_yaml reads it unchanged. Off by default: some hosted providers
+        reject the parameter, and the prompts' worked examples are YAML.
+
+        Returns the OpenAI-shaped dict, or None when unset. Raises ValueError on an unsupported
+        value so the caller surfaces it as a configuration error rather than retrying it.
+        """
+        response_format = str(getattr(get_settings().litellm, "response_format", "") or "").strip()
+        if not response_format:
+            return None
+        if response_format != "json_object":
+            raise ValueError(f"litellm.response_format must be 'json_object' or empty, "
+                             f"got {response_format!r}")
+        return {"type": response_format}
+
+    async def chat_completion(self, model: str, system: str, user: str, temperature: float = 0.2,
+                              img_path: str = None, *, stage: str = None, chunk_index: int = None,
+                              sample_index: int = None, files=None):
         configured_deployment_id = self.deployment_id
         return await self._chat_completion_with_retry(
             model,
@@ -3735,6 +3762,10 @@ class LiteLLMAIHandler(BaseAiHandler):
             temperature,
             img_path,
             configured_deployment_id=configured_deployment_id,
+            stage=stage,
+            chunk_index=chunk_index,
+            sample_index=sample_index,
+            files=files,
         )
 
     @retry(
@@ -3751,11 +3782,17 @@ class LiteLLMAIHandler(BaseAiHandler):
         img_path: str = None,
         *,
         configured_deployment_id: str | None,
+        stage: str = None,
+        chunk_index: int = None,
+        sample_index: int = None,
+        files=None,
     ):
         # Validate config-derived kwargs before the try/except below, so a malformed value raises a
         # ValueError config error instead of being wrapped as openai.APIError and retried.
         cache_control_injection_points = self._resolve_cache_control_injection_points()
+        response_format = self._resolve_response_format()
         client_retries = _configured_client_retries()
+        started = time.monotonic()
         custom_llm_provider = self._custom_llm_provider
         user_model = model
         routed_model = self._route_model_for_request(user_model, custom_llm_provider, configured_deployment_id)
@@ -3894,6 +3931,11 @@ class LiteLLMAIHandler(BaseAiHandler):
                 if model not in self.no_support_temperature_models and not get_settings().config.custom_reasoning_model:
                     # get_logger().info(f"Adding temperature with value {temperature} to model {model}.")
                     kwargs["temperature"] = temperature
+
+                # Opt-in constrained decoding, validated above the try so a typo fails fast as a
+                # config error instead of being retried on every model as a provider error.
+                if response_format:
+                    kwargs["response_format"] = response_format
 
                 if thinking_kwargs_gpt5:
                     kwargs.update(thinking_kwargs_gpt5)
@@ -4112,7 +4154,10 @@ class LiteLLMAIHandler(BaseAiHandler):
         if get_verbosity_level() >= 2:
             get_logger().info(f"\nAI response:\n{resp}")
 
-        self._record_completion_metadata(response_obj, model=model, display_model=user_model)
+        latency_ms = int((time.monotonic() - started) * 1000)
+        self._record_completion_metadata(response_obj, model=model, display_model=user_model, stage=stage,
+                                         chunk_index=chunk_index, sample_index=sample_index, files=files,
+                                         latency_ms=latency_ms)
 
         return resp, finish_reason
 

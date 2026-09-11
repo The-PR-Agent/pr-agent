@@ -23,6 +23,10 @@ class TokenEncoder:
     _encoder_instance = None
     _model = None
     _lock = Lock()  # Create a lock object
+    # Models already warned about, so a fallback chain does not repeat the notice per call.
+    _warned_models: set[str] = set()
+    # Models whose counts come from the o200k_base fallback rather than their own tokenizer.
+    _approximate_models: set[str] = set()
 
     @classmethod
     def get_token_encoder(cls, model=None):
@@ -41,12 +45,48 @@ class TokenEncoder:
                     cls._encoder_instance = cls._create_encoder(cls._model)
         return cls._encoder_instance
 
-    @staticmethod
-    def _create_encoder(model):
+    @classmethod
+    def _create_encoder(cls, model):
         try:
-            return encoding_for_model(model) if "gpt" in model else get_encoding("o200k_base")
+            if "gpt" in model:
+                return encoding_for_model(model)
         except Exception:
-            return get_encoding("o200k_base")
+            get_logger().warning(f"No tiktoken encoding for '{model}', falling back to o200k_base")
+        cls._approximate_models.add(model)
+        cls._warn_approximate_tokenizer(model)
+        return get_encoding("o200k_base")
+
+    @classmethod
+    def is_approximate(cls, model=None) -> bool:
+        """Does this model's count come from the o200k_base fallback rather than its own tokenizer?
+
+        Creates the encoder if it has not been created yet, so the answer does not depend on call
+        order.
+        """
+        model = model or get_settings().config.model
+        cls.get_token_encoder(model)
+        return model in cls._approximate_models
+
+    @classmethod
+    def _warn_approximate_tokenizer(cls, model):
+        """Note once that this model's token counts are approximations.
+
+        Diff budgeting counts tokens through this encoder, and TokenHandler.count_tokens defaults
+        to force_accurate=False, so config.model_token_count_estimate_factor never applies there.
+        For a model whose vocabulary differs from o200k_base the budget can therefore run low, and
+        an oversized prompt is silently truncated by some self-hosted servers rather than rejected,
+        which loses findings with no error. TokenHandler now adds
+        config.approximate_token_count_safety_factor of headroom on that path instead of leaving
+        the shortfall for the operator to guess at, so this is a notice, not a to-do.
+        """
+        if model in cls._warned_models:
+            return
+        cls._warned_models.add(model)
+        factor = get_settings().get("config.approximate_token_count_safety_factor", 0)
+        get_logger().warning(
+            f"Token counts for '{model}' are approximated with the o200k_base tokenizer; the diff "
+            f"budget adds {factor} of headroom (config.approximate_token_count_safety_factor). "
+            f"Lower config.max_model_tokens as well if the server still rejects or truncates.")
 
 
 class TokenHandler:
@@ -80,6 +120,9 @@ class TokenHandler:
         if vars is None:
             vars = {}
         self.encoder = TokenEncoder.get_token_encoder(model)
+        # An approximate encoder under-counts as easily as it over-counts, and the budgeting path
+        # asks for a plain estimate, so the headroom has to be added here.
+        self.approximate_encoder = TokenEncoder.is_approximate(model)
 
         if pr is not None:
             self.prompt_tokens = self._get_system_user_tokens(pr, self.encoder, vars, system, user)
@@ -193,6 +236,26 @@ class TokenHandler:
 
         # If an estimate is enough (for example, in cases where the maximal allowed tokens is way below the known limits), return it.
         if not force_accurate:
-            return encoder_estimate
+            return self._add_approximation_headroom(encoder_estimate)
 
         return self._get_token_count_by_model_type(patch, encoder_estimate)
+
+    def _add_approximation_headroom(self, estimate: int) -> int:
+        """Inflate an estimate produced by a tokenizer that is not the model's own.
+
+        Only for the o200k_base fallback: a model with its own encoding is counted exactly, and
+        inflating it would shrink the diff for no reason.
+        """
+        if not getattr(self, "approximate_encoder", False):
+            return estimate
+        raw_factor = get_settings().get("config.approximate_token_count_safety_factor", 0)
+        try:
+            factor = float(raw_factor)
+        except (TypeError, ValueError, OverflowError):
+            factor = 0
+        if isinstance(raw_factor, bool) or not factor > 0:
+            return estimate
+        try:
+            return ceil(estimate * (1 + factor))
+        except (OverflowError, ValueError):
+            return estimate

@@ -45,6 +45,7 @@
 * [Help](tools/help.md)
 * [Help Docs](tools/help_docs.md)
 * [Update Changelog](tools/update_changelog.md)
+* [Dashboard](tools/dashboard.md)
 
 ## Core Abilities
 

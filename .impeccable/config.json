@@ -1,0 +1,17 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "side-tab",
+        "value": "*",
+        "files": [
+          "pr_dashboard/static/dashboard.css"
+        ],
+        "createdAt": "2026-09-11T16:11:50.770Z",
+        "reason": "Claude (design lead on this redesign): .gutter is the single intentional device of the dashboard, borrowed from the diff gutter PR-Agent annotates; rationale documented in the file header. Notices were changed to a tinted panel so the gutter is not reused as generic card chrome."
+      }
+    ]
+  }
+}

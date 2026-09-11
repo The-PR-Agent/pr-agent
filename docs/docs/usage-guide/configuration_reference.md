@@ -62,10 +62,11 @@ to-do list.
 | --- | --- | --- |
 | `max_description_tokens` | 500 |  |
 | `max_commits_tokens` | 500 |  |
-| `max_model_tokens` | 32000 | Limits the maximum number of tokens that can be used by any model, regardless of the model's default capabilities. |
+| `max_model_tokens` | 200000 | Caps the input tokens any model may use, regardless of its own context window. 32000 (the historical default) starved large PRs: on a 294-file PR it reached 5 files and found nothing (tests/eval/BASELINE.md). 200000 lets a big-context model use its own window while still bounding models that would degrade on a very long input. |
 | `custom_model_max_tokens` | -1 | for models not in the default list |
 | `max_output_tokens` | 0 | 0 = unset (the provider's own default applies) |
 | `model_token_count_estimate_factor` | 0.3 | factor to increase the token count estimate, in order to reduce likelihood of model failure due to too many tokens - applicable only when requesting an accurate estimate. |
+| `approximate_token_count_safety_factor` | 0.1 | Diff budgeting does not request an accurate estimate, so the factor above does not apply there. Instead, when a model has no tiktoken encoding of its own its counts come from the o200k_base fallback, and this factor is added to those counts as headroom - a model whose vocabulary is denser than o200k_base would otherwise be under-counted, and some self-hosted servers truncate an oversized prompt silently rather than rejecting it, which loses findings with no error. Applies only to the fallback encoder; a model counted by its own tokenizer is left exact. 0 disables it, restoring the raw encoder count. |
 **patch extension logic**
 
 | Key | Default | Description |
@@ -80,6 +81,8 @@ to-do list.
 | `output_relevant_configurations` | false |  |
 | `output_run_details` | false | if true, append an agent run details section (model, tokens, time cost, AI calls) to generated PR comments |
 | `output_run_cost` | false | if true, collect estimated LiteLLM API cost and include it inside the enabled run details section |
+| `run_ledger_path` | "" | When set, append one JSON line per model call (stage, chunk, files, tokens, cost, latency) to this file. |
+| `run_ledger_run_id` | "" | Identity stamped on ledger rows. Defaults to the latest commit URL; set this when the provider has none (plain diff, local) to attribute rows to a job or eval run. |
 | `large_patch_policy` | "clip" | "clip", "skip" |
 | `duplicate_prompt_examples` | false |  |
 | `persistent_inline_comments` | false | Persistent inline comments (issue #2037): when true, the GitHub, GitLab, and Azure DevOps providers fingerprint each inline comment, embed the fingerprint as an HTML marker, and skip re-posting suggestions already present on the PR/MR across runs. |
@@ -152,6 +155,14 @@ to-do list.
 | `inline_key_issues` | false |  |
 | `extra_instructions` | "" |  |
 | `num_max_findings` | 3 |  |
+**visible, so a finding can be read without clicking into it**
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `findings_layout` | "details" | Layout of the key-issues section of the review comment. "details"  - each finding is a collapsed <details> block whose title carries the diff link "expanded" - the file path and line range are shown as text and the code snippet is always An unrecognised value falls back to "details". |
+| `num_samples` | 1 | explicit value is honoured, clamped to the samples that parsed. Note that at num_samples = 2 a majority is 1, i.e. the union of both samples: recall first, since demanding unanimity from two samples empties the review whenever they place one defect a few lines apart. Each sample is a full model call. Total calls per model attempt are bounded by max_concurrent_calls concurrently and, with chunking and its one retry, by 2 x max_number_of_calls x num_samples overall. |
+| `min_votes` | 0 |  |
+| `max_concurrent_calls` | 4 | Maximum model calls a single review keeps in flight, across chunk and sample fan-out together. 0 disables the cap. Raise only if the provider tolerates the burst; a 429 is not retried. |
 | `final_update_message` | true |  |
 **review labels**
 
@@ -169,8 +180,17 @@ to-do list.
 | `enable_intro_text` | true |  |
 | `enable_help_text` | false | Determines whether to include help text in the PR review. |
 | `enable_review_coverage_footer` | true |  |
-| `enable_large_pr_chunking` | false | large-diff chunking (opt-in). When the token budget leaves files out of the review, split the diff into chunks, review each chunk, and merge the per-chunk results into one review. |
+| `low_priority_globs` | ["docs/**", "design/**", "mockups/**", "**/fixtures/**", "**/*.md"] | Files matching these globs are reviewed last and, when the token budget is tight, summarized in one line instead of reviewed. Nothing is dropped; an [ignore] snippet is proposed in the comment for a human to accept. |
+| `low_priority_summarize_when_over_budget` | true |  |
+| `low_priority_max_tokens_per_file` | 3000 | Per-file cap for low-priority files, applied whether or not the budget binds: a matching file whose patch exceeds this is summarized instead of reviewed. 0 disables the cap. |
+| `enable_large_pr_chunking` | true | large-diff chunking. When the token budget leaves files out of the review, split the diff into chunks, review each chunk, and merge the per-chunk results into one review. On by default: without chunking a PR larger than one model call is silently reviewed in part, and the unreviewed files are never reported. max_number_of_calls bounds the cost. |
 | `max_number_of_calls` | 3 | maximum number of chunk review calls, used only when enable_large_pr_chunking is true |
+| `chunk_split_on_failure` | true | On a chunk that fails every attempt: split it in half by file and retry, then try the first fallback model, and only then mark its files as not reviewed. |
+| `chunk_fallback_model_on_failure` | true |  |
+| `enable_finding_verification` | false | Verify each finding's premise against the full content of its file and any PR file it references, using a cheap model; refuted findings are dropped (logged with evidence), unverified ones are tagged. |
+| `verify_max_findings` | 10 |  |
+| `verification_model` | "" | empty = config.model_weak, else config.model |
+| `verify_max_context_chars` | 200000 | Max characters of file content packed into one verification prompt (own file + referenced). If any file is truncated, a refuted verdict is downgraded to unverified so findings are never dropped on partial evidence. |
 
 
 ## `[pr_description]` — /describe
@@ -474,6 +494,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `force_streaming_custom_llm_provider` | "" | Force streaming when the request matches this provider AND its api_base contains one of the substrings below. Some OpenAI-compatible endpoints return a response that LiteLLM cannot normalize in non-streaming mode. Both must be set for the workaround to apply. |
 | `force_streaming_api_base_substrings` | [] |  |
 | `callback_timeout_seconds` | 30 | max seconds to wait for pending litellm callbacks to flush before exiting |
+| `response_format` | "" | Optional constrained decoding: "json_object" asks the server to enforce a JSON grammar on the response. Useful for small self-hosted models whose failure mode is malformed output; JSON is valid YAML, so nothing downstream changes. Leave empty for providers that reject the parameter. |
 | `cache_control_injection_points` | [] | Optional: enable Anthropic prompt caching via LiteLLM, e.g. [{location = "message", role = "system"}] (https://docs.litellm.ai/docs/tutorials/prompt_caching) |
 
 
@@ -625,3 +646,10 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `file_path` | "pr-agent-outputs/reviews.jsonl" | used by the "file" channel |
 | `webhook_url` | "" | used by the "webhook" channel: generic JSON POST target. Must be an absolute https:// URL |
 | `slack_webhook_url` | "" | used by the "slack" channel: a Slack Incoming Webhook URL. Must be an absolute https:// URL |
+
+
+## `[pr_dashboard]`
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `record_runs` | false | Record one row per command run (model, tokens, cost, duration) into the local dashboard database at ~/.pr_dashboard/usage.db. Off by default: webhook and serverless deployments must not start writing a database just because the dashboard package is installed. |

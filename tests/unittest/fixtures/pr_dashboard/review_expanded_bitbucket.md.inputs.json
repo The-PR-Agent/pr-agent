@@ -1,0 +1,44 @@
+{
+  "renderer": "convert_to_markdown_v2",
+  "gfm_supported": false,
+  "findings_layout": "expanded",
+  "enable_intro_text": false,
+  "provider": "bitbucket",
+  "review": {
+    "estimated_effort_to_review_[1-5]": 2,
+    "security_concerns": "No",
+    "key_issues_to_review": [
+      {
+        "relevant_file": "src/worker/queue.py",
+        "issue_header": "Race condition on shared queue state",
+        "issue_content": "Concurrent writers can corrupt the queue because no lock guards the append.",
+        "start_line": 42,
+        "end_line": 58
+      },
+      {
+        "relevant_file": "src/auth/session.py",
+        "issue_header": "Missing null check before dereference",
+        "issue_content": "`user` may be None when parsed from an anonymous session.",
+        "start_line": 10,
+        "end_line": 12
+      }
+    ]
+  },
+  "files": [
+    {
+      "filename": "src/worker/queue.py",
+      "head_file": "pass\npass\npass\npass\npass\npass\npass\npass\npass\npass\npass\npass\npass\npass\npass\npass\npass\npass\npass\npass\npass\npass\npass\npass\npass\npass\npass\npass\npass\npass\npass\npass\npass\npass\npass\npass\npass\npass\npass\npass\npass\n    def append(self, item):\n        self._queue.append(item)  # no lock held here\n        self._notify()\npass\npass\npass\npass\npass\npass\npass\npass\npass\npass\npass\npass\npass\npass\n",
+      "language": "python"
+    },
+    {
+      "filename": "src/auth/session.py",
+      "head_file": "pass\npass\npass\npass\npass\npass\npass\npass\npass\n    user = session.get('user')\n    return user.id\npass\n",
+      "language": "python"
+    }
+  ],
+  "identity": "<!-- pr-agent:review:full -->",
+  "line_links": {
+    "src/worker/queue.py": "https://bitbucket.org/samer2373/block_rush/pull-requests/1/#Lsrc/worker/queue.pyT42",
+    "src/auth/session.py": "https://bitbucket.org/samer2373/block_rush/pull-requests/1/#Lsrc/auth/session.pyT10"
+  }
+}

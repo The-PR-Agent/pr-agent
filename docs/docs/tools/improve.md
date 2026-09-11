@@ -305,7 +305,7 @@ PR-Agent uses a dynamic strategy to generate code suggestions based on the size 
 #### 1. Chunking large PRs
 
 - PR-Agent divides large PRs into 'chunks'.
-- Each chunk contains up to `config.max_model_tokens` tokens (default: 32,000).
+- Each chunk contains up to `config.max_model_tokens` tokens (default: 200,000, further limited by the model's own context window).
 
 #### 2. Generating suggestions
 

@@ -165,7 +165,9 @@ async def test_review_command_through_diff_provider_mocked_llm(cfg, monkeypatch)
             return "fake"
 
         async def chat_completion(self, model: str, system: str, user: str,
-                                  temperature: float = 0.2, img_path: str = None):
+                                  temperature: float = 0.2, img_path: str = None, *,
+                                  stage: str = None, chunk_index: int = None,
+                                  sample_index: int = None, files=None):
             calls.append({"system": system, "user": user})
             # Return a minimal response; PRReviewer will store this as self.prediction
             # and then attempt _prepare_pr_review().  If parsing fails the run()

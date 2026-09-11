@@ -83,7 +83,7 @@ class FakeAIHandler:
     response = REVIEW_YAML
     main_pr_language = None
 
-    async def chat_completion(self, model, system, user, temperature=0.2, img_path=None):
+    async def chat_completion(self, model, system, user, temperature=0.2, img_path=None, **_kwargs):
         return self.response, "stop"
 
 
@@ -293,7 +293,7 @@ async def test_control_github_pat_rerun_edits_the_previous_review(monkeypatch, r
     assert [c for c in provider.pr.created if not c.deleted] == []
     assert len(previous.edits) == 1
     assert PRReviewIdentity.REGULAR.value in previous.body
-    assert "pr-agent-review-state:v1" in previous.body
+    assert "pr-agent-review-state:v2" in previous.body
 
 
 async def test_forged_review_comment_is_never_edited(monkeypatch, review_settings):

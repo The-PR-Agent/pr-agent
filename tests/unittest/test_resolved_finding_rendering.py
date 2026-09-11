@@ -23,7 +23,9 @@ ISSUE = {
 def _resolved_section_for(issue):
     finding = PRReviewer._review_finding_from_issue(issue)
     active = reconcile_review_findings(None, [finding], allow_resolution=False, head_sha="aaa111").state
-    resolved = reconcile_review_findings(active, [], allow_resolution=True, head_sha="bbb222").state
+    resolved = reconcile_review_findings(
+        active, [], allow_resolution=True, head_sha="bbb222", fully_reviewed_files=["src/app.py"]
+    ).state
     return _render_resolved_section(resolved)
 
 

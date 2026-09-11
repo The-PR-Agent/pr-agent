@@ -309,7 +309,9 @@ class TestCodeCommitProvider:
         assert len(prepared) <= 10240
         parsed = parse_review_state(prepared)
         assert parsed.valid
-        assert [f["finding_id"] for f in parsed.state["findings"]] == [f"f{i}" for i in range(20)]
+        # No finding may be lost. Retained findings are keyed by finding_id and deliberately
+        # sorted by it (_retained_findings), so compare as a set rather than pinning the order.
+        assert {f["finding_id"] for f in parsed.state["findings"]} == {f"f{i}" for i in range(20)}
         assert prepared.rstrip().endswith("-->")
         assert "..." in prepared
 

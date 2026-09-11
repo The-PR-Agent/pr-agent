@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% set nav = "repos" %}
+{% block title %}{{ repo.slug }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>{{ repo.slug }}</h1>
+  <p>Open pull requests on {{ repo.provider }}.</p>
+</div>
+
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+{% if stale %}<div class="stale">Showing cached data; the provider was unreachable.</div>{% endif %}
+
+{% if pulls %}
+<div class="panel table-scroll">
+  <table>
+    <thead><tr><th>#</th><th>Title</th><th>Author</th><th>State</th><th>Updated</th></tr></thead>
+    <tbody>
+    {% for pull in pulls %}
+      <tr>
+        <td><a href="/pr/{{ repo.provider }}/{{ repo.slug }}/{{ pull.number }}">{{ pull.number }}</a></td>
+        <td>{{ pull.title }}</td>
+        <td>{{ pull.author }}</td>
+        <td><span class="state {{ 'state-ok' if pull.state == 'open' else '' }}">{{ pull.state }}</span></td>
+        <td class="muted">{{ pull.updated_at[:16].replace("T", " ") }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="panel"><p class="empty">No open pull requests.</p></div>
+{% endif %}
+{% endblock %}

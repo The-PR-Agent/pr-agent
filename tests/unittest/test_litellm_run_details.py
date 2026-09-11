@@ -1,7 +1,7 @@
 import asyncio
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 import pytest
 
@@ -344,6 +344,11 @@ async def test_chat_completion_preserves_configured_model_for_cost_breakdown(mon
         response,
         model="azure/gpt-4.1",
         display_model="gpt-4.1",
+        stage=None,
+        chunk_index=None,
+        sample_index=None,
+        files=None,
+        latency_ms=ANY,
     )
 
 

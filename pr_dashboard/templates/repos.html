@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% set nav = "repos" %}
+{% block title %}Repositories{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>Connected repositories</h1>
+  <p>GitHub and Bitbucket repositories this dashboard watches. Credentials are read from your
+    existing <code>.secrets.toml</code> and environment, and are never stored or shown here.</p>
+</div>
+
+<div class="panel">
+  <div class="panel-body">
+    <form class="form-row" hx-post="/repos" hx-target="#repo-list" hx-swap="innerHTML">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <select name="provider" aria-label="Provider">
+        <option value="github">github</option>
+        <option value="bitbucket">bitbucket</option>
+      </select>
+      <input name="slug" placeholder="owner/name" size="28" required aria-label="Repository">
+      <button type="submit">Add repository</button>
+    </form>
+  </div>
+</div>
+
+<div id="repo-list">
+  {% include "_repo_rows.html" %}
+</div>
+{% endblock %}

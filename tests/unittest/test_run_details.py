@@ -10,6 +10,7 @@ from pr_agent.algo.run_details import (
     init_run_details,
     record_ai_call,
     record_model_used,
+    set_call_findings,
 )
 
 
@@ -228,5 +229,63 @@ def test_helpers_are_noops_when_not_initialized():
         record_model_used("m", is_fallback=False)  # must not raise
         record_ai_call(_Usage(1, 1, 2))  # must not raise
         add_token_usage({"total_tokens": 5})  # must not raise
+    finally:
+        run_details._run_details.reset(token)
+
+
+def test_set_call_findings_sets_the_matching_record():
+    details = init_run_details()
+    record_ai_call(_Usage(1, 1, 2), stage="review", chunk_index=0, sample_index=None)
+    record_ai_call(_Usage(1, 1, 2), stage="review", chunk_index=1, sample_index=None)
+
+    found = set_call_findings("review", 1, None, 3)
+
+    assert found is True
+    assert details.calls[0].findings_emitted is None  # the non-matching chunk is untouched
+    assert details.calls[1].findings_emitted == 3
+
+
+def test_set_call_findings_matches_by_identity_not_call_order():
+    """Chunks run under asyncio.gather, so completion order need not match chunk order:
+    the last-appended record must not be assumed to be the one just parsed."""
+    details = init_run_details()
+    record_ai_call(_Usage(1, 1, 2), stage="review", chunk_index=1, sample_index=None)  # appended first
+    record_ai_call(_Usage(1, 1, 2), stage="review", chunk_index=0, sample_index=None)  # appended second
+
+    set_call_findings("review", 0, None, 5)
+
+    assert details.calls[0].findings_emitted is None
+    assert details.calls[1].findings_emitted == 5
+
+
+def test_set_call_findings_returns_false_when_no_call_matches():
+    init_run_details()
+    record_ai_call(_Usage(1, 1, 2), stage="review", chunk_index=0, sample_index=None)
+
+    assert set_call_findings("review", 99, None, 3) is False
+    assert set_call_findings("verify", 0, None, 3) is False
+    assert set_call_findings("review", 0, 5, 3) is False
+
+
+def test_set_call_findings_does_not_overwrite_an_already_set_record():
+    """A retried chunk reuses the same (stage, chunk_index, sample_index) triple as its
+    failed predecessor; the first call to reach a findings count wins."""
+    details = init_run_details()
+    record_ai_call(_Usage(1, 1, 2), stage="review", chunk_index=0, sample_index=None)
+    record_ai_call(_Usage(1, 1, 2), stage="review", chunk_index=0, sample_index=None)  # the retry
+
+    assert set_call_findings("review", 0, None, 2) is True
+    assert set_call_findings("review", 0, None, 7) is True  # falls through to the second record
+
+    assert details.calls[0].findings_emitted == 2
+    assert details.calls[1].findings_emitted == 7
+
+
+def test_set_call_findings_returns_false_when_not_initialized():
+    from pr_agent.algo import run_details
+
+    token = run_details._run_details.set(None)
+    try:
+        assert set_call_findings("review", 0, None, 3) is False
     finally:
         run_details._run_details.reset(token)

@@ -1,0 +1,23 @@
+{% set run_state = {"ok": "state-ok", "failed": "state-fail", "cancelled": "state-warn",
+                    "running": "state-live", "queued": "state-live"} %}
+{% if runs %}
+<div class="panel table-scroll">
+<table>
+  <thead><tr><th>Repo</th><th>PR</th><th>Command</th><th>Status</th><th>Started</th><th></th></tr></thead>
+  <tbody>
+  {% for run in runs %}
+    <tr>
+      <td>{{ run["provider"] }}/{{ run["repo_slug"] }}</td>
+      <td>{{ run["pr_number"] }}</td>
+      <td><code>{{ run["command"] }}</code></td>
+      <td><span class="state {{ run_state.get(run['status'], '') }}">{{ run["status"] }}</span></td>
+      <td class="muted">{{ run["started_at"][:16].replace("T", " ") }}</td>
+      <td style="text-align: right;"><a href="/runs/{{ run['token'] }}">Open</a></td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<div class="panel"><p class="empty">No runs yet. Start one with the form above.</p></div>
+{% endif %}

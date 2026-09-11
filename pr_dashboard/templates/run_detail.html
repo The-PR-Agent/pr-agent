@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% set nav = "runs" %}
+{% set gutter = {"ok": "gutter-ok", "failed": "gutter-fail", "cancelled": "gutter-warn"}.get(run["status"], "gutter-live") %}
+{% set dot = {"ok": "state-ok", "failed": "state-fail", "cancelled": "state-warn"}.get(run["status"], "state-live") %}
+{% block title %}Run {{ run["token"] }}{% endblock %}
+{% block content %}
+<div id="run-content"
+     {% if run["status"] not in ("ok", "failed", "cancelled") %}
+     hx-get="/runs/{{ run['token'] }}" hx-trigger="every 2s" hx-select="#run-content" hx-swap="outerHTML"
+     {% endif %}>
+
+<div class="page-head">
+  <h1><code>{{ run["command"] }}</code> on {{ run["repo_slug"] }}#{{ run["pr_number"] }}</h1>
+  <p><a href="{{ run["pr_url"] }}">{{ run["provider"] }}/{{ run["repo_slug"] }}#{{ run["pr_number"] }}</a>
+     · <span class="path">{{ run["token"] }}</span></p>
+</div>
+
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+{% if timed_out %}<p class="error">the run timed out after {{ timeout_seconds }} seconds and was killed</p>{% endif %}
+
+<div class="panel gutter {{ gutter }}">
+  <div class="panel-body">
+    <p style="margin:0;">
+      Status: <span class="state {{ dot }}">{{ run["status"] }}</span><br>
+      Command: {{ run["command"] }}<br>
+      Exit code: {% if run["exit_code"] is not none %}<code>{{ run["exit_code"] }}</code>
+                 {% else %}<span class="unknown" title="the run has not finished">—</span>{% endif %}
+    </p>
+  </div>
+</div>
+
+<h2>Accounting</h2>
+{# Exactly one of three states, never a spinner and never a zero standing in for an absent
+   row: a missing accounting row is the normal case, not an error. #}
+<div class="panel">
+  <div class="panel-body">
+  {% if accounting %}
+    <p style="margin:0;">
+      Tokens: {% if accounting["total_tokens"] is not none %}{{ accounting["total_tokens"] }}
+              {% else %}<span class="unknown">unknown</span>{% endif %}<br>
+      Cost: {% if accounting_cost is not none %}{{ accounting_cost }} USD
+            {% else %}<span class="unknown" title="the provider reported no usage to price">unknown</span> USD{% endif %}
+    </p>
+  {% elif not recording_enabled %}
+    <p class="muted" style="margin:0;">Accounting is off for this run. Set
+      <code>pr_dashboard.record_runs = true</code> to record tokens and cost.</p>
+  {% else %}
+    <p class="muted" style="margin:0;">The run ended before accounting started, so nothing was recorded.</p>
+  {% endif %}
+  </div>
+</div>
+
+<h2>Log</h2>
+{% if log_unavailable %}
+  <p class="error">{{ log_unavailable }} — the log is withheld rather than shown unredacted.</p>
+{% else %}
+  <p class="muted">Redacted on read. The raw log stays on disk at
+    <span class="path">{{ run["log_path"] }}</span>, mode 0600.</p>
+  <pre class="log">{{ log_tail }}</pre>
+{% endif %}
+
+{% if run["status"] not in ("ok", "failed", "cancelled") %}
+<form style="margin-top:1.25rem;" hx-post="/runs/{{ run['token'] }}/cancel" hx-target="body" hx-select="body" hx-swap="outerHTML">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button class="danger" type="submit">Cancel run</button>
+</form>
+{% endif %}
+</div>
+{% endblock %}

@@ -61,6 +61,7 @@ dependencies = [
   "retry==0.9.2",
   "starlette-context==0.3.6",
   "tiktoken==0.12.0",
+  "tomlkit>=0.13.2,<1",
   "ujson>=5.13.0,<6",
   "unidiff==0.7.5",
   "uvicorn>=0.31.1,<1",
@@ -96,11 +97,13 @@ include-package-data = true
 
 [tool.setuptools.package-data]
 pr_agent = ["py.typed"]
+pr_dashboard = ["templates/*.html", "static/*"]
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = [
   "pr_agent*",
+  "pr_dashboard*",
 ] # include pr_agent and any sub-packages it finds under it.
 
 [project.optional-dependencies]
@@ -118,6 +121,7 @@ langchain = [
 
 [project.scripts]
 pr-agent = "pr_agent.cli:run"
+pr-dashboard = "pr_dashboard.app:main"
 
 [dependency-groups]
 # 'similar issue' tool. Install with: uv sync --group similar-issue.

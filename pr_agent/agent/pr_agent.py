@@ -27,6 +27,15 @@ from pr_agent.tools.pr_reviewer import PRReviewer
 from pr_agent.tools.pr_similar_issue import PRSimilarIssue
 from pr_agent.tools.pr_update_changelog import PRUpdateChangelog
 
+try:
+    from pr_dashboard.recorder import record_run
+except ImportError:  # dashboard package not installed in this distribution
+    from contextlib import nullcontext
+
+    def record_run(**_kwargs):
+        """No-op stand-in when pr_dashboard is not installed (wheel and Docker builds)."""
+        return nullcontext()
+
 command2class = {
     "auto_review": PRReviewer,
     "answer": PRReviewer,
@@ -276,7 +285,7 @@ class PRAgent:
         span.set_attribute("pr_agent.command", action)
         get_commands_counter().add(1, {"pr_agent.command": action, "vcs.provider.name": _git_provider})
 
-        with get_logger().contextualize(command=action, pr_url=pr_url):
+        with get_logger().contextualize(command=action, pr_url=pr_url), record_run(pr_url=pr_url, command=action):
             get_logger().info("PR-Agent request handler started", analytics=True)
             if action == "answer":
                 if notify:
