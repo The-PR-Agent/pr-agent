@@ -45,6 +45,14 @@ class TestParsePrUrl:
         assert recorder.parse_pr_url(None) == (None, None)
 
 
+def _restore_setting(key: str, previous, *, was_present: bool) -> None:
+    """Restore a Dynaconf key to absence or to its prior value."""
+    if was_present:
+        get_settings().set(key, previous)
+    else:
+        get_settings().unset(key)
+
+
 class TestRecordingEnabled:
     """recording_enabled() itself, with no monkeypatch of it.
 
@@ -52,35 +60,41 @@ class TestRecordingEnabled:
     recording_enabled() gutted to `return True` would leave the whole module's tests green --
     a typo'd setting key, or a flipped default in configuration.toml, would be invisible. This
     exercises the real property against the repo's normal settings mechanism instead, and
-    restores the previous value afterwards so no other test observes the override.
+    restores absence versus presence exactly so no other test observes the override.
     """
 
     def test_absent_setting_falls_back_to_the_configured_default(self):
         """With no override, configuration.toml's baked-in default (false) applies"""
-        previous = get_settings().get(_RECORD_RUNS_KEY, False)
+        settings = get_settings()
+        was_present = _RECORD_RUNS_KEY in settings
+        previous = settings.get(_RECORD_RUNS_KEY, False) if was_present else None
         try:
-            get_settings().unset(_RECORD_RUNS_KEY)
+            settings.unset(_RECORD_RUNS_KEY)
             assert recorder.recording_enabled() is False
         finally:
-            get_settings().set(_RECORD_RUNS_KEY, previous)
+            _restore_setting(_RECORD_RUNS_KEY, previous, was_present=was_present)
 
     def test_explicit_false_is_disabled(self):
         """An explicit false disables recording"""
-        previous = get_settings().get(_RECORD_RUNS_KEY, False)
+        settings = get_settings()
+        was_present = _RECORD_RUNS_KEY in settings
+        previous = settings.get(_RECORD_RUNS_KEY, False) if was_present else None
         try:
-            get_settings().set(_RECORD_RUNS_KEY, False)
+            settings.set(_RECORD_RUNS_KEY, False)
             assert recorder.recording_enabled() is False
         finally:
-            get_settings().set(_RECORD_RUNS_KEY, previous)
+            _restore_setting(_RECORD_RUNS_KEY, previous, was_present=was_present)
 
     def test_explicit_true_is_enabled(self):
         """An explicit true enables recording, proving this is the real gate, not a stub"""
-        previous = get_settings().get(_RECORD_RUNS_KEY, False)
+        settings = get_settings()
+        was_present = _RECORD_RUNS_KEY in settings
+        previous = settings.get(_RECORD_RUNS_KEY, False) if was_present else None
         try:
-            get_settings().set(_RECORD_RUNS_KEY, True)
+            settings.set(_RECORD_RUNS_KEY, True)
             assert recorder.recording_enabled() is True
         finally:
-            get_settings().set(_RECORD_RUNS_KEY, previous)
+            _restore_setting(_RECORD_RUNS_KEY, previous, was_present=was_present)
 
 
 class TestRecordRun:

@@ -36,6 +36,8 @@ Each run then records one row — command, model, prompt and completion tokens, 
 duration, and status — into `~/.pr_dashboard/usage.db`. Runs that fail before reaching a
 tool are recorded as attempts with no usage, so the counts are not silently short.
 
+When recording is enabled, SQLite lock contention can delay a command by up to the store's five-second busy timeout.
+
 Costs come from litellm's synchronous pricing. Where a model has no pricing entry, or the
 provider did not report usage, the dashboard shows "not reported" rather than `$0.00`.
 

@@ -80,20 +80,20 @@ def _exc_text(exc: BaseException) -> str:
 def credential_status(provider: str) -> CredentialStatus:
     """Report whether a provider is usable, never echoing the credential itself."""
     if provider == "github":
-        deployment = _setting("GITHUB.DEPLOYMENT_TYPE", "user")
-        if deployment == "app":
-            # The dashboard reads pull requests and comments with a plain user token
-            # (_github_client always reads GITHUB.USER_TOKEN); it never builds an installation
-            # client for an app deployment, so app credentials alone can never make it usable
-            # here, regardless of whether APP_ID/PRIVATE_KEY are configured.
-            return CredentialStatus(
-                "github", False,
-                "github app deployment is not usable by the dashboard (it reads with a user "
-                "token, not an app installation); set GITHUB.USER_TOKEN to enable it here",
-            )
+        # _github_client always reads GITHUB.USER_TOKEN, including under an app deployment, so
+        # usability is gated on that token alone. App credentials without a user token still
+        # cannot drive the dashboard read path.
         configured = bool(_setting("GITHUB.USER_TOKEN"))
-        detail = "github user token configured" if configured else (
-            "no token configured for github; set GITHUB.USER_TOKEN in .secrets.toml")
+        deployment = _setting("GITHUB.DEPLOYMENT_TYPE", "user")
+        if configured:
+            detail = "github user token configured"
+        elif deployment == "app":
+            detail = (
+                "github app deployment is not usable by the dashboard (it reads with a user "
+                "token, not an app installation); set GITHUB.USER_TOKEN to enable it here"
+            )
+        else:
+            detail = "no token configured for github; set GITHUB.USER_TOKEN in .secrets.toml"
         return CredentialStatus("github", configured, detail)
 
     if provider == "bitbucket":

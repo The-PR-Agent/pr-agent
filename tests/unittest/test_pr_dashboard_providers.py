@@ -62,13 +62,8 @@ class TestCredentialStatus:
         assert status.configured is False
         assert "gitlab" in status.detail.lower()
 
-    def test_github_app_deployment_reports_unusable_not_configured(self, monkeypatch):
-        """An app-type deployment is reported as not usable by the dashboard, never as configured
-
-        _github_client always reads GITHUB.USER_TOKEN regardless of deployment type, so app
-        credentials alone (APP_ID/PRIVATE_KEY) can never make the dashboard's read path work --
-        reporting configured=True from them was the green-then-blank-error bug.
-        """
+    def test_github_app_deployment_without_user_token_reports_unusable(self, monkeypatch):
+        """App credentials alone cannot make the dashboard usable; detail says to set USER_TOKEN"""
         monkeypatch.setattr(providers, "_setting", lambda key, default=None: {
             "GITHUB.DEPLOYMENT_TYPE": "app",
             "GITHUB.APP_ID": "123",
@@ -77,6 +72,18 @@ class TestCredentialStatus:
         status = providers.credential_status("github")
         assert status.configured is False
         assert "USER_TOKEN" in status.detail
+
+    def test_github_app_deployment_with_user_token_reports_usable(self, monkeypatch):
+        """An app deployment that also has GITHUB.USER_TOKEN is usable by the dashboard"""
+        monkeypatch.setattr(providers, "_setting", lambda key, default=None: {
+            "GITHUB.DEPLOYMENT_TYPE": "app",
+            "GITHUB.APP_ID": "123",
+            "GITHUB.PRIVATE_KEY": "-----BEGIN RSA PRIVATE KEY-----",
+            "GITHUB.USER_TOKEN": "ghp_supersecret",
+        }.get(key, default))
+        status = providers.credential_status("github")
+        assert status.configured is True
+        assert "ghp_supersecret" not in status.detail
 
 
 class TestCache:
