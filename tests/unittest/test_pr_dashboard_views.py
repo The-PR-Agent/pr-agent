@@ -83,7 +83,10 @@ class TestOverview:
             provider, True, "configured"))
 
         def fake_pulls(repo, state="open", limit=50, conn=None):
-            raise providers.ProviderError(f"{repo.slug} exploded")
+            # Deliberately NOT naming the repo in the message: the attribution asserted
+            # below must come from the route's own errors.append(f"{repo.key}: {exc}"),
+            # not from text the provider happened to include.
+            raise providers.ProviderError("exploded")
 
         monkeypatch.setattr(providers, "list_pull_requests", fake_pulls)
         application = app_module.create_app(
@@ -92,8 +95,8 @@ class TestOverview:
         client.post("/repos", data={"provider": "github", "slug": "samer2373/block_rush"})
         client.post("/repos", data={"provider": "github", "slug": "other/repo"})
         response = client.get("/")
-        assert "samer2373/block_rush exploded" in response.text
-        assert "other/repo exploded" in response.text
+        assert "github:samer2373/block_rush: exploded" in response.text
+        assert "github:other/repo: exploded" in response.text
 
     def test_zero_tokens_renders_as_zero_not_dash(self, tmp_path, monkeypatch):
         """A repo whose 7-day runs recorded zero tokens shows 0, not the no-data dash"""
@@ -112,9 +115,10 @@ class TestOverview:
             repo_slug="samer2373/block_rush", pr_number=None, started_at=now)
         conn.execute("UPDATE runs SET status='ok', total_tokens=0 WHERE id=?", (run_id,))
         response = client.get("/")
-        # Reviewed is the only card column with no source of data at all; if this em-dash
-        # count is more than 1, the zero tokens rendered as "no data" too.
-        assert response.text.count("—") == 1
+        # Assert the cell directly rather than counting em-dashes on the whole page: a
+        # count is only correct while "reviewed" stays the single column with no data
+        # source, which a later task changes.
+        assert "<td>0</td>" in response.text
 
     def test_stale_cache_is_labelled(self, tmp_path, monkeypatch):
         """Data served from an expired cache is shown with a stale banner, not silently"""
@@ -128,6 +132,21 @@ class TestOverview:
                             lambda repo, state="open", limit=50, conn=None: ([], True))
         response = client.get("/")
         assert "cached data" in response.text.lower()
+
+    def test_fresh_data_is_not_labelled_stale(self, tmp_path, monkeypatch):
+        """Fresh data carries no stale banner, so the banner is conditional and not decoration"""
+        # The negative case is the half that proves the banner means something: a template
+        # that always rendered it would satisfy test_stale_cache_is_labelled on its own.
+        monkeypatch.setattr(providers, "credential_status", lambda provider: providers.CredentialStatus(
+            provider, True, "configured"))
+        application = app_module.create_app(
+            registry_path=tmp_path / "pr_dashboard.toml", db_path=tmp_path / "usage.db")
+        client = TestClient(application)
+        client.post("/repos", data={"provider": "github", "slug": "o/r"})
+        monkeypatch.setattr(providers, "list_pull_requests",
+                            lambda repo, state="open", limit=50, conn=None: ([], False))
+        response = client.get("/")
+        assert "cached data" not in response.text.lower()
 
 
 class TestRepoDetail:
