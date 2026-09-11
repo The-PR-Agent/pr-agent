@@ -46,6 +46,23 @@ Model `gemini/gemini-3.5-flash`, shared budget `enable_large_pr_chunking=true ma
 
 Caveats that the next session must not paper over: verification was never exercised live (Google quota exhausted mid-run); the two rows differ in chunk packing so the recall delta is noise until repeated; stock defaults (32k clamp, chunking off) reviewed 5/294 files and scored 0 — that is the real out-of-box experience today.
 
+## Session 2 addendum — Codex review of the session-2 diff
+
+Adversarial read-only pass (Codex, `task-mtx02yzm-ibsh0k`) over `bbb14015..bcce8ebe` found two
+real holes in the per-file cap; both verified against the file, fixed and tested in `fb543d32`:
+
+1. A PR of only oversized low-priority files capped to an empty diff → `prediction is None` →
+   `run()` returned before publishing anything, so the PR was silently skipped and the coverage
+   ledger that recorded the exclusion never reached a reader. `cap_low_priority_files` now
+   reviews the files when capping would empty the review.
+2. The chunked path's failure rollback cleared `_ship_scope_summary_paths`, erasing the capped
+   files' footer lines even though the single-call result it rolls back to also excludes them.
+   The previous paths are restored with `previous_coverage`.
+
+`9b274152` also closed the untested `len(plans) < 2` fallback and caches the cap result per
+attempt. Suite: 4692 pass, 1 pre-existing worktree-only failure
+(`test_a_reverted_fix_run_from_inside_the_checkout_is_refused`); ruff clean.
+
 ## Session 2 (2026-09-11 16:15-16:40) — what changed
 
 Tests: 4689 pass, ruff clean; the one failure is still the worktree-only `test_eval_harness.py::test_a_reverted_fix_run_from_inside_the_checkout_is_refused`.
