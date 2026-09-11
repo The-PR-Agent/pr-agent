@@ -78,6 +78,7 @@ class GithubProvider(GitProvider):
         self.diff_files = None
         self.git_files = None
         self.incremental = IncrementalPR(False)
+        self._resolved_config_branch: str | None = None
         self._check_run_ids: dict = {}
         if pr_url and 'pull' in pr_url:
             self.set_pr(pr_url)
@@ -1191,6 +1192,7 @@ class GithubProvider(GitProvider):
             # left to propagate so they aren't masked by a silent fallback.
             try:
                 contents = self.repo_obj.get_contents(".pr_agent.toml", ref=config_branch).decoded_content
+                self._resolved_config_branch = config_branch
                 if settings_files:
                     settings_files.append(("local", contents))
                     return settings_files
@@ -1206,6 +1208,7 @@ class GithubProvider(GitProvider):
         try:
             # more logical to take 'pr_agent.toml' from the default branch
             contents = self.repo_obj.get_contents(".pr_agent.toml").decoded_content
+            self._resolved_config_branch = getattr(self.repo_obj, "default_branch", "") or ""
             if config_branch and not settings_files:
                 return contents
             settings_files.append(("local", contents))
@@ -1220,6 +1223,88 @@ class GithubProvider(GitProvider):
             get_logger().warning(f"Failed to load .pr_agent.toml file, error: {e}")
 
         return settings_files if settings_files else ""
+
+    def get_repo_settings_tree(self, ref: str = "") -> tuple[list[str], str]:
+        """Recursively list every `.pr_agent.toml` at `ref` ("" = default branch).
+
+        Follows the same branch-fallback logic as get_repo_settings(): *ref* is only a
+        CONFIG.CONFIG_BRANCH / PR_AGENT_CONFIG_BRANCH hint, so a branch that the root
+        config already resolved away from (e.g. a CONFIG_BRANCH without a root
+        `.pr_agent.toml`) is never read here. The tree is read from the branch the root
+        config actually used (``_resolved_config_branch``), falling back to the repository
+        default branch when that is missing. Returns ``(paths, resolved_ref)`` where
+        *resolved_ref* is the branch the tree was actually read from; an empty *paths*
+        list means the recursive tree hit GitHub's truncation cap and per-directory
+        settings had to be skipped.
+        """
+        repo = getattr(self, "repo_obj", None)
+        if repo is None:
+            return [], ""
+        resolved_ref = self._resolved_config_branch or ref or ""
+        try:
+            if not resolved_ref:
+                resolved_ref = repo.default_branch
+            return self._list_config_tree_paths(repo, resolved_ref), resolved_ref
+        except GithubException as e:
+            if e.status == 404 and resolved_ref:
+                # Branch or tree not found (possibly deleted between root and per-dir
+                # resolution). Fall back to the default branch; matches the root config
+                # fallback when CONFIG_BRANCH is stale.
+                get_logger().debug(
+                    f"No git tree for branch '{resolved_ref}' while listing per-directory "
+                    "settings; falling back to default branch"
+                )
+                resolved_ref = repo.default_branch
+                return self._list_config_tree_paths(repo, resolved_ref), resolved_ref
+            # Unlike 404, a 403/5xx is not an expected fallback signal: propagate so it
+            # is not masked by a silent downgrade (matches get_repo_settings()).
+            raise
+
+    def _list_config_tree_paths(self, repo, ref: str) -> list[str]:
+        """Fetch a recursive tree at *ref* and return its `.pr_agent.toml` blob paths.
+
+        A truncated tree (GitHub caps recursive trees at 100k entries / 7 MB and sets
+        ``truncated``) cannot be trusted to name every config, so it degrades to no
+        per-directory settings with a warning rather than applying an incomplete, silent
+        subset. The root config is unaffected.
+        """
+        tree = repo.get_git_tree(ref, recursive=True)
+        if getattr(tree, "truncated", False):
+            get_logger().warning(
+                f"Git tree for branch '{ref}' is truncated by GitHub's recursive-tree "
+                "limit; skipping per-directory settings for this repository"
+            )
+            return []
+        return self._extract_config_tree_paths(tree)
+
+    @staticmethod
+    def _extract_config_tree_paths(tree) -> list[str]:
+        """Return repository-relative paths of every `.pr_agent.toml` blob in a
+        PyGithub GitTree object."""
+        return [
+            item.path
+            for item in getattr(tree, "tree", [])
+            if getattr(item, "type", None) == "blob"
+            and getattr(item, "path", "").endswith(".pr_agent.toml")
+        ]
+
+    def get_repo_settings_contents(self, paths: list[str], ref: str) -> dict[str, bytes]:
+        """Fetch raw content of per-directory settings files at *ref*."""
+        repo = getattr(self, "repo_obj", None)
+        if repo is None:
+            return {}
+        result: dict[str, bytes] = {}
+        for path in paths:
+            try:
+                result[path] = repo.get_contents(path, ref=ref).decoded_content
+            except GithubException as e:
+                if e.status == 404:
+                    get_logger().warning(
+                        f"Per-directory settings file '{path}' not found at ref '{ref}'; skipping"
+                    )
+                else:
+                    raise
+        return result
 
     def _get_global_settings_cache_key(self, repo_owner: str) -> str:
         # Cache per org AND host: the same org name on two different hosts (github.com vs a
