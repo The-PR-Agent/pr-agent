@@ -70,22 +70,74 @@ _FOCUS_AREA_MARKERS = ("Recommended focus areas for review", "Key issues to revi
 # matched precisely (not preceded by a 4th '#', which "#### " would otherwise satisfy).
 _NEXT_SECTION_HEADING = re.compile(r"(?<!#)###(?!#)\s")
 
+# Mirrored from convert_to_markdown_v2's local `emojis` dict (pr_agent/algo/utils.py). Kept here
+# rather than imported because that dict is function-local; TestMirroredSectionLabels guards drift.
+_GFM_SECTION_LABELS = frozenset({
+    "Can be split",
+    "Key issues to review",
+    "Recommended focus areas for review",
+    "Score",
+    "Relevant tests",
+    "Focused PR",
+    "Relevant ticket",
+    "Security concerns",
+    "Todo sections",
+    "Insights from user's answers",
+    "Code feedback",
+    "Estimated effort to review [1-5]",
+    "Contribution time cost estimate",
+    "Ticket compliance check",
+    "Risk level",
+    "Merge recommendation",
+    "Review priority files",
+})
+# Real GFM section rows open as: <tr><td>{emoji}&nbsp;<strong>{label}</strong>...
+_GFM_SECTION_ROW_OPEN = re.compile(
+    r"^[^<]*&nbsp;<strong>(?P<label>[^<]+)</strong>"
+)
+
+
+def _is_known_gfm_section_row(after_tr_td: str) -> bool:
+    """True when `after_tr_td` (text after `<tr><td>`) opens a known convert_to_markdown_v2 section."""
+    match = _GFM_SECTION_ROW_OPEN.match(after_tr_td)
+    if not match:
+        return False
+    label = match.group("label")
+    if label in _GFM_SECTION_LABELS:
+        return True
+    # Renderer rewrites a few keys before emitting <strong> (e.g. drops " [1-5]", uppercases
+    # "Todo" to "TODO"). Accept casefold equality or a mirrored key that only adds a " [...]" suffix.
+    label_cf = label.casefold()
+    for known in _GFM_SECTION_LABELS:
+        known_cf = known.casefold()
+        if known_cf == label_cf or known_cf.startswith(label_cf + " ["):
+            return True
+    return False
+
 
 def _gfm_focus_area_end(body: str, start: int) -> int:
     """Return the index of the real GFM cell close after `start`, or -1.
 
     convert_to_markdown_v2 closes the focus-area row with `</td></tr>` immediately before
-    the next `<tr><td>` section or `</table>`. A bare `</td></tr>` inside model-generated
-    issue content is not a section boundary and must be skipped.
+    the next section row or `</table>`. A bare `</td></tr>` or even `</td></tr><tr><td>`
+    inside model-generated issue content is not enough: the following `<tr><td>` must open a
+    known section label (`{emoji}&nbsp;<strong>{label}</strong>` for a label in
+    `_GFM_SECTION_LABELS`). This is hardening, not a proof — a model that emits the exact
+    emoji, `&nbsp;`, `<strong>`, and a real section label is indistinguishable from a genuine
+    section to any parser. The failure direction is under-reporting (later findings dropped),
+    never fabricating findings.
     """
     needle = "</td></tr>"
+    row_open = "<tr><td>"
     search_from = start
     while True:
         index = body.find(needle, search_from)
         if index == -1:
             return -1
         after = body[index + len(needle):].lstrip()
-        if after.startswith("<tr><td>") or after.startswith("</table>"):
+        if after.startswith("</table>"):
+            return index
+        if after.startswith(row_open) and _is_known_gfm_section_row(after[len(row_open):]):
             return index
         search_from = index + len(needle)
 
