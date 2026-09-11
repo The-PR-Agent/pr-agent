@@ -1,15 +1,47 @@
 from fastapi.testclient import TestClient
 
-from pr_agent.algo.utils import PRReviewIdentity
+from pr_agent.algo.utils import PRReviewIdentity, add_pr_review_identity, convert_to_markdown_v2
+from pr_agent.config_loader import get_settings
 from pr_dashboard import app as app_module
 from pr_dashboard import comments, providers, registry
 
-REVIEW_BODY = (
-    f"{PRReviewIdentity.REGULAR.value}\n"
-    "## PR Reviewer Guide\n\n"
-    "- **Race on profile write** `lib/profile.dart` [120-134]\n"
-    "- **Missing ads timeout** `lib/ads.dart` [42-58]\n"
-)
+
+def _build_review_body() -> str:
+    """Render a real review comment (via convert_to_markdown_v2) with two focus-area findings.
+
+    Built from the actual renderer rather than hand-typed, per item 8/1 of the fix plan: a
+    hand-typed body let a test pass even against a parse_findings gutted to `return []`,
+    because pr_detail.html also dumps the raw comment body into a <pre> the test's assertions
+    could match against instead of the parsed findings table.
+    """
+    review = {
+        "key_issues_to_review": [
+            {
+                "relevant_file": "lib/profile.dart",
+                "issue_header": "Race on profile write",
+                "issue_content": "Race on profile write.",
+                "start_line": 120,
+                "end_line": 134,
+            },
+            {
+                "relevant_file": "lib/ads.dart",
+                "issue_header": "Missing ads timeout",
+                "issue_content": "Missing ads timeout.",
+                "start_line": 42,
+                "end_line": 58,
+            },
+        ],
+    }
+    previous_layout = get_settings().get("pr_reviewer.findings_layout", "details")
+    try:
+        get_settings().set("pr_reviewer.findings_layout", "expanded")
+        rendered = convert_to_markdown_v2({"review": review}, gfm_supported=True)
+    finally:
+        get_settings().set("pr_reviewer.findings_layout", previous_layout)
+    return add_pr_review_identity(rendered, PRReviewIdentity.REGULAR.value)
+
+
+REVIEW_BODY = _build_review_body()
 
 
 def _client(tmp_path, monkeypatch, *, pulls=None, review_comments=None, error=None):
@@ -170,9 +202,13 @@ class TestPrDetail:
         ])
         response = client.get("/pr/github/samer2373/block_rush/1")
         assert response.status_code == 200
-        assert "Race on profile write" in response.text
-        assert "lib/profile.dart" in response.text
-        assert "120" in response.text and "134" in response.text
+        # Scope the assertion to the Findings table region: the raw comment body is also
+        # dumped into a <pre> under Comments and contains the same text, so asserting against
+        # the whole page would pass even with parse_findings gutted to `return []`.
+        findings_section = response.text.split("<h2>Findings</h2>", 1)[1].split("<h2>Runs</h2>", 1)[0]
+        assert "Race on profile write" in findings_section
+        assert "lib/profile.dart" in findings_section
+        assert "120" in findings_section and "134" in findings_section
 
     def test_run_history_for_the_pull_request(self, tmp_path, monkeypatch):
         """Recorded runs for this pull request appear on its page"""
