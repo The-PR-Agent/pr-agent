@@ -1042,7 +1042,9 @@ class PRCodeSuggestions:
 
     async def push_inline_code_suggestions(self, data, include_coverage_footer: bool = True) -> None:
         code_suggestions = []
+        artifact_suggestions = []
         fallback_comments = []
+        artifact_batch_published = False
         coverage_footer = self._get_suggestions_coverage_footer() if include_coverage_footer else ""
         supports_suggestions_artifact = self.git_provider.supports_code_suggestions_artifact() is True
 
@@ -1113,20 +1115,26 @@ class PRCodeSuggestions:
                 elif requires_pr_fallback:
                     body += f"\n\nNot offered as a committable change because {fallback_reason}."
 
-            # Keep safety-rejected suggestions out of provider patch APIs while preserving standalone artifacts.
+            rendered_suggestion = {'body': body, 'relevant_file': relevant_file,
+                                   'relevant_lines_start': relevant_lines_start,
+                                   'relevant_lines_end': relevant_lines_end,
+                                   'original_suggestion': d}
+            if supports_suggestions_artifact:
+                artifact_suggestions.append(rendered_suggestion)
+
+            # Keep safety-rejected suggestions out of provider patch APIs and retain fallback recovery text.
             if not has_valid_anchor or (requires_pr_fallback and not supports_suggestions_artifact):
                 fallback_comments.append(f"{body}\n\nLocation: `{relevant_file}:"
                                          f"{relevant_lines_start}-{relevant_lines_end}`")
             else:
-                code_suggestions.append({'body': body, 'relevant_file': relevant_file,
-                                         'relevant_lines_start': relevant_lines_start,
-                                         'relevant_lines_end': relevant_lines_end,
-                                         'original_suggestion': d})
+                code_suggestions.append(rendered_suggestion)
 
-        if code_suggestions:
+        suggestions_to_publish = artifact_suggestions if supports_suggestions_artifact else code_suggestions
+        if suggestions_to_publish:
             if supports_suggestions_artifact:
                 is_successful = self.git_provider.publish_code_suggestions_artifact(
-                    code_suggestions, artifact_footer=coverage_footer)
+                    suggestions_to_publish, artifact_footer=coverage_footer)
+                artifact_batch_published = is_successful
             else:
                 is_successful = self.git_provider.publish_code_suggestions(code_suggestions)
             if is_successful:
@@ -1139,7 +1147,7 @@ class PRCodeSuggestions:
                         self._output_published = True
         if coverage_footer and not supports_suggestions_artifact:
             fallback_comments.append(coverage_footer.strip())
-        if fallback_comments:
+        if fallback_comments and not artifact_batch_published:
             self.git_provider.publish_comment("\n\n---\n\n".join(fallback_comments))
             self._output_published = True
         if code_suggestions and not is_successful:
