@@ -21,6 +21,7 @@ from pr_dashboard import providers, registry, store
 from pr_dashboard import usage as usage_module
 
 _HERE = Path(__file__).parent
+_OPEN_PRS_DISPLAY_LIMIT = 50
 
 
 async def _form_values(request: Request) -> dict[str, str]:
@@ -93,21 +94,33 @@ def create_app(*, registry_path: Optional[Path] = None, db_path: Optional[Path] 
 
     def repo_summary(conn, repo: registry.Repo) -> dict:
         since = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+        # runs.repo_slug is parsed from a PR URL (see recorder.parse_pr_url), while the
+        # registry stores whatever the user typed when they registered the repository -- so
+        # a repo registered as "Owner/Repo" must still match its own "owner/repo" runs.
         row = conn.execute(
             "SELECT sum(total_tokens) AS tokens, max(started_at) AS last_run "
-            "FROM runs WHERE provider = ? AND repo_slug = ? AND started_at >= ?",
+            "FROM runs WHERE provider = ? AND lower(repo_slug) = lower(?) AND started_at >= ?",
             (repo.provider, repo.slug, since),
         ).fetchone()
         costs = conn.execute(
             "SELECT total_cost_usd FROM runs "
-            "WHERE provider = ? AND repo_slug = ? AND started_at >= ? AND total_cost_usd IS NOT NULL",
+            "WHERE provider = ? AND lower(repo_slug) = lower(?) AND started_at >= ? AND total_cost_usd IS NOT NULL",
             (repo.provider, repo.slug, since),
         ).fetchall()
-        total_cost = sum((Decimal(r["total_cost_usd"]) for r in costs), Decimal("0")) if costs else None
+        # Guarded the same way usage._decimal is: one corrupt cost row must not 500 the page.
+        total_cost = (
+            sum((usage_module._decimal(r["total_cost_usd"]) for r in costs), Decimal("0"))
+            if costs else None
+        )
+        reviewed_row = conn.execute(
+            "SELECT count(DISTINCT pr_number) AS reviewed FROM runs "
+            "WHERE provider = ? AND lower(repo_slug) = lower(?) AND started_at >= ? AND pr_number IS NOT NULL",
+            (repo.provider, repo.slug, since),
+        ).fetchone()
         return {
             "repo": repo,
             "open_prs": None,
-            "reviewed_prs": None,
+            "reviewed_prs": reviewed_row["reviewed"],
             "last_run": row["last_run"],
             "tokens_7d": row["tokens"],
             "cost_7d": total_cost,
@@ -120,8 +133,13 @@ def create_app(*, registry_path: Optional[Path] = None, db_path: Optional[Path] 
         for repo in registry.load(application.state.registry_path):
             card = repo_summary(conn, repo)
             try:
-                pulls, repo_stale = providers.list_pull_requests(repo, state="open", limit=50, conn=conn)
-                card["open_prs"] = len(pulls)
+                # Fetch one more than the display limit so a repo with more open PRs than fit
+                # can be shown as "50+" instead of silently reporting the truncated count (50)
+                # as if it were the whole truth.
+                pulls, repo_stale = providers.list_pull_requests(
+                    repo, state="open", limit=_OPEN_PRS_DISPLAY_LIMIT + 1, conn=conn)
+                count = len(pulls)
+                card["open_prs"] = f"{_OPEN_PRS_DISPLAY_LIMIT}+" if count > _OPEN_PRS_DISPLAY_LIMIT else count
                 stale = stale or repo_stale
             except providers.ProviderError as exc:
                 # Attributed per repo: with several repos registered, a single collapsed
