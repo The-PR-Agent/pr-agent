@@ -20,6 +20,11 @@ DIMENSIONS = {
 
 
 def _decimal(raw) -> Decimal:
+    # Both fallbacks are defence against a corrupt database, not a normal path: store.py
+    # writes either str(Decimal) or NULL, and every caller here already filters NULLs out
+    # or skips empty group_concat entries. They return 0 so one bad row cannot take the
+    # whole usage page down; the cost is that such a row reads as free rather than as
+    # unknown, so if malformed costs ever become reachable this needs a third state.
     if raw is None:
         return Decimal("0")
     try:
@@ -67,6 +72,11 @@ def by_dimension(conn: sqlite3.Connection, dimension: str, since: Optional[str] 
     """Group usage by one whitelisted dimension."""
     if dimension not in DIMENSIONS:
         raise ValueError(f"unknown usage dimension {dimension!r}; expected one of {', '.join(DIMENSIONS)}")
+    # `column` comes from DIMENSIONS, never from the caller, which is the only reason the
+    # f-strings below are not an injection surface. Costs go through group_concat and are
+    # summed in Python because the column is TEXT holding a Decimal: SUM() would make it a
+    # float. Splitting on "," is safe only while str(Decimal) cannot contain one — if the
+    # writer in store.py ever stores a formatted cost, this needs a different separator.
     column = DIMENSIONS[dimension]
     clause, params = _since_clause(since)
     rows = conn.execute(

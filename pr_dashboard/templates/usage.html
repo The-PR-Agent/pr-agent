@@ -19,6 +19,10 @@
 <canvas id="daily" height="90"></canvas>
 <script src="{{ url_for('static', path='/chart.umd.js') }}"></script>
 <script>
+  {# tojson, not plain interpolation: it escapes the </script> breakout sequence, which
+     HTML autoescaping inside a <script> block would not. `daily` currently holds only a
+     server-computed date, an int, and str(Decimal) — add a provider-derived field (a model
+     name, a repo slug) only after re-checking that this stays safe. #}
   const daily = {{ daily | tojson }};
   new Chart(document.getElementById("daily"), {
     type: "line",
