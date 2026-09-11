@@ -58,6 +58,30 @@ _MD_BOLD_TITLE = re.compile(r"^\s*\*\*(?P<title>[^*]+?)\*\*")
 # Last resort: an unadorned bullet line with no bold run, for comments with neither shape.
 _PLAIN_TITLE = re.compile(r"^\s*(?:[-*]|\d+\.)\s+(?P<title>[^*\n][^\n]*?)\s*$")
 
+# render_focus_area_issue's output lives inside one section of the comment, headed by one of
+# these two labels (pr_agent/algo/utils.py's emojis map carries both: "Recommended focus areas
+# for review" is what convert_to_markdown_v2 actually renders today, "Key issues to review" is
+# kept as a fallback for the label it replaced). Every *other* section of a review comment --
+# security concerns, TODO sections, the effort estimate -- can contain its own bold lead-ins and
+# bullets, and must never be scanned for findings.
+_FOCUS_AREA_MARKERS = ("Recommended focus areas for review", "Key issues to review")
+# The non-gfm layout's own section heading is "### {emoji} Recommended focus areas for review",
+# followed immediately by a level-4 "#### " sub-heading -- so the next *level-3* heading must be
+# matched precisely (not preceded by a 4th '#', which "#### " would otherwise satisfy).
+_NEXT_SECTION_HEADING = re.compile(r"(?<!#)###(?!#)\s")
+
+
+def _focus_area_section(body: str) -> Optional[str]:
+    """Return the slice of `body` covering only the focus-area/key-issues section, or None."""
+    starts = [index for index in (body.find(marker) for marker in _FOCUS_AREA_MARKERS) if index != -1]
+    if not starts:
+        return None
+    start = min(starts)
+    table_end = body.find("</td></tr>", start)
+    heading_match = _NEXT_SECTION_HEADING.search(body, start)
+    ends = [e for e in (table_end, heading_match.start() if heading_match else -1) if e != -1]
+    return body[start: min(ends)] if ends else body[start:]
+
 
 class CommentKind(str, Enum):
     REVIEW = "review"
@@ -109,9 +133,18 @@ def _finding_from_location(title: str, location: re.Match) -> Finding:
 
 
 def parse_findings(body: str) -> list[Finding]:
-    """Extract findings from a review comment, across every findings_layout and gfm support."""
+    """Extract findings from a review's focus-area section, across every findings_layout and gfm support.
+
+    Only text between the focus-area heading and the end of that section is scanned: a
+    comment's other sections (security concerns, TODO sections, ...) can carry their own bold
+    lead-ins and bullets, which must never be misread as findings. A comment whose own verdict
+    is "no major issues" -- so the heading never appears -- yields no findings.
+    """
+    section = _focus_area_section(body)
+    if section is None:
+        return []
     findings: list[Finding] = []
-    lines = body.splitlines()
+    lines = section.splitlines()
     for index, raw_line in enumerate(lines):
         line = raw_line.strip()
         if not line or line.startswith("<!--"):

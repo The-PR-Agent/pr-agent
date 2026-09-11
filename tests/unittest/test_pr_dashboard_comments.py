@@ -88,6 +88,7 @@ class TestParseFindings:
         """The title is the bold run only; the file and line range never leak into it"""
         body = (
             f"{PRReviewIdentity.REGULAR.value}\n## PR Reviewer Guide\n\n"
+            "Recommended focus areas for review\n\n"
             "- **Race on profile write** `lib/profile.dart` [120-134]\n"
         )
         finding = comments.parse_findings(body)[0]
@@ -99,6 +100,7 @@ class TestParseFindings:
         """A backtick-quoted dotted token inside the title itself is not read as the location"""
         body = (
             f"{PRReviewIdentity.REGULAR.value}\n## PR Reviewer Guide\n\n"
+            "Recommended focus areas for review\n\n"
             "- **Handle `config.yml` parsing failure** `src/config_loader.py` [5-9]\n"
         )
         finding = comments.parse_findings(body)[0]
@@ -110,6 +112,7 @@ class TestParseFindings:
         """A finding with no location must not steal one from a later finding's title text"""
         body = (
             f"{PRReviewIdentity.REGULAR.value}\n## PR Reviewer Guide\n\n"
+            "Recommended focus areas for review\n\n"
             "**Race condition on shared queue state**\n\n"
             "**Update `config.py` to version 2 handling**\n"
         )
@@ -123,6 +126,7 @@ class TestParseFindings:
         """render_focus_area_issue omits the dash for a single-line finding; line_range still resolves"""
         body = (
             f"{PRReviewIdentity.REGULAR.value}\n## PR Reviewer Guide\n\n"
+            "Recommended focus areas for review\n\n"
             "<strong>Off-by-one when slicing the buffer</strong><br><code>src/buffer.py</code> L77\n"
         )
         finding = comments.parse_findings(body)[0]
@@ -135,5 +139,24 @@ class TestParseFindings:
             f"{PRReviewIdentity.REGULAR.value}\n## PR Reviewer Guide 🔍\n\n"
             "<table>\n<tr><td>⚡&nbsp;<strong>No major issues detected</strong></td></tr>\n</table>\n"
         )
+        assert comments.parse_findings(body) == []
+        assert comments.classify(body) is comments.CommentKind.REVIEW
+
+    def test_other_sections_are_not_read_as_findings_gfm(self):
+        """Bold lead-ins in security concerns/TODO sections never fabricate findings (gfm layout).
+
+        This fixture is generated from the real renderer (convert_to_markdown_v2) with
+        security_concerns and todo_sections populated and an empty key_issues_to_review, so
+        the focus-area heading never appears anywhere in the body.
+        """
+        body = (FIXTURES / "review_no_issues_with_sections.md").read_text(encoding="utf-8")
+        assert "Recommended focus areas for review" not in body
+        assert "Key issues to review" not in body
+        assert comments.parse_findings(body) == []
+        assert comments.classify(body) is comments.CommentKind.REVIEW
+
+    def test_other_sections_are_not_read_as_findings_non_gfm(self):
+        """Bold lead-ins in security concerns/TODO sections never fabricate findings (non-gfm layout)"""
+        body = (FIXTURES / "review_no_issues_with_sections_bitbucket.md").read_text(encoding="utf-8")
         assert comments.parse_findings(body) == []
         assert comments.classify(body) is comments.CommentKind.REVIEW
