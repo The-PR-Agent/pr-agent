@@ -165,6 +165,44 @@ so both default rows score recall 0.000.
   under test. That is the next thing worth investigating, ahead of more knob tuning.
 - Finding verification was on for both p0 rows; its contribution was not isolated.
 
+## 2026-09-11: Step 1 prompt-wording experiment - pre-registration
+
+**Written before the rows ran.** Nothing below is a result; it is the rule the results will be
+read against, recorded in advance so a marginal row cannot be talked into being a win.
+
+**Question.** Does the key-issues field wording cap recall? `pr_reviewer_prompts.toml` asked for
+"A concise list ... Only include issues you are confident about", and every row so far lands at
+1-3 findings regardless of budget, chunking or cap - which is what that sentence asks for.
+
+**Design.** The sentence moved to `prompt_fragments.findings_field` (commit `4e3f55a5`) so a
+variant is a `--set` override and the tree under test is identical across rows. Three variants,
+two reps each, one flag apart, run by `.delegate/runs/task-11/run_prompt_variants.sh`:
+
+| Variant | Wording |
+|---|---|
+| A | today's wording - control, the shipped fragment, no override |
+| B | "A concise list" -> "A list"; confidence gate kept, everything else byte-identical |
+| C | no brevity cue, no confidence gate; "report every defect you can evidence ... an empty list is correct only if there are no defects"; the evidence and trigger-scenario requirements kept |
+
+`(0-{{ num_max_findings }} issues)` is byte-identical in all three. The cap is enforced in code as
+well as in the prompt (`pr_reviewer.py`, `review_merge.py`), so dropping it from one variant would
+change the cap and not just the wording. All rows run at `num_max_findings=12`, where the cap does
+not bind at these finding counts.
+
+**Decision rule (pre-registered).** A variant wins only if it matches **>= 4 of the 23 labels on
+both reps** with **zero control false flags** (`control-record-run`, `control-board-origin`). 1->2
+or 1->3 is inside this line's measured rep-to-rep noise - identical flags already disagreed by 2
+findings - and counts as **no signal**, not a small win. Budget must not exceed the control's.
+
+**If no variant clears the bar**, the prompt is exonerated as the sole cause and the next suspect
+is the schema: R-22 server-side structured output, promoted ahead of P1. Note the shim cannot test
+R-22 at all - it concatenates system+user onto stdin and has no `response_format` - so that branch
+needs a provider key, not this one.
+
+**Caveat carried from the rows above.** Same model line as the four Cursor rows (`cursor-agent`,
+`gemini-3.7-flash-high`), flags identical to `p0-cap`, so variant A doubles as a replication of the
+1-of-23 row. Not comparable to the `gemini-3.5-flash` rows at the top of this file.
+
 ## Reproduce
 
 To reproduce the Cursor rows, start the shim first and point the run at it instead of Gemini:
