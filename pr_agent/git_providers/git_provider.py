@@ -7,6 +7,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from typing import Optional, Tuple
 
+from pr_agent.algo.language_handler import numeric_languages
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import (
     Range,
@@ -865,6 +866,9 @@ def get_main_pr_language(languages, files) -> str:
         return main_language_str
 
     try:
+        languages = numeric_languages(languages)
+        if not languages:
+            return main_language_str
         top_language = max(languages, key=languages.get).lower()
 
         # validate that the specific commit uses the main language
