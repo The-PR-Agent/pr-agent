@@ -1128,7 +1128,8 @@ class GithubProvider(GitProvider):
                     our_app_name = get_settings().get("GITHUB.APP_NAME", "")
                     same_comment_creator = False
                     if self.deployment_type == 'app':
-                        same_comment_creator = our_app_name.lower() in existing_comment['user']['login'].lower()
+                        same_comment_creator = bool(our_app_name) and our_app_name.lower() in \
+                            existing_comment['user']['login'].lower()
                     elif self.deployment_type == 'user':
                         same_comment_creator = self.github_user_id == existing_comment['user']['login']
                     if existing_comment['subject_type'] == 'file' and comment['path'] == existing_comment['path'] and same_comment_creator:
