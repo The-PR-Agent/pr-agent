@@ -15,6 +15,20 @@ Concurrent writers can corrupt the queue because no lock guards the append.
     def append(self, item):
         self._queue.append(item)  # no lock held here
         self._notify()
+pass
+pass
+pass
+pass
+pass
+pass
+pass
+pass
+pass
+pass
+pass
+pass
+pass
+pass
 ```
 
 <hr>
@@ -26,6 +40,7 @@ Concurrent writers can corrupt the queue because no lock guards the append.
 ```python
     user = session.get('user')
     return user.id
+pass
 ```
 
 </td></tr>

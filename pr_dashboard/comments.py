@@ -71,13 +71,32 @@ _FOCUS_AREA_MARKERS = ("Recommended focus areas for review", "Key issues to revi
 _NEXT_SECTION_HEADING = re.compile(r"(?<!#)###(?!#)\s")
 
 
+def _gfm_focus_area_end(body: str, start: int) -> int:
+    """Return the index of the real GFM cell close after `start`, or -1.
+
+    convert_to_markdown_v2 closes the focus-area row with `</td></tr>` immediately before
+    the next `<tr><td>` section or `</table>`. A bare `</td></tr>` inside model-generated
+    issue content is not a section boundary and must be skipped.
+    """
+    needle = "</td></tr>"
+    search_from = start
+    while True:
+        index = body.find(needle, search_from)
+        if index == -1:
+            return -1
+        after = body[index + len(needle):].lstrip()
+        if after.startswith("<tr><td>") or after.startswith("</table>"):
+            return index
+        search_from = index + len(needle)
+
+
 def _focus_area_section(body: str) -> Optional[str]:
     """Return the slice of `body` covering only the focus-area/key-issues section, or None."""
     starts = [index for index in (body.find(marker) for marker in _FOCUS_AREA_MARKERS) if index != -1]
     if not starts:
         return None
     start = min(starts)
-    table_end = body.find("</td></tr>", start)
+    table_end = _gfm_focus_area_end(body, start)
     heading_match = _NEXT_SECTION_HEADING.search(body, start)
     ends = [e for e in (table_end, heading_match.start() if heading_match else -1) if e != -1]
     return body[start: min(ends)] if ends else body[start:]

@@ -1,13 +1,84 @@
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from pr_agent.algo.utils import (
     _ALL_COMMENT_IDENTITIES,
     PRCodeSuggestionsIdentity,
     PRReviewIdentity,
+    add_pr_review_identity,
+    convert_to_markdown_v2,
 )
+from pr_agent.config_loader import get_settings
 from pr_dashboard import comments
 
 FIXTURES = Path("tests/unittest/fixtures/pr_dashboard")
+
+
+def _render_review(review: dict, *, gfm_supported: bool, layout: str) -> str:
+    settings = get_settings()
+    key = "pr_reviewer.findings_layout"
+    was_present = key in settings
+    previous = settings.get(key, "details") if was_present else None
+    try:
+        settings.set(key, layout)
+        rendered = convert_to_markdown_v2({"review": review}, gfm_supported=gfm_supported)
+    finally:
+        if was_present:
+            settings.set(key, previous)
+        else:
+            settings.unset(key)
+    return add_pr_review_identity(rendered, PRReviewIdentity.REGULAR.value)
+
+
+def _provider_from_links(line_links: dict | None):
+    if not line_links:
+        return None
+
+    class _Provider:
+        def get_line_link(self, path, start, end):
+            # Fixtures record the exact link the mock provider returned for that file's
+            # start/end at generation time; ignore the call's start/end and return it.
+            return line_links[path]
+
+    return _Provider()
+
+
+def _render_from_inputs(payload: dict) -> str:
+    settings = get_settings()
+    layout_key = "pr_reviewer.findings_layout"
+    intro_key = "pr_reviewer.enable_intro_text"
+    layout_present = layout_key in settings
+    intro_present = intro_key in settings
+    previous_layout = settings.get(layout_key, "details") if layout_present else None
+    previous_intro = settings.get(intro_key, False) if intro_present else None
+    files = None
+    if payload.get("files"):
+        files = [
+            SimpleNamespace(filename=item["filename"], head_file=item["head_file"],
+                            patch="", language=item["language"])
+            for item in payload["files"]
+        ]
+    try:
+        settings.set(layout_key, payload["findings_layout"])
+        settings.set(intro_key, payload["enable_intro_text"])
+        rendered = convert_to_markdown_v2(
+            {"review": payload["review"]},
+            gfm_supported=payload["gfm_supported"],
+            git_provider=_provider_from_links(payload.get("line_links")),
+            files=files,
+        )
+    finally:
+        if layout_present:
+            settings.set(layout_key, previous_layout)
+        else:
+            settings.unset(layout_key)
+        if intro_present:
+            settings.set(intro_key, previous_intro)
+        else:
+            settings.unset(intro_key)
+    return add_pr_review_identity(rendered, payload["identity"])
+
 
 
 class TestUpstreamContract:
@@ -142,21 +213,120 @@ class TestParseFindings:
         assert comments.parse_findings(body) == []
         assert comments.classify(body) is comments.CommentKind.REVIEW
 
-    def test_other_sections_are_not_read_as_findings_gfm(self):
-        """Bold lead-ins in security concerns/TODO sections never fabricate findings (gfm layout).
+    def test_model_injected_table_close_does_not_drop_later_findings(self):
+        """A finding whose content contains </td></tr> must not truncate later findings"""
+        body = _render_review(
+            {
+                "key_issues_to_review": [
+                    {
+                        "relevant_file": "a.py",
+                        "issue_header": "Poisoned finding",
+                        "issue_content": "Text with </td></tr> inside it.",
+                        "start_line": 1,
+                        "end_line": 2,
+                    },
+                    {
+                        "relevant_file": "b.py",
+                        "issue_header": "Later finding",
+                        "issue_content": "Should still be visible.",
+                        "start_line": 3,
+                        "end_line": 4,
+                    },
+                ],
+            },
+            gfm_supported=True,
+            layout="details",
+        )
+        titles = [f.title for f in comments.parse_findings(body)]
+        assert titles == ["Poisoned finding", "Later finding"]
 
-        This fixture is generated from the real renderer (convert_to_markdown_v2) with
-        security_concerns and todo_sections populated and an empty key_issues_to_review, so
-        the focus-area heading never appears anywhere in the body.
-        """
-        body = (FIXTURES / "review_no_issues_with_sections.md").read_text(encoding="utf-8")
-        assert "Recommended focus areas for review" not in body
-        assert "Key issues to review" not in body
-        assert comments.parse_findings(body) == []
-        assert comments.classify(body) is comments.CommentKind.REVIEW
+    def test_focus_area_findings_are_kept_and_other_sections_are_not(self):
+        """Against one renderer body, focus-area titles are returned and section noise is not"""
+        body = _render_review(
+            {
+                "security_concerns": (
+                    "**Sensitive information exposure:**\n user tokens are written to application "
+                    "logs on startup."
+                ),
+                "todo_sections": (
+                    "Add regression coverage for the new cache eviction path before merging."
+                ),
+                "key_issues_to_review": [
+                    {
+                        "relevant_file": "src/worker/queue.py",
+                        "issue_header": "Race condition on shared queue state",
+                        "issue_content": "Concurrent writers can corrupt the queue.",
+                        "start_line": 42,
+                        "end_line": 58,
+                    },
+                    {
+                        "relevant_file": "src/auth/session.py",
+                        "issue_header": "Missing null check before dereference",
+                        "issue_content": "user may be None.",
+                        "start_line": 10,
+                        "end_line": 12,
+                    },
+                ],
+            },
+            gfm_supported=True,
+            layout="details",
+        )
+        titles = [f.title for f in comments.parse_findings(body)]
+        assert titles == [
+            "Race condition on shared queue state",
+            "Missing null check before dereference",
+        ]
+        assert "Sensitive information exposure" not in titles
+        assert not any("regression coverage" in t.lower() for t in titles)
 
-    def test_other_sections_are_not_read_as_findings_non_gfm(self):
-        """Bold lead-ins in security concerns/TODO sections never fabricate findings (non-gfm layout)"""
-        body = (FIXTURES / "review_no_issues_with_sections_bitbucket.md").read_text(encoding="utf-8")
-        assert comments.parse_findings(body) == []
-        assert comments.classify(body) is comments.CommentKind.REVIEW
+    def test_focus_area_findings_are_kept_and_other_sections_are_not_non_gfm(self):
+        """Against one non-gfm renderer body, focus-area titles are returned and section noise is not"""
+        body = _render_review(
+            {
+                "security_concerns": (
+                    "**Sensitive information exposure:**\n user tokens are written to application "
+                    "logs on startup."
+                ),
+                "todo_sections": (
+                    "Add regression coverage for the new cache eviction path before merging."
+                ),
+                "key_issues_to_review": [
+                    {
+                        "relevant_file": "src/worker/queue.py",
+                        "issue_header": "Race condition on shared queue state",
+                        "issue_content": "Concurrent writers can corrupt the queue.",
+                        "start_line": 42,
+                        "end_line": 58,
+                    },
+                    {
+                        "relevant_file": "src/auth/session.py",
+                        "issue_header": "Missing null check before dereference",
+                        "issue_content": "user may be None.",
+                        "start_line": 10,
+                        "end_line": 12,
+                    },
+                ],
+            },
+            gfm_supported=False,
+            layout="details",
+        )
+        titles = [f.title for f in comments.parse_findings(body)]
+        assert titles == [
+            "Race condition on shared queue state",
+            "Missing null check before dereference",
+        ]
+        assert "Sensitive information exposure" not in titles
+        assert not any("regression coverage" in t.lower() for t in titles)
+
+
+class TestFixtureProvenance:
+    def test_each_review_fixture_matches_convert_to_markdown_v2(self):
+        """Every review fixture equals convert_to_markdown_v2 for its recorded inputs"""
+        input_paths = sorted(FIXTURES.glob("*.md.inputs.json"))
+        assert input_paths, "expected review fixture input sidecars"
+        for inputs_path in input_paths:
+            payload = json.loads(inputs_path.read_text(encoding="utf-8"))
+            assert payload["renderer"] == "convert_to_markdown_v2"
+            fixture_name = inputs_path.name.removesuffix(".inputs.json")
+            expected = (FIXTURES / fixture_name).read_text(encoding="utf-8")
+            assert _render_from_inputs(payload) == expected, fixture_name

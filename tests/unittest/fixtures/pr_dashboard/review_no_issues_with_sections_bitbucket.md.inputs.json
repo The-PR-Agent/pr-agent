@@ -1,0 +1,14 @@
+{
+  "renderer": "convert_to_markdown_v2",
+  "gfm_supported": false,
+  "findings_layout": "details",
+  "enable_intro_text": true,
+  "provider": null,
+  "review": {
+    "security_concerns": "**Sensitive information exposure:**\n user tokens are written to application logs on startup.",
+    "todo_sections": "Add regression coverage for the new cache eviction path before merging.",
+    "key_issues_to_review": "No"
+  },
+  "files": null,
+  "identity": "<!-- pr-agent:review:full -->"
+}
