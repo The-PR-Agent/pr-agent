@@ -20,6 +20,11 @@ You can give parameters via a configuration file, or from environment variables.
     See [litellm documentation](https://litellm.vercel.app/docs/proxy/quick_start#supported-llms) for the environment variables needed per model, as they may vary and change over time. Our documentation per-model may not always be up-to-date with the latest changes.
     Failing to set the needed keys of a specific model will usually result in litellm not identifying the model type, and failing to utilize it.
 
+!!! warning "Credential isolation boundary"
+    PR-Agent captures request settings and supported provider environment values per handler. Deployment-owned LiteLLM secret managers are outside this request-isolation boundary; their credentials are not snapshotted by PR-Agent. Keep process environment variables and LiteLLM globals stable while requests run. The handler does not isolate arbitrary changes made by embedding applications during a request. Use separate processes when workloads require different deployment-owned credential sources or mutable global authentication and routing state.
+
+    Process-wide routing fallbacks such as `litellm.api_base`, `litellm.api_version`, `litellm.organization`, `litellm.vertex_project`, and `litellm.vertex_location` can be rejected even when unchanged. Use the corresponding PR-Agent settings (`OPENAI.API_BASE`, `OPENAI.API_VERSION`, `OPENAI.ORG`, `VERTEXAI.VERTEX_PROJECT`, and `VERTEXAI.VERTEX_LOCATION`) or supported provider environment variables, and clear the corresponding LiteLLM globals even when they match the intended routing. Use `LITELLM.EXTRA_HEADERS` instead of `litellm.headers`.
+
 ### OpenAI like API
 
 To use an OpenAI like API, set the following in your `.secrets.toml` file:
@@ -43,7 +48,7 @@ To reduce costs for non-urgent/background tasks, enable Flex Processing:
 
 ```toml
 [litellm]
-extra_body='{"processing_mode": "flex"}'
+extra_body='{"service_tier": "flex"}'
 ```
 
 See [OpenAI Flex Processing docs](https://platform.openai.com/docs/guides/flex-processing) for details.
@@ -79,6 +84,10 @@ tenant_id = ""  # Your Azure AD tenant ID
 api_base = ""  # Your Azure OpenAI service base URL (e.g., https://openai.xyz.com/)
 ```
 
+The request-local Azure OIDC bridge captures `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_AUTHORITY_HOST`, `AZURE_SCOPE`, and competing `AZURE_CLIENT_SECRET` / `AZURE_USERNAME` / `AZURE_PASSWORD` settings when the handler is initialized. It preserves native authentication precedence while binding companion credentials and their cache identity to the captured authority; an absent authority uses the Azure public-cloud default, while an empty authority is rejected for companion credentials. LiteLLM's native assertion and secret-selector resolvers still control updates and source selection; their underlying deployment-owned credential chains are not request-isolated. Keep those sources scoped to the intended workload identity, or use separate processes for distinct identities.
+
+For native Azure SDK routes other than Cloudflare gateways, ordinary AD tokens use the same captured companion settings and SDK client-cache isolation. Azure Responses routes also bind ordinary AD companion selection to the captured settings. Complete companion credentials can also be selected without an initial AD token, including on native Azure AI raw HTTP routes. Captured companion providers retain callable token refresh and native authentication precedence. If SDK initialization or Responses token resolution reaches LiteLLM's implicit credential discovery with `enable_azure_ad_token_refresh=True`, the request is rejected: that fallback re-reads process-wide identity settings. Configure complete client-secret or username/password companion credentials instead. Managed identity, certificate, and default credential-chain discovery through this fallback are intentionally unsupported; an already cached, isolated SDK client can still be reused without entering discovery.
+
 Passing custom headers to the underlying LLM Model API can be done by setting extra_headers parameter to litellm.
 
 ```toml
@@ -87,6 +96,8 @@ extra_headers='{"projectId": "<authorized projectId >", ...}') #The value of thi
 ```
 
 This enables users to pass authorization tokens or API keys, when routing requests through an API management gateway.
+
+Requests that would otherwise inherit non-empty process-wide `litellm.headers` are rejected, even for non-authentication headers; configure headers through `LITELLM.EXTRA_HEADERS` instead.
 
 ### Ollama
 
@@ -105,7 +116,7 @@ duplicate_examples=true # will duplicate the examples in the prompt, to help the
 api_base = "http://localhost:11434" # or whatever port you're running Ollama on
 ```
 
-By default, Ollama uses a context window size of 2048 tokens. In most cases this is not enough to cover pr-agent prompt and pull-request diff. Context window size can be overridden with the `OLLAMA_CONTEXT_LENGTH` environment variable. For example, to set the default context length to 8K, use: `OLLAMA_CONTEXT_LENGTH=8192 ollama serve`. More information you can find on the [official ollama faq](https://github.com/ollama/ollama/blob/main/docs/faq.md#how-can-i-specify-the-context-window-size).
+By default, Ollama uses a context window size of 2048 tokens. In most cases this is not enough to cover pr-agent prompt and pull-request diff. Context window size can be overridden with the `OLLAMA_CONTEXT_LENGTH` environment variable. For example, to set the default context length to 8K, use: `OLLAMA_CONTEXT_LENGTH=8192 ollama serve`. More information you can find on the [official ollama faq](https://docs.ollama.com/faq#how-can-i-specify-the-context-window-size).
 
 Please note that the `custom_model_max_tokens` setting should be configured in accordance with the `OLLAMA_CONTEXT_LENGTH`. Failure to do so may result in unexpected model output.
 
@@ -218,6 +229,12 @@ Your [application default credentials](https://cloud.google.com/docs/authenticat
 
 If you do want to set explicit credentials, then you can use the `GOOGLE_APPLICATION_CREDENTIALS` environment variable set to a path to a json credentials file.
 
+Each handler captures the selected Cloud SDK ADC file and its resource project configuration, including `CLOUDSDK_CONFIG`, the active named configuration, and `CLOUDSDK_CORE_PROJECT`. Later changes apply to new handlers, not existing ones. The quota project remains separate from the resource project. When no ADC file exists at initialization, the handler retains managed-runtime discovery rather than adopting a file created later.
+
+AWS-backed Vertex workload identity federation captures environment credentials and region per handler. Different captured identities use separate credential caches even when they share the same WIF configuration; identical snapshots can reuse a cache entry. Metadata-backed credentials continue refreshing through the captured metadata source.
+
+Vertex external-account credentials with an executable source are intentionally unsupported, including when `GOOGLE_EXTERNAL_ACCOUNT_ALLOW_EXECUTABLES=1`. The helper and its cached output can change identity after a handler captures its configuration, so Vertex requests reject this source before using it for authentication. Use a non-executable credential source configured for the intended identity instead; normal credential refresh remains enabled for supported sources.
+
 ### Google AI Studio
 
 To use [Google AI Studio](https://aistudio.google.com/) models, set the relevant models in the configuration section of the configuration file:
@@ -299,6 +316,41 @@ Set `AWS_USE_IMDS=true` in the environment. PR-Agent will resolve credentials vi
 | EKS pod with IRSA | Web identity token + STS |
 | Lambda function | Runtime-injected credentials |
 
+Credential discovery runs synchronously when the handler is initialized. Before each SigV4 call, PR-Agent
+refreshes credentials synchronously through the same boto3 credentials object and passes a request-local snapshot
+to LiteLLM, without writing credentials into the process environment. AWS calls using this provider chain are
+serialized within a handler, including any static-credential retry. Discovery and refresh can block the event loop.
+
+The same opt-in is required for other boto3 provider-chain sources, including `AWS_PROFILE` and shared credentials
+files. LiteLLM-specific `AWS_PROFILE_NAME` and `AWS_ROLE_NAME` selectors are not supported because they can override
+request-local credentials; unset them and use `AWS_USE_IMDS=true` instead.
+
+When upgrading from implicit LiteLLM credential-chain discovery, set `AWS_USE_IMDS=true` explicitly. Without this
+opt-in, PR-Agent only uses complete static credentials from settings or environment credentials captured when the
+handler is initialized; it does not ask LiteLLM to discover a role or profile at request time.
+
+For classic Bedrock, a supported model ARN supplies the request region ahead of environment/settings regions, including during static-credential retries. Converse also uses a captured `litellm.model_id` ARN, or a region/model path when `model_id` is absent; Invoke does not derive its region from the separate `model_id`. Otherwise, without `AWS_USE_IMDS=true`, set `aws.AWS_REGION_NAME`, `AWS_REGION_NAME`, `AWS_REGION`, or `AWS_DEFAULT_REGION`. Complete environment credentials alone do not enable region discovery from boto3 profiles or LiteLLM's default region. Static credentials in `[aws]` still require `AWS_REGION_NAME`.
+
+For Bedrock Mantle without IMDS or complete static credentials, the region comes from `BEDROCK_MANTLE_REGION`, `AWS_REGION_NAME`, `aws.AWS_REGION_NAME`, or `AWS_REGION`, then defaults to `us-east-1`; `AWS_DEFAULT_REGION` alone does not change that default. A `BEDROCK_MANTLE_API_BASE` on the standard host `https://bedrock-mantle.<region>.api.aws` supplies the region and overrides these sources; a custom endpoint host does not. Complete static credentials and opted-in boto3 discovery retain the AWS region policy described above.
+
+Without `AWS_USE_IMDS=true`, environment authentication follows LiteLLM's `AWS_SESSION_TOKEN` selection. The legacy `AWS_SECURITY_TOKEN` alias is recognized only by the opted-in boto3 chain, which prefers it over `AWS_SESSION_TOKEN` when both are nonempty.
+
+Bedrock bearer tokens must come from handler-captured credentials rather than process-wide LiteLLM fallback, and `AWS_BEARER_TOKEN_BEDROCK` must be unset for `sagemaker_chat` and `sagemaker_nova` routes.
+
+When resolving credentials through profiles with `AWS_USE_IMDS=true`, PR-Agent does not execute
+`credential_process` in the selected profile or its `source_profile` chain. If such a process is configured,
+PR-Agent uses complete static credentials from `[aws]` (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and
+`AWS_REGION_NAME`, plus `AWS_SESSION_TOKEN` when required) instead; without them, credential resolution fails.
+This restriction does not apply when using complete environment credentials captured at handler initialization.
+
+Workload token files selected by `AWS_WEB_IDENTITY_TOKEN_FILE`, profile `web_identity_token_file`, or
+`AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE` must be controlled by the deployment, not switched between tenants.
+PR-Agent retains native token reload and credential refresh from the selected source; it does not freeze token
+contents or detect a different identity replacing the contents at the same path. Use separately controlled
+credential sources and appropriate process/container isolation for distinct workload identities, or supply
+explicit request-local credentials. Request-local configuration is not an isolation boundary against arbitrary
+code running in the same process.
+
 Minimal GitHub Actions workflow (no AWS secret keys required):
 
 ```yaml
@@ -321,7 +373,7 @@ The IAM role must have `bedrock:InvokeModel` permission on the target model ARN,
 }
 ```
 
-If you also configure static keys in `[aws]`, they serve as an automatic fallback: if the ambient credentials fail a Bedrock call (e.g., the role lacks `bedrock:InvokeModel`), PR-Agent retries with the static keys and logs a warning.
+If you also configure static keys in `[aws]`, they serve as an automatic fallback when ambient credentials cannot be resolved or a SigV4 call using the opted-in provider chain raises an API error other than a rate-limit error. This applies to Bedrock, Bedrock Mantle, and SageMaker routes and preserves the existing fallback behavior for IAM authorization and connection failures, using only the static credentials captured by the handler.
 
 #### Custom Inference Profiles
 
@@ -342,6 +394,39 @@ model_id = "your-application-inference-profile-arn"
 ```
 
 The `litellm.model_id` parameter applies only to classic `bedrock/` calls made through the `bedrock-runtime` APIs. It does not apply to `bedrock_mantle/`; for cost allocation with the Mantle Chat Completions and Responses APIs, use [Amazon Bedrock Projects](https://docs.aws.amazon.com/bedrock/latest/userguide/cost-mgmt-projects.html).
+
+#### Claude 5 thinking with an application inference profile ARN
+
+Claude Sonnet 5 on Bedrock is invoked through an inference profile rather than a direct
+foundation-model id. When that profile is an application inference profile, its ARN is an
+opaque value that carries no model name. Thinking configuration in PR-Agent is gated on
+recognizing the model, so the opaque ARN can never match: `enable_claude_adaptive_thinking`
+requires a recognized Claude 5 model name in the id, and `enable_claude_extended_thinking`
+requires exact membership in `claude_extended_thinking_models`. PR-Agent logs a warning in
+that case, so the unconfigured state is no longer silent.
+
+Address the model by name and pass the profile ARN through `litellm.model_id`, which is what
+the invocation actually uses:
+
+```toml
+[config] # in configuration.toml
+model = "bedrock/converse/eu.anthropic.claude-sonnet-5"
+fallback_models = ["bedrock/converse/eu.anthropic.claude-sonnet-5"]
+enable_claude_adaptive_thinking = true # requires a recognizable claude 5 model name in `model`
+
+[litellm]
+model_id = "arn:aws:bedrock:eu-central-1:<account-id>:application-inference-profile/<profile-id>"
+```
+
+Cost attribution is preserved through the application inference profile, and because `model`
+is the named id, the adaptive-thinking payload is applied and kept intact.
+
+Two caveats. First, ARNs only fail the detection when the suffix is opaque: an ARN that
+embeds the model family, for example `...:inference-profile/us.anthropic.claude-sonnet-5`,
+normalises to a string the adaptive regex does match. The miss is specific to application
+inference profiles with an opaque hex suffix. Second, `litellm.model_id` is a single global
+value applied to every model whose id contains `bedrock/`, so this configuration cannot point
+different models at different profiles within one fallback chain without per-call handling.
 
 #### Using a Custom VPC Endpoint (PrivateLink)
 
@@ -508,6 +593,8 @@ api_base = "https://adb-xxxx.azuredatabricks.net/serving-endpoints" # your works
 
 The model name after the `databricks/` prefix is the name of your serving endpoint. See LiteLLM's [Databricks provider docs](https://docs.litellm.ai/docs/providers/databricks) for details.
 
+The configured PAT and endpoint are captured per handler. When both `DATABRICKS_CLIENT_ID` and `DATABRICKS_CLIENT_SECRET` are set, LiteLLM performs an OAuth M2M exchange even if a PAT is supplied. An exchange failure can abort the request; after a successful exchange, the supplied PAT replaces the OAuth token in the final Authorization header. Without OAuth M2M credentials or a PAT, optional Databricks SDK authentication remains available. These deployment-owned credentials and profile selection are not request-isolated. Do not change those sources between tenants in a shared process; use request-specific PATs with OAuth M2M credentials unset, or separate processes for distinct workload identities.
+
 ### Openrouter
 
 To use model from Openrouter, for example, set:
@@ -554,7 +641,7 @@ For `openrouter/...` models you can optionally restrict which upstream providers
 # max_tokens = 16000                   # hard cap on completion tokens for the request
 ```
 
-`provider_only` and `reasoning_effort = "none"` are useful to pin a specific provider and to bound the cost of reasoning models. Because Openrouter treats effort and token budgets as mutually exclusive, an explicit Openrouter-specific `"none"` keeps reasoning disabled when the model supports disabling it. Grok 4.5/4.6 clamp `"none"` before precedence is applied, so a positive budget wins there; otherwise a positive `reasoning_max_tokens` value takes precedence over the global effort and other Openrouter-specific values. Invalid Openrouter-specific effort values are warned about and treated as unset, so registered reasoning models fall back to `config.reasoning_effort`. Openrouter normalizes `"max"` to `"xhigh"` in this path to match LiteLLM 1.98.0. Supported effort values vary by model, and models whose metadata marks reasoning as mandatory reject `"none"`. For Anthropic models using a reasoning budget, set the effective output `max_tokens` higher than `reasoning_max_tokens` so the final answer has output headroom. See the Openrouter [provider routing](https://openrouter.ai/docs/guides/routing/provider-selection) and [reasoning tokens](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens) docs.
+`provider_only` and `reasoning_effort = "none"` are useful to pin a specific provider and to bound the cost of reasoning models. Because Openrouter treats effort and token budgets as mutually exclusive, an explicit Openrouter-specific `"none"` keeps reasoning disabled when the model supports disabling it. Grok 4.5/4.6 clamp `"none"` before precedence is applied, so a positive budget wins there; otherwise a positive `reasoning_max_tokens` value takes precedence over the global effort and other Openrouter-specific values. Invalid Openrouter-specific effort values are warned about and treated as unset, so registered reasoning models fall back to `config.reasoning_effort`. Openrouter normalizes `"max"` to `"xhigh"` in this path for LiteLLM/OpenRouter compatibility. Supported effort values vary by model, and models whose metadata marks reasoning as mandatory reject `"none"`. For Anthropic models using a reasoning budget, set the effective output `max_tokens` higher than `reasoning_max_tokens` so the final answer has output headroom. See the Openrouter [provider routing](https://openrouter.ai/docs/guides/routing/provider-selection) and [reasoning tokens](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens) docs.
 
 ### OrcaRouter
 
@@ -614,6 +701,26 @@ Create the credential per branch in the [Neon Console](https://console.neon.tech
 
 !!! note "Chat completions only"
     Some model IDs in Neon's catalog are served through the OpenAI Responses API, which Neon exposes under `/openai/v1` instead of `/v1`. The configuration above points at the chat-completions endpoint, so it cannot reach those models. Neon also documents a few models that return `message.content` as an array of typed blocks rather than a string, and PR-Agent reads the reply as a string.
+
+### GitHub Copilot
+
+Models under an active GitHub Copilot subscription are available through litellm's `github_copilot` provider, which authenticates as your GitHub identity rather than with a dedicated API key:
+
+```toml
+[config]
+model = "github_copilot/gpt-4o"
+fallback_models = ["github_copilot/gpt-4.1"]
+```
+
+The GitHub identity behind the model needs an active Copilot subscription. The token budget for a Copilot model is resolved automatically from litellm's model metadata (verified against the pinned litellm 1.100.0), so `custom_model_max_tokens` is not required. However, `get_max_tokens` clamps the effective window to `config.max_model_tokens`, which defaults to 32000. To use the full context window of the model (e.g., 64000 for gpt-4o, 128000 for gpt-4.1), raise `config.max_model_tokens` accordingly.
+
+Authentication uses the [GitHub Copilot provider](https://docs.litellm.ai/docs/providers/github_copilot) flow:
+
+1. litellm first looks for a pre-seeded GitHub access token in `access-token` under `GITHUB_COPILOT_TOKEN_DIR` (default `~/.config/litellm/github_copilot`; the filename is overridable with `GITHUB_COPILOT_ACCESS_TOKEN_FILE`). In a CI runner, write that token before the job runs - for example, mount a secret into the directory or point the variable at a mounted secret directory - and the flow never becomes interactive.
+2. Only when the file is missing or empty does litellm fall back to the interactive device-code flow (`POST https://github.com/login/device/code`, up to three attempts), which does not suit unattended runners.
+3. The Copilot API key (`api-key.json` in the same directory) is refreshed automatically against `https://api.github.com/copilot_internal/v2/token`, using the pre-seeded access token.
+
+Whether Copilot's terms permit this programmatic use is a question for GitHub rather than a guarantee this project can make, so confirm before relying on the route.
 
 ### Custom models
 
@@ -692,6 +799,11 @@ built-in defaults.
     `claude_extended_thinking_models_override` anyway, PR-Agent skips the extended-thinking payload
     for it and logs a warning rather than sending a request the provider would reject — use
     `enable_claude_adaptive_thinking` for those models instead.
+
+Both thinking gates only fire when the model id itself is recognizable: an opaque id such as a
+Bedrock application inference profile ARN matches neither gate, and PR-Agent logs a warning
+instead of silently sending nothing. See [Claude 5 thinking with an application inference
+profile ARN](#claude-5-thinking-with-an-application-inference-profile-arn).
 
 ## Output token limit
 

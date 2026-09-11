@@ -10,7 +10,6 @@ from typing import Dict, List, Optional
 
 from jinja2 import Environment, StrictUndefined
 
-from pr_agent.algo import MAX_TOKENS
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.git_patch_processing import decouple_and_convert_to_hunks_with_lines_numbers
@@ -784,15 +783,6 @@ class PRCodeSuggestions:
             new_comment = git_provider.publish_comment(pr_comment, **({"as_thread": True} if as_thread else {}))
         return new_comment
 
-    def extract_link(self, s):
-        r = re.compile(r"<!--.*?-->")
-        match = r.search(s)
-
-        up_to_commit_txt = ""
-        if match:
-            up_to_commit_txt = f" up to commit {match.group(0)[4:-3].strip()}"
-        return up_to_commit_txt
-
     async def _prepare_prediction(self, model: str) -> dict:
         self.patches_diff = get_pr_diff(self.git_provider,
                                         self.token_handler,
@@ -834,7 +824,7 @@ class PRCodeSuggestions:
             await self.analyze_self_reflection_response(data, response_reflect)
         else:
             # get_logger().error(f"Could not self-reflect on suggestions. using default score 7")
-            for i, suggestion in enumerate(data["code_suggestions"]):
+            for suggestion in data["code_suggestions"]:
                 suggestion["score"] = 7
                 suggestion["score_why"] = ""
 
@@ -1625,11 +1615,8 @@ class PRCodeSuggestions:
                                                                                                           file=None).strip()
                         patches_new[i] = patches_new[i].strip()
                     patch_final = "\n\n\n".join(patches_new)
-                    if model in MAX_TOKENS:
-                        max_tokens_full = MAX_TOKENS[
-                            model]  # note - here we take the actual max tokens, without any reductions. we do aim to get the full documentation website in the prompt
-                    else:
-                        max_tokens_full = get_max_tokens(model)
+                    # take the actual max tokens, without any reductions
+                    max_tokens_full = get_max_tokens(model, ignore_max_model_tokens=True)
                     delta_output = 2000
                     token_count = self.token_handler.count_tokens(patch_final)
                     if token_count > max_tokens_full - delta_output:

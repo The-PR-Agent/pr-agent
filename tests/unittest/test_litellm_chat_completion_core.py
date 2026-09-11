@@ -9,6 +9,22 @@ import pytest
 import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_handler
 
 
+@pytest.fixture(autouse=True)
+def isolate_aws_environment(monkeypatch):
+    environment_variables = set(litellm_handler.AWS_CREDENTIAL_CHAIN_ENV_VARS) | {
+        "AWS_USE_IMDS",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "AWS_REGION_NAME",
+        "AWS_REGION",
+        "AWS_DEFAULT_REGION",
+        "AWS_BEARER_TOKEN_BEDROCK",
+    }
+    for variable in environment_variables:
+        monkeypatch.delenv(variable, raising=False)
+
+
 class FakeBox:
     def __init__(self, values=None, **attrs):
         self._values = values or {}
@@ -31,7 +47,12 @@ class FakeSettings:
             model="gpt-4o",
         )
         self.litellm = FakeBox()
-        self._settings_values = settings_values or {}
+        self._settings_values = {
+            "aws.AWS_ACCESS_KEY_ID": "test-access-key",
+            "aws.AWS_SECRET_ACCESS_KEY": "test-secret-key",
+            "aws.AWS_REGION_NAME": "us-east-1",
+            **(settings_values or {}),
+        }
 
     def get(self, key, default=None):
         return self._settings_values.get(key, default)
@@ -121,6 +142,22 @@ async def test_chat_completion_scopes_model_id_to_classic_bedrock(monkeypatch, m
         assert "model_id" not in mock_call.call_args.kwargs
     else:
         assert mock_call.call_args.kwargs["model_id"] == expected_model_id
+
+
+@pytest.mark.asyncio
+async def test_health_probe_uses_snapshotted_classic_bedrock_model_id(monkeypatch):
+    active_settings = FakeSettings(settings_values={"litellm.model_id": "profile-a"})
+    monkeypatch.setattr(litellm_handler, "get_settings", lambda: active_settings)
+    handler = litellm_handler.LiteLLMAIHandler()
+    active_settings = FakeSettings(settings_values={"litellm.model_id": "profile-b"})
+    completion = AsyncMock(return_value=_mock_response())
+
+    await handler.probe_completion(
+        "bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0",
+        _completion=completion,
+    )
+
+    assert completion.call_args.kwargs["model_id"] == "profile-a"
 
 
 @pytest.mark.asyncio
@@ -462,6 +499,7 @@ async def test_chat_completion_timeout_not_retried_same_model_when_disabled(monk
 @pytest.mark.asyncio
 async def test_get_completion_uses_streaming_for_required_models():
     handler = litellm_handler.LiteLLMAIHandler.__new__(litellm_handler.LiteLLMAIHandler)
+    handler._sdk_header_defaults = {"organization": None, "project": None, "custom_headers": {}}
     handler.streaming_required_models = ["streaming-model"]
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call, \
@@ -485,6 +523,24 @@ async def test_get_completion_uses_streaming_for_required_models():
     assert resp == "streamed text"
     assert finish_reason == "stop"
     assert response_obj.dict()["choices"][0]["message"]["content"] == "streamed text"
+
+
+@pytest.mark.parametrize("model", ("azure/qwq-plus", "azure/openai/qwq-plus"))
+@pytest.mark.asyncio
+async def test_get_completion_preserves_streaming_requirement_after_azure_routing(model):
+    handler = litellm_handler.LiteLLMAIHandler.__new__(litellm_handler.LiteLLMAIHandler)
+    handler._sdk_header_defaults = {"organization": None, "project": None, "custom_headers": {}}
+    handler.streaming_required_models = ["openai/qwq-plus"]
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call, \
+            patch("pr_agent.algo.ai_handlers.litellm_ai_handler._handle_streaming_response",
+                  new_callable=AsyncMock) as mock_stream:
+        mock_call.return_value = "stream"
+        mock_stream.return_value = ("streamed text", "stop", MagicMock())
+
+        await handler._get_completion(model=model, messages=[])
+
+    assert mock_call.call_args.kwargs["stream"] is True
 
 
 def _empty_content_response(finish_reason="stop"):
@@ -513,6 +569,7 @@ async def test_get_completion_raises_on_empty_content_for_non_streaming_model():
 @pytest.mark.asyncio
 async def test_get_completion_returns_non_empty_content_for_non_streaming_model():
     handler = litellm_handler.LiteLLMAIHandler.__new__(litellm_handler.LiteLLMAIHandler)
+    handler._sdk_header_defaults = {"organization": None, "project": None, "custom_headers": {}}
     handler.streaming_required_models = []
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:

@@ -1,4 +1,3 @@
-# enum EDIT_TYPE (ADDED, DELETED, MODIFIED, RENAMED)
 import os
 import re
 import shutil
@@ -195,12 +194,54 @@ class GitProvider(ABC):
         """Whether this provider is compatible with the linked PR-Agent browser-extension chat experience."""
         return False
 
+    @classmethod
+    def supports_issue_indexing(cls) -> bool:
+        """Whether `/similar_issue` can read and index this provider's issues.
+
+        Declared on the class rather than on an instance because the tool consults it before
+        constructing a provider: `PRSimilarIssue` needs to know whether to build one at all.
+        The indexing path relies on issue listing, issue bodies and issue comments, so a
+        provider that exposes those overrides this; the default is no support, so the tool
+        reports the command as unsupported instead of failing part-way through.
+        """
+        return False
+
+    def supports_inline_help_footer(self) -> bool:
+        """Whether the `/describe` help footer is rendered as an inline `<li>` list.
+
+        Scoped to that footer's layout, not to HTML lists in general: the changes
+        walkthrough already emits `<ul>` and `<li>` for every provider that passes the
+        `gfm_markdown` gate. Providers whose `<details>` summary renders a sibling `<li>`
+        inline override this; the default falls back to `<br>`-separated bullets."""
+        return False
+
+    def supports_changelog_update_review(self) -> bool:
+        """Whether a pushed CHANGELOG.md commit can be annotated with a PR review.
+
+        `/update_changelog --push_changelog_changes=true` posts its summary as a review on the
+        commit it just pushed. Providers exposing a commit-scoped review API override this;
+        the default is no support, so the review is simply skipped.
+        """
+        return False
+
     def supports_markdown_tables(self) -> bool:
         """Whether comments render pipe-table markdown.
 
         Only consulted for providers without `gfm_markdown`, so that tools can degrade to
         a plain table instead of refusing to render. Providers that render Markdown tables
         but not GitHub-flavored markdown override this."""
+        return False
+
+    def supports_issue_url_tickets(self) -> bool:
+        """Tickets are linked as issue URLs in the PR description or branch name."""
+        return False
+
+    def supports_issue_reference_tickets(self) -> bool:
+        """Tickets are linked as project-scoped issue references (e.g. group/project#12)."""
+        return False
+
+    def supports_linked_work_item_tickets(self) -> bool:
+        """Tickets come from work items the platform links to the PR itself."""
         return False
 
     #Given a url (issues or PR/MR) - get the .git repo url to which they belong. Needs to be implemented by the provider.
@@ -236,13 +277,9 @@ class GitProvider(ABC):
         get_logger().warning("Not implemented! Returning None")
         return None
 
-    # Does a shallow clone, using a forked process to support a timeout guard.
-    # In case operation has failed, it is expected to throw an exception as this method does not return a value.
+    # Run a shallow, blob-filtered clone in a subprocess so the timeout can terminate the operation.
+    # Failures propagate to clone(), which handles and logs them.
     def _clone_inner(self, repo_url: str, dest_folder: str, operation_timeout_in_seconds: int=None) -> None:
-        #The following ought to be equivalent to:
-        # #Repo.clone_from(repo_url, dest_folder)
-        # , but with throwing an exception upon timeout.
-        # Note: This can only be used in context that supports using pipes.
         try:
             ssl_env = get_git_ssl_env()
         except Exception as e:
@@ -482,6 +519,17 @@ class GitProvider(ABC):
     def get_repo_file_content(self, file_path: str, from_default_branch: bool = False):
         return ""
 
+    def get_repo_context_ref(self, from_default_branch: bool = False) -> Optional[str]:
+        """Return the ref (commit SHA or branch name) that repo-context files are read from.
+
+        The repo-context cache key (pr_agent/algo/repo_context.py) includes this ref so a
+        rebase or a push to the base branch invalidates cached file content instead of serving
+        it from a commit that has since moved. Providers that override get_repo_file_content
+        should return the same ref they fetch from; the default None covers providers with no
+        repo-context support at all.
+        """
+        return None
+
     def get_workspace_name(self):
         return ""
 
@@ -540,6 +588,16 @@ class GitProvider(ABC):
     def resolve_outdated_inline_threads(self):  # noqa: B027 - intentional no-op
         pass
 
+    def supports_comment_editing(self) -> bool:
+        """Whether this provider can actually edit an existing comment.
+
+        The base ``edit_comment`` is a no-op that returns ``None``, which
+        ``publish_persistent_comment_full`` cannot distinguish from a successful
+        edit. A provider that has not implemented it therefore cannot persist,
+        and must create a new comment instead of silently discarding the body.
+        """
+        return type(self).edit_comment is not GitProvider.edit_comment
+
     def publish_persistent_comment(self, pr_comment: str,
                                    initial_header: str,
                                    update_header: bool = True,
@@ -548,7 +606,18 @@ class GitProvider(ABC):
                                    as_thread: bool = False,
                                    identity_marker: str | None = None,
                                    legacy_initial_header: str | None = None):
-        return self.publish_comment(pr_comment, **({'as_thread': True} if as_thread else {}))
+        if not self.supports_comment_editing():
+            return self.publish_comment(pr_comment, **({'as_thread': True} if as_thread else {}))
+        return self.publish_persistent_comment_full(
+            pr_comment,
+            initial_header,
+            update_header,
+            name,
+            final_update_message,
+            as_thread=as_thread,
+            identity_marker=identity_marker,
+            legacy_initial_header=legacy_initial_header,
+        )
 
     @staticmethod
     def _get_comment_body(comment) -> str:
@@ -773,7 +842,14 @@ class GitProvider(ABC):
             return -1
 
     def limit_output_characters(self, output: str, max_chars: int):
-        return output[:max_chars] + '...' if len(output) > max_chars else output
+        """Truncate output to max_chars, including the truncation suffix."""
+        if len(output) <= max_chars:
+            return output
+        if max_chars <= 0:
+            return ""
+        suffix = "..."
+        suffix = suffix[:max_chars]
+        return output[:max_chars - len(suffix)] + suffix
 
 
 def get_main_pr_language(languages, files) -> str:

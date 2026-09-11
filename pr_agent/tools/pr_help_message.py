@@ -3,9 +3,8 @@ import re
 from functools import partial
 from pathlib import Path
 
-from jinja2 import Environment, StrictUndefined
+from jinja2 import Environment, StrictUndefined, select_autoescape
 
-from pr_agent.algo import MAX_TOKENS
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.pr_processing import retry_with_fallback_models
@@ -16,19 +15,6 @@ from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.log import get_logger
 
-
-def extract_header(snippet):
-    res = ''
-    lines = snippet.split('===Snippet content===')[0].split('\n')
-    highest_header = ''
-    highest_level = float('inf')
-    for line in lines[::-1]:
-        line = line.strip()
-        if line.startswith('Header '):
-            highest_header = line.split(': ')[1]
-    if highest_header:
-        res = f"#{highest_header.lower().replace(' ', '-')}"
-    return res
 
 class PRHelpMessage:
     def __init__(self, pr_url: str, args=None, ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler, return_as_string=False):
@@ -47,17 +33,17 @@ class PRHelpMessage:
                                               get_settings().pr_help_prompts.user)
 
     async def _prepare_prediction(self, model: str):
-        try:
-            variables = copy.deepcopy(self.vars)
-            environment = Environment(undefined=StrictUndefined)
-            system_prompt = environment.from_string(get_settings().pr_help_prompts.system).render(variables)
-            user_prompt = environment.from_string(get_settings().pr_help_prompts.user).render(variables)
-            response, finish_reason = await self.ai_handler.chat_completion(
-                model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
-            return response
-        except Exception as e:
-            get_logger().error(f"Error while preparing prediction: {e}")
-            return ""
+        variables = copy.deepcopy(self.vars)
+        # These string templates produce plain-text model prompts, not HTML.
+        environment = Environment(
+            autoescape=select_autoescape(default_for_string=False),
+            undefined=StrictUndefined,
+        )
+        system_prompt = environment.from_string(get_settings().pr_help_prompts.system).render(variables)
+        user_prompt = environment.from_string(get_settings().pr_help_prompts.user).render(variables)
+        response, finish_reason = await self.ai_handler.chat_completion(
+            model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
+        return response
 
     def parse_args(self, args):
         if args and len(args) > 0:
@@ -112,7 +98,7 @@ class PRHelpMessage:
                 # get all the 'md' files inside docs_path and its subdirectories
                 md_files = list(docs_path.glob('**/*.md'))
                 folders_to_exclude = ['/finetuning_benchmark/']
-                files_to_exclude = {'EXAMPLE_BEST_PRACTICE.md', 'compression_strategy.md', '/docs/overview/index.md'}
+                files_to_exclude = {'compression_strategy.md', '/docs/overview/index.md'}
                 md_files = [file for file in md_files if not any(folder in str(file) for folder in folders_to_exclude) and not any(file.name == file_to_exclude for file_to_exclude in files_to_exclude)]
 
                 # sort the 'md_files' so that 'priority_files' will be at the top
@@ -134,11 +120,9 @@ class PRHelpMessage:
                 token_count = self.token_handler.count_tokens(docs_prompt)
                 get_logger().debug(f"Token count of full documentation website: {token_count}")
 
-                model = get_settings().config.model
-                if model in MAX_TOKENS:
-                    max_tokens_full = MAX_TOKENS[model] # note - here we take the actual max tokens, without any reductions. we do aim to get the full documentation website in the prompt
-                else:
-                    max_tokens_full = get_max_tokens(model)
+                # take the actual max tokens, without any reductions. we do aim to get
+                # the full documentation website in the prompt
+                max_tokens_full = get_max_tokens(get_settings().config.model, ignore_max_model_tokens=True)
                 delta_output = 2000
                 if token_count > max_tokens_full - delta_output:
                     get_logger().info(f"Token count {token_count} exceeds the limit {max_tokens_full - delta_output}. Skipping the PR Help message.")
@@ -266,26 +250,6 @@ class PRHelpMessage:
         except Exception as e:
             get_logger().exception(f"Error while running PRHelpMessage: {e}")
         return ""
-
-    async def prepare_relevant_snippets(self, sim_results):
-        # Get relevant snippets
-        relevant_snippets_full = []
-        relevant_pages_full = []
-        relevant_snippets_full_header = []
-        th = 0.75
-        for s in sim_results:
-            page = s[0].metadata['source']
-            content = s[0].page_content
-            score = s[1]
-            relevant_snippets_full.append(content)
-            relevant_snippets_full_header.append(extract_header(content))
-            relevant_pages_full.append(page)
-        # build the snippets string
-        relevant_snippets_str = ""
-        for i, s in enumerate(relevant_snippets_full):
-            relevant_snippets_str += f"Snippet {i+1}:\n\n{s}\n\n"
-            relevant_snippets_str += "-------------------\n\n"
-        return relevant_pages_full, relevant_snippets_full_header, relevant_snippets_str
 
 
 def generate_bbdc_table(column_arr_1, column_arr_2):

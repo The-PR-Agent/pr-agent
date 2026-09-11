@@ -64,3 +64,44 @@ def test_a_full_url_is_not_bounded():
 def test_a_cross_repo_shorthand_is_not_bounded():
     """Control: owner/repo#123 names its repository, so it is unambiguous too."""
     assert _links("Fixes other/project#12345") == [f"{BASE}/other/project/issues/12345"]
+
+
+@pytest.mark.parametrize(
+    ("shorthand", "expected_url"),
+    [
+        ("my-org/repo#42", f"{BASE}/my-org/repo/issues/42"),
+        ("org/my-repo#42", f"{BASE}/org/my-repo/issues/42"),
+        ("my-org/my-repo#42", f"{BASE}/my-org/my-repo/issues/42"),
+    ],
+)
+def test_cross_repo_with_hyphens(shorthand, expected_url):
+    assert _links(f"Fixes {shorthand}") == [expected_url]
+
+
+@pytest.mark.parametrize(
+    ("shorthand", "expected_url"),
+    [
+        ("org/my.repo#7", f"{BASE}/org/my.repo/issues/7"),
+        ("org/my_repo#7", f"{BASE}/org/my_repo/issues/7"),
+    ],
+)
+def test_cross_repo_with_period_and_underscore_in_repo_name(shorthand, expected_url):
+    assert _links(f"Fixes {shorthand}") == [expected_url]
+
+
+def test_cross_repo_this_repo_own_name():
+    assert _links("Fixes The-PR-Agent/pr-agent#3081") == [f"{BASE}/The-PR-Agent/pr-agent/issues/3081"]
+
+
+def test_regression_bare_shorthand_resolves_against_current_repo():
+    assert _links("Fixes #42") == [f"{BASE}/{REPO}/issues/42"]
+
+
+def test_regression_full_url_still_wins():
+    url = f"{BASE}/some-org/some-repo/issues/99"
+    assert _links(f"Fixes {url}") == [url]
+
+
+def test_regression_mid_token_does_not_match_cross_repo():
+    assert _links("see x/my-org/my-repo#42") == [f"{BASE}/{REPO}/issues/42"]
+    assert _links("see x/other/project#12345") == [f"{BASE}/{REPO}/issues/12345"]

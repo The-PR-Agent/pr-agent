@@ -23,7 +23,7 @@ def test_suffix_is_scoped_to_qdrant_only():
         assert call_site in source
 
     assert 'index_name = self.index_name = "codium-ai-pr-agent-issues"' in source
-    assert "pinecone.Index(index_name=self.index_name)" in source
+    assert "self.pc.Index(name=self.index_name)" in source
     assert "self.db.create_table(self.index_name, data=df, mode=\"overwrite\")" in source
     assert "self.qdrant_collection_name" not in source.split("elif get_settings().pr_similar_issue.vectordb == \"qdrant\":")[0]
 

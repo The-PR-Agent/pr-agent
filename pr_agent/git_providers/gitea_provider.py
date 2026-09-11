@@ -322,24 +322,6 @@ class GiteaProvider(GitProvider):
             return comment.get("html_url") or comment.get("url") or ""
         return getattr(comment, "html_url", "") or getattr(comment, "url", "")
 
-    def publish_persistent_comment(self, pr_comment: str,
-                                   initial_header: str,
-                                   update_header: bool = True,
-                                   name='review',
-                                   final_update_message=True,
-                                   identity_marker: str | None = None,
-                                   legacy_initial_header: str | None = None):
-        # Keep the legacy updater path until Gitea normalizes its dictionary-shaped comment payloads.
-        return self.publish_persistent_comment_full(
-            pr_comment,
-            initial_header,
-            update_header,
-            name,
-            final_update_message,
-            identity_marker=identity_marker,
-            legacy_initial_header=legacy_initial_header,
-        )
-
     def publish_comment(self, comment: str,is_temporary: bool = False) -> None:
         """Publish a comment to the pull request"""
         if is_temporary and not get_settings().config.publish_output_progress:
@@ -952,6 +934,12 @@ class GiteaProvider(GitProvider):
             if getattr(e, "status", None) == 404:
                 return ""
             raise
+
+    def get_repo_context_ref(self, from_default_branch: bool = False) -> Optional[str]:
+        if from_default_branch:
+            return self.repo_api.repo_get(self.owner, self.repo).default_branch
+        # Only trust the PR target (base) ref — never the PR head (self.sha).
+        return self.base_sha or self.base_ref
 
 class RepoApi(giteapy.RepositoryApi):
     def __init__(self, client: giteapy.ApiClient):

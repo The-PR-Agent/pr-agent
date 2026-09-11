@@ -1,6 +1,8 @@
 import os
 import re
 from collections import Counter
+from datetime import datetime
+from types import SimpleNamespace
 from typing import List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -8,7 +10,12 @@ from pr_agent.algo.language_handler import is_valid_file
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.git_providers.codecommit_client import CodeCommitClient
 
-from ..algo.utils import load_large_diff
+from ..algo.utils import (
+    add_pr_review_identity,
+    comment_carries_other_identity,
+    comment_matches_identity,
+    load_large_diff,
+)
 from ..config_loader import get_settings
 from ..log import get_logger
 from .git_provider import GitProvider
@@ -79,7 +86,6 @@ class CodeCommitProvider(GitProvider):
 
     def is_supported(self, capability: str) -> bool:
         if capability in [
-            "get_issue_comments",
             "create_inline_comment",
             "publish_inline_comments",
             "get_labels",
@@ -195,22 +201,90 @@ class CodeCommitProvider(GitProvider):
     def publish_comment(self, pr_comment: str, is_temporary: bool = False):
         if is_temporary:
             get_logger().info(pr_comment)
-            return
-
-        pr_comment = CodeCommitProvider._remove_markdown_html(pr_comment)
-        pr_comment = CodeCommitProvider._add_additional_newlines(pr_comment)
+            return None
 
         try:
-            for target in self._get_target_contexts():
-                self.codecommit_client.publish_comment(
-                    repo_name=target["repository_name"],
-                    pr_number=self.pr_num,
-                    destination_commit=target["destination_commit"],
-                    source_commit=target["source_commit"],
-                    comment=pr_comment,
-                )
+            published_comments = [
+                self._publish_comment_to_target(pr_comment, target)
+                for target in self._get_target_contexts()
+            ]
+            if len(published_comments) == 1:
+                return published_comments[0]
+            return published_comments
         except Exception as e:
             raise ValueError(f"CodeCommit Cannot publish comment for PR: {self.pr_num}") from e
+
+    def publish_persistent_comment(self, pr_comment: str,
+                                   initial_header: str,
+                                   update_header: bool = True,
+                                   name='review',
+                                   final_update_message=True,
+                                   as_thread: bool = False,
+                                   identity_marker: str | None = None,
+                                   legacy_initial_header: str | None = None):
+        if as_thread:
+            get_logger().debug("CodeCommit does not support threaded persistent comments; publishing as a PR comment")
+
+        if not identity_marker:
+            get_logger().debug(
+                "CodeCommit persistent comment updates require a stable identity marker; publishing a new comment"
+            )
+            return self.publish_comment(pr_comment)
+
+        persistent_comment = add_pr_review_identity(pr_comment, identity_marker)
+        try:
+            comments = self.get_issue_comments_newest_first()
+        except Exception as e:
+            get_logger().warning(
+                f"CodeCommit could not read existing comments; publishing a new persistent comment: {e}"
+            )
+            return self.publish_comment(persistent_comment)
+
+        identifiers = [identity_marker, legacy_initial_header]
+        used_comment_ids = set()
+        published_comments = []
+        target_contexts = self._get_target_contexts()
+        destination_counts = Counter(
+            (target["repository_name"], target["destination_commit"])
+            for target in target_contexts
+        )
+        allow_repository_fallback = len(target_contexts) == 1
+
+        for target in target_contexts:
+            comment_to_update = self._find_persistent_comment_for_target(
+                comments,
+                target,
+                identifiers,
+                identity_marker,
+                used_comment_ids,
+                destination_counts[(target["repository_name"], target["destination_commit"])] == 1,
+                allow_repository_fallback,
+            )
+            if comment_to_update is None:
+                published_comments.append(self._publish_comment_to_target(persistent_comment, target))
+                continue
+
+            used_comment_ids.add(comment_to_update.id)
+            comment_body = self._persistent_body_for_target(
+                persistent_comment,
+                update_header,
+                name,
+                identity_marker,
+                target,
+            )
+            comment_url = self.get_comment_url(comment_to_update)
+            get_logger().info(f"Persistent mode - updating comment {comment_url} to latest {name} message")
+            if self.edit_comment(comment_to_update, comment_body) is not False:
+                published_comments.append(comment_to_update)
+                continue
+
+            published_comments.append(self._publish_comment_to_target(persistent_comment, target))
+
+        if final_update_message:
+            get_logger().debug("CodeCommit does not publish separate persistent update status comments")
+        if len(published_comments) == 1:
+            return published_comments[0]
+        return published_comments
 
     def publish_code_suggestions(self, code_suggestions: list) -> bool:
         counter = 1
@@ -260,6 +334,26 @@ class CodeCommitProvider(GitProvider):
 
     def remove_comment(self, comment):
         return ""  # not implemented yet
+
+    def edit_comment(self, comment, body: str):
+        comment_id = comment.get("id") if isinstance(comment, dict) else getattr(comment, "id", None)
+        if not isinstance(comment_id, str) or not comment_id:
+            get_logger().warning(f"CodeCommit cannot update comment without a valid comment id: {comment_id!r}")
+            return False
+
+        body = self._prepare_comment_body(body)
+        try:
+            response = self.codecommit_client.update_comment(comment_id, body)
+        except Exception as e:
+            get_logger().warning(f"CodeCommit failed to update comment {comment_id}: {e}")
+            return False
+
+        updated_comment = response.get("comment") if isinstance(response, dict) else None
+        if not isinstance(updated_comment, dict):
+            return False
+        if updated_comment.get("deleted") is True:
+            return False
+        return updated_comment.get("commentId") == comment_id and updated_comment.get("content") == body
 
     def publish_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str, original_suggestion=None):
         # https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/codecommit/client/post_comment_for_compared_commit.html
@@ -326,7 +420,19 @@ class CodeCommitProvider(GitProvider):
         return -1  # not implemented yet
 
     def get_issue_comments(self):
-        raise NotImplementedError("CodeCommit provider does not support issue comments yet")
+        comments = []
+        for comment_data in self.codecommit_client.get_comments_for_pull_request(self.pr_num):
+            comments.extend(self._extract_issue_comments(comment_data))
+        return sorted(comments, key=self._comment_sort_key)
+
+    def get_issue_comments_newest_first(self):
+        return sorted(self.get_issue_comments(), key=self._comment_sort_key, reverse=True)
+
+    def supports_review_comment_identity(self) -> bool:
+        return True
+
+    def get_comment_url(self, comment) -> str:
+        return self.get_pr_url()
 
     def get_repo_settings(self):
         # a local ".pr_agent.toml" settings file is optional
@@ -466,6 +572,168 @@ class CodeCommitProvider(GitProvider):
 
     def get_commit_messages(self) -> str:
         return ""  # not implemented yet
+
+    def _publish_comment_to_target(self, pr_comment: str, target: dict):
+        pr_comment = self._prepare_comment_body(pr_comment)
+        response = self.codecommit_client.publish_comment(
+            repo_name=target["repository_name"],
+            pr_number=self.pr_num,
+            destination_commit=target["destination_commit"],
+            source_commit=target["source_commit"],
+            comment=pr_comment,
+        )
+        if isinstance(response, dict):
+            return self._comment_from_api_comment(
+                response.get("comment"),
+                {
+                    "repositoryName": target["repository_name"],
+                    "beforeCommitId": target["destination_commit"],
+                    "afterCommitId": target["source_commit"],
+                },
+            )
+        return response
+
+    def _find_persistent_comment_for_target(
+        self,
+        comments: list,
+        target: dict,
+        identifiers: list,
+        identity_marker: str,
+        used_comment_ids: set,
+        allow_destination_fallback: bool,
+        allow_repository_fallback: bool,
+    ):
+        matchers = [self._comment_matches_target_exact]
+        if allow_destination_fallback:
+            matchers.append(self._comment_matches_target_destination)
+        if allow_repository_fallback:
+            matchers.append(self._comment_matches_target_repository)
+
+        for matcher in matchers:
+            comment = self._find_persistent_comment(
+                comments,
+                identifiers,
+                identity_marker,
+                used_comment_ids,
+                lambda candidate: matcher(candidate, target),
+            )
+            if comment is not None:
+                return comment
+        return None
+
+    @staticmethod
+    def _find_persistent_comment(
+        comments: list,
+        identifiers: list,
+        identity_marker: str,
+        used_comment_ids: set,
+        target_matcher,
+    ):
+        for identifier in identifiers:
+            if not identifier:
+                continue
+            for comment in comments:
+                if comment.id in used_comment_ids or not target_matcher(comment):
+                    continue
+                body = GitProvider._get_comment_body(comment)
+                if not comment_matches_identity(body, identifier):
+                    continue
+                if comment_carries_other_identity(body, identity_marker):
+                    continue
+                return comment
+        return None
+
+    @staticmethod
+    def _comment_matches_target_exact(comment, target: dict) -> bool:
+        return (
+            CodeCommitProvider._comment_matches_target_destination(comment, target)
+            and getattr(comment, "after_commit_id", None) == target["source_commit"]
+        )
+
+    @staticmethod
+    def _comment_matches_target_destination(comment, target: dict) -> bool:
+        return (
+            CodeCommitProvider._comment_matches_target_repository(comment, target)
+            and getattr(comment, "before_commit_id", None) == target["destination_commit"]
+        )
+
+    @staticmethod
+    def _comment_matches_target_repository(comment, target: dict) -> bool:
+        repository_name = getattr(comment, "repository_name", None)
+        return repository_name == target["repository_name"]
+
+    @staticmethod
+    def _persistent_body_for_target(
+        pr_comment: str,
+        update_header: bool,
+        name: str,
+        identity_marker: str,
+        target: dict,
+    ) -> str:
+        if not update_header:
+            return pr_comment
+
+        update_message = f"#### ({name.capitalize()} updated until commit {target['source_commit']})\n"
+        updated_anchor = f"{identity_marker}\n\n{update_message}"
+        return pr_comment.replace(identity_marker, updated_anchor, 1)
+
+    @staticmethod
+    def _prepare_comment_body(pr_comment: str) -> str:
+        pr_comment = CodeCommitProvider._remove_markdown_html(pr_comment)
+        return CodeCommitProvider._add_additional_newlines(pr_comment)
+
+    @staticmethod
+    def _extract_issue_comments(comment_data: dict):
+        if not isinstance(comment_data, dict) or comment_data.get("location"):
+            return []
+
+        comments = []
+        for comment in comment_data.get("comments", []):
+            issue_comment = CodeCommitProvider._comment_from_api_comment(comment, comment_data)
+            if issue_comment is not None:
+                comments.append(issue_comment)
+        return comments
+
+    @staticmethod
+    def _comment_from_api_comment(comment: dict, comment_data: dict):
+        if not isinstance(comment, dict):
+            return None
+        if comment.get("deleted") is True or comment.get("inReplyTo"):
+            return None
+
+        body = comment.get("content")
+        comment_id = comment.get("commentId")
+        created_at = CodeCommitProvider._comment_timestamp(comment.get("creationDate"))
+        if not isinstance(body, str) or not body:
+            return None
+        if not isinstance(comment_id, str) or not comment_id:
+            return None
+        if created_at is None:
+            return None
+
+        author_arn = comment.get("authorArn") if isinstance(comment.get("authorArn"), str) else ""
+        return SimpleNamespace(
+            body=body,
+            id=comment_id,
+            created_at=created_at,
+            last_modified_at=CodeCommitProvider._comment_timestamp(comment.get("lastModifiedDate")),
+            repository_name=comment_data.get("repositoryName"),
+            before_commit_id=comment_data.get("beforeCommitId"),
+            after_commit_id=comment_data.get("afterCommitId"),
+            user=SimpleNamespace(login=author_arn),
+        )
+
+    @staticmethod
+    def _comment_timestamp(value):
+        if isinstance(value, datetime):
+            return value.timestamp()
+        if isinstance(value, (int, float)):
+            return float(value)
+        return None
+
+    @staticmethod
+    def _comment_sort_key(comment):
+        return (comment.created_at, comment.id)
 
     @staticmethod
     def _add_additional_newlines(body: str) -> str:
