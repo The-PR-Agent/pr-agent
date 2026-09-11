@@ -60,17 +60,17 @@ def _get_markdown_fence(content: str) -> str:
 
 
 def _get_repo_context_cache_key(
-    context_files: list, max_lines: int, from_default_branch: bool
-) -> tuple[tuple[tuple[str, str], ...], int, bool]:
+    context_files: list, max_lines: int, context_ref: str | None
+) -> tuple[tuple[tuple[str, str], ...], int, str | None]:
     return (
         tuple((type(file_path).__name__, str(file_path)) for file_path in context_files),
         max_lines,
-        from_default_branch,
+        context_ref,
     )
 
 
 def _get_repo_context_process_cache_key(
-    git_provider, context_files: list, max_lines: int, from_default_branch: bool
+    git_provider, context_files: list, max_lines: int, context_ref: str | None
 ) -> tuple | None:
     try:
         pr_url = git_provider.get_pr_url()
@@ -81,7 +81,7 @@ def _get_repo_context_process_cache_key(
         return None
 
     return type(git_provider).__name__, pr_url, _get_repo_context_cache_key(
-        context_files, max_lines, from_default_branch
+        context_files, max_lines, context_ref
     )
 
 
@@ -136,17 +136,17 @@ def _get_provider_repo_context_cache(git_provider) -> _RepoContextCache:
 
 
 def _get_cached_repo_context(
-    git_provider, context_files: list, max_lines: int, from_default_branch: bool
+    git_provider, context_files: list, max_lines: int, context_ref: str | None
 ):
     process_cache_key = _get_repo_context_process_cache_key(
-        git_provider, context_files, max_lines, from_default_branch
+        git_provider, context_files, max_lines, context_ref
     )
     if process_cache_key is not None:
         cached_repo_context = _repo_context_process_cache.get(process_cache_key, _REPO_CONTEXT_CACHE_MISS)
         if cached_repo_context is not _REPO_CONTEXT_CACHE_MISS:
             return cached_repo_context
 
-    cache_key = _get_repo_context_cache_key(context_files, max_lines, from_default_branch)
+    cache_key = _get_repo_context_cache_key(context_files, max_lines, context_ref)
     cached_repo_context = _get_provider_repo_context_cache(git_provider).get(
         cache_key, _REPO_CONTEXT_CACHE_MISS
     )
@@ -157,13 +157,13 @@ def _get_cached_repo_context(
 
 
 def _store_repo_context(
-    git_provider, context_files: list, max_lines: int, from_default_branch: bool, repo_context: str
+    git_provider, context_files: list, max_lines: int, context_ref: str | None, repo_context: str
 ) -> None:
-    cache_key = _get_repo_context_cache_key(context_files, max_lines, from_default_branch)
+    cache_key = _get_repo_context_cache_key(context_files, max_lines, context_ref)
     _get_provider_repo_context_cache(git_provider)[cache_key] = repo_context
 
     process_cache_key = _get_repo_context_process_cache_key(
-        git_provider, context_files, max_lines, from_default_branch
+        git_provider, context_files, max_lines, context_ref
     )
     if process_cache_key:
         _repo_context_process_cache[process_cache_key] = repo_context
@@ -290,8 +290,11 @@ def build_repo_context(git_provider) -> str:
         return ""
 
     from_default_branch = _read_bool_setting("repo_context_from_default_branch", default=True)
+    # Resolve the revision being read once and key the cache on it: within the TTL a rebase or a
+    # push to the base branch must not serve file content from a commit that has since moved.
+    context_ref = git_provider.get_repo_context_ref(from_default_branch)
     cached_repo_context = _get_cached_repo_context(
-        git_provider, context_files, max_lines, from_default_branch
+        git_provider, context_files, max_lines, context_ref
     )
     if cached_repo_context is not _REPO_CONTEXT_CACHE_MISS:
         return cached_repo_context
@@ -303,5 +306,5 @@ def build_repo_context(git_provider) -> str:
     # Only cache when every file was fetched successfully. A transient/unexpected fetch error must
     # not be cached as a real result, so it is retried instead of being served until the TTL expires.
     if not had_fetch_error:
-        _store_repo_context(git_provider, context_files, max_lines, from_default_branch, repo_context)
+        _store_repo_context(git_provider, context_files, max_lines, context_ref, repo_context)
     return repo_context

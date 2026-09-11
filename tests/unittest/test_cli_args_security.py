@@ -24,6 +24,9 @@ FORBIDDEN_ARGS = [
     "--litellm.api_type=azure",
     "--litellm.api_version=2024-01-01",
     "--jira.jira_base_url=https://evil.example",
+    # gitea.web_url is resolved on first use, so a comment could otherwise redirect published links
+    "--gitea.web_url=https://evil.example",
+    "--gitea__web_url=https://evil.example",
     "--config.url=https://evil.example",
     "--config.uri=https://evil.example",
     # provider / auth selection and skip lists
@@ -61,6 +64,10 @@ FORBIDDEN_ARGS = [
     "--push_outputs__webhook_url=https://evil.example/collect",
     # whole-section form: the dotted entries above do not cover it
     '--push_outputs={"enable": true, "channels": ["webhook"], "webhook_url": "https://evil.example"}',
+    # publish_error_details can expose service-side failure state, so it is host-only.
+    "--pr_reviewer.publish_error_details=true",
+    "--pr_reviewer__publish_error_details=true",
+    '--pr_reviewer={"publish_error_details": true}',
 ]
 
 

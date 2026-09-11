@@ -37,15 +37,15 @@ See more configuration options in the [Configuration options](#configuration-opt
 
 [//]: # (#### Asking a question about this repository:)
 
-[//]: # (![help_docs on the documentation of this repository]&#40;https://codium.ai/images/pr_agent/help_docs_comment.png&#41;{width=512})
+[//]: # (![help_docs on the documentation of this repository]&#40;../assets/help_docs_comment.png&#41;{width=512})
 
 **Asking a question about another repository**
 
-![help_docs on the documentation of another repository](https://codium.ai/images/pr_agent/help_docs_comment_explicit_git.png){width=512}
+![help_docs on the documentation of another repository](../assets/help_docs_comment_explicit_git.png){width=512}
 
 **Response**:
 
-![help_docs response](https://codium.ai/images/pr_agent/help_docs_response.png){width=512}
+![help_docs response](../assets/help_docs_response.png){width=512}
 
 ## Run automatically when a new issue is opened
 
@@ -54,7 +54,7 @@ This can be useful, for example, for providing immediate feedback to users who o
 
 Here's how:
 
-1) Follow the steps depicted under [Run as a Github Action](../installation/github.md#run-as-a-github-action) to create a new workflow, such as:`.github/workflows/help_docs.yml`:
+1) Follow the steps depicted under [Run as a GitHub Action](../installation/github.md#run-as-a-github-action) to create a new workflow, such as:`.github/workflows/help_docs.yml`:
 
 2) Edit your yaml file to the following:
 

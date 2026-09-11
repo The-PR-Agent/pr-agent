@@ -59,9 +59,9 @@ class PRAddDocs:
                 self.git_provider.publish_comment("Generating Documentation...", is_temporary=True)
 
             get_logger().info('Preparing PR documentation...')
-            await retry_with_fallback_models(self._prepare_prediction)
+            await retry_with_fallback_models(self._prepare_prediction, git_provider=self.git_provider)
             data = self._prepare_pr_code_docs()
-            if (not data) or (not 'Code Documentation' in data):
+            if (not data) or ("Code Documentation" not in data):
                 get_logger().info('No code documentation found for PR.')
                 return
 
@@ -126,8 +126,8 @@ class PRAddDocs:
 
                     body = "**Suggestion:** Proposed documentation\n```suggestion\n" + new_code_snippet + "\n```"
                     docs.append({'body': body, 'relevant_file': relevant_file,
-                                             'relevant_lines_start': relevant_line,
-                                             'relevant_lines_end': relevant_line})
+                                 "relevant_lines_start": relevant_line,
+                                 "relevant_lines_end": relevant_line})
             except Exception:
                 if get_verbosity_level() >= 2:
                     get_logger().info(f"Could not parse code docs: {d}")

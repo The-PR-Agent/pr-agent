@@ -93,8 +93,7 @@ When this parameter is set to `true`, PR-Agent will not run any automatic tools 
 ### GitHub App
 
 !!! note "Configurations for PR-Agent"
-    PR-Agent for GitHub is an App, hosted by Codium. So all the instructions below are relevant for PR-Agent users.
-    Same goes for [GitLab webhook](#gitlab-webhook) and [BitBucket App](#bitbucket-app) sections.
+    These settings apply to self-hosted GitHub App, GitLab webhook, and Bitbucket App deployments.
 
 #### GitHub app automatic tools when a new PR is opened
 
@@ -204,6 +203,34 @@ Adding `"synchronize"` to this list enables auto tools on new commits pushed to 
 `github_action_config.push_trigger_ignore_merge_commits` (default `true`) skips processing when the push contains a merge commit, avoiding duplicate reviews on "Update branch" clicks.
 
 `github_action_config.push_trigger_ignore_bot_commits` (default `true`) skips processing when the push author is a bot, avoiding redundant runs on automated commits.
+
+#### Automatic tools after a submitted GitHub review
+
+The GitHub App can run configured tools after a human reviewer submits a native GitHub review. This is opt-in: `review_commands` is empty by default. By default, only reviews submitted with the `changes_requested` state by a `User` review author trigger the commands. This conservative default avoids running on the repository's high-volume `commented` reviews; set `review_states` or `review_author_types` explicitly when a different workflow is needed.
+
+```toml
+[github_app]
+review_states = ["changes_requested"]
+review_author_types = ["User"]
+review_commands = [
+    "/improve",
+]
+```
+
+The event must be `submitted`; edited or dismissed reviews do not trigger tools. The review author's `user.type` must match `review_author_types`, which defaults to `User` and prevents bot reviews from triggering commands. Existing repository filtering, draft-PR handling, eligibility checks, and `config.disable_auto_feedback` still apply. The review text is not treated as a command; each configured command runs with the normal pull-request context.
+
+For GitHub Action, add the review event to the workflow and configure the equivalent settings. `github_action_config.*` overrides the corresponding `github_app.*` setting when present.
+
+```yaml
+on:
+  pull_request_review:
+    types: [submitted]
+
+env:
+  github_action_config.review_states: '["changes_requested"]'
+  github_action_config.review_author_types: '["User"]'
+  github_action_config.review_commands: '["/improve"]'
+```
 
 `github_action_config.enable_output` are used to enable/disable github actions [output parameter](https://docs.github.com/en/actions/creating-actions/metadata-syntax-for-github-actions#outputs-for-docker-container-and-javascript-actions) (default is `true`).
 Review result is output as JSON to `steps.{step-id}.outputs.review` property.

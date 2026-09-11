@@ -58,21 +58,21 @@ PR-Agent offers comprehensive pull request functionalities integrated with vario
 #### [/describe](https://github.com/the-pr-agent/pr-agent/pull/530)
 
 <figure markdown="1">
-![/describe](https://www.codium.ai/images/pr_agent/describe_new_short_main.png){width=512}
+![/describe](assets/describe_new_short_main.webp){width=512}
 </figure>
 <hr>
 
 #### [/review](https://github.com/the-pr-agent/pr-agent/pull/732#issuecomment-1975099151)
 
 <figure markdown="1">
-![/review](https://www.codium.ai/images/pr_agent/review_new_short_main.png){width=512}
+![/review](assets/review_new_short_main.png){width=512}
 </figure>
 <hr>
 
 #### [/improve](https://github.com/the-pr-agent/pr-agent/pull/732#issuecomment-1975099159)
 
 <figure markdown="1">
-![/improve](https://www.codium.ai/images/pr_agent/improve_new_short_main.png){width=512}
+![/improve](assets/improve_new_short_main.webp){width=512}
 </figure>
 <hr>
 
@@ -80,6 +80,6 @@ PR-Agent offers comprehensive pull request functionalities integrated with vario
 
 The following diagram illustrates PR-Agent tools and their flow:
 
-![PR-Agent Tools](https://codium.ai/images/pr_agent/diagram-v0.9.png)
+![PR-Agent Tools](assets/diagram-v0.9.webp)
 
 Check out the [PR Compression strategy](core-abilities/index.md) page for more details on how we convert a code diff to a manageable LLM prompt

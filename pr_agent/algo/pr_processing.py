@@ -3,14 +3,13 @@ from __future__ import annotations
 import traceback
 from typing import Callable, List, Tuple
 
-from github import RateLimitExceededException
-
 from pr_agent.algo.git_patch_processing import (
     decouple_and_convert_to_hunks_with_lines_numbers,
     extend_patch,
     handle_patch_deletions,
 )
 from pr_agent.algo.language_handler import sort_files_by_main_languages
+from pr_agent.algo.model_routing import route_primary_model
 from pr_agent.algo.run_details import record_model_used
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.types import EDIT_TYPE
@@ -58,11 +57,7 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
         PATCH_EXTRA_LINES_BEFORE = cap_and_log_extra_lines(PATCH_EXTRA_LINES_BEFORE, "before")
         PATCH_EXTRA_LINES_AFTER = cap_and_log_extra_lines(PATCH_EXTRA_LINES_AFTER, "after")
 
-    try:
-        diff_files = git_provider.get_diff_files()
-    except RateLimitExceededException as e:
-        get_logger().error(f"Rate limit exceeded for git provider API. original message {e}")
-        raise
+    diff_files = git_provider.get_diff_files()
 
     # get pr languages
     pr_languages = sort_files_by_main_languages(git_provider.get_languages(), diff_files)
@@ -152,11 +147,7 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
 
 def get_pr_diff_multiple_patchs(git_provider: GitProvider, token_handler: TokenHandler, model: str,
                 add_line_numbers_to_hunks: bool = False, disable_extra_lines: bool = False):
-    try:
-        diff_files = git_provider.get_diff_files()
-    except RateLimitExceededException as e:
-        get_logger().error(f"Rate limit exceeded for git provider API. original message {e}")
-        raise
+    diff_files = git_provider.get_diff_files()
 
     # get pr languages
     pr_languages = sort_files_by_main_languages(git_provider.get_languages(), diff_files)
@@ -273,7 +264,7 @@ def pr_generate_compressed_diff(top_langs: list, token_handler: TokenHandler, mo
     # additional iterations (if needed)
     if large_pr_handling:
         NUMBER_OF_ALLOWED_ITERATIONS = get_settings().pr_description.get("max_ai_calls", 4) - 1 # one more call is to summarize
-        for i in range(NUMBER_OF_ALLOWED_ITERATIONS-1):
+        for _ in range(NUMBER_OF_ALLOWED_ITERATIONS-1):
             if remaining_files_list:
                 total_tokens, patches, remaining_files_list, files_in_patch_list = generate_full_patch(convert_hunks_to_line_numbers,
                                                                                  file_dict,
@@ -299,7 +290,6 @@ def generate_full_patch(convert_hunks_to_line_numbers, file_dict, max_tokens_mod
             continue
 
         patch = data['patch']
-        new_patch_tokens = data['tokens']
         edit_type = data['edit_type']
 
         # Hard Stop, no more tokens
@@ -308,7 +298,17 @@ def generate_full_patch(convert_hunks_to_line_numbers, file_dict, max_tokens_mod
             remaining_files_list_new.append(filename)
             continue
 
-        # If the patch is too large, just show the file name
+        if patch:
+            if not convert_hunks_to_line_numbers:
+                patch_final = f"\n\n## File: '{filename.strip()}'\n\n{patch.strip()}\n"
+            else:
+                patch_final = "\n\n" + patch.strip()
+            new_patch_tokens = token_handler.count_tokens(patch_final)
+        else:
+            patch_final = ""
+            new_patch_tokens = 0
+
+        # If the patch is too large, leave the file in the remaining-files list.
         if total_tokens + new_patch_tokens > max_tokens_model - OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD:
             # Current logic is to skip the patch if it's too large
             # TODO: Option for alternative logic to remove hunks from the patch to reduce the number of tokens
@@ -319,25 +319,26 @@ def generate_full_patch(convert_hunks_to_line_numbers, file_dict, max_tokens_mod
             continue
 
         if patch:
-            if not convert_hunks_to_line_numbers:
-                patch_final = f"\n\n## File: '{filename.strip()}'\n\n{patch.strip()}\n"
-            else:
-                patch_final = "\n\n" + patch.strip()
             patches.append(patch_final)
-            total_tokens += token_handler.count_tokens(patch_final)
+            total_tokens += new_patch_tokens
             files_in_patch_list.append(filename)
             if get_verbosity_level() >= 2:
                 get_logger().info(f"Tokens: {total_tokens}, last filename: {filename}")
     return total_tokens, patches, remaining_files_list_new, files_in_patch_list
 
 
-async def retry_with_fallback_models(f: Callable, model_type: ModelType = ModelType.REGULAR):
+async def retry_with_fallback_models(f: Callable, model_type: ModelType = ModelType.REGULAR,
+                                     git_provider: GitProvider | None = None):
     all_models = _get_all_models(model_type)
     all_deployments = _get_all_deployments(all_models)
+    routed = route_primary_model(model_type, git_provider)
+    if routed:
+        # A cheaper primary for a small pull request; config.fallback_models still follow it.
+        all_models[0], all_deployments[0] = routed
     original_deployment_id = get_settings().get("openai.deployment_id", None)
     try:
         # try each (model, deployment_id) pair until one is successful, otherwise raise exception
-        for i, (model, deployment_id) in enumerate(zip(all_models, all_deployments)):
+        for i, (model, deployment_id) in enumerate(zip(all_models, all_deployments, strict=True)):
             try:
                 get_logger().debug(
                     f"Generating prediction with {model}"
@@ -404,7 +405,7 @@ def get_pr_multi_diffs(git_provider: GitProvider,
         git_provider (GitProvider): An object that provides access to Git provider APIs.
         token_handler (TokenHandler): An object that handles tokens in the context of a pull request.
         model (str): The name of the model.
-        max_calls (int, optional): The maximum number of calls to retrieve diff files. Defaults to 5.
+        max_calls (int, optional): Maximum number of groups for split diffs; the full-diff fast path may still return one group. Defaults to 5.
         return_remaining_files (bool, optional): Also return the files the token budget left out, in the
             same shape as `get_pr_diff`. Files without a patch, and delete-only files, are not reported:
             nothing was omitted for them. Defaults to False.
@@ -413,14 +414,8 @@ def get_pr_multi_diffs(git_provider: GitProvider,
         List[str]: A list of final diff strings, split into multiple groups based on the maximum number of tokens allowed for the given model.
         With `return_remaining_files`, a tuple of that list and the list of omitted file names.
 
-    Raises:
-        RateLimitExceededException: If the rate limit for the Git provider API is exceeded.
     """
-    try:
-        diff_files = git_provider.get_diff_files()
-    except RateLimitExceededException as e:
-        get_logger().error(f"Rate limit exceeded for git provider API. original message {e}")
-        raise
+    diff_files = git_provider.get_diff_files()
 
     # Sort files by main language
     pr_languages = sort_files_by_main_languages(git_provider.get_languages(), diff_files)
@@ -431,7 +426,7 @@ def get_pr_multi_diffs(git_provider: GitProvider,
     PATCH_EXTRA_LINES_BEFORE = cap_and_log_extra_lines(PATCH_EXTRA_LINES_BEFORE, "before")
     PATCH_EXTRA_LINES_AFTER = cap_and_log_extra_lines(PATCH_EXTRA_LINES_AFTER, "after")
 
-    # try first a single run with standard diff string, with patch extension, and no deletions
+    # First try a single run with the full diff and extended patch context.
     patches_extended, total_tokens, patches_extended_tokens = pr_generate_extended_diff(
         pr_languages, token_handler,
         add_line_numbers_to_hunks=add_line_numbers,

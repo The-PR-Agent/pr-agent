@@ -12,7 +12,7 @@ This integration enriches the review process by automatically surfacing relevant
 
 **Ticket systems supported**:
 
-- [GitHub/Gitlab Issues](#githubgitlab-issues-integration)
+- [GitHub/GitLab Issues](#githubgitlab-issues-integration)
 - [Jira](#jira-integration)
 - [Asana](#asana-integration)
 
@@ -50,7 +50,7 @@ Each ticket will be assigned a label (Compliance/Alignment level), Indicates the
 - Not Compliant
 - PR Code Verified
 
-![Ticket Compliance](https://www.qodo.ai/images/pr_agent/ticket_compliance_review.png){width=768}
+![Ticket Compliance](../assets/ticket_compliance_review.png){width=768}
 
 A `PR Code Verified` label indicates the PR code meets ticket requirements, but requires additional manual testing beyond the code scope. For example - validating UI display across different environments (Mac, Windows, mobile, etc.).
 
@@ -78,10 +78,10 @@ A `PR Code Verified` label indicates the PR code meets ticket requirements, but 
 
     the `review` tool will also validate that the PR code doesn't contain any additional content that is not related to the ticket. If it does, the PR will be labeled at best as `PR Code Verified`, and the `review` tool will provide a comment with the additional unrelated content found in the PR code.
 
-## GitHub/Gitlab Issues Integration
+## GitHub/GitLab Issues Integration
 
-PR-Agent will automatically recognize GitHub/Gitlab issues mentioned in the PR description and fetch the issue content.
-Examples of valid GitHub/Gitlab issue references:
+PR-Agent will automatically recognize GitHub/GitLab issues mentioned in the PR description and fetch the issue content.
+Examples of valid GitHub/GitLab issue references:
 
 - `https://github.com/<ORG_NAME>/<REPO_NAME>/issues/<ISSUE_NUMBER>` or `https://gitlab.com/<ORG_NAME>/<REPO_NAME>/-/issues/<ISSUE_NUMBER>`
 - `#<ISSUE_NUMBER>`

@@ -1,4 +1,5 @@
 import copy
+import re
 from datetime import date
 from functools import partial
 from time import sleep
@@ -17,6 +18,21 @@ from pr_agent.git_providers.git_provider import get_main_pr_language
 from pr_agent.log import get_logger
 
 CHANGELOG_LINES = 50
+# A whole answer wrapped in one fenced block, e.g. "```markdown\n...\n```". The opening fence
+# is optional: the prompt ends with a dangling open "```markdown", which primes the model to
+# answer with a closing fence and no opening one.
+_WRAPPING_CODE_FENCE_RE = re.compile(r"\A\s*(?:```[^\n]*\n)?(?P<body>.*?)\n?```\s*\Z", re.DOTALL)
+
+
+def strip_wrapping_code_fence(text: str) -> str:
+    """Remove a fence that wraps the whole answer, leaving the content untouched.
+
+    `str.strip("`")` would remove characters rather than the fence, so an entry ending in an
+    inline code span (`` - Handle `None` in `parse()` ``) loses its closing backtick and the
+    corrupted line is committed to CHANGELOG.md.
+    """
+    match = _WRAPPING_CODE_FENCE_RE.match(text)
+    return match.group("body") if match else text
 
 
 class PRUpdateChangelog:
@@ -130,15 +146,10 @@ class PRUpdateChangelog:
         response = response.strip()
         if not response:
             return ""
-        if response.startswith("```"):
-            response_lines = response.splitlines()
-            response_lines = response_lines[1:]
-            response = "\n".join(response_lines)
-        response = response.strip("`")
-        return response
+        return strip_wrapping_code_fence(response)
 
     def _prepare_changelog_update(self) -> Tuple[str, str]:
-        answer = self.prediction.strip().strip("```").strip()  # noqa B005
+        answer = strip_wrapping_code_fence(self.prediction.strip()).strip()
         if hasattr(self, "changelog_file"):
             existing_content = self.changelog_file
         else:
@@ -169,7 +180,7 @@ class PRUpdateChangelog:
 
         sleep(5)  # wait for the file to be updated
         try:
-            if get_settings().config.git_provider == "github":
+            if self.git_provider.supports_changelog_update_review():
                 last_commit_id = list(self.git_provider.pr.get_commits())[-1]
                 d = dict(
                     body="CHANGELOG.md update",

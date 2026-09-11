@@ -1,6 +1,6 @@
 from base64 import b64decode
 
-from pr_agent.config_security import REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION
+from pr_agent.config_security import REPO_HOST_ONLY_KEYS_BY_SECTION, REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION
 
 
 class CliArgs:
@@ -10,12 +10,15 @@ class CliArgs:
         setting_name = arg.removeprefix('--').split('=', 1)[0].replace('__', '.')
         section, separator, key = setting_name.partition('.')
         if not separator:
-            if section in REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION:
+            if section in REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION or section in REPO_HOST_ONLY_KEYS_BY_SECTION:
                 return f'.{section}'
             return None
 
         allowed_keys = REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION.get(section)
         if allowed_keys is not None and key not in allowed_keys:
+            return f'.{section}.{key}'
+        host_only_keys = REPO_HOST_ONLY_KEYS_BY_SECTION.get(section, frozenset())
+        if key.split('.', 1)[0] in host_only_keys:
             return f'.{section}.{key}'
         return None
 
@@ -39,7 +42,7 @@ class CliArgs:
                 'c2hhcmVkX3NlY3JldA==:dXNlcg==:c3lzdGVt'
                 ':ZW5hYmxlX2NvbW1lbnRfYXBwcm92YWw=:ZW5hYmxlX21hbnVhbF9hcHByb3ZhbA=='
                 ':ZW5hYmxlX2F1dG9fYXBwcm92YWw=:YXBwcm92ZV9wcl9vbl9zZWxmX3Jldmlldw=='
-                ':YmFzZV91cmw=:dXJs:YXBwX25hbWU=:c2VjcmV0X3Byb3ZpZGVy'
+                ':YmFzZV91cmw=:dXJs:d2ViX3VybA==:YXBwX25hbWU=:c2VjcmV0X3Byb3ZpZGVy'
                 ':Z2l0X3Byb3ZpZGVy:c2tpcF9rZXlz:b3BlbmFpLmtleQ==:QU5BTFlUSUNTX0ZPTERFUg=='
                 ':dXJp:YXBwX2lk:d2ViaG9va19zZWNyZXQ=:YmVhcmVyX3Rva2Vu'
                 ':UEVSU09OQUxfQUNDRVNTX1RPS0VO:b3ZlcnJpZGVfZGVwbG95bWVudF90eXBl'

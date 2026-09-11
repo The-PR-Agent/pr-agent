@@ -477,6 +477,12 @@ class AzureDevopsProvider(GitProvider):
     def supports_line_question_history(self) -> bool:
         return True
 
+    def supports_thread_resolution(self) -> bool:
+        return True
+
+    def supports_linked_work_item_tickets(self) -> bool:
+        return True
+
     def set_pr(self, pr_url: str):
         self.diff_files = None
         self._diff_path_map = None
@@ -645,6 +651,10 @@ class AzureDevopsProvider(GitProvider):
         return latest
 
     def get_repo_settings(self):
+        settings_files = []
+        global_settings = self._get_global_repo_settings()
+        if global_settings:
+            settings_files.append(("global", global_settings))
         try:
             contents = self.azure_devops_client.get_item_content(
                 repository_id=self.repo_slug,
@@ -654,11 +664,46 @@ class AzureDevopsProvider(GitProvider):
                 include_content=True,
                 path=".pr_agent.toml",
             )
-            return b"".join(list(contents))
+            settings_files.append(("local", b"".join(list(contents))))
         except Exception as e:
             if get_verbosity_level() >= 2:
                 get_logger().error(f"Failed to get repo settings, error: {e}")
-            return ""
+        return settings_files if settings_files else ""
+
+    def get_owning_namespace(self) -> Optional[str]:
+        # In Azure DevOps the owning namespace is the organization, not the project
+        # (the org contains projects which contain repos). It is configured via
+        # azure_devops.org, which may be a bare org name or a full collection URL.
+        org = get_settings().azure_devops.get("org", None)
+        if not org:
+            return None
+        parsed = urlparse(org)
+        if parsed.scheme and parsed.netloc:
+            path_first = parsed.path.strip("/").split("/")[0]
+            return path_first if path_first else parsed.netloc.split(".")[0]
+        return str(org)
+
+    def _get_global_settings_cache_key(self, org: str) -> str:
+        return f"azure-devops:{org}:{self.workspace_slug}"
+
+    def _fetch_global_repo_settings(self, org):
+        # Convention: the org-wide <org>/pr-agent-settings settings repository lives in the
+        # same project as the current repository (Azure DevOps orgs contain projects, not
+        # repos directly, so there is no repo addressable purely from the org name).
+        try:
+            contents = self.azure_devops_client.get_item_content(
+                repository_id="pr-agent-settings",
+                project=self.workspace_slug,
+                download=False,
+                include_content_metadata=False,
+                include_content=True,
+                path=".pr_agent.toml",
+            )
+            return b"".join(list(contents))
+        except Exception as e:
+            if _is_not_found_error(e):
+                return ""
+            raise
 
     def get_repo_file_content(self, file_path: str, from_default_branch: bool = False):
         try:
@@ -685,6 +730,13 @@ class AzureDevopsProvider(GitProvider):
             if _is_not_found_error(e):
                 return ""
             raise
+
+    def get_repo_context_ref(self, from_default_branch: bool = False) -> Optional[str]:
+        # The PR target (base) commit is the cached revision; the default branch is selected by
+        # omitting the version, so it carries no explicit ref, mirroring get_repo_file_content.
+        if from_default_branch:
+            return None
+        return self.pr.last_merge_target_commit.commit_id
 
     def get_files(self):
         if (isinstance(getattr(self, "incremental", None), IncrementalPR)
@@ -934,27 +986,69 @@ class AzureDevopsProvider(GitProvider):
             self.temp_comments.append(created_comment)
         return created_comment
 
-    def publish_persistent_comment(self, pr_comment: str,
-                                   initial_header: str,
-                                   update_header: bool = True,
-                                   name='review',
-                                   final_update_message=True,
-                                   identity_marker: str | None = None,
-                                   legacy_initial_header: str | None = None):
-        return self.publish_persistent_comment_full(
-            pr_comment,
-            initial_header,
-            update_header,
-            name,
-            final_update_message,
-            identity_marker=identity_marker,
-            legacy_initial_header=legacy_initial_header,
-        )
-
     def supports_review_comment_identity(self) -> bool:
         return True
 
-    def publish_description(self, pr_title: str, pr_body: str):
+    def _configured_agent_identities(self) -> set[str]:
+        configured = get_settings().get("azure_devops_server.agent_identity", "")
+        if isinstance(configured, str):
+            values = (configured,)
+        elif isinstance(configured, (list, tuple, set)):
+            values = configured
+        else:
+            values = ()
+        return {
+            value.strip().casefold()
+            for value in values
+            if isinstance(value, str) and value.strip()
+        }
+
+    @staticmethod
+    def _is_stable_agent_identity(identity: str) -> bool:
+        return (
+            "@" in identity
+            or bool(re.fullmatch(
+                r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                identity,
+                re.IGNORECASE,
+            ))
+            or identity.startswith(("aad.", "acs.", "app.", "msa.", "svc.", "vss."))
+        )
+
+    def _configured_stable_agent_identities(self) -> set[str]:
+        return {
+            identity
+            for identity in self._configured_agent_identities()
+            if self._is_stable_agent_identity(identity)
+        }
+
+    def supports_review_finding_state(self) -> bool:
+        return bool(self._configured_stable_agent_identities())
+
+    def is_comment_authored_by_pr_agent(self, comment) -> bool:
+        identities = self._configured_agent_identities()
+        if not identities:
+            raise RuntimeError("Azure DevOps agent identity is not configured")
+        stable_identities = self._configured_stable_agent_identities()
+        if not stable_identities:
+            return False
+        author = self._value(comment, "author") or self._value(comment, "user")
+        if author is None:
+            raise RuntimeError("Azure DevOps comment author cannot be verified")
+        values = []
+        for attribute, serialized_attribute in (
+            ("id", None),
+            ("unique_name", "uniqueName"),
+            ("descriptor", "descriptor"),
+        ):
+            value = self._value(author, attribute, serialized_attribute)
+            if value is not None:
+                values.append(str(value).strip().casefold())
+        if not values:
+            raise RuntimeError("Azure DevOps comment author cannot be verified")
+        return any(value in stable_identities for value in values)
+
+    def publish_description(self, pr_title: str, pr_body: str) -> None:
         if len(pr_body) > MAX_PR_DESCRIPTION_AZURE_LENGTH:
 
             usage_guide_text='<details> <summary><strong>✨ Describe tool usage guide:</strong></summary><hr>'
@@ -987,6 +1081,7 @@ class AzureDevopsProvider(GitProvider):
             get_logger().exception(
                 f"Could not update pull request {self.pr_num} description: {e}"
             )
+            raise
 
     def remove_initial_comment(self):
         try:
@@ -1250,6 +1345,41 @@ class AzureDevopsProvider(GitProvider):
             return value.get(serialized_attribute or attribute)
         return getattr(value, attribute, None)
 
+    @staticmethod
+    def _stable_id_sort_key(value):
+        if value is None:
+            return (0, "")
+        text = str(value).strip()
+        if not text:
+            return (0, "")
+        try:
+            return (2, int(text))
+        except (TypeError, ValueError):
+            return (1, text.casefold())
+
+    @classmethod
+    def _comment_latest_timestamp(cls, comment):
+        timestamps = []
+        for attribute, serialized_attribute in (
+            ("published_date", "publishedDate"),
+            ("last_updated_date", "lastUpdatedDate"),
+        ):
+            value = cls._value(comment, attribute, serialized_attribute)
+            if isinstance(value, str):
+                value = value.strip()
+                if value.endswith("Z"):
+                    value = value[:-1] + "+00:00"
+                try:
+                    value = _dt.datetime.fromisoformat(value)
+                except ValueError:
+                    continue
+            if isinstance(value, _dt.datetime):
+                value = _to_naive_utc(value)
+                if value is not None:
+                    timestamps.append(value)
+        return max(timestamps, default=_dt.datetime.min)
+
+
     def _get_threads(self):
         threads = getattr(self, "_threads_cache", None)
         if threads is None:
@@ -1294,6 +1424,7 @@ class AzureDevopsProvider(GitProvider):
             comments.append(SimpleNamespace(
                 id=self._value(comment, "id"),
                 body=content,
+                author=author,
                 user=SimpleNamespace(login=author_name),
             ))
         return comments
@@ -1359,16 +1490,35 @@ class AzureDevopsProvider(GitProvider):
 
     def get_issue_comments(self) -> list[Comment]:
         comment_list = []
-        for thread in reversed(self._get_threads()):
-            for comment in thread.comments:
-                if comment.content and comment not in comment_list:
-                    comment.body = comment.content
-                    comment.thread_id = thread.id
-                    comment_list.append(comment)
+        for thread in self._get_threads():
+            thread_id = self._value(thread, "id")
+            for comment in self._value(thread, "comments") or []:
+                content = self._value(comment, "content")
+                if not content or comment in comment_list:
+                    continue
+                if isinstance(comment, dict):
+                    comment["body"] = content
+                    comment["thread_id"] = thread_id
+                else:
+                    comment.body = content
+                    comment.thread_id = thread_id
+                comment_list.append(comment)
+
+        comment_list.sort(
+            key=lambda comment: (
+                self._comment_latest_timestamp(comment),
+                self._stable_id_sort_key(self._value(comment, "id")),
+                self._stable_id_sort_key(self._value(comment, "thread_id")),
+            ),
+            reverse=True,
+        )
         return comment_list
 
+    def get_issue_comments_newest_first(self):
+        return list(self.get_issue_comments())
+
     def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
-        return True
+        return None
 
     def remove_reaction(self, issue_comment_id: int, reaction_id: int) -> bool:
         return True
@@ -1389,6 +1539,9 @@ class AzureDevopsProvider(GitProvider):
         except Exception as e:
             get_logger().exception(f"Failed to set thread status, error: {e}")
             return False
+
+    def resolve_comment_thread(self, comment_id: int) -> bool:
+        return self.set_thread_status(comment_id, "closed")
 
     def reply_to_thread(self, thread_id: int, body: str, is_temporary: bool = False) -> Comment:
         try:
@@ -1480,7 +1633,7 @@ class AzureDevopsProvider(GitProvider):
         )
         return self.pr
 
-    def get_commit_messages(self):
+    def get_commit_messages(self) -> str:
         return ""  # not implemented yet
 
     def get_pr_id(self):

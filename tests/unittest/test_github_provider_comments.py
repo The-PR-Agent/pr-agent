@@ -8,6 +8,7 @@ These tests use ``GithubProvider.__new__(GithubProvider)`` to bypass network-bou
 
 import json
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -52,6 +53,34 @@ def _make_provider(pr=None, max_chars=65000):
     p.diff_files = []
     p.base_url = "https://api.github.com"
     return p
+
+
+def test_edit_comment_returns_false_on_github_failure():
+    provider = _make_provider()
+    comment = MagicMock()
+    comment.edit.side_effect = gh_module.GithubException(500, "edit failed", {})
+
+    assert provider.edit_comment(comment, "updated body") is False
+
+
+@pytest.mark.parametrize(
+    ("deployment_type", "agent_login", "comment_login", "expected"),
+    [
+        ("user", "pr-agent", "pr-agent", True),
+        ("user", "pr-agent", "human", False),
+        ("app", "review-app[bot]", "review-app[bot]", True),
+        ("app", "review-app[bot]", "review-app[bot]-human", False),
+    ],
+)
+def test_comment_authorship_uses_authenticated_github_identity(
+    deployment_type, agent_login, comment_login, expected
+):
+    provider = _make_provider()
+    provider.deployment_type = deployment_type
+    provider.github_user_id = agent_login
+    comment = SimpleNamespace(user=SimpleNamespace(login=comment_login))
+
+    assert provider.is_comment_authored_by_pr_agent(comment) is expected
 
 
 # ---------------------------------------------------------------------------
@@ -283,6 +312,7 @@ def test_publish_code_suggestions_multi_line_payload_shape():
 
     def capture(comments, disable_fallback=False):
         captured["comments"] = comments
+        return True
 
     provider.publish_inline_comments = capture
 
@@ -385,6 +415,209 @@ def test_publish_code_suggestions_returns_false_on_publish_error():
         "relevant_lines_start": 1, "relevant_lines_end": 2,
     }])
     assert result is False
+
+
+def test_publish_code_suggestions_422_fallback_all_dropped_returns_false(monkeypatch):
+    """Regression test for #3223: When the 422 fallback drops all comments
+    (0 verified, 0 repaired), publish_code_suggestions must return False so caller
+    can trigger retry logic."""
+    fake_pr = _FakePR(raise_on_first=_FakeGithubException(status=422))
+    provider = _make_provider(pr=fake_pr)
+    _stub_validation_passthrough(provider)
+
+    # All comments are rejected during verification
+    monkeypatch.setattr(
+        provider,
+        "_verify_code_comments",
+        lambda comments: ([], [(c, Exception("invalid")) for c in comments]),
+    )
+    # No invalid comment can be repaired
+    monkeypatch.setattr(
+        provider,
+        "_try_fix_invalid_inline_comments",
+        lambda invalid_list: [],
+    )
+
+    suggestions = [{
+        "body": "```suggestion\nsuggestion\n```",
+        "relevant_file": "src/foo.py",
+        "relevant_lines_start": 10,
+        "relevant_lines_end": 12,
+    }]
+
+    result = provider.publish_code_suggestions(suggestions)
+    assert result is False
+    # Only the initial failing create_review call occurred; 0 fallback comments posted
+    assert len(fake_pr.create_review_calls) == 1
+
+
+def test_publish_code_suggestions_422_fallback_partial_success_returns_true(monkeypatch):
+    """When 422 fallback successfully publishes at least one comment, return True
+    to prevent duplicate comment creation by whole-batch retries."""
+    fake_pr = _FakePR(raise_on_first=_FakeGithubException(status=422))
+    provider = _make_provider(pr=fake_pr)
+    _stub_validation_passthrough(provider)
+
+    # 1 verified comment, 1 invalid comment
+    def fake_verify(comments):
+        return [comments[0]], [(comments[1], Exception("invalid"))]
+
+    monkeypatch.setattr(provider, "_verify_code_comments", fake_verify)
+    monkeypatch.setattr(provider, "_try_fix_invalid_inline_comments", lambda invalid_list: [])
+
+    suggestions = [
+        {
+            "body": "```suggestion\nfirst\n```",
+            "relevant_file": "src/foo.py",
+            "relevant_lines_start": 1,
+            "relevant_lines_end": 2,
+        },
+        {
+            "body": "```suggestion\nsecond\n```",
+            "relevant_file": "src/foo.py",
+            "relevant_lines_start": 5,
+            "relevant_lines_end": 6,
+        },
+    ]
+
+    result = provider.publish_code_suggestions(suggestions)
+    assert result is True
+    # 1 initial failed batch call, 1 successful fallback call with the verified comment
+    assert len(fake_pr.create_review_calls) == 2
+    assert len(fake_pr.create_review_calls[1]["comments"]) == 1
+
+
+def test_publish_code_suggestions_422_fallback_repaired_comment_success(monkeypatch):
+    """When initial batch gets 422, verification rejects, but repairing succeeds and
+    individual publish succeeds, return True."""
+    fake_pr = _FakePR(raise_on_first=_FakeGithubException(status=422))
+    provider = _make_provider(pr=fake_pr)
+    _stub_validation_passthrough(provider)
+
+    settings = SimpleNamespace(
+        github=SimpleNamespace(try_fix_invalid_inline_comments=True),
+        get=lambda key, default=None: default,
+    )
+    monkeypatch.setattr(gh_module, "get_settings", lambda: settings)
+
+    monkeypatch.setattr(
+        provider,
+        "_verify_code_comments",
+        lambda comments: ([], [(comments[0], Exception("invalid"))]),
+    )
+    repaired = [{"body": "fixed single line", "path": "src/foo.py", "line": 10, "side": "RIGHT"}]
+    monkeypatch.setattr(provider, "_try_fix_invalid_inline_comments", lambda invalid: repaired)
+
+    suggestions = [{
+        "body": "```suggestion\nmulti\nline\n```",
+        "relevant_file": "src/foo.py",
+        "relevant_lines_start": 10,
+        "relevant_lines_end": 12,
+    }]
+
+    result = provider.publish_code_suggestions(suggestions)
+    assert result is True
+    # Call 1: initial batch -> raises 422
+    # Call 2: repaired comment via publish_inline_comments([comment], disable_fallback=True) -> succeeds
+    assert len(fake_pr.create_review_calls) == 2
+    assert fake_pr.create_review_calls[1]["comments"] == repaired
+
+
+def test_publish_code_suggestions_422_fallback_repaired_comment_failure_returns_false(monkeypatch):
+    """When repaired payload is generated but publishing that repaired comment fails,
+    it must NOT count as published, and publish_code_suggestions must return False."""
+    fake_pr = _FakePR(raise_on_first=_FakeGithubException(status=422))
+    provider = _make_provider(pr=fake_pr)
+    _stub_validation_passthrough(provider)
+
+    settings = SimpleNamespace(
+        github=SimpleNamespace(try_fix_invalid_inline_comments=True),
+        get=lambda key, default=None: default,
+    )
+    monkeypatch.setattr(gh_module, "get_settings", lambda: settings)
+
+    monkeypatch.setattr(
+        provider,
+        "_verify_code_comments",
+        lambda comments: ([], [(comments[0], Exception("invalid"))]),
+    )
+    repaired = [{"body": "fixed single line", "path": "src/foo.py", "line": 10, "side": "RIGHT"}]
+    monkeypatch.setattr(provider, "_try_fix_invalid_inline_comments", lambda invalid: repaired)
+
+    calls = 0
+
+    def fail_repaired(commit=None, comments=None):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise _FakeGithubException(status=422)
+        # with disable_fallback=True, this re-raises from publish_inline_comments
+        raise _FakeGithubException(status=422)
+
+    fake_pr.create_review = fail_repaired
+
+    suggestions = [{
+        "body": "```suggestion\nmulti\nline\n```",
+        "relevant_file": "src/foo.py",
+        "relevant_lines_start": 10,
+        "relevant_lines_end": 12,
+    }]
+
+    result = provider.publish_code_suggestions(suggestions)
+    assert result is False
+    assert calls == 2
+
+
+def test_publish_code_suggestions_normal_success():
+    """Clean create_review call without 422 must return True."""
+    fake_pr = _FakePR()
+    provider = _make_provider(pr=fake_pr)
+    _stub_validation_passthrough(provider)
+
+    suggestions = [{
+        "body": "normal",
+        "relevant_file": "src/foo.py",
+        "relevant_lines_start": 1,
+        "relevant_lines_end": 1,
+    }]
+
+    result = provider.publish_code_suggestions(suggestions)
+    assert result is True
+    assert len(fake_pr.create_review_calls) == 1
+
+
+def test_persistent_dedup_all_skipped_returns_true(monkeypatch):
+    """When persistent_inline_comments is enabled and all comments are duplicates,
+    publish_inline_comments and publish_code_suggestions must return True without
+    calling create_review."""
+    fake_pr = _FakePR()
+    provider = _make_provider(pr=fake_pr)
+    _stub_validation_passthrough(provider)
+
+    settings = SimpleNamespace(
+        get=lambda key, default=None: True if key == "config.persistent_inline_comments" else default,
+        github=SimpleNamespace(try_fix_invalid_inline_comments=False),
+    )
+    monkeypatch.setattr(gh_module, "get_settings", lambda: settings)
+
+    store = MagicMock()
+    store.seen.return_value = True
+    monkeypatch.setattr(gh_module, "get_inline_comment_store", lambda prov: store)
+
+    comments = [{"path": "src/foo.py", "body": "already posted", "line": 5}]
+    res_inline = provider.publish_inline_comments(comments)
+    assert res_inline is True
+    assert len(fake_pr.create_review_calls) == 0
+
+    suggestions = [{
+        "body": "already posted",
+        "relevant_file": "src/foo.py",
+        "relevant_lines_start": 5,
+        "relevant_lines_end": 5,
+    }]
+    res_suggestions = provider.publish_code_suggestions(suggestions)
+    assert res_suggestions is True
+    assert len(fake_pr.create_review_calls) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -594,3 +827,82 @@ class TestResolveCommentThread:
 
         result = p.resolve_comment_thread(123)
         assert result is False
+
+
+def test_app_comment_authorship_requires_grounded_identity_without_user_endpoint(monkeypatch):
+    provider = _make_provider()
+    provider.deployment_type = "app"
+    provider.github_user_id = ""
+
+    def fail_get_user():
+        raise AssertionError("installation tokens must not use /user")
+
+    provider.github_client = SimpleNamespace(get_user=fail_get_user)
+    settings = SimpleNamespace(
+        get=lambda key, default=None: (
+            "review-app" if key == "GITHUB.APP_NAME" else default
+        )
+    )
+    monkeypatch.setattr(gh_module, "get_settings", lambda: settings)
+
+    bot_comment = SimpleNamespace(
+        user=SimpleNamespace(login="review-app[bot]")
+    )
+    copied_marker_comment = SimpleNamespace(
+        user=SimpleNamespace(login="review-app-human")
+    )
+
+    assert provider.supports_review_finding_state() is False
+    with pytest.raises(RuntimeError, match="identity"):
+        provider.is_comment_authored_by_pr_agent(bot_comment)
+    with pytest.raises(RuntimeError, match="identity"):
+        provider.is_comment_authored_by_pr_agent(copied_marker_comment)
+
+
+def test_app_comment_authorship_uses_published_response_identity_when_app_name_is_stale(
+    monkeypatch,
+):
+    provider = _make_provider()
+    provider.deployment_type = "app"
+    provider.github_user_id = ""
+    response = SimpleNamespace(user=SimpleNamespace(login="actual-app[bot]"))
+    provider.pr = SimpleNamespace(
+        create_issue_comment=lambda _body: response,
+    )
+    provider.issue_main = None
+    provider.github_client = SimpleNamespace(
+        get_user=lambda: pytest.fail("installation tokens must not use /user")
+    )
+    settings = SimpleNamespace(
+        get=lambda key, default=None: (
+            "stale-app" if key == "GITHUB.APP_NAME" else default
+        )
+    )
+
+    monkeypatch.setattr(gh_module, "get_settings", lambda: settings)
+
+    assert provider.publish_comment("identity bootstrap") is response
+    assert provider.github_user_id == "actual-app[bot]"
+    actual_bot_comment = SimpleNamespace(
+        user=SimpleNamespace(login="actual-app[bot]")
+    )
+    stale_bot_comment = SimpleNamespace(
+        user=SimpleNamespace(login="stale-app[bot]")
+    )
+
+    assert provider.supports_review_finding_state() is True
+    assert provider.is_comment_authored_by_pr_agent(actual_bot_comment) is True
+    assert provider.is_comment_authored_by_pr_agent(stale_bot_comment) is False
+
+
+def test_user_comment_authorship_resolves_authenticated_user():
+    provider = _make_provider()
+    provider.deployment_type = "user"
+    provider.github_user_id = ""
+    provider.github_client = SimpleNamespace(
+        get_user=lambda: SimpleNamespace(raw_data={"login": "user-agent"})
+    )
+    comment = SimpleNamespace(user=SimpleNamespace(login="user-agent"))
+
+    assert provider.supports_review_finding_state() is True
+    assert provider.is_comment_authored_by_pr_agent(comment) is True

@@ -7,13 +7,15 @@ from starlette_context.middleware import RawContextMiddleware
 
 import pr_agent.servers.gerrit_server as gerrit_server
 
+AUTH = ("admin", "s3cret")
+
 
 class SettingsStub:
-    """No webhook credentials configured, so authorize() lets the request through."""
+    """Webhook credentials configured, since authorize() rejects every call without them."""
 
     def get(self, key, default=None):
         if key == "gerrit":
-            return {"webhook_username": "", "webhook_password": ""}
+            return {"webhook_username": AUTH[0], "webhook_password": AUTH[1]}
         return default
 
 
@@ -42,6 +44,7 @@ def test_reject_an_ask_whose_msg_is_only_whitespace(client, msg):
     response = http.post(
         "/api/v1/gerrit/ask",
         json={"refspec": "refs/changes/1", "project": "p", "msg": msg},
+        auth=AUTH,
     )
 
     assert response.status_code == 400
@@ -54,6 +57,7 @@ def test_dispatch_an_ask_with_the_question_taken_from_msg(client):
     response = http.post(
         "/api/v1/gerrit/ask",
         json={"refspec": "refs/changes/1", "project": "p", "msg": "  why is this slow? "},
+        auth=AUTH,
     )
 
     assert response.status_code == 200

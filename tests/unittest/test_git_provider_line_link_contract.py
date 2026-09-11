@@ -235,7 +235,7 @@ def test_contract_tier_matches_expected_anchor_shapes(contract: ProviderContract
 
 @pytest.mark.parametrize(
     "contract",
-    (contract for contract in PROVIDER_CONTRACTS if contract.tier is AnchorTier.FILE_ONLY),
+    list(contract for contract in PROVIDER_CONTRACTS if contract.tier is AnchorTier.FILE_ONLY),
     ids=lambda contract: contract.name,
 )
 def test_file_only_contract_ignores_all_line_arguments(contract: ProviderContract):
@@ -249,7 +249,7 @@ def test_file_only_contract_ignores_all_line_arguments(contract: ProviderContrac
 
 @pytest.mark.parametrize(
     "contract",
-    (contract for contract in PROVIDER_CONTRACTS if contract.tier is AnchorTier.SINGLE_LINE),
+    list(contract for contract in PROVIDER_CONTRACTS if contract.tier is AnchorTier.SINGLE_LINE),
     ids=lambda contract: contract.name,
 )
 def test_single_line_contract_ignores_end_argument(contract: ProviderContract):

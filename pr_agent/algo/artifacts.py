@@ -109,3 +109,54 @@ def load_artifact() -> str:
     label = artifacts_settings.get("artifact_label", "") or artifact_path.name
     instructions = artifacts_settings.get("artifact_instructions", "")
     return format_artifact_content(content, label, instructions)
+
+
+def inject_artifact_context() -> None:
+    """Append the CI artifact (see [artifacts]) to the extra_instructions of the target tools.
+
+    ARTIFACT_PATH in the environment turns the feature on by itself. Called once before a
+    command runs, by the GitHub Action runner and by the CLI.
+    """
+    artifact_path_env = (
+        os.environ.get("ARTIFACT_PATH") or os.environ.get("PR_AGENT_ARTIFACT_PATH") or ""
+    ).strip()
+    artifact_instructions_env = (
+        os.environ.get("ARTIFACT_INSTRUCTIONS") or os.environ.get("PR_AGENT_ARTIFACT_INSTRUCTIONS") or ""
+    ).strip()
+    if artifact_path_env:
+        get_settings().set("ARTIFACTS.ENABLE", True)
+        get_settings().set("ARTIFACTS.ARTIFACT_PATH", artifact_path_env)
+        if artifact_instructions_env:
+            get_settings().set("ARTIFACTS.ARTIFACT_INSTRUCTIONS", artifact_instructions_env)
+
+    artifacts_enabled = get_settings().get("ARTIFACTS.ENABLE", False)
+    if isinstance(artifacts_enabled, str):
+        artifacts_enabled = artifacts_enabled.lower() == "true"
+    if artifacts_enabled is not True:
+        return
+
+    try:
+        artifact_text = load_artifact()
+        if not artifact_text:
+            return
+        target_tools = get_settings().get(
+            "ARTIFACTS.TARGET_TOOLS",
+            ["pr_reviewer", "pr_description", "pr_code_suggestions"]
+        )
+        if isinstance(target_tools, str):
+            target_tools = [t.strip() for t in target_tools.split(",") if t.strip()]
+        target_tools = {str(t).lower() for t in target_tools}
+        separator = "\n======\n\n"
+        for key in get_settings():
+            setting = get_settings().get(key)
+            if str(type(setting)) == "<class 'dynaconf.utils.boxing.DynaBox'>":
+                if key.lower() in target_tools and hasattr(setting, 'extra_instructions'):
+                    extra_instructions = str(setting.extra_instructions or "")
+                    if artifact_text not in extra_instructions:
+                        setting.extra_instructions = (
+                            extra_instructions + separator + artifact_text
+                            if extra_instructions else artifact_text
+                        )
+        get_logger().info(f"Injected artifact context into tools: {target_tools}")
+    except (OSError, ValueError, TypeError) as e:
+        get_logger().warning(f"Failed to process artifacts: {e}", exc_info=True)

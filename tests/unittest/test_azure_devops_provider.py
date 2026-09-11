@@ -7,8 +7,38 @@ import pytest
 from pr_agent.algo.inline_comment_dedup import code_fingerprint
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import PRCodeSuggestionsIdentity
-from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
+from pr_agent.git_providers.azuredevops_provider import (
+    AzureDevopsProvider,
+    Comment,
+    CommentThread,
+)
 from pr_agent.log import get_logger
+
+
+def test_publish_description_propagates_update_failure():
+    provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+    provider.workspace_slug = "my-project"
+    provider.repo_slug = "my-repo"
+    provider.pr_num = 1
+    provider.azure_devops_client = MagicMock()
+    provider.azure_devops_client.update_pull_request.side_effect = RuntimeError("permission denied")
+
+    with pytest.raises(RuntimeError, match="permission denied"):
+        provider.publish_description("AI title", "Updated description")
+
+
+def test_azure_supports_thread_resolution():
+    provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+
+    assert provider.supports_thread_resolution() is True
+
+
+def test_azure_resolve_comment_thread_closes_thread():
+    provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+    provider.set_thread_status = MagicMock(return_value=True)
+
+    assert provider.resolve_comment_thread(42) is True
+    provider.set_thread_status.assert_called_once_with(42, "closed")
 
 
 class TestAzureDevopsProviderRepoContext:
@@ -1387,3 +1417,318 @@ class TestAzureDevopsProviderSuggestionDiscussions:
         discussions = json.loads(provider.get_code_suggestion_thread_context())
 
         assert [reply["message"] for reply in discussions[0]["replies"]] == ["Rejected, keep as is."]
+
+
+def test_azure_issue_comments_newest_first_does_not_reverse_twice():
+    provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+    threads = [
+        SimpleNamespace(
+            id=1,
+            comments=[SimpleNamespace(
+                id=11,
+                content="old comment",
+                author=SimpleNamespace(unique_name="developer@example.com"),
+            )],
+        ),
+        SimpleNamespace(
+            id=2,
+            comments=[SimpleNamespace(
+                id=22,
+                content="new comment",
+                author=SimpleNamespace(unique_name="agent@example.com"),
+            )],
+        ),
+    ]
+    provider._get_threads = MagicMock(return_value=threads)
+
+    comments = provider.get_issue_comments_newest_first()
+
+    assert [comment.body for comment in comments] == ["new comment", "old comment"]
+
+
+@patch("pr_agent.git_providers.azuredevops_provider.get_settings")
+def test_azure_comment_authorship_uses_explicit_agent_identity(mock_get_settings):
+    mock_get_settings.return_value.get.side_effect = lambda key, default=None: (
+        "agent@example.com" if key == "azure_devops_server.agent_identity" else default
+    )
+    provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+    agent_comment = SimpleNamespace(
+        author=SimpleNamespace(unique_name="agent@example.com")
+    )
+    human_comment = SimpleNamespace(
+        author=SimpleNamespace(unique_name="human@example.com")
+    )
+
+    assert provider.supports_review_finding_state() is True
+    assert provider.is_comment_authored_by_pr_agent(agent_comment) is True
+    assert provider.is_comment_authored_by_pr_agent(human_comment) is False
+
+
+@patch("pr_agent.git_providers.azuredevops_provider.get_settings")
+def test_azure_lifecycle_does_not_trust_display_name(mock_get_settings):
+    mock_get_settings.return_value.get.side_effect = lambda key, default=None: (
+        "PR Agent" if key == "azure_devops_server.agent_identity" else default
+    )
+    provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+    comment = SimpleNamespace(
+        author=SimpleNamespace(
+            id="actual-agent-id",
+            display_name="PR Agent",
+            unique_name="different@example.com",
+        )
+    )
+
+    assert provider.supports_review_finding_state() is False
+    assert provider.is_comment_authored_by_pr_agent(comment) is False
+
+
+@patch("pr_agent.git_providers.azuredevops_provider.get_settings")
+def test_azure_lifecycle_matches_stable_identity_not_display_name(mock_get_settings):
+    agent_id = "11111111-1111-1111-1111-111111111111"
+    mock_get_settings.return_value.get.side_effect = lambda key, default=None: (
+        agent_id if key == "azure_devops_server.agent_identity" else default
+    )
+    provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+    matching_comment = SimpleNamespace(
+        author=SimpleNamespace(
+            id=agent_id,
+            display_name="PR Agent",
+            unique_name="other@example.com",
+        )
+    )
+    same_name_different_id = SimpleNamespace(
+        author=SimpleNamespace(
+            id="22222222-2222-2222-2222-222222222222",
+            display_name="PR Agent",
+            unique_name="other@example.com",
+        )
+    )
+
+    assert provider.supports_review_finding_state() is True
+    assert provider.is_comment_authored_by_pr_agent(matching_comment) is True
+    assert provider.is_comment_authored_by_pr_agent(same_name_different_id) is False
+
+
+@patch("pr_agent.git_providers.azuredevops_provider.get_settings")
+def test_azure_lifecycle_matches_descriptor_identity(mock_get_settings):
+    descriptor = "aad.aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    mock_get_settings.return_value.get.side_effect = lambda key, default=None: (
+        descriptor if key == "azure_devops_server.agent_identity" else default
+    )
+    provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+    matching_comment = SimpleNamespace(
+        author=SimpleNamespace(
+            descriptor=descriptor,
+            id=None,
+            unique_name=None,
+            display_name="PR Agent",
+        )
+    )
+    same_name_different_descriptor = SimpleNamespace(
+        author=SimpleNamespace(
+            descriptor="aad.ffffffff-1111-2222-3333-444444444444",
+            id=None,
+            unique_name=None,
+            display_name="PR Agent",
+        )
+    )
+    missing_stable_identity = SimpleNamespace(
+        author=SimpleNamespace(
+            descriptor=None,
+            id=None,
+            unique_name=None,
+            display_name="PR Agent",
+        )
+    )
+
+    assert provider.supports_review_finding_state() is True
+    assert provider.is_comment_authored_by_pr_agent(matching_comment) is True
+    assert provider.is_comment_authored_by_pr_agent({
+        "author": {"descriptor": descriptor, "displayName": "PR Agent"},
+    }) is True
+    assert provider.is_comment_authored_by_pr_agent(same_name_different_descriptor) is False
+    with pytest.raises(RuntimeError, match="cannot be verified"):
+        provider.is_comment_authored_by_pr_agent(missing_stable_identity)
+
+
+def test_azure_newest_comment_order_is_chronological_across_threads():
+    from datetime import datetime, timezone
+
+    def timestamp(second):
+        return datetime(2026, 1, 1, 0, 0, second, tzinfo=timezone.utc)
+
+    def comment(comment_id, body, second):
+        return Comment(
+            id=comment_id,
+            content=body,
+            published_date=timestamp(second),
+            last_updated_date=timestamp(second),
+        )
+
+    old = comment(10, "old", 1)
+    middle = comment(20, "middle", 2)
+    tied_low = comment(30, "tied-low", 4)
+    tied_high = comment(31, "tied-high", 4)
+    newest = comment(5, "newest", 5)
+    old_thread = CommentThread(id=100, comments=[old, middle])
+    tied_thread = CommentThread(id=200, comments=[tied_low, tied_high])
+    newest_thread = CommentThread(id=300, comments=[newest])
+
+    raw_variants = [
+        [old_thread, tied_thread, newest_thread],
+        [newest_thread, tied_thread, old_thread],
+        [tied_thread, old_thread, newest_thread],
+    ]
+    provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+
+    for raw_threads in raw_variants:
+        provider._get_threads = lambda raw_threads=raw_threads: raw_threads
+        comments = provider.get_issue_comments_newest_first()
+        assert [item.body for item in comments] == [
+            "newest",
+            "tied-high",
+            "tied-low",
+            "middle",
+            "old",
+        ]
+        assert [item.id for item in comments] == [5, 31, 30, 20, 10]
+
+
+def test_azure_raw_comment_order_uses_updates_and_thread_id_ties():
+    def raw_comment(body, published, updated):
+        return {
+            "id": 1,
+            "content": body,
+            "publishedDate": published,
+            "lastUpdatedDate": updated,
+        }
+
+    tied_time = "2026-01-01T00:00:04.000001Z"
+    older_thread = {
+        "id": 10,
+        "comments": [raw_comment("tied-older-thread", tied_time, tied_time)],
+    }
+    newer_thread = {
+        "id": 20,
+        "comments": [raw_comment("tied-newer-thread", tied_time, tied_time)],
+    }
+    edited_thread = {
+        "id": 5,
+        "comments": [raw_comment(
+            "edited-newest", "2026-01-01T00:00:01Z", "2026-01-01T00:00:05+00:00",
+        )],
+    }
+    provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+
+    for threads in (
+        [older_thread, newer_thread, edited_thread],
+        [edited_thread, newer_thread, older_thread],
+        [newer_thread, edited_thread, older_thread],
+    ):
+        provider._get_threads = lambda threads=threads: threads
+        comments = provider.get_issue_comments_newest_first()
+        assert [comment["body"] for comment in comments] == [
+            "edited-newest", "tied-newer-thread", "tied-older-thread",
+        ]
+
+
+class TestAzureDevopsGlobalSettings:
+    @pytest.fixture(autouse=True)
+    def _clear_global_settings_cache(self):
+        # The org global-settings cache is process-level; clear it between tests.
+        from pr_agent.git_providers import git_provider as _gp
+        _gp._GLOBAL_SETTINGS_CACHE.clear()
+        yield
+        _gp._GLOBAL_SETTINGS_CACHE.clear()
+
+    def _make_provider(self):
+        provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+        provider.workspace_slug = "my-project"
+        provider.repo_slug = "my-repo"
+        provider.azure_devops_client = MagicMock()
+        return provider
+
+    @staticmethod
+    def _set_org_settings(ms, org):
+        ms.return_value.config.use_global_settings_file = True
+        ms.return_value.azure_devops.get.return_value = org
+
+    def test_get_owning_namespace_returns_configured_org(self):
+        provider = self._make_provider()
+        with patch("pr_agent.git_providers.azuredevops_provider.get_settings") as ms:
+            self._set_org_settings(ms, "myorg")
+            assert provider.get_owning_namespace() == "myorg"
+
+    def test_get_owning_namespace_parses_org_from_collection_url(self):
+        provider = self._make_provider()
+        with patch("pr_agent.git_providers.azuredevops_provider.get_settings") as ms:
+            self._set_org_settings(ms, "https://dev.azure.com/myorg")
+            assert provider.get_owning_namespace() == "myorg"
+
+    def test_get_owning_namespace_none_when_org_unset(self):
+        provider = self._make_provider()
+        with patch("pr_agent.git_providers.azuredevops_provider.get_settings") as ms:
+            self._set_org_settings(ms, None)
+            assert provider.get_owning_namespace() is None
+
+    def test_fetch_global_repo_settings_reads_pr_agent_settings_from_pr_project(self):
+        provider = self._make_provider()
+        provider.azure_devops_client.get_item_content.return_value = [b"[pr_reviewer]"]
+        result = provider._fetch_global_repo_settings("myorg")
+
+        assert result == b"[pr_reviewer]"
+        provider.azure_devops_client.get_item_content.assert_called_once_with(
+            repository_id="pr-agent-settings",
+            project="my-project",
+            download=False,
+            include_content_metadata=False,
+            include_content=True,
+            path=".pr_agent.toml",
+        )
+
+    def test_fetch_global_repo_settings_404_returns_empty_and_propagates_other_errors(self):
+        provider = self._make_provider()
+        provider.azure_devops_client.get_item_content.side_effect = Exception(
+            "Operation returned a 404 status code."
+        )
+        assert provider._fetch_global_repo_settings("myorg") == ""
+
+    def test_get_repo_settings_merges_global_then_local(self):
+        provider = self._make_provider()
+        provider.azure_devops_client.get_item_content.side_effect = [
+            [b"[pr_reviewer]\nextra_instructions = \"global\"\n"],
+            [b"[pr_reviewer]\nextra_instructions = \"local\"\n"],
+        ]
+        with patch("pr_agent.git_providers.git_provider.get_settings") as ms, \
+             patch("pr_agent.git_providers.azuredevops_provider.get_settings") as az:
+            az.return_value.azure_devops.get.return_value = "myorg"
+            ms.return_value.config.use_global_settings_file = True
+            result = provider.get_repo_settings()
+
+        assert result == [
+            ("global", b"[pr_reviewer]\nextra_instructions = \"global\"\n"),
+            ("local", b"[pr_reviewer]\nextra_instructions = \"local\"\n"),
+        ]
+
+    def test_get_repo_settings_only_local_when_global_disabled(self):
+        provider = self._make_provider()
+        provider.azure_devops_client.get_item_content.side_effect = [
+            [b"[pr_reviewer]\ntemperature = 0.2\n"],
+        ]
+        with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = False
+            result = provider.get_repo_settings()
+
+        assert result == [("local", b"[pr_reviewer]\ntemperature = 0.2\n")]
+
+    def test_global_settings_result_is_cached(self):
+        provider = self._make_provider()
+        provider.azure_devops_client.get_item_content.return_value = [b"[pr_reviewer]\nnum_max_findings = 5\n"]
+        with patch("pr_agent.git_providers.git_provider.get_settings") as ms, \
+             patch("pr_agent.git_providers.azuredevops_provider.get_settings") as az:
+            az.return_value.azure_devops.get.return_value = "myorg"
+            ms.return_value.config.use_global_settings_file = True
+            assert provider._get_global_repo_settings() == b"[pr_reviewer]\nnum_max_findings = 5\n"
+            assert provider._get_global_repo_settings() == b"[pr_reviewer]\nnum_max_findings = 5\n"  # cached
+
+        assert provider.azure_devops_client.get_item_content.call_count == 1

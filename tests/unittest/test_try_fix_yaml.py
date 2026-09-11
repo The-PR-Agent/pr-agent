@@ -318,6 +318,83 @@ code_suggestions:
         }
         assert try_fix_yaml(review_text, first_key='code_suggestions', last_key='existing_code') == expected_output
 
+    def test_stray_closing_brace_is_not_added_to_block_scalar(self):
+        review_text = '''\
+code_suggestions:
+- relevant_file: |
+    example.py
+  improved_code: |
+    return shared_helper(x)
+  }
+'''
+        expected_output = {
+            'code_suggestions': [{
+                'relevant_file': 'example.py\n',
+                'improved_code': 'return shared_helper(x)\n'
+            }]
+        }
+
+        assert try_fix_yaml(review_text, first_key='code_suggestions', last_key='improved_code') == expected_output
+
+    def test_stray_closing_brace_before_following_key_is_not_added_to_block_scalar(self):
+        review_text = '''\
+code_suggestions:
+- relevant_file: |
+    example.py
+  improved_code: |
+    return shared_helper(x)
+  }
+  label: |
+    maintainability
+'''
+        expected_output = {
+            'code_suggestions': [{
+                'relevant_file': 'example.py\n',
+                'improved_code': 'return shared_helper(x)\n',
+                'label': 'maintainability\n'
+            }]
+        }
+
+        assert try_fix_yaml(review_text, first_key='code_suggestions', last_key='improved_code') == expected_output
+
+    def test_closing_brace_after_brace_in_string_stays_in_block_scalar(self):
+        review_text = '''\
+code_suggestions:
+- relevant_file: |
+    example.js
+  existing_code: |
+    if (x) {
+      console.log("}");
+  }
+'''
+        expected_output = {
+            'code_suggestions': [{
+                'relevant_file': 'example.js\n',
+                'existing_code': 'if (x) {\n  console.log("}");\n}\n'
+            }]
+        }
+
+        assert try_fix_yaml(review_text, first_key='code_suggestions', last_key='existing_code') == expected_output
+
+    def test_closing_brace_after_else_block_stays_in_block_scalar(self):
+        review_text = '''\
+code_suggestions:
+- relevant_file: |
+    example.js
+  existing_code: |
+    } else {
+      fallback()
+  }
+'''
+        expected_output = {
+            'code_suggestions': [{
+                'relevant_file': 'example.js\n',
+                'existing_code': '} else {\n  fallback()\n}\n'
+            }]
+        }
+
+        assert try_fix_yaml(review_text, first_key='code_suggestions', last_key='existing_code') == expected_output
+
 
     def test_wrong_indentation_code_block_scalar(self):
         review_text = '''\

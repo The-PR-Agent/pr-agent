@@ -166,20 +166,18 @@ def test_e2e_run_gitea_app():
         raise
     finally:
         try:
-            if headers is None or gitea_url is None:
-                return
+            if headers is not None and gitea_url is not None:
+                if pr_number is not None:
+                    requests.patch(
+                        f"{gitea_url}/api/v1/repos/{owner}/{repo_name}/pulls/{pr_number}",
+                        headers=headers,
+                        json={'state': 'closed'}
+                    )
 
-            if pr_number is not None:
-                requests.patch(
-                    f"{gitea_url}/api/v1/repos/{owner}/{repo_name}/pulls/{pr_number}",
-                    headers=headers,
-                    json={'state': 'closed'}
+                requests.delete(
+                    f"{gitea_url}/api/v1/repos/{owner}/{repo_name}/git/refs/heads/{new_branch}",
+                    headers=headers
                 )
-
-            requests.delete(
-                f"{gitea_url}/api/v1/repos/{owner}/{repo_name}/git/refs/heads/{new_branch}",
-                headers=headers
-            )
         except Exception as cleanup_error:
             logger.error(f"Failed to clean up after test: {cleanup_error}")
 

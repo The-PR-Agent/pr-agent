@@ -1,10 +1,173 @@
+import copy
+import json
 from io import BytesIO
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 from giteapy.rest import ApiException
+from starlette_context import context, request_cycle_context
 
+from pr_agent.config_loader import global_settings
+from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.git_providers.gitea_provider import GiteaProvider
+
+
+def test_gitea_comment_url_accepts_dict_fields():
+    provider = GiteaProvider.__new__(GiteaProvider)
+
+    html_url_comment = {"html_url": "https://gitea.example/comment/1"}
+    assert provider.get_comment_url(html_url_comment) == (
+        "https://gitea.example/comment/1"
+    )
+    url_comment = {"url": "https://gitea.example/comment/2"}
+    assert provider.get_comment_url(url_comment) == (
+        "https://gitea.example/comment/2"
+    )
+
+
+@pytest.mark.parametrize(
+    ("comment", "expected_id"),
+    [
+        ({"comment_id": 7, "id": 42}, 7),
+        ({"id": 42}, 42),
+    ],
+)
+def test_gitea_edit_comment_accepts_dict_ids(comment, expected_id):
+    provider = GiteaProvider.__new__(GiteaProvider)
+    provider.repo_api = MagicMock()
+    provider.owner = "owner"
+    provider.repo = "repo"
+    provider.max_comment_chars = 1000
+
+    provider.edit_comment(comment, "updated body")
+
+    provider.repo_api.edit_comment.assert_called_once_with(
+        owner="owner",
+        repo="repo",
+        comment_id=expected_id,
+        comment="updated body",
+    )
+
+
+def test_gitea_edit_comment_returns_false_on_failure():
+    provider = GiteaProvider.__new__(GiteaProvider)
+    provider.repo_api = MagicMock()
+    provider.repo_api.edit_comment.side_effect = RuntimeError("edit failed")
+    provider.owner = "owner"
+    provider.repo = "repo"
+    provider.max_comment_chars = 1000
+    provider.logger = MagicMock()
+
+    assert provider.edit_comment({"id": 42}, "updated body") is False
+
+
+def test_gitea_publish_description_raises_when_update_returns_no_response():
+    provider = GiteaProvider.__new__(GiteaProvider)
+    provider.repo_api = MagicMock()
+    provider.repo_api.edit_pull_request.return_value = None
+    provider.owner = "owner"
+    provider.repo = "repo"
+    provider.pr_number = 1
+    provider.issue_number = None
+    provider.enabled_pr = True
+    provider.logger = MagicMock()
+
+    with pytest.raises(RuntimeError, match="Failed to publish PR description"):
+        provider.publish_description("AI title", "Updated description")
+
+
+def test_gitea_get_issue_comments_returns_empty_list_when_no_comments():
+    provider = GiteaProvider.__new__(GiteaProvider)
+    provider.enabled_issue = False
+    provider.pr_number = 1
+    provider.owner = "owner"
+    provider.repo = "repo"
+    provider.repo_api = MagicMock()
+    provider.repo_api.list_all_comments.return_value = []
+    provider.logger = MagicMock()
+
+    assert provider.get_issue_comments() == []
+
+
+def test_gitea_get_issue_comments_raises_when_api_returns_empty_value():
+    provider = GiteaProvider.__new__(GiteaProvider)
+    provider.enabled_issue = False
+    provider.pr_number = 1
+    provider.owner = "owner"
+    provider.repo = "repo"
+    provider.repo_api = MagicMock()
+    provider.repo_api.list_all_comments.return_value = None
+    provider.logger = MagicMock()
+
+    with pytest.raises(RuntimeError, match="Failed to get comments"):
+        provider.get_issue_comments()
+
+
+def test_gitea_get_issue_comments_raises_when_api_returns_error_payload():
+    provider = GiteaProvider.__new__(GiteaProvider)
+    provider.enabled_issue = False
+    provider.pr_number = 1
+    provider.owner = "owner"
+    provider.repo = "repo"
+    provider.repo_api = MagicMock()
+    provider.repo_api.list_all_comments.return_value = {
+        "error": "unauthorized"
+    }
+    provider.logger = MagicMock()
+
+    with pytest.raises(RuntimeError, match="Failed to get comments"):
+        provider.get_issue_comments()
+
+
+def test_gitea_get_issue_comments_returns_comment_list():
+    provider = GiteaProvider.__new__(GiteaProvider)
+    provider.enabled_issue = False
+    provider.pr_number = 1
+    provider.owner = "owner"
+    provider.repo = "repo"
+    provider.repo_api = MagicMock()
+    comments = [{"body": "comment", "id": 1}]
+    provider.repo_api.list_all_comments.return_value = comments
+    provider.logger = MagicMock()
+
+    assert provider.get_issue_comments() == comments
+
+
+@pytest.mark.parametrize(
+    ("fallback_on_error", "expected", "publishes_fallback"),
+    [(True, "fallback", True), (False, None, False)],
+)
+def test_gitea_edit_failure_respects_persistent_fallback(
+    fallback_on_error, expected, publishes_fallback
+):
+    header = "## PR Reviewer Guide 🔍"
+    provider = GiteaProvider.__new__(GiteaProvider)
+    provider.repo_api = MagicMock()
+    provider.repo_api.edit_comment.side_effect = RuntimeError("edit failed")
+    provider.owner = "owner"
+    provider.repo = "repo"
+    provider.max_comment_chars = 1000
+    provider.logger = MagicMock()
+    provider.get_issue_comments = MagicMock(return_value=[{"body": header, "id": 42}])
+    provider.get_latest_commit_url = MagicMock(return_value="commit-url")
+    provider.get_comment_url = MagicMock(return_value="comment-url")
+    provider.publish_comment = MagicMock(return_value="fallback")
+
+    result = GitProvider.publish_persistent_comment_full(
+        provider,
+        "new review",
+        initial_header=header,
+        update_header=False,
+        final_update_message=False,
+        fallback_on_error=fallback_on_error,
+    )
+
+    assert result == expected
+    if publishes_fallback:
+        provider.publish_comment.assert_called_once_with("new review")
+    else:
+        provider.publish_comment.assert_not_called()
 
 
 class TestGiteaProvider:
@@ -218,10 +381,11 @@ class TestGiteaProvider:
         assert args[0] == '/repos/owner/repo/pulls/123.diff'
         assert kwargs.get('auth_settings') == ['AuthorizationHeaderToken']
     def test_get_repo_settings_returns_bytes(self):
-        """Regression for #2347: get_repo_settings must return bytes so that
-        utils.apply_repo_settings can os.write() it and later .decode() it. The
-        Gitea raw-file API yields str (unlike GitHub/GitLab/Bitbucket, which hand
-        back bytes), so the provider must encode before returning."""
+        """Regression for #2347: the local settings content returned by get_repo_settings
+        must be bytes so that utils.apply_repo_settings can os.write() it and later
+        .decode() it. The Gitea raw-file API yields str (unlike GitHub/GitLab/Bitbucket,
+        which hand back bytes), so the provider must encode before returning. Global
+        settings are disabled to isolate the local path."""
         from pr_agent.git_providers.gitea_provider import GiteaProvider
 
         toml = '[pr_reviewer]\nnum_code_suggestions = 4\n'
@@ -234,23 +398,26 @@ class TestGiteaProvider:
         provider.repo_api = MagicMock()
         provider.repo_api.get_file_content.return_value = toml  # API decodes to str
 
-        result = provider.get_repo_settings()
+        with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = False
+            result = provider.get_repo_settings()
 
-        assert isinstance(result, bytes)
-        assert result == toml.encode('utf-8')
+        assert result == [("local", toml.encode('utf-8'))]
         # The bytes must survive the exact operations utils.py performs on them.
-        assert result.decode() == toml
+        assert result[0][1].decode() == toml
 
-    def test_get_repo_settings_empty_bytes_when_unset_or_missing(self):
-        """No settings path configured, or empty/absent file: return empty
-        bytes, so every code path honours the -> bytes contract (not just the
-        success path) and a caller can never receive a str."""
+    def test_get_repo_settings_empty_when_unset_or_missing(self):
+        """No settings path configured, or empty/absent file: return empty (falsy),
+        so apply_repo_settings skips the local file. Global settings are disabled
+        to isolate the local path."""
         from pr_agent.git_providers.gitea_provider import GiteaProvider
 
         unset = GiteaProvider.__new__(GiteaProvider)
         unset.logger = MagicMock()
         unset.repo_settings = None
-        assert unset.get_repo_settings() == b""
+        with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = False
+            assert unset.get_repo_settings() == ""
 
         empty = GiteaProvider.__new__(GiteaProvider)
         empty.logger = MagicMock()
@@ -260,7 +427,9 @@ class TestGiteaProvider:
         empty.repo_settings = '.pr_agent.toml'
         empty.repo_api = MagicMock()
         empty.repo_api.get_file_content.return_value = ''
-        assert empty.get_repo_settings() == b""
+        with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = False
+            assert empty.get_repo_settings() == ""
 
     def test_get_repo_file_content_loads_from_base_sha(self):
         provider = GiteaProvider.__new__(GiteaProvider)
@@ -370,6 +539,101 @@ class TestGiteaProvider:
 
         assert content == ""
         provider.repo_api.get_file_content.assert_not_called()
+
+
+class TestGiteaGlobalSettings:
+    @pytest.fixture(autouse=True)
+    def _clear_global_settings_cache(self):
+        # The owner global-settings cache is process-level; clear it between tests.
+        from pr_agent.git_providers import git_provider as _gp
+        _gp._GLOBAL_SETTINGS_CACHE.clear()
+        yield
+        _gp._GLOBAL_SETTINGS_CACHE.clear()
+
+    def _make_provider(self, repo_settings=".pr_agent.toml"):
+        provider = GiteaProvider.__new__(GiteaProvider)
+        provider.logger = MagicMock()
+        provider.owner = "owner"
+        provider.repo = "repo"
+        provider.sha = "head-sha"
+        provider.repo_settings = repo_settings
+        provider.repo_api = MagicMock()
+        return provider
+
+    def test_get_owning_namespace_returns_owner(self):
+        provider = self._make_provider()
+        assert provider.get_owning_namespace() == "owner"
+
+    def test_get_repo_settings_merges_global_then_local(self):
+        global_toml = "[pr_reviewer]\nextra_instructions = \"global\"\n"
+        local_toml = "[pr_reviewer]\nextra_instructions = \"local\"\n"
+        provider = self._make_provider()
+        provider.repo_api.repo_get.return_value = SimpleNamespace(default_branch="main")
+
+        def get_file_content(**kwargs):
+            if kwargs["commit_sha"] == "main":
+                return global_toml
+            return local_toml
+
+        provider.repo_api.get_file_content.side_effect = get_file_content
+
+        with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = True
+            result = provider.get_repo_settings()
+
+        assert result == [("global", global_toml.encode('utf-8')), ("local", local_toml.encode('utf-8'))]
+
+    def test_get_repo_settings_skips_global_when_settings_repo_missing(self):
+        local_toml = "[pr_reviewer]\ntemperature = 0.2\n"
+        provider = self._make_provider()
+        provider.repo_api.repo_get.side_effect = ApiException(status=404)
+        provider.repo_api.get_file_content.return_value = local_toml
+
+        with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = True
+            result = provider.get_repo_settings()
+
+        assert result == [("local", local_toml.encode('utf-8'))]
+
+    def test_get_repo_settings_skips_global_when_no_default_branch(self):
+        provider = self._make_provider()
+        provider.repo_api.repo_get.return_value = SimpleNamespace(default_branch="")
+        provider.repo_api.get_file_content.return_value = "[pr_reviewer]\ntemperature = 0.2\n"
+
+        with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = True
+            result = provider.get_repo_settings()
+
+        assert result == [("local", b"[pr_reviewer]\ntemperature = 0.2\n")]
+
+    def test_get_repo_settings_empty_when_global_missing_and_local_unset(self):
+        provider = self._make_provider(repo_settings=None)
+        provider.repo_api.repo_get.side_effect = ApiException(status=404)
+
+        with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = True
+            result = provider.get_repo_settings()
+
+        assert result == ""
+
+    def test_global_settings_result_is_cached(self):
+        provider = self._make_provider()
+        provider.repo_api.repo_get.return_value = SimpleNamespace(default_branch="main")
+        provider.repo_api.get_file_content.return_value = "[pr_reviewer]\nnum_max_findings = 5\n"
+
+        with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = True
+            assert provider._get_global_repo_settings() == b"[pr_reviewer]\nnum_max_findings = 5\n"
+            assert provider._get_global_repo_settings() == b"[pr_reviewer]\nnum_max_findings = 5\n"  # cached
+
+        assert provider.repo_api.repo_get.call_count == 1
+
+    def test_fetch_global_repo_settings_propagates_non_404_errors(self):
+        provider = self._make_provider()
+        provider.repo_api.repo_get.side_effect = ApiException(status=500)
+
+        with pytest.raises(ApiException):
+            provider._fetch_global_repo_settings("owner")
 
 
 class TestGiteaProviderPRCommits:
@@ -919,3 +1183,281 @@ class TestGiteaProviderInlineCommentStatus:
 
         _, kwargs = client.call_api.call_args
         assert kwargs["body"]["event"] == "COMMENT"
+
+
+def test_gitea_persistent_wrapper_preserves_identity_and_result():
+    published = object()
+
+    class RecordingGiteaProvider:
+        # Gitea no longer overrides this: the base implementation persists.
+        publish_persistent_comment = GiteaProvider.publish_persistent_comment
+        supports_comment_editing = GitProvider.supports_comment_editing
+
+        def __init__(self):
+            self.calls = []
+
+        def edit_comment(self, comment, body):
+            return True
+
+        def publish_persistent_comment_full(
+            self, pr_comment, initial_header, update_header=True, name="review",
+            final_update_message=True, as_thread=False, identity_marker=None,
+            legacy_initial_header=None, require_agent_authorship=False,
+            fallback_on_error=True,
+        ):
+            self.calls.append((
+                pr_comment, initial_header, update_header, name,
+                final_update_message, as_thread, identity_marker,
+                legacy_initial_header, require_agent_authorship, fallback_on_error,
+            ))
+            return published
+
+    provider = RecordingGiteaProvider()
+    result = provider.publish_persistent_comment(
+        "review body",
+        "initial header",
+        update_header=False,
+        name="review",
+        final_update_message=False,
+        identity_marker="marker",
+        legacy_initial_header="legacy header",
+    )
+
+    assert result is published
+    assert provider.calls == [(
+        "review body", "initial header", False, "review", False,
+        False, "marker", "legacy header", False, True,
+    )]
+
+
+def _page(items):
+    """A raw (non-preloaded) giteapy response carrying one JSON page."""
+    return SimpleNamespace(data=BytesIO(json.dumps(items).encode("utf-8")))
+
+
+class TestGiteaRepoApiPagination:
+    """Gitea answers list endpoints one page at a time (30 items by default), so the PR
+    files and commits must be collected across every page."""
+
+    @staticmethod
+    def _repo_api(pages):
+        from pr_agent.git_providers.gitea_provider import RepoApi
+
+        repo_api = RepoApi(MagicMock())
+        repo_api.logger = MagicMock()
+        repo_api.api_client.call_api.side_effect = [_page(items) for items in pages]
+        return repo_api
+
+    @staticmethod
+    def _requested_pages(repo_api):
+        return [dict(call.kwargs["query_params"])["page"] for call in repo_api.api_client.call_api.call_args_list]
+
+    def test_pr_files_are_collected_across_pages(self):
+        repo_api = self._repo_api([
+            [{"filename": "a.py"}, {"filename": "b.py"}],
+            [{"filename": "c.py"}],
+            [],
+        ])
+
+        files = repo_api.get_change_file_pull_request(owner="owner", repo="repo", pr_number=7)
+
+        assert [f["filename"] for f in files] == ["a.py", "b.py", "c.py"]
+        assert self._requested_pages(repo_api) == [1, 2, 3]
+
+    def test_pr_commits_are_collected_across_pages(self):
+        repo_api = self._repo_api([
+            [{"sha": "newest"}, {"sha": "middle"}],
+            [{"sha": "oldest"}],
+            [],
+        ])
+
+        commits = repo_api.get_pr_commits(owner="owner", repo="repo", pr_number=7)
+
+        assert [c["sha"] for c in commits] == ["newest", "middle", "oldest"]
+        assert self._requested_pages(repo_api) == [1, 2, 3]
+
+    def test_a_page_shorter_than_the_requested_limit_is_not_the_last_page(self):
+        # A server capped at 30 items answers a limit of 50 with 30 items; only an empty
+        # page ends the walk, otherwise the original truncation would be back.
+        repo_api = self._repo_api([
+            [{"sha": str(i)} for i in range(30)],
+            [{"sha": str(i)} for i in range(30, 35)],
+            [],
+        ])
+
+        commits = repo_api.get_pr_commits(owner="owner", repo="repo", pr_number=7)
+
+        assert len(commits) == 35
+        assert self._requested_pages(repo_api) == [1, 2, 3]
+
+    def test_every_page_request_authenticates_via_header(self):
+        repo_api = self._repo_api([[{"filename": "a.py"}], []])
+
+        repo_api.get_change_file_pull_request(owner="owner", repo="repo", pr_number=7)
+
+        for call in repo_api.api_client.call_api.call_args_list:
+            assert call.kwargs["auth_settings"] == ["AuthorizationHeaderToken"]
+            assert "token" not in dict(call.kwargs["query_params"])
+
+    def test_a_failure_mid_way_does_not_return_a_partial_list(self):
+        repo_api = self._repo_api([])
+        repo_api.api_client.call_api.side_effect = [_page([{"filename": "a.py"}]), ApiException(status=502)]
+
+        files = repo_api.get_change_file_pull_request(owner="owner", repo="repo", pr_number=7)
+
+        assert files == []
+        repo_api.logger.error.assert_called_once()
+
+
+class TestBaseUrlHtmlIsResolvedOnFirstUse:
+    """apply_repo_settings builds the provider before it merges the repo's .pr_agent.toml,
+    so a user-facing URL fixed in the constructor would ignore a repo-level web_url."""
+
+    @staticmethod
+    def _settings(values):
+        settings = MagicMock()
+        settings.get.side_effect = lambda k, d=None: values.get(k, d)
+        return settings
+
+    @staticmethod
+    def _provider():
+        provider = GiteaProvider.__new__(GiteaProvider)
+        provider.logger = MagicMock()
+        provider.owner = "owner"
+        provider.repo = "repo"
+        provider.pr_number = 4
+        provider.base_url = "http://forgejo:3000"
+        provider.pr = MagicMock(html_url="http://forgejo:3000/owner/repo/pulls/4")
+        provider.get_pr_branch = MagicMock(return_value="feature")
+        return provider
+
+    @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_the_constructor_leaves_the_url_unresolved(self, mock_get_settings, _):
+        mock_get_settings.return_value = self._settings({"GITEA.PERSONAL_ACCESS_TOKEN": "token"})
+
+        provider = GiteaProvider("https://gitea.example.com/repository")
+
+        assert provider._base_url_html is None
+
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_a_web_url_merged_after_construction_is_honoured(self, mock_get_settings):
+        values = {"GITEA.WEB_URL": ""}
+        mock_get_settings.return_value = self._settings(values)
+        provider = self._provider()
+        # The repo's .pr_agent.toml lands after the provider exists and before any link is built.
+        values["GITEA.WEB_URL"] = "https://git.example.com"
+
+        link = provider.get_line_link("src/app.py", 7)
+
+        assert link == "https://git.example.com/owner/repo/src/branch/feature/src/app.py#L7"
+        assert provider.get_pr_url() == "https://git.example.com/owner/repo/pulls/4"
+
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_the_url_is_resolved_once(self, mock_get_settings):
+        values = {"GITEA.WEB_URL": "https://git.example.com"}
+        mock_get_settings.return_value = self._settings(values)
+        provider = self._provider()
+
+        first = provider.base_url_html
+        values["GITEA.WEB_URL"] = "https://changed.example.com"
+
+        assert provider.base_url_html == first == "https://git.example.com"
+
+    def test_an_assigned_url_is_used_as_is(self):
+        provider = self._provider()
+
+        provider.base_url_html = "https://assigned.example.com"
+
+        assert provider.base_url_html == "https://assigned.example.com"
+
+
+class TestGiteaRepoIgnoreRules:
+    """Regression for #2620: repository-level [ignore] rules from .pr_agent.toml
+    are merged into settings AFTER GiteaProvider is constructed (so the eager
+    filter in __init__ could never see them). The filter now runs inside
+    get_diff_files(), at diff time, when the merged repo settings are in effect.
+    """
+
+    GITEA_SETTINGS = {
+        "GITEA.URL": "https://gitea.example.com",
+        "GITEA.PERSONAL_ACCESS_TOKEN": "test-token",
+        "GITEA.REPO_SETTING": None,
+        "GITEA.SKIP_SSL_VERIFICATION": False,
+        "GITEA.SSL_CA_CERT": None,
+    }
+
+    FILES = [
+        {"filename": "generated/client.py", "additions": 10, "deletions": 0, "status": "added"},
+        {"filename": "api/schema.d.ts", "additions": 5, "deletions": 0, "status": "modified"},
+        {"filename": "src/application.py", "additions": 3, "deletions": 1, "status": "modified"},
+    ]
+
+    def _build_provider(self, mock_repo_api_cls, mock_get_settings, mock_api_client_cls):
+        settings = MagicMock()
+        settings.get.side_effect = lambda k, d=None: self.GITEA_SETTINGS.get(k, d)
+        mock_get_settings.return_value = settings
+
+        repo_api = mock_repo_api_cls.return_value
+        pr = SimpleNamespace(
+            head=SimpleNamespace(sha="head-sha"),
+            base=SimpleNamespace(sha="base-sha", ref="main"),
+        )
+        repo_api.get_pull_request.return_value = pr
+        repo_api.get_change_file_pull_request.return_value = self.FILES
+        repo_api.get_file_content.return_value = "file content"
+        repo_api.get_pull_request_diff.return_value = (
+            "diff --git a/generated/client.py b/generated/client.py\n"
+            "@@ -1 +1 @@\n-old\n+new\n"
+            "diff --git a/api/schema.d.ts b/api/schema.d.ts\n"
+            "@@ -1 +1 @@\n-old\n+new\n"
+            "diff --git a/src/application.py b/src/application.py\n"
+            "@@ -1 +1 @@\n-old\n+new\n"
+        )
+        repo_api.get_pr_commits.return_value = [{"sha": "head-sha"}]
+
+        from pr_agent.git_providers.gitea_provider import GiteaProvider
+
+        return GiteaProvider("https://gitea.example.com/owner/repo/pulls/1")
+
+    @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
+    @patch("pr_agent.git_providers.gitea_provider.RepoApi")
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_repo_ignore_globs_exclude_files_at_diff_time(
+        self, mock_get_settings, mock_repo_api_cls, mock_api_client_cls
+    ):
+        """Construct the provider with NO ignore rules (as happens before
+        apply_repo_settings merges the repo .pr_agent.toml), then merge the
+        repo's [ignore] rules into the request settings and confirm
+        get_diff_files() drops the matching files."""
+        provider = self._build_provider(mock_repo_api_cls, mock_get_settings, mock_api_client_cls)
+
+        with request_cycle_context({}):
+            context["settings"] = copy.deepcopy(global_settings)
+            context["settings"].ignore.glob = ["generated/**", "api/schema.d.ts"]
+            context["settings"].ignore.regex = []
+
+            diff_files = provider.get_diff_files()
+            names = [f.filename for f in diff_files]
+
+            assert "src/application.py" in names
+            assert "generated/client.py" not in names, \
+                "repo-level glob 'generated/**' must exclude generated/client.py"
+            assert "api/schema.d.ts" not in names, \
+                "repo-level glob 'api/schema.d.ts' must exclude api/schema.d.ts"
+
+    @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
+    @patch("pr_agent.git_providers.gitea_provider.RepoApi")
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_no_ignore_rules_keeps_all_files(
+        self, mock_get_settings, mock_repo_api_cls, mock_api_client_cls
+    ):
+        provider = self._build_provider(mock_repo_api_cls, mock_get_settings, mock_api_client_cls)
+
+        with request_cycle_context({}):
+            context["settings"] = copy.deepcopy(global_settings)
+            context["settings"].ignore.glob = []
+            context["settings"].ignore.regex = []
+
+            names = [f.filename for f in provider.get_diff_files()]
+            assert sorted(names) == ["api/schema.d.ts", "generated/client.py", "src/application.py"]

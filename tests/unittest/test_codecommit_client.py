@@ -164,3 +164,63 @@ class TestCodeCommitProvider:
             ("repo-one", "source-one", "destination-one"),
             ("repo-two", "source-two", "destination-two"),
         ]
+
+    def test_get_comments_for_pull_request_uses_safe_page_size_and_all_pages(self):
+        api = CodeCommitClient()
+        api.boto_client = MagicMock()
+        paginator = api.boto_client.get_paginator.return_value
+        paginator.paginate.return_value = [
+            {"commentsForPullRequestData": [{"comments": [{"commentId": "comment-1"}]}]},
+            {"commentsForPullRequestData": [{"comments": [{"commentId": "comment-2"}]}]},
+        ]
+
+        comments = api.get_comments_for_pull_request(321)
+
+        assert comments == [
+            {"comments": [{"commentId": "comment-1"}]},
+            {"comments": [{"commentId": "comment-2"}]},
+        ]
+        api.boto_client.get_paginator.assert_called_once_with("get_comments_for_pull_request")
+        paginator.paginate.assert_called_once_with(
+            pullRequestId="321",
+            PaginationConfig={"PageSize": 100},
+        )
+
+    def test_publish_comment_returns_boto_response(self):
+        api = CodeCommitClient()
+        api.boto_client = MagicMock()
+        api.boto_client.post_comment_for_pull_request.return_value = {
+            "comment": {"commentId": "comment-1", "content": "Review"}
+        }
+
+        response = api.publish_comment(
+            repo_name="my_test_repo",
+            pr_number=321,
+            destination_commit="destination-commit",
+            source_commit="source-commit",
+            comment="Review",
+        )
+
+        assert response == {"comment": {"commentId": "comment-1", "content": "Review"}}
+        api.boto_client.post_comment_for_pull_request.assert_called_once_with(
+            pullRequestId="321",
+            repositoryName="my_test_repo",
+            beforeCommitId="destination-commit",
+            afterCommitId="source-commit",
+            content="Review",
+        )
+
+    def test_update_comment_returns_boto_response(self):
+        api = CodeCommitClient()
+        api.boto_client = MagicMock()
+        api.boto_client.update_comment.return_value = {
+            "comment": {"commentId": "comment-1", "content": "Updated review"}
+        }
+
+        response = api.update_comment("comment-1", "Updated review")
+
+        assert response == {"comment": {"commentId": "comment-1", "content": "Updated review"}}
+        api.boto_client.update_comment.assert_called_once_with(
+            commentId="comment-1",
+            content="Updated review",
+        )

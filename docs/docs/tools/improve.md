@@ -1,6 +1,6 @@
 ## Overview
 
-The `improve` tool scans the PR code changes, and automatically generates meaningful suggestions for improving the PR code.
+Generate actionable code suggestions for improving the PR.
 The tool can be triggered automatically every time a new PR is [opened](../usage-guide/automations_and_usage.md#github-app-automatic-tools-when-a-new-pr-is-opened), or it can be invoked manually by commenting on any PR:
 
 ```toml
@@ -10,10 +10,10 @@ The tool can be triggered automatically every time a new PR is [opened](../usage
 ## How it looks
 
 === "Suggestions Overview"
-    ![code_suggestions_as_comment_closed](https://codium.ai/images/pr_agent/code_suggestions_as_comment_closed.png){width=512}
+    ![code_suggestions_as_comment_closed](../assets/code_suggestions_as_comment_closed.png){width=512}
 
 === "Selecting a specific suggestion"
-    ![code_suggestions_as_comment_open](https://codium.ai/images/pr_agent/code_suggestions_as_comment_open.png){width=512}
+    ![code_suggestions_as_comment_open](../assets/code_suggestions_as_comment_open.png){width=512}
 
 ___
 
@@ -37,7 +37,15 @@ For example, you can present suggestions with verified replacement ranges as com
 
 Suggestions whose replacement ranges cannot be verified remain regular comments without an apply action.
 
-![improve](https://codium.ai/images/pr_agent/improve.png){width=512}
+If batch publication fails, `/improve` retries each suggestion individually. If every retry fails,
+it reports a failure instead of silently removing the progress comment. With
+`config.propagate_tool_errors=true`, the publication error is also raised to the caller.
+Regular fallback comments and coverage notices are published before the error is reported.
+When this fallback output succeeds, it is retained without an additional failure banner;
+error propagation still follows `config.propagate_tool_errors`.
+If any individual retry succeeds, the existing partial-recovery behavior is preserved.
+
+![improve](../assets/improve.png){width=512}
 
 ### Automatic triggering
 
@@ -68,9 +76,9 @@ changes exits without calling the model.
 
 PR-Agent supports two modes for presenting code suggestions:
 
-1) [Table](https://codium.ai/images/pr_agent/code_suggestions_as_comment_closed.png) mode
+1) [Table](../assets/code_suggestions_as_comment_closed.png) mode
 
-2) [Inline Committable](https://codium.ai/images/pr_agent/improve.png) code comments mode.
+2) [Inline Committable](../assets/improve.png) code comments mode.
 
 The table format offers several key advantages:
 
@@ -82,7 +90,7 @@ The table format offers several key advantages:
 
 Table mode is the default of PR-Agent, and is recommended approach for most users due to these benefits.
 
-![code_suggestions_as_comment_closed.png](https://codium.ai/images/pr_agent/code_suggestions_as_comment_closed.png){width=512}
+![code_suggestions_as_comment_closed.png](../assets/code_suggestions_as_comment_closed.png){width=512}
 
 Teams with specific preferences can enable committable code comments mode in their local configuration, or use [dual publishing mode](#dual-publishing-mode).
 
@@ -114,25 +122,20 @@ Use triple quotes to write multi-line instructions. Use bullet points or numbers
 
 ### Best practices
 
-`Platforms supported: GitHub, GitLab, Bitbucket`
+`Repository context files supported: GitHub, GitLab, Gitea, Bitbucket, Azure DevOps`
 
-!!! warning "Open-source PR-Agent"
+The open-source PR-Agent package does not load `best_practices.md` automatically. To use a best-practices file,
+add it to `config.repo_context_files`:
 
-    Automatic loading of `best_practices.md` is a Qodo Merge feature and is not available in the open-source
-    PR-Agent package. In the open-source package, add the file to `config.repo_context_files` instead:
+```toml
+[config]
+repo_context_files = ["AGENTS.md", "best_practices.md"]
+```
 
-    ```toml
-    [config]
-    repo_context_files = ["AGENTS.md", "best_practices.md"]
-    ```
-
-    This fallback supports GitHub, GitLab, Gitea, Bitbucket, and Azure DevOps. Repository context files are read
-    from the default branch by default and are limited by
-    `config.repo_context_max_lines` (500 lines by default). Set `config.repo_context_from_default_branch = false`
-    to read them from the pull request's target branch instead. Providers without repository file fetching log a
-    warning and skip this context.
-
-Qodo Merge supports both simple and hierarchical best practices configurations to provide guidance to the AI model for generating relevant code suggestions.
+This fallback supports GitHub, GitLab, Gitea, Bitbucket, and Azure DevOps. Repository context files are read
+from the default branch by default and are limited by `config.repo_context_max_lines` (500 lines by default).
+Set `config.repo_context_from_default_branch = false` to read them from the pull request's target branch instead.
+Providers without repository file fetching log a warning and skip this context.
 
 ???- tip "Writing effective best practices files"
 
@@ -141,10 +144,11 @@ Qodo Merge supports both simple and hierarchical best practices configurations t
     - Write clearly and concisely
     - Include brief code examples when helpful with before/after patterns
     - Focus on project-specific guidelines that will result in relevant suggestions you actually want to get
-    - Keep each file relatively short, under 800 lines, since:
+    - Keep each file short and focused, since:
         - AI models may not process effectively very long documents
         - Long files tend to contain generic guidelines already known to AI
-        - Maximum multiple file accumulated content is limited to 2000 lines.
+        - `config.repo_context_max_lines` limits the total rendered repository context, including wrapper and
+          truncation lines.
     - Use pattern-based structure rather than simple bullet points for better clarity
 
 ???- tip "Example of a best practices file"
@@ -190,17 +194,11 @@ Qodo Merge supports both simple and hierarchical best practices configurations t
         return ""
     ```
 
-#### Local best practices in Qodo Merge
-
-For basic usage, create a `best_practices.md` file in your repository's root directory containing a list of best practices, coding standards, and guidelines specific to your repository.
-
-The AI model will use this `best_practices.md` file as a reference, and in case the PR code violates any of the guidelines, it will create additional suggestions, with a dedicated label: `Organization best practice`.
-
 ### Combining 'extra instructions' and 'best practices'
 
 The `extra instructions` configuration is more related to the `improve` tool prompt. It can be used, for example, to avoid specific suggestions ("Don't suggest to add try-except block", "Ignore changes in toml files", ...) or to emphasize specific aspects or formats ("Answer in Japanese", "Give only short suggestions", ...)
 
-In contrast, the `best_practices.md` file is a general guideline for the way code should be written in the repo.
+In contrast, a `best_practices.md` file is a general guideline for the way code should be written in the repo.
 
 Using a combination of both can help the AI model to provide relevant and tailored suggestions.
 
@@ -294,7 +292,7 @@ You can set the content of the checkbox text via:
 code_suggestions_self_review_text = "... (your text here) ..."
 ```
 
-![self_review_1](https://codium.ai/images/pr_agent/self_review_1.png){width=512}
+![self_review_1](../assets/self_review_1.webp){width=512}
 
 !!! note "The checkbox is a visual marker only"
 
@@ -312,6 +310,9 @@ PR-Agent uses a dynamic strategy to generate code suggestions based on the size 
 #### 2. Generating suggestions
 
 - For each chunk, PR-Agent generates up to `pr_code_suggestions.num_code_suggestions_per_chunk` suggestions (default: 3).
+- To bound output from large or chunked PRs, set `pr_code_suggestions.max_suggestions_per_file` to a positive integer.
+  After all chunks are merged, the highest-scored suggestions are retained per file; ties keep their original order.
+  The default value `0` disables this cap.
 
 This approach has two main benefits:
 
@@ -392,6 +393,13 @@ for the authoritative default values.
       <tr>
         <td><b>num_code_suggestions_per_chunk</b></td>
         <td>Number of code suggestions provided by the 'improve' tool, per chunk.</td>
+      </tr>
+      <tr>
+        <td><b>max_suggestions_per_file</b></td>
+        <td>
+          Maximum number of suggestions retained for each file after chunk results are combined. The highest-scored
+          suggestions are retained. Set to <code>0</code> to preserve the uncapped behavior.
+        </td>
       </tr>
       <tr>
         <td><b>max_number_of_calls</b></td>

@@ -39,9 +39,23 @@ Implement a `GitProvider` subclass and register it:
 1. Create `pr_agent/git_providers/<name>_provider.py`, extending the interface in `pr_agent/git_providers/git_provider.py` (`gitlab_provider.py` is the reference).
 2. Register the class in `_GIT_PROVIDERS` in `pr_agent/git_providers/__init__.py`. Keys already used: `github`, `gitlab`, `bitbucket`, `bitbucket_server`, `azure`, `codecommit`, `local`, `gerrit`, `gitea`, `plain-diff`.
 3. Select it via `[config]` → `git_provider="<name>"` in `pr_agent/settings/configuration.toml`.
-4. Add `docs/docs/installation/<name>.md` (see [`gitlab.md`](../installation/gitlab.md)) and register it under `Installation` in `docs/mkdocs.yml`.
+4. Add `docs/docs/installation/<name>.md` (see [`gitlab.md`](../installation/gitlab.md)) and register it under `Installation` in both `docs/mkdocs.yml` and `docs/docs/summary.md`.
 5. Select provider-dependent behavior with capability checks like `provider.is_supported("feature")` rather than provider-type checks.
 6. Add unit tests under `tests/unittest/test_<name>_provider.py` (see `test_bitbucket_provider.py`) and list the required env vars in `pr_agent/settings/.secrets_template.toml`.
+
+### Registering a provider from another package
+
+A provider does not have to live in this repository. Call `register_git_provider` from your own package before PR-Agent resolves the provider, for example from the module that starts your server or wraps the CLI:
+
+```python
+from pr_agent.git_providers import register_git_provider
+
+from my_package.forge_provider import ForgeProvider
+
+register_git_provider("forge", ForgeProvider)
+```
+
+Then select it with `git_provider="forge"` under `[config]`. The class must extend `GitProvider`. Registering the same class twice is a no-op, and registering a different class under an id that is already taken raises, so a package cannot silently replace a built-in provider.
 
 ## Adding a tool
 
@@ -50,5 +64,5 @@ Implement a `GitProvider` subclass and register it:
 3. Add a prompt TOML under `pr_agent/settings/` and register it in the `settings_files=[...]` list in `pr_agent/config_loader.py` — it is not loaded otherwise.
 4. Match the TOML section name to the settings key the tool reads: `[pr_review_prompt]` in `pr_reviewer_prompts.toml` ↔ `get_settings().pr_review_prompt` in `pr_reviewer.py`.
 5. Register the tool in `command2class` in `pr_agent/agent/pr_agent.py` under a command name, e.g. `"my_tool": PRMyTool`. Then add it to the hardcoded help surfaces, or it will not show up in `/help`: `pr_agent/tools/pr_help_message.py`, `pr_agent/servers/help.py`, and the command list in `pr_agent/cli.py`.
-6. Add a row to the tool list in `docs/docs/tools/index.md`, a page `docs/docs/tools/<name>.md` (see [`review.md`](../tools/review.md)), and register the page under `Tools` in `docs/mkdocs.yml`.
+6. Add a row to the tool list in `docs/docs/tools/index.md`, a page `docs/docs/tools/<name>.md` (see [`review.md`](../tools/review.md)), and register the page under `Tools` in both `docs/mkdocs.yml` and `docs/docs/summary.md`.
 7. Add tests under `tests/unittest/` and verify with `PYTHONPATH=. uv run pytest tests/unittest`.

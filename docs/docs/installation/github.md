@@ -2,7 +2,7 @@ In this page we will cover how to install and run PR-Agent as a GitHub Action or
 
 ## Run as a GitHub Action
 
-You can use our pre-built Github Action Docker image to run PR-Agent as a Github Action.
+You can use our pre-built GitHub Action Docker image to run PR-Agent as a GitHub Action.
 
 1) Add the following file to your repository under `.github/workflows/pr_agent.yml`:
 
@@ -442,6 +442,8 @@ max_artifact_size = 50000                                   # characters; longer
 !!! note
     A path that resolves outside `GITHUB_WORKSPACE` is rejected, and a missing or unreadable file is skipped with a warning — in both cases the tools still run, just without the artifact context.
 
+The same settings apply when PR-Agent runs as a CLI from another CI system, with `ARTIFACT_PATH` set in the job's environment; see the [GitLab pipeline example](./gitlab.md#ci-artifact-context).
+
 #### Using Configuration Files
 
 Instead of setting all options via environment variables, you can use a `.pr_agent.toml` file in your repository root:
@@ -614,7 +616,7 @@ For more detailed configuration options, see:
     ...
     ```
 
-    For enhanced security, you can also specify the Docker image by its [digest](https://hub.docker.com/repository/docker/pragent/pr-agent/tags). Resolve the digest for the version you are pinning with `docker buildx imagetools inspect pragent/pr-agent:0.41.0-github_action --format '{{.Manifest.Digest}}'`, then use it in place of the tag:
+    For enhanced security, you can also specify the Docker image by its [digest](https://hub.docker.com/r/pragent/pr-agent/tags). Resolve the digest for the version you are pinning with `docker buildx imagetools inspect pragent/pr-agent:0.41.0-github_action --format '{{.Manifest.Digest}}'`, then use it in place of the tag:
     ```yaml
     ...
         steps:
@@ -649,7 +651,7 @@ For more detailed configuration options, see:
 
 Allowing you to automate the review process on your private or public repositories.
 
-1) Create a GitHub App from the [Github Developer Portal](https://docs.github.com/en/developers/apps/creating-a-github-app).
+1) Create a GitHub App from the [GitHub Developer Portal](https://docs.github.com/en/developers/apps/creating-a-github-app).
 
    - Set the following permissions:
      - Pull requests: Read & write
@@ -659,6 +661,7 @@ Allowing you to automate the review process on your private or public repositori
    - Set the following events:
      - Issue comment
      - Pull request
+     - Pull request review
      - Push (if you need to enable triggering on PR update)
      - Pull request review comment (required for `/ask` on review threads)
 
@@ -699,9 +702,8 @@ cp pr_agent/settings/.secrets_template.toml pr_agent/settings/.secrets.toml
 - Copy your app's webhook secret to the webhook_secret field (required).
 - Set deployment_type to 'app' in [configuration.toml](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml)
 
-    > The .secrets.toml file is not copied to the Docker image by default, and is only used for local development.
-    > If you want to use the .secrets.toml file in your Docker image, you can add remove it from the .dockerignore file.
-    > In most production environments, you would inject the secrets file as environment variables or as mounted volumes.
+    > The local `.secrets.toml` file is excluded from the Docker build context. Never bake secrets into a container image.
+    > For container deployments, provide secrets at runtime through environment variables or a mounted secret volume.
     > For example, in order to inject a secrets file as a volume in a Kubernetes environment you can update your pod spec to include the following,
     > assuming you have a secret named `pr-agent-settings` with a key named `.secrets.toml`:
 
@@ -843,6 +845,7 @@ Example IAM permissions to that user to allow access to CodeCommit:
                 "codecommit:List*",
                 "codecommit:PostComment*",
                 "codecommit:PutCommentReaction",
+                "codecommit:UpdateComment",
                 "codecommit:UpdatePullRequestDescription",
                 "codecommit:UpdatePullRequestTitle"
             ],
