@@ -64,8 +64,15 @@ Two properties were verified before the rows ran, because either would have made
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `old-default` | 32k clamp, chunking off | 2 | 110,357 | 0 | - | 0.00 | 0.000 |
 | `new-default` | 200k clamp, chunking on | 4 | 890,093 | 1 | 0 | 0.00 | 0.000 |
-| `p0-cap` | p0 profile, cap 3,000 | 3 | 446,885 | 1 | `test-debug-leftovers` | 1.00 | 0.043 |
-| `p0-nocap` | p0 profile, cap disabled | 7 | 1,002,748 | 2 | 0 | 0.00 | 0.000 |
+| `p0-cap` | p0 flags, cap 3,000 | 3 | 446,885 | 1 | `test-debug-leftovers` | 1.00 | 0.043 |
+| `p0-nocap` | p0 flags, cap disabled | 7 | 1,002,748 | 2 | 0 | 0.00 | 0.000 |
+
+"p0 flags" is not `local_profile.toml`: the runner sets that file's structural keys
+(`num_max_findings=12`, chunking, the three `require_*` toggles, finding verification) but not
+its `extra_instructions` block, and runs at `temperature=0` rather than the file's `0.1`. That
+prompt block plausibly moves finding counts, so these rows do not measure the profile as written.
+`old-default` is likewise not a pure pre-change picture - `low_priority_max_tokens_per_file` sits
+at its new default of 3,000 there, which is inert at a 32k clamp but was not reverted.
 
 Adjudication of the three findings the scorer left `unknown` (raw text in `raw/`, reports in
 `cursor_*.json`): none of them changes a score.
@@ -76,15 +83,33 @@ Adjudication of the three findings the scorer left `unknown` (raw text in `raw/`
   verified, because the corpus repo is deliberately not on this machine.
 - Both `p0-nocap` findings are in `design/_s_play.html`. No label lives under `design/**`.
 
-### R-9a (the per-file cap) - acceptance met on this model line
+### R-9a (the per-file cap) - acceptance met
 
-`p0-cap` against `p0-nocap` is the same profile with only `low_priority_max_tokens_per_file`
-changed, so the comparison is clean: **the cap halved the run** (446,885 vs 1,002,748 prompt
-tokens, 3 calls vs 7) and moved the output from two findings in a design mockup to one finding
-that matches a real labeled defect. Without the cap, 100% of the findings were in `design/**` -
-the exact failure R-9 was written against. Both excluded files were reported in the coverage
-ledger and the review footer (`design/*.html` ... `(low-priority file, not reviewed)`), so
-nothing was dropped silently.
+R-9's acceptance is a **`design/**` token share below 5%**, not a token total. `p0-cap` and
+`p0-nocap` are the same flags with only `low_priority_max_tokens_per_file` changed, so the
+comparison is clean. Share computed by attributing each file's patch tokens (o200k_base, the
+tokenizer the run used) to the files that actually reached a model call, per the `files` field
+of each ledger row:
+
+| row | files reached | patch tokens reaching a call | `design/**` | all low-priority |
+| --- | --- | --- | --- | --- |
+| `p0-cap` | 172 | 304,120 | **0 (0.0%)** | 8,932 (2.9%) |
+| `p0-nocap` | 190 | 743,370 | 414,976 (55.8%) | 448,182 (60.3%) |
+
+0.0% against a 5% bar, from 55.8% uncapped. This is arithmetic over the diff and the ledger, not
+a sample of model behaviour, so it does not depend on n or on model nondeterminism - which is
+why it, and not the finding counts, is what settles R-9a. The 55% drop in total prompt tokens
+(446,885 vs 1,002,748, 3 calls vs 7) is the same fact seen from the budget side.
+
+`new-default` also shows 0.0%, because the cap ships as a stock default.
+
+Both excluded files were reported in the coverage ledger and the review footer
+(`design/*.html` ... `(low-priority file, not reviewed)`), so nothing was dropped silently.
+
+Observed but **not** part of the acceptance: `p0-nocap`'s only two findings were both in
+`design/_s_play.html`, while `p0-cap`'s one finding matched a labeled defect. That is a 1-vs-2
+delta at n = 1, which this corpus says to treat as noise until R-1's repetition agrees within
++/-1.
 
 ### R-9b (the raised defaults) - measured, and the honest reading
 
