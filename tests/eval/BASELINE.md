@@ -41,7 +41,7 @@ Two default/behavior changes landed after the rows above, so **both rows are now
 ## 2026-09-11: the Cursor CLI model line (4 rows)
 
 The Gemini free tier stayed spent, so these rows ran through the Cursor CLI instead:
-`.delegate/runs/task-10/cursor_openai_shim.py` serves `/v1/chat/completions` and pipes each
+`tests/eval/cursor_openai_shim.py` serves `/v1/chat/completions` and pipes each
 prompt to `cursor-agent -p --output-format json --mode ask --sandbox enabled`, model
 `gemini-3.7-flash-high`. **This is a separate model line. Do not compare these rows to the two
 `gemini-3.5-flash` rows above** - different model, different provider path, different prompt
@@ -131,6 +131,18 @@ so both default rows score recall 0.000.
 - Finding verification was on for both p0 rows; its contribution was not isolated.
 
 ## Reproduce
+
+To reproduce the Cursor rows, start the shim first and point the run at it instead of Gemini:
+
+```bash
+CURSOR_API_KEY=... python3 tests/eval/cursor_openai_shim.py --port 8899 \
+  --model gemini-3.7-flash-high --raw-dir /tmp/cursor-raw &
+#   ... then --set config.model=openai/cursor-gemini-3.7-flash-high \
+#            --set openai.api_base=http://127.0.0.1:8899/v1 --set openai.key=cursor-cli-shim \
+#            --set config.custom_model_max_tokens=1048576
+```
+
+The model must have a 1M context; a smaller one truncates long prompts without saying so.
 
 ```bash
 tests/eval/fetch_pr_diff.sh samer2373/block_rush 1 /tmp/block_rush_pr1.diff
