@@ -46,6 +46,31 @@ Model `gemini/gemini-3.5-flash`, shared budget `enable_large_pr_chunking=true ma
 
 Caveats that the next session must not paper over: verification was never exercised live (Google quota exhausted mid-run); the two rows differ in chunk packing so the recall delta is noise until repeated; stock defaults (32k clamp, chunking off) reviewed 5/294 files and scored 0 — that is the real out-of-box experience today.
 
+## Session 3 (2026-09-11 16:49-17:35) - the baseline, via the Cursor CLI
+
+Item 1 is **unblocked and done**, on a new model line. The Gemini free tier is still spent, so
+`tests/eval/cursor_openai_shim.py` (committed, `22baa75c`) serves an OpenAI-compatible endpoint
+backed by `cursor-agent -p --mode ask --sandbox enabled`, model `gemini-3.7-flash-high`. Six
+rows ran through it: four configs plus a repetition of the two that carry the verdict. Full
+table, adjudication and caveats in `tests/eval/BASELINE.md`.
+
+- **R-9a (per-file cap): acceptance met.** `design/**` was 0.0% of the reviewed budget with the
+  cap against 55.8% without, on both reps - inside R-9's < 5% bar. Measured as arithmetic over
+  the diff and the ledger, so it does not depend on n. Budget: ~450-500k prompt tokens capped
+  against ~1.00M uncapped.
+- **R-9b (raised defaults): partially met.** The old defaults produced a well-formed but empty
+  review of a 2.4MB diff; the new ones reach the whole PR in two merged chunks and report a
+  finding. No recall improvement - that finding is out-of-label.
+- **R-1 repetition: run, and it fails.** Same-flag pairs disagree by up to 2 findings, outside
+  the +/-1 band. A rep-1 observation that the cap improved finding quality did not replicate
+  and is retracted in BASELINE.md.
+- **Open, and the next thing worth doing:** absolute recall on this line is 1 of 23 at best.
+  That points at the prompt/provider path, not at any knob tuned so far - investigate it before
+  more tuning.
+
+Item 5 (merge `fix/review-p0`) is still held; the baseline it was waiting on now exists.
+Rotate the Cursor API key used for these runs - it was pasted into a chat transcript.
+
 ## Session 2 addendum — Codex review of the session-2 diff
 
 Adversarial read-only pass (Codex, `task-mtx02yzm-ibsh0k`) over `bbb14015..bcce8ebe` found two
