@@ -138,12 +138,14 @@ class BitbucketServerProvider(GitProvider):
     def get_repo_file_content(self, file_path: str, from_default_branch: bool = False):
         # Read from the PR target ref (the branch being merged into), matching the other providers,
         # or from the repository default branch when from_default_branch is requested.
+        ref = self.get_repo_context_ref(from_default_branch)
+        return self.get_file(file_path, ref)
+
+    def get_repo_context_ref(self, from_default_branch: bool = False) -> Optional[str]:
         if from_default_branch:
             default_branch_dict = self.bitbucket_client.get_default_branch(self.workspace_slug, self.repo_slug)
-            ref = default_branch_dict.get('displayId') or self.pr.toRef['latestCommit']
-        else:
-            ref = self.pr.toRef['latestCommit']
-        return self.get_file(file_path, ref)
+            return default_branch_dict.get('displayId') or self.pr.toRef['latestCommit']
+        return self.pr.toRef['latestCommit']
 
     def get_pr_id(self):
         return self.pr_num
@@ -356,25 +358,6 @@ class BitbucketServerProvider(GitProvider):
                 self.workspace_slug, self.repo_slug, self.pr_num, pr_comment
             )
         return None
-
-    def publish_persistent_comment(self, pr_comment: str,
-                                   initial_header: str,
-                                   update_header: bool = True,
-                                   name='review',
-                                   final_update_message=True,
-                                   as_thread: bool = False,
-                                   identity_marker: str | None = None,
-                                   legacy_initial_header: str | None = None):
-        return self.publish_persistent_comment_full(
-            pr_comment,
-            initial_header,
-            update_header,
-            name,
-            final_update_message,
-            as_thread,
-            identity_marker=identity_marker,
-            legacy_initial_header=legacy_initial_header,
-        )
 
     def supports_review_comment_identity(self) -> bool:
         return True

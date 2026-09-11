@@ -232,6 +232,18 @@ class GitProvider(ABC):
         but not GitHub-flavored markdown override this."""
         return False
 
+    def supports_issue_url_tickets(self) -> bool:
+        """Tickets are linked as issue URLs in the PR description or branch name."""
+        return False
+
+    def supports_issue_reference_tickets(self) -> bool:
+        """Tickets are linked as project-scoped issue references (e.g. group/project#12)."""
+        return False
+
+    def supports_linked_work_item_tickets(self) -> bool:
+        """Tickets come from work items the platform links to the PR itself."""
+        return False
+
     #Given a url (issues or PR/MR) - get the .git repo url to which they belong. Needs to be implemented by the provider.
     def get_git_repo_url(self, issues_or_pr_url: str) -> str:
         get_logger().warning("Not implemented! Returning empty url")
@@ -522,6 +534,17 @@ class GitProvider(ABC):
     def get_repo_file_content(self, file_path: str, from_default_branch: bool = False):
         return ""
 
+    def get_repo_context_ref(self, from_default_branch: bool = False) -> Optional[str]:
+        """Return the ref (commit SHA or branch name) that repo-context files are read from.
+
+        The repo-context cache key (pr_agent/algo/repo_context.py) includes this ref so a
+        rebase or a push to the base branch invalidates cached file content instead of serving
+        it from a commit that has since moved. Providers that override get_repo_file_content
+        should return the same ref they fetch from; the default None covers providers with no
+        repo-context support at all.
+        """
+        return None
+
     def get_workspace_name(self):
         return ""
 
@@ -580,6 +603,16 @@ class GitProvider(ABC):
     def resolve_outdated_inline_threads(self):  # noqa: B027 - intentional no-op
         pass
 
+    def supports_comment_editing(self) -> bool:
+        """Whether this provider can actually edit an existing comment.
+
+        The base ``edit_comment`` is a no-op that returns ``None``, which
+        ``publish_persistent_comment_full`` cannot distinguish from a successful
+        edit. A provider that has not implemented it therefore cannot persist,
+        and must create a new comment instead of silently discarding the body.
+        """
+        return type(self).edit_comment is not GitProvider.edit_comment
+
     def publish_persistent_comment(self, pr_comment: str,
                                    initial_header: str,
                                    update_header: bool = True,
@@ -588,7 +621,18 @@ class GitProvider(ABC):
                                    as_thread: bool = False,
                                    identity_marker: str | None = None,
                                    legacy_initial_header: str | None = None):
-        return self.publish_comment(pr_comment, **({'as_thread': True} if as_thread else {}))
+        if not self.supports_comment_editing():
+            return self.publish_comment(pr_comment, **({'as_thread': True} if as_thread else {}))
+        return self.publish_persistent_comment_full(
+            pr_comment,
+            initial_header,
+            update_header,
+            name,
+            final_update_message,
+            as_thread=as_thread,
+            identity_marker=identity_marker,
+            legacy_initial_header=legacy_initial_header,
+        )
 
     @staticmethod
     def _get_comment_body(comment) -> str:

@@ -142,6 +142,9 @@ class GithubProvider(GitProvider):
     def supports_changelog_update_review(self) -> bool:
         return True
 
+    def supports_issue_url_tickets(self) -> bool:
+        return True
+
     def _get_owner_and_repo_path(self, given_url: str) -> str:
         try:
             repo_path = None
@@ -431,17 +434,19 @@ class GithubProvider(GitProvider):
                                    update_header: bool = True,
                                    name='review',
                                    final_update_message=True,
+                                   as_thread: bool = False,
                                    identity_marker: str | None = None,
                                    legacy_initial_header: str | None = None):
         if get_settings().github.publish_as_check_run:
             if self._publish_check_run(pr_comment, name):
                 return
-        self.publish_persistent_comment_full(
+        return self.publish_persistent_comment_full(
             pr_comment,
             initial_header,
             update_header,
             name,
             final_update_message,
+            as_thread=as_thread,
             identity_marker=identity_marker,
             legacy_initial_header=legacy_initial_header,
         )
@@ -1361,6 +1366,25 @@ class GithubProvider(GitProvider):
             if e.status == 404:
                 return ""
             raise
+
+    def get_repo_context_ref(self, from_default_branch: bool = False) -> Optional[str]:
+        # Match get_repo_file_content: the PR target (base) commit is the cached revision.
+        # When the default branch is read (explicitly, or because no PR base exists) resolve
+        # its head commit so a push to the default branch invalidates cached content within
+        # the TTL instead of serving it from a moved commit.
+        if not from_default_branch:
+            base = getattr(getattr(self, "pr", None), "base", None)
+            ref = getattr(base, "sha", None) or getattr(base, "ref", None)
+            if ref:
+                return ref
+        repo_obj = getattr(self, "repo_obj", None)
+        if repo_obj is None:
+            return None
+        try:
+            return repo_obj.get_branch(repo_obj.default_branch).commit.sha
+        except Exception as e:
+            get_logger().debug(f"Could not resolve the default branch revision for repo context: {e}")
+            return None
 
     def get_workspace_name(self):
         return self.repo.split('/')[0]

@@ -73,6 +73,12 @@ def _create_metric_exporter(config):
         if config.otlp_headers:
             kwargs["headers"] = config.otlp_headers
         return OTLPMetricExporter(**kwargs)
+    elif config.exporter_type == ExporterType.PROMETHEUS:
+        # Imported lazily so the gunicorn master (preload_app) never pulls in
+        # prometheus_client before the multiprocess dir is provisioned.
+        from pr_agent.telemetry.prometheus import PrometheusMetricExporter
+
+        return PrometheusMetricExporter()
     return None
 
 

@@ -498,11 +498,12 @@ _This section only documents commented-out examples; see the [TOML source](https
 | Key | Default | Description |
 | --- | --- | --- |
 | `is_enabled` | false | disabled by default; set to true to enable telemetry |
-| `exporter_type` | "console" | "console", "otlp", or "none" |
+| `exporter_type` | "console" | "console", "otlp", "prometheus", or "none" |
 | `service_name` | "pr-agent" |  |
 | `environment` | "development" | "development", "staging", "production", etc. |
 | `otlp_timeout` | 3 | seconds; hard deadline per OTLP export call (incl. retries). Bounds CLI-exit/request stalls when the collector is unreachable; batches slower than this are dropped. |
 | `otlp_protocol` | "http" | "http" (default; exporter ships with pr-agent) or "grpc" (requires the otel-grpc extra: pip install pr-agent[otel-grpc]) |
+| `prometheus_multiproc_dir` | "/tmp/pr-agent-prometheus" | shared dir for the prometheus exporter's per-worker state files; required when exporter_type = "prometheus" (multiprocess gunicorn deployments); created 0700 and must stay owned by the run user (symlink or foreign-owner paths are refused) |
 | `include_pr_url` | false | set to true to attach PR URLs to spans (may expose private repo names) |
 | `include_error_details` | false | set to true to attach exception messages and rejected-command text to spans (may expose PR URLs, repo names, or other request content) |
 
