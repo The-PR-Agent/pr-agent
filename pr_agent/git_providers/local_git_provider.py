@@ -1,6 +1,6 @@
 from collections import Counter
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from git import Repo
 
@@ -195,17 +195,17 @@ class LocalGitProvider(GitProvider):
     def remove_comment(self, comment):
         pass  # Not applicable to the local git provider, but required by the interface
 
-    def add_eyes_reaction(self, comment):
-        pass  # Not applicable to the local git provider, but required by the interface
+    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
+        return None  # Not applicable to the local git provider, but required by the interface
 
-    def get_commit_messages(self):
-        pass  # Not applicable to the local git provider, but required by the interface
+    def get_commit_messages(self) -> str:
+        return ""  # Not applicable to the local git provider, but required by the interface
 
     def get_repo_settings(self):
         pass  # Not applicable to the local git provider, but required by the interface
 
-    def remove_reaction(self, comment):
-        pass  # Not applicable to the local git provider, but required by the interface
+    def remove_reaction(self, issue_comment_id: int, reaction_id: int) -> bool:
+        return True  # Not applicable to the local git provider, but required by the interface
 
     def get_languages(self):
         """

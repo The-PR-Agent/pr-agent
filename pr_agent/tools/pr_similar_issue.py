@@ -53,10 +53,39 @@ def _embed_with_fallback(texts: List[str]) -> List[List[float]]:
         return embeds
 
 
+def _qdrant_collection_name(base_name: str) -> str:
+    """Derive the qdrant collection name from the shared index name.
+
+    Point ids were re-seeded with the repository name in #2323, so points written by an earlier
+    version live under ids that are never rewritten and never deleted. Writing the new ids into a
+    separate collection keeps those stale points out of every query without deleting anything: the
+    pre-#2323 collection is left untouched and can be dropped by hand once it is no longer wanted.
+
+    Only the qdrant backend uses this; ``self.index_name`` is shared with pinecone and lancedb and
+    is deliberately left alone.
+    """
+    return f"{base_name}-v2"
+
+
+def _provider_supports_issue_indexing() -> bool:
+    """Whether the configured provider can back `/similar_issue`.
+
+    The check is on the provider class rather than on the configured id, so a provider
+    registered through `register_git_provider()` is judged by the capability it declares.
+    An unresolvable configuration is reported as unsupported, which is what the tool's
+    `run()` already handles, rather than raised out of `__init__`.
+    """
+    try:
+        provider_class = get_git_provider()
+    except ValueError:
+        return False
+    return provider_class.supports_issue_indexing()
+
+
 class PRSimilarIssue:
     def __init__(self, issue_url: str, ai_handler, args: list = None):
         self.issue_url = issue_url
-        self.supported = get_settings().config.git_provider == "github"
+        self.supported = _provider_supports_issue_indexing()
         if not self.supported:
             return
 
@@ -74,39 +103,36 @@ class PRSimilarIssue:
         if get_settings().pr_similar_issue.vectordb == "pinecone":
             try:
                 import pinecone
-            except:
-                raise Exception("Please install 'pinecone' and 'pinecone_datasets' to use pinecone as vectordb")
-            # assuming pinecone api key and environment are set in secrets file
+                from pinecone import ServerlessSpec
+            except ImportError:
+                raise Exception("Please install the 'pinecone' package to use pinecone as vectordb") from None
+            # assuming pinecone api key, cloud and region are set in secrets file
             try:
                 api_key = get_settings().pinecone.api_key
-                environment = get_settings().pinecone.environment
+                cloud = get_settings().pinecone.cloud
+                region = get_settings().pinecone.region
             except Exception:
                 if not self.cli_mode:
                     repo_name, original_issue_number = self.git_provider._parse_issue_url(self.issue_url.split('=')[-1])
                     issue_main = self.git_provider.repo_obj.get_issue(original_issue_number)
-                    issue_main.create_comment("Please set pinecone api key and environment in secrets file")
-                raise Exception("Please set pinecone api key and environment in secrets file")
+                    issue_main.create_comment("Please set pinecone api key, cloud and region in secrets file")
+                raise Exception("Please set pinecone api key, cloud and region in secrets file")
+            self.pc = pinecone.Pinecone(api_key=api_key)
+            self.pc_spec = ServerlessSpec(cloud=cloud, region=region)
+            self.pinecone_index = None
 
             # check if index exists, and if repo is already indexed
             run_from_scratch = False
-            if run_from_scratch:  # for debugging
-                pinecone.init(api_key=api_key, environment=environment)
-                if index_name in pinecone.list_indexes():
-                    get_logger().info('Removing index...')
-                    pinecone.delete_index(index_name)
-                    get_logger().info('Done')
-
             upsert = True
-            pinecone.init(api_key=api_key, environment=environment)
-            if not index_name in pinecone.list_indexes():
+            if not self.pc.has_index(index_name):
                 run_from_scratch = True
                 upsert = False
             else:
                 if get_settings().pr_similar_issue.force_update_dataset:
                     upsert = True
                 else:
-                    pinecone_index = pinecone.Index(index_name=index_name)
-                    res = pinecone_index.fetch([f"example_issue_{repo_name_for_index}"]).to_dict()
+                    self.pinecone_index = self.pc.Index(name=index_name)
+                    res = self.pinecone_index.fetch(ids=[f"example_issue_{repo_name_for_index}"]).to_dict()
                     if res["vectors"]:
                         upsert = False
 
@@ -118,7 +144,7 @@ class PRSimilarIssue:
                 get_logger().info('Done')
                 self._update_index_with_issues(issues, repo_name_for_index, upsert=upsert)
             else:  # update index if needed
-                pinecone_index = pinecone.Index(index_name=index_name)
+                self.pinecone_index = self.pc.Index(name=index_name)
                 issues_to_update = []
                 issues_paginated_list = repo_obj.get_issues(state='all')
                 counter = 1
@@ -128,7 +154,7 @@ class PRSimilarIssue:
                     issue_str, comments, number = self._process_issue(issue)
                     issue_key = f"issue_{number}"
                     id = issue_key + "." + "issue"
-                    res = pinecone_index.fetch([id]).to_dict()
+                    res = self.pinecone_index.fetch(ids=[id]).to_dict()
                     is_new_issue = True
                     for vector in res["vectors"].values():
                         if vector['metadata']['repo'] == repo_name_for_index:
@@ -218,6 +244,9 @@ class PRSimilarIssue:
             except Exception:
                 raise Exception("Please install qdrant-client to use qdrant as vectordb")
 
+            # Scoped to qdrant only: pinecone and lancedb keep using self.index_name unchanged.
+            self.qdrant_collection_name = _qdrant_collection_name(index_name)
+
             api_key = None
             url = None
             try:
@@ -235,11 +264,11 @@ class PRSimilarIssue:
             run_from_scratch = False
             ingest = True
 
-            if not self.qdrant.collection_exists(collection_name=self.index_name):
+            if not self.qdrant.collection_exists(collection_name=self.qdrant_collection_name):
                 run_from_scratch = True
                 ingest = False
                 self.qdrant.create_collection(
-                    collection_name=self.index_name,
+                    collection_name=self.qdrant_collection_name,
                     vectors_config=VectorParams(size=1536, distance=Distance.COSINE),
                 )
             else:
@@ -247,7 +276,7 @@ class PRSimilarIssue:
                     ingest = True
                 else:
                     response = self.qdrant.count(
-                        collection_name=self.index_name,
+                        collection_name=self.qdrant_collection_name,
                         count_filter=Filter(must=[
                             FieldCondition(key="metadata.repo", match=MatchValue(value=repo_name_for_index)),
                             FieldCondition(key="id", match=MatchValue(value=f"example_issue_{repo_name_for_index}")),
@@ -272,7 +301,7 @@ class PRSimilarIssue:
                     issue_key = f"issue_{number}"
                     point_id = issue_key + "." + "issue"
                     response = self.qdrant.count(
-                        collection_name=self.index_name,
+                        collection_name=self.qdrant_collection_name,
                         count_filter=Filter(must=[
                             FieldCondition(key="id", match=MatchValue(value=point_id)),
                             FieldCondition(key="metadata.repo", match=MatchValue(value=repo_name_for_index)),
@@ -293,7 +322,7 @@ class PRSimilarIssue:
 
     async def run(self):
         if not self.supported:
-            message = "The /similar_issue tool is currently supported only for GitHub."
+            message = "The /similar_issue tool is not supported by the configured git provider."
             if get_settings().config.publish_output:
                 try:
                     from pr_agent.git_providers import get_git_provider_with_context
@@ -320,10 +349,8 @@ class PRSimilarIssue:
         score_list = []
 
         if get_settings().pr_similar_issue.vectordb == "pinecone":
-            import pinecone
-
-            pinecone_index = pinecone.Index(index_name=self.index_name)
-            res = pinecone_index.query(embeds[0],
+            pinecone_index = self.pc.Index(name=self.index_name)
+            res = pinecone_index.query(vector=embeds[0],
                                     top_k=5,
                                     filter={"repo": self.repo_name_for_index},
                                     include_metadata=True).to_dict()
@@ -379,7 +406,7 @@ class PRSimilarIssue:
         elif get_settings().pr_similar_issue.vectordb == "qdrant":
             from qdrant_client.models import FieldCondition, Filter, MatchValue
             res = self.qdrant.search(
-                collection_name=self.index_name,
+                collection_name=self.qdrant_collection_name,
                 query_vector=embeds[0],
                 limit=5,
                 query_filter=Filter(must=[FieldCondition(key="metadata.repo", match=MatchValue(value=self.repo_name_for_index))]),
@@ -434,8 +461,6 @@ class PRSimilarIssue:
 
     def _update_index_with_issues(self, issues_list, repo_name_for_index, upsert=False):
         import pandas as pd
-        import pinecone
-        from pinecone_datasets import Dataset, DatasetMetadata
 
         get_logger().info('Processing issues...')
         corpus = Corpus()
@@ -495,28 +520,26 @@ class PRSimilarIssue:
         get_logger().info('Done')
 
         get_logger().info('Embedding...')
-        list_to_encode = list(df["text"].values)
+        list_to_encode = df["text"].to_list()
         embeds = _embed_with_fallback(list_to_encode)
         df["values"] = embeds
-        meta = DatasetMetadata.empty()
-        meta.dense_model.dimension = len(embeds[0])
-        ds = Dataset.from_pandas(df, meta)
         get_logger().info('Done')
 
-        api_key = get_settings().pinecone.api_key
-        environment = get_settings().pinecone.environment
+        vectors = [
+            (row["id"], row["values"], row["metadata"])
+            for row in df.to_dict(orient="records")
+        ]
         if not upsert:
             get_logger().info('Creating index from scratch...')
-            ds.to_pinecone_index(self.index_name, api_key=api_key, environment=environment)
-            time.sleep(15)  # wait for pinecone to finalize indexing before querying
-        else:
-            get_logger().info('Upserting index...')
-            namespace = ""
-            batch_size: int = 100
-            concurrency: int = 10
-            pinecone.init(api_key=api_key, environment=environment)
-            ds._upsert_to_index(self.index_name, namespace, batch_size, concurrency)
-            time.sleep(5)  # wait for pinecone to finalize upserting before querying
+            self.pc.create_index(name=self.index_name, dimension=len(embeds[0]), metric="cosine", spec=self.pc_spec,
+                                 timeout=120)
+        get_logger().info('Upserting index...')
+        self.pinecone_index = self.pc.Index(name=self.index_name)
+        self.pinecone_index.upsert(vectors=vectors,
+                                   namespace="",
+                                   batch_size=100,
+                                   max_concurrency=10)
+        time.sleep(5)  # wait for pinecone to finalize upserting before querying
         get_logger().info('Done')
 
     def _update_table_with_issues(self, issues_list, repo_name_for_index, ingest=False):
@@ -581,7 +604,7 @@ class PRSimilarIssue:
         get_logger().info('Done')
 
         get_logger().info('Embedding...')
-        list_to_encode = list(df["text"].values)
+        list_to_encode = df["text"].to_list()
         embeds = _embed_with_fallback(list_to_encode)
         df["vector"] = embeds
         get_logger().info('Done')
@@ -668,7 +691,7 @@ class PRSimilarIssue:
         get_logger().info('Done')
 
         get_logger().info('Embedding...')
-        list_to_encode = list(df["text"].values)
+        list_to_encode = df["text"].to_list()
         embeds = _embed_with_fallback(list_to_encode)
         df["vector"] = embeds
         get_logger().info('Done')
@@ -691,7 +714,7 @@ class PRSimilarIssue:
                     },
                 )
             )
-        self.qdrant.upsert(collection_name=self.index_name, points=points)
+        self.qdrant.upsert(collection_name=self.qdrant_collection_name, points=points)
         get_logger().info('Done')
 
 

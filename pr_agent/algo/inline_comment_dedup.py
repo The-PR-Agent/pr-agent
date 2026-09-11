@@ -12,8 +12,9 @@ present is skipped.
 Two fingerprints are computed per comment and matched with OR semantics:
 
 - Body fingerprint: SHA-256 over (relevant_file, anchor line, normalised
-  first 80 characters of the body). The category/importance tag and the
-  ``**Suggestion:**`` lead are stripped and whitespace is collapsed first.
+  body). The category/importance tag and the ``**Suggestion:**`` lead are
+  stripped and whitespace is collapsed first. The default compares the first
+  80 characters; providers may compare the complete body.
 - Code fingerprint: SHA-256 over (relevant_file, anchor line, normalised
   contents of the first ```suggestion fenced block). Returns None when the
   body has no suggestion block, in which case matching falls back to the
@@ -24,9 +25,9 @@ different prose" re-emissions of the same defect, which are the two ways an
 LLM tends to restate a finding across runs.
 
 The feature is opt-in via ``config.persistent_inline_comments`` (default
-false) and is wired into the GitHub and GitLab providers. The marker-scan
-store needs no external infrastructure; a different backend (database,
-cache) could populate the same load/seen/add interface.
+false) and is wired into the GitHub, GitLab, and Azure DevOps providers. The
+marker-scan store needs no external infrastructure; a different backend
+(database, cache) could populate the same load/seen/add interface.
 """
 
 from __future__ import annotations
@@ -74,12 +75,22 @@ def _strip_markers(body: str) -> str:
     return body
 
 
-def body_fingerprint(relevant_file: str, target_line_no, body: str) -> str:
+def _body_fingerprint(relevant_file: str, target_line_no, body: str, max_chars: Optional[int]) -> str:
     normalised = _LEAD_RE.sub("", _strip_markers(body))
     normalised = _TAG_RE.sub("", normalised)
-    normalised = _WS_RE.sub(" ", normalised).strip()[:80].lower()
+    normalised = _WS_RE.sub(" ", normalised).strip().lower()
+    if max_chars is not None:
+        normalised = normalised[:max_chars]
     key = f"{relevant_file}|{target_line_no}|{normalised}"
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
+
+
+def body_fingerprint(relevant_file: str, target_line_no, body: str) -> str:
+    return _body_fingerprint(relevant_file, target_line_no, body, 80)
+
+
+def full_body_fingerprint(relevant_file: str, target_line_no, body: str) -> str:
+    return _body_fingerprint(relevant_file, target_line_no, body, None)
 
 
 def key_issue_fingerprint(relevant_file: str, body: str) -> str:
@@ -93,16 +104,24 @@ def key_issue_location_fingerprint(fingerprint: str, start_line: int, end_line: 
 
 
 def code_fingerprint(relevant_file: str, target_line_no, body: str) -> Optional[str]:
-    m = _CODE_BLOCK_RE.search(_strip_markers(body))
-    if not m:
+    match = _CODE_BLOCK_RE.search(_strip_markers(body))
+    if not match:
         return None
     # Do not lower-case: code is case-sensitive, so case-only differences
     # must produce distinct fingerprints.
-    code = _WS_RE.sub(" ", m.group(1)).strip()
+    code = match.group(1)
+    code = _WS_RE.sub(" ", code).strip()
     if not code:
         return None
     key = f"{relevant_file}|{target_line_no}|code|{code}"
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
+
+
+def extract_suggestion_code(body: str) -> Optional[str]:
+    match = _CODE_BLOCK_RE.search(_strip_markers(body))
+    if not match:
+        return None
+    return match.group(1).strip("\n")
 
 
 def build_markers(body_fp: str, code_fp: Optional[str]) -> str:
@@ -172,7 +191,7 @@ def iter_existing_inline_comment_bodies(git_provider) -> Iterator[str]:
         for draft in git_provider.mr.draft_notes.list(get_all=True):
             yield getattr(draft, "note", "") or ""
     elif provider_name == "AzureDevopsProvider":
-        yield from git_provider.get_inline_comment_bodies()
+        yield from git_provider.get_persistent_comment_bodies()
     else:
         raise NotImplementedError(
             f"inline-comment dedup not implemented for {provider_name}"
@@ -180,7 +199,7 @@ def iter_existing_inline_comment_bodies(git_provider) -> Iterator[str]:
 
 
 def can_verify_inline_comment_publication(git_provider) -> bool:
-    return (callable(getattr(git_provider, "get_inline_comment_bodies", None)) and
+    return (callable(getattr(git_provider, "get_persistent_comment_bodies", None)) and
             callable(getattr(git_provider, "get_recent_inline_comment_bodies", None)))
 
 
@@ -206,6 +225,12 @@ class InlineCommentStore:
         try:
             for body in iter_existing_inline_comment_bodies(self._git_provider):
                 self.add_body(body)
+            fingerprints = getattr(
+                self._git_provider, "get_existing_inline_comment_fingerprints", None
+            )
+            if callable(fingerprints):
+                for fingerprint in fingerprints():
+                    self.add(fingerprint)
         except Exception as e:
             self._load_failed = True
             from pr_agent.log import get_logger

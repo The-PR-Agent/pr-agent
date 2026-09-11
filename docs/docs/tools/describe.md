@@ -1,6 +1,6 @@
 ## Overview
 
-The `describe` tool scans the PR code changes, and generates a description for the PR - title, type, summary, walkthrough and labels.
+Generate a PR title, type, summary, code walkthrough and labels.
 
 The tool can be triggered automatically every time a new PR is [opened](../usage-guide/automations_and_usage.md#github-app-automatic-tools-when-a-new-pr-is-opened), or it can be invoked manually by commenting on any PR:
 
@@ -14,11 +14,11 @@ The tool can be triggered automatically every time a new PR is [opened](../usage
 
 Invoke the tool manually by commenting `/describe` on any PR:
 
-![Describe comment](https://codium.ai/images/pr_agent/describe_comment.png){width=512}
+![Describe comment](../assets/describe_comment.png){width=512}
 
 After ~30 seconds, the tool will generate a description for the PR:
 
-![Describe New](https://codium.ai/images/pr_agent/describe_new.png){width=512}
+![Describe New](../assets/describe_new.webp){width=512}
 
 If you want to edit [configurations](#configuration-options), add the relevant ones to the command:
 
@@ -59,7 +59,7 @@ From our experience, there are two possible reasons:
 - When _updating_ PR descriptions, the `/describe` tool considers everything above the "PR Type" field as user content and will preserve it.
 Everything below this marker is treated as previously auto-generated content and will be replaced.
 
-![Describe comment](https://codium.ai/images/pr_agent/pr_description_user_description.png){width=512}
+![Describe comment](../assets/pr_description_user_description.png){width=512}
 
 ## Sequence Diagram Support
 The `/describe` tool includes a Mermaid sequence diagram showing component/function interactions.
@@ -87,28 +87,32 @@ The direction of the diagram adapts to its shape. A diagram whose longest chain 
 
 ## Configuration options
 
+The descriptions below explain each option's behavior. See the relevant sections in
+[`configuration.toml`](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml)
+for the authoritative default values.
+
 ???+ example "Possible configurations"
 
     <table>
       <tr>
         <td><b>publish_labels</b></td>
-        <td>If set to true, the tool will publish labels to the PR. Default is false.</td>
+        <td>If set to true, the tool will publish labels to the PR.</td>
       </tr>
       <tr>
         <td><b>publish_description_as_comment</b></td>
-        <td>If set to true, the tool will publish the description as a comment to the PR. If false, it will overwrite the original description. Default is false.</td>
+        <td>If set to true, the tool will publish the description as a comment to the PR. If false, it will overwrite the original description.</td>
       </tr>
       <tr>
         <td><b>publish_description_as_comment_persistent</b></td>
-        <td>If set to true and `publish_description_as_comment` is true, the tool will publish the description as a persistent comment to the PR. Default is true.</td>
+        <td>If set to true and `publish_description_as_comment` is true, the tool will publish the description as a persistent comment to the PR.</td>
       </tr>
       <tr>
         <td><b>add_original_user_description</b></td>
-        <td>If set to true, the tool will add the original user description to the generated description. Default is true.</td>
+        <td>If set to true, the tool will add the original user description to the generated description.</td>
       </tr>
       <tr>
         <td><b>generate_ai_title</b></td>
-        <td>If set to true, the tool will also generate an AI title for the PR. Default is false.</td>
+        <td>If set to true, the tool will also generate an AI title for the PR.</td>
       </tr>
       <tr>
         <td><b>extra_instructions</b></td>
@@ -116,51 +120,51 @@ The direction of the diagram adapts to its shape. A diagram whose longest chain 
       </tr>
       <tr>
         <td><b>enable_pr_type</b></td>
-        <td>If set to false, it will not show the `PR type` as a text value in the description content. Default is true.</td>
+        <td>If set to false, it will not show the `PR type` as a text value in the description content.</td>
       </tr>
       <tr>
         <td><b>enable_pr_description</b></td>
-        <td>If set to false, the AI-generated summary section will not be requested from the model, nor shown in the description content. The other sections (diagram, changes walkthrough) are unaffected. Default is true.</td>
+        <td>If set to false, the AI-generated summary section will not be requested from the model, nor shown in the description content. The other sections (diagram, changes walkthrough) are unaffected.</td>
       </tr>
       <tr>
         <td><b>final_update_message</b></td>
-        <td>If set to true, it will add a comment message [`PR Description updated to latest commit...`](https://github.com/the-pr-agent/pr-agent/pull/499#issuecomment-1837412176) after finishing calling `/describe`. Default is true.</td>
+        <td>If set to true, it will add a comment message [`PR Description updated to latest commit...`](https://github.com/the-pr-agent/pr-agent/pull/499#issuecomment-1837412176) after finishing calling `/describe`.</td>
       </tr>
       <tr>
         <td><b>enable_semantic_files_types</b></td>
-        <td>If set to true, "Changes walkthrough" section will be generated. Default is true.</td>
+        <td>If set to true, "Changes walkthrough" section will be generated.</td>
       </tr>
       <tr>
             <td><b>file_table_collapsible_open_by_default</b></td>
-            <td>If set to true, the file list in the "Changes walkthrough" section will be open by default. If set to false, it will be closed by default. Default is false.</td>
+            <td>Controls whether the file list in the "Changes walkthrough" section is initially open or closed.</td>
       </tr>
       <tr>
         <td><b>collapsible_file_list</b></td>
-        <td>If set to true, the file list in the "Changes walkthrough" section will be collapsible. If set to "adaptive", the file list will be collapsible only if there are more than 8 files. Default is "adaptive".</td>
+        <td>If set to true, the file list in the "Changes walkthrough" section will be collapsible. If set to "adaptive", the file list will be collapsible only when the number of files exceeds <code>collapsible_file_list_threshold</code>.</td>
       </tr>
       <tr>
         <td><b>enable_large_pr_handling</b></td>
-        <td>If set to true, in case of a large PR the tool will make several calls to the AI and combine them to be able to cover more files. Default is true.</td>
+        <td>If set to true, in case of a large PR the tool will make several calls to the AI and combine them to be able to cover more files.</td>
       </tr>
       <tr>
         <td><b>enable_help_text</b></td>
-        <td>If set to true, the tool will display a help text in the comment. Default is false.</td>
+        <td>If set to true, the tool will display a help text in the comment.</td>
       </tr>
       <tr>
         <td><b>enable_pr_diagram</b></td>
-        <td>If set to true, the tool will generate a Mermaid flowchart summarizing the main pull request changes. This field remains empty if not applicable. Default is true.</td>
+        <td>If set to true, the tool will generate a Mermaid flowchart summarizing the main pull request changes. This field remains empty if not applicable.</td>
       </tr>
       <tr>
         <td><b>pr_diagram_direction</b></td>
-        <td>Direction of the generated Mermaid flowchart: <b>adaptive</b>, <b>LR</b> or <b>TD</b>. With adaptive, the direction is chosen from the shape of the diagram. Default is adaptive.</td>
+        <td>Direction of the generated Mermaid flowchart: <b>adaptive</b>, <b>LR</b> or <b>TD</b>. With adaptive, the direction is chosen from the shape of the diagram.</td>
       </tr>
       <tr>
         <td><b>pr_diagram_direction_threshold</b></td>
-        <td>With <b>adaptive</b> direction, a diagram whose longest chain exceeds this many nodes is drawn top-down instead of left-to-right. Default is 5.</td>
+        <td>With <b>adaptive</b> direction, a diagram whose longest chain exceeds this many nodes is drawn top-down instead of left-to-right.</td>
       </tr>
       <tr>
         <td><b>auto_create_ticket</b></td>
-        <td>If set to true, this will automatically create a ticket in the ticketing system when a PR is opened. Default is false.</td>
+        <td>If set to true, this will automatically create a ticket in the ticketing system when a PR is opened.</td>
       </tr>
     </table>
 
@@ -189,11 +193,11 @@ pr_agent:diagram
 
 The marker `pr_agent:type` will be replaced with the PR type, `pr_agent:summary` will be replaced with the PR summary, `pr_agent:walkthrough` will be replaced with the PR walkthrough, and `pr_agent:diagram` will be replaced with the sequence diagram (if enabled).
 
-![Describe markers before](https://codium.ai/images/pr_agent/describe_markers_before.png){width=512}
+![Describe markers before](../assets/describe_markers_before.png){width=512}
 
 becomes
 
-![Describe markers after](https://codium.ai/images/pr_agent/describe_markers_after.png){width=512}
+![Describe markers after](../assets/describe_markers_after.webp){width=512}
 
 **Configuration params**:
 
@@ -254,7 +258,7 @@ Examples for custom labels:
 - ...
 
 The description should be comprehensive and detailed, indicating when to add the desired label. For example:
-![Add native custom labels](https://codium.ai/images/pr_agent/add_native_custom_labels.png){width=768}
+![Add native custom labels](../assets/add_native_custom_labels.webp){width=768}
 
 ## Usage Tips
 

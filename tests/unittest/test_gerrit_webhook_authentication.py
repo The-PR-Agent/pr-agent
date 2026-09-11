@@ -68,28 +68,39 @@ def test_accept_correct_credentials(secured_client):
     assert calls
 
 
-def test_an_unconfigured_deployment_keeps_the_previous_behaviour(monkeypatch):
-    client, calls = build_client(monkeypatch, "", "")
+def test_a_non_ascii_configured_password_rejects_with_401_not_500(monkeypatch):
+    client, calls = build_client(monkeypatch, "admin", "şifre")
 
-    response = client.post("/api/v1/gerrit/review", json=PAYLOAD)
+    response = client.post("/api/v1/gerrit/review", json=PAYLOAD, auth=("admin", "sifre"))
 
-    assert response.status_code == 200
-    assert calls
+    assert response.status_code == 401
+    assert calls == []
 
 
-@pytest.mark.parametrize("username, password", [("admin", ""), ("", "s3cret")])
-def test_reject_a_half_configured_deployment(monkeypatch, username, password):
-    """Fail closed when only one credential is set, rather than reverting to open access."""
+@pytest.mark.parametrize("username, password", [("", ""), ("admin", ""), ("", "s3cret")])
+def test_reject_a_deployment_without_both_credentials(monkeypatch, username, password):
+    """Fail closed until both credentials are set: the route runs commands with
+    caller-supplied arguments, so it is never left open, the way the GitHub app
+    rejects webhooks while its secret is unconfigured."""
     client, calls = build_client(monkeypatch, username, password)
 
     response = client.post("/api/v1/gerrit/review", json=PAYLOAD)
 
-    assert response.status_code == 500
-    assert response.json() == {"detail": "Webhook authentication is misconfigured."}
+    assert response.status_code == 403
+    assert response.json() == {"detail": "Webhook authentication is not configured."}
     assert calls == []
 
 
-@pytest.mark.parametrize("username, password", [("admin", ""), ("", "s3cret")])
+def test_credentials_do_not_open_an_unconfigured_deployment(monkeypatch):
+    client, calls = build_client(monkeypatch, "", "")
+
+    response = client.post("/api/v1/gerrit/review", json=PAYLOAD, auth=("admin", "s3cret"))
+
+    assert response.status_code == 403
+    assert calls == []
+
+
+@pytest.mark.parametrize("username, password", [("", ""), ("admin", ""), ("", "s3cret")])
 def test_the_misconfiguration_response_names_no_settings(monkeypatch, username, password):
     """Keep configuration key names out of a response an unauthenticated caller can read."""
     client, _ = build_client(monkeypatch, username, password)

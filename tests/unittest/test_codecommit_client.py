@@ -131,7 +131,96 @@ class TestCodeCommitProvider:
         assert pr.title == "My PR"
         assert pr.description == "My PR description"
         assert len(pr.targets) == 1
+        assert pr.targets[0].repository_name == "my_test_repo"
         assert pr.targets[0].source_commit == "commit1"
         assert pr.targets[0].source_branch == "branch1"
         assert pr.targets[0].destination_commit == "commit2"
         assert pr.targets[0].destination_branch == "branch2"
+
+    def test_get_pr_preserves_all_target_repositories(self):
+        api = CodeCommitClient()
+        api.boto_client = MagicMock()
+        api.boto_client.get_pull_request.return_value = {
+            "pullRequest": {
+                "title": "Multi-target PR",
+                "pullRequestTargets": [
+                    {
+                        "repositoryName": "repo-one",
+                        "sourceCommit": "source-one",
+                        "destinationCommit": "destination-one",
+                    },
+                    {
+                        "repositoryName": "repo-two",
+                        "sourceCommit": "source-two",
+                        "destinationCommit": "destination-two",
+                    },
+                ],
+            }
+        }
+
+        pr = api.get_pr("repo-one", 321)
+
+        assert [(target.repository_name, target.source_commit, target.destination_commit) for target in pr.targets] == [
+            ("repo-one", "source-one", "destination-one"),
+            ("repo-two", "source-two", "destination-two"),
+        ]
+
+    def test_get_comments_for_pull_request_uses_safe_page_size_and_all_pages(self):
+        api = CodeCommitClient()
+        api.boto_client = MagicMock()
+        paginator = api.boto_client.get_paginator.return_value
+        paginator.paginate.return_value = [
+            {"commentsForPullRequestData": [{"comments": [{"commentId": "comment-1"}]}]},
+            {"commentsForPullRequestData": [{"comments": [{"commentId": "comment-2"}]}]},
+        ]
+
+        comments = api.get_comments_for_pull_request(321)
+
+        assert comments == [
+            {"comments": [{"commentId": "comment-1"}]},
+            {"comments": [{"commentId": "comment-2"}]},
+        ]
+        api.boto_client.get_paginator.assert_called_once_with("get_comments_for_pull_request")
+        paginator.paginate.assert_called_once_with(
+            pullRequestId="321",
+            PaginationConfig={"PageSize": 100},
+        )
+
+    def test_publish_comment_returns_boto_response(self):
+        api = CodeCommitClient()
+        api.boto_client = MagicMock()
+        api.boto_client.post_comment_for_pull_request.return_value = {
+            "comment": {"commentId": "comment-1", "content": "Review"}
+        }
+
+        response = api.publish_comment(
+            repo_name="my_test_repo",
+            pr_number=321,
+            destination_commit="destination-commit",
+            source_commit="source-commit",
+            comment="Review",
+        )
+
+        assert response == {"comment": {"commentId": "comment-1", "content": "Review"}}
+        api.boto_client.post_comment_for_pull_request.assert_called_once_with(
+            pullRequestId="321",
+            repositoryName="my_test_repo",
+            beforeCommitId="destination-commit",
+            afterCommitId="source-commit",
+            content="Review",
+        )
+
+    def test_update_comment_returns_boto_response(self):
+        api = CodeCommitClient()
+        api.boto_client = MagicMock()
+        api.boto_client.update_comment.return_value = {
+            "comment": {"commentId": "comment-1", "content": "Updated review"}
+        }
+
+        response = api.update_comment("comment-1", "Updated review")
+
+        assert response == {"comment": {"commentId": "comment-1", "content": "Updated review"}}
+        api.boto_client.update_comment.assert_called_once_with(
+            commentId="comment-1",
+            content="Updated review",
+        )

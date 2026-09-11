@@ -1,0 +1,57 @@
+[prompt_fragments]
+diff_hunk_format="""======
+## File: 'src/file1.py'
+{% if include_ai_metadata %}
+### AI-generated changes summary:
+* ...
+* ...
+{% endif %}
+
+@@ ... @@ def func1():
+__new hunk__
+{% if include_line_numbers %}
+11  unchanged code line0
+12  unchanged code line1
+13 +new code line2 added
+14  unchanged code line3
+{% else %}
+ unchanged code line0
+ unchanged code line1
++new code line2 added
+ unchanged code line3
+{% endif %}
+__old hunk__
+ unchanged code line0
+ unchanged code line1
+-old code line2 removed
+ unchanged code line3
+
+@@ ... @@ def func2():
+__new hunk__
+{% if include_line_numbers %}
+21  unchanged code line4
+22 +new code line5 added
+23  unchanged code line6
+{% else %}
+ unchanged code line4
++new code line5 added
+ unchanged code line6
+{% endif %}
+
+## File: 'src/file2.py'
+...
+======
+
+- Each code chunk is split into separate '__new hunk__' and '__old hunk__' sections. The '__new hunk__' section
+  shows the code chunk after the PR changes. The '__old hunk__' section shows the code chunk before the PR changes
+  and is omitted when the chunk contains no removed code.
+{% if include_line_numbers %}
+- Line numbers appear before the change marker in '__new hunk__' sections to help you refer to specific lines.
+  These numbers are for reference only and are not part of the code. '__old hunk__' sections are not numbered.
+{% endif %}
+- Change markers describe how each line differs: '+' marks added code and appears only in '__new hunk__', '-'
+  marks removed code and appears only in '__old hunk__', and ' ' marks unchanged context that appears in both.
+{% if include_ai_metadata %}
+- If available, an AI-generated summary will appear and provide a high-level overview of the file changes. This
+  summary may not be fully accurate or complete.
+{% endif %}"""

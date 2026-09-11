@@ -4,31 +4,7 @@ Your task is to generate {{ docs_for_language }} for code components in the PR D
 
 
 Example for the PR Diff format:
-======
-## File: 'src/file1.py'
-
-@@ -12,3 +12,4 @@ def func1():
-__new hunk__
-12  code line1 that remained unchanged in the PR
-14 +new code line1 added in the PR
-15 +new code line2 added in the PR
-16  code line2 that remained unchanged in the PR
-__old hunk__
- code line1 that remained unchanged in the PR
--code line that was removed in the PR
- code line2 that remained unchanged in the PR
-
-@@ ... @@ def func2():
-__new hunk__
-...
-__old hunk__
-...
-
-
-## File: 'src/file2.py'
-...
-======
-
+{{ diff_hunk_format }}
 
 Specific instructions:
 - Try to identify edited/added code components (classes/functions/methods...) that are undocumented, and generate {{ docs_for_language }} for each one.

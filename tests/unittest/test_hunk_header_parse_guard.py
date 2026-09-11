@@ -1,4 +1,4 @@
-"""Parse a patch without crashing on a '@@' line that is not a unified hunk header."""
+"""Guard numbered diff rendering around malformed hunks and file metadata."""
 from pr_agent.algo.git_patch_processing import (
     decouple_and_convert_to_hunks_with_lines_numbers,
     extract_hunk_lines_from_patch,
@@ -7,6 +7,16 @@ from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 
 COMBINED = "@@@ -1,2 -1,2 +1,2 @@@\n- a\n +b\n  c"
 NORMAL = "@@ -1,2 +1,2 @@\n ctx\n-old\n+new"
+WITH_FILE_HEADERS = (
+    "diff --git a/m.py b/m.py\n"
+    "index 1111111..2222222 100644\n"
+    "--- a/m.py\n"
+    "+++ b/m.py\n"
+    "@@ -1,2 +1,2 @@\n"
+    " ctx\n"
+    "-old\n"
+    "+new"
+)
 
 
 def _file():
@@ -27,6 +37,13 @@ def test_decouple_still_renders_a_normal_hunk():
 
     assert "__new hunk__" in out
     assert "+new" in out
+
+
+def test_decouple_ignores_file_headers_before_the_first_hunk():
+    expected = decouple_and_convert_to_hunks_with_lines_numbers(NORMAL, _file())
+    actual = decouple_and_convert_to_hunks_with_lines_numbers(WITH_FILE_HEADERS, _file())
+
+    assert actual == expected
 
 
 def test_a_valid_hunk_after_an_invalid_header_is_still_rendered():

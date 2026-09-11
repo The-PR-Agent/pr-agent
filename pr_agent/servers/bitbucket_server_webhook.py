@@ -21,7 +21,7 @@ from pr_agent.agent.pr_agent import PRAgent, prepare_command
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
-from pr_agent.servers.utils import verify_signature
+from pr_agent.servers.utils import get_pr_commands, push_trigger_slot, verify_signature
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
 router = APIRouter()
@@ -159,6 +159,7 @@ async def handle_webhook(background_tasks: BackgroundTasks, request: Request):
     log_context["event"] = "pull_request"
 
     commands_to_run = []
+    is_push_event = False
 
     # push event; -1 for push unassigned to a PR: Check auto commands for creation/updating
     if (data["eventKey"] == "pr:opened"
@@ -177,7 +178,7 @@ async def handle_webhook(background_tasks: BackgroundTasks, request: Request):
             )
         get_settings().set("config.is_auto_command", True)
         if data["eventKey"] == "pr:opened":
-            commands_to_run.extend(_get_commands_list_from_settings('BITBUCKET_SERVER.PR_COMMANDS'))
+            commands_to_run.extend(get_pr_commands("bitbucket_server"))
         else: # Has to be: data["eventKey"] == "pr:from_ref_updated" or "repo:refs_changed"
             if not get_settings().get("BITBUCKET_SERVER.HANDLE_PUSH_TRIGGER"):
                 get_logger().info(f"Push trigger is disabled, skipping push commands for PR {pr_url}", **log_context)
@@ -187,6 +188,7 @@ async def handle_webhook(background_tasks: BackgroundTasks, request: Request):
 
             get_settings().set("config.is_new_pr", False)
             commands_to_run.extend(_get_commands_list_from_settings('BITBUCKET_SERVER.PUSH_COMMANDS'))
+            is_push_event = True
     elif data["eventKey"] == "pr:comment:added":
         commands_to_run.append(data["comment"]["text"])
     else:
@@ -197,7 +199,12 @@ async def handle_webhook(background_tasks: BackgroundTasks, request: Request):
 
     async def inner():
         try:
-            await _run_commands_sequentially(commands_to_run, pr_url, log_context)
+            if is_push_event:
+                async with push_trigger_slot(pr_url, allow_backlog=True, ttl=300) as proceed:
+                    if proceed:
+                        await _run_commands_sequentially(commands_to_run, pr_url, log_context)
+            else:
+                await _run_commands_sequentially(commands_to_run, pr_url, log_context)
         except Exception as e:
             get_logger().error(f"Failed to handle webhook: {e}")
 

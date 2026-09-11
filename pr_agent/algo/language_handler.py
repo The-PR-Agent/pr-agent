@@ -32,7 +32,11 @@ def is_valid_file(filename:str, bad_extensions=None) -> bool:
     if filename.endswith(auto_generated_suffixes):
         return False
 
-    return filename.split('.')[-1] not in bad_extensions
+    # Compare case-insensitively: bad_extensions lists binary and asset types (png, zip, svg),
+    # and 'logo.SVG' is the same kind of file as 'logo.svg'. The list is spelled in lower case,
+    # so a file named with an uppercase extension would otherwise slip into the diff.
+    bad_extensions_lower = {str(extension).lower() for extension in bad_extensions}
+    return filename.split('.')[-1].lower() not in bad_extensions_lower
 
 
 def build_language_file_matcher(language_extension_map: Dict) -> Callable[[str], str | None]:

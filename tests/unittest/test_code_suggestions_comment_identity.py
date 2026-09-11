@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -9,6 +10,7 @@ from pr_agent.algo.utils import (
     format_pr_code_suggestions_header,
 )
 from pr_agent.config_loader import get_settings
+from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
@@ -150,3 +152,53 @@ def test_github_check_run_receives_configured_presentation_without_identity():
 
     provider._publish_check_run.assert_called_once_with(comment, "suggestions")
     provider.get_issue_comments.assert_not_called()
+
+
+def _persistent_publish(prev_comment_bodies):
+    provider = MagicMock()
+    comments = [SimpleNamespace(body=body) for body in prev_comment_bodies]
+    provider.get_issue_comments.return_value = comments
+    provider.get_issue_comments_newest_first.return_value = list(reversed(comments))
+    GitProvider.publish_persistent_comment_full(
+        provider,
+        "## PR Code Suggestions ✨\n\n<table>new</table>",
+        initial_header="## PR Code Suggestions ✨",
+        update_header=False,
+        name="suggestions",
+        final_update_message=False,
+        identity_marker=PRCodeSuggestionsIdentity.SUMMARY.value,
+        legacy_initial_header="## PR Code Suggestions ✨",
+    )
+    return provider
+
+
+@pytest.mark.parametrize(
+    "other_identity",
+    [PRCodeSuggestionsIdentity.UNANCHORED.value, PRCodeSuggestionsIdentity.NO_SUGGESTIONS.value],
+)
+def test_persistent_summary_never_overwrites_another_suggestions_comment(other_identity):
+    provider = _persistent_publish([f"## PR Code Suggestions ✨\n\n{other_identity}\n\nfallback body"])
+
+    provider.edit_comment.assert_not_called()
+    provider.publish_comment.assert_called_once()
+    assert PRCodeSuggestionsIdentity.SUMMARY.value in provider.publish_comment.call_args.args[0]
+
+
+def test_persistent_summary_still_migrates_an_unmarked_legacy_comment():
+    provider = _persistent_publish(["## PR Code Suggestions ✨\n\n<table>old</table>"])
+
+    provider.edit_comment.assert_called_once()
+    provider.publish_comment.assert_not_called()
+
+
+def test_persistent_summary_updates_the_marked_summary_comment():
+    provider = _persistent_publish([
+        f"## PR Code Suggestions ✨\n\n{PRCodeSuggestionsIdentity.UNANCHORED.value}\n\nfallback body",
+        f"## PR Code Suggestions ✨\n\n{PRCodeSuggestionsIdentity.SUMMARY.value}\n\n<table>old</table>",
+    ])
+
+    provider.edit_comment.assert_called_once()
+    assert provider.edit_comment.call_args.args[0].body.startswith(
+        f"## PR Code Suggestions ✨\n\n{PRCodeSuggestionsIdentity.SUMMARY.value}"
+    )
+    provider.publish_comment.assert_not_called()

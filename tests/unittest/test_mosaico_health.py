@@ -5,8 +5,8 @@ health_check (the no-retry behavior itself was proven in 2c). Verify the route a
 200/503 response shape without relying on Starlette's thread-backed TestClient.
 
 Also exercises the REAL health_check() (no stub) to lock in Fix A: the removed
-'stop'-param gate must NOT short-circuit /health for models that lack 'stop' (e.g. the
-shipped gpt-5.x defaults), since PR-Agent's LiteLLMAIHandler never sends 'stop'."""
+'stop'-param gate must NOT short-circuit /health for models that lack 'stop', since
+PR-Agent's LiteLLMAIHandler never sends 'stop'."""
 import httpx
 import litellm
 import pytest
@@ -56,14 +56,14 @@ class TestHealthRoute:
 # under the pinned litellm). Under the OLD (removed) gate, health_check() short-circuited
 # to "Unhealthy: LLM does not support 'stop' parameter" for exactly such models — so these
 # tests would have failed before Fix A. They guard against the gate being reintroduced.
-_MODEL_WITHOUT_STOP = "gpt-5.6"
+_MODEL_WITHOUT_STOP = "perplexity/sonar"
 
 
 @pytest.fixture
 def restore_config_model():
     """Restore LLM settings exactly, including originally-absent state."""
     snapshot = snapshot_settings(
-        ["CONFIG.MODEL", "LITELLM.CUSTOM_LLM_PROVIDER"]
+        ["CONFIG.MODEL", "LITELLM.CUSTOM_LLM_PROVIDER", "OPENAI.KEY", "GROQ.KEY"]
     )
     yield get_settings()
     restore_settings(snapshot)
@@ -71,6 +71,26 @@ def restore_config_model():
 
 class TestHealthCheckGate:
     """Exercise the REAL health_check() (not the monkeypatched stub) to lock in Fix A."""
+
+    @pytest.mark.asyncio
+    async def test_health_credentials_remain_request_local(self, monkeypatch, restore_config_model):
+        restore_config_model.set("LITELLM.CUSTOM_LLM_PROVIDER", "")
+        restore_config_model.set("GROQ.KEY", "groq-request-key")
+        restore_config_model.set("OPENAI.KEY", "openai-request-key")
+        monkeypatch.setattr(litellm, "api_key", "unrelated-global-key")
+        calls = []
+
+        async def fake_acompletion(**kwargs):
+            calls.append(kwargs)
+            return {"choices": [{"message": {"content": "pong"}}]}
+
+        monkeypatch.setattr(litellm, "acompletion", fake_acompletion)
+        for model in ("groq/gemma2-9b-it", "openai/gpt-4o"):
+            restore_config_model.set("CONFIG.MODEL", model)
+            assert await health_check() == "OK"
+
+        assert [call["api_key"] for call in calls] == ["groq-request-key", "openai-request-key"]
+        assert litellm.api_key == "unrelated-global-key"
 
     @pytest.mark.asyncio
     async def test_model_without_stop_probes_live_and_returns_ok(
@@ -84,7 +104,7 @@ class TestHealthCheckGate:
             called.update(kwargs)
             return {"choices": [{"message": {"content": "pong"}}]}
 
-        # health_check does `import litellm` then `await litellm.acompletion(...)`.
+        # health_check injects litellm.acompletion into the handler's probe.
         monkeypatch.setattr(litellm, "acompletion", fake_acompletion)
 
         result = await health_check()

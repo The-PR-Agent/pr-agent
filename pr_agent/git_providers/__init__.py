@@ -27,6 +27,21 @@ _GIT_PROVIDERS = {
 }
 
 
+def register_git_provider(provider_id: str, provider_class: type[GitProvider]) -> None:
+    """Make `provider_class` selectable through `config.git_provider = provider_id`.
+
+    Meant for providers that live outside this package. Registering the same class again is a
+    no-op, so an import-time registration may run twice; a different class under an id that is
+    already taken raises, so a package cannot silently shadow a built-in provider.
+    """
+    if not (isinstance(provider_class, type) and issubclass(provider_class, GitProvider)):
+        raise TypeError(f"Git provider {provider_id!r} must be a GitProvider subclass, got {provider_class!r}")
+    registered = _GIT_PROVIDERS.get(provider_id)
+    if registered is not None and registered is not provider_class:
+        raise ValueError(f"Git provider {provider_id!r} is already registered to {registered.__name__}")
+    _GIT_PROVIDERS[provider_id] = provider_class
+
+
 def get_git_provider():
     try:
         provider_id = get_settings().config.git_provider

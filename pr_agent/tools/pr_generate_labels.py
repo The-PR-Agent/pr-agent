@@ -15,6 +15,22 @@ from pr_agent.git_providers.git_provider import get_main_pr_language
 from pr_agent.log import get_logger
 
 
+def _label_name(label) -> str:
+    """Read one label entry, tolerating the mapping form a model may return.
+
+    The prompt asks for a list of strings, but a schema presented as a class invites entries
+    such as ``- name: bug fix``. An entry with no readable name is dropped.
+    """
+    if isinstance(label, dict):
+        for key in ("name", "label", "title", "value"):
+            if isinstance(label.get(key), str) and label[key].strip():
+                return label[key].strip()
+        return ""
+    if isinstance(label, bool) or not isinstance(label, (str, int, float)):
+        return ""
+    return str(label).strip()
+
+
 class PRGenerateLabels:
     def __init__(self, pr_url: str, args: list = None,
                  ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
@@ -71,7 +87,7 @@ class PRGenerateLabels:
             if get_settings().config.publish_output:
                 self.git_provider.publish_comment("Preparing PR labels...", is_temporary=True)
 
-            await retry_with_fallback_models(self._prepare_prediction)
+            await retry_with_fallback_models(self._prepare_prediction, git_provider=self.git_provider)
 
             get_logger().info(f"Preparing answer {self.pr_id}")
             if self.prediction:
@@ -159,12 +175,12 @@ class PRGenerateLabels:
         pr_types = []
 
         # If the 'labels' key is present in the dictionary, split its value by comma and assign it to 'pr_types'
-        if 'labels' in self.data:
-            if type(self.data['labels']) == list:
-                pr_types = self.data['labels']
-            elif type(self.data['labels']) == str:
-                pr_types = self.data['labels'].split(',')
-        pr_types = [label.strip() for label in pr_types]
+        if "labels" in self.data:
+            if isinstance(self.data["labels"], list):
+                pr_types = self.data["labels"]
+            elif isinstance(self.data["labels"], str):
+                pr_types = self.data["labels"].split(",")
+        pr_types = [name for name in (_label_name(label) for label in pr_types) if name]
 
         # convert lowercase labels to original case
         try:

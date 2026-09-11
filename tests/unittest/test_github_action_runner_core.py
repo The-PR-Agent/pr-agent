@@ -180,6 +180,23 @@ def _write_issue_comment_event(tmp_path, sender_type):
     return event_path
 
 
+def _write_review_event(
+    tmp_path, state="changes_requested", sender_type="User", review_author_type="User", action="submitted"
+):
+    event_path = tmp_path / "event.json"
+    event_path.write_text(json.dumps({
+        "action": action,
+        "review": {"state": state, "user": {"type": review_author_type}},
+        "pull_request": {
+            "url": "https://api.github.com/repos/org/repo/pulls/1",
+            "html_url": "https://github.com/org/repo/pull/1",
+            "draft": False,
+        },
+        "sender": {"type": sender_type},
+    }))
+    return event_path
+
+
 def _patch_issue_comment_deps(monkeypatch, handled):
     monkeypatch.setattr(github_action_runner, "apply_repo_settings", lambda pr_url: None)
 
@@ -197,6 +214,189 @@ def _patch_issue_comment_deps(monkeypatch, handled):
             handled.append((url, body))
 
     monkeypatch.setattr(github_action_runner, "PRAgent", FakeAgent)
+
+
+async def _run_review_action_with_settings(
+    monkeypatch,
+    tmp_path,
+    app_review_states,
+    app_review_commands,
+    action_config=None,
+    action="submitted",
+    state="changes_requested",
+):
+    settings = get_settings()
+    settings.set("GITHUB_APP.REVIEW_STATES", app_review_states)
+    settings.set("GITHUB_APP.REVIEW_AUTHOR_TYPES", ["User"])
+    settings.set("GITHUB_APP.REVIEW_COMMANDS", app_review_commands)
+    settings.set("GITHUB_APP.FEEDBACK_ON_DRAFT_PR", False)
+    settings.set("CONFIG.DISABLE_AUTO_FEEDBACK", False)
+    settings.set("GITHUB_ACTION_CONFIG", dict(action_config or {}), merge=False)
+
+    handled = []
+    monkeypatch.setattr(github_action_runner, "apply_repo_settings", lambda _pr_url: None)
+    monkeypatch.setattr(github_action_runner, "_inject_artifact_context", lambda: None)
+
+    class FakeAgent:
+        async def handle_request(self, url, body, notify=None):
+            handled.append((url, body))
+
+    monkeypatch.setattr(github_action_runner, "PRAgent", FakeAgent)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request_review")
+    monkeypatch.setenv(
+        "GITHUB_EVENT_PATH",
+        str(_write_review_event(tmp_path, action=action, state=state)),
+    )
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    await github_action_runner.run_action()
+    return handled
+
+
+@pytest.mark.asyncio
+async def test_review_submission_runs_configured_commands(monkeypatch, tmp_path, restore_github_settings):
+    handled = []
+    monkeypatch.setattr(github_action_runner, "apply_repo_settings", lambda pr_url: None)
+
+    class FakeAgent:
+        async def handle_request(self, url, body, notify=None):
+            handled.append((url, body))
+
+    monkeypatch.setattr(github_action_runner, "PRAgent", FakeAgent)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request_review")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_review_event(tmp_path, "CHANGES_REQUESTED")))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    def fake_get_setting_or_env(key, default=None):
+        values = {
+            "GITHUB_ACTION_CONFIG.ENABLE_OUTPUT": True,
+            "GITHUB_ACTION_CONFIG.REVIEW_STATES": '["changes_requested"]',
+            "GITHUB_ACTION_CONFIG.REVIEW_AUTHOR_TYPES": '["User"]',
+            "GITHUB_ACTION_CONFIG.REVIEW_COMMANDS": '["/review"]',
+            "GITHUB_ACTION_CONFIG.FEEDBACK_ON_DRAFT_PR": False,
+        }
+        return values.get(key, default)
+
+    monkeypatch.setattr(github_action_runner, "get_setting_or_env", fake_get_setting_or_env)
+
+    await github_action_runner.run_action()
+
+    assert handled == [("https://api.github.com/repos/org/repo/pulls/1", "/review")]
+
+
+@pytest.mark.asyncio
+async def test_review_submission_ignores_unconfigured_state(monkeypatch, tmp_path, restore_github_settings):
+    handled = []
+    monkeypatch.setattr(github_action_runner, "apply_repo_settings", lambda pr_url: None)
+
+    class FakeAgent:
+        async def handle_request(self, url, body, notify=None):
+            handled.append((url, body))
+
+    monkeypatch.setattr(github_action_runner, "PRAgent", FakeAgent)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request_review")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_review_event(tmp_path, "approved")))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    def fake_get_setting_or_env(key, default=None):
+        values = {
+            "GITHUB_ACTION_CONFIG.ENABLE_OUTPUT": True,
+            "GITHUB_ACTION_CONFIG.REVIEW_STATES": '["changes_requested"]',
+            "GITHUB_ACTION_CONFIG.REVIEW_AUTHOR_TYPES": '["User"]',
+            "GITHUB_ACTION_CONFIG.REVIEW_COMMANDS": '["/review"]',
+        }
+        return values.get(key, default)
+
+    monkeypatch.setattr(github_action_runner, "get_setting_or_env", fake_get_setting_or_env)
+
+    await github_action_runner.run_action()
+
+    assert handled == []
+
+
+@pytest.mark.asyncio
+async def test_review_submission_ignores_unconfigured_author_type(monkeypatch, tmp_path, restore_github_settings):
+    handled = []
+    monkeypatch.setattr(github_action_runner, "apply_repo_settings", lambda pr_url: None)
+
+    class FakeAgent:
+        async def handle_request(self, url, body, notify=None):
+            handled.append((url, body))
+
+    monkeypatch.setattr(github_action_runner, "PRAgent", FakeAgent)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request_review")
+    monkeypatch.setenv(
+        "GITHUB_EVENT_PATH", str(_write_review_event(tmp_path, review_author_type="Bot"))
+    )
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    def fake_get_setting_or_env(key, default=None):
+        values = {
+            "GITHUB_ACTION_CONFIG.ENABLE_OUTPUT": True,
+            "GITHUB_ACTION_CONFIG.REVIEW_STATES": '["changes_requested"]',
+            "GITHUB_ACTION_CONFIG.REVIEW_AUTHOR_TYPES": '["User"]',
+            "GITHUB_ACTION_CONFIG.REVIEW_COMMANDS": '["/review"]',
+        }
+        return values.get(key, default)
+
+    monkeypatch.setattr(github_action_runner, "get_setting_or_env", fake_get_setting_or_env)
+
+    await github_action_runner.run_action()
+
+    assert handled == []
+
+
+@pytest.mark.asyncio
+async def test_review_submission_is_disabled_without_review_commands(monkeypatch, tmp_path, restore_github_settings):
+    handled = await _run_review_action_with_settings(
+        monkeypatch,
+        tmp_path,
+        app_review_states=["changes_requested"],
+        app_review_commands=[],
+    )
+
+    assert handled == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["edited", "dismissed"])
+async def test_review_submission_ignores_non_submitted_actions(
+    monkeypatch, tmp_path, restore_github_settings, action
+):
+    handled = await _run_review_action_with_settings(
+        monkeypatch,
+        tmp_path,
+        app_review_states=["changes_requested"],
+        app_review_commands=["/review"],
+        action=action,
+    )
+
+    assert handled == []
+
+
+@pytest.mark.asyncio
+async def test_action_review_config_falls_back_to_app_and_overrides_it(
+    monkeypatch, tmp_path, restore_github_settings
+):
+    handled = await _run_review_action_with_settings(
+        monkeypatch,
+        tmp_path,
+        app_review_states=["changes_requested"],
+        app_review_commands=["/app-review"],
+    )
+    assert handled == [("https://api.github.com/repos/org/repo/pulls/1", "/app-review")]
+
+    handled = await _run_review_action_with_settings(
+        monkeypatch,
+        tmp_path,
+        app_review_states=["approved"],
+        app_review_commands=["/app-review"],
+        action_config={
+            "review_states": ["changes_requested"],
+            "review_commands": ["/action-review"],
+        },
+    )
+    assert handled == [("https://api.github.com/repos/org/repo/pulls/1", "/action-review")]
 
 
 @pytest.mark.asyncio

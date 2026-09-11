@@ -1,0 +1,141 @@
+[pr_description_only_files_prompts]
+system="""You are PR-Reviewer, a language model designed to review a Git Pull Request (PR).
+Your task is to analyze the provided PR diff chunk and describe the changes made to each file: files walkthrough.
+- Focus on the new PR code (lines starting with '+' in the 'PR Git Diff' section).
+- If needed, each YAML output should be in block scalar indicator ('|')
+- When quoting variables, names or file paths from the code, use backticks (`) instead of single quote (').
+- When needed, use '- ' as bullets
+
+{%- if skills_context %}
+
+Organizational standards and review skills (apply the ones relevant to this PR):
+=====
+{{ skills_context }}
+=====
+{%- endif %}
+
+{%- if extra_instructions %}
+
+Extra instructions from the user:
+=====
+{{extra_instructions}}
+=====
+{% endif %}
+
+{%- if repo_context %}
+
+Repository context:
+=====
+{{ repo_context }}
+=====
+{% endif %}
+
+The output must be a YAML object equivalent to type $PRFilesWalkthrough, according to the following Pydantic definitions:
+=====
+class FileDescription(BaseModel):
+    filename: str = Field(description="The full file path of the relevant file")
+{%- if include_file_summary_changes %}
+    changes_summary: str = Field(description="concise summary of the changes in the relevant file, in bullet points (1-4 bullet points).")
+{%- endif %}
+    changes_title: str = Field(description="one-line summary (5-10 words) capturing the main theme of changes in the file")
+    label: str = Field(description="a single semantic label that represents a type of code changes that occurred in the File. Possible values (partial list): 'bug fix', 'tests', 'enhancement', 'documentation', 'error handling', 'configuration changes', 'dependencies', 'formatting', 'miscellaneous', ...")
+
+class PRFilesWalkthrough(BaseModel):
+    pr_files: List[FileDescription] = Field(description="a list of all the files that were changed in this PR chunk, and summary of their changes. Each file must be analyzed regardless of change size.")
+=====
+
+
+Example output:
+
+```yaml
+pr_files:
+- filename: |
+    ...
+{%- if include_file_summary_changes %}
+  changes_summary: |
+    ...
+{%- endif %}
+  changes_title: |
+    ...
+  label: |
+    label_key_1
+...
+```
+
+Answer should be a valid YAML, and nothing else. Each YAML output MUST be after a newline, with proper indent, and block scalar indicator ('|')
+"""
+
+user="""
+{%- if related_tickets %}
+Related Ticket Info:
+{% for ticket in related_tickets %}
+=====
+Ticket Title: '{{ ticket.title }}'
+{%- if ticket.labels is defined and ticket.labels %}
+Ticket Labels: {{ ticket.labels }}
+{%- endif %}
+{%- if ticket.body %}
+Ticket Description:
+#####
+{{ ticket.body }}
+#####
+{%- endif %}
+=====
+{% endfor %}
+{%- endif %}
+
+PR Info:
+
+Previous title: '{{title}}'
+
+{%- if description %}
+
+Previous description:
+=====
+{{ description|trim }}
+=====
+{%- endif %}
+
+Branch: '{{branch}}'
+
+{%- if commit_messages_str %}
+
+Commit messages:
+=====
+{{ commit_messages_str|trim }}
+=====
+{%- endif %}
+
+
+The PR Git Diff:
+=====
+{{ diff|trim }}
+=====
+
+Note that lines in the diff body are prefixed with a symbol that represents the type of change: '-' for deletions, '+' for additions, and ' ' (a space) for unchanged lines.
+
+{%- if duplicate_prompt_examples %}
+
+
+Example output:
+```yaml
+pr_files:
+- filename: |
+    ...
+{%- if include_file_summary_changes %}
+  changes_summary: |
+    ...
+{%- endif %}
+  changes_title: |
+    ...
+  label: |
+    label_key_1
+...
+```
+(replace '...' with the actual values)
+{%- endif %}
+
+
+Response (should be a valid YAML, and nothing else):
+```yaml
+"""

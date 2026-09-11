@@ -74,9 +74,9 @@ Sensitive values should stay in environment variables or the gitignored `.secret
 Ruff is the single linting tool: `pyproject.toml` configures it and the pre-commit Ruff hook enforces it (Flake8 and the standalone isort hook have been removed).
 
 - Keep Python lines within the 120-character limit declared in `pyproject.toml`.
-- `pyproject.toml` configures Ruff rules `E`, `F`, `B`, `I001`, and `I002`; `I001` (import sorting), `F401` (unused imports), and `F541` (f-strings without placeholders) are fixable. The `lint.ignore` list defers pre-existing violations — treat it as a debt ledger: fix the code and drop entries rather than adding new ones.
+- `pyproject.toml` configures Ruff rules `E`, `F`, `B` and `I`; `I001` (import sorting), `F401` (unused imports), and `F541` (f-strings without placeholders) are fixable. The `lint.ignore` list defers pre-existing violations — treat it as a debt ledger: fix the code and drop entries rather than adding new ones.
 - Before committing, run `uv run ruff check --fix` on the files you touched and fix every issue it reports. Keep fixes mechanical (rename, remove unused imports, sort imports); do not alter program logic while cleaning up — if a lint fix would change behavior, surface it instead of applying it silently.
-- `.pre-commit-config.yaml` is the source of truth for enabled pre-commit hooks. Run them on the files you touched with `uv run pre-commit run --files <paths>` and review the automatic edits so unrelated changes are not included. The pre-commit GitHub Actions workflow is manual-only (`workflow_dispatch`); the hooks are not enforced in CI.
+- `.pre-commit-config.yaml` is the source of truth for enabled pre-commit hooks. Run them on the files you touched with `uv run pre-commit run --files <paths>` and review the automatic edits so unrelated changes are not included. The pre-commit GitHub Actions workflow runs on pull requests, so the hooks are enforced in CI.
 - No general-purpose Python formatter is currently enforced (`ruff format` is deliberately not adopted yet). Preserve the surrounding file's formatting and avoid unrelated rewrites or repository-wide formatting.
 - Prefer double quotes for Python strings where consistent with the surrounding file.
 - Match existing docstring and comment style—concise English comments using imperative phrasing only where necessary.
@@ -86,7 +86,7 @@ Ruff is the single linting tool: `pyproject.toml` configures it and the pre-comm
 ## Testing Guidelines
 
 - Pytest is the standard framework; keep new tests under the closest matching directory (`tests/unittest/` for unit logic, `tests/e2e_tests/` for integration flows, `tests/health_test/` for smoke coverage).
-- Pytest configuration lives in `pyproject.toml`, including `asyncio_mode = "auto"` and `testpaths = ["tests"]`. The Docker test image keeps `pyproject.toml` at `/app` (uv installs from it), so CI inherits these settings as well.
+- Pytest configuration lives in `pyproject.toml`, including `asyncio_mode = "auto"` and `testpaths = ["tests/unittest"]`. The Docker test image keeps `pyproject.toml` at `/app` (uv installs from it), so CI inherits these settings as well. Plain `PYTHONPATH=. uv run pytest` therefore defaults to the unit suite; invoke end-to-end tests explicitly.
 - Prefer focused unit tests that isolate helpers in `pr_agent/algo/`, `pr_agent/tools/`, or provider adapters; use parameterized tests where existing files already do so.
 - Set `PYTHONPATH=.` when invoking pytest from the repository root to avoid import errors.
 - End-to-end suites require provider tokens (`TOKEN_GITHUB`, `TOKEN_GITLAB`, `BITBUCKET_USERNAME`, `BITBUCKET_PASSWORD`) and may take several minutes; run them only when credentials and sandboxes are configured.
@@ -97,7 +97,7 @@ Ruff is the single linting tool: `pyproject.toml` configures it and the pre-comm
 - Follow `CONTRIBUTING.md`: keep changes focused, add or update tests, and use Conventional Commit-style messages (e.g., `fix: handle missing repo settings gracefully`).
 - Target branch names follow `feature/<name>` or `fix/<issue>` patterns for substantial work.
 - Reference related issues and update README or docs when user-facing behavior shifts.
-- Ensure CI workflows (`build-and-test`, `code-coverage`, `docs-ci`) succeed locally or in draft PRs before requesting review; reproduce failures with the documented commands above.
+- Before requesting review, run the relevant local checks above and make sure the corresponding CI workflows (`build-and-test`, `pre-commit`) pass; coverage is collected and uploaded by `build-and-test`, and `docs-ci` runs only on pushes to `main` and `add-docs-portal`.
 - Include screenshots or terminal captures when modifying user-visible output or documentation previews.
 
 ## Safety and Permissions

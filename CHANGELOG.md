@@ -63,5 +63,5 @@ only; they do **not** describe any release after that date.
 #### Added
 
 - New feature for updating the CHANGELOG.md based on the contents of a PR.
-- Added support for this feature for the Github provider.
+- Added support for this feature for the GitHub provider.
 - New configuration settings and prompts for the changelog update feature.

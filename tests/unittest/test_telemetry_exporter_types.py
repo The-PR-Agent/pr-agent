@@ -32,7 +32,9 @@ def _reset_telemetry():
 
 
 def test_valid_exporter_types_equals_constant_set():
-    assert VALID_EXPORTER_TYPES == {ExporterType.CONSOLE, ExporterType.OTLP, ExporterType.NONE}
+    assert VALID_EXPORTER_TYPES == {
+        ExporterType.CONSOLE, ExporterType.OTLP, ExporterType.PROMETHEUS, ExporterType.NONE
+    }
 
 
 def test_disabled_tracer_is_noop_never_global(monkeypatch):
@@ -64,6 +66,7 @@ def test_exporter_type_constant_values():
     users put in configuration.toml."""
     assert ExporterType.OTLP == "otlp"
     assert ExporterType.CONSOLE == "console"
+    assert ExporterType.PROMETHEUS == "prometheus"
     assert ExporterType.NONE == "none"
 
 
@@ -83,6 +86,22 @@ def test_span_exporter_none():
 
 def test_metric_exporter_none():
     assert _create_metric_exporter(make_config(exporter_type=ExporterType.NONE)) is None
+
+
+def test_span_exporter_prometheus_is_none():
+    """The prometheus exporter is metrics-only: spans are silently dropped."""
+    with capture_loguru(level="WARNING") as captured:
+        exporter = _create_exporter(make_config(exporter_type=ExporterType.PROMETHEUS))
+
+    assert exporter is None
+    assert "metrics only" in "\n".join(captured)
+
+
+def test_metric_exporter_prometheus():
+    from pr_agent.telemetry.prometheus import PrometheusMetricExporter
+
+    exporter = _create_metric_exporter(make_config(exporter_type=ExporterType.PROMETHEUS))
+    assert isinstance(exporter, PrometheusMetricExporter)
 
 
 def test_span_exporter_unknown_returns_none():

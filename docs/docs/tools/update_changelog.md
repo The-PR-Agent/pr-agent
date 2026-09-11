@@ -9,13 +9,13 @@ It can be invoked manually by commenting on any PR:
 
 ## Example usage
 
-![update_changelog_comment](https://codium.ai/images/pr_agent/update_changelog_comment.png){width=768}
+![update_changelog_comment](../assets/update_changelog_comment.png){width=768}
 
-![update_changelog](https://codium.ai/images/pr_agent/update_changelog.png){width=768}
+![update_changelog](../assets/update_changelog.png){width=768}
 
 ## Configuration options
 
-Under the section `pr_update_changelog`, the [configuration file](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml#L169) contains options to customize the 'update changelog' tool:
+Under the section `pr_update_changelog`, the [configuration file](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) contains options to customize the 'update changelog' tool:
 
 - `push_changelog_changes`: whether to push the changes to CHANGELOG.md, or just publish them as a comment. Default is false (publish as comment).
 - `extra_instructions`: Optional extra instructions to the tool. For example: "Use the following structure: ..."

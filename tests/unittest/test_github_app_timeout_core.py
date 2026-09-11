@@ -416,26 +416,15 @@ def _run(coro):
 @pytest.fixture
 def push_trigger_env(monkeypatch):
     """Set up minimal mocks so handle_push_trigger_for_new_commits can run."""
-    # Swap module-level dedupe state with fresh test-local instances so we
-    # don't leak entries into other tests and don't depend on prior state.
-    fresh_duplicate_push_triggers = DefaultDictWithTimeout(ttl=None)
-    fresh_pending_conditions = DefaultDictWithTimeout(
-        asyncio.locks.Condition, ttl=None
-    )
-    monkeypatch.setattr(
-        github_app, "_duplicate_push_triggers", fresh_duplicate_push_triggers
-    )
-    monkeypatch.setattr(
-        github_app,
-        "_pending_task_duplicate_push_conditions",
-        fresh_pending_conditions,
-    )
+    monkeypatch.setattr(servers_utils, "_push_trigger_states_by_ttl", {})
+    monkeypatch.setattr(servers_utils, "_active_push_trigger_states", {})
 
     settings = SimpleNamespace(
         github_app=SimpleNamespace(
             handle_push_trigger=True,
             push_trigger_ignore_merge_commits=False,
             push_trigger_pending_tasks_backlog=False,
+            push_trigger_pending_tasks_ttl=300,
         )
     )
     monkeypatch.setattr(github_app, "get_settings", lambda: settings)
@@ -483,7 +472,8 @@ class TestPushTriggerDedupe:
 
         assert push_trigger_env["count"] == 1
         # Counter incremented then decremented back to 0.
-        assert github_app._duplicate_push_triggers[api_url] == 0
+        state = servers_utils._get_push_trigger_state(api_url, 300)
+        assert state.active_tasks == 0
 
     def test_skips_when_before_equals_after(self, push_trigger_env):
         body = _push_body()
@@ -526,7 +516,8 @@ class TestPushTriggerDedupe:
         body = _push_body()
         api_url = body["pull_request"]["url"]
         # Simulate an already-running task with backlog disabled (max=1).
-        github_app._duplicate_push_triggers[api_url] = 1
+        state = servers_utils._get_push_trigger_state(api_url, 300)
+        state.active_tasks = 1
 
         asyncio.run(
             github_app.handle_push_trigger_for_new_commits(
@@ -536,7 +527,7 @@ class TestPushTriggerDedupe:
 
         # Third path: counter is left untouched, perform never runs.
         assert push_trigger_env["count"] == 0
-        assert github_app._duplicate_push_triggers[api_url] == 1
+        assert state.active_tasks == 1
 
     def test_cancelled_backlog_waiter_releases_dedupe_slot(self, push_trigger_env, monkeypatch):
         settings = github_app.get_settings()
@@ -567,11 +558,12 @@ class TestPushTriggerDedupe:
                     body, "push", "alice", "1", "synchronize", {}, agent=None
                 )
             )
+            state = servers_utils._get_push_trigger_state(api_url, 300)
             for _ in range(10):
-                if github_app._duplicate_push_triggers[api_url] == 2:
+                if state.active_tasks == 2:
                     break
                 await asyncio.sleep(0)
-            assert github_app._duplicate_push_triggers[api_url] == 2
+            assert state.active_tasks == 2
 
             second.cancel()
             with pytest.raises(asyncio.CancelledError):
@@ -579,12 +571,12 @@ class TestPushTriggerDedupe:
 
             try:
                 # Cancelling the waiting task must return its reserved slot.
-                assert github_app._duplicate_push_triggers[api_url] == 1
+                assert state.active_tasks == 1
             finally:
                 release_first.set()
                 await first
 
-            assert github_app._duplicate_push_triggers[api_url] == 0
+            assert state.active_tasks == 0
             await asyncio.wait_for(
                 github_app.handle_push_trigger_for_new_commits(
                     body, "push", "alice", "1", "synchronize", {}, agent=None
