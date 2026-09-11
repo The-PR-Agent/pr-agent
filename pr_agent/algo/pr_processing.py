@@ -418,14 +418,21 @@ def get_pr_multi_diffs_with_files(git_provider: GitProvider,
                                   token_handler: TokenHandler,
                                   model: str,
                                   max_calls: int = 5,
-                                  add_line_numbers: bool = True) -> tuple[list[ChunkPlan], list[str]]:
+                                  add_line_numbers: bool = True,
+                                  diff_files: list = None) -> tuple[list[ChunkPlan], list[str]]:
     """Same chunking as get_pr_multi_diffs, but each chunk also names its files and which were clipped.
+
+    Args:
+        diff_files: override the files considered, instead of calling `git_provider.get_diff_files()`.
+            Used by `split_chunk_plan` (pr_reviewer.py) to regenerate a diff for just one half of a
+            failed chunk's files, without needing a stub `GitProvider`.
 
     Returns:
         A tuple of the list of `ChunkPlan`s (one per model call) and the list of files the token
         budget left out entirely (in the same shape as `get_pr_diff`'s `remaining_files_list`).
     """
-    diff_files = git_provider.get_diff_files()
+    if diff_files is None:
+        diff_files = git_provider.get_diff_files()
 
     # Sort files by main language
     pr_languages = sort_files_by_main_languages(git_provider.get_languages(), diff_files)

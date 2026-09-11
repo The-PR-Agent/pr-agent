@@ -19,6 +19,7 @@ from pr_agent.algo.inline_comment_dedup import (
     key_issue_location_fingerprint,
 )
 from pr_agent.algo.pr_processing import (
+    ChunkPlan,
     add_ai_metadata_to_diff_files,
     get_pr_diff,
     get_pr_multi_diffs_with_files,
@@ -164,6 +165,34 @@ class UnparsableReview(ValueError):
 # One retry per failed chunk. Chunk failures cost findings, and both an unanswered call and
 # unparsable YAML are usually transient; more attempts would multiply latency on a large PR.
 CHUNK_REVIEW_ATTEMPTS = 2
+
+
+def split_chunk_plan(plan: ChunkPlan, git_provider, token_handler, model: str) -> list[ChunkPlan]:
+    """Split a chunk that failed every attempt on `model` into two smaller chunks, one per half of
+    its files, each with its diff regenerated from scratch (so the token budget is re-applied to
+    just that half rather than reusing the failed chunk's possibly-clipped diff).
+
+    Returns `[plan]` unchanged when it has only one file left to split, or when regenerating a
+    half's diff produced nothing (e.g. every file in it turned out to be delete-only).
+    """
+    if len(plan.files) <= 1:
+        return [plan]
+    mid = len(plan.files) // 2
+    file_halves = (plan.files[:mid], plan.files[mid:])
+    all_diff_files = git_provider.get_diff_files()
+
+    halves: list[ChunkPlan] = []
+    for files_subset in file_halves:
+        wanted = set(files_subset)
+        subset_diff_files = [f for f in all_diff_files if f.filename in wanted]
+        # max_calls=1: if a half still does not fit in one model call, take its first plan and
+        # let whatever it could not fit go uncovered, same as the top-level chunker would.
+        sub_plans, _ = get_pr_multi_diffs_with_files(
+            git_provider, token_handler, model, max_calls=1, add_line_numbers=True,
+            diff_files=subset_diff_files)
+        if sub_plans:
+            halves.append(sub_plans[0])
+    return halves if halves else [plan]
 
 
 class PRReviewer:
@@ -920,56 +949,158 @@ class PRReviewer:
             model,
             max_calls=get_settings().pr_reviewer.get("max_number_of_calls", 3),
             add_line_numbers=True)
-        patches_diff_list = [plan.diff for plan in plans]
-        if len(patches_diff_list) < 2:
+        if len(plans) < 2:
             get_logger().info("Large-diff chunking produced a single chunk, reviewing the PR in one call")
             return False
 
         self.chunk_plans = plans
-        get_logger().info(f"Number of PR chunk calls: {len(patches_diff_list)}")
-        get_logger().debug("PR diff chunks", artifact=patches_diff_list)
-        # A dropped chunk loses every finding in its slice of the diff, and both failure modes
-        # here (no answer, or an answer whose YAML cannot be repaired) are usually transient, so
-        # give the failures one more pass before giving up on them.
-        chunk_results: dict[int, tuple[str, dict]] = {}
-        # Per chunk index, not a running total: a chunk that is retried, or a model attempt that
-        # fails after a later one succeeds, must not add its drops twice.
-        chunk_dropped: dict[int, int] = {}
-        pending_indices = list(range(len(patches_diff_list)))
+        get_logger().info(f"Number of PR chunk calls: {len(plans)}")
+        get_logger().debug("PR diff chunks", artifact=[plan.diff for plan in plans])
+
+        # Built here, before the chunk loop runs, so _review_chunk_plans can mark chunk_failed on
+        # it directly as plans exhaust their recovery stages, rather than the caller reassembling
+        # the same information afterwards. previous_coverage is restored below if chunking ends up
+        # producing no output at all: that path falls back to the single-call flow, which must see
+        # the coverage ledger _prepare_prediction built before chunking was ever attempted, not
+        # this one's clipped marks for a chunking attempt that never actually reviewed anything.
+        previous_coverage = self.coverage
+        coverage = self._build_coverage_ledger(remaining_files_list)
+        for plan in plans:
+            for filename in plan.clipped:
+                coverage.mark(filename, "clipped")
+        self.coverage = coverage
+
+        fallback_models = get_settings().config.get("fallback_models", [])
+        if not isinstance(fallback_models, list):
+            fallback_models = [m.strip() for m in fallback_models.split(",")] if fallback_models else []
+        ok = await self._review_chunk_plans(model, fallback_models)
+        if ok:
+            self.remaining_files_list = remaining_files_list
+        else:
+            self.coverage = previous_coverage
+        return ok
+
+    async def _review_chunk_plans(self, model: str, fallback_models: list) -> bool:
+        """Review `self.chunk_plans`, recovering a chunk that fails every attempt on `model` in
+        stages, each only as expensive as it needs to be:
+
+        1. `CHUNK_REVIEW_ATTEMPTS` attempts on `model` (a transient failure or unparsable answer
+           usually survives a second try).
+        2. `pr_reviewer.chunk_split_on_failure`: split whatever is still pending in half by file
+           (`split_chunk_plan`) and give the halves one attempt on `model` - a chunk that failed
+           because it was too large, not because the diff itself was hard, gets a smaller bite.
+        3. `pr_reviewer.chunk_fallback_model_on_failure`: one attempt on `fallback_models[0]` for
+           whatever is still pending, skipped when that is the model just tried (retry_with_fallback
+           models will already give it its own attempt at the top level in that case).
+        4. Anything still pending after all of that has its files marked chunk_failed - but only
+           when at least one other chunk in this run produced output; if every chunk failed
+           outright, this returns False (or raises the first transport error) so the single-call
+           flow gets a turn on the whole diff, as it did before chunking existed.
+
+        Mutates `self.coverage` directly (marking chunk_failed on it) so a caller that pre-built
+        the ledger, or a test that hands one in, sees the final state without a second pass.
+        """
+        original_plans = list(self.chunk_plans)
+        # One "leaf" per plan still being tracked, keyed by a stable id: a plan that is split
+        # keeps its parent's original index (for review_failed_chunk_count) and takes its
+        # parent's place in `order`, so a partial success/failure still merges in diff order and
+        # a split plan's failure still counts as one failed original chunk, not two.
+        order: list[int] = list(range(len(original_plans)))
+        leaf_plan: dict[int, ChunkPlan] = dict(enumerate(original_plans))
+        leaf_parent: dict[int, int] = {i: i for i in range(len(original_plans))}
+        next_id = len(original_plans)
+
+        results: dict[int, tuple[str, dict, int]] = {}
         # The first failure is the one worth reporting; a retry's error is usually a repeat.
         first_chunk_error: Exception | None = None
-        for attempt in range(CHUNK_REVIEW_ATTEMPTS):
-            if not pending_indices:
-                break
-            if attempt:
-                get_logger().info(f"Retrying {len(pending_indices)} failed review chunk(s)")
-            results = await asyncio.gather(
-                *[self._get_review_data(model, patches_diff_list[i], chunk_index=i,
-                                        files=list(plans[i].files)) for i in pending_indices],
-                return_exceptions=True)
 
-            retry_indices = []
-            for chunk_index, result in zip(pending_indices, results, strict=True):
-                if isinstance(result, Exception):
+        async def _attempt(pending_ids: list, call_model: str) -> list:
+            nonlocal first_chunk_error
+            positions = {lid: idx for idx, lid in enumerate(order)}
+            outcomes = await asyncio.gather(
+                *[self._get_review_data(call_model, leaf_plan[lid].diff, chunk_index=positions[lid],
+                                        files=list(leaf_plan[lid].files)) for lid in pending_ids],
+                return_exceptions=True)
+            still_pending = []
+            for lid, outcome in zip(pending_ids, outcomes, strict=True):
+                if isinstance(outcome, Exception):
                     # An unparsable chunk is not a failed call: if every chunk ends up unparsable
                     # the single-call flow still gets its turn, whereas a transport error is the
                     # run's error and is re-raised below.
-                    if first_chunk_error is None and not isinstance(result, UnparsableReview):
-                        first_chunk_error = result
-                    get_logger().warning(f"Failed to review chunk {chunk_index + 1}; retaining successful chunks",
-                                         artifact={"error": result})
-                    retry_indices.append(chunk_index)
+                    if first_chunk_error is None and not isinstance(outcome, UnparsableReview):
+                        first_chunk_error = outcome
+                    get_logger().warning(
+                        f"Failed to review chunk {positions[lid] + 1}; retaining successful chunks",
+                        artifact={"error": outcome})
+                    still_pending.append(lid)
                     continue
-                if isinstance(result, BaseException):
-                    raise result
-                prediction, data, dropped = result
-                chunk_results[chunk_index] = (prediction, data)
-                chunk_dropped[chunk_index] = dropped
-            pending_indices = retry_indices
+                if isinstance(outcome, BaseException):
+                    raise outcome
+                results[lid] = outcome
+            return still_pending
 
-        # keep the chunks in diff order, not completion order
-        raw_predictions = [chunk_results[i][0] for i in sorted(chunk_results)]
-        chunk_outputs = [chunk_results[i][1] for i in sorted(chunk_results)]
+        # Stage 1: CHUNK_REVIEW_ATTEMPTS attempts on the model this review is running as.
+        pending = list(order)
+        for attempt in range(CHUNK_REVIEW_ATTEMPTS):
+            if not pending:
+                break
+            if attempt:
+                get_logger().info(f"Retrying {len(pending)} failed review chunk(s)")
+            pending = await _attempt(pending, model)
+
+        # Stage 2: split what is still pending in half by file, and give the halves one attempt
+        # on the same model. A plan that could not be split (one file, or split_chunk_plan handed
+        # it back unchanged) already got its fair shake in stage 1 on the exact same diff, so it
+        # is left pending rather than spending another call re-asking the same question.
+        if pending and get_settings().pr_reviewer.get("chunk_split_on_failure", True):
+            split_ids = []
+            for lid in list(pending):
+                plan = leaf_plan[lid]
+                if len(plan.files) <= 1:
+                    continue
+                halves = split_chunk_plan(plan, getattr(self, "git_provider", None),
+                                          getattr(self, "token_handler", None), model)
+                if len(halves) <= 1:
+                    continue  # unsplittable in practice; leave it pending as-is
+                parent = leaf_parent[lid]
+                new_ids = []
+                covered = set()
+                for half in halves:
+                    leaf_plan[next_id] = half
+                    leaf_parent[next_id] = parent
+                    new_ids.append(next_id)
+                    next_id += 1
+                    covered.update(half.files)
+                    for filename in half.clipped:
+                        self.coverage.mark(filename, "clipped")
+                # split_chunk_plan re-chunks each half with max_calls=1: a file that does not fit
+                # even alone is dropped from the half rather than clipped, so it needs its own mark
+                # here (stage 4 overwrites it with chunk_failed if the half goes on to fail anyway).
+                for filename in set(plan.files) - covered:
+                    self.coverage.mark(filename, "skipped_budget")
+                pos = order.index(lid)
+                order[pos:pos + 1] = new_ids
+                pending.remove(lid)
+                pending.extend(new_ids)
+                split_ids.extend(new_ids)
+                del leaf_plan[lid]
+            if split_ids:
+                get_logger().info(f"Split {len(split_ids)} chunk half(s) from a failed review chunk; retrying them")
+                retried = await _attempt(split_ids, model)
+                pending = [lid for lid in pending if lid not in split_ids] + retried
+
+        # Stage 3: one attempt on the first fallback model, unless it is the model already tried
+        # (retry_with_fallback_models gives that its own full attempt at the top level).
+        if (pending and fallback_models
+                and get_settings().pr_reviewer.get("chunk_fallback_model_on_failure", True)):
+            fallback_model = fallback_models[0]
+            if fallback_model != model:
+                get_logger().info(f"Trying fallback model {fallback_model} for {len(pending)} failed chunk(s)")
+                pending = await _attempt(pending, fallback_model)
+
+        # keep the chunks in diff order, not completion order; halves keep their parent's position
+        raw_predictions = [results[lid][0] for lid in order if lid in results]
+        chunk_outputs = [results[lid][1] for lid in order if lid in results]
 
         if not chunk_outputs:
             if first_chunk_error is not None:
@@ -977,23 +1108,23 @@ class PRReviewer:
             get_logger().warning("No chunk produced a parsable review, falling back to a single review call")
             return False
 
+        # Stage 4: whatever is still pending exhausted every recovery stage - its files are not
+        # covered by this review.
+        failed_parents = set()
+        for lid in pending:
+            failed_parents.add(leaf_parent[lid])
+            for filename in leaf_plan[lid].files:
+                self.coverage.mark(filename, "chunk_failed")
+
         # the raw text is kept for logging only; the merged verdict is in self.prediction_data
         self.prediction = "\n".join(raw_predictions)
         self.prediction_data = merge_review_chunks(chunk_outputs)
-        self.review_chunk_count = len(patches_diff_list)
-        self.review_failed_chunk_count = len(patches_diff_list) - len(chunk_outputs)
-        self.review_vote_dropped_count = sum(chunk_dropped.values())
-        self.remaining_files_list = remaining_files_list
-
-        coverage = self._build_coverage_ledger(remaining_files_list)
-        for plan in plans:
-            for filename in plan.clipped:
-                coverage.mark(filename, "clipped")
-        for chunk_index, plan in enumerate(plans):
-            if chunk_index not in chunk_results:
-                for filename in plan.files:
-                    coverage.mark(filename, "chunk_failed")
-        self.coverage = coverage
+        self.review_chunk_count = len(original_plans)
+        # Counted by ORIGINAL plan, not by leaf: a parent whose halves both succeeded counts 0,
+        # one whose split left one half still failing (or that could not be split at all) counts 1
+        # - never 2, even though it may now be tracked as two leaves.
+        self.review_failed_chunk_count = len(failed_parents)
+        self.review_vote_dropped_count = sum(result[2] for result in results.values())
         return True
 
     async def _get_review_data(self, model: str, patches_diff: Optional[str] = None,

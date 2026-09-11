@@ -188,6 +188,10 @@ enable_review_coverage_footer=true
 # into chunks, review each chunk, and merge the per-chunk results into one review.
 enable_large_pr_chunking=false
 max_number_of_calls=3 # maximum number of chunk review calls, used only when enable_large_pr_chunking is true
+# On a chunk that fails every attempt: split it in half by file and retry, then try the first fallback model,
+# and only then mark its files as not reviewed.
+chunk_split_on_failure = true
+chunk_fallback_model_on_failure = true
 
 [pr_description] # /describe #
 publish_labels=false
