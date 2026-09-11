@@ -18,6 +18,7 @@ from fastapi.templating import Jinja2Templates
 
 from pr_dashboard import comments as comments_module
 from pr_dashboard import providers, registry, store
+from pr_dashboard import usage as usage_module
 
 _HERE = Path(__file__).parent
 
@@ -161,6 +162,27 @@ def create_app(*, registry_path: Optional[Path] = None, db_path: Optional[Path] 
         return templates.TemplateResponse(request, "pr_detail.html", {
             "repo": repo, "number": number, "findings": findings,
             "review_comments": review_comments, "runs": runs, "error": error, "stale": stale,
+        })
+
+    @application.get("/usage", response_class=HTMLResponse)
+    def usage_page(request: Request, dimension: Optional[str] = None):
+        # dimension is user-controlled input (a query parameter); it must be checked against
+        # the DIMENSIONS whitelist here rather than trusted through to by_dimension, which
+        # interpolates it into a SQL column name.
+        if dimension is not None and dimension not in usage_module.DIMENSIONS:
+            raise HTTPException(status_code=400, detail=f"unknown usage dimension {dimension!r}")
+        conn = store.connect(application.state.db_path)
+        daily = [
+            {"day": row["day"], "tokens": row["tokens"], "cost": str(row["cost"])}
+            for row in usage_module.daily_tokens(conn, days=30)
+        ]
+        dimension_names = (dimension,) if dimension else ("repo", "model", "command")
+        groups = [
+            {"name": name, "rows": usage_module.by_dimension(conn, name)}
+            for name in dimension_names
+        ]
+        return templates.TemplateResponse(request, "usage.html", {
+            "totals": usage_module.totals(conn), "daily": daily, "groups": groups,
         })
 
     return application

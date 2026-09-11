@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Usage{% endblock %}
+{% block content %}
+<h1>Usage</h1>
+<p>
+  {{ totals.runs }} runs — {{ totals.ok }} ok, {{ totals.failed }} failed.
+  {{ totals.tokens }} tokens.
+  {% if totals.runs > 0 and totals.unpriced_runs == totals.runs %}
+    Cost not reported (no run in this window could be priced).
+  {% else %}
+    Cost {{ totals.cost }} USD.
+  {% endif %}
+</p>
+<p class="muted">
+  {{ totals.unpriced_runs }} runs could not be priced (local models, or usage the provider did not report).
+  {{ totals.fallback_runs }} runs used a fallback model.
+</p>
+
+<canvas id="daily" height="90"></canvas>
+<script src="{{ url_for('static', path='/chart.umd.js') }}"></script>
+<script>
+  const daily = {{ daily | tojson }};
+  new Chart(document.getElementById("daily"), {
+    type: "line",
+    data: {
+      labels: daily.map(d => d.day),
+      datasets: [{ label: "tokens", data: daily.map(d => d.tokens) }]
+    },
+    options: { responsive: true, scales: { y: { beginAtZero: true } } }
+  });
+</script>
+
+{% for group in groups %}
+  <h2>By {{ group.name }}</h2>
+  <table>
+    <thead><tr><th>{{ group.name }}</th><th>Runs</th><th>Tokens</th><th>Cost (USD)</th></tr></thead>
+    <tbody>
+    {% for row in group.rows %}
+      <tr><td>{{ row.label }}</td><td>{{ row.runs }}</td><td>{{ row.tokens }}</td><td>{{ row.cost }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+{% endfor %}
+{% endblock %}
