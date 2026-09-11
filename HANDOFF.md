@@ -74,6 +74,38 @@ rather than forced). `main` is 42 commits ahead of `origin/main` and **was not p
 `fix/review-p0` still points at the same commit.
 Rotate the Cursor API key used for these runs - it was pasted into a chat transcript.
 
+## Session 4 (2026-09-11 18:05-18:45) - Step 1 answered, Step 2 done
+
+- **Step 1 is closed and the answer is null.** The key-issues wording is not what caps recall.
+  Six rows, three wordings x two reps, equal coverage; best 1 of 23, control 1 then 0 on identical
+  flags. Table and adjudication in `tests/eval/BASELINE.md`; the decision rule was pre-registered in
+  the same file *before* the rows ran (`6fdffc15`), and the result commit is `14f7007d`.
+- **Mechanism that makes future prompt A/Bs cheap** (`4e3f55a5`): the sentence moved to
+  `prompt_fragments.findings_field`, so a variant is `--set prompt_fragments.findings_field=...`
+  and the tree under test is identical across rows. The runner
+  (`.delegate/runs/task-11/run_prompt_variants.sh`) greps the shim's raw prompt dumps after every
+  row and marks the row invalid if the variant's wording never reached the model - without that, a
+  broken `--set` produces six identical rows that read as "the prompt is exonerated".
+- **Step 2 (web research) is done** and is in the spec's *External evidence* section: W13, amended
+  R-16, confirmed R-19, promoted R-22.
+
+### Open items this session created
+
+1. **R-22 needs a provider key with quota.** The Cursor shim concatenates system+user onto stdin and
+   has no `response_format`, so server-side structured output cannot be tested through it at all.
+   This is now the blocking dependency for the next tier, since R-22 was promoted ahead of P1.
+2. **Corpus-revision candidate, deliberately not added.** Three independent rows (B rep1, C rep1,
+   C rep2) flagged a mission-replacement duplication in
+   `packages/engine/lib/src/game_engine.dart` around lines 362-375. It is not in the 23 labels and
+   was **not** added after the fact. If a future session verifies it and adds it, the denominator
+   becomes 24 and **recall numbers either side of that change are not comparable** - say so in
+   BASELINE.md at the same time.
+3. **Key rotation is still owed.** The Cursor key pasted into a transcript (WORKPLAN "Rules that
+   carry over") was never rotated, and the key now in `~/.cursor-eval-key` paid for six more rows.
+   Rotate before the next eval session.
+4. `/tmp/cursor-raw` holds 48 raw prompt dumps from this run (each carries the full PR diff). Scratch
+   only; delete when done with them.
+
 ## Session 2 addendum — Codex review of the session-2 diff
 
 Adversarial read-only pass (Codex, `task-mtx02yzm-ibsh0k`) over `bbb14015..bcce8ebe` found two

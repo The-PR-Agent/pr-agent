@@ -32,7 +32,21 @@ Commands register in `pr_agent/agent/pr_agent.py::command2class`.
 
 ---
 
-## Step 1 — Recall. Blocks everything else.
+## Step 1 — DONE 2026-09-11, and the answer is null. Do not re-run it.
+
+Six rows (3 wordings x 2 reps) at equal coverage: best 1 of 23, the same as the control, and the
+control disagreed with itself (1 then 0) on identical flags. Full table, adjudication and what it
+does not establish: `tests/eval/BASELINE.md`, section "Step 1 prompt-wording experiment - result".
+The wording now lives in `prompt_fragments.findings_field`, so any future variant is a
+`--set` override; the runner is `.delegate/runs/task-11/run_prompt_variants.sh`.
+
+**Per this plan's own branch (task 4 below), the next thing to build is Step 5's R-22**, not P1.
+R-22 cannot be tested through the Cursor shim - it has no `response_format` - so it needs a
+provider key with quota.
+
+Original hypothesis and tasks, kept for the record:
+
+### Step 1 (original) — Recall. Blocks everything else.
 
 **Hypothesis.** `pr_agent/settings/pr_reviewer_prompts.toml:123` describes the findings field as
 `"A concise list (0-{{ num_max_findings }} issues) … Only include issues you are confident
@@ -59,7 +73,14 @@ flags, reproduced within ±1 finding across two reps, plus a BASELINE.md row.
 **Risk.** Wording that inflates finding counts by lowering the confidence bar — which is why the
 control rows and precision are part of the acceptance, not an afterthought.
 
-## Step 2 — Deep web research. Do it before designing P2/P3.
+## Step 2 — DONE 2026-09-11. Findings are in the spec.
+
+Three read-only research agents; results written into the spec's new *External evidence* section
+with citations, plus W13 and amendments to R-16 (analyzer/SCIP is the spine, not tree-sitter),
+R-19 (confirmed; BugBot's diff-order-permutation vote is the cheap first variant) and R-22
+(promoted ahead of P1). Original brief:
+
+### Step 2 (original) — Deep web research
 
 Not yet done at all, and it is cheap next to building the wrong lens. Target: how CodeRabbit and
 peers actually get recall (retrieval strategy, lens decomposition, per-finding verification,
