@@ -10,6 +10,7 @@
       <td class="{{ '' if row.credentials.configured else 'muted' }}">{{ row.credentials.detail }}</td>
       <td>
         <button hx-post="/repos/{{ row.repo.provider }}/{{ row.repo.slug }}/delete"
+                hx-vals='{"csrf_token": "{{ csrf_token }}"}'
                 hx-target="#repo-list" hx-swap="innerHTML">Remove</button>
       </td>
     </tr>

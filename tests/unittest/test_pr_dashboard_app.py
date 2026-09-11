@@ -1,3 +1,4 @@
+import re
 import shutil
 import subprocess
 import zipfile
@@ -10,6 +11,8 @@ from pr_dashboard import app as app_module
 from pr_dashboard import providers
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+_ORIGIN = "http://127.0.0.1"
+_SAFE_HEADERS = {"Origin": _ORIGIN}
 
 
 def _client(tmp_path, monkeypatch):
@@ -19,7 +22,20 @@ def _client(tmp_path, monkeypatch):
         lambda provider: providers.CredentialStatus(provider, True, f"{provider} token configured"),
     )
     application = app_module.create_app(registry_path=tmp_path / "pr_dashboard.toml", db_path=tmp_path / "usage.db")
-    return TestClient(application)
+    return TestClient(application, base_url=_ORIGIN)
+
+
+def _csrf_token(client):
+    response = client.get("/repos")
+    match = re.search(r'name="csrf_token"\s+value="([^"]+)"', response.text)
+    assert match, "csrf_token input missing from /repos"
+    return match.group(1)
+
+
+def _post_repos(client, data):
+    token = _csrf_token(client)
+    payload = {**data, "csrf_token": token}
+    return client.post("/repos", data=payload, headers=_SAFE_HEADERS)
 
 
 class TestReposPage:
@@ -33,7 +49,7 @@ class TestReposPage:
     def test_add_repository(self, tmp_path, monkeypatch):
         """Posting a valid repository registers it and it appears in the list"""
         client = _client(tmp_path, monkeypatch)
-        response = client.post("/repos", data={"provider": "github", "slug": "samer2373/block_rush"})
+        response = _post_repos(client, {"provider": "github", "slug": "samer2373/block_rush"})
         assert response.status_code == 200
         assert "samer2373/block_rush" in response.text
         # And it persists across a fresh GET, not just in the POST response fragment.
@@ -43,7 +59,7 @@ class TestReposPage:
     def test_add_invalid_slug_shows_the_error(self, tmp_path, monkeypatch):
         """An invalid slug is reported in the page, not raised as a 500"""
         client = _client(tmp_path, monkeypatch)
-        response = client.post("/repos", data={"provider": "github", "slug": "no-owner"})
+        response = _post_repos(client, {"provider": "github", "slug": "no-owner"})
         assert response.status_code == 200
         assert "owner/name" in response.text
         # The rejected entry must not have been registered.
@@ -53,7 +69,7 @@ class TestReposPage:
     def test_add_unsupported_provider_shows_the_error(self, tmp_path, monkeypatch):
         """An unsupported provider is rejected with a message, not accepted or raised as a 500"""
         client = _client(tmp_path, monkeypatch)
-        response = client.post("/repos", data={"provider": "gitlab", "slug": "o/r"})
+        response = _post_repos(client, {"provider": "gitlab", "slug": "o/r"})
         assert response.status_code == 200
         # Assert the rejection phrase, not merely that "gitlab" appears: the row template
         # renders row.repo.provider, so a wrongly ACCEPTED repo would also put "gitlab" in
@@ -64,17 +80,18 @@ class TestReposPage:
     def test_add_missing_fields_does_not_500(self, tmp_path, monkeypatch):
         """A malformed post (missing fields) is handled, not a 500 from a KeyError"""
         client = _client(tmp_path, monkeypatch)
-        response = client.post("/repos", data={})
+        response = _post_repos(client, {})
         assert response.status_code == 200
         assert "unsupported provider" in response.text
 
     def test_add_non_utf8_body_does_not_500(self, tmp_path, monkeypatch):
         """A non-UTF-8 body is reported as a validation error, not a 500 from the decode"""
         client = _client(tmp_path, monkeypatch)
+        token = _csrf_token(client)
         response = client.post(
             "/repos",
-            content=b"provider=github&slug=o/\xff\xfe",
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            content=b"provider=github&slug=o/\xff\xfe&csrf_token=" + token.encode("ascii"),
+            headers={"Content-Type": "application/x-www-form-urlencoded", **_SAFE_HEADERS},
         )
         assert response.status_code == 200
         assert "invalid repository" in response.text
@@ -82,8 +99,10 @@ class TestReposPage:
     def test_delete_repository(self, tmp_path, monkeypatch):
         """A registered repository can be removed"""
         client = _client(tmp_path, monkeypatch)
-        client.post("/repos", data={"provider": "github", "slug": "o/r"})
-        response = client.post("/repos/github/o/r/delete")
+        _post_repos(client, {"provider": "github", "slug": "o/r"})
+        token = _csrf_token(client)
+        response = client.post(
+            "/repos/github/o/r/delete", data={"csrf_token": token}, headers=_SAFE_HEADERS)
         assert response.status_code == 200
         assert "o/r" not in response.text
         # Confirm it is actually gone from the registry, not just this response fragment.
@@ -93,7 +112,9 @@ class TestReposPage:
     def test_delete_unknown_repository_shows_the_error(self, tmp_path, monkeypatch):
         """Deleting a repository that was never registered is reported, not a 500"""
         client = _client(tmp_path, monkeypatch)
-        response = client.post("/repos/github/no/such/delete")
+        token = _csrf_token(client)
+        response = client.post(
+            "/repos/github/no/such/delete", data={"csrf_token": token}, headers=_SAFE_HEADERS)
         assert response.status_code == 200
         assert "not registered" in response.text.lower()
 
@@ -109,8 +130,8 @@ class TestReposPage:
         application = app_module.create_app(
             registry_path=tmp_path / "pr_dashboard.toml", db_path=tmp_path / "usage.db"
         )
-        client = TestClient(application)
-        client.post("/repos", data={"provider": "bitbucket", "slug": "team/svc"})
+        client = TestClient(application, base_url=_ORIGIN)
+        _post_repos(client, {"provider": "bitbucket", "slug": "team/svc"})
         response = client.get("/repos")
         assert "no token configured for bitbucket" in response.text
 
@@ -125,9 +146,10 @@ class TestReposPage:
             }.get(key, default),
         )
         client = TestClient(
-            app_module.create_app(registry_path=tmp_path / "pr_dashboard.toml", db_path=tmp_path / "usage.db")
+            app_module.create_app(registry_path=tmp_path / "pr_dashboard.toml", db_path=tmp_path / "usage.db"),
+            base_url=_ORIGIN,
         )
-        client.post("/repos", data={"provider": "bitbucket", "slug": "team/svc"})
+        _post_repos(client, {"provider": "bitbucket", "slug": "team/svc"})
         response = client.get("/repos")
         assert "bitbucket bearer token configured" in response.text
         assert "s3cr3t-sentinel-token" not in response.text
@@ -143,9 +165,9 @@ class TestCreateApp:
         )
         app_a = app_module.create_app(registry_path=tmp_path / "a.toml", db_path=tmp_path / "a.db")
         app_b = app_module.create_app(registry_path=tmp_path / "b.toml", db_path=tmp_path / "b.db")
-        client_a = TestClient(app_a)
-        client_b = TestClient(app_b)
-        client_a.post("/repos", data={"provider": "github", "slug": "only/inA"})
+        client_a = TestClient(app_a, base_url=_ORIGIN)
+        client_b = TestClient(app_b, base_url=_ORIGIN)
+        _post_repos(client_a, {"provider": "github", "slug": "only/inA"})
         assert "only/inA" in client_a.get("/repos").text
         assert "only/inA" not in client_b.get("/repos").text
 

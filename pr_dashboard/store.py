@@ -78,6 +78,23 @@ _SCHEMA = (
     """,
     "CREATE INDEX IF NOT EXISTS runs_started_at ON runs (started_at)",
     "CREATE INDEX IF NOT EXISTS runs_repo ON runs (provider, repo_slug)",
+    """
+    CREATE TABLE IF NOT EXISTS ui_runs (
+        token        TEXT PRIMARY KEY,
+        provider     TEXT NOT NULL,
+        repo_slug    TEXT NOT NULL,
+        pr_number    INTEGER,
+        pr_url       TEXT NOT NULL,
+        command      TEXT NOT NULL,
+        status       TEXT NOT NULL,
+        pid          INTEGER,
+        exit_code    INTEGER,
+        log_path     TEXT NOT NULL,
+        started_at   TEXT NOT NULL,
+        finished_at  TEXT
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ui_runs_started ON ui_runs(started_at DESC)",
 )
 
 _FINISH_WITH_USAGE = (
@@ -105,9 +122,15 @@ def connect(db_path: Path | str | None = None) -> sqlite3.Connection:
 
 
 def migrate(conn: sqlite3.Connection) -> None:
-    """Apply the schema. Every statement is IF NOT EXISTS, so this is idempotent."""
+    """Apply the schema. Idempotent: IF NOT EXISTS statements plus a guarded column add."""
     for statement in _SCHEMA:
         conn.execute(statement)
+    # ALTER TABLE ADD COLUMN is not idempotent — inspect columns rather than catching
+    # the duplicate-column error, so a genuine failure is not swallowed.
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(runs)")}
+    if "dashboard_token" not in columns:
+        conn.execute("ALTER TABLE runs ADD COLUMN dashboard_token TEXT")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS runs_dashboard_token ON runs(dashboard_token)")
 
 
 def start_run(conn: sqlite3.Connection, *, provider: str, command: str, pr_url: Optional[str],
@@ -176,3 +199,42 @@ def run_cost(row: sqlite3.Row) -> Optional[Decimal]:
         return Decimal(raw)
     except InvalidOperation:
         return None
+
+
+def start_ui_run(conn: sqlite3.Connection, *, token: str, provider: str, repo_slug: str,
+                 pr_number: Optional[int], pr_url: str, command: str, log_path: str,
+                 started_at: str) -> None:
+    """Record a dashboard-launched invocation before the child process is spawned."""
+    conn.execute(
+        "INSERT INTO ui_runs (token, provider, repo_slug, pr_number, pr_url, command, status, "
+        "log_path, started_at) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
+        (token, provider, repo_slug, pr_number, pr_url, command, log_path, started_at),
+    )
+
+
+def finish_ui_run(conn: sqlite3.Connection, *, token: str, status: str,
+                  exit_code: Optional[int], finished_at: str) -> None:
+    """Mark a dashboard invocation terminal with its exit code and finish time."""
+    conn.execute(
+        "UPDATE ui_runs SET status = ?, exit_code = ?, finished_at = ? WHERE token = ?",
+        (status, exit_code, finished_at, token),
+    )
+
+
+def get_ui_run(conn: sqlite3.Connection, token: str) -> Optional[sqlite3.Row]:
+    """Return one ui_runs row by token, or None when unknown."""
+    return conn.execute("SELECT * FROM ui_runs WHERE token = ?", (token,)).fetchone()
+
+
+def list_ui_runs(conn: sqlite3.Connection, limit: int = 50) -> list[sqlite3.Row]:
+    """Return recent dashboard invocations, newest first."""
+    return conn.execute(
+        "SELECT * FROM ui_runs ORDER BY started_at DESC LIMIT ?", (limit,)
+    ).fetchall()
+
+
+def run_for_token(conn: sqlite3.Connection, token: str) -> Optional[sqlite3.Row]:
+    """Return the accounting runs row joined by dashboard_token, if any."""
+    return conn.execute(
+        "SELECT * FROM runs WHERE dashboard_token = ?", (token,)
+    ).fetchone()

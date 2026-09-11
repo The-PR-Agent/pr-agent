@@ -3,6 +3,7 @@
 {% block content %}
 <h1>Repositories</h1>
 <form hx-post="/repos" hx-target="#repo-list" hx-swap="innerHTML">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <select name="provider">
     <option value="github">github</option>
     <option value="bitbucket">bitbucket</option>

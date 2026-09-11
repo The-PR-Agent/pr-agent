@@ -32,25 +32,32 @@ class TestStoreSchema:
         """A fresh connection has the runs, run_model_costs and provider_cache tables"""
         conn = store.connect(":memory:")
         names = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        assert {"runs", "run_model_costs", "provider_cache"} <= names
+        assert {"runs", "run_model_costs", "provider_cache", "ui_runs"} <= names
 
     def test_migrate_is_idempotent(self):
         """migrate() preserves existing data and schema across multiple invocations"""
         conn = store.connect(":memory:")
         # Capture schema before second migrate
         schema_before = conn.execute("PRAGMA table_info(runs)").fetchall()
-        # Insert a row to verify data preservation
+        assert "dashboard_token" in {row["name"] for row in schema_before}
+        # Insert rows to verify data preservation — a DROP-and-recreate would pass a
+        # weaker "can call twice" check while destroying usage history.
         run_id = store.start_run(
             conn, provider="github", command="review", pr_url="https://github.com/o/r/pull/1",
             repo_slug="o/r", pr_number=1, started_at="2026-09-10T10:00:00Z",
         )
-        # Call migrate a second time (should be idempotent)
+        store.start_ui_run(
+            conn, token="tok-preserve", provider="github", repo_slug="o/r", pr_number=1,
+            pr_url="https://github.com/o/r/pull/1", command="review",
+            log_path="/tmp/tok-preserve.log", started_at="2026-09-10T10:00:00Z",
+        )
         store.migrate(conn)
-        # Verify row survived
         row = store.get_run(conn, run_id)
         assert row is not None, "Data was lost during second migrate call"
         assert row["pr_number"] == 1
-        # Verify schema is unchanged
+        ui = store.get_ui_run(conn, "tok-preserve")
+        assert ui is not None, "ui_runs row was lost during second migrate call"
+        assert ui["command"] == "review"
         schema_after = conn.execute("PRAGMA table_info(runs)").fetchall()
         assert schema_before == schema_after, "Schema changed during second migrate call"
 
@@ -136,3 +143,71 @@ class TestRunLifecycle:
         assert row["cost_status"] == "unavailable"
         assert row["total_cost_usd"] is None
         assert store.run_cost(row) is None
+
+
+class TestUiRuns:
+    def test_start_ui_run_round_trips_every_field(self):
+        """start_ui_run then get_ui_run returns every field that was written"""
+        conn = store.connect(":memory:")
+        store.start_ui_run(
+            conn, token="abc-123", provider="github", repo_slug="o/r", pr_number=7,
+            pr_url="https://github.com/o/r/pull/7", command="review",
+            log_path="/tmp/abc-123.log", started_at="2026-09-11T12:00:00Z",
+        )
+        row = store.get_ui_run(conn, "abc-123")
+        assert row is not None
+        assert row["token"] == "abc-123"
+        assert row["provider"] == "github"
+        assert row["repo_slug"] == "o/r"
+        assert row["pr_number"] == 7
+        assert row["pr_url"] == "https://github.com/o/r/pull/7"
+        assert row["command"] == "review"
+        assert row["status"] == "queued"
+        assert row["log_path"] == "/tmp/abc-123.log"
+        assert row["started_at"] == "2026-09-11T12:00:00Z"
+        assert row["pid"] is None
+        assert row["exit_code"] is None
+        assert row["finished_at"] is None
+
+    def test_finish_ui_run_sets_status_and_exit_code(self):
+        """finish_ui_run records terminal status, exit code, and finished_at"""
+        conn = store.connect(":memory:")
+        store.start_ui_run(
+            conn, token="fin-1", provider="github", repo_slug="o/r", pr_number=1,
+            pr_url="https://github.com/o/r/pull/1", command="improve",
+            log_path="/tmp/fin-1.log", started_at="2026-09-11T12:00:00Z",
+        )
+        store.finish_ui_run(
+            conn, token="fin-1", status="ok", exit_code=0, finished_at="2026-09-11T12:01:00Z")
+        row = store.get_ui_run(conn, "fin-1")
+        assert row["status"] == "ok"
+        assert row["exit_code"] == 0
+        assert row["finished_at"] == "2026-09-11T12:01:00Z"
+
+    def test_list_ui_runs_newest_first_with_limit(self):
+        """list_ui_runs returns newest first and honours the limit"""
+        conn = store.connect(":memory:")
+        for i, started in enumerate(("2026-09-11T10:00:00Z", "2026-09-11T11:00:00Z", "2026-09-11T12:00:00Z")):
+            store.start_ui_run(
+                conn, token=f"t{i}", provider="github", repo_slug="o/r", pr_number=i,
+                pr_url=f"https://github.com/o/r/pull/{i}", command="review",
+                log_path=f"/tmp/t{i}.log", started_at=started,
+            )
+        rows = store.list_ui_runs(conn, limit=2)
+        assert [r["token"] for r in rows] == ["t2", "t1"]
+
+    def test_null_dashboard_tokens_coexist_but_duplicates_do_not(self):
+        """Many NULL dashboard_token values are allowed; a repeated non-NULL is not"""
+        conn = store.connect(":memory:")
+        for _ in range(2):
+            store.start_run(
+                conn, provider="github", command="review", pr_url=None,
+                repo_slug="o/r", pr_number=1, started_at="2026-09-11T12:00:00Z",
+            )
+        nulls = conn.execute("SELECT count(*) AS n FROM runs WHERE dashboard_token IS NULL").fetchone()
+        assert nulls["n"] == 2
+        conn.execute("UPDATE runs SET dashboard_token = ? WHERE id = 1", ("dash-tok",))
+        with pytest.raises(Exception):
+            conn.execute("UPDATE runs SET dashboard_token = ? WHERE id = 2", ("dash-tok",))
+        assert store.run_for_token(conn, "dash-tok")["id"] == 1
+        assert store.run_for_token(conn, "missing") is None

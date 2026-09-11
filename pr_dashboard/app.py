@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from pr_dashboard import comments as comments_module
-from pr_dashboard import providers, registry, store
+from pr_dashboard import providers, registry, store, websec
 from pr_dashboard import usage as usage_module
 
 _HERE = Path(__file__).parent
@@ -47,6 +47,13 @@ def create_app(*, registry_path: Optional[Path] = None, db_path: Optional[Path] 
     application.state.registry_path = registry_path or registry.DEFAULT_REGISTRY_PATH
     application.state.db_path = db_path or store.DEFAULT_DB_PATH
     application.state.templates = templates
+    application.state.csrf_sessions = {}
+
+    def html(request: Request, name: str, context: dict) -> HTMLResponse:
+        context = {**context, "csrf_token": websec.csrf_token(request)}
+        response = templates.TemplateResponse(request, name, context)
+        websec.attach_session_cookie(request, response)
+        return response
 
     def repo_rows() -> list[dict]:
         return [
@@ -55,15 +62,16 @@ def create_app(*, registry_path: Optional[Path] = None, db_path: Optional[Path] 
         ]
 
     def render_rows(request: Request, error: Optional[str] = None) -> HTMLResponse:
-        return templates.TemplateResponse(request, "_repo_rows.html", {"repos": repo_rows(), "error": error})
+        return html(request, "_repo_rows.html", {"repos": repo_rows(), "error": error})
 
     @application.get("/repos", response_class=HTMLResponse)
     def repos_page(request: Request):
-        return templates.TemplateResponse(request, "repos.html", {"repos": repo_rows(), "error": None})
+        return html(request, "repos.html", {"repos": repo_rows(), "error": None})
 
     @application.post("/repos", response_class=HTMLResponse)
     async def add_repo(request: Request):
         values = await _form_values(request)
+        websec.require_safe_request(request, values)
         provider = values.get("provider", "")
         slug = values.get("slug", "")
         try:
@@ -73,7 +81,9 @@ def create_app(*, registry_path: Optional[Path] = None, db_path: Optional[Path] 
         return render_rows(request)
 
     @application.post("/repos/{provider}/{slug:path}/delete", response_class=HTMLResponse)
-    def delete_repo(request: Request, provider: str, slug: str):
+    async def delete_repo(request: Request, provider: str, slug: str):
+        values = await _form_values(request)
+        websec.require_safe_request(request, values)
         try:
             registry.remove(provider, slug, application.state.registry_path)
         except registry.RegistryError as exc:
@@ -147,8 +157,7 @@ def create_app(*, registry_path: Optional[Path] = None, db_path: Optional[Path] 
                 # message would hide which one failed and silently swallow the rest.
                 errors.append(f"{repo.key}: {exc}")
             cards.append(card)
-        return templates.TemplateResponse(
-            request, "overview.html", {"cards": cards, "errors": errors, "stale": stale})
+        return html(request, "overview.html", {"cards": cards, "errors": errors, "stale": stale})
 
     @application.get("/repos/{provider}/{slug:path}", response_class=HTMLResponse)
     def repo_detail(request: Request, provider: str, slug: str):
@@ -159,8 +168,7 @@ def create_app(*, registry_path: Optional[Path] = None, db_path: Optional[Path] 
             pulls, stale = providers.list_pull_requests(repo, state="open", limit=50, conn=conn)
         except providers.ProviderError as exc:
             error = str(exc)
-        return templates.TemplateResponse(
-            request, "repo_detail.html", {"repo": repo, "pulls": pulls, "error": error, "stale": stale})
+        return html(request, "repo_detail.html", {"repo": repo, "pulls": pulls, "error": error, "stale": stale})
 
     @application.get("/pr/{provider}/{slug:path}/{number}", response_class=HTMLResponse)
     def pr_detail(request: Request, provider: str, slug: str, number: int):
@@ -178,7 +186,7 @@ def create_app(*, registry_path: Optional[Path] = None, db_path: Optional[Path] 
             "ORDER BY started_at DESC",
             (repo.provider, repo.slug, number),
         ).fetchall()
-        return templates.TemplateResponse(request, "pr_detail.html", {
+        return html(request, "pr_detail.html", {
             "repo": repo, "number": number, "findings": findings,
             "review_comments": review_comments, "runs": runs, "error": error, "stale": stale,
         })
@@ -201,7 +209,7 @@ def create_app(*, registry_path: Optional[Path] = None, db_path: Optional[Path] 
             {"name": name, "rows": usage_module.by_dimension(conn, name)}
             for name in dimension_names
         ]
-        return templates.TemplateResponse(request, "usage.html", {
+        return html(request, "usage.html", {
             "totals": usage_module.totals(conn), "daily": daily, "groups": groups,
         })
 

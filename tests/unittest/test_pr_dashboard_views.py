@@ -61,11 +61,11 @@ def _client(tmp_path, monkeypatch, *, pulls=None, review_comments=None, error=No
     monkeypatch.setattr(providers, "list_pull_requests", fake_pulls)
     monkeypatch.setattr(providers, "list_pr_agent_comments", fake_comments)
 
+    registry_path = tmp_path / "pr_dashboard.toml"
     application = app_module.create_app(
-        registry_path=tmp_path / "pr_dashboard.toml", db_path=tmp_path / "usage.db")
-    client = TestClient(application)
-    client.post("/repos", data={"provider": "github", "slug": "samer2373/block_rush"})
-    return client
+        registry_path=registry_path, db_path=tmp_path / "usage.db")
+    registry.add(registry.Repo(provider="github", slug="samer2373/block_rush"), registry_path)
+    return TestClient(application)
 
 
 class TestOverview:
@@ -121,11 +121,12 @@ class TestOverview:
             raise providers.ProviderError("exploded")
 
         monkeypatch.setattr(providers, "list_pull_requests", fake_pulls)
+        registry_path = tmp_path / "pr_dashboard.toml"
         application = app_module.create_app(
-            registry_path=tmp_path / "pr_dashboard.toml", db_path=tmp_path / "usage.db")
+            registry_path=registry_path, db_path=tmp_path / "usage.db")
         client = TestClient(application)
-        client.post("/repos", data={"provider": "github", "slug": "samer2373/block_rush"})
-        client.post("/repos", data={"provider": "github", "slug": "other/repo"})
+        registry.add(registry.Repo(provider="github", slug="samer2373/block_rush"), registry_path)
+        registry.add(registry.Repo(provider="github", slug="other/repo"), registry_path)
         response = client.get("/")
         assert "github:samer2373/block_rush: exploded" in response.text
         assert "github:other/repo: exploded" in response.text
@@ -159,13 +160,14 @@ class TestOverview:
 
         monkeypatch.setattr(providers, "credential_status", lambda provider: providers.CredentialStatus(
             provider, True, "configured"))
+        registry_path = tmp_path / "pr_dashboard.toml"
         application = app_module.create_app(
-            registry_path=tmp_path / "pr_dashboard.toml", db_path=tmp_path / "usage.db")
+            registry_path=registry_path, db_path=tmp_path / "usage.db")
         client = TestClient(application)
         monkeypatch.setattr(providers, "list_pull_requests",
                             lambda repo, state="open", limit=50, conn=None: ([], False))
-        client.post("/repos", data={"provider": "github", "slug": "samer2373/block_rush"})
-        client.post("/repos", data={"provider": "github", "slug": "other/repo"})
+        registry.add(registry.Repo(provider="github", slug="samer2373/block_rush"), registry_path)
+        registry.add(registry.Repo(provider="github", slug="other/repo"), registry_path)
 
         conn = store.connect(tmp_path / "usage.db")
         now = datetime.now(timezone.utc).isoformat()
@@ -231,10 +233,11 @@ class TestOverview:
             provider, True, "configured"))
         monkeypatch.setattr(providers, "list_pull_requests",
                             lambda repo, state="open", limit=50, conn=None: ([], False))
+        registry_path = tmp_path / "pr_dashboard.toml"
         application = app_module.create_app(
-            registry_path=tmp_path / "pr_dashboard.toml", db_path=tmp_path / "usage.db")
+            registry_path=registry_path, db_path=tmp_path / "usage.db")
         client = TestClient(application)
-        client.post("/repos", data={"provider": "github", "slug": "Samer2373/Block_Rush"})
+        registry.add(registry.Repo(provider="github", slug="Samer2373/Block_Rush"), registry_path)
 
         conn = store.connect(tmp_path / "usage.db")
         now = datetime.now(timezone.utc).isoformat()
@@ -270,10 +273,11 @@ class TestOverview:
         """Data served from an expired cache is shown with a stale banner, not silently"""
         monkeypatch.setattr(providers, "credential_status", lambda provider: providers.CredentialStatus(
             provider, True, "configured"))
+        registry_path = tmp_path / "pr_dashboard.toml"
         application = app_module.create_app(
-            registry_path=tmp_path / "pr_dashboard.toml", db_path=tmp_path / "usage.db")
+            registry_path=registry_path, db_path=tmp_path / "usage.db")
         client = TestClient(application)
-        client.post("/repos", data={"provider": "github", "slug": "o/r"})
+        registry.add(registry.Repo(provider="github", slug="o/r"), registry_path)
         monkeypatch.setattr(providers, "list_pull_requests",
                             lambda repo, state="open", limit=50, conn=None: ([], True))
         response = client.get("/")
@@ -285,10 +289,11 @@ class TestOverview:
         # that always rendered it would satisfy test_stale_cache_is_labelled on its own.
         monkeypatch.setattr(providers, "credential_status", lambda provider: providers.CredentialStatus(
             provider, True, "configured"))
+        registry_path = tmp_path / "pr_dashboard.toml"
         application = app_module.create_app(
-            registry_path=tmp_path / "pr_dashboard.toml", db_path=tmp_path / "usage.db")
+            registry_path=registry_path, db_path=tmp_path / "usage.db")
         client = TestClient(application)
-        client.post("/repos", data={"provider": "github", "slug": "o/r"})
+        registry.add(registry.Repo(provider="github", slug="o/r"), registry_path)
         monkeypatch.setattr(providers, "list_pull_requests",
                             lambda repo, state="open", limit=50, conn=None: ([], False))
         response = client.get("/")
