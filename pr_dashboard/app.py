@@ -115,7 +115,7 @@ def create_app(*, registry_path: Optional[Path] = None, db_path: Optional[Path] 
     @application.get("/", response_class=HTMLResponse)
     def overview(request: Request):
         conn = store.connect(application.state.db_path)
-        cards, error, stale = [], None, False
+        cards, errors, stale = [], [], False
         for repo in registry.load(application.state.registry_path):
             card = repo_summary(conn, repo)
             try:
@@ -123,10 +123,12 @@ def create_app(*, registry_path: Optional[Path] = None, db_path: Optional[Path] 
                 card["open_prs"] = len(pulls)
                 stale = stale or repo_stale
             except providers.ProviderError as exc:
-                error = str(exc)
+                # Attributed per repo: with several repos registered, a single collapsed
+                # message would hide which one failed and silently swallow the rest.
+                errors.append(f"{repo.key}: {exc}")
             cards.append(card)
         return templates.TemplateResponse(
-            request, "overview.html", {"cards": cards, "error": error, "stale": stale})
+            request, "overview.html", {"cards": cards, "errors": errors, "stale": stale})
 
     @application.get("/repos/{provider}/{slug:path}", response_class=HTMLResponse)
     def repo_detail(request: Request, provider: str, slug: str):

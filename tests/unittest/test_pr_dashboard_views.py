@@ -77,6 +77,45 @@ class TestOverview:
         assert "429" in response.text
         assert "Traceback" not in response.text
 
+    def test_two_repo_failures_are_both_shown_and_attributed(self, tmp_path, monkeypatch):
+        """Two repos failing with different provider errors both appear, each attributed to its own repo"""
+        monkeypatch.setattr(providers, "credential_status", lambda provider: providers.CredentialStatus(
+            provider, True, "configured"))
+
+        def fake_pulls(repo, state="open", limit=50, conn=None):
+            raise providers.ProviderError(f"{repo.slug} exploded")
+
+        monkeypatch.setattr(providers, "list_pull_requests", fake_pulls)
+        application = app_module.create_app(
+            registry_path=tmp_path / "pr_dashboard.toml", db_path=tmp_path / "usage.db")
+        client = TestClient(application)
+        client.post("/repos", data={"provider": "github", "slug": "samer2373/block_rush"})
+        client.post("/repos", data={"provider": "github", "slug": "other/repo"})
+        response = client.get("/")
+        assert "samer2373/block_rush exploded" in response.text
+        assert "other/repo exploded" in response.text
+
+    def test_zero_tokens_renders_as_zero_not_dash(self, tmp_path, monkeypatch):
+        """A repo whose 7-day runs recorded zero tokens shows 0, not the no-data dash"""
+        from datetime import datetime, timezone
+
+        from pr_dashboard import store
+
+        client = _client(tmp_path, monkeypatch, pulls=[
+            providers.PullRequestSummary(1, "Add rush mode", "samer2373", "open",
+                                         "https://github.com/samer2373/block_rush/pull/1", "2026-09-10T10:00:00")
+        ])
+        conn = store.connect(tmp_path / "usage.db")
+        now = datetime.now(timezone.utc).isoformat()
+        run_id = store.start_run(
+            conn, provider="github", command="review", pr_url=None,
+            repo_slug="samer2373/block_rush", pr_number=None, started_at=now)
+        conn.execute("UPDATE runs SET status='ok', total_tokens=0 WHERE id=?", (run_id,))
+        response = client.get("/")
+        # Reviewed is the only card column with no source of data at all; if this em-dash
+        # count is more than 1, the zero tokens rendered as "no data" too.
+        assert response.text.count("—") == 1
+
     def test_stale_cache_is_labelled(self, tmp_path, monkeypatch):
         """Data served from an expired cache is shown with a stale banner, not silently"""
         monkeypatch.setattr(providers, "credential_status", lambda provider: providers.CredentialStatus(
@@ -139,12 +178,12 @@ class TestPrDetail:
 
 class TestPathValidation:
     def test_unsupported_provider_path_is_404(self, tmp_path, monkeypatch):
-        """A provider outside SUPPORTED_PROVIDERS never reaches the registry lookup as a match"""
+        """A provider/slug combination that was never registered under that provider returns 404"""
         client = _client(tmp_path, monkeypatch)
         assert client.get("/repos/gitlab/samer2373/block_rush").status_code == 404
 
     def test_invalid_slug_path_is_404(self, tmp_path, monkeypatch):
-        """A slug that fails SLUG_PATTERN never reaches the registry lookup as a match"""
+        """A single-segment slug, which was never registered, returns 404"""
         client = _client(tmp_path, monkeypatch)
         assert client.get("/repos/github/no-owner-segment").status_code == 404
 
