@@ -191,7 +191,8 @@ def create_app(*, registry_path: Optional[Path] = None, db_path: Optional[Path] 
             raise HTTPException(status_code=400, detail=f"unknown usage dimension {dimension!r}")
         conn = store.connect(application.state.db_path)
         daily = [
-            {"day": row["day"], "tokens": row["tokens"], "cost": str(row["cost"])}
+            {"day": row["day"], "tokens": row["tokens"],
+             "cost": str(row["cost"]) if row["cost"] is not None else None}
             for row in usage_module.daily_tokens(conn, days=30)
         ]
         dimension_names = (dimension,) if dimension else ("repo", "model", "command")

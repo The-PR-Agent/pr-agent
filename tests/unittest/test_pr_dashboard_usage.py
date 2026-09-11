@@ -86,7 +86,23 @@ class TestByDimension:
         labels = {row["label"]: row for row in rows}
         assert labels["o/a"]["tokens"] == 3000
         assert labels["o/a"]["cost"] == Decimal("0.03")
-        assert labels["o/b"]["cost"] == Decimal("0")
+        # o/b's only two runs (3 and 4) both have total_cost_usd IS NULL -- the group has zero
+        # priced rows, so its cost must read as unreported, never as a real, known 0.
+        assert labels["o/b"]["cost"] is None
+
+    def test_group_with_no_priced_runs_reports_none_not_zero(self, conn):
+        """A group whose every run was unpriced (local model, failure before pricing) is None"""
+        rows = usage.by_dimension(conn, "repo")
+        labels = {row["label"]: row for row in rows}
+        assert labels["o/b"]["cost"] is None
+        assert labels["o/b"]["runs"] == 2
+
+    def test_group_with_a_mix_of_priced_and_unpriced_runs_sums_only_the_priced_ones(self, conn):
+        """A group with at least one priced run still reports a real Decimal cost"""
+        rows = usage.by_dimension(conn, "repo")
+        labels = {row["label"]: row for row in rows}
+        # o/a's two runs (1 and 2) are both priced: 0.01 + 0.02.
+        assert labels["o/a"]["cost"] == Decimal("0.03")
 
     def test_by_model(self, conn):
         """Usage groups by model"""
@@ -110,6 +126,15 @@ class TestDailySeries:
         series = usage.daily_tokens(conn, days=3650)
         by_day = {row["day"]: row for row in series}
         assert by_day["2026-09-09"]["tokens"] == 2500
+
+    def test_day_with_no_priced_runs_reports_none_not_zero(self, conn):
+        """2026-09-10's only run (4) has total_cost_usd IS NULL, so the day's cost is None"""
+        series = usage.daily_tokens(conn, days=3650)
+        by_day = {row["day"]: row for row in series}
+        assert by_day["2026-09-10"]["cost"] is None
+        # 2026-09-09 mixes a priced run (2, 0.02) with an unpriced one (3): it still has a
+        # real Decimal cost, since the fix is about zero priced rows, not zero cost.
+        assert by_day["2026-09-09"]["cost"] == Decimal("0.02")
 
 
 class TestUsagePage:
@@ -148,6 +173,34 @@ class TestUsagePage:
         # never as a misleading "Cost 0 USD" that looks like a real, known zero.
         assert "cost not reported" in response.text.lower()
         assert "cost 0 usd" not in response.text.lower()
+
+    def test_unpriced_group_reads_as_not_reported_in_the_tables(self, tmp_path):
+        """By-repo/model/command tables show "not reported" for a group with zero priced runs
+
+        This is the defect from the fix plan written down as a test: with an entirely unpriced
+        repo (ollama, no pricing data), the By-repo table must not print "0" for its cost --
+        that reads as "this repo's reviews are free", which is not something the dashboard
+        knows.
+        """
+        from fastapi.testclient import TestClient
+
+        from pr_dashboard import app as app_module
+
+        db_path = tmp_path / "usage.db"
+        connection = store.connect(db_path)
+        connection.execute(
+            "INSERT INTO runs (started_at, status, provider, repo_slug, pr_number, command, model_used, "
+            "fallback_used, total_tokens, total_cost_usd, cost_status) "
+            "VALUES ('2026-09-10T09:00:00+00:00', 'ok', 'github', 'o/b', 4, 'review', 'ollama/l3', "
+            "0, 500, NULL, 'unavailable')"
+        )
+        application = app_module.create_app(
+            registry_path=tmp_path / "pr_dashboard.toml", db_path=db_path)
+        response = TestClient(application).get("/usage")
+        assert response.status_code == 200
+        by_repo = response.text.split("By repo</h2>", 1)[1].split("</table>", 1)[0]
+        assert "not reported" in by_repo
+        assert "<td>0</td>" not in by_repo
 
     def test_dimension_sql_injection_attempt_is_rejected(self, tmp_path):
         """A malicious dimension value cannot reach SQL through the route"""

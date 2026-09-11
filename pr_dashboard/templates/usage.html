@@ -40,7 +40,8 @@
     <thead><tr><th>{{ group.name }}</th><th>Runs</th><th>Tokens</th><th>Cost (USD)</th></tr></thead>
     <tbody>
     {% for row in group.rows %}
-      <tr><td>{{ row.label }}</td><td>{{ row.runs }}</td><td>{{ row.tokens }}</td><td>{{ row.cost }}</td></tr>
+      <tr><td>{{ row.label }}</td><td>{{ row.runs }}</td><td>{{ row.tokens }}</td>
+        <td>{{ row.cost if row.cost is not none else "not reported" }}</td></tr>
     {% endfor %}
     </tbody>
   </table>

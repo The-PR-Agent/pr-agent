@@ -81,6 +81,7 @@ def by_dimension(conn: sqlite3.Connection, dimension: str, since: Optional[str] 
     clause, params = _since_clause(since)
     rows = conn.execute(
         f"SELECT {column} AS label, count(*) AS runs, sum(total_tokens) AS tokens, "
+        f"sum(CASE WHEN total_cost_usd IS NOT NULL THEN 1 ELSE 0 END) AS priced_runs, "
         f"group_concat(total_cost_usd) AS costs FROM runs{clause} "
         f"GROUP BY {column} ORDER BY tokens DESC",
         params,
@@ -89,12 +90,19 @@ def by_dimension(conn: sqlite3.Connection, dimension: str, since: Optional[str] 
     for row in rows:
         if row["label"] is None:
             continue
-        raw_costs = (row["costs"] or "").split(",") if row["costs"] else []
+        # A group with zero priced rows (every run local/unavailable/failed before pricing)
+        # must read as "not reported", not as a real, known cost of 0 -- otherwise an entirely
+        # unpriced group (e.g. a local model) reads as free.
+        if not row["priced_runs"]:
+            cost = None
+        else:
+            raw_costs = (row["costs"] or "").split(",") if row["costs"] else []
+            cost = sum((_decimal(value) for value in raw_costs if value), Decimal("0"))
         result.append({
             "label": row["label"],
             "runs": row["runs"],
             "tokens": row["tokens"] or 0,
-            "cost": sum((_decimal(value) for value in raw_costs if value), Decimal("0")),
+            "cost": cost,
         })
     return result
 
@@ -104,16 +112,18 @@ def daily_tokens(conn: sqlite3.Connection, days: int = 30) -> list[dict]:
     since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     rows = conn.execute(
         "SELECT substr(started_at, 1, 10) AS day, sum(total_tokens) AS tokens, "
+        "sum(CASE WHEN total_cost_usd IS NOT NULL THEN 1 ELSE 0 END) AS priced_runs, "
         "group_concat(total_cost_usd) AS costs FROM runs WHERE started_at >= ? "
         "GROUP BY day ORDER BY day",
         (since,),
     ).fetchall()
-    return [
-        {
-            "day": row["day"],
-            "tokens": row["tokens"] or 0,
-            "cost": sum(
-                (_decimal(value) for value in (row["costs"] or "").split(",") if value), Decimal("0")),
-        }
-        for row in rows
-    ]
+    result = []
+    for row in rows:
+        # Same exposure as by_dimension: a day with no priced runs must read as unreported.
+        if not row["priced_runs"]:
+            cost = None
+        else:
+            cost = sum(
+                (_decimal(value) for value in (row["costs"] or "").split(",") if value), Decimal("0"))
+        result.append({"day": row["day"], "tokens": row["tokens"] or 0, "cost": cost})
+    return result
