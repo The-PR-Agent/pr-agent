@@ -27,7 +27,16 @@ With stock defaults (`max_model_tokens=32000`, chunking off) the tool reviewed 5
 - `design/**` still consumed 44–53% of tokens in both rows. Ship-scope ordering (R-9) puts those files last but, with 8 × 200k budget, nothing was cut, so nothing was summarized. R-9's "< 5% on design/**" needs the budget to bind or a `[ignore]` acceptance; the footer now proposes one.
 - Coverage: 113 and 178 of 294 files reached a model call; the rest were budget-skipped or chunk-failed. The coverage footer reports this per run; it was not captured here because the run predates `--keep-reviews` on the labels path.
 - Zero control false flags in both rows.
-- Per-call ledger rows carry an empty `run_id` under the eval harness (no PR URL); fill it from the harness in a follow-up.
+- Per-call ledger rows carry an empty `run_id` under the eval harness (no PR URL). **Fixed** (00fcd5f1): rows now take `config.run_ledger_run_id`, which `run_eval.py` fills with `eval:<labels-stem>:<utc-timestamp>`, or a per-run `local-<hex>` id.
+
+## 2026-09-11: repetition attempt, and what changed since these rows
+
+The repetition R-1 asks for (two same-flag runs agreeing within ±1 finding) **has not been run**. The 2026-09-11 attempt hit the Google AI Studio free-tier request quota — `429 RESOURCE_EXHAUSTED ... generate_content_free_tier_requests, limit: 20` — after a single model call. Those four rows are quarantined under `.delegate/runs/task-10/failed-quota/` with the error text; they are not data. Repeating this needs a paid key or another provider.
+
+Two default/behavior changes landed after the rows above, so **both rows are now stale as a description of stock behavior**, and neither has a row of its own yet:
+
+- `config.max_model_tokens` 32,000 → 200,000 and `pr_reviewer.enable_large_pr_chunking` false → true. The starved-default runs in `.delegate/runs/task-10/run1_starved_*.json` are what the old defaults produced: 1 and 4 findings respectively, 0 of them matching a label, recall 0.00.
+- `pr_reviewer.low_priority_max_tokens_per_file` (new, default 3,000) summarizes a low-priority file whose patch exceeds it regardless of whether the budget binds, on both the single-call and chunked paths. This is the R-9 fix for `design/**` taking 44–53% of tokens; **the target is not yet demonstrated** — it needs a row measuring the design/** token share with the cap on.
 
 ## Reproduce
 

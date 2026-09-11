@@ -42,6 +42,8 @@ from pr_agent.algo.run_details import get_run_details, init_run_details, set_cal
 from pr_agent.algo.run_ledger import write_ledger
 from pr_agent.algo.ship_scope import (
     DEFAULT_LOW_PRIORITY_GLOBS,
+    DEFAULT_LOW_PRIORITY_MAX_TOKENS_PER_FILE,
+    cap_low_priority_files,
     is_low_priority,
     order_files_by_priority,
     propose_ignore_globs,
@@ -936,12 +938,14 @@ class PRReviewer:
                 get_settings().pr_review_prompt.user,
                 model,
             )
+        review_files, summarized_low_priority = self._cap_low_priority_diff_files()
         output = get_pr_diff(self.git_provider,
                              self.token_handler,
                              model,
                              add_line_numbers_to_hunks=True,
                              disable_extra_lines=False,
-                             return_remaining_files=True,)
+                             return_remaining_files=True,
+                             diff_files=review_files,)
         if isinstance(output, tuple):
             self.patches_diff, self.remaining_files_list = output
         else:
@@ -950,6 +954,8 @@ class PRReviewer:
         # The single-call ledger. _prepare_chunked_prediction below replaces this with a more
         # granular one (clipped/chunk_failed per file) when chunking actually runs.
         self.coverage = self._build_coverage_ledger(self.remaining_files_list)
+        for filename in summarized_low_priority:
+            self.coverage.mark(filename, "low_priority_summary")
 
         # retry_with_fallback_models calls this once per model, so clear the previous attempt's
         # merged verdict; otherwise a chunked run that failed on model A would be read back as
@@ -958,7 +964,7 @@ class PRReviewer:
         self.review_chunk_count = 1  # the single-call default; the chunked flow rebinds it
         self.review_failed_chunk_count = 0
         self.review_vote_dropped_count = 0
-        self._ship_scope_summary_paths = []
+        self._ship_scope_summary_paths = list(summarized_low_priority)
         self._ship_scope_ignore_footer = ""
         # One cap for the whole run, so nested fan-out (chunks x samples) cannot burst past it.
         # Rebuilt per model attempt: a semaphore is not reusable across event loops.
@@ -1023,6 +1029,37 @@ class PRReviewer:
         """Is this parsed output a review the rest of the tool can render?"""
         return isinstance(data, dict) and isinstance(data.get("review"), dict) and bool(data["review"])
 
+    def _cap_low_priority_diff_files(self) -> tuple[list, list[str]]:
+        """Order the diff by ship-scope priority and summarize oversized low-priority files.
+
+        Ordering only pays off when the token budget binds. Applied here, before either the
+        single-call or the chunked diff is built, so a large mockup or design document cannot
+        take half a run's tokens on a PR whose budget never binds (R-9).
+        """
+        settings = get_settings()
+        globs = list(settings.pr_reviewer.get("low_priority_globs", DEFAULT_LOW_PRIORITY_GLOBS))
+        ordered = order_files_by_priority(self.git_provider.get_diff_files(), globs)
+        max_tokens = settings.pr_reviewer.get(
+            "low_priority_max_tokens_per_file", DEFAULT_LOW_PRIORITY_MAX_TOKENS_PER_FILE
+        )
+        try:
+            max_tokens = int(max_tokens)
+        except (TypeError, ValueError):
+            get_logger().warning(
+                f"Ignoring invalid pr_reviewer.low_priority_max_tokens_per_file: {max_tokens!r}")
+            max_tokens = DEFAULT_LOW_PRIORITY_MAX_TOKENS_PER_FILE
+        count_tokens = getattr(self.token_handler, "count_tokens", None)
+        if not callable(count_tokens):
+            # Some flows swap in a budget-fitted handler; without a counter there is no safe way
+            # to price a patch, and ship scope never drops a file it cannot price.
+            return ordered, []
+        kept, summarized = cap_low_priority_files(ordered, globs, max_tokens, count_tokens)
+        if summarized:
+            get_logger().info(
+                f"Ship scope: summarizing {len(summarized)} low-priority file(s) over "
+                f"{max_tokens} tokens instead of reviewing them")
+        return kept, summarized
+
     def _build_coverage_ledger(self, remaining_files: list) -> CoverageLedger:
         """A file the model saw whole is reviewed by default; the caller marks the exceptions
         (clipped, skipped for budget, or lost to a failed chunk) on top of this base ledger."""
@@ -1054,7 +1091,7 @@ class PRReviewer:
         Returns False when chunking does not apply, leaving the single-call flow in place.
         """
         globs = list(get_settings().pr_reviewer.get("low_priority_globs", DEFAULT_LOW_PRIORITY_GLOBS))
-        diff_files = order_files_by_priority(self.git_provider.get_diff_files(), globs)
+        diff_files, capped_low_priority = self._cap_low_priority_diff_files()
         plans, remaining_files_list = get_pr_multi_diffs_with_files(
             self.git_provider,
             self.token_handler,
@@ -1087,8 +1124,13 @@ class PRReviewer:
             for filename in remaining_files_list:
                 if is_low_priority(filename, globs):
                     coverage.mark(filename, "low_priority_summary")
+        # Files the per-file cap took out of the diff are not in remaining_files_list (the token
+        # budget never saw them), so they are marked here or they would count as reviewed.
+        for filename in capped_low_priority:
+            coverage.mark(filename, "low_priority_summary")
         self.coverage = coverage
-        self._record_ship_scope_footer(plans, remaining_files_list, globs, summarize_low)
+        self._record_ship_scope_footer(plans, remaining_files_list, globs, summarize_low,
+                                       capped_low_priority)
 
         fallback_models = get_settings().config.get("fallback_models", [])
         if not isinstance(fallback_models, list):
@@ -1108,12 +1150,16 @@ class PRReviewer:
         remaining_files_list: list,
         globs: list,
         summarize_low: bool,
+        capped_low_priority: list = None,
     ) -> None:
         """Stash low-priority summary lines and an optional [ignore] proposal for the review footer."""
         summary_paths = [
             path for path in remaining_files_list
             if summarize_low and is_low_priority(path, globs)
         ]
+        for path in capped_low_priority or []:
+            if path not in summary_paths:
+                summary_paths.append(path)
         self._ship_scope_summary_paths = summary_paths
         reviewed_paths = {path for plan in plans for path in plan.files}
         low_in_chunks = [path for path in reviewed_paths if is_low_priority(path, globs)]

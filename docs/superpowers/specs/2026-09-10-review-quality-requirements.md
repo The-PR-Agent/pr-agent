@@ -40,6 +40,17 @@ Format: **R-n (Wx)** requirement. *Acceptance:* checkable criterion. *Metric:* w
 - **R-7 (W4) Bounded recovery to completion.** On a chunk failing all attempts: split its files in half and retry each half; then retry on `fallback_models[0]`; only then mark `chunk_failed`. When coverage < 95%, the partial notice renders at the top as a warning, not a footnote. *Acceptance:* a chunk that fails once at full size and succeeds at half size yields full coverage. *Metric:* coverage ≥ 95% or explicit pending state; p95 completion latency logged.
 - **R-8 (W6) Premise verification.** Each finding (up to `verify_max_findings`) is checked by a cheap model given: the finding, full head content of its own file, and full content of any PR file whose basename appears in the finding text. Verdict ∈ {confirmed, refuted, unverified} with a quoted evidence line. Refuted findings are dropped and logged with the evidence; unverified are kept with a tag. Hedge phrases are a logged trigger signal, not the gate. *Acceptance:* on the block_rush replay, the four labeled FPs are refuted and the five TPs confirmed. *Metric:* cross-file FP rate on the corpus at fixed budget.
 - **R-9 (W7) Ship-scope priority.** Files matching `pr_reviewer.low_priority_globs` (default: `docs/**`, `design/**`, `mockups/**`, `**/fixtures/**`, `**/*.md`) are ordered last in chunking and, when budget is tight, summarized in one line instead of reviewed; never silently dropped. Footer proposes `[ignore] glob` lines with estimated token savings for a human to accept. *Acceptance:* block_rush replay spends < 5% of tokens on `design/**` and recall on labeled TPs is unchanged. *Metric:* tokens on low-priority files; recall delta on the corpus.
+    - **R-9a (amendment, 2026-09-11).** Ordering alone does not meet R-9's acceptance: the first
+      baseline never bound its budget, so `design/**` still took 44-53% of tokens. A low-priority
+      file whose patch exceeds `pr_reviewer.low_priority_max_tokens_per_file` (default 3000) is
+      therefore summarized regardless of budget, on both the single-call and the chunked path.
+      *Acceptance:* unchanged from R-9, and still unmeasured - it needs a BASELINE row.
+- **R-9b (amendment, 2026-09-11) Defaults that reach the whole PR.** `config.max_model_tokens`
+  defaults to 200000 (was 32000) and `pr_reviewer.enable_large_pr_chunking` defaults to true. With
+  the old defaults a 294-file PR reached 5 files and matched no label; the clamp is still applied
+  per model, so a small-context model is unaffected. This raises the call count for large PRs on
+  every install, bounded by `pr_reviewer.max_number_of_calls`. *Acceptance:* a BASELINE row on
+  stock defaults matching or beating the budgeted row above.
 
 ### Tier P1: `/setup` onboarding
 

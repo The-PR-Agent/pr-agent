@@ -27,6 +27,20 @@ def _make_reviewer(git_provider=None):
     return reviewer
 
 
+@pytest.fixture
+def single_call_only():
+    """Pin large-PR chunking off.
+
+    These tests drive `_prepare_prediction` with a non-empty remaining-files list, which since
+    chunking became a default now takes the chunked branch; they are about the single-call path.
+    """
+    settings = get_settings()
+    original = settings.pr_reviewer.get("enable_large_pr_chunking", True)
+    settings.set("pr_reviewer.enable_large_pr_chunking", False)
+    yield
+    settings.set("pr_reviewer.enable_large_pr_chunking", original)
+
+
 def _make_prediction_reviewer(git_provider=None):
     reviewer = _make_reviewer(git_provider)
     reviewer.token_handler = MagicMock()
@@ -90,7 +104,7 @@ def test_review_failure_comment_treats_quoted_false_as_disabled():
 
 
 @pytest.mark.asyncio
-async def test_prepare_prediction_requests_remaining_files_and_preserves_tuple_result():
+async def test_prepare_prediction_requests_remaining_files_and_preserves_tuple_result(single_call_only):
     reviewer = _make_prediction_reviewer()
     reviewer._get_prediction = AsyncMock(return_value=PARSABLE_REVIEW)
 
@@ -100,14 +114,14 @@ async def test_prepare_prediction_requests_remaining_files_and_preserves_tuple_r
     ) as get_pr_diff:
         await reviewer._prepare_prediction("model")
 
-    get_pr_diff.assert_called_once_with(
-        reviewer.git_provider,
-        reviewer.token_handler,
-        "model",
-        add_line_numbers_to_hunks=True,
-        disable_extra_lines=False,
-        return_remaining_files=True,
-    )
+    assert get_pr_diff.call_count == 1
+    args, kwargs = get_pr_diff.call_args
+    assert args == (reviewer.git_provider, reviewer.token_handler, "model")
+    assert kwargs["add_line_numbers_to_hunks"] is True
+    assert kwargs["disable_extra_lines"] is False
+    assert kwargs["return_remaining_files"] is True
+    # Ship scope hands get_pr_diff the priority-ordered, per-file-capped list.
+    assert "diff_files" in kwargs
     assert reviewer.patches_diff == "diff"
     assert reviewer.remaining_files_list == ["src/one.py", "docs/two.md"]
     assert reviewer.prediction == PARSABLE_REVIEW
@@ -127,7 +141,7 @@ async def test_prepare_prediction_accepts_full_diff_string_when_token_budget_is_
 
 
 @pytest.mark.asyncio
-async def test_prepare_prediction_keeps_incremental_review_compatible_with_tuple_result():
+async def test_prepare_prediction_keeps_incremental_review_compatible_with_tuple_result(single_call_only):
     reviewer = _make_prediction_reviewer()
     reviewer.incremental = SimpleNamespace(is_incremental=True)
     reviewer._get_prediction = AsyncMock(return_value=PARSABLE_REVIEW)
@@ -141,7 +155,7 @@ async def test_prepare_prediction_keeps_incremental_review_compatible_with_tuple
 
 
 @pytest.mark.asyncio
-async def test_prepare_prediction_builds_a_coverage_ledger_for_the_single_call_path():
+async def test_prepare_prediction_builds_a_coverage_ledger_for_the_single_call_path(single_call_only):
     reviewer = _make_prediction_reviewer()
     reviewer._get_prediction = AsyncMock(return_value=PARSABLE_REVIEW)
     reviewer.git_provider.get_diff_files.return_value = [
@@ -215,7 +229,7 @@ async def test_prepare_prediction_deletion_only_files_do_not_count_against_the_r
 
 
 @pytest.mark.asyncio
-async def test_prepare_prediction_derives_changed_lines_from_patch_when_counts_are_unpopulated():
+async def test_prepare_prediction_derives_changed_lines_from_patch_when_counts_are_unpopulated(single_call_only):
     """Providers that never report num_plus_lines/num_minus_lines (local/plain-diff, gerrit,
     bitbucket, codecommit) must not silently zero the file out of the ratio: a skipped file on
     top of one of these must still show up as a partial review."""

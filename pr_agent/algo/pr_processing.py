@@ -48,7 +48,8 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
                 add_line_numbers_to_hunks: bool = False,
                 disable_extra_lines: bool = False,
                 large_pr_handling=False,
-                return_remaining_files=False):
+                return_remaining_files=False,
+                diff_files: list = None):
     if disable_extra_lines:
         PATCH_EXTRA_LINES_BEFORE = 0
         PATCH_EXTRA_LINES_AFTER = 0
@@ -58,7 +59,10 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
         PATCH_EXTRA_LINES_BEFORE = cap_and_log_extra_lines(PATCH_EXTRA_LINES_BEFORE, "before")
         PATCH_EXTRA_LINES_AFTER = cap_and_log_extra_lines(PATCH_EXTRA_LINES_AFTER, "after")
 
-    diff_files = git_provider.get_diff_files()
+    # `diff_files` lets a caller review a narrowed file list (ship-scope caps oversized
+    # low-priority files out of the diff) without the provider having to lie about the PR.
+    if diff_files is None:
+        diff_files = git_provider.get_diff_files()
 
     # get pr languages
     pr_languages = sort_files_by_main_languages(git_provider.get_languages(), diff_files)

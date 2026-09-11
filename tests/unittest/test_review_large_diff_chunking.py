@@ -1,4 +1,4 @@
-"""The opt-in gate and wiring of the chunked `/review` flow.
+"""The gate and wiring of the chunked `/review` flow.
 
 The merge rules themselves live in tests/unittest/test_review_chunk_merge.py; what is
 covered here is when chunking runs at all, what it does with a chunk that fails, and what
@@ -83,8 +83,34 @@ def chunking_enabled():
     restore_settings(snapshot)
 
 
+@pytest.fixture
+def chunking_disabled():
+    snapshot = snapshot_settings(_TRACKED_KEYS)
+    get_settings().set("pr_reviewer.enable_large_pr_chunking", False)
+    yield
+    restore_settings(snapshot)
+
+
 @pytest.mark.asyncio
-async def test_chunking_is_off_by_default_even_when_the_token_budget_truncated_the_diff():
+async def test_chunking_runs_by_default_when_the_token_budget_truncated_the_diff():
+    """The default flipped to on: a truncated diff used to be reviewed in part and the files
+    the budget left out were never looked at (tests/eval/BASELINE.md). max_number_of_calls
+    still bounds what chunking costs."""
+    reviewer = _make_reviewer()
+    reviewer._get_prediction = AsyncMock(return_value=CHUNK_A)
+
+    with (
+        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["left_out.py"])),
+        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs_with_files") as get_pr_multi_diffs_with_files,
+    ):
+        get_pr_multi_diffs_with_files.return_value = ([], ["left_out.py"])
+        await reviewer._prepare_prediction("model")
+
+    get_pr_multi_diffs_with_files.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_chunking_can_still_be_turned_off(chunking_disabled):
     reviewer = _make_reviewer()
     reviewer._get_prediction = AsyncMock(return_value=CHUNK_A)
 
