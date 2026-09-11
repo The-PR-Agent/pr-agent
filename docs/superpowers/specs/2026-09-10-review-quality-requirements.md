@@ -44,13 +44,20 @@ Format: **R-n (Wx)** requirement. *Acceptance:* checkable criterion. *Metric:* w
       baseline never bound its budget, so `design/**` still took 44-53% of tokens. A low-priority
       file whose patch exceeds `pr_reviewer.low_priority_max_tokens_per_file` (default 3000) is
       therefore summarized regardless of budget, on both the single-call and the chunked path.
-      *Acceptance:* unchanged from R-9, and still unmeasured - it needs a BASELINE row.
+      *Acceptance:* met on the Cursor model line (tests/eval/BASELINE.md, 2026-09-11). The same
+      profile with only this key changed spent 446,885 prompt tokens in 3 calls with the cap
+      against 1,002,748 in 7 without it, and the uncapped run put 100% of its findings in
+      `design/**` while the capped run's one finding matched a labeled defect. n = 1 per
+      config: the R-1 repetition is still unrun.
 - **R-9b (amendment, 2026-09-11) Defaults that reach the whole PR.** `config.max_model_tokens`
   defaults to 200000 (was 32000) and `pr_reviewer.enable_large_pr_chunking` defaults to true. With
   the old defaults a 294-file PR reached 5 files and matched no label; the clamp is still applied
   per model, so a small-context model is unaffected. This raises the call count for large PRs on
-  every install, bounded by `pr_reviewer.max_number_of_calls`. *Acceptance:* a BASELINE row on
-  stock defaults matching or beating the budgeted row above.
+  every install, bounded by `pr_reviewer.max_number_of_calls`. *Acceptance:* partially met
+  (tests/eval/BASELINE.md, 2026-09-11). On the Cursor model line the old defaults produced a
+  well-formed but empty review of a 2.4MB diff, while the new defaults reached the whole PR in
+  2 merged chunks and reported a finding - so the defaults no longer starve a large PR. They
+  did not improve recall: that finding is out-of-label, and both default rows score 0.000.
 
 ### Tier P1: `/setup` onboarding
 

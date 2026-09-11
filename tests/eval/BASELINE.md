@@ -38,6 +38,73 @@ Two default/behavior changes landed after the rows above, so **both rows are now
 - `config.max_model_tokens` 32,000 → 200,000 and `pr_reviewer.enable_large_pr_chunking` false → true. The starved-default runs in `.delegate/runs/task-10/run1_starved_*.json` are what the old defaults produced: 1 and 4 findings respectively, 0 of them matching a label, recall 0.00.
 - `pr_reviewer.low_priority_max_tokens_per_file` (new, default 3,000) summarizes a low-priority file whose patch exceeds it regardless of whether the budget binds, on both the single-call and chunked paths. This is the R-9 fix for `design/**` taking 44–53% of tokens; **the target is not yet demonstrated** — it needs a row measuring the design/** token share with the cap on.
 
+## 2026-09-11: the Cursor CLI model line (4 rows)
+
+The Gemini free tier stayed spent, so these rows ran through the Cursor CLI instead:
+`.delegate/runs/task-10/cursor_openai_shim.py` serves `/v1/chat/completions` and pipes each
+prompt to `cursor-agent -p --output-format json --mode ask --sandbox enabled`, model
+`gemini-3.7-flash-high`. **This is a separate model line. Do not compare these rows to the two
+`gemini-3.5-flash` rows above** - different model, different provider path, different prompt
+adherence. They are internally comparable only.
+
+Two properties were verified before the rows ran, because either would have made them worthless:
+
+- **Prompt fidelity.** argv cannot carry an 800KB prompt, so the prompt goes on stdin. stdin was
+  measured to deliver 313k tokens intact on a 1M-context model; a smaller-context model silently
+  truncates (a 960KB prompt arrived as 17.9k tokens on `composer-2.5`). Do not point the shim at
+  a small-context model.
+- **No corpus contamination.** With an empty workspace the agent still read local files through
+  its tools. `--sandbox enabled` blocks shell and network, and `samer2373/block_rush` is not
+  checked out on this machine, so the PR under review is unreachable. The `--mode ask` agent
+  narrates before answering; the shim returns the fenced block when there is one, which is
+  format normalization - content is never edited. Every prompt and raw result is dumped to
+  `.delegate/runs/task-10/raw/`.
+
+| row | flags | calls | prompt tokens | findings | matched | precision | recall |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `old-default` | 32k clamp, chunking off | 2 | 110,357 | 0 | - | 0.00 | 0.000 |
+| `new-default` | 200k clamp, chunking on | 4 | 890,093 | 1 | 0 | 0.00 | 0.000 |
+| `p0-cap` | p0 profile, cap 3,000 | 3 | 446,885 | 1 | `test-debug-leftovers` | 1.00 | 0.043 |
+| `p0-nocap` | p0 profile, cap disabled | 7 | 1,002,748 | 2 | 0 | 0.00 | 0.000 |
+
+Adjudication of the three findings the scorer left `unknown` (raw text in `raw/`, reports in
+`cursor_*.json`): none of them changes a score.
+
+- `new-default`'s `lib/src/shell/shop_screen.dart:134-142` "Ownership Detection Bug" is a
+  different defect from either labeled item in that file (`shop-nonnotifying-provider` at 31-98,
+  `store-flow-triplicated` at 145-161). Out-of-label, so unmatched; whether it is real was not
+  verified, because the corpus repo is deliberately not on this machine.
+- Both `p0-nocap` findings are in `design/_s_play.html`. No label lives under `design/**`.
+
+### R-9a (the per-file cap) - acceptance met on this model line
+
+`p0-cap` against `p0-nocap` is the same profile with only `low_priority_max_tokens_per_file`
+changed, so the comparison is clean: **the cap halved the run** (446,885 vs 1,002,748 prompt
+tokens, 3 calls vs 7) and moved the output from two findings in a design mockup to one finding
+that matches a real labeled defect. Without the cap, 100% of the findings were in `design/**` -
+the exact failure R-9 was written against. Both excluded files were reported in the coverage
+ledger and the review footer (`design/*.html` ... `(low-priority file, not reviewed)`), so
+nothing was dropped silently.
+
+### R-9b (the raised defaults) - measured, and the honest reading
+
+`old-default` is the pre-change stock: on a 2.4MB diff the 32k clamp produced a well-formed
+review with `key_issues_to_review: []` - the raw model output is in `raw/`, so this is a genuine
+empty review, not a parse failure. `new-default` reaches the whole PR in 2 merged chunks and
+reports a finding. The defaults no longer starve a large PR, which is what the change claimed.
+
+What it does **not** show is a recall improvement: the new default's one finding is out-of-label,
+so both default rows score recall 0.000.
+
+### What these rows do not establish
+
+- **n = 1 per config.** R-1's repetition (two same-flag runs agreeing within +/-1 finding) is
+  still unrun. A one-finding difference is inside the noise these rows cannot measure.
+- **Absolute recall is poor on this model line** - the best row found 1 of 23. Findings-per-run
+  is low across all four rows, which points at the prompt/provider path, not at the two knobs
+  under test. That is the next thing worth investigating, ahead of more knob tuning.
+- Finding verification was on for both p0 rows; its contribution was not isolated.
+
 ## Reproduce
 
 ```bash
