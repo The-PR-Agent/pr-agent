@@ -211,7 +211,8 @@ project_keys = ["PROJ", "OPS"]
 ```
 
 Entries are plain project keys (letters only, matched case-insensitively); anything else is
-ignored with a warning.
+ignored with a warning. If the list is set but none of its entries is valid, no Jira lookup
+is made at all until it is fixed, so a typo cannot silently widen the lookup again.
 
 ### How to link a PR to a Jira ticket
 

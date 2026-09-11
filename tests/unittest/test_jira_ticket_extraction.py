@@ -324,6 +324,31 @@ class TestExtractJiraTickets:
         warning_calls = [str(c) for c in get_logger.return_value.warning.call_args_list]
         assert any("project_keys" in c and bad_entry in c for c in warning_calls)
 
+    @pytest.mark.parametrize("entries", [["PROJ-123"], ["https://acme.atlassian.net/browse/PROJ", "P"], "PROJ-123, x"])
+    def test_project_keys_with_no_valid_entry_fail_closed(self, entries):
+        """A configured allowlist whose entries are all malformed must not widen to the
+        unfiltered default: nothing is looked up and no client is built until it is fixed."""
+        self._configure_jira()
+        _set_project_keys(entries)
+        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira") as jira_cls, \
+                patch("pr_agent.tools.ticket_pr_compliance_check.get_logger") as get_logger:
+            result = extract_jira_tickets("PROJ-1 SHA-256")
+        assert result == []
+        jira_cls.assert_not_called()
+        warning_calls = [str(c) for c in get_logger.return_value.warning.call_args_list]
+        assert any("no valid entry" in c for c in warning_calls)
+
+    @pytest.mark.parametrize("entries", [[], "", " , ", [""]])
+    def test_project_keys_blank_values_mean_unset(self, entries):
+        """Only entries count as configuration: an empty list, an empty string or a string of
+        separators keeps today's behaviour of looking up every detected key."""
+        self._configure_jira()
+        _set_project_keys(entries)
+        client = self._fake_client()
+        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client):
+            extract_jira_tickets("PROJ-1 SHA-256")
+        assert [call.args[0] for call in client.issue.call_args_list] == ["PROJ-1", "SHA-256"]
+
     def test_skips_ticket_on_fetch_error(self):
         """A failed fetch for one key does not abort the others."""
         self._configure_jira()

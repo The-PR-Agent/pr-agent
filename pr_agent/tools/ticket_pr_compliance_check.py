@@ -82,24 +82,29 @@ def _jira_cloud_base_url():
 def _jira_project_keys():
     """
     Return the configured jira.project_keys allowlist as a set of upper-case project keys,
-    or an empty set when the option is unset (look up every key found). Entries that are
-    not plain project keys are ignored with a warning, so a typo cannot widen or silently
-    disable the allowlist without a trace. Accepts a list or a comma-separated string, the
-    latter for environment-variable overrides (jira__project_keys="PROJ,OPS").
+    or None when the option is unset or empty (look up every key found). Entries that are
+    not plain project keys are ignored with a warning. An allowlist that was configured but
+    has no valid entry left yields an empty set, which drops every key: a typo fails closed
+    instead of silently widening the lookup to every key-shaped string. Accepts a list or a
+    comma-separated string, the latter for environment-variable overrides
+    (jira__project_keys="PROJ,OPS").
     """
     configured = get_settings().get("JIRA.PROJECT_KEYS", None) or []
     if isinstance(configured, str):
         configured = configured.split(",")
+    entries = [entry for entry in (str(item).strip() for item in configured) if entry]
+    if not entries:
+        return None
     allowed = set()
-    for entry in configured:
-        key = str(entry).strip()
-        if not key:
-            continue
+    for key in entries:
         if not JIRA_PROJECT_KEY_PATTERN.match(key):
             get_logger().warning(
                 f"Ignoring invalid jira.project_keys entry '{key}'; expected a plain project key like 'PROJ'")
             continue
         allowed.add(key.upper())
+    if not allowed:
+        get_logger().warning(
+            "jira.project_keys has no valid entry; skipping Jira ticket lookup until it is fixed")
     return allowed
 
 
@@ -193,7 +198,7 @@ def extract_jira_tickets(text, max_characters=MAX_TICKET_CHARACTERS, max_tickets
     # another prefix ("SHA-256", "UTF-8", "ISO-8601") are dropped here, before any lookup,
     # instead of each costing an authenticated 404. Empty keeps today's behaviour.
     allowed_projects = _jira_project_keys()
-    if allowed_projects:
+    if allowed_projects is not None:
         skipped = [key for key in keys if key.split("-", 1)[0] not in allowed_projects]
         if skipped:
             get_logger().debug(
