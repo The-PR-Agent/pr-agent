@@ -2,6 +2,7 @@ import difflib
 import re
 import urllib.parse
 from datetime import datetime, timezone
+from enum import Enum, auto
 from types import SimpleNamespace
 from typing import Optional, Tuple
 from urllib.parse import urlparse
@@ -44,6 +45,14 @@ from .git_provider import (
 class DiffNotFoundError(Exception):
     """Raised when the diff for a merge request cannot be found."""
     pass
+
+
+class _InlineCommentResult(Enum):
+    FAILED = auto()
+    DUPLICATE = auto()
+    PUBLIC_DUPLICATE = auto()
+    LIVE = auto()
+    DRAFT = auto()
 
 
 def _parse_gitlab_iso_datetime(value) -> Optional[datetime]:
@@ -1027,6 +1036,8 @@ class GitLabProvider(GitProvider):
             return
         resolved = 0
         released_fps = set()
+        # Old public markers cannot prove that a replacement draft was published.
+        released_note_ids = getattr(self, "_superseded_inline_note_ids", set())
         for discussion in discussions:
             discussion_id = getattr(discussion, 'id', None)
             try:
@@ -1038,8 +1049,11 @@ class GitLabProvider(GitProvider):
                 for note in discussion.attributes.get('notes') or []:
                     if isinstance(note, dict):
                         released_fps |= marker_fingerprints(note.get('body'))
+                        if note.get('id') is not None:
+                            released_note_ids.add(note['id'])
             except Exception as e:
                 get_logger().warning(f"Failed to resolve outdated inline thread {discussion_id}: {e}")
+        self._superseded_inline_note_ids = released_note_ids
         if released_fps:
             get_inline_comment_store(self).release(released_fps)
         if resolved:
@@ -1079,9 +1093,16 @@ class GitLabProvider(GitProvider):
                             source_line_no: int, target_file: str, target_line_no: int,
                             original_suggestion=None, as_draft: bool = False) -> bool:
         """Returns True iff a comment (live or draft, primary or fallback) was created."""
+        result = self._send_inline_comment(body, edit_type, found, relevant_file, relevant_line_in_file,
+                                           source_line_no, target_file, target_line_no, original_suggestion, as_draft)
+        return result in (_InlineCommentResult.LIVE, _InlineCommentResult.DRAFT)
+
+    def _send_inline_comment(self, body: str, edit_type: str, found: bool, relevant_file: str,
+                             relevant_line_in_file: str, source_line_no: int, target_file: str, target_line_no: int,
+                             original_suggestion=None, as_draft: bool = False) -> _InlineCommentResult:
         if not found:
             get_logger().info(f"Could not find position for {relevant_file} {relevant_line_in_file}")
-            return False
+            return _InlineCommentResult.FAILED
         else:
             store = None
             body_fp = code_fp = None
@@ -1097,7 +1118,10 @@ class GitLabProvider(GitProvider):
                     get_logger().info(
                         f"Persistent inline comments: skipping duplicate inline "
                         f"comment on {relevant_file}:{anchor_line}")
-                    return False
+                    if self._is_inline_comment_public(body_fp, code_fp):
+                        return _InlineCommentResult.PUBLIC_DUPLICATE
+                    self._record_pending_inline_comment({body_fp, code_fp} - {None})
+                    return _InlineCommentResult.DUPLICATE
                 body = body_with_markers(
                     body, body_fp, code_fp, getattr(self, "max_comment_chars", None))
             # in order to have exact sha's we have to find correct diff for this change
@@ -1129,7 +1153,44 @@ class GitLabProvider(GitProvider):
                     f"live comment instead of a draft")
                 created = self._create_suggestion_note(False, body, pos_obj, diff, target_file, relevant_file,
                                                         original_suggestion, store, body_fp, code_fp)
-            return created
+                as_draft = False
+            if not created:
+                return _InlineCommentResult.FAILED
+            if as_draft:
+                self._record_pending_inline_comment({body_fp, code_fp} - {None})
+            return _InlineCommentResult.DRAFT if as_draft else _InlineCommentResult.LIVE
+
+    def _record_pending_inline_comment(self, fingerprints: set):
+        self._code_suggestion_drafts_pending = True
+        pending = getattr(self, "_pending_code_suggestion_fingerprints", [])
+        if fingerprints not in pending:
+            pending.append(fingerprints)
+        self._pending_code_suggestion_fingerprints = pending
+
+    def _is_inline_comment_public(self, body_fp: str, code_fp: Optional[str]) -> bool:
+        # The dedup store includes drafts. Verify public markers separately so an
+        # unavailable draft endpoint cannot turn an already-public duplicate into a failure.
+        fingerprints = {body_fp, code_fp} - {None}
+        superseded = getattr(self, "_superseded_inline_note_ids", set())
+        try:
+            for note in self.mr.notes.list(get_all=True):
+                if getattr(note, "id", None) in superseded:
+                    continue
+                if fingerprints & marker_fingerprints(getattr(note, "body", "") or ""):
+                    return True
+        except Exception as e:
+            get_logger().warning(f"Could not verify public notes for MR {self.id_mr}: {e}")
+        try:
+            for discussion in self.mr.discussions.list(get_all=True):
+                attrs = getattr(discussion, "attributes", None) or {}
+                for note in attrs.get("notes", []) or []:
+                    if isinstance(note, dict) and note.get("id") in superseded:
+                        continue
+                    if isinstance(note, dict) and fingerprints & marker_fingerprints(note.get("body", "") or ""):
+                        return True
+        except Exception as e:
+            get_logger().warning(f"Could not verify public inline comment for MR {self.id_mr}: {e}")
+        return False
 
     def _create_suggestion_note(self, as_draft: bool, body: str, pos_obj: dict, diff, target_file,
                                 relevant_file: str, original_suggestion, store, body_fp, code_fp) -> bool:
@@ -1230,6 +1291,38 @@ class GitLabProvider(GitProvider):
     def publish_code_suggestions(self, code_suggestions: list) -> bool:
         # Runs first so the fingerprints it frees are in the store before any dedup lookup.
         self.resolve_outdated_inline_threads()
+        if not code_suggestions:
+            return True
+        published = False
+        retry_results = getattr(self, "_code_suggestion_retry_results", {})
+        needs_draft_publication = getattr(self, "_code_suggestion_drafts_pending", False)
+        results = {}
+
+        def finish(success):
+            # Remember each initial attempt for one individual retry. Consuming even
+            # failed retries avoids suppressing later runs when persistence is disabled.
+            if not success:
+                for key, attempted_results in results.items():
+                    retry_results[key] = attempted_results + retry_results.get(key, [])
+            self._code_suggestion_retry_results = retry_results
+            return success
+
+        def drafts_published():
+            self._code_suggestion_drafts_pending = False
+            self._pending_code_suggestion_fingerprints = []
+            for key, pending_results in retry_results.items():
+                retry_results[key] = [_InlineCommentResult.PUBLIC_DUPLICATE
+                                      if result in (_InlineCommentResult.DRAFT, _InlineCommentResult.DUPLICATE)
+                                      else result for result in pending_results]
+
+        def verify_pending_publication():
+            fingerprints = getattr(self, "_pending_code_suggestion_fingerprints", [])
+            if fingerprints and all(keys and any(self._is_inline_comment_public(key, None) for key in keys)
+                                    for keys in fingerprints):
+                drafts_published()
+                return True
+            return False
+
         # When true, suggestions are queued as GitLab draft notes and published together in a single
         # batch at the end, instead of each one going out as its own live discussion (and its own
         # notification/email) as soon as it's created.
@@ -1244,6 +1337,18 @@ class GitLabProvider(GitProvider):
                 relevant_file = suggestion['relevant_file']
                 relevant_lines_start = suggestion['relevant_lines_start']
                 relevant_lines_end = suggestion['relevant_lines_end']
+
+                key = (relevant_file, relevant_lines_start, relevant_lines_end, body)
+                is_retry = key in retry_results
+                result = None
+                if is_retry:
+                    result = retry_results[key].pop(0)
+                    if not retry_results[key]:
+                        del retry_results[key]
+                else:
+                    # Record the occurrence before any diff/API call can raise or skip it.
+                    results.setdefault(key, []).append(_InlineCommentResult.FAILED)
+                    result_index = len(results[key]) - 1
 
                 diff_files = self.get_diff_files()
                 target_file = None
@@ -1273,30 +1378,46 @@ class GitLabProvider(GitProvider):
                 found = True
                 edit_type = 'addition'
 
-                self.send_inline_comment(body, edit_type, found, relevant_file, relevant_line_in_file,
-                                         source_line_no, target_file, target_line_no, original_suggestion,
-                                         as_draft=as_review)
+                if result in (None, _InlineCommentResult.FAILED, _InlineCommentResult.DUPLICATE):
+                    result = self._send_inline_comment(body, edit_type, found, relevant_file, relevant_line_in_file,
+                                                       source_line_no, target_file, target_line_no, original_suggestion,
+                                                       as_draft=as_review)
+                if not is_retry:
+                    results[key][result_index] = result
+                if result in (_InlineCommentResult.LIVE, _InlineCommentResult.PUBLIC_DUPLICATE):
+                    published = True
+                # Dedup also scans pending drafts, so a duplicate is not necessarily public yet.
+                if result in (_InlineCommentResult.DRAFT, _InlineCommentResult.DUPLICATE):
+                    needs_draft_publication = True
+                if result == _InlineCommentResult.DRAFT:
+                    self._code_suggestion_drafts_pending = True
             except Exception as e:
                 get_logger().exception(f"Could not publish code suggestion:\nsuggestion: {suggestion}\nerror: {e}")
 
         if as_review:
             try:
-                # Check the MR's actual pending drafts rather than tracking creations from this call
-                # alone: this correctly skips bulk-publish when nothing is pending (e.g. an empty or
-                # all-failed suggestion list, which would otherwise publish unrelated drafts already on
-                # the MR from a previous run or a manual draft review in progress), while still
-                # retrying to publish drafts left over from an earlier run whose bulk_publish failed -
-                # even if every suggestion in this run was skipped as a dedup-detected duplicate of one
-                # of those still-pending drafts.
+                # Include drafts left by an earlier failed batch even when this call dedupes every suggestion.
                 try:
                     pending = self.mr.draft_notes.list(get_all=True)
+                    self._code_suggestion_drafts_pending = bool(pending)
+                    self._pending_code_suggestion_fingerprints = [
+                        marker_fingerprints(getattr(draft, "note", "") or "") for draft in pending]
                 except Exception as e:
-                    # Draft notes are unusable on this instance/token; send_inline_comment has
-                    # already degraded every suggestion to a live comment, so nothing is pending.
                     get_logger().warning(f"Could not list draft notes for MR {self.id_mr}: {e}")
-                    pending = []
+                    # A bulk request can time out after publishing server-side. Only
+                    # recover when every last-known draft has a verifiable public marker.
+                    if verify_pending_publication():
+                        return finish(True)
+                    # A live fallback can succeed on instances without a draft endpoint, but a
+                    # queued/deduped draft must not be reported as public without verification.
+                    return finish(published and not needs_draft_publication)
                 if pending:
                     self.mr.draft_notes.bulk_publish()
+                    published = True
+                elif needs_draft_publication:
+                    # No pending drafts remain (possibly published concurrently).
+                    published = True
+                drafts_published()
             except Exception as e:
                 # Draft notes are only visible to the posting user until published, so a failure here
                 # leaves the suggestions invisible to everyone else. They aren't lost: GitLab keeps
@@ -1307,9 +1428,21 @@ class GitLabProvider(GitProvider):
                     f"Failed to bulk-publish draft code-suggestion notes for MR {self.id_mr}; they remain "
                     f"as pending drafts, visible only to the posting user, until published manually from "
                     f"the GitLab UI or by a subsequent successful run: {e}")
+                return finish(False)
 
         # note that we publish suggestions one-by-one. so, if one fails, the rest will still be published
-        return True
+        if not as_review and needs_draft_publication:
+            try:
+                pending = self.mr.draft_notes.list(get_all=True)
+                if pending:
+                    return finish(False)
+                drafts_published()
+                return finish(True)
+            except Exception as e:
+                get_logger().warning(f"Could not refresh pending draft notes for MR {self.id_mr}: {e}")
+                if verify_pending_publication():
+                    return finish(True)
+        return finish(published and (as_review or not needs_draft_publication))
 
     def publish_file_comments(self, file_comments: list) -> bool:
         pass
