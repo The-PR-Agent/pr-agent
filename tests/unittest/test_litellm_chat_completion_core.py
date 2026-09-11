@@ -118,6 +118,31 @@ async def test_chat_completion_probes_images_off_loop_with_timeout(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_chat_completion_dead_image_uses_current_help_link(monkeypatch):
+    monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+    monkeypatch.setattr(
+        litellm_handler.requests,
+        "head",
+        lambda *args, **kwargs: SimpleNamespace(status_code=404),
+    )
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        handler = litellm_handler.LiteLLMAIHandler()
+
+        response, finish_reason = await handler.chat_completion(
+            model="gpt-4o",
+            system="sys",
+            user="usr",
+            img_path="https://example.test/missing.png",
+        )
+
+    assert "https://docs.pr-agent.ai/tools/ask/#ask-on-images" in response
+    assert "pr-agent-docs.codium.ai" not in response
+    assert finish_reason == "error"
+    mock_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("model", "expected_model_id"),
     [

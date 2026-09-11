@@ -216,11 +216,8 @@ class BitbucketServerProvider(GitProvider):
                 get_logger().error(f"Failed to publish code suggestion, error: {e}")
             return False
 
-    def publish_file_comments(self, file_comments: list) -> bool:
-        pass
-
     def is_supported(self, capability: str) -> bool:
-        if capability in ['get_labels', 'gfm_markdown', 'publish_file_comments']:
+        if capability in ['get_labels', 'gfm_markdown']:
             return False
         return True
 

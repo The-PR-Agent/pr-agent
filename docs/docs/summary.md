@@ -27,6 +27,7 @@
 * [Changing a Model](usage-guide/changing_a_model.md)
 * [Extending PR-Agent](usage-guide/extending_pr_agent.md)
 * [Additional Configurations](usage-guide/additional_configurations.md)
+* [Custom CA and Self-Signed Certificates](usage-guide/custom_ca_and_self_signed_certificates.md)
 * [Plain-Diff Mode](usage-guide/plain_diff_mode.md)
 * [Local Git Provider](usage-guide/local_git_provider.md)
 * [Frequently Asked Questions](faq/index.md)

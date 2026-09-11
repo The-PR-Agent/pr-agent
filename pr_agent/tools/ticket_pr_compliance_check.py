@@ -1,3 +1,4 @@
+import asyncio
 import copy
 import math
 import re
@@ -431,26 +432,39 @@ async def _fetch_asana_ticket_contents(
 
     timeout = aiohttp.ClientTimeout(total=_get_asana_request_timeout())
     headers = {"Authorization": f"Bearer {api_token.strip()}"}
-    tickets_content = []
     async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
         # Bound attempts as well as successful results so invalid references cannot
         # multiply request latency, rate-limit usage, or warning logs.
+        selected_tickets = []
         for ticket_url in ticket_urls[:max_tickets]:
-            if len(tickets_content) >= max_tickets:
-                break
-            task_gid = None
             try:
                 task_gid = _get_asana_task_gid(ticket_url)
-                ticket_content = await _fetch_asana_ticket_content(
-                    session,
-                    ticket_url,
-                    max_body_characters,
-                )
             except Exception as e:
-                task_label = task_gid or "invalid reference"
-                get_logger().warning(f"Failed to fetch Asana task {task_label}: {e}")
+                get_logger().warning(f"Failed to fetch Asana task invalid reference: {e}")
                 continue
-            tickets_content.append(ticket_content)
+            selected_tickets.append((ticket_url, task_gid))
+
+        async def fetch_ticket(ticket_url):
+            try:
+                return await _fetch_asana_ticket_content(session, ticket_url, max_body_characters), None
+            except Exception as e:
+                return None, e
+
+        tasks = [asyncio.create_task(fetch_ticket(ticket_url)) for ticket_url, _task_gid in selected_tickets]
+        try:
+            results = await asyncio.gather(*tasks)
+        except BaseException:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+
+    tickets_content = []
+    for (_ticket_url, task_gid), (ticket_content, error) in zip(selected_tickets, results, strict=True):
+        if error is not None:
+            get_logger().warning(f"Failed to fetch Asana task {task_gid}: {error}")
+            continue
+        tickets_content.append(ticket_content)
     return tickets_content
 
 

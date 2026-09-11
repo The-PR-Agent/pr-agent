@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import traceback
+from dataclasses import dataclass
 from typing import Callable, List, Tuple
 
 from pr_agent.algo.git_patch_processing import (
@@ -29,6 +30,23 @@ OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD = 1000
 MAX_EXTRA_LINES = 10
 
 
+@dataclass
+class PreparedPRDiff:
+    """The single-call diff and compressed file data prepared for one model attempt.
+
+    The compressed file data is request-scoped. It is only reused by a caller that keeps the
+    same token handler and model, so fallback attempts still rebuild their model-specific budget.
+    """
+
+    diff: str
+    remaining_files_list: list
+    file_dict: dict | None = None
+    files_by_name: dict | None = None
+    model: str | None = None
+    add_line_numbers_to_hunks: bool = False
+    token_handler: TokenHandler | None = None
+
+
 def cap_and_log_extra_lines(value, direction) -> int:
     try:
         value = int(value)
@@ -47,7 +65,8 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
                 add_line_numbers_to_hunks: bool = False,
                 disable_extra_lines: bool = False,
                 large_pr_handling=False,
-                return_remaining_files=False):
+                return_remaining_files=False,
+                return_prepared=False):
     if disable_extra_lines:
         PATCH_EXTRA_LINES_BEFORE = 0
         PATCH_EXTRA_LINES_AFTER = 0
@@ -76,7 +95,12 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
     if total_tokens + OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD < get_max_tokens(model):
         get_logger().info(f"Tokens: {total_tokens}, total tokens under limit: {get_max_tokens(model)}, "
                           f"returning full diff.")
-        return "\n".join(patches_extended)
+        full_diff = "\n".join(patches_extended)
+        if return_prepared:
+            return PreparedPRDiff(full_diff, [], model=model,
+                                  add_line_numbers_to_hunks=add_line_numbers_to_hunks,
+                                  token_handler=token_handler)
+        return full_diff
 
     # if we are over the limit, start pruning (If we got here, we will not extend the patches with extra lines)
     get_logger().info(f"Tokens: {total_tokens}, total tokens over limit: {get_max_tokens(model)}, "
@@ -139,6 +163,21 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
 
     get_logger().debug(f"After pruning, added_list_str: {added_list_str}, modified_list_str: {modified_list_str}, "
                        f"deleted_list_str: {deleted_list_str}")
+    if return_prepared:
+        files_by_name = {
+            file.filename: file
+            for language in pr_languages
+            for file in language["files"]
+        }
+        return PreparedPRDiff(
+            final_diff,
+            remaining_files_list,
+            file_dict,
+            files_by_name,
+            model=model,
+            add_line_numbers_to_hunks=add_line_numbers_to_hunks,
+            token_handler=token_handler,
+        )
     if not return_remaining_files:
         return final_diff
     else:
@@ -161,6 +200,107 @@ def get_pr_diff_multiple_patchs(git_provider: GitProvider, token_handler: TokenH
         pr_generate_compressed_diff(pr_languages, token_handler, model, add_line_numbers_to_hunks, large_pr_handling=True)
 
     return patches_compressed_list, total_tokens_list, deleted_files_list, remaining_files_list, file_dict, files_in_patches_list
+
+
+def _pack_pr_multi_diffs(file_dict: dict,
+                         token_handler: TokenHandler,
+                         model: str,
+                         max_calls: int,
+                         return_remaining_files: bool):
+    patches = []
+    final_diff_list = []
+    files_in_patches = set()
+    total_tokens = token_handler.prompt_tokens
+    call_number = 1
+
+    for filename, data in file_dict.items():
+        if call_number > max_calls:
+            if get_verbosity_level() >= 2:
+                get_logger().info(f"Reached max calls ({max_calls})")
+            break
+
+        patch = data["patch"]
+        new_patch_tokens = data["tokens"]
+
+        if patch and (token_handler.prompt_tokens + new_patch_tokens) > get_max_tokens(model) - OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD:
+            if get_settings().config.get("large_patch_policy", "skip") == "skip":
+                get_logger().warning(f"Patch too large, skipping: {filename}")
+                continue
+            if get_settings().config.get("large_patch_policy") == "clip":
+                delta_tokens = get_max_tokens(model) - OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD - token_handler.prompt_tokens
+                patch_clipped = clip_tokens(patch, delta_tokens, delete_last_line=True,
+                                             num_input_tokens=new_patch_tokens)
+                new_patch_tokens = token_handler.count_tokens(patch_clipped)
+                if patch_clipped and (token_handler.prompt_tokens + new_patch_tokens) > get_max_tokens(model) - OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD:
+                    get_logger().warning(f"Patch too large, skipping: {filename}")
+                    continue
+                get_logger().info(f"Clipped large patch for file: {filename}")
+                patch = patch_clipped
+            else:
+                get_logger().warning(f"Patch too large, skipping: {filename}")
+                continue
+
+        if patch and (total_tokens + new_patch_tokens > get_max_tokens(model) - OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD):
+            final_diff_list.append("\n".join(patches))
+            patches = []
+            total_tokens = token_handler.prompt_tokens
+            call_number += 1
+            if call_number > max_calls:
+                if get_verbosity_level() >= 2:
+                    get_logger().info(f"Reached max calls ({max_calls})")
+                break
+            if get_verbosity_level() >= 2:
+                get_logger().info(f"Call number: {call_number}")
+
+        if patch:
+            patches.append(patch)
+            files_in_patches.add(filename)
+            total_tokens += new_patch_tokens
+            if get_verbosity_level() >= 2:
+                get_logger().info(f"Tokens: {total_tokens}, last filename: {filename}")
+
+    if patches:
+        final_diff_list.append("\n".join(patches).strip())
+
+    if not return_remaining_files:
+        return final_diff_list
+
+    remaining_files_list = [
+        filename for filename in file_dict
+        if filename not in files_in_patches
+    ]
+    return final_diff_list, remaining_files_list
+
+
+def _get_pr_multi_diffs_from_prepared(prepared_diff: PreparedPRDiff,
+                                      token_handler: TokenHandler,
+                                      model: str,
+                                      max_calls: int,
+                                      return_remaining_files: bool):
+    """Pack already transformed file patches without repeating preparation work.
+
+    ``get_pr_diff`` and the review chunking path use the same model-specific token handler and
+    line-number format. Reusing its compressed file dictionary preserves the existing packing
+    and large-patch policy while avoiding a second provider fetch, patch conversion, and token
+    count for every file.
+    """
+    file_dict = {}
+    for filename, data in (prepared_diff.file_dict or {}).items():
+        patch = data["patch"]
+        tokens = data["tokens"]
+        file = (prepared_diff.files_by_name or {}).get(filename)
+        if file and file.ai_file_summary and get_settings().get("config.enable_ai_metadata", False):
+            patch = add_ai_summary_top_patch(file, patch)
+            tokens = token_handler.count_tokens(patch)
+        file_dict[filename] = {**data, "patch": patch, "tokens": tokens}
+
+    return _pack_pr_multi_diffs(
+        file_dict,
+        token_handler,
+        model,
+        max_calls,
+        return_remaining_files,
+    )
 
 
 def pr_generate_extended_diff(pr_languages: list,
@@ -396,7 +536,8 @@ def get_pr_multi_diffs(git_provider: GitProvider,
                        model: str,
                        max_calls: int = 5,
                        add_line_numbers: bool = True,
-                       return_remaining_files: bool = False):
+                       return_remaining_files: bool = False,
+                       prepared_diff: PreparedPRDiff | None = None):
     """
     Retrieves the diff files from a Git provider, sorts them by main language, and generates patches for each file.
     The patches are split into multiple groups based on the maximum number of tokens allowed for the given model.
@@ -409,12 +550,30 @@ def get_pr_multi_diffs(git_provider: GitProvider,
         return_remaining_files (bool, optional): Also return the files the token budget left out, in the
             same shape as `get_pr_diff`. Files without a patch, and delete-only files, are not reported:
             nothing was omitted for them. Defaults to False.
+        prepared_diff (PreparedPRDiff, optional): Reuse compressed file data prepared by a preceding
+            `get_pr_diff` call for the same model attempt. Defaults to None.
 
     Returns:
         List[str]: A list of final diff strings, split into multiple groups based on the maximum number of tokens allowed for the given model.
         With `return_remaining_files`, a tuple of that list and the list of omitted file names.
 
     """
+    if (
+        prepared_diff is not None
+        and prepared_diff.file_dict is not None
+        and prepared_diff.model == model
+        and add_line_numbers
+        and prepared_diff.add_line_numbers_to_hunks == add_line_numbers
+        and prepared_diff.token_handler is token_handler
+    ):
+        return _get_pr_multi_diffs_from_prepared(
+            prepared_diff,
+            token_handler,
+            model,
+            max_calls,
+            return_remaining_files,
+        )
+
     diff_files = git_provider.get_diff_files()
 
     # Sort files by main language
@@ -443,17 +602,11 @@ def get_pr_multi_diffs(git_provider: GitProvider,
     for lang in pr_languages:
         sorted_files.extend(sorted(lang['files'], key=lambda x: x.tokens, reverse=True))
 
-    patches = []
-    final_diff_list = []
-    files_in_patches = set()  # files that made it into a chunk
-    total_tokens = token_handler.prompt_tokens
-    call_number = 1
+    # Build the same transformed file dictionary used by the prepared path, preserving the
+    # descending token order established above. The shared packer then owns chunk boundaries,
+    # large-patch policy, and remaining-file tracking for both paths.
+    file_dict = {}
     for file in sorted_files:
-        if call_number > max_calls:
-            if get_verbosity_level() >= 2:
-                get_logger().info(f"Reached max calls ({max_calls})")
-            break
-
         original_file_content_str = file.base_file
         new_file_content_str = file.head_file
         patch = file.patch
@@ -475,66 +628,19 @@ def get_pr_multi_diffs(git_provider: GitProvider,
         if file.ai_file_summary and get_settings().get("config.enable_ai_metadata", False):
             patch = add_ai_summary_top_patch(file, patch)
         new_patch_tokens = token_handler.count_tokens(patch)
+        file_dict[file.filename] = {
+            'patch': patch,
+            'tokens': new_patch_tokens,
+            'edit_type': file.edit_type,
+        }
 
-        if patch and (token_handler.prompt_tokens + new_patch_tokens) > get_max_tokens(
-                model) - OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD:
-            if get_settings().config.get('large_patch_policy', 'skip') == 'skip':
-                get_logger().warning(f"Patch too large, skipping: {file.filename}")
-                continue
-            elif get_settings().config.get('large_patch_policy') == 'clip':
-                delta_tokens = get_max_tokens(model) - OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD - token_handler.prompt_tokens
-                patch_clipped = clip_tokens(patch, delta_tokens, delete_last_line=True, num_input_tokens=new_patch_tokens)
-                new_patch_tokens = token_handler.count_tokens(patch_clipped)
-                if patch_clipped and (token_handler.prompt_tokens + new_patch_tokens) > get_max_tokens(
-                        model) - OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD:
-                    get_logger().warning(f"Patch too large, skipping: {file.filename}")
-                    continue
-                else:
-                    get_logger().info(f"Clipped large patch for file: {file.filename}")
-                    patch = patch_clipped
-            else:
-                get_logger().warning(f"Patch too large, skipping: {file.filename}")
-                continue
-
-        if patch and (total_tokens + new_patch_tokens > get_max_tokens(model) - OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD):
-            final_diff = "\n".join(patches)
-            final_diff_list.append(final_diff)
-            patches = []
-            total_tokens = token_handler.prompt_tokens
-            call_number += 1
-            if call_number > max_calls: # avoid creating new patches
-                if get_verbosity_level() >= 2:
-                    get_logger().info(f"Reached max calls ({max_calls})")
-                break
-            if get_verbosity_level() >= 2:
-                get_logger().info(f"Call number: {call_number}")
-
-        if patch:
-            patches.append(patch)
-            files_in_patches.add(file.filename)
-            total_tokens += new_patch_tokens
-            if get_verbosity_level() >= 2:
-                get_logger().info(f"Tokens: {total_tokens}, last filename: {file.filename}")
-
-    # Add the last chunk
-    if patches:
-        final_diff = "\n".join(patches)
-        final_diff_list.append(final_diff.strip())
-
-    if not return_remaining_files:
-        return final_diff_list
-
-    remaining_files_list = []
-    for file in sorted_files:
-        if file.filename in files_in_patches or file.filename in remaining_files_list:
-            continue
-        # a file with no patch, or with a delete-only patch, has nothing to review:
-        # the token budget is not what kept it out of the diff
-        if not file.patch or handle_patch_deletions(file.patch, file.base_file, file.head_file,
-                                                    file.filename, file.edit_type) is None:
-            continue
-        remaining_files_list.append(file.filename)
-    return final_diff_list, remaining_files_list
+    return _pack_pr_multi_diffs(
+        file_dict,
+        token_handler,
+        model,
+        max_calls,
+        return_remaining_files,
+    )
 
 
 def add_ai_metadata_to_diff_files(git_provider, pr_description_files):

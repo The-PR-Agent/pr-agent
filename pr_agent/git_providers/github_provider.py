@@ -1113,40 +1113,6 @@ class GithubProvider(GitProvider):
             get_logger().exception(f"Failed to edit comment, error: {e}")
             return None
 
-    def publish_file_comments(self, file_comments: list) -> bool:
-        try:
-            headers, existing_comments = self.pr._requester.requestJsonAndCheck(
-                "GET", f"{self.pr.url}/comments"
-            )
-            for comment in file_comments:
-                comment['commit_id'] = self.last_commit_id.sha
-                comment['body'] = self.limit_output_characters(comment['body'], self.max_comment_chars)
-
-                found = False
-                for existing_comment in existing_comments:
-                    comment['commit_id'] = self.last_commit_id.sha
-                    our_app_name = get_settings().get("GITHUB.APP_NAME", "")
-                    same_comment_creator = False
-                    if self.deployment_type == 'app':
-                        same_comment_creator = our_app_name.lower() in existing_comment['user']['login'].lower()
-                    elif self.deployment_type == 'user':
-                        same_comment_creator = self.github_user_id == existing_comment['user']['login']
-                    if existing_comment['subject_type'] == 'file' and comment['path'] == existing_comment['path'] and same_comment_creator:
-
-                        headers, data_patch = self.pr._requester.requestJsonAndCheck(
-                            "PATCH", f"{self.base_url}/repos/{self.repo}/pulls/comments/{existing_comment['id']}", input={"body":comment['body']}
-                        )
-                        found = True
-                        break
-                if not found:
-                    headers, data_post = self.pr._requester.requestJsonAndCheck(
-                        "POST", f"{self.pr.url}/comments", input=comment
-                    )
-            return True
-        except Exception as e:
-            get_logger().error(f"Failed to publish diffview file summary, error: {e}")
-            return False
-
     def remove_initial_comment(self):
         try:
             for comment in getattr(self.pr, 'comments_list', []):

@@ -272,6 +272,76 @@ class TestCodeCommitProvider:
             ("two.py", "before two\n", "after two\n"),
         ]
 
+    def test_prepare_comment_body_caps_at_codecommit_limit(self):
+        # PostCommentForPullRequest rejects bodies above 10,240 characters and
+        # publish_comment raises instead of degrading (#3272). The cap must be
+        # measured AFTER the newline doubling, which grows the body.
+        provider = self._make_persistent_provider()
+        body = "\n".join(["x" * 100] * 120)  # 12,099 chars before doubling
+
+        prepared = provider._prepare_comment_body(body)
+
+        assert len(prepared) <= 10240
+        assert prepared.endswith("...")
+        assert "\n\n" in prepared
+
+    def test_prepare_comment_body_keeps_review_state_marker_parseable(self):
+        # The reviewer budgets the hidden state marker before the newline
+        # doubling; once doubled, the body can exceed the cap. Only the human
+        # text may be truncated, or the next run cannot read the state.
+        from pr_agent.algo.review_finding_state import append_review_state, parse_review_state
+
+        provider = self._make_persistent_provider()
+        state = {
+            "schema_version": 1,
+            "last_run": {"commit": "abc123"},
+            "findings": [
+                {"finding_id": f"f{i}", "state": "ACTIVE", "path": "a.py", "body": "x" * 40}
+                for i in range(20)
+            ],
+        }
+        review = "\n".join(["r" * 24] * 400)
+        body = append_review_state(review, state, max_chars=10240 - 3)
+        assert len(body) <= 10240 - 3
+
+        prepared = provider._prepare_comment_body(body)
+
+        assert len(prepared) <= 10240
+        parsed = parse_review_state(prepared)
+        assert parsed.valid
+        assert [f["finding_id"] for f in parsed.state["findings"]] == [f"f{i}" for i in range(20)]
+        assert prepared.rstrip().endswith("-->")
+        assert "..." in prepared
+
+    def test_class_docstring_survives_the_comment_limit_attribute(self):
+        assert CodeCommitProvider.__doc__ is not None
+        assert "CodeCommit" in CodeCommitProvider.__doc__
+
+    def test_prepare_comment_body_leaves_short_comment_alone(self):
+        provider = self._make_persistent_provider()
+
+        assert provider._prepare_comment_body("line one\nline two") == "line one\n\nline two"
+
+    def test_publish_comment_sends_capped_body(self):
+        provider = self._make_persistent_provider()
+        provider.codecommit_client.publish_comment.return_value = {"comment": {}}
+
+        provider.publish_comment("\n".join(["y" * 100] * 120))
+
+        sent = provider.codecommit_client.publish_comment.call_args.kwargs["comment"]
+        assert len(sent) <= 10240
+        assert sent.endswith("...")
+
+    def test_edit_comment_sends_capped_body(self):
+        provider = self._make_persistent_provider()
+        provider.codecommit_client.update_comment.return_value = {"comment": {}}
+
+        provider.edit_comment({"id": "comment-1"}, "\n".join(["z" * 100] * 120))
+
+        sent = provider.codecommit_client.update_comment.call_args.args[1]
+        assert len(sent) <= 10240
+        assert sent.endswith("...")
+
     def test_publish_comment_uses_every_pull_request_target(self):
         provider = object.__new__(CodeCommitProvider)
         provider.repo_name = "source-repository"

@@ -301,14 +301,12 @@ class TestPRDescriptionCore:
             "changes_diagram": "\n```mermaid\ngraph LR\nA --> B\n```",
         }
 
-        title, body, walkthrough, file_changes = obj._prepare_pr_answer_with_markers()
+        title, body = obj._prepare_pr_answer_with_markers()
 
         assert title == "AI title"
         assert "Bug fix" in body
         assert "Fixes the cache invalidation bug." in body
         assert "```mermaid" in body
-        assert walkthrough == ""
-        assert file_changes == []
 
     @pytest.mark.asyncio
     async def test_extend_uncovered_files_adds_missing_diff_files_to_prediction(self):

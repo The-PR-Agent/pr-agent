@@ -90,7 +90,9 @@ async def test_primary_failure_uses_backup_answer(help_tool):
     assert tool.question_str in backup_prompt
     assert "Enable automatic review in the repository settings." in backup_prompt
     tool.git_provider.publish_comment.assert_called_once()
-    assert "### Answer:\nEnable automatic review" in tool.git_provider.publish_comment.call_args.args[0]
+    published_comment = tool.git_provider.publish_comment.call_args.args[0]
+    assert "### Answer:\nEnable automatic review" in published_comment
+    assert "> - https://docs.pr-agent.ai/tools/review/#automatic-review" in published_comment
     assert details.model_used == BACKUP
     assert details.fallback_used is True
     assert get_settings().get("openai.deployment_id") == "primary-deployment"
