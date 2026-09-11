@@ -842,7 +842,14 @@ class GitProvider(ABC):
             return -1
 
     def limit_output_characters(self, output: str, max_chars: int):
-        return output[:max_chars] + '...' if len(output) > max_chars else output
+        """Truncate output to max_chars, including the truncation suffix."""
+        if len(output) <= max_chars:
+            return output
+        if max_chars <= 0:
+            return ""
+        suffix = "..."
+        suffix = suffix[:max_chars]
+        return output[:max_chars - len(suffix)] + suffix
 
 
 def get_main_pr_language(languages, files) -> str:
