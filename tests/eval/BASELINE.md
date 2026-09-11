@@ -436,6 +436,46 @@ tuning below that ceiling optimises noise. Retrieval stays in the tree, default 
 (0.4s to index 1,358 symbols) and is the right thing to re-test once a model line is chosen that can
 use it.
 
+## 2026-09-11: is the ceiling the model? - pre-registration
+
+**Written before the rows ran.** Five mechanisms are dead with rows and 14 rows have produced the
+same answer. The remaining explanation is the model line itself, and it has never been tested: every
+row to date used `gemini-3.7-flash-high` through the Cursor CLI.
+
+**Design.** Two rows, identical flags, identical diff, one thing different - the model:
+
+| Row | Model | Path |
+|---|---|---|
+| claude-opus | Opus via the `claude` CLI | `tests/eval/claude_openai_shim.py` on :8900 |
+| cursor-flash | gemini-3.7-flash-high | `tests/eval/cursor_openai_shim.py` on :8899 |
+
+Running **both** over the same subset is the point: a subset score compared against a full-corpus
+score would confound the model with the corpus, which is the mistake this row exists to avoid.
+
+**Subset.** Six files (`.delegate/runs/task-17/subset.diff`, 59KB): `ads_service.dart`,
+`iap_providers.dart`, `iap_service.dart`, `shop_screen.dart`, `profile_store.dart`,
+`profile_providers.dart`. It carries **11 expected-positive labels**, including *both* severity-4
+labels no configuration has ever found, plus one control and one FP-trap. The denominator is 11, not
+23: **never compare a number here to a full-corpus row.**
+
+Why a subset at all: a 450k-token row on Opus costs roughly $7 per call. The subset is ~15k tokens
+of diff, which makes the question affordable to ask.
+
+**Tool access is disabled on the Claude side** (`--disallowed-tools Bash Read Glob Grep Edit Write
+WebFetch WebSearch`, empty working directory). Claude Code ships with file and shell tools; left on,
+it could read the repository it is reviewing and score for context the harness never sent.
+
+**Decision rule (pre-registered).**
+- **The ceiling is the model:** Opus matches >= 4 of 11 where flash matches <= 2. That reframes every
+  earlier null - the mechanisms were never being given a model that could use them.
+- **The ceiling is not the model:** both land at or below 2. Then the corpus labels, or the review
+  framing itself, are the thing to question next - not the harness, and not the prompt.
+- **Split (Opus 3, flash 1-2):** suggestive, needs a second rep before it means anything.
+
+Watch `ads-show-timeout` and `iap-starter-coin-loss` specifically. If Opus finds either, that is the
+single most informative event in this whole sequence: both are multi-step reasoning defects, and
+their absence is what has made every mechanism look dead.
+
 ## Reproduce
 
 To reproduce the Cursor rows, start the shim first and point the run at it instead of Gemini:
