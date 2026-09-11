@@ -5,6 +5,7 @@ from pr_agent.algo.review_finding_state import (
     parse_review_state,
     reconcile_review_findings,
     render_carried_section,
+    serialize_review_state,
 )
 
 A = {"path": "lib/a.dart", "line_start": 1, "line_end": 2, "body": "**A**\n\nfirst issue"}
@@ -63,3 +64,68 @@ def test_current_ids_excludes_fuzzy_matched_finding_under_new_wording():
 
     section = render_carried_section(s2.state, set(s2.current_ids), fully_reviewed_files=[])
     assert section == ""
+
+
+def _single_active_state():
+    finding = {"path": "app.py", "line_start": 1, "line_end": 1, "body": "**A**\n\nfirst issue"}
+    return reconcile_review_findings(None, [finding], allow_resolution=False, head_sha="s1", run_id="r1").state
+
+
+def test_body_exact_fit_is_untouched_and_carried_is_dropped():
+    """budget for (body + carried) equals len(body) exactly: no truncation, no "...", carried drops."""
+    state = _single_active_state()
+    marker = serialize_review_state(state)
+    body = "x" * 400
+    carried = "### Carried from earlier runs\n\n- **B** — `other.py:1` · first seen 2026-01-01 · " \
+              "not re-reviewed this run"
+    max_chars = len(body) + len(marker) + 3  # budget == len(body) exactly, zero slack for carried
+
+    out = append_review_state(body, state, max_chars=max_chars, carried_section=carried)
+
+    assert len(out) <= max_chars + 1  # +1 for append_review_state's trailing newline
+    assert out.startswith(body)
+    assert "..." not in out
+    assert "Carried from earlier runs" not in out
+    assert parse_review_state(out).valid is True
+
+
+def test_carried_dropped_entirely_when_budget_only_covers_body_and_marker():
+    """A little slack beyond the exact fit still isn't enough for even a shortened carried section."""
+    state = _single_active_state()
+    marker = serialize_review_state(state)
+    body = "x" * 400
+    carried = "### Carried from earlier runs\n\n- **B** — `other.py:1` · first seen 2026-01-01 · " \
+              "not re-reviewed this run"
+    # One spare char beyond the exact fit: not enough for the "\n\n" separator plus any carried text.
+    max_chars = len(body) + 1 + len(marker) + 3
+
+    out = append_review_state(body, state, max_chars=max_chars, carried_section=carried)
+
+    assert len(out) <= max_chars + 1
+    assert out.startswith(body)
+    assert "..." not in out
+    assert "Carried from earlier runs" not in out
+    assert parse_review_state(out).valid is True
+
+
+def test_carried_section_is_truncated_with_ellipsis_when_partially_over_budget():
+    """Enough slack for part of the carried section: body stays whole, carried is shortened."""
+    state = _single_active_state()
+    marker = serialize_review_state(state)
+    body = "x" * 400
+    carried = "### Carried from earlier runs\n\n" + "- **B** — `other.py:1` · not re-reviewed this run " * 5
+    carried_room = 20  # enough for a truncated "..." remainder, not the whole carried section
+    assert carried_room < len(carried)
+    max_chars = len(body) + 2 + carried_room + len(marker) + 3
+
+    out = append_review_state(body, state, max_chars=max_chars, carried_section=carried)
+
+    assert len(out) <= max_chars + 1
+    assert out.startswith(body)
+    parsed = parse_review_state(out)
+    assert parsed.valid is True
+    human_only = out.split("<!-- pr-agent-review-state", 1)[0]
+    truncated_carried = human_only[len(body):].strip("\n")
+    assert truncated_carried.endswith("...")
+    assert len(truncated_carried) == carried_room
+    assert truncated_carried != carried[:carried_room]  # confirms it was actually shortened, not coincidental

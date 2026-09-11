@@ -386,7 +386,7 @@ def render_carried_section(
     ]
     if not carried:
         return ""
-    carried.sort(key=lambda finding: str(finding.get("finding_id") or ""))
+    carried.sort(key=lambda finding: (str(finding.get("path") or ""), finding.get("line_start") or 0))
     lines = ["### Carried from earlier runs", ""]
     for finding in carried:
         path = finding.get("path", "")
@@ -462,7 +462,7 @@ def append_review_state(
                 # Step 2/3: shrink the carried section (down to nothing) before ever touching
                 # the human review body; only truncate the body if it alone still doesn't fit.
                 budget = max(0, max_chars - len(marker) - 3)
-                if len(body) >= budget:
+                if len(body) > budget:
                     carried = ""
                     if budget <= 0:
                         body = ""
