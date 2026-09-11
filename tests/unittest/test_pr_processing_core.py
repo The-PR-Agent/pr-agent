@@ -48,9 +48,13 @@ def test_prepared_pr_diff_reuses_compressed_files_without_changing_chunks(monkey
     settings.config.large_patch_policy = "skip"
     settings.config.verbosity_level = 0
 
-    hunk = "@@ -1 +1 @@\n-old\n+" + ("alpha " * 60)
+    hunk_sizes = (20, 40, 60, 80)
+    hunks = [
+        "@@ -1 +1 @@\n-old\n+" + ("alpha " * size)
+        for size in hunk_sizes
+    ]
     files = [
-        FilePatchInfo("old\n", "new\n", hunk, f"file_{index}.py", edit_type=EDIT_TYPE.MODIFIED)
+        FilePatchInfo("old\n", "new\n", hunks[index], f"file_{index}.py", edit_type=EDIT_TYPE.MODIFIED)
         for index in range(4)
     ]
     provider = FakeProvider(files)
@@ -71,6 +75,8 @@ def test_prepared_pr_diff_reuses_compressed_files_without_changing_chunks(monkey
 
         assert isinstance(prepared, pr_processing.PreparedPRDiff)
         assert prepared.file_dict
+        expected_order = [f"file_{index}.py" for index in range(3, -1, -1)]
+        assert list(prepared.file_dict) == expected_order
         calls_after_prepare = token_handler.count_calls
         prepared_chunks = pr_processing.get_pr_multi_diffs(
             provider,
@@ -83,7 +89,7 @@ def test_prepared_pr_diff_reuses_compressed_files_without_changing_chunks(monkey
         )
 
         fresh_provider = FakeProvider([
-            FilePatchInfo("old\n", "new\n", hunk, f"file_{index}.py", edit_type=EDIT_TYPE.MODIFIED)
+            FilePatchInfo("old\n", "new\n", hunks[index], f"file_{index}.py", edit_type=EDIT_TYPE.MODIFIED)
             for index in range(4)
         ])
         fresh_chunks = pr_processing.get_pr_multi_diffs(
@@ -96,6 +102,11 @@ def test_prepared_pr_diff_reuses_compressed_files_without_changing_chunks(monkey
         )
 
         assert prepared_chunks == fresh_chunks
+        prepared_diff_list, _ = prepared_chunks
+        combined_chunks = "\n".join(prepared_diff_list)
+        assert [combined_chunks.index(filename) for filename in expected_order] == sorted(
+            combined_chunks.index(filename) for filename in expected_order
+        )
         assert token_handler.count_calls == calls_after_prepare
         assert (provider.diff_calls, provider.language_calls) == (1, 1)
     finally:
