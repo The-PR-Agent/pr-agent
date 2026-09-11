@@ -104,6 +104,61 @@ def test_prepare_review_reconciles_previous_state_and_renders_resolved_section(m
     assert settings.pr_reviewer.persistent_finding_state is True
 
 
+def test_prepare_review_renders_carried_section_for_findings_not_reported_this_run(monkeypatch):
+    _settings(monkeypatch)
+    previous = reconcile_review_findings(
+        None,
+        [
+            {"body": "**A**\n\nissue a", "path": "app.py", "line_start": 2, "line_end": 2},
+            {"body": "**B**\n\nissue b", "path": "other.py", "line_start": 5, "line_end": 5},
+        ],
+        allow_resolution=True,
+        head_sha="head-1",
+        timestamp="2026-01-01T00:00:00Z",
+    ).state
+    old_body = (
+        f"{PRReviewHeader.REGULAR.value} 🔍\n\nold review\n\n"
+        f"{serialize_review_state(previous)}"
+    )
+    provider = MagicMock()
+    # Same head as the previous run: absence carries no evidence the line was re-checked, so
+    # the un-reported finding becomes UNCONFIRMED rather than RESOLVED - and it must still show.
+    provider.last_commit_id = "head-1"
+    provider.get_issue_comments.return_value = [SimpleNamespace(body=old_body)]
+    provider.get_diff_files.return_value = []
+    provider.is_supported.side_effect = lambda capability: capability == "get_issue_comments"
+    reviewer = _reviewer(provider)
+    issue = {
+        "relevant_file": "app.py",
+        "issue_content": "issue a",
+        "issue_header": "A",
+        "start_line": 2,
+        "end_line": 2,
+    }
+
+    with (
+        patch(
+            "pr_agent.tools.pr_reviewer.load_yaml",
+            return_value={"review": {"key_issues_to_review": [issue]}},
+        ),
+        patch("pr_agent.tools.pr_reviewer.github_action_output"),
+        patch(
+            "pr_agent.tools.pr_reviewer.convert_to_markdown_v2",
+            return_value="### Key issue\n\n**A**\n\nissue a",
+        ),
+    ):
+        review = reviewer._prepare_pr_review()
+
+    assert "### Carried from earlier runs" in review
+    # Isolate the rendered carried section from the hidden state marker that follows it - the
+    # marker's raw JSON also names "app.py", but that is bookkeeping, not the visible section.
+    carried = review.split("### Carried from earlier runs", 1)[1].split("<!-- pr-agent-review-state", 1)[0]
+    # other.py was not reported this run, so it is carried and visible …
+    assert "other.py:5" in carried and "not re-reviewed this run" in carried
+    # … while app.py, reported again this run under the same id, is not shown as carried.
+    assert "app.py" not in carried
+
+
 def test_prepare_review_same_head_absence_preserves_active_finding(monkeypatch):
     _settings(monkeypatch)
     previous = reconcile_review_findings(
@@ -486,7 +541,7 @@ def test_malformed_marker_self_heals_with_valid_marker(monkeypatch):
     provider.publish_comment.assert_not_called()
 
 
-def test_prepare_and_persisted_state_round_trip_preserves_marker_and_history(monkeypatch):
+def test_prepare_and_persisted_state_round_trip_drops_resolved_history_before_truncating_review_text(monkeypatch):
     settings = _settings(monkeypatch)
     monkeypatch.setattr(settings.pr_reviewer, "num_max_findings", 3)
     header = f"{PRReviewHeader.REGULAR.value} 🔍"
@@ -556,7 +611,9 @@ def test_prepare_and_persisted_state_round_trip_preserves_marker_and_history(mon
     parsed = parse_review_state(comment.body)
     assert parsed.valid is True
     states = {finding["body"]: finding["state"] for finding in parsed.state["findings"]}
-    assert states == {"a-body": "ACTIVE", "b-body": "RESOLVED"}
+    # Budget order (R-4): RESOLVED history yields before an ACTIVE finding does, so a marker that
+    # cannot fit both drops b-body's resolution and keeps a-body's still-open finding.
+    assert states == {"a-body": "ACTIVE"}
     assert "long human review" in comment.body
     provider.publish_comment.assert_not_called()
 

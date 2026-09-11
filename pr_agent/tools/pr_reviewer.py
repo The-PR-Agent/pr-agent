@@ -31,6 +31,7 @@ from pr_agent.algo.review_finding_state import (
     append_review_state,
     parse_review_state,
     reconcile_review_findings,
+    render_carried_section,
 )
 from pr_agent.algo.review_merge import merge_review_chunks, vote_review_samples
 from pr_agent.algo.run_details import get_run_details, init_run_details, set_call_findings
@@ -732,6 +733,7 @@ class PRReviewer:
         self._review_state_block_reason = None
         self._review_finding_previous_state = None
         self._review_state_preserved = False
+        self._review_fully_reviewed_files = []
         if not self._review_finding_state_enabled():
             return
         if not isinstance(data.get("review"), dict):
@@ -754,6 +756,9 @@ class PRReviewer:
         coverage = getattr(self, "coverage", None) or CoverageLedger()
         fully_reviewed = [path for path, file_coverage in coverage.files.items()
                           if file_coverage.status == "reviewed"]
+        # _prepare_pr_review needs this to render the carried-findings section from the same
+        # state result, without recomputing it from self.coverage a second time.
+        self._review_fully_reviewed_files = fully_reviewed
         if self._review_state_blocked:
             if self._review_state_block_reason == _STATE_BLOCK_INVALID_MARKER:
                 self._review_state_result = reconcile_review_findings(
@@ -1239,11 +1244,15 @@ class PRReviewer:
 
         if self._review_state_result is not None:
             state_result = self._review_state_result
+            fully_reviewed = getattr(self, "_review_fully_reviewed_files", [])
+            current_ids = set(state_result.current_ids)
+            carried_section = render_carried_section(state_result.state, current_ids, fully_reviewed)
             try:
                 markdown_text = append_review_state(
                     markdown_text or "",
                     state_result.state,
                     max_chars=self._review_comment_max_chars(),
+                    carried_section=carried_section,
                 )
             except ValueError as error:
                 previous_state = getattr(self, "_review_finding_previous_state", None)
@@ -1256,10 +1265,14 @@ class PRReviewer:
                 )
                 if previous_state is not None:
                     try:
+                        previous_carried_section = render_carried_section(
+                            previous_state, current_ids, fully_reviewed
+                        )
                         markdown_text = append_review_state(
                             markdown_text or "",
                             previous_state,
                             max_chars=self._review_comment_max_chars(),
+                            carried_section=previous_carried_section,
                         )
                     except ValueError as previous_error:
                         get_logger().warning(

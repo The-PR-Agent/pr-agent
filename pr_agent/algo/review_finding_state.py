@@ -36,6 +36,11 @@ class ReconciliationResult:
     changed: bool
     resolved_ids: tuple[str, ...]
     reopened_ids: tuple[str, ...]
+    # Ids of findings this run actually reported, keyed by the *retained* finding id (the
+    # previous id when a current finding fuzzy-matched one, not a fresh fingerprint of its
+    # current wording). Callers use this - not a re-fingerprint of current findings - to decide
+    # which stored findings are "carried" from earlier runs rather than present this run.
+    current_ids: tuple[str, ...]
 
 
 def _timestamp(value: str | None) -> str:
@@ -255,6 +260,7 @@ def reconcile_review_findings(
     reconciled: dict[str, dict[str, Any]] = {}
     resolved_ids: list[str] = []
     reopened_ids: list[str] = []
+    current_ids: list[str] = []
     changed = previous_state is None and bool(current)
 
     for _, current_finding in current_by_id.items():
@@ -282,6 +288,7 @@ def reconcile_review_findings(
         if head_sha:
             record["last_seen_head_sha"] = head_sha
         reconciled[record["finding_id"]] = record
+        current_ids.append(record["finding_id"])
 
     for finding_id, previous in previous_by_id.items():
         if finding_id in matched_previous_ids:
@@ -324,6 +331,7 @@ def reconcile_review_findings(
         changed=changed,
         resolved_ids=tuple(sorted(resolved_ids)),
         reopened_ids=tuple(sorted(reopened_ids)),
+        current_ids=tuple(sorted(current_ids)),
     )
 
 
@@ -354,14 +362,62 @@ def _render_resolved_section(state: Mapping[str, Any]) -> str:
     return "\n".join(lines).rstrip()
 
 
+def render_carried_section(
+    state: Mapping[str, Any],
+    current_ids: set[str],
+    fully_reviewed_files: Iterable[str],
+) -> str:
+    """Render every ACTIVE/UNCONFIRMED finding this run did not itself report.
+
+    A finding absent from `current_ids` was not (re)emitted this run - either because its file
+    was not touched, or because it was reviewed and simply not flagged again. Both cases stay
+    visible here so a reader never loses track of a still-open finding just because one run
+    didn't happen to restate it.
+    """
+    # Local import: review_merge.py does not import review_finding_state.py today, but importing
+    # inside the function avoids creating a module-load-order dependency between the two.
+    from pr_agent.algo.review_merge import normalize_finding_path
+
+    reviewed = {normalize_finding_path(p) for p in fully_reviewed_files or []}
+    carried = [
+        finding
+        for finding in state.get("findings", [])
+        if finding.get("state") in ("ACTIVE", "UNCONFIRMED") and finding.get("finding_id") not in current_ids
+    ]
+    if not carried:
+        return ""
+    carried.sort(key=lambda finding: str(finding.get("finding_id") or ""))
+    lines = ["### Carried from earlier runs", ""]
+    for finding in carried:
+        path = finding.get("path", "")
+        loc = f"{path}:{finding['line_start']}" if finding.get("line_start") else path
+        note = (
+            "re-reviewed, not re-emitted"
+            if normalize_finding_path(path) in reviewed
+            else "not re-reviewed this run"
+        )
+        tag = " · unconfirmed" if finding.get("state") == "UNCONFIRMED" else ""
+        header = finding.get("body", "").split("\n", 1)[0].strip("* ")
+        first_seen = str(finding.get("first_seen") or "")[:10]
+        lines.append(f"- **{header}** — `{loc}` · first seen {first_seen} · {note}{tag}")
+    return "\n".join(lines)
+
+
 def append_review_state(
     review_body: str,
     state: Mapping[str, Any],
     max_chars: int | None = None,
+    *,
+    carried_section: str = "",
 ) -> str:
-    """Append the resolved section and hidden marker within an optional limit.
+    """Append the carried section, resolved section and hidden marker within an optional limit.
 
-    The optional limit is reserved for the complete hidden marker.
+    Section order (highest priority for the reader first): the human review body, the carried
+    section, the resolved section, then the hidden marker. When `max_chars` does not fit
+    everything, sections give way in the opposite order: RESOLVED findings are dropped from the
+    marker (and the resolved section, which mirrors it) first, then the carried section is
+    truncated, and only as a last resort is the human body itself truncated. `ValueError` is
+    raised only when the marker, stripped of RESOLVED findings, still does not fit.
     """
     raw_body = review_body or ""
     namespace_count = raw_body.count(_STATE_MARKER_NAMESPACE)
@@ -373,25 +429,56 @@ def append_review_state(
         body = raw_body.split(_STATE_MARKER_NAMESPACE, 1)[0].rstrip()
     else:
         body = raw_body.rstrip()
-    human_body = "\n\n".join(
-        section
-        for section in (body, _render_resolved_section(state))
-        if section
-    )
+    carried = carried_section or ""
+    resolved_section = _render_resolved_section(state)
     marker = serialize_review_state(state)
+
+    def _compose(b: str, c: str, r: str) -> str:
+        return "\n\n".join(section for section in (b, c, r) if section)
+
+    def _total_length(human: str, mark: str) -> int:
+        return len(mark) + 1 if not human else len(human) + len(mark) + 3
+
     if max_chars is not None:
-        if not isinstance(max_chars, int) or max_chars < len(marker) + 1:
+        if not isinstance(max_chars, int):
             raise ValueError(
                 "Comment limit is too small for the persistent "
                 "review state marker"
             )
-        human_budget = max_chars - len(marker) - 3
-        if len(human_body) > human_budget:
-            if human_budget <= 0:
-                human_body = ""
-            elif human_budget < 3:
-                human_body = human_body[:human_budget]
-            else:
-                human_body = human_body[: human_budget - 3] + "..."
+        if _total_length(_compose(body, carried, resolved_section), marker) > max_chars:
+            # Step 1: drop RESOLVED findings from the marker; the resolved section mirrors the
+            # same state, so rendering it from the trimmed copy drops it too (it only ever shows
+            # RESOLVED findings).
+            trimmed_state = dict(state)
+            trimmed_state["findings"] = _retained_findings(state.get("findings", []), 0)
+            marker = serialize_review_state(trimmed_state)
+            resolved_section = _render_resolved_section(trimmed_state)
+            if max_chars < len(marker) + 1:
+                raise ValueError(
+                    "Comment limit is too small for the persistent "
+                    "review state marker"
+                )
+            if _total_length(_compose(body, carried, resolved_section), marker) > max_chars:
+                # Step 2/3: shrink the carried section (down to nothing) before ever touching
+                # the human review body; only truncate the body if it alone still doesn't fit.
+                budget = max(0, max_chars - len(marker) - 3)
+                if len(body) >= budget:
+                    carried = ""
+                    if budget <= 0:
+                        body = ""
+                    elif budget < 3:
+                        body = body[:budget]
+                    else:
+                        body = body[: budget - 3] + "..."
+                else:
+                    carried_budget = budget - len(body) - (2 if carried else 0)
+                    if carried_budget <= 0:
+                        carried = ""
+                    elif len(carried) > carried_budget:
+                        if carried_budget < 3:
+                            carried = carried[:carried_budget]
+                        else:
+                            carried = carried[: carried_budget - 3] + "..."
+    human_body = _compose(body, carried, resolved_section)
     sections = [section for section in (human_body, marker) if section]
     return "\n\n".join(sections).rstrip() + "\n"
