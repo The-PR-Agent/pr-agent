@@ -38,6 +38,13 @@ from pr_agent.algo.review_finding_state import (
 from pr_agent.algo.review_merge import merge_review_chunks, vote_review_samples
 from pr_agent.algo.run_details import get_run_details, init_run_details, set_call_findings
 from pr_agent.algo.run_ledger import write_ledger
+from pr_agent.algo.ship_scope import (
+    DEFAULT_LOW_PRIORITY_GLOBS,
+    is_low_priority,
+    order_files_by_priority,
+    propose_ignore_globs,
+    render_ignore_proposal,
+)
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (
@@ -223,6 +230,9 @@ class PRReviewer:
     coverage: Optional[CoverageLedger] = None
     # Per-chunk file/clip breakdown from the chunked flow; empty when the diff was not chunked.
     chunk_plans: list = None
+    # Ship-scope (R-9): low-priority files summarized under budget, plus an optional [ignore] proposal.
+    _ship_scope_summary_paths: list = None
+    _ship_scope_ignore_footer: str = ""
 
     def __init__(self, pr_url: str, is_answer: bool = False, is_auto: bool = False, args: list = None,
                  ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
@@ -881,6 +891,8 @@ class PRReviewer:
         self.review_chunk_count = 1  # the single-call default; the chunked flow rebinds it
         self.review_failed_chunk_count = 0
         self.review_vote_dropped_count = 0
+        self._ship_scope_summary_paths = []
+        self._ship_scope_ignore_footer = ""
         # One cap for the whole run, so nested fan-out (chunks x samples) cannot burst past it.
         # Rebuilt per model attempt: a semaphore is not reusable across event loops.
         self._call_semaphore = self._build_call_semaphore()
@@ -952,12 +964,15 @@ class PRReviewer:
 
         Returns False when chunking does not apply, leaving the single-call flow in place.
         """
+        globs = list(get_settings().pr_reviewer.get("low_priority_globs", DEFAULT_LOW_PRIORITY_GLOBS))
+        diff_files = order_files_by_priority(self.git_provider.get_diff_files(), globs)
         plans, remaining_files_list = get_pr_multi_diffs_with_files(
             self.git_provider,
             self.token_handler,
             model,
             max_calls=get_settings().pr_reviewer.get("max_number_of_calls", 3),
-            add_line_numbers=True)
+            add_line_numbers=True,
+            diff_files=diff_files)
         if len(plans) < 2:
             get_logger().info("Large-diff chunking produced a single chunk, reviewing the PR in one call")
             return False
@@ -977,7 +992,13 @@ class PRReviewer:
         for plan in plans:
             for filename in plan.clipped:
                 coverage.mark(filename, "clipped")
+        summarize_low = get_settings().pr_reviewer.get("low_priority_summarize_when_over_budget", True)
+        if summarize_low:
+            for filename in remaining_files_list:
+                if is_low_priority(filename, globs):
+                    coverage.mark(filename, "low_priority_summary")
         self.coverage = coverage
+        self._record_ship_scope_footer(plans, remaining_files_list, globs, summarize_low)
 
         fallback_models = get_settings().config.get("fallback_models", [])
         if not isinstance(fallback_models, list):
@@ -987,7 +1008,39 @@ class PRReviewer:
             self.remaining_files_list = remaining_files_list
         else:
             self.coverage = previous_coverage
+            self._ship_scope_summary_paths = []
+            self._ship_scope_ignore_footer = ""
         return ok
+
+    def _record_ship_scope_footer(
+        self,
+        plans: list,
+        remaining_files_list: list,
+        globs: list,
+        summarize_low: bool,
+    ) -> None:
+        """Stash low-priority summary lines and an optional [ignore] proposal for the review footer."""
+        summary_paths = [
+            path for path in remaining_files_list
+            if summarize_low and is_low_priority(path, globs)
+        ]
+        self._ship_scope_summary_paths = summary_paths
+        reviewed_paths = {path for plan in plans for path in plan.files}
+        low_in_chunks = [path for path in reviewed_paths if is_low_priority(path, globs)]
+        # Propose ignore when low-priority files burned tokens in a chunk, or when they were
+        # summarized under budget (so a human can skip them next time).
+        if not low_in_chunks and not summary_paths:
+            self._ship_scope_ignore_footer = ""
+            return
+        low_paths = list(dict.fromkeys([*low_in_chunks, *summary_paths]))
+        tokens_by_file = {
+            f.filename: self.token_handler.count_tokens(f.patch or "")
+            for f in self.git_provider.get_diff_files()
+            if f.filename in low_paths
+        }
+        self._ship_scope_ignore_footer = render_ignore_proposal(
+            propose_ignore_globs(low_paths, tokens_by_file)
+        )
 
     async def _review_chunk_plans(self, model: str, fallback_models: list) -> bool:
         """Review `self.chunk_plans`, recovering a chunk that fails every attempt on `model` in
@@ -1450,6 +1503,15 @@ class PRReviewer:
             # A PR whose only gaps are clipped/failed chunks (nothing skipped for budget) would
             # otherwise show no coverage signal at all, since the block above never fires.
             markdown_text += f"\n\n<hr>\n\n{self.coverage.render_footer()}"
+
+        summary_paths = getattr(self, "_ship_scope_summary_paths", None) or []
+        if summary_paths:
+            markdown_text += "\n" + "\n".join(
+                f"- `{path}` (mockup, not reviewed)" for path in summary_paths
+            )
+        ignore_footer = getattr(self, "_ship_scope_ignore_footer", "") or ""
+        if ignore_footer:
+            markdown_text += f"\n\n{ignore_footer}"
 
         # Add help text if gfm_markdown is supported
         if self.git_provider.is_supported("gfm_markdown") and get_settings().pr_reviewer.enable_help_text:

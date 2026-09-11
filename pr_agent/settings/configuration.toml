@@ -184,6 +184,10 @@ minimal_minutes_for_incremental_review=0
 enable_intro_text=true
 enable_help_text=false # Determines whether to include help text in the PR review. Enabled by default.
 enable_review_coverage_footer=true
+# Files matching these globs are reviewed last and, when the token budget is tight, summarized in one line
+# instead of reviewed. Nothing is dropped; an [ignore] snippet is proposed in the comment for a human to accept.
+low_priority_globs = ["docs/**", "design/**", "mockups/**", "**/fixtures/**", "**/*.md"]
+low_priority_summarize_when_over_budget = true
 # large-diff chunking (opt-in). When the token budget leaves files out of the review, split the diff
 # into chunks, review each chunk, and merge the per-chunk results into one review.
 enable_large_pr_chunking=false
