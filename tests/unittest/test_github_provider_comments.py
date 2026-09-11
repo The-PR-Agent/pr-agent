@@ -55,6 +55,30 @@ def _make_provider(pr=None, max_chars=65000):
     return p
 
 
+@pytest.mark.parametrize(
+    ("output", "max_chars", "expected"),
+    [
+        pytest.param("short", 10, "short", id="short"),
+        pytest.param("exact", 5, "exact", id="exact"),
+        pytest.param("x" * 20, 10, ("x" * 7) + "...", id="truncated"),
+        pytest.param("abcdef", -1, "", id="negative-limit"),
+        pytest.param("abcdef", 0, "", id="zero-limit"),
+        pytest.param("abcdef", 1, ".", id="one-character-limit"),
+        pytest.param("abcdef", 2, "..", id="two-character-limit"),
+        pytest.param("abcdef", 3, "...", id="three-character-limit"),
+        pytest.param("😀" * 5, 4, "😀...", id="unicode-code-points"),
+    ],
+)
+def test_limit_output_characters_respects_total_limit(output, max_chars, expected):
+    provider = _make_provider()
+
+    result = provider.limit_output_characters(output, max_chars)
+
+    assert result == expected
+    if max_chars >= 0:
+        assert len(result) <= max_chars
+
+
 def test_edit_comment_returns_false_on_github_failure():
     provider = _make_provider()
     comment = MagicMock()
@@ -172,8 +196,8 @@ def test_create_inline_comment_limits_body_length(monkeypatch):
     payload = provider.create_inline_comment(long_body, "f.py", "line")
 
     assert payload["body"].endswith("...")
-    # limit_output_characters: output[:max_chars] + '...'
-    assert payload["body"] == "A" * 10 + "..."
+    assert payload["body"] == "A" * 7 + "..."
+    assert len(payload["body"]) == provider.max_comment_chars
 
 
 def test_create_inline_comment_does_not_truncate_short_body(monkeypatch):

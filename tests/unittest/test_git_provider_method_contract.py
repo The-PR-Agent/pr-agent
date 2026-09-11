@@ -242,7 +242,7 @@ REACTION_TIERS = _tiers(supported=("github", "gitlab", "gitea"), not_implemented
 PREDICATE_CONTRACTS = (
     PredicateContract(
         name="supports_review_comment_identity",
-        evidence=("publish_persistent_comment",),
+        evidence=("edit_comment",),
         deliberate_mismatches={
             "gitea": DeliberateMismatch(
                 "Gitea forwards identity arguments but cannot safely activate identity tracking "
@@ -316,6 +316,18 @@ METHOD_CONTRACTS = (
         # Signature-only contract: catches signature drift against GitProvider without
         # requiring live backends or mock state for every provider.
         check_return_annotation=False,
+        check_execution=False,
+    ),
+    MethodContract(
+        name="get_repo_context_ref",
+        args=(),
+        noop_value=None,
+        check_supported=lambda _: None,
+        tiers=_tiers(
+            supported=("github", "gitlab", "gitea", "azure-devops", "bitbucket", "bitbucket-server"),
+        ),
+        # Signature + return-annotation contract: the providers that fetch repo-context files
+        # must expose the same hook so the cache can key on the revision being read.
         check_execution=False,
     ),
 )
@@ -509,11 +521,7 @@ def _has_evidence(provider_type: type[GitProvider], contract: PredicateContract)
     for name in contract.evidence:
         member = getattr(provider_type, name, None)
         if member is not getattr(GitProvider, name, None):
-            if contract.name == "supports_review_comment_identity":
-                if "identity_marker" in inspect.signature(member).parameters:
-                    return True
-            else:
-                return True
+            return True
     return False
 
 
