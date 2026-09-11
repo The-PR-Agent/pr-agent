@@ -589,21 +589,20 @@ def _warn_on_sibling_key_conflicts(ordered: list[str], contents: dict[str, bytes
                 parsed[directory] = tomllib.loads(content.decode("utf-8"))
             except Exception:
                 continue
-        key_sets = [
-            {(section.lower(), key.lower())
-             for section, table in data.items()
-             if isinstance(table, dict)
-             for key in table}
-            for data in parsed.values()
-        ]
-        if len(key_sets) < 2:
-            continue
-        common = set.intersection(*key_sets)
-        winner_directory = group[-1]
-        for section, key in sorted(common):
+        key_owners: dict[tuple[str, str], list[str]] = {}
+        for directory, data in parsed.items():
+            for section, table in data.items():
+                if not isinstance(table, dict):
+                    continue
+                for key in table:
+                    key_owners.setdefault((section.lower(), key.lower()), []).append(directory)
+        for (section, key), owners in sorted(key_owners.items()):
+            if len(owners) < 2:
+                continue
+            winner_directory = owners[-1]
             get_logger().warning(
                 f"Per-directory settings at the same depth set the same key "
-                f"'{section}.{key}': sibling configs {sorted(group)} all apply to this PR "
+                f"'{section}.{key}': sibling configs {sorted(owners)} all set it "
                 f"and '{winner_directory}/.pr_agent.toml' wins (later path overrides)"
             )
             conflicts.append((section, key, winner_directory))

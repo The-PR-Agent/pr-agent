@@ -183,6 +183,44 @@ class TestResolvePerDirectorySettings:
 
         assert conflicts == []
 
+    def test_sibling_key_shared_by_two_of_three_is_warned(self):
+        from loguru import logger as loguru_logger
+
+        ordered = ["services/auth", "services/billing", "services/orders"]
+        contents = {
+            "services/auth/.pr_agent.toml": SERVICES_AUTH_TOML,
+            "services/billing/.pr_agent.toml": SERVICES_BILLING_TOML,
+            "services/orders/.pr_agent.toml": b"[pr_description]\nuse_description_markers = true\n",
+        }
+
+        captured_lines = []
+        sink_id = loguru_logger.add(
+            lambda msg: captured_lines.append(str(msg)),
+            level="WARNING",
+        )
+        try:
+            conflicts = git_utils._warn_on_sibling_key_conflicts(ordered, contents)
+        finally:
+            loguru_logger.remove(sink_id)
+
+        # pr_reviewer.num_max_findings is set by auth + billing only; orders only sets config.temperature.
+        assert conflicts == [("pr_reviewer", "num_max_findings", "services/billing")]
+        assert any("pr_reviewer.num_max_findings" in line for line in captured_lines)
+
+    def test_sibling_winner_is_last_owner_that_sets_key(self):
+        ordered = ["services/auth", "services/billing", "services/orders"]
+        contents = {
+            "services/auth/.pr_agent.toml": SERVICES_AUTH_TOML,
+            "services/billing/.pr_agent.toml": SERVICES_BILLING_TOML,
+            # orders is the last sibling in path order but its content is invalid TOML,
+            # so it can never be the winner for a key it does not set.
+            "services/orders/.pr_agent.toml": b"[pr_reviewer\nbroken = true\n",
+        }
+
+        conflicts = git_utils._warn_on_sibling_key_conflicts(ordered, contents)
+
+        assert conflicts == [("pr_reviewer", "num_max_findings", "services/billing")]
+
     def test_no_config_crossed_returns_empty(self, per_dir_settings):
         provider = _provider(
             tree_paths=["services/auth/.pr_agent.toml"],
