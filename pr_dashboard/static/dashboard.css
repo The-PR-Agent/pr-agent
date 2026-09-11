@@ -1,0 +1,354 @@
+/* PR-Agent dashboard — an operator console for a code reviewer.
+
+   One idea carries the design: the status gutter, a colored channel down the left edge of
+   anything that has state. PR-Agent annotates positions in a diff, so the interface borrows
+   the diff gutter. Everything else stays quiet so the gutter reads at a glance.
+
+   Two rules worth knowing before editing:
+   - Monospace is for machine content only (paths, tokens, costs, logs, diffs). Using it for
+     small labels is decoration and makes every panel look the same.
+   - An unknown value is never rendered as zero. .unknown is the typographic treatment for
+     "could not be priced" / "no data", and it must never be given a status color, because a
+     colored badge reads as a state the system actually observed.
+*/
+
+:root {
+  color-scheme: light dark;
+
+  --ink: #101a24;
+  --ink-soft: #24313f;
+  --slate: #46586b;
+  --slate-dim: #6b7c8e;
+  --paper: #eef1f4;
+  --panel: #ffffff;
+  --panel-sunk: #f6f8fa;
+  --rule: #cbd5de;
+  --rule-soft: #dfe6ec;
+
+  --ok: #1f7a5c;
+  --warn: #a66300;
+  --fail: #b3261e;
+  --live: #2c5fd6;
+
+  --ok-wash: #e6f2ed;
+  --warn-wash: #fbf0dd;
+  --fail-wash: #fbe9e7;
+  --live-wash: #e7eefb;
+
+  --rail-w: 13.5rem;
+  --radius: 3px;
+
+  --sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #e8edf2;
+    --ink-soft: #c6d0da;
+    --slate: #9aa9b8;
+    --slate-dim: #7b8a99;
+    --paper: #0d151d;
+    --panel: #141f29;
+    --panel-sunk: #101a23;
+    --rule: #2a3947;
+    --rule-soft: #223040;
+
+    --ok: #4dbd93;
+    --warn: #d99a2b;
+    --fail: #e8695d;
+    --live: #6f9bf0;
+
+    --ok-wash: #14372c;
+    --warn-wash: #3a2c12;
+    --fail-wash: #3d1f1c;
+    --live-wash: #1a2740;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font: 400 14px/1.55 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---- shell ------------------------------------------------------------- */
+
+.shell { display: flex; min-height: 100vh; }
+
+.rail {
+  width: var(--rail-w);
+  flex: 0 0 var(--rail-w);
+  background: var(--panel);
+  border-right: 1px solid var(--rule);
+  padding: 1.25rem 0;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+}
+
+.rail-mark {
+  display: block;
+  padding: 0 1.25rem 1.25rem;
+  color: var(--ink);
+  text-decoration: none;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  font-size: 15px;
+}
+
+.rail-mark span { color: var(--slate-dim); font-weight: 400; }
+
+.rail-group {
+  padding: 0.75rem 1.25rem 0.35rem;
+  color: var(--slate-dim);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+.rail a.nav {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 1.25rem;
+  color: var(--slate);
+  text-decoration: none;
+  border-left: 3px solid transparent;
+}
+
+.rail a.nav:hover { color: var(--ink); background: var(--panel-sunk); }
+
+.rail a.nav[aria-current="page"] {
+  color: var(--ink);
+  font-weight: 500;
+  border-left-color: var(--live);
+  background: var(--panel-sunk);
+}
+
+.content { flex: 1 1 auto; min-width: 0; padding: 1.75rem 2rem 4rem; max-width: 90rem; }
+
+/* ---- page header ------------------------------------------------------- */
+
+.page-head { margin-bottom: 1.5rem; }
+
+.page-head h1 {
+  margin: 0;
+  font-size: 25px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+
+.page-head p { margin: 0.35rem 0 0; color: var(--slate); max-width: 68ch; }
+.page-head p + p { margin-top: 0.5rem; }
+
+h2 {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 2rem 0 0.75rem;
+}
+
+/* ---- panels ------------------------------------------------------------ */
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  margin-bottom: 1.25rem;
+}
+
+.panel-body { padding: 1rem 1.15rem; }
+.panel > table { margin: 0; }
+
+/* The status gutter: the one repeated device. A channel, not a badge. */
+.gutter { border-left: 4px solid var(--rule); }
+.gutter-ok { border-left-color: var(--ok); }
+.gutter-warn { border-left-color: var(--warn); }
+.gutter-fail { border-left-color: var(--fail); }
+.gutter-live { border-left-color: var(--live); }
+
+/* ---- tables ------------------------------------------------------------ */
+
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+
+th {
+  text-align: left;
+  padding: 0.55rem 0.8rem;
+  border-bottom: 1px solid var(--rule);
+  color: var(--slate);
+  font-weight: 500;
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+td {
+  text-align: left;
+  padding: 0.55rem 0.8rem;
+  border-bottom: 1px solid var(--rule-soft);
+  vertical-align: top;
+}
+
+tbody tr:last-child td { border-bottom: none; }
+tbody tr:hover td { background: var(--panel-sunk); }
+
+/* Numeric columns are addressed by position, never by a class on the cell: several tests
+   assert bare `<td>0</td>`, and a redesign must not put attributes inside those cells. */
+/* Mono belongs to the DATA, not the header: a monospace column label is styling rather than
+   content, and it makes every table read the same. Headers stay in the sans and only inherit
+   the alignment. */
+.nums-2 th:nth-child(n + 2), .nums-3 th:nth-child(n + 3), .nums-4 th:nth-child(n + 4) { text-align: right; }
+.nums-2 td:nth-child(n + 2), .nums-3 td:nth-child(n + 3), .nums-4 td:nth-child(n + 4) {
+  text-align: right;
+  font-family: var(--mono);
+  font-size: 13px;
+}
+.nums-2 td:first-child, .nums-3 td:first-child, .nums-4 td:first-child { font-weight: 500; }
+
+.table-scroll { overflow-x: auto; }
+
+/* ---- machine content --------------------------------------------------- */
+
+code, .mono { font-family: var(--mono); font-size: 13px; }
+
+.path { font-family: var(--mono); font-size: 12.5px; color: var(--ink-soft); word-break: break-all; }
+
+pre.log, pre.diff {
+  margin: 0;
+  padding: 0.9rem 1rem;
+  background: var(--panel-sunk);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ---- state ------------------------------------------------------------- */
+
+.state { display: inline-flex; align-items: center; gap: 0.4rem; white-space: nowrap; }
+.state::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--slate-dim); flex: none; }
+.state-ok::before { background: var(--ok); }
+.state-warn::before { background: var(--warn); }
+.state-fail::before { background: var(--fail); }
+.state-live::before { background: var(--live); animation: pulse 1.6s ease-in-out infinite; }
+
+@keyframes pulse { 50% { opacity: 0.35; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .state-live::before { animation: none; }
+}
+
+/* An unknown value is not a state the system observed, so it gets no color -- only a
+   typographic mark that reads as "no reading taken" rather than "measured zero". */
+.unknown {
+  /* Sans even inside a mono numeric column: "not reported" is prose about the absence of a
+     reading, not a machine value, and setting it in the data face makes it read as one. */
+  font-family: var(--sans);
+  font-size: 14px;
+  color: var(--slate-dim);
+  border-bottom: 1px dashed var(--rule);
+  cursor: help;
+}
+
+.muted { color: var(--slate); }
+
+/* ---- notices ----------------------------------------------------------- */
+
+/* Notices are a tinted panel in the signal color, NOT a gutter. The gutter means "this row
+   has a status the system observed"; reusing it here would spend the one device twice and
+   make a transient message look like durable state. */
+.error, .stale {
+  padding: 0.7rem 0.9rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  margin-bottom: 1rem;
+}
+
+.error { border-color: var(--fail); background: var(--fail-wash); color: var(--ink); }
+.stale { border-color: var(--warn); background: var(--warn-wash); color: var(--ink); }
+
+.empty {
+  padding: 2rem 1.15rem;
+  color: var(--slate);
+  text-align: center;
+}
+
+/* ---- forms ------------------------------------------------------------- */
+
+.form-row { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; }
+
+input[type="text"], input[type="number"], input:not([type]), select, textarea {
+  font: inherit;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  padding: 0.4rem 0.55rem;
+}
+
+textarea { font-family: var(--mono); font-size: 12.5px; line-height: 1.6; width: 100%; }
+
+input:focus-visible, select:focus-visible, textarea:focus-visible,
+button:focus-visible, a:focus-visible {
+  outline: 2px solid var(--live);
+  outline-offset: 2px;
+}
+
+button {
+  font: 500 13px/1 var(--sans);
+  padding: 0.5rem 0.85rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--ink);
+  background: var(--ink);
+  color: var(--panel);
+  cursor: pointer;
+}
+
+button:hover { background: var(--ink-soft); border-color: var(--ink-soft); }
+
+button.quiet { background: transparent; color: var(--slate); border-color: var(--rule); }
+button.quiet:hover { color: var(--ink); border-color: var(--slate); background: var(--panel-sunk); }
+
+button.danger { background: transparent; color: var(--fail); border-color: var(--rule); }
+button.danger:hover { background: var(--fail-wash); border-color: var(--fail); }
+
+a { color: var(--live); }
+a:hover { color: var(--ink); }
+
+/* ---- diff -------------------------------------------------------------- */
+
+.diff .add { color: var(--ok); }
+.diff .del { color: var(--fail); }
+.diff .hunk { color: var(--slate-dim); }
+
+/* ---- responsive -------------------------------------------------------- */
+
+@media (max-width: 60rem) {
+  .shell { display: block; }
+  .rail {
+    width: auto;
+    height: auto;
+    position: static;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.15rem;
+    padding: 0.6rem 1rem;
+    border-right: none;
+    border-bottom: 1px solid var(--rule);
+  }
+  .rail-mark { padding: 0 0.75rem 0 0; }
+  .rail-group { display: none; }
+  .rail a.nav { border-left: none; border-bottom: 3px solid transparent; padding: 0.35rem 0.6rem; }
+  .rail a.nav[aria-current="page"] { border-left-color: transparent; border-bottom-color: var(--live); }
+  .content { padding: 1.25rem 1rem 3rem; }
+}

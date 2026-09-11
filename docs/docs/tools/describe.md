@@ -14,11 +14,11 @@ The tool can be triggered automatically every time a new PR is [opened](../usage
 
 Invoke the tool manually by commenting `/describe` on any PR:
 
-![Describe comment](https://codium.ai/images/pr_agent/describe_comment.png){width=512}
+![Describe comment](../assets/describe_comment.png){width=512}
 
 After ~30 seconds, the tool will generate a description for the PR:
 
-![Describe New](https://codium.ai/images/pr_agent/describe_new.png){width=512}
+![Describe New](../assets/describe_new.webp){width=512}
 
 If you want to edit [configurations](#configuration-options), add the relevant ones to the command:
 
@@ -59,7 +59,7 @@ From our experience, there are two possible reasons:
 - When _updating_ PR descriptions, the `/describe` tool considers everything above the "PR Type" field as user content and will preserve it.
 Everything below this marker is treated as previously auto-generated content and will be replaced.
 
-![Describe comment](https://codium.ai/images/pr_agent/pr_description_user_description.png){width=512}
+![Describe comment](../assets/pr_description_user_description.png){width=512}
 
 ## Sequence Diagram Support
 The `/describe` tool includes a Mermaid sequence diagram showing component/function interactions.
@@ -193,11 +193,11 @@ pr_agent:diagram
 
 The marker `pr_agent:type` will be replaced with the PR type, `pr_agent:summary` will be replaced with the PR summary, `pr_agent:walkthrough` will be replaced with the PR walkthrough, and `pr_agent:diagram` will be replaced with the sequence diagram (if enabled).
 
-![Describe markers before](https://codium.ai/images/pr_agent/describe_markers_before.png){width=512}
+![Describe markers before](../assets/describe_markers_before.png){width=512}
 
 becomes
 
-![Describe markers after](https://codium.ai/images/pr_agent/describe_markers_after.png){width=512}
+![Describe markers after](../assets/describe_markers_after.webp){width=512}
 
 **Configuration params**:
 
@@ -258,7 +258,7 @@ Examples for custom labels:
 - ...
 
 The description should be comprehensive and detailed, indicating when to add the desired label. For example:
-![Add native custom labels](https://codium.ai/images/pr_agent/add_native_custom_labels.png){width=768}
+![Add native custom labels](../assets/add_native_custom_labels.webp){width=768}
 
 ## Usage Tips
 

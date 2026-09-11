@@ -31,6 +31,9 @@ skip_keys = []
 custom_reasoning_model = false # when true, disables system messages and temperature controls for models that don't support chat-style inputs
 response_language="en-US" # Language locales code for PR responses in ISO 3166 and ISO 639 format (e.g., "en-US", "it-IT", "zh-CN", ...)
 repo_context_files = ["AGENTS.md"] # Repository-relative files (e.g. AGENTS.md, CLAUDE.md) to include as AI prompt context; set to [] to disable
+# The repo-context cache is keyed on the revision read: the PR target commit for target-branch
+# reads, and the resolved default branch head on GitHub, so a default-branch push invalidates
+# cached content within the TTL. Providers without commit resolution key on a branch name or None.
 repo_context_from_default_branch = true # Read repo context files from the repository default branch (trusts only default-branch content). Set to false to read from the PR target branch instead.
 repo_context_max_lines = 500 # Maximum total rendered lines for repo context, including wrapper tags
 # token limits
@@ -202,7 +205,7 @@ require_all_thresholds_for_incremental_review=false
 minimal_commits_for_incremental_review=0
 minimal_minutes_for_incremental_review=0
 enable_intro_text=true
-enable_help_text=false # Determines whether to include help text in the PR review. Enabled by default.
+enable_help_text=false # Determines whether to include help text in the PR review.
 enable_review_coverage_footer=true
 # Files matching these globs are reviewed last and, when the token budget is tight, summarized in one line
 # instead of reviewed. Nothing is dropped; an [ignore] snippet is proposed in the comment for a human to accept.
@@ -253,7 +256,6 @@ enable_semantic_files_types=true
 collapsible_file_list='adaptive' # true, false, 'adaptive'
 collapsible_file_list_threshold=6
 file_table_collapsible_open_by_default=false
-inline_file_summary=false # false, true, 'table'
 # markers
 use_description_markers=false
 enable_large_pr_handling=true
@@ -368,6 +370,13 @@ enable_help_text=false
 # The type of deployment to create. Valid values are 'app' or 'user'.
 deployment_type = "user"
 ratelimit_retries = 5
+# PyGithub 2.x enables request pacing and transient retries by default (0.25s
+# between requests, 1s between writes, 10 retries); PyGithub 1.59 applied none.
+# The defaults below mirror the 1.59 behaviour, so the 2.x upgrade stays neutral
+# unless an operator opts in. Raise them to throttle or retry on the GitHub API.
+seconds_between_requests = 0 # seconds between API requests; 0 = no pacing (1.59 behaviour)
+seconds_between_writes = 0 # seconds between write calls; 0 = no pacing (1.59 behaviour)
+api_retries = 0 # max retries per request with backoff; 0 = no retries (1.59 behaviour)
 polling_request_timeout = 10 # total seconds for comment-history fallback; positive values capped at 60
 base_url = "https://api.github.com"
 publish_inline_comments_fallback_with_verification = true
@@ -477,9 +486,21 @@ webhook_password = ""
 # patch_server_token = ""
 
 [bitbucket_server]
-# URL to the BitBucket Server instance
 # url = "https://git.bitbucket.com"
-url = ""
+url = "" # URL to the BitBucket Server instance
+
+[jira]
+# Jira Cloud ticket context. Only Jira Cloud is supported; the base URL is built as
+# https://<jira_site>.atlassian.net from the site name below, so repo configuration
+# cannot redirect the authenticated request to another host.
+# Credentials: fill and place in .secrets.toml, or set via environment variables
+# (e.g. jira__jira_api_token).
+# jira_site = "your-org"   # the "<site>" in https://<site>.atlassian.net
+# jira_api_email = "..."   # Atlassian account email
+# jira_api_token = "..."   # Atlassian API token
+# Custom field id holding acceptance criteria / requirements, mapped to the ticket
+# "requirements" section. Instance-specific (e.g. "customfield_10127"); empty disables it.
+jira_requirements_field = ""
 
 [litellm]
 # use_client = false
@@ -520,7 +541,7 @@ allow_fallbacks = true # when provider_order is set, allow routing beyond the li
 # Invalid reasoning_effort values are warned about and treated as unset.
 # Empty inherits config.reasoning_effort for models in SUPPORT_REASONING_EFFORT_MODELS.
 # Valid values: "none", "minimal", "low", "medium", "high", "xhigh", "max".
-# OpenRouter normalizes "max" to "xhigh" to match LiteLLM 1.98.0.
+# OpenRouter normalizes "max" to "xhigh" for LiteLLM/OpenRouter compatibility.
 # Model-specific support varies; mandatory reasoning models reject "none".
 reasoning_effort = ""
 # A positive value overrides global effort and non-none OpenRouter-specific efforts.
@@ -544,11 +565,12 @@ rules = [] # e.g. [{ max_hunks = 3, model = "gpt-5.6-luna" }, { max_hunks = 15, 
 [otel]
 # Keys map to settings.get("OTEL.*") via section-key dot notation.
 is_enabled = false # disabled by default; set to true to enable telemetry
-exporter_type = "console" # "console", "otlp", or "none"
+exporter_type = "console" # "console", "otlp", "prometheus", or "none"
 service_name = "pr-agent"
 environment = "development" # "development", "staging", "production", etc.
 otlp_timeout = 3 # seconds; hard deadline per OTLP export call (incl. retries). Bounds CLI-exit/request stalls when the collector is unreachable; batches slower than this are dropped.
 otlp_protocol = "http" # "http" (default; exporter ships with pr-agent) or "grpc" (requires the otel-grpc extra: pip install pr-agent[otel-grpc])
+prometheus_multiproc_dir = "/tmp/pr-agent-prometheus" # shared dir for the prometheus exporter's per-worker state files; required when exporter_type = "prometheus" (multiprocess gunicorn deployments); created 0700 and must stay owned by the run user (symlink or foreign-owner paths are refused)
 include_pr_url = false # set to true to attach PR URLs to spans (may expose private repo names)
 include_error_details = false # set to true to attach exception messages and rejected-command text to spans (may expose PR URLs, repo names, or other request content)
 
@@ -556,7 +578,7 @@ include_error_details = false # set to true to attach exception messages and rej
 skip_comments = false
 force_update_dataset = false
 max_issues_to_scan = 500
-vectordb = "pinecone" # options: "pinecone", "lancedb", "qdrant"
+vectordb = "lancedb" # options: "pinecone", "lancedb", "qdrant"
 
 [pr_find_similar_component]
 class_name = ""
@@ -569,7 +591,10 @@ number_of_results = 5
 [pinecone]
 # fill and place in .secrets.toml
 #api_key = ...
-# environment = "gcp-starter"
+# Serverless index deployment for the modern SDK. `cloud` is one of "aws",
+# "gcp" or "azure"; pick a `region` offered by that cloud.
+cloud = "aws"
+region = "us-east-1"
 
 [lancedb]
 uri = "./lancedb"
@@ -613,9 +638,9 @@ enable = false
 artifact_path = ""
 # Custom instructions appended after the artifact content (leave empty for a sensible default)
 artifact_instructions = ""
-# Label shown to the AI — defaults to the filename when empty
+# Label shown to the AI — defaults to the filename when empty.
 artifact_label = ""
-# Which tools receive artifact context
+# Which tools receive artifact context.
 target_tools = ["pr_reviewer", "pr_description", "pr_code_suggestions"]
 # Max artifact size in characters (content is truncated if exceeded)
 max_artifact_size = 50000
@@ -635,3 +660,9 @@ channels = [] # any of: "stdout", "file", "webhook", "slack". Nothing is emitted
 file_path = "pr-agent-outputs/reviews.jsonl" # used by the "file" channel
 webhook_url = "" # used by the "webhook" channel: generic JSON POST target. Must be an absolute https:// URL
 slack_webhook_url = "" # used by the "slack" channel: a Slack Incoming Webhook URL. Must be an absolute https:// URL
+
+[pr_dashboard]
+# Record one row per command run (model, tokens, cost, duration) into the local dashboard
+# database at ~/.pr_dashboard/usage.db. Off by default: webhook and serverless deployments
+# must not start writing a database just because the dashboard package is installed.
+record_runs = false

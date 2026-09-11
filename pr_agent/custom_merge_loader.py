@@ -19,10 +19,10 @@ def load(obj, env=None, silent=True, key=None, filename=None):
     - Supports Dynaconf's fresh_vars feature for dynamic reloading.
     Args:
         obj: The Dynaconf settings instance to update.
-        env: The current environment name (upper case). Defaults to 'DEVELOPMENT'. Note: currently unused.
+        env: Unused compatibility parameter. Defaults to None.
         silent (bool): If True, suppress exceptions and log warnings/errors instead.
         key (str | None): Load only this top-level key (section) if provided; otherwise, load all keys from the files.
-        filename (str | None): Custom filename for tests (not used when settings_files are provided).
+        filename (str | None): Unused compatibility parameter. Settings files come from the Dynaconf object.
     Returns:
         None
     """

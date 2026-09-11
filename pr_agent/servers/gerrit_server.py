@@ -21,7 +21,7 @@ router = APIRouter()
 security = HTTPBasic(auto_error=False)
 
 
-def authorize(credentials: HTTPBasicCredentials = Depends(security)):
+def authorize(credentials: HTTPBasicCredentials = Depends(security)):  # noqa: B008
     """Require the configured webhook credentials on every call."""
     gerrit_settings = get_settings().get("gerrit", {})
     username = gerrit_settings.get("webhook_username", None) if gerrit_settings else None

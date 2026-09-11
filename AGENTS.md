@@ -97,7 +97,7 @@ Ruff is the single linting tool: `pyproject.toml` configures it and the pre-comm
 - Follow `CONTRIBUTING.md`: keep changes focused, add or update tests, and use Conventional Commit-style messages (e.g., `fix: handle missing repo settings gracefully`).
 - Target branch names follow `feature/<name>` or `fix/<issue>` patterns for substantial work.
 - Reference related issues and update README or docs when user-facing behavior shifts.
-- Ensure CI workflows (`build-and-test`, `code-coverage`, `docs-ci`) succeed locally or in draft PRs before requesting review; reproduce failures with the documented commands above.
+- Before requesting review, run the relevant local checks above and make sure the corresponding CI workflows (`build-and-test`, `pre-commit`) pass; coverage is collected and uploaded by `build-and-test`, and `docs-ci` runs only on pushes to `main` and `add-docs-portal`.
 - Include screenshots or terminal captures when modifying user-visible output or documentation previews.
 
 ## Safety and Permissions

@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% set nav = "config" %}
+{% block title %}Edit configuration{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>{% if config_file %}{{ config_file.path.name }}{% else %}Edit configuration{% endif %}</h1>
+  {% if config_file %}<p><span class="path" title="{{ config_file.path }}">{{ config_file.path | repo_relative }}</span></p>{% endif %}
+  <p><a href="/config">All configuration files</a></p>
+</div>
+
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+{% if applied_backup %}
+  <div class="stale">
+    Written to the working tree. The previous content is backed up at
+    <code>{{ applied_backup }}</code>. Nothing was staged or committed — review the change
+    with your own tools.
+  </div>
+{% endif %}
+
+{% if config_file %}
+  {% if config_file.is_prompt %}
+    <div class="panel gutter gutter-warn">
+      <div class="panel-body">
+        This file is a prompt. Jinja2 renders it with <code>StrictUndefined</code>, so a variable
+        that is referenced but not supplied raises at render time rather than being silently empty.
+        A malformed prompt does not fail loudly — it produces worse reviews.
+      </div>
+    </div>
+  {% endif %}
+
+  <form method="post" action="/config/{{ config_file.index }}/preview">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <textarea name="content" rows="24" spellcheck="false">{{ content }}</textarea>
+    {# An empty box is ambiguous -- the file may be absent or genuinely empty -- and either way
+       the operator needs to know that saving writes at this path. #}
+    {% if not content %}<p class="muted">Nothing here yet. Saving writes a new file at this path.</p>{% endif %}
+    <p><button type="submit">Preview changes</button></p>
+  </form>
+
+  {% if diff %}
+    <h2>Review the change</h2>
+    {# Colored by line prefix because a diff is the subject matter here, not decoration:
+       reading + and - at a glance is the whole point of the confirmation step. #}
+    <pre class="diff">{% for line in diff.split("\n") %}{% if line.startswith("+++") or line.startswith("---") %}<span class="hunk">{{ line }}</span>
+{% elif line.startswith("@@") %}<span class="hunk">{{ line }}</span>
+{% elif line.startswith("+") %}<span class="add">{{ line }}</span>
+{% elif line.startswith("-") %}<span class="del">{{ line }}</span>
+{% else %}{{ line }}
+{% endif %}{% endfor %}</pre>
+    <form method="post" action="/config/{{ config_file.index }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="preview_token" value="{{ preview_token }}">
+      {# Hidden, not a second textarea: the token binds a hash of the previewed text, so an
+         edit made here would be refused rather than written. Offering the edit invites it. #}
+      <input type="hidden" name="content" value="{{ content }}">
+      <p><button type="submit">Confirm and write</button></p>
+    </form>
+  {% endif %}
+{% endif %}
+{% endblock %}

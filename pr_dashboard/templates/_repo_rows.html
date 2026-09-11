@@ -1,0 +1,28 @@
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+{% if repos %}
+<div class="panel table-scroll">
+<table>
+  <thead><tr><th>Provider</th><th>Repository</th><th>Credentials</th><th></th></tr></thead>
+  <tbody>
+  {% for row in repos %}
+    <tr>
+      <td>{{ row.repo.provider }}</td>
+      <td><a href="/repos/{{ row.repo.provider }}/{{ row.repo.slug }}">{{ row.repo.slug }}</a></td>
+      {# The credential column reports status only -- providers.credential_status never
+         returns the secret itself, and nothing here may start rendering one. #}
+      <td>
+        <span class="state {{ 'state-ok' if row.credentials.configured else 'state-fail' }}">{{ row.credentials.detail }}</span>
+      </td>
+      <td style="text-align: right;">
+        <button class="danger" hx-post="/repos/{{ row.repo.provider }}/{{ row.repo.slug }}/delete"
+                hx-vals='{"csrf_token": "{{ csrf_token }}"}'
+                hx-target="#repo-list" hx-swap="innerHTML">Remove</button>
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<div class="panel"><p class="empty">Nothing connected yet. Add a repository with the form above.</p></div>
+{% endif %}

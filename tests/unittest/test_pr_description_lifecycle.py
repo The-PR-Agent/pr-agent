@@ -160,7 +160,7 @@ async def test_run_appends_partial_description_coverage_to_output(monkeypatch):
         description.description_total_chunk_count = 2
         description.description_failed_files = ["src/file2.py"]
         description._prepare_data = MagicMock()
-        description._prepare_pr_answer = MagicMock(return_value=("AI title", "Description", "", []))
+        description._prepare_pr_answer = MagicMock(return_value=("AI title", "Description", ""))
 
         monkeypatch.setattr(pr_description_module, "extract_and_cache_pr_tickets", AsyncMock())
         monkeypatch.setattr(pr_description_module, "retry_with_fallback_models", AsyncMock())
@@ -195,7 +195,7 @@ async def test_run_reports_description_publication_failure(monkeypatch, propagat
         description = _make_description(provider)
         description.prediction = "generated"
         description._prepare_data = MagicMock()
-        description._prepare_pr_answer = MagicMock(return_value=("AI title", "Description", "", []))
+        description._prepare_pr_answer = MagicMock(return_value=("AI title", "Description", ""))
 
         monkeypatch.setattr(pr_description_module, "extract_and_cache_pr_tickets", AsyncMock())
         monkeypatch.setattr(pr_description_module, "retry_with_fallback_models", AsyncMock())
@@ -221,5 +221,42 @@ async def test_run_reports_description_publication_failure(monkeypatch, propagat
         assert call("Failed to update PR description") in provider.publish_comment.call_args_list
         assert not any("updated to latest commit" in str(published) for published in provider.publish_comment.call_args_list)
         provider.remove_comment.assert_called_once_with(progress_comment)
+    finally:
+        restore_settings(settings_snapshot)
+
+
+@pytest.mark.asyncio
+async def test_run_always_includes_walkthrough_in_the_description_body(monkeypatch):
+    # Regression guard for #3116: a provider advertising inline-comment capability support used
+    # to strip the File Walkthrough from the description body and publish nothing in its place.
+    # The walkthrough must always be appended on the non-marker rendering path.
+    settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
+    try:
+        provider = MagicMock()
+        provider.is_supported.return_value = True
+        description = _make_description(provider)
+        description.prediction = "generated"
+        description._prepare_data = MagicMock()
+        description._prepare_pr_answer = MagicMock(return_value=("AI title", "Base body", "WALKTHROUGH"))
+
+        monkeypatch.setattr(pr_description_module, "extract_and_cache_pr_tickets", AsyncMock())
+        monkeypatch.setattr(pr_description_module, "retry_with_fallback_models", AsyncMock())
+        _configure_published_run()
+        settings = get_settings()
+        settings.pr_description.enable_help_comment = False
+        settings.pr_description.enable_help_text = False
+        settings.pr_description.enable_semantic_files_types = False
+        settings.pr_description.final_update_message = False
+        settings.pr_description.generate_ai_title = True
+        settings.pr_description.publish_description_as_comment = False
+        settings.pr_description.publish_labels = False
+        settings.pr_description.use_description_markers = False
+
+        await description.run()
+
+        provider.publish_description.assert_called_once()
+        title, body = provider.publish_description.call_args.args
+        assert title == "AI title"
+        assert "WALKTHROUGH" in body
     finally:
         restore_settings(settings_snapshot)

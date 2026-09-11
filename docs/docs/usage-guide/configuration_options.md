@@ -8,7 +8,7 @@ There are three main ways to set persistent configurations:
 In terms of precedence, local configurations will override global configurations, and global configurations will override an external configuration URL.
 
 
-For a list of all possible configurations, see the [configuration options](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) page.
+For a list of all possible configurations, see the [configuration options](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) page, or the rendered [Configuration Reference](./configuration_reference.md) which lists every option grouped by section.
 In addition to general configuration options, each tool has its own configurations. For example, the `review` tool will use parameters from the [pr_reviewer](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) section in the configuration file.
 
 !!! tip "Tip1: Edit only what you need"
@@ -89,11 +89,11 @@ Loading the global settings file is controlled by the `use_global_settings_file`
 use_global_settings_file = false
 ```
 
-For example, in the GitHub organization `qodo-ai`:
+For example, in a GitHub organization named `my-org`:
 
-- The file [`https://github.com/the-pr-agent/pr-agent-settings/.pr_agent.toml`](https://github.com/the-pr-agent/pr-agent-settings/blob/main/.pr_agent.toml)  serves as a global configuration file for all the repos in the GitHub organization `qodo-ai`.
+- The file `my-org/pr-agent-settings/.pr_agent.toml` (read from that repository's default branch) serves as a global configuration file for all the repos in the organization.
 
-- The repo [`https://github.com/the-pr-agent/pr-agent`](https://github.com/the-pr-agent/pr-agent/blob/main/.pr_agent.toml) inherits the global configuration file from `pr-agent-settings`.
+- A repository such as `my-org/my-repo` inherits that global configuration file, and may override any of its values in its own `.pr_agent.toml`.
 
 ## Project/Group level configuration file
 
@@ -117,7 +117,7 @@ Create a dedicated project to hold a global configuration file that affects all 
 1. Create a new project with both the name and key: PR_AGENT_SETTINGS.
 2. Inside the PR_AGENT_SETTINGS project, create a repository named pr-agent-settings.
 3. In this repository, add a `.pr_agent.toml` configuration file—structured similarly to the global configuration file described above.
-4. Optionally, you can add organizational-level [global best practices](../tools/improve.md#global-hierarchical-best-practices).
+4. Optionally, you can add repository context files with shared instructions or best practices.
 
 Repositories across your entire Bitbucket organization will inherit the configuration from this file.
 
