@@ -27,6 +27,7 @@ from pr_dashboard import (
     redaction,
     registry,
     runner,
+    secrets_editor,
     store,
     websec,
 )
@@ -382,6 +383,44 @@ def create_app(
     def config_list_page(request: Request):
         files = discover_config_files()
         return html(request, "config_list.html", {"groups": grouped_config_files(files), "error": None})
+
+    def secrets_context(*, error: Optional[str] = None, changed: Optional[list[str]] = None) -> dict:
+        # `status` is set/not-set per key. The template has no access to a value, because
+        # nothing here ever reads one back out of the file.
+        #
+        # Reading the status can itself fail -- an unparsable or symlinked secrets file -- and
+        # that is exactly the state in which the page must still render its own error. So the
+        # failure degrades to "nothing is set" and keeps the first error, rather than raising
+        # a second time out of the handler that was already reporting one.
+        try:
+            status = secrets_editor.status()
+        except secrets_editor.SecretsError as exc:
+            status = {field.key: False for field in secrets_editor.FIELDS}
+            error = error or str(exc)
+        return {
+            "fields": secrets_editor.FIELDS,
+            "status": status,
+            "secrets_path": secrets_editor.SECRETS_PATH,
+            "error": error,
+            "changed": changed,
+        }
+
+    @application.get("/secrets", response_class=HTMLResponse)
+    def secrets_page(request: Request):
+        return html(request, "secrets.html", secrets_context())
+
+    @application.post("/secrets", response_class=HTMLResponse)
+    async def secrets_apply_route(request: Request):
+        values = await _form_values(request)
+        websec.require_safe_request(request, values)
+        clears = [name[len("clear__"):] for name, value in values.items()
+                  if name.startswith("clear__") and value]
+        try:
+            changed = secrets_editor.apply(values, clears)
+            context = secrets_context(changed=changed)
+        except secrets_editor.SecretsError as exc:
+            return html(request, "secrets.html", secrets_context(error=str(exc)))
+        return html(request, "secrets.html", context)
 
     @application.get("/config/backups", response_class=HTMLResponse)
     def config_backups_page(request: Request):
