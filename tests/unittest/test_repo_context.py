@@ -599,6 +599,7 @@ def test_github_provider_reads_from_default_branch_when_requested():
                 "require_merge_recommendation": False,
                 "require_priority_files": False,
                 "num_max_findings": 3,
+                "findings_field_instruction": "",
                 "num_pr_files": 1,
                 "is_ai_metadata": False,
             },

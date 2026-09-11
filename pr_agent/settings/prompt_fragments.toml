@@ -55,3 +55,10 @@ __new hunk__
 - If available, an AI-generated summary will appear and provide a high-level overview of the file changes. This
   summary may not be fully accurate or complete.
 {% endif %}"""
+
+# Wording of the review prompt's key-issues field. It lives here, not inline in
+# pr_reviewer_prompts.toml, so a wording experiment is a `--set prompt_fragments.findings_field=...`
+# override rather than an edit to the prompt file - two eval rows that differ by an edited file are
+# not comparable. Rendered with `num_max_findings`. The result is inserted inside Field("...") in the
+# prompt's pseudo-schema, so the value must not contain a double quote.
+findings_field="""A concise list (0-{{ num_max_findings }} issues) of bugs, security vulnerabilities, or significant performance concerns introduced in this PR. Only include issues you are confident about. If confidence is limited but the potential impact is high (e.g., data loss, security), you may include it only if you explicitly note what remains uncertain. Each issue must identify a concrete problem with a realistic trigger scenario. An empty list is acceptable if no clear issues are found."""

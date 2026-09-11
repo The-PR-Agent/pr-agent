@@ -27,7 +27,7 @@ from pr_agent.algo.pr_processing import (
     get_pr_multi_diffs_with_files,
     retry_with_fallback_models,
 )
-from pr_agent.algo.prompt_fragments import render_diff_hunk_format
+from pr_agent.algo.prompt_fragments import render_diff_hunk_format, render_findings_field_instruction
 from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.review_coverage import CoverageLedger, FileCoverage, patch_line_counts
 from pr_agent.algo.review_finding_state import (
@@ -297,6 +297,8 @@ class PRReviewer:
             "diff": "",  # empty diff for initial calculation
             "num_pr_files": self.git_provider.get_num_of_files(),
             "num_max_findings": get_settings().pr_reviewer.num_max_findings,
+            "findings_field_instruction": render_findings_field_instruction(
+                num_max_findings=get_settings().pr_reviewer.num_max_findings),
             "require_score": get_settings().pr_reviewer.require_score_review,
             "require_tests": get_settings().pr_reviewer.require_tests_review,
             "require_estimate_effort_to_review": get_settings().pr_reviewer.require_estimate_effort_to_review,
