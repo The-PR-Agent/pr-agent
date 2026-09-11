@@ -338,6 +338,20 @@ class TestExtractJiraTickets:
         warning_calls = [str(c) for c in get_logger.return_value.warning.call_args_list]
         assert any("no valid entry" in c for c in warning_calls)
 
+    @pytest.mark.parametrize("bad_entry", [True, False, None, 0])
+    def test_non_string_project_keys_are_not_stringified_into_labels(self, bad_entry):
+        """A boolean or null in the list must not become a key-shaped label ("TRUE",
+        "NONE") that silently filters; it is ignored and the valid entry keeps working."""
+        self._configure_jira()
+        _set_project_keys([bad_entry, "PROJ"])
+        client = self._fake_client()
+        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client), \
+                patch("pr_agent.tools.ticket_pr_compliance_check.get_logger") as get_logger:
+            extract_jira_tickets("PROJ-1 TRUE-2 NONE-3 SHA-256")
+        assert [call.args[0] for call in client.issue.call_args_list] == ["PROJ-1"]
+        warning_calls = [str(c) for c in get_logger.return_value.warning.call_args_list]
+        assert any("project_keys" in c for c in warning_calls)
+
     @pytest.mark.parametrize("entries", [[], "", " , ", [""]])
     def test_project_keys_blank_values_mean_unset(self, entries):
         """Only entries count as configuration: an empty list, an empty string or a string of

@@ -92,12 +92,15 @@ def _jira_project_keys():
     configured = get_settings().get("JIRA.PROJECT_KEYS", None) or []
     if isinstance(configured, str):
         configured = configured.split(",")
-    entries = [entry for entry in (str(item).strip() for item in configured) if entry]
+    # Only strings are candidates: a TOML/YAML boolean or null in the list must not
+    # be stringified into a key-shaped label ("TRUE", "NONE") that then filters.
+    entries = [item for item in configured if not isinstance(item, str) or item.strip()]
     if not entries:
         return None
     allowed = set()
-    for key in entries:
-        if not JIRA_PROJECT_KEY_PATTERN.match(key):
+    for item in entries:
+        key = item.strip() if isinstance(item, str) else item
+        if not isinstance(key, str) or not JIRA_PROJECT_KEY_PATTERN.match(key):
             get_logger().warning(
                 f"Ignoring invalid jira.project_keys entry '{key}'; expected a plain project key like 'PROJ'")
             continue
