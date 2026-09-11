@@ -81,9 +81,11 @@ async def test_checkboxes_stay_disabled_by_configuration(published_output):
     assert "<table>" in comment
 
 
-async def test_walkthrough_uses_current_documentation_site(published_output):
-    comment = await run_walkthrough(StubProvider(gfm_markdown=True))
+@pytest.mark.parametrize("checkbox_commands", [False, True], ids=["without-checkboxes", "with-checkboxes"])
+async def test_walkthrough_uses_current_documentation_site(published_output, checkbox_commands):
+    comment = await run_walkthrough(StubProvider(gfm_markdown=True, checkbox_commands=checkbox_commands))
 
+    assert (INTERACTIVE_MARKER in comment) is checkbox_commands
     assert f"{CURRENT_DOCS_URL}/tools/review/" in comment
     assert f"{CURRENT_DOCS_URL}/usage-guide/automations_and_usage/" in comment
     assert not any(host in comment for host in RETIRED_DOCS_HOSTS)
