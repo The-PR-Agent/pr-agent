@@ -504,6 +504,13 @@ SUPPORT_REASONING_EFFORT_MODELS = [
     "grok-4.5-latest",
     "grok-build-latest",
     "grok-4.6",
+    # Gemini 3.x models support reasoning_effort the same way as 2.5.
+    # Bare names cover all provider-prefixed forms (gemini/, vertex_ai/, openrouter/)
+    # via the endswith("/" + m) check in litellm_ai_handler.py.
+    "gemini-3.1-flash",
+    "gemini-3.1-pro",
+    "gemini-3.5-pro",
+    "gemini-3.8-flash",
 ]
 
 # Clamp OpenAI-only levels for always-on Grok reasoning; allow xhigh on 4.6+.
