@@ -621,6 +621,38 @@ class TestFindAsanaTickets:
         assert active_fetches == 0
 
     @pytest.mark.asyncio
+    async def test_asana_ticket_child_abort_cancels_and_drains_siblings(self, monkeypatch):
+        class FetchAborted(BaseException):
+            pass
+
+        active_fetches = 0
+        all_started = asyncio.Event()
+
+        async def _aborting_fetch(_session, ticket_url, _max_body_characters):
+            nonlocal active_fetches
+            active_fetches += 1
+            if active_fetches == 3:
+                all_started.set()
+            try:
+                await asyncio.wait_for(all_started.wait(), timeout=0.1)
+                if tpc._get_asana_task_gid(ticket_url) == "111111111111":
+                    raise FetchAborted("child fetch aborted")
+                await asyncio.Event().wait()
+            finally:
+                active_fetches -= 1
+
+        monkeypatch.setattr(tpc, "_fetch_asana_ticket_content", _aborting_fetch)
+        ticket_urls = [
+            f"https://app.asana.com/0/99/{task_gid}"
+            for task_gid in (111111111111, 222222222222, 333333333333)
+        ]
+
+        with pytest.raises(FetchAborted, match="child fetch aborted"):
+            await tpc._fetch_asana_ticket_contents(ticket_urls, 3, 10000)
+
+        assert active_fetches == 0
+
+    @pytest.mark.asyncio
     async def test_invalid_asana_url_does_not_abort_valid_batch_entry(self, monkeypatch):
         attempted_urls = []
 
