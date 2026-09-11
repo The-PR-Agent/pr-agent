@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}Findings{% endblock %}
+{% block content %}
+<div id="findings-content"
+     {% if any_loading %}
+     hx-get="/findings{{ filter_query }}" hx-trigger="every 2s" hx-select="#findings-content" hx-swap="outerHTML"
+     {% endif %}>
+<h1>Findings</h1>
+<p class="muted">
+  This view covers the most recent {{ max_indexed }} open pull requests per repository, not every open pull request.
+</p>
+<form method="get" action="/findings">
+  <label>
+    Repository
+    <select name="repository">
+      <option value="">all</option>
+      {% for entry in repos %}
+        <option value="{{ entry.repo.key }}" {% if filters.repository == entry.repo.key %}selected{% endif %}>
+          {{ entry.repo.key }}
+        </option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>
+    Command
+    <select name="command">
+      <option value="">all</option>
+      <option value="review" {% if filters.command == "review" %}selected{% endif %}>review</option>
+      <option value="improve" {% if filters.command == "improve" %}selected{% endif %}>improve</option>
+    </select>
+  </label>
+  <label>
+    File location
+    <select name="has_file">
+      <option value="">all</option>
+      <option value="yes" {% if filters.has_file == "yes" %}selected{% endif %}>with file</option>
+      <option value="no" {% if filters.has_file == "no" %}selected{% endif %}>without file</option>
+    </select>
+  </label>
+  <label>
+    Title contains
+    <input name="title" value="{{ filters.title }}" placeholder="substring">
+  </label>
+  <button type="submit">Filter</button>
+</form>
+{% for entry in repos %}
+  {% if entry.state.status == "failed" %}
+    <div class="error">{{ entry.repo.key }}: {{ entry.state.message }}</div>
+  {% elif entry.state.status == "loading" %}
+    <p class="muted">{{ entry.repo.key }}: still loading…</p>
+  {% elif entry.state.status == "stale" %}
+    <div class="stale">{{ entry.repo.key }}: {{ entry.state.message or "cached data" }}</div>
+  {% endif %}
+{% endfor %}
+<table>
+  <thead>
+    <tr>
+      <th>Repository</th>
+      <th>PR</th>
+      <th>Title</th>
+      <th>File</th>
+      <th>Lines</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in rows %}
+      <tr>
+        <td>{{ row.repo_key }}</td>
+        <td><a href="/pr/{{ row.provider }}/{{ row.slug }}/{{ row.pr_number }}">#{{ row.pr_number }}</a></td>
+        <td><a href="/pr/{{ row.provider }}/{{ row.slug }}/{{ row.pr_number }}">{{ row.finding_title }}</a></td>
+        <td>{{ row.relevant_file or "—" }}</td>
+        <td>
+          {% if row.line_start is not none %}
+            {{ row.line_start }}{% if row.line_end is not none and row.line_end != row.line_start %}-{{ row.line_end }}{% endif %}
+          {% else %}
+            —
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

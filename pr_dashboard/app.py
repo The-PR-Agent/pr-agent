@@ -5,11 +5,12 @@ database; the module-level ``app`` uses the real defaults for uvicorn.
 """
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Optional
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlencode
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -17,7 +18,18 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from pr_dashboard import comments as comments_module
-from pr_dashboard import config_files, config_writer, providers, recorder, redaction, registry, runner, store, websec
+from pr_dashboard import (
+    config_files,
+    config_writer,
+    findings_index,
+    providers,
+    recorder,
+    redaction,
+    registry,
+    runner,
+    store,
+    websec,
+)
 from pr_dashboard import usage as usage_module
 
 _HERE = Path(__file__).parent
@@ -432,6 +444,58 @@ def create_app(
                 config_file, read_config_content(config_file.path), applied_backup=backup_path,
             ),
         )
+
+    def findings_context(
+        conn,
+        *,
+        repository: Optional[str] = None,
+        command: Optional[str] = None,
+        has_file: Optional[str] = None,
+        title: Optional[str] = None,
+    ) -> dict:
+        repos = registry.load(application.state.registry_path)
+        snapshot = findings_index.index_snapshot(conn, repos)
+        filtered = findings_index.filter_rows(
+            snapshot["rows"],
+            repository=repository,
+            command=command,
+            has_file=has_file,
+            title=title,
+        )
+        filters = {
+            "repository": repository or "",
+            "command": command or "",
+            "has_file": has_file or "",
+            "title": title or "",
+        }
+        query_params = {key: value for key, value in filters.items() if value}
+        return {
+            "repos": snapshot["repos"],
+            "rows": filtered,
+            "any_loading": snapshot["any_loading"],
+            "max_indexed": snapshot["max_indexed"],
+            "filters": filters,
+            "filter_query": f"?{urlencode(query_params)}" if query_params else "",
+        }
+
+    def _refresh_findings_background() -> None:
+        conn = store.connect(application.state.db_path)
+        findings_index.refresh(conn, registry.load(application.state.registry_path))
+
+    @application.get("/findings", response_class=HTMLResponse)
+    def findings_page(
+        request: Request,
+        repository: Optional[str] = None,
+        command: Optional[str] = None,
+        has_file: Optional[str] = None,
+        title: Optional[str] = None,
+    ):
+        conn = store.connect(application.state.db_path)
+        context = findings_context(
+            conn, repository=repository, command=command, has_file=has_file, title=title,
+        )
+        threading.Thread(target=_refresh_findings_background, daemon=True).start()
+        return html(request, "findings.html", context)
 
     return application
 
