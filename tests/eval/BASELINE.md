@@ -106,10 +106,32 @@ why it, and not the finding counts, is what settles R-9a. The 55% drop in total 
 Both excluded files were reported in the coverage ledger and the review footer
 (`design/*.html` ... `(low-priority file, not reviewed)`), so nothing was dropped silently.
 
-Observed but **not** part of the acceptance: `p0-nocap`'s only two findings were both in
-`design/_s_play.html`, while `p0-cap`'s one finding matched a labeled defect. That is a 1-vs-2
-delta at n = 1, which this corpus says to treat as noise until R-1's repetition agrees within
-+/-1.
+### R-1's repetition, run at last - and what it retracts
+
+Both verdict rows were repeated (`p0-cap-rep2`, `p0-nocap-rep2`, same flags, same shim):
+
+| row | calls | prompt tokens | findings | matched | precision | recall | `design/**` share |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `p0-cap` | 3 | 446,885 | 1 | `test-debug-leftovers` | 1.00 | 0.043 | 0.0% |
+| `p0-cap-rep2` | 5 | 502,981 | 3 | `test-debug-leftovers` | 1.00 | 0.043 | 0.0% |
+| `p0-nocap` | 7 | 1,002,748 | 2 | - | 0.00 | 0.000 | 55.8% |
+| `p0-nocap-rep2` | 6 | 998,012 | 1 | `test-debug-leftovers` | 1.00 | 0.043 | 55.8% |
+
+What replicates and what does not, and this is the point of running it:
+
+- **The `design/**` share and the budget do.** 0.0% / 0.0% capped against 55.8% / 55.8%
+  uncapped; ~450-500k prompt tokens capped against ~1.00M uncapped. Both are functions of the
+  diff, not of the model, so R-9a's acceptance holds on both reps.
+- **Finding counts do not.** `p0-cap` gave 1 then 3, `p0-nocap` 2 then 1 - a swing of 2 within
+  a config, outside R-1's +/-1 band. Finding counts on this model line are not yet a measurable
+  quantity, and no conclusion here rests on one.
+- **The rep-1 observation is retracted.** Rep 1 showed the uncapped run's only findings in
+  `design/_s_play.html` and the capped run's one finding matching a label, which looked like
+  the cap improving finding quality. It did not replicate: `p0-nocap-rep2` produced exactly the
+  same matched label as both capped rows. The cap's demonstrated effect is on budget and share,
+  not on what the model finds.
+- `test-debug-leftovers` is the only label matched in any row, in 3 of the 4 p0 rows. Recall is
+  0.043 wherever anything matched.
 
 ### R-9b (the raised defaults) - measured, and the honest reading
 
@@ -123,8 +145,9 @@ so both default rows score recall 0.000.
 
 ### What these rows do not establish
 
-- **n = 1 per config.** R-1's repetition (two same-flag runs agreeing within +/-1 finding) is
-  still unrun. A one-finding difference is inside the noise these rows cannot measure.
+- **Finding counts are not stable.** R-1's repetition was run (above) and the two same-flag
+  pairs disagree by up to 2 findings. Treat any conclusion resting on a finding count as unmade;
+  the claims here rest on the `design/**` share and the budget, which are deterministic.
 - **Absolute recall is poor on this model line** - the best row found 1 of 23. Findings-per-run
   is low across all four rows, which points at the prompt/provider path, not at the two knobs
   under test. That is the next thing worth investigating, ahead of more knob tuning.
