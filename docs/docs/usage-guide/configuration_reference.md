@@ -314,7 +314,6 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `polling_request_timeout` | 10 | total seconds for comment-history fallback; positive values capped at 60 |
 | `base_url` | "https://api.github.com" |  |
 | `try_fix_invalid_inline_comments` | true |  |
-| `app_name` | "pr-agent" |  |
 | `ignore_bot_pr` | true |  |
 | `publish_as_check_run` | false | when true, publish review/description/improve output as GitHub Checks instead of PR comments |
 
