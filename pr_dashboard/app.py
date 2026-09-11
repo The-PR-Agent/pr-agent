@@ -27,7 +27,9 @@ async def _form_values(request: Request) -> dict[str, str]:
     dependencies.
     """
     body = await request.body()
-    parsed = parse_qs(body.decode("utf-8"), keep_blank_values=True)
+    # errors="replace": a non-UTF-8 body is malformed input, and it must surface as the
+    # page's own validation error rather than a 500 from UnicodeDecodeError.
+    parsed = parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=True)
     return {key: values[0] for key, values in parsed.items()}
 
 

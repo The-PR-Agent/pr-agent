@@ -51,11 +51,15 @@ class TestReposPage:
         assert "no-owner" not in follow_up.text
 
     def test_add_unsupported_provider_shows_the_error(self, tmp_path, monkeypatch):
-        """An unsupported provider is reported in the page, not raised as a 500"""
+        """An unsupported provider is rejected with a message, not accepted or raised as a 500"""
         client = _client(tmp_path, monkeypatch)
         response = client.post("/repos", data={"provider": "gitlab", "slug": "o/r"})
         assert response.status_code == 200
-        assert "gitlab" in response.text
+        # Assert the rejection phrase, not merely that "gitlab" appears: the row template
+        # renders row.repo.provider, so a wrongly ACCEPTED repo would also put "gitlab" in
+        # the response. The follow-up GET proves nothing was persisted either.
+        assert "unsupported provider" in response.text
+        assert "gitlab" not in client.get("/repos").text
 
     def test_add_missing_fields_does_not_500(self, tmp_path, monkeypatch):
         """A malformed post (missing fields) is handled, not a 500 from a KeyError"""
@@ -63,6 +67,17 @@ class TestReposPage:
         response = client.post("/repos", data={})
         assert response.status_code == 200
         assert "unsupported provider" in response.text
+
+    def test_add_non_utf8_body_does_not_500(self, tmp_path, monkeypatch):
+        """A non-UTF-8 body is reported as a validation error, not a 500 from the decode"""
+        client = _client(tmp_path, monkeypatch)
+        response = client.post(
+            "/repos",
+            content=b"provider=github&slug=o/\xff\xfe",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        assert response.status_code == 200
+        assert "invalid repository" in response.text
 
     def test_delete_repository(self, tmp_path, monkeypatch):
         """A registered repository can be removed"""
@@ -137,13 +152,11 @@ class TestCreateApp:
 
 class TestWheelPackaging:
     def test_wheel_ships_templates_and_static(self, tmp_path):
-        """A built wheel actually contains the templates and static assets create_app() needs.
-
-        This is the packaging failure class from Task 3: packages.find only discovers Python
-        packages, so templates/*.html and static/* silently disappear from a real install unless
-        [tool.setuptools.package-data] names them. A test that only re-reads pyproject.toml would
-        assert a string equals itself; this builds the actual wheel and inspects its contents.
-        """
+        """A built wheel actually contains the templates and static assets create_app() needs"""
+        # packages.find discovers Python packages only, so templates/*.html and static/*
+        # silently disappear from a real install unless [tool.setuptools.package-data] names
+        # them. A test that only re-read pyproject.toml would assert a string equals itself,
+        # so this builds the actual wheel and inspects its contents.
         if shutil.which("uv") is None:
             pytest.skip("uv is not on PATH; cannot build a wheel to inspect")
 
@@ -155,7 +168,10 @@ class TestWheelPackaging:
             timeout=120,
         )
         if result.returncode != 0:
-            pytest.skip(f"uv build failed in this environment, cannot verify wheel contents: {result.stderr[-500:]}")
+            # Fail, never skip: this test exists to catch a packaging regression, and a
+            # skip here would green-light the suite in exactly the environment meant to
+            # catch it. Only a missing `uv` (checked above) is a legitimate skip.
+            pytest.fail(f"uv build failed, so wheel contents could not be verified: {result.stderr[-500:]}")
 
         wheels = list(tmp_path.glob("*.whl"))
         assert wheels, "uv build reported success but produced no .whl file"
