@@ -333,6 +333,30 @@ which bytes the model sees.
 `pr_reviewer.permute_diff_order_across_samples` stays in the tree, default off: it costs nothing
 when unused, and it is the honest way to re-test this once retrieval changes what a sample contains.
 
+## 2026-09-11: R-17 - the repo's own analyzer contributes nothing on this corpus
+
+Measured, not assumed. `block_rush` cloned at the labeled head `6e61389`, `flutter pub get` run,
+then `dart analyze --format=machine lib test`: **0 diagnostics**. The same command on `main` is
+also clean.
+
+So every one of the 23 labeled defects is invisible to the repository's own toolchain. They are
+semantic and business-logic defects - a missing timeout on a show path, a coin grant written before
+the flag that guards it, a non-notifying provider - not the class of thing a linter names. Two
+consequences:
+
+- **R-17 cannot raise recall here.** Its stated value is verification targets plus deduplication of
+  findings the linter already reports; with zero diagnostics there is nothing to feed and nothing to
+  dedupe. It is still worth having for repos that are not analyzer-clean, and the plumbing is built
+  (`pr_agent/algo/static_analysis.py`), but it must not be sold as a recall play on this corpus.
+- **It sharpens what R-16 has to do.** If the toolchain that fully resolves types and imports finds
+  nothing, then no amount of *syntactic* context will either. The retrieved context has to carry the
+  code that makes a *behavioural* asymmetry visible - the load path next to the show path - not just
+  definitions.
+
+A practical constraint worth recording: `dart analyze` on a checkout without `flutter pub get`
+reports one `URI_DOES_NOT_EXIST` per import and nothing else. `run_dart_analyze` treats that state
+as "analyzer unavailable" rather than passing the noise into a prompt.
+
 ## Reproduce
 
 To reproduce the Cursor rows, start the shim first and point the run at it instead of Gemini:
