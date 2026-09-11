@@ -202,6 +202,23 @@ class TestUsagePage:
         assert "not reported" in by_repo
         assert "<td>0</td>" not in by_repo
 
+    def test_by_model_table_notes_the_fallback_cost_attribution_caveat(self, tmp_path):
+        """The By-model table names the fallback-run cost-attribution caveat, with a real count"""
+        from fastapi.testclient import TestClient
+
+        from pr_dashboard import app as app_module
+
+        db_path = tmp_path / "usage.db"
+        connection = store.connect(db_path)
+        _seed(connection)
+        application = app_module.create_app(
+            registry_path=tmp_path / "pr_dashboard.toml", db_path=db_path)
+        response = TestClient(application).get("/usage")
+        assert response.status_code == 200
+        by_model = response.text.split("By model</h2>", 1)[1].split("</table>", 1)[0]
+        assert "fallback" in by_model.lower()
+        assert "1 runs" in by_model  # totals.fallback_runs from _seed's one fallback_used=1 row
+
     def test_dimension_sql_injection_attempt_is_rejected(self, tmp_path):
         """A malicious dimension value cannot reach SQL through the route"""
         from fastapi.testclient import TestClient

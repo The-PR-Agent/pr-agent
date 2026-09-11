@@ -39,6 +39,15 @@ tool are recorded as attempts with no usage, so the counts are not silently shor
 Costs come from litellm's synchronous pricing. Where a model has no pricing entry, or the
 provider did not report usage, the dashboard shows "not reported" rather than `$0.00`.
 
+### By-model cost and fallback runs
+
+The **Usage** page's By-model breakdown groups by the last model a run used. A run that
+fell back to a different model after an earlier attempt failed attributes its *entire*
+cost to that final model, not split across every model it actually called during the
+run. The **Totals** line's `fallback_runs` count tells you how many runs in the window
+fell back, so you can judge how much this skews the By-model numbers; a per-model split
+is not implemented yet.
+
 **`record_runs` defaults to `false`.** If the **Usage** page is empty, this is almost
 always why: no runs have been recorded yet because the setting was never turned on. Set
 it to `true` and run a command against a PR to start populating `~/.pr_dashboard/usage.db`.

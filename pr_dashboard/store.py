@@ -129,6 +129,11 @@ def finish_run(conn: sqlite3.Connection, run_id: int, *, status: str, finished_a
         ),
     )
     for model, cost in details.model_costs_usd.items():
+        # Populated now for a future accurate per-model cost breakdown, but deliberately not
+        # read anywhere yet -- usage.by_dimension(conn, "model") still groups by model_used
+        # (the last model a run used), so a fallback run's entire cost is attributed to its
+        # final model rather than split across run_model_costs. Do not delete this as dead
+        # code; the honest-for-now mitigation is the fallback_runs note on the usage page.
         conn.execute(
             "INSERT OR REPLACE INTO run_model_costs (run_id, model, cost_usd) VALUES (?, ?, ?)",
             (run_id, model, str(cost)),

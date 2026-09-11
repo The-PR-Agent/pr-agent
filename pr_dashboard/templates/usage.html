@@ -36,6 +36,11 @@
 
 {% for group in groups %}
   <h2>By {{ group.name }}</h2>
+  {% if group.name == "model" %}
+    <p class="muted">A run that fell back to a different model attributes its whole cost to
+      the model it finished with, not split across every model it actually called.
+      {{ totals.fallback_runs }} runs in this window used a fallback.</p>
+  {% endif %}
   <table>
     <thead><tr><th>{{ group.name }}</th><th>Runs</th><th>Tokens</th><th>Cost (USD)</th></tr></thead>
     <tbody>
