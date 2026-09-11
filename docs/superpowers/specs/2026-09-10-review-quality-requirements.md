@@ -21,6 +21,51 @@ Two independent whole-repo reviews produced the labels; Codex (gpt-6-astra) crit
 | W10 | No PR-level assessment | senior-reviewer observations absent | prompt asks only for line-scoped issues |
 | W11 | Security section wrong | "No security concerns" with unverified IAP | security is a boolean paragraph, not a lens with evidence |
 | W12 | No ground truth | tool cannot say whether a change helped | eval harness covers mutants only (`tests/eval/`), no adjudicated real-PR labels |
+| W13 | Recall ceiling is not the prompt | 6 rows, 3 wordings x 2 reps at equal coverage: best 1 of 23, control itself 1 then 0 (`tests/eval/BASELINE.md`, 2026-09-11) | wording of `key_issues_to_review` is not the limiter; the only label ever matched is hunk-local, every severity-4 label needs context beyond the diff |
+
+## External evidence (web research, 2026-09-11)
+
+Gathered before designing P2/P3, so the lens and retrieval work is not invented from scratch.
+
+- **Recall in production tools comes from runtime context pulling plus multiple passes, not prompt
+  wording.** CodeRabbit builds a *fresh per-PR* structural graph with shell tools (`cat`, `grep`,
+  `ast-grep`) rather than pre-built embeddings, targets a ~1:1 code-to-context ratio, and runs a
+  post-generation verification layer before posting
+  (<https://www.coderabbit.ai/blog/context-engineering-ai-code-reviews>). Greptile pre-builds an AST
+  code graph with per-node generated docstrings, then retrieves by vector + keyword + an agentic
+  relevance step (<https://www.greptile.com/docs/how-greptile-works/graph-based-codebase-context>).
+  Qodo 2.4 *removed* its RAG/indexing pipeline in favour of on-demand agentic fetching
+  (<https://www.qodo.ai/blog/we-built-a-state-of-the-art-rag-system-for-code-review-in-qodo-2-4-we-took-most-of-it-out/>).
+  This is consistent with W13: our wording experiment was always testing the wrong layer.
+- **Cursor BugBot is a direct precedent for the over-caution problem and its fix.** Multiple parallel
+  passes over *differently ordered* diffs combined by majority vote, plus a separate validator model
+  for false positives; they state the agentic version became "too cautious". Their ground-truth
+  metric is resolution rate (did the author fix it), raised 52% -> 70% over 40 experiments
+  (<https://cursor.com/blog/building-bugbot>).
+- **Precision in every vendor comes from an explicit second pass** - validator model (BugBot),
+  verification layer (CodeRabbit), or thumbs-up/down retraining labels (CodeGuru,
+  <https://aws.amazon.com/blogs/aws/new-for-amazon-codeguru-reviewer-detector-library-and-security-detectors-for-log-injection-flaws/>) -
+  not from a single-pass "only report what you are sure about" instruction. R-8 already is that
+  second pass; the open question is whether to default it on.
+- **Lens decomposition has two vendor precedents.** Qodo runs specialised agents, one concern each,
+  each emitting pass/fail rather than free text
+  (<https://www.qodo.ai/blog/single-agent-vs-multi-agent-code-review/>); Greptile's agentic relevance
+  step is the same idea applied to retrieval. Confirms R-19's direction.
+- **Published recall is 12-44%, so our 4.3% is below the field but the field is not solved.**
+  CodeReviewBench: best model 44.2% recall / 43.6% precision on 95 golden bugs, "no model finds even
+  half" (<https://www.codereviewbench.com/>). SWR-Bench: best system 19.4% F1 over 1000 verified PRs
+  with full-repo context, most approaches under 10% precision
+  (<https://arxiv.org/html/2509.01494v1>).
+- **Adjudication should be a two-pass judge**, deterministic first (normalised path + line-range
+  overlap with +/-5 tolerance + type compatibility) resolving most cases, an LLM judge only for the
+  remainder; SWR-Bench validated its LLM judge at ~90% agreement with three human experts. This is a
+  better spec than R-1's current by-hand adjudication.
+- **Power.** At n=23 labels a prompt/config A/B needs roughly +3 to +5 true positives before it is
+  real, and >= 5 repetitions with a bootstrap CI; statistical testing is rare in this literature and
+  N < 30 is flagged as needing caution. Recorded so future acceptances are not written at +1.
+- **Gap:** no published work measures early stopping or position bias ("lost in the middle")
+  specifically for code review on diffs. Our W13 result is, as far as this search found, the only
+  measurement of it.
 
 ## Requirements
 
@@ -70,16 +115,16 @@ Format: **R-n (Wx)** requirement. *Acceptance:* checkable criterion. *Metric:* w
 
 ### Tier P2: context beyond the diff
 
-- **R-16 Symbol retrieval, one language first.** Tree-sitter index for Dart: for each changed symbol, definition + callers + callees within a reserved token cap, package-qualified, generated code skipped, traversal depth capped. *Acceptance:* the ad-timeout asymmetry (load vs show paths) is visible in retrieved context for `ads_service.dart` changes. *Metric:* cross-file FP rate and serious-defect recall on the corpus at fixed budget.
+- **R-16 Symbol retrieval, one language first.** *Amended 2026-09-11 by research:* tree-sitter gives Dart **syntax only** - callers/callees need semantic resolution (imports, dispatch, type inference), which means the `analyzer` package / Dart analysis server, or SCIP on top of it. Use the analyzer as the spine and tree-sitter at most for fast symbol enumeration; reuse `scip_dart` (<https://pub.dev/packages/scip_dart>), Workiva/scip-dart or Infigraph's LSP->SCIP bridge rather than building an indexer. This also makes R-17 nearly free, since the analyzer is then already running. Prebuilt tree-sitter Dart wheels do exist (<https://pypi.org/project/tree-sitter-dart/>), so the grammar is not the obstacle - resolution is. Original text: tree-sitter index for Dart: for each changed symbol, definition + callers + callees within a reserved token cap, package-qualified, generated code skipped, traversal depth capped. *Acceptance:* the ad-timeout asymmetry (load vs show paths) is visible in retrieved context for `ads_service.dart` changes. *Metric:* cross-file FP rate and serious-defect recall on the corpus at fixed budget.
 - **R-17 Static analysis first.** When a sandbox is available, run the repo's analyzer and feed results as verification targets; dedupe findings the linter already reports. *Acceptance:* `dart analyze` findings appear in the ledger as stage `static`.
 - **R-18 Selective escalation.** Findings in high-risk paths touching ordering, concurrency or money go to the strong tier for verification. *Metric:* recall per dollar as in R-12.
 
 ### Tier P3: focused passes and PR-level view
 
-- **R-19 Lenses added one at a time.** Business-logic/invariants first, then async/lifecycle, persistence/atomicity, security/trust boundary, test quality; each kept only if the corpus shows recall gain at fixed budget.
+- **R-19 Lenses added one at a time.** *Confirmed 2026-09-11 by research* - Qodo ships one agent per concern emitting pass/fail, and BugBot attributes its over-caution to asking a single prompt to be both broad and careful. Add a cheap precedent-backed variant first: permute diff order across `num_samples` consensus samples and vote, which is BugBot's mechanism and needs no new code path beyond ordering. Business-logic/invariants first, then async/lifecycle, persistence/atomicity, security/trust boundary, test quality; each kept only if the corpus shows recall gain at fixed budget.
 - **R-20 (W11) Security as a lens with evidence.** "No security concerns" is emitted only when the security lens ran over all high-risk files and returned none. Otherwise "not assessed".
 - **R-21 (W10) PR-level assessment.** 3–5 bullets about architecture, state boundaries, test hygiene, documentation drift, with file anchors. *Acceptance:* block_rush replay produces a bullet about the non-notifying service holder providers.
-- **R-22 Structured output enforced server-side.** `response_format` / tool-call schema for findings when the provider supports it. *Metric:* completion tokens per finding.
+- **R-22 Structured output enforced server-side.** *Promoted 2026-09-11:* W13 exonerated the prompt wording, so this is the next suspect for the recall ceiling and comes before P1. Note the Cursor CLI shim cannot test it at all - it concatenates system+user onto stdin and has no `response_format` - so this needs a provider key with quota. `response_format` / tool-call schema for findings when the provider supports it. *Metric:* completion tokens per finding.
 
 ### Tier P4: self-improvement
 

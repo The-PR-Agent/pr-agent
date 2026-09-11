@@ -208,6 +208,54 @@ the shim's raw prompt dumps for each variant's wording and marks a row invalid i
 `gemini-3.7-flash-high`), flags identical to `p0-cap`, so variant A doubles as a replication of the
 1-of-23 row. Not comparable to the `gemini-3.5-flash` rows at the top of this file.
 
+## 2026-09-11: Step 1 prompt-wording experiment - result. The prompt is exonerated.
+
+Six rows, `.delegate/runs/task-11/`, run id `variants:20260911T151849Z:*`. Read against the rule
+pre-registered above, which was written before any row ran.
+
+| Row | Findings | Matched/23 | Unknown (adjudicated) | Control FPs | Review calls | Files | Prompt tokens |
+|---|---|---|---|---|---|---|---|
+| A rep1 (control) | 1 | **1** | 0 | 0 | 2 | 172 | 452k |
+| A rep2 (control) | 0 | **0** | 0 | 0 | 2 | 171 | 426k |
+| B rep1 (no "concise") | 2 | **0** | 2 -> both out-of-label | 0 | 2 | 173 | 436k |
+| B rep2 | 1 | **1** | 0 | 0 | 2 | 172 | 446k |
+| C rep1 (completeness) | 2 | **1** | 1 -> out-of-label | 0 | 2 | 173 | 456k |
+| C rep2 | 2 | **1** | 1 -> out-of-label | 0 | 2 | 173 | 439k |
+
+Every row: 2 review calls, 171-173 of the PR's files reached, 426-456k prompt tokens. Budget and
+coverage are equal across variants, so wording is the only thing that differs. Each row's raw
+prompts were grepped for that variant's sentence and all six passed, so the override did reach the
+model rather than silently falling back to the control.
+
+**Verdict: no variant clears the pre-registered bar** (>= 4 of 23 on both reps). Best variant
+result is 1 of 23 - the same as the control. The bar was set at +3 true positives because that is
+the bottom of the range the literature says n=23 can support; the observed spread is +/-1 finding.
+
+**The control disagrees with itself more than the variants disagree with the control.** A rep1
+found 1, A rep2 found 0, on identical wording, flags and seed. That is the whole result: on this
+model line, finding count is noise of size +/-1 around ~1, and no wording tested moves it.
+
+**Adjudication.** Four findings were out-of-label, all in code the corpus does not label: a
+mission-replacement duplication in `packages/engine/lib/src/game_engine.dart` (reported by B rep1,
+C rep1 and C rep2 - three independent rows, so worth a look as a real defect) and a chroma
+undershoot in `lib/src/theme/oklab.dart`. They are **not** counted as matches and no label was
+added after the fact. If the engine finding is real, it belongs in a corpus revision scored by
+later runs, not this one.
+
+**The one label ever matched is `test-debug-leftovers` (severity 1)** - print/debugDumpApp left in
+a test helper, a lexically local defect visible in the diff hunk alone. The severity-4 labels
+(`ads-show-timeout`, `iap-starter-coin-loss`) were found by no row of any variant. Severity-weighted
+recall is 0.022 across the board. What the tool misses is what needs context beyond the hunk.
+
+**Consequence, per the work plan's own branch.** The prompt is exonerated as the sole cause of the
+recall ceiling. Next suspect is R-22 server-side structured output, promoted ahead of P1 - and the
+Cursor shim cannot test it (it concatenates system+user onto stdin and has no `response_format`),
+so that branch needs a provider key with quota.
+
+**What this does not establish.** Two reps per variant, not the >= 5 the literature recommends, so
+this rules out a large wording effect, not a small one. A wording change worth < 3 true positives
+would not be visible here and is not worth chasing at this recall level anyway.
+
 ## Reproduce
 
 To reproduce the Cursor rows, start the shim first and point the run at it instead of Gemini:
