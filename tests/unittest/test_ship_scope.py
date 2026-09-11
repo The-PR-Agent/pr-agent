@@ -92,3 +92,17 @@ def test_cap_low_priority_files_keeps_a_file_it_cannot_price():
     )
     assert [f.filename for f in kept] == ["design/b.html"]
     assert summarized == []
+
+
+def test_cap_low_priority_files_never_empties_the_review():
+    """A PR of nothing but oversized low-priority files would cap down to an empty diff, and an
+    empty diff ends the run with no prediction - so no review is published at all and the PR is
+    silently skipped. The cap protects real code from low-priority files; with no other code in
+    the PR there is nothing to protect."""
+    globs = ["design/**", "**/*.md"]
+    files = [_sized_file("design/hero.html", "x" * 400), _sized_file("docs/spec.md", "x" * 400)]
+
+    kept, summarized = cap_low_priority_files(files, globs, max_tokens=10, count_tokens=len)
+
+    assert [f.filename for f in kept] == ["design/hero.html", "docs/spec.md"]
+    assert summarized == []

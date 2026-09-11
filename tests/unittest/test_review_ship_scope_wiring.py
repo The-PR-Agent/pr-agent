@@ -256,3 +256,39 @@ async def test_a_capped_file_is_still_reported_when_chunking_falls_back_to_one_c
     review = _render_review(reviewer)
     assert "design/a.html" in review
     assert "(low-priority file, not reviewed)" in review
+
+
+@pytest.mark.asyncio
+async def test_a_capped_file_is_still_reported_when_the_chunked_review_fails(per_file_cap):
+    """A failed chunk review rolls back to the single-call result, which excluded the capped file
+    too - so the rollback has to keep its footer lines, not clear them with the chunking
+    attempt's own bookkeeping."""
+    design = _file("design/a.html")
+    lib = _file("lib/a.dart")
+    reviewer = _make_reviewer([design, lib])
+    reviewer.token_handler.count_tokens.side_effect = (
+        lambda patch, *a, **kw: 900 if patch is design.patch else 10
+    )
+    reviewer._get_review_data = AsyncMock(
+        return_value=("raw", {"review": {"score": "80", "key_issues_to_review": []}}, 0)
+    )
+    reviewer._review_chunk_plans = AsyncMock(return_value=False)
+    plans = [
+        ChunkPlan(diff="lib-diff-a", files=("lib/a.dart",), clipped=()),
+        ChunkPlan(diff="lib-diff-b", files=("lib/a.dart",), clipped=()),
+    ]
+
+    with (
+        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["lib/a.dart"])),
+        patch(
+            "pr_agent.tools.pr_reviewer.get_pr_multi_diffs_with_files",
+            return_value=(plans, []),
+        ),
+    ):
+        await reviewer._prepare_prediction("model")
+
+    assert reviewer._ship_scope_summary_paths == ["design/a.html"]
+    assert reviewer.coverage.files["design/a.html"].status == "low_priority_summary"
+    review = _render_review(reviewer)
+    assert "design/a.html" in review
+    assert "(low-priority file, not reviewed)" in review

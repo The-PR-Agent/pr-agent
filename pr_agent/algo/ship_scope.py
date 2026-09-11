@@ -83,6 +83,12 @@ def cap_low_priority_files(files: list, globs: Iterable[str], max_tokens: int,
             summarized.append(file.filename)
         else:
             kept.append(file)
+    if not kept:
+        # Capping every file leaves an empty diff, and an empty diff ends the run with no
+        # prediction and so no published review at all - the PR would be silently skipped.
+        # The cap exists to stop low-priority files starving real code; with no other code in
+        # the PR there is nothing to protect, so review them.
+        return list(files), []
     return kept, summarized
 
 

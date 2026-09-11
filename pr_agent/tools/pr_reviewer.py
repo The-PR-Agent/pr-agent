@@ -1119,6 +1119,7 @@ class PRReviewer:
         # the coverage ledger _prepare_prediction built before chunking was ever attempted, not
         # this one's clipped marks for a chunking attempt that never actually reviewed anything.
         previous_coverage = self.coverage
+        previous_summary_paths = list(self._ship_scope_summary_paths)
         coverage = self._build_coverage_ledger(remaining_files_list)
         for plan in plans:
             for filename in plan.clipped:
@@ -1144,7 +1145,10 @@ class PRReviewer:
             self.remaining_files_list = remaining_files_list
         else:
             self.coverage = previous_coverage
-            self._ship_scope_summary_paths = []
+            # The single-call flow this falls back to excludes the capped files too, so its
+            # footer lines have to come back with its ledger - not be cleared along with the
+            # chunking attempt's own bookkeeping.
+            self._ship_scope_summary_paths = previous_summary_paths
             self._ship_scope_ignore_footer = ""
         return ok
 
