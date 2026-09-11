@@ -93,8 +93,7 @@ When this parameter is set to `true`, PR-Agent will not run any automatic tools 
 ### GitHub App
 
 !!! note "Configurations for PR-Agent"
-    PR-Agent for GitHub is an App, hosted by Codium. So all the instructions below are relevant for PR-Agent users.
-    Same goes for [GitLab webhook](#gitlab-webhook) and [BitBucket App](#bitbucket-app) sections.
+    These settings apply to self-hosted GitHub App, GitLab webhook, and Bitbucket App deployments.
 
 #### GitHub app automatic tools when a new PR is opened
 

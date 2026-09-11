@@ -152,24 +152,31 @@ def get_repetition_penalty():
     return penalty
 
 
-def _get_azure_ad_token():
+def _get_azure_ad_credential(settings):
+    """Create an Azure AD credential for one handler/request context."""
+    from azure.identity import ClientSecretCredential
+
+    return ClientSecretCredential(
+        tenant_id=settings.azure_ad.tenant_id,
+        client_id=settings.azure_ad.client_id,
+        client_secret=settings.azure_ad.client_secret,
+    )
+
+
+def _get_azure_ad_token(credential):
     """
     Generates an access token using Azure AD credentials from settings.
     Returns:
         str: The access token
     """
-    from azure.identity import ClientSecretCredential
+    if credential is None:
+        raise ValueError("Azure AD credential is required for request-local token resolution")
     try:
-        credential = ClientSecretCredential(
-            tenant_id=get_settings().azure_ad.tenant_id,
-            client_id=get_settings().azure_ad.client_id,
-            client_secret=get_settings().azure_ad.client_secret
-        )
         # Get token for Azure OpenAI service
         token = credential.get_token("https://cognitiveservices.azure.com/.default")
         return token.token
     except Exception as e:
-        get_logger().error(f"Failed to get Azure AD token: {e}")
+        get_logger().error(f"Failed to get Azure AD token: {type(e).__name__}")
         raise
 
 

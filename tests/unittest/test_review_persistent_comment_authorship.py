@@ -17,7 +17,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-from github import GithubException
+from github import Auth, GithubException
 
 from pr_agent.algo.review_finding_state import append_review_state, reconcile_review_findings
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
@@ -367,9 +367,11 @@ def test_a_transient_app_login_failure_is_retried(monkeypatch):
     monkeypatch.setattr(get_settings(), "github", SimpleNamespace(
         app_id="1", private_key="key", deployment_type="app"), raising=False)
     attempts = []
+    auths = []
 
     def integration(**kwargs):
         attempts.append(1)
+        auths.append(kwargs["auth"])
         if len(attempts) == 1:
             raise RuntimeError("connection reset")
         return SimpleNamespace(get_app=lambda: SimpleNamespace(slug="pr-agent"))
@@ -379,6 +381,7 @@ def test_a_transient_app_login_failure_is_retried(monkeypatch):
     assert provider._resolve_app_login() == ""
     assert provider._resolve_app_login() == "pr-agent[bot]"
     assert len(attempts) == 2
+    assert all(isinstance(auth, Auth.AppAuth) for auth in auths)
 
 
 def test_a_resolved_app_login_is_cached(monkeypatch):
@@ -389,9 +392,11 @@ def test_a_resolved_app_login_is_cached(monkeypatch):
     monkeypatch.setattr(get_settings(), "github", SimpleNamespace(
         app_id="1", private_key="key", deployment_type="app"), raising=False)
     attempts = []
+    auths = []
 
     def integration(**kwargs):
         attempts.append(1)
+        auths.append(kwargs["auth"])
         return SimpleNamespace(get_app=lambda: SimpleNamespace(slug="pr-agent"))
 
     monkeypatch.setattr("pr_agent.git_providers.github_provider.GithubIntegration", integration)
@@ -399,6 +404,7 @@ def test_a_resolved_app_login_is_cached(monkeypatch):
     assert provider._resolve_app_login() == "pr-agent[bot]"
     assert provider._resolve_app_login() == "pr-agent[bot]"
     assert len(attempts) == 1
+    assert all(isinstance(auth, Auth.AppAuth) for auth in auths)
 
 
 def test_an_app_that_never_resolves_stays_unproven(monkeypatch):

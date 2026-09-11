@@ -22,7 +22,8 @@ from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.secret_providers import get_secret_provider, validate_secret_provider_setting
-from pr_agent.servers.utils import get_pr_commands
+from pr_agent.servers.utils import get_pr_commands, push_trigger_slot
+from pr_agent.telemetry.prometheus import attach_metrics_endpoint, prometheus_metrics_enabled
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
 router = APIRouter()
@@ -362,6 +363,26 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                 apply_repo_settings(url)
                 await _perform_commands_gitlab("pr_commands", PRAgent(), url, log_context, data)
 
+            # for draft to ready triggered merge requests, before the push case: one update can be both
+            elif object_attributes.get('action') == 'update' and is_draft_ready(data):
+                url = object_attributes.get('url')
+                get_logger().info(f"Draft MR is ready: {url}")
+
+                apply_repo_settings(url)
+                if get_settings().get("gitlab.feedback_on_draft_pr", False):
+                    # the draft was already getting feedback, so only the push half of this update is new
+                    if (object_attributes.get('oldrev')
+                            and get_settings().get("gitlab.push_commands", {})
+                            and get_settings().get("gitlab.handle_push_trigger", False)):
+                        get_logger().debug(f'A push event has been received: {url}')
+                        async with push_trigger_slot(url, allow_backlog=True, ttl=300) as proceed:
+                            if proceed:
+                                await _perform_commands_gitlab("push_commands", PRAgent(), url, log_context, data)
+                    else:
+                        get_logger().info(f"Skipping draft-ready commands because draft feedback is enabled: {url}")
+                    return
+                await _perform_commands_gitlab("pr_commands", PRAgent(), url, log_context, data)
+
             # for push event triggered merge requests
             elif object_attributes.get('action') == 'update' and object_attributes.get('oldrev'):
                 url = object_attributes.get('url')
@@ -376,18 +397,9 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                     return
 
                 get_logger().debug(f'A push event has been received: {url}')
-                await _perform_commands_gitlab("push_commands", PRAgent(), url, log_context, data)
-
-            # for draft to ready triggered merge requests
-            elif object_attributes.get('action') == 'update' and is_draft_ready(data):
-                url = object_attributes.get('url')
-                get_logger().info(f"Draft MR is ready: {url}")
-
-                apply_repo_settings(url)
-                if get_settings().get("gitlab.feedback_on_draft_pr", False):
-                    get_logger().info(f"Skipping draft-ready commands because draft feedback is enabled: {url}")
-                    return
-                await _perform_commands_gitlab("pr_commands", PRAgent(), url, log_context, data)
+                async with push_trigger_slot(url, allow_backlog=True, ttl=300) as proceed:
+                    if proceed:
+                        await _perform_commands_gitlab("push_commands", PRAgent(), url, log_context, data)
 
             # for reviewer assignment triggered merge requests
             elif object_attributes.get('action') == 'update' and not object_attributes.get('oldrev'):
@@ -486,6 +498,8 @@ if not gitlab_url:
     raise ValueError("GITLAB.URL is not set")
 get_settings().config.git_provider = "gitlab"
 middleware = [Middleware(RawContextMiddleware)]
+if prometheus_metrics_enabled():
+    attach_metrics_endpoint(router)
 app = FastAPI(middleware=middleware)
 app.include_router(router)
 

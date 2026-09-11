@@ -258,7 +258,8 @@ async def test_description_large_pr_fits_each_prompt_from_raw_tickets(monkeypatc
     async def get_prediction(_model, patches_diff=None, prompt=None):
         prediction_calls.append((prompt, patches_diff, tool.vars))
         if prompt == "pr_description_only_files_prompts":
-            return "pr_files:\n- filename: src/app.py"
+            return ("pr_files:\n- filename: src/app.py\n  changes_title: Update app\n"
+                    "  changes_summary: Updates app behavior.\n  label: enhancement")
         return "title: Test\ndescription: Test"
 
     monkeypatch.setattr(module, "fit_related_tickets_to_prompt_budget", fit_payload)

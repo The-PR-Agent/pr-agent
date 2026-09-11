@@ -1,13 +1,17 @@
+import asyncio
 import hashlib
 import hmac
 import secrets
 import time
 from collections import defaultdict
-from typing import Any, Callable, Sequence
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
+from typing import Any, AsyncIterator, Callable, Sequence
 
 from fastapi import HTTPException
 
 from pr_agent.config_loader import get_settings
+from pr_agent.log import get_logger
 
 # custom_merge_loader bypasses Dynaconf token expansion, so TOML references such as
 # @get would remain strings. Keep the shared profiles immutable and copy only defaults.
@@ -146,3 +150,66 @@ class DefaultDictWithTimeout(defaultdict):
             return super().__getitem__(__key)
         self[__key] = __default
         return __default
+
+
+@dataclass
+class _PushTriggerState:
+    condition: asyncio.Condition = field(default_factory=asyncio.Condition)
+    active_tasks: int = 0
+    running: bool = False
+
+
+_push_trigger_states_by_ttl = {}
+_active_push_trigger_states = {}
+
+
+def _get_push_trigger_state(key: str, ttl: int | None) -> _PushTriggerState:
+    # TTL changes and cache eviction must never split an active PR's queue.
+    if key in _active_push_trigger_states:
+        return _active_push_trigger_states[key]
+    if ttl not in _push_trigger_states_by_ttl:
+        _push_trigger_states_by_ttl[ttl] = DefaultDictWithTimeout(_PushTriggerState, ttl=ttl)
+    states = _push_trigger_states_by_ttl[ttl]
+    # setdefault expires idle entries before refreshing their access time.
+    state = states.setdefault(key)
+    if state is None:
+        state = states[key] = _PushTriggerState()
+    return state
+
+
+@asynccontextmanager
+async def push_trigger_slot(key: str, *, allow_backlog: bool, ttl: int | None) -> AsyncIterator[bool]:
+    """Run one push per PR, optionally keeping one delegate for subsequent pushes.
+
+    State is process-local. TTL bounds idle cache retention; active runs and
+    waiters retain their state until all reserved slots have been released.
+    """
+    state = _get_push_trigger_state(key, ttl)
+    max_active_tasks = 2 if allow_backlog else 1
+    if state.active_tasks >= max_active_tasks:
+        get_logger().info(
+            f"Skipping push trigger for {key=} because another event already triggered the same processing"
+        )
+        yield False
+        return
+
+    get_logger().info(
+        f"Continue processing push trigger for {key=} because there are {state.active_tasks} active tasks"
+    )
+    _active_push_trigger_states[key] = state
+    state.active_tasks += 1
+    acquired = False
+    try:
+        async with state.condition:
+            await state.condition.wait_for(lambda: not state.running)
+            state.running = True
+            acquired = True
+        yield True
+    finally:
+        async with state.condition:
+            if acquired:
+                state.running = False
+            state.active_tasks -= 1
+            state.condition.notify(1)
+            if state.active_tasks == 0:
+                del _active_push_trigger_states[key]

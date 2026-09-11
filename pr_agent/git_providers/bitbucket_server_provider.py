@@ -2,6 +2,7 @@ import difflib
 import re
 import shlex
 import subprocess
+from collections import Counter
 from types import SimpleNamespace
 from typing import Optional, Tuple
 from urllib.parse import quote_plus, urlparse
@@ -12,7 +13,7 @@ from requests.exceptions import HTTPError
 
 from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import decode_if_bytes
-from ..algo.language_handler import is_valid_file
+from ..algo.language_handler import build_language_file_matcher, is_valid_file
 from ..algo.types import EDIT_TYPE, FilePatchInfo
 from ..algo.utils import find_line_number_of_relevant_line_in_file, load_large_diff
 from ..config_loader import get_settings, get_verbosity_level
@@ -103,30 +104,49 @@ class BitbucketServerProvider(GitProvider):
         return (prefix, suffix)
 
     def get_repo_settings(self):
+        settings_files = []
+        global_settings = self._get_global_repo_settings()
+        if global_settings:
+            settings_files.append(("global", global_settings))
         try:
             content = self.bitbucket_client.get_content_of_file(self.workspace_slug, self.repo_slug, ".pr_agent.toml")
-
-            return content
+            settings_files.append(("local", content))
+        except HTTPError as e:
+            if e.response.status_code == 404:  # not found
+                pass
+            else:
+                # A missing .pr_agent.toml is an expected, optional case (like the other
+                # git providers), so don't report it as an error. Log at info level to keep
+                # visibility for genuinely unexpected failures without alarming users.
+                get_logger().info(f"Failed to load .pr_agent.toml file, error: {e}")
         except Exception as e:
-            if isinstance(e, HTTPError):
-                if e.response.status_code == 404:  # not found
-                    return ""
-
-            # A missing .pr_agent.toml is an expected, optional case (like the other
-            # git providers), so don't report it as an error. Log at info level to keep
-            # visibility for genuinely unexpected failures without alarming users.
             get_logger().info(f"Failed to load .pr_agent.toml file, error: {e}")
-            return ""
+        return settings_files if settings_files else ""
+
+    def _get_global_settings_cache_key(self, workspace: str) -> str:
+        return f"bitbucket-server:{getattr(self, 'bitbucket_server_url', '')}:{workspace}"
+
+    def _fetch_global_repo_settings(self, workspace):
+        # A missing pr-agent-settings repo/file (404) is an expected fallback -> return "" (cached).
+        try:
+            return self.bitbucket_client.get_content_of_file(workspace, "pr-agent-settings", ".pr_agent.toml")
+        except HTTPError as e:
+            if e.response.status_code == 404:
+                return ""
+            raise
+        # Transient/unexpected errors propagate so the caller does not cache the failure.
 
     def get_repo_file_content(self, file_path: str, from_default_branch: bool = False):
         # Read from the PR target ref (the branch being merged into), matching the other providers,
         # or from the repository default branch when from_default_branch is requested.
+        ref = self.get_repo_context_ref(from_default_branch)
+        return self.get_file(file_path, ref)
+
+    def get_repo_context_ref(self, from_default_branch: bool = False) -> Optional[str]:
         if from_default_branch:
             default_branch_dict = self.bitbucket_client.get_default_branch(self.workspace_slug, self.repo_slug)
-            ref = default_branch_dict.get('displayId') or self.pr.toRef['latestCommit']
-        else:
-            ref = self.pr.toRef['latestCommit']
-        return self.get_file(file_path, ref)
+            return default_branch_dict.get('displayId') or self.pr.toRef['latestCommit']
+        return self.pr.toRef['latestCommit']
 
     def get_pr_id(self):
         return self.pr_num
@@ -197,12 +217,13 @@ class BitbucketServerProvider(GitProvider):
                 get_logger().error(f"Failed to publish code suggestion, error: {e}")
             return False
 
-    def publish_file_comments(self, file_comments: list) -> bool:
-        pass
-
     def is_supported(self, capability: str) -> bool:
-        if capability in ['get_labels', 'gfm_markdown', 'publish_file_comments']:
+        if capability in ['get_labels', 'gfm_markdown']:
             return False
+        return True
+
+    def supports_markdown_tables(self) -> bool:
+        # Bitbucket Data Center renders Markdown tables in comments, but not GFM.
         return True
 
     def set_pr(self, pr_url: str):
@@ -335,25 +356,6 @@ class BitbucketServerProvider(GitProvider):
                 self.workspace_slug, self.repo_slug, self.pr_num, pr_comment
             )
         return None
-
-    def publish_persistent_comment(self, pr_comment: str,
-                                   initial_header: str,
-                                   update_header: bool = True,
-                                   name='review',
-                                   final_update_message=True,
-                                   as_thread: bool = False,
-                                   identity_marker: str | None = None,
-                                   legacy_initial_header: str | None = None):
-        return self.publish_persistent_comment_full(
-            pr_comment,
-            initial_header,
-            update_header,
-            name,
-            final_update_message,
-            as_thread,
-            identity_marker=identity_marker,
-            legacy_initial_header=legacy_initial_header,
-        )
 
     def supports_review_comment_identity(self) -> bool:
         return True
@@ -524,12 +526,28 @@ class BitbucketServerProvider(GitProvider):
         return self.pr.title
 
     def get_languages(self):
-        return {"yaml": 0}  # devops LOL
+        # Return {language name: percentage}, like the other providers.
+        lang_map = get_settings().get("language_extension_map_org", {}) or {}
+        get_language = build_language_file_matcher(lang_map)
+
+        lang_count = Counter()
+        for filename in self.get_files():
+            if not filename:
+                continue
+            language = get_language(filename)
+            if language:
+                lang_count[language] += 1
+
+        total = sum(lang_count.values()) or 1
+        return {lang: count / total * 100 for lang, count in lang_count.items()}
 
     def get_pr_branch(self):
         return self.pr.fromRef['displayId']
 
     def get_pr_owner_id(self) -> str | None:
+        return self.workspace_slug
+
+    def get_owning_namespace(self) -> str | None:
         return self.workspace_slug
 
     def get_pr_description_full(self):
@@ -594,9 +612,11 @@ class BitbucketServerProvider(GitProvider):
 
     @staticmethod
     def _parse_bitbucket_server(url: str) -> str:
-        # pr url format: f"{bitbucket_server}/projects/{project_name}/repos/{repository_name}/pull-requests/{pr_id}"
+        # PR URLs use either projects/{project} or users/{user} after the Bitbucket Server base URL.
         parsed_url = urlparse(url)
-        server_path = parsed_url.path.split("/projects/")
+        server_path = parsed_url.path.split("/projects/", maxsplit=1)
+        if len(server_path) == 1:
+            server_path = parsed_url.path.split("/users/", maxsplit=1)
         if len(server_path) > 1:
             server_path = server_path[0].strip("/")
             return f"{parsed_url.scheme}://{parsed_url.netloc}/{server_path}".strip("/")

@@ -15,7 +15,8 @@ class PRConfig:
 
         Args:
             pr_url (str): The URL of the pull request to be reviewed.
-            args (list, optional): List of arguments passed to the PRReviewer class. Defaults to None.
+            args (list, optional): Unused compatibility parameter for the common tool interface. Defaults to None.
+            ai_handler: Unused compatibility parameter for the common tool interface. Defaults to None.
         """
         self.git_provider = get_git_provider()(pr_url)
 

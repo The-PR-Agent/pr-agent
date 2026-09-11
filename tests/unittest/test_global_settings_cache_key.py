@@ -66,8 +66,13 @@ def test_the_same_key_is_still_cached():
 
 
 def test_github_keys_the_cache_on_the_host(monkeypatch):
-    """Key the same org differently on github.com and on an enterprise host."""
-    keys = _record_keys(monkeypatch, ghp)
+    """Key the same org differently on github.com and on an enterprise host.
+
+    `_get_global_repo_settings` now lives on the base GitProvider and resolves settings
+    through the `git_provider` module, so the settings/cache are stubbed there while the
+    GitHub provider supplies the host-scoped cache key.
+    """
+    keys = _record_keys(monkeypatch, gp)
 
     _github("https://api.github.com")._get_global_repo_settings()
     _github("https://ghe.internal/api/v3")._get_global_repo_settings()

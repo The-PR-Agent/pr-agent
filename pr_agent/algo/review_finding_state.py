@@ -155,6 +155,21 @@ def parse_review_state(comment_body: str) -> ParsedReviewState:
     return ParsedReviewState(state, present=True, valid=True)
 
 
+def split_review_state_marker(comment_body: str) -> tuple[str, str]:
+    """Split a comment into its human text and its hidden state marker.
+
+    Returns ``(body, marker)``; ``marker`` is ``""`` when the comment carries no
+    complete marker. Providers that cap comment length use this to keep the
+    marker intact while truncating only the human text.
+    """
+    raw = comment_body or ""
+    match = _STATE_MARKER_RE.search(raw)
+    if match is None:
+        return raw, ""
+    body = (raw[: match.start()] + raw[match.end():]).rstrip()
+    return body, match.group(0)
+
+
 def serialize_review_state(state: Mapping[str, Any]) -> str:
     """Serialize state deterministically so repeated updates are diffable."""
     if not _is_valid_state(state):

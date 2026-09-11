@@ -1053,7 +1053,7 @@ class TestGitLabGlobalSettings:
         proj.default_branch = "main"
         proj.files.get.return_value.decode.return_value = b"[pr_reviewer]\nnum_max_findings = 5\n"
         provider.gl.projects.get.return_value = proj
-        with patch("pr_agent.git_providers.gitlab_provider.get_settings") as ms:
+        with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
             ms.return_value.config.use_global_settings_file = True
             result = provider._get_global_repo_settings()
         assert result == b"[pr_reviewer]\nnum_max_findings = 5\n"
@@ -1069,7 +1069,7 @@ class TestGitLabGlobalSettings:
         settings_project.files.get.return_value.decode.return_value = b"[pr_reviewer]\nnum_max_findings = 5\n"
         provider.gl.projects.get.side_effect = [project, settings_project]
 
-        with patch("pr_agent.git_providers.gitlab_provider.get_settings") as ms:
+        with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
             ms.return_value.config.use_global_settings_file = True
             result = provider._get_global_repo_settings()
 
@@ -1077,17 +1077,23 @@ class TestGitLabGlobalSettings:
         assert provider.gl.projects.get.call_args_list[0].args == ("127014",)
         assert provider.gl.projects.get.call_args_list[1].args == ("mygroup/pr-agent-settings",)
 
-    def test_skips_on_self_hosted(self):
-        # "mygitlab.com" contains the substring "gitlab.com" but is NOT GitLab.com — must be skipped.
+    def test_loads_group_pr_agent_settings_on_self_hosted_too(self):
+        # Self-hosted GitLab instances must also resolve group-level global settings
+        # (the top-level group of path_with_namespace works on any host).
         provider = self._provider(gitlab_url="https://mygitlab.com")
-        with patch("pr_agent.git_providers.gitlab_provider.get_settings") as ms:
+        proj = MagicMock()
+        proj.default_branch = "main"
+        proj.files.get.return_value.decode.return_value = b"[pr_reviewer]\nnum_max_findings = 5\n"
+        provider.gl.projects.get.return_value = proj
+        with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
             ms.return_value.config.use_global_settings_file = True
-            assert provider._get_global_repo_settings() == ""
-        provider.gl.projects.get.assert_not_called()
+            result = provider._get_global_repo_settings()
+        assert result == b"[pr_reviewer]\nnum_max_findings = 5\n"
+        provider.gl.projects.get.assert_called_with("mygroup/pr-agent-settings")
 
     def test_disabled_returns_empty(self):
         provider = self._provider()
-        with patch("pr_agent.git_providers.gitlab_provider.get_settings") as ms:
+        with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
             ms.return_value.config.use_global_settings_file = False
             assert provider._get_global_repo_settings() == ""
         provider.gl.projects.get.assert_not_called()
@@ -1098,7 +1104,7 @@ class TestGitLabGlobalSettings:
         proj.default_branch = "main"
         proj.files.get.return_value.decode.return_value = b"[pr_reviewer]\nx = 1\n"
         provider.gl.projects.get.return_value = proj
-        with patch("pr_agent.git_providers.gitlab_provider.get_settings") as ms:
+        with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
             ms.return_value.config.use_global_settings_file = True
             provider._get_global_repo_settings()
             provider._get_global_repo_settings()
@@ -1923,7 +1929,6 @@ class TestGitLabCapabilities:
     @pytest.mark.parametrize("capability", [
         "create_inline_comment",
         "publish_inline_comments",
-        "publish_file_comments",
     ])
     def test_unimplemented_capabilities_stay_unsupported(self, capability):
         assert self._provider().is_supported(capability) is False
