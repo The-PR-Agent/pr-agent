@@ -148,6 +148,18 @@ so both default rows score recall 0.000.
 - **Finding counts are not stable.** R-1's repetition was run (above) and the two same-flag
   pairs disagree by up to 2 findings. Treat any conclusion resting on a finding count as unmade;
   the claims here rest on the `design/**` share and the budget, which are deterministic.
+- **Chunk size is not the lever - tested and refuted.** The obvious reading of the low recall
+  was that findings collapse when a chunk is ~200k tokens. A `p0-smallchunk` row
+  (`config.max_model_tokens=40000`, `max_number_of_calls=20`, cap on) split the same PR into
+  **11 chunks / 14 calls** instead of 2-3, at a comparable total budget (530,897 prompt tokens
+  against 446,885). Result: **3 findings, recall 0.043, the same single matched label** - inside
+  the 1-3 findings every other p0 row produced. Shrinking the context 5x changed nothing, so
+  context length is not what limits findings-per-run.
+  What that leaves, untested: the prompt itself. The schema field is described to the model as
+  "A concise list (0-3 issues)" even when `num_max_findings` is 12 (the count interpolates, the
+  word "concise" does not), the review prompt says "Only include issues you are confident
+  about", and these rows omit `local_profile.toml`'s `extra_instructions`. That is where to look
+  next.
 - **Absolute recall is poor on this model line** - the best row found 1 of 23. Findings-per-run
   is low across all four rows, which points at the prompt/provider path, not at the two knobs
   under test. That is the next thing worth investigating, ahead of more knob tuning.
