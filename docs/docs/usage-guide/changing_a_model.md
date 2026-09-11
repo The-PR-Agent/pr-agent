@@ -1,3 +1,8 @@
+---
+title: "Changing a Model"
+sidebar_position: 8
+---
+
 ## Changing a model in PR-Agent
 
 See [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py) for a list of supported models in PR-Agent.
@@ -16,14 +21,16 @@ To send small pull requests to a cheaper model, see [Routing small pull requests
 For models and environments not from OpenAI, you might need to provide additional keys and other parameters.
 You can give parameters via a configuration file, or from environment variables.
 
-!!! note "Model-specific environment variables"
-    See [litellm documentation](https://litellm.vercel.app/docs/proxy/quick_start#supported-llms) for the environment variables needed per model, as they may vary and change over time. Our documentation per-model may not always be up-to-date with the latest changes.
-    Failing to set the needed keys of a specific model will usually result in litellm not identifying the model type, and failing to utilize it.
+:::note[Model-specific environment variables]
+See [litellm documentation](https://litellm.vercel.app/docs/proxy/quick_start#supported-llms) for the environment variables needed per model, as they may vary and change over time. Our documentation per-model may not always be up-to-date with the latest changes.
+Failing to set the needed keys of a specific model will usually result in litellm not identifying the model type, and failing to utilize it.
+:::
 
-!!! warning "Credential isolation boundary"
-    PR-Agent captures request settings and supported provider environment values per handler. Deployment-owned LiteLLM secret managers are outside this request-isolation boundary; their credentials are not snapshotted by PR-Agent. Keep process environment variables and LiteLLM globals stable while requests run. The handler does not isolate arbitrary changes made by embedding applications during a request. Use separate processes when workloads require different deployment-owned credential sources or mutable global authentication and routing state.
+:::warning[Credential isolation boundary]
+PR-Agent captures request settings and supported provider environment values per handler. Deployment-owned LiteLLM secret managers are outside this request-isolation boundary; their credentials are not snapshotted by PR-Agent. Keep process environment variables and LiteLLM globals stable while requests run. The handler does not isolate arbitrary changes made by embedding applications during a request. Use separate processes when workloads require different deployment-owned credential sources or mutable global authentication and routing state.
 
-    Process-wide routing fallbacks such as `litellm.api_base`, `litellm.api_version`, `litellm.organization`, `litellm.vertex_project`, and `litellm.vertex_location` can be rejected even when unchanged. Use the corresponding PR-Agent settings (`OPENAI.API_BASE`, `OPENAI.API_VERSION`, `OPENAI.ORG`, `VERTEXAI.VERTEX_PROJECT`, and `VERTEXAI.VERTEX_LOCATION`) or supported provider environment variables, and clear the corresponding LiteLLM globals even when they match the intended routing. Use `LITELLM.EXTRA_HEADERS` instead of `litellm.headers`.
+Process-wide routing fallbacks such as `litellm.api_base`, `litellm.api_version`, `litellm.organization`, `litellm.vertex_project`, and `litellm.vertex_location` can be rejected even when unchanged. Use the corresponding PR-Agent settings (`OPENAI.API_BASE`, `OPENAI.API_VERSION`, `OPENAI.ORG`, `VERTEXAI.VERTEX_PROJECT`, and `VERTEXAI.VERTEX_LOCATION`) or supported provider environment variables, and clear the corresponding LiteLLM globals even when they match the intended routing. Use `LITELLM.EXTRA_HEADERS` instead of `litellm.headers`.
+:::
 
 ### OpenAI like API
 
@@ -120,14 +127,15 @@ By default, Ollama uses a context window size of 2048 tokens. In most cases this
 
 Please note that the `custom_model_max_tokens` setting should be configured in accordance with the `OLLAMA_CONTEXT_LENGTH`. Failure to do so may result in unexpected model output.
 
-!!! note "Local models vs commercial models"
-    PR-Agent is compatible with almost any AI model, but analyzing complex code repositories and pull requests requires a model specifically optimized for code analysis.
+:::note[Local models vs commercial models]
+PR-Agent is compatible with almost any AI model, but analyzing complex code repositories and pull requests requires a model specifically optimized for code analysis.
 
-    Commercial models such as GPT-5, Claude Sonnet, and Gemini have demonstrated robust capabilities in generating structured output for code analysis tasks with large input. In contrast, most open-source models currently available (as of January 2025) face challenges with these complex tasks.
+Commercial models such as GPT-5, Claude Sonnet, and Gemini have demonstrated robust capabilities in generating structured output for code analysis tasks with large input. In contrast, most open-source models currently available (as of January 2025) face challenges with these complex tasks.
 
-    Based on our testing, local open-source models are suitable for experimentation and learning purposes (mainly for the `ask` command), but they are not suitable for production-level code analysis tasks.
+Based on our testing, local open-source models are suitable for experimentation and learning purposes (mainly for the `ask` command), but they are not suitable for production-level code analysis tasks.
 
-    Hence, for production workflows and real-world usage, we recommend using commercial models.
+Hence, for production workflows and real-world usage, we recommend using commercial models.
+:::
 
 ### Hugging Face
 
@@ -699,8 +707,9 @@ Keep the `openai/` prefix on the model name, whichever Neon model ID you use: th
 
 Create the credential per branch in the [Neon Console](https://console.neon.tech/) with the `ai_gateway:invoke` scope. The credential also works on branches descended from the one it was created on. The gateway is in beta and requires a paid Neon plan. It runs only in AWS US East (Ohio), `aws-us-east-2`.
 
-!!! note "Chat completions only"
-    Some model IDs in Neon's catalog are served through the OpenAI Responses API, which Neon exposes under `/openai/v1` instead of `/v1`. The configuration above points at the chat-completions endpoint, so it cannot reach those models. Neon also documents a few models that return `message.content` as an array of typed blocks rather than a string, and PR-Agent reads the reply as a string.
+:::note[Chat completions only]
+Some model IDs in Neon's catalog are served through the OpenAI Responses API, which Neon exposes under `/openai/v1` instead of `/v1`. The configuration above points at the chat-completions endpoint, so it cannot reach those models. Neon also documents a few models that return `message.content` as an array of typed blocks rather than a string, and PR-Agent reads the reply as a string.
+:::
 
 ### GitHub Copilot
 
@@ -750,8 +759,9 @@ OPENAI__KEY=...
 
 Keep the `openai/` prefix on the model name, whichever Atlas model ID you use (`openai/deepseek-ai/deepseek-v4-pro`, `openai/zai-org/glm-5`, `openai/moonshotai/kimi-k2.6`, ...): the prefix routes the request through litellm's OpenAI-compatible path. A prefixed name is not in the `MAX_TOKENS` table [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py), so you also have to set `custom_model_max_tokens`. Take the value from Atlas's [model catalog](https://www.atlascloud.ai/models).
 
-!!! note "Reasoning models need output headroom"
-    Several Atlas models are reasoning models that spend completion tokens on a hidden chain of thought before writing the answer. `deepseek-ai/deepseek-v4-pro` with `max_tokens = 16` returns `finish_reason = "length"` and an **empty** `message.content` — all 16 completion tokens were reasoning tokens. If a tool comes back blank, raise the output budget rather than assuming the request failed. Non-reasoning IDs such as `deepseek-ai/DeepSeek-V3.1` are unaffected.
+:::note[Reasoning models need output headroom]
+Several Atlas models are reasoning models that spend completion tokens on a hidden chain of thought before writing the answer. `deepseek-ai/deepseek-v4-pro` with `max_tokens = 16` returns `finish_reason = "length"` and an **empty** `message.content` — all 16 completion tokens were reasoning tokens. If a tool comes back blank, raise the output budget rather than assuming the request failed. Non-reasoning IDs such as `deepseek-ai/DeepSeek-V3.1` are unaffected.
+:::
 
 ### Custom models
 
@@ -822,14 +832,15 @@ When `claude_extended_thinking_models_override` is non-empty, it fully replaces 
 include every model that should receive extended thinking. Leave it empty (the default) to use the
 built-in defaults.
 
-!!! note "Only models that accept a thinking budget are supported"
-    PR-Agent enables extended thinking through the manual
-    `thinking={"type": "enabled", "budget_tokens": ...}` request. Adaptive-only Claude models
-    (e.g. Opus 4.7/4.8, Opus 5, Sonnet 5, Fable 5, Fable 5.1) reject `budget_tokens`, so they are
-    intentionally excluded from the built-in defaults. If you add one to
-    `claude_extended_thinking_models_override` anyway, PR-Agent skips the extended-thinking payload
-    for it and logs a warning rather than sending a request the provider would reject — use
-    `enable_claude_adaptive_thinking` for those models instead.
+:::note[Only models that accept a thinking budget are supported]
+PR-Agent enables extended thinking through the manual
+`thinking={"type": "enabled", "budget_tokens": ...}` request. Adaptive-only Claude models
+(e.g. Opus 4.7/4.8, Opus 5, Sonnet 5, Fable 5, Fable 5.1) reject `budget_tokens`, so they are
+intentionally excluded from the built-in defaults. If you add one to
+`claude_extended_thinking_models_override` anyway, PR-Agent skips the extended-thinking payload
+for it and logs a warning rather than sending a request the provider would reject — use
+`enable_claude_adaptive_thinking` for those models instead.
+:::
 
 Both thinking gates only fire when the model id itself is recognizable: an opaque id such as a
 Bedrock application inference profile ARN matches neither gate, and PR-Agent logs a warning
@@ -885,6 +896,7 @@ Routing applies only to calls that ask for the regular model: `/review`, `/impro
 alone, and a dedicated `config.model_reasoning` is still used for self-reflection. With `config.output_run_details`
 enabled, the run details show which model a routed pull request ended up on.
 
-!!! note "Azure deployments"
-    An Azure deployment is tied to one model, so when `openai.deployment_id` is set each rule also needs its own
-    `deployment_id`. A rule without one is skipped with a warning and the next rule is tried.
+:::note[Azure deployments]
+An Azure deployment is tied to one model, so when `openai.deployment_id` is set each rule also needs its own
+`deployment_id`. A rule without one is skipped with a warning and the next rule is tried.
+:::

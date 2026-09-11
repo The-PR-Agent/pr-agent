@@ -1,4 +1,7 @@
-# Local Git Provider
+---
+title: "Local Git Provider"
+sidebar_position: 13
+---
 
 Use the `local` Git provider to run PR-Agent from a local Git checkout when there is no hosted GitHub, GitLab, or Bitbucket pull/merge request. It treats the local branch comparison as a pull-request-like change and writes the result to files in the checkout.
 

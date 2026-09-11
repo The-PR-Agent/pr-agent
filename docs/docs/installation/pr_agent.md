@@ -1,4 +1,7 @@
-# PR-Agent Installation Guide
+---
+title: "PR-Agent Installation Guide"
+sidebar_position: 2
+---
 
 PR-Agent can be deployed in various environments and platforms. Choose the installation method that best suits your needs:
 

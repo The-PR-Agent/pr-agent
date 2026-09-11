@@ -1,6 +1,11 @@
+---
+title: "Additional Configurations"
+sidebar_position: 10
+---
+
 ## Show possible configurations
 
-The possible configurations of PR-Agent are stored in [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml){:target="_blank"}.
+The possible configurations of PR-Agent are stored in <a href="https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml" target="_blank" rel="noopener noreferrer">here</a>.
 In the [tools](../tools/index.md) page you can find explanations on how to use these configurations for each tool.
 
 To print all the available configurations as a comment on your PR, you can use the following command:
@@ -9,7 +14,7 @@ To print all the available configurations as a comment on your PR, you can use t
 /config
 ```
 
-![possible_config1](../assets/possible_config1.png){width=512}
+<img src="/img/possible_config1.png" alt="possible_config1" width="512" />
 
 To view the **actual** configurations used for a specific tool, after all the user settings are applied, you can add for each tool a `--config.output_relevant_configurations=true` suffix.
 For example:
@@ -20,7 +25,7 @@ For example:
 
 Will output an additional field showing the actual configurations used for the `improve` tool.
 
-![possible_config2](../assets/possible_config2.png){width=512}
+<img src="/img/possible_config2.png" alt="possible_config2" width="512" />
 
 ### Showing the agent run details
 
@@ -419,15 +424,16 @@ You can list any repository-relative paths. By default the files are read from t
 repo_context_files = ["AGENTS.md", "CLAUDE.md", "docs/conventions.md"]
 ```
 
-!!! note "Which branch the files are read from"
-    By default (`repo_context_from_default_branch = true`), instruction files are read from the repository's **default branch** — a single trusted source — so neither the PR nor its target branch can alter the guidance used to review it. This matches how Qodo Merge reads these files.
+:::note[Which branch the files are read from]
+By default (`repo_context_from_default_branch = true`), instruction files are read from the repository's **default branch** — a single trusted source — so neither the PR nor its target branch can alter the guidance used to review it. This matches how Qodo Merge reads these files.
 
-    Set `repo_context_from_default_branch = false` to instead read from the PR's **target (base) branch**. This respects branch-specific instructions (for example a release branch, or a stacked PR that carries its own `AGENTS.md`), at the cost of trusting whoever can write to that target branch. Even then, files are never read from the PR's own head.
+Set `repo_context_from_default_branch = false` to instead read from the PR's **target (base) branch**. This respects branch-specific instructions (for example a release branch, or a stacked PR that carries its own `AGENTS.md`), at the cost of trusting whoever can write to that target branch. Even then, files are never read from the PR's own head.
 
-    ```toml
-    [config]
-    repo_context_from_default_branch = false
-    ```
+```toml
+[config]
+repo_context_from_default_branch = false
+```
+:::
 
 To bound how much of this context is sent to the model, `repo_context_max_lines` (default `500`) caps the total number of rendered lines, including the wrapper tags. Content beyond the budget is truncated safely:
 
@@ -526,8 +532,9 @@ ignore_pr_authors = ["my-special-bot-user", ...]
 
 Where the `ignore_pr_authors` is a regex list of usernames that you want to ignore.
 
-!!! note
-    There is one specific case where bots will receive an automatic response - when they generated a PR with a _failed test_.
+:::note
+There is one specific case where bots will receive an automatic response - when they generated a PR with a _failed test_.
+:::
 
 ### Ignoring Generated Files by Language/Framework
 

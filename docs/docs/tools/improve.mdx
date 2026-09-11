@@ -1,3 +1,11 @@
+---
+title: "Improve"
+sidebar_position: 4
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
 ## Overview
 
 Generate actionable code suggestions for improving the PR.
@@ -9,11 +17,18 @@ The tool can be triggered automatically every time a new PR is [opened](../usage
 
 ## How it looks
 
-=== "Suggestions Overview"
-    ![code_suggestions_as_comment_closed](../assets/code_suggestions_as_comment_closed.png){width=512}
+<Tabs>
+<TabItem value="suggestions-overview" label="Suggestions Overview">
 
-=== "Selecting a specific suggestion"
-    ![code_suggestions_as_comment_open](../assets/code_suggestions_as_comment_open.png){width=512}
+<img src="/img/code_suggestions_as_comment_closed.png" alt="code_suggestions_as_comment_closed" width="512" />
+
+</TabItem>
+<TabItem value="selecting-a-specific-suggestion" label="Selecting a specific suggestion">
+
+<img src="/img/code_suggestions_as_comment_open.png" alt="code_suggestions_as_comment_open" width="512" />
+
+</TabItem>
+</Tabs>
 
 ___
 
@@ -45,7 +60,7 @@ When this fallback output succeeds, it is retained without an additional failure
 error propagation still follows `config.propagate_tool_errors`.
 If any individual retry succeeds, the existing partial-recovery behavior is preserved.
 
-![improve](../assets/improve.png){width=512}
+<img src="/img/improve.png" alt="improve" width="512" />
 
 ### Automatic triggering
 
@@ -76,9 +91,9 @@ changes exits without calling the model.
 
 PR-Agent supports two modes for presenting code suggestions:
 
-1) [Table](../assets/code_suggestions_as_comment_closed.png) mode
+1) [Table](/img/code_suggestions_as_comment_closed.png) mode
 
-2) [Inline Committable](../assets/improve.png) code comments mode.
+2) [Inline Committable](/img/improve.png) code comments mode.
 
 The table format offers several key advantages:
 
@@ -90,7 +105,7 @@ The table format offers several key advantages:
 
 Table mode is the default of PR-Agent, and is recommended approach for most users due to these benefits.
 
-![code_suggestions_as_comment_closed.png](../assets/code_suggestions_as_comment_closed.png){width=512}
+<img src="/img/code_suggestions_as_comment_closed.png" alt="code_suggestions_as_comment_closed.png" width="512" />
 
 Teams with specific preferences can enable committable code comments mode in their local configuration, or use [dual publishing mode](#dual-publishing-mode).
 
@@ -137,62 +152,68 @@ from the default branch by default and are limited by `config.repo_context_max_l
 Set `config.repo_context_from_default_branch = false` to read them from the pull request's target branch instead.
 Providers without repository file fetching log a warning and skip this context.
 
-???- tip "Writing effective best practices files"
+<details>
+<summary>Writing effective best practices files</summary>
 
-    The following guidelines apply to all best practices files:
+The following guidelines apply to all best practices files:
 
-    - Write clearly and concisely
-    - Include brief code examples when helpful with before/after patterns
-    - Focus on project-specific guidelines that will result in relevant suggestions you actually want to get
-    - Keep each file short and focused, since:
-        - AI models may not process effectively very long documents
-        - Long files tend to contain generic guidelines already known to AI
-        - `config.repo_context_max_lines` limits the total rendered repository context, including wrapper and
-          truncation lines.
-    - Use pattern-based structure rather than simple bullet points for better clarity
+- Write clearly and concisely
+- Include brief code examples when helpful with before/after patterns
+- Focus on project-specific guidelines that will result in relevant suggestions you actually want to get
+- Keep each file short and focused, since:
+    - AI models may not process effectively very long documents
+    - Long files tend to contain generic guidelines already known to AI
+    - `config.repo_context_max_lines` limits the total rendered repository context, including wrapper and
+      truncation lines.
+- Use pattern-based structure rather than simple bullet points for better clarity
 
-???- tip "Example of a best practices file"
+</details>
 
-    Pattern 1: Add proper error handling with try-except blocks around external function calls.
+<details>
+<summary>Example of a best practices file</summary>
 
-    Example code before:
+Pattern 1: Add proper error handling with try-except blocks around external function calls.
 
-    ```python
+Example code before:
+
+```python
+# Some code that might raise an exception
+return process_pr_data(data)
+```
+
+Example code after:
+
+```python
+try:
     # Some code that might raise an exception
     return process_pr_data(data)
-    ```
+except Exception as e:
+    logger.exception("Failed to process request", extra={"error": e})
+```
 
-    Example code after:
+Pattern 2: Add defensive null/empty checks before accessing object properties or performing operations on potentially null variables to prevent runtime errors.
 
-    ```python
-    try:
-        # Some code that might raise an exception
-        return process_pr_data(data)
-    except Exception as e:
-        logger.exception("Failed to process request", extra={"error": e})
-    ```
+Example code before:
 
-    Pattern 2: Add defensive null/empty checks before accessing object properties or performing operations on potentially null variables to prevent runtime errors.
+```python
+def get_pr_code(pr_data):
+    if "changed_code" in pr_data:
+        return pr_data.get("changed_code", "")
+    return ""
+```
 
-    Example code before:
+Example code after:
 
-    ```python
-    def get_pr_code(pr_data):
-        if "changed_code" in pr_data:
-            return pr_data.get("changed_code", "")
+```python
+def get_pr_code(pr_data):
+    if pr_data is None:
         return ""
-    ```
+    if "changed_code" in pr_data:
+        return pr_data.get("changed_code", "")
+    return ""
+```
 
-    Example code after:
-
-    ```python
-    def get_pr_code(pr_data):
-        if pr_data is None:
-            return ""
-        if "changed_code" in pr_data:
-            return pr_data.get("changed_code", "")
-        return ""
-    ```
+</details>
 
 ### Combining 'extra instructions' and 'best practices'
 
@@ -218,7 +239,7 @@ In such cases, we recommend prioritizing the suggestion's detailed description, 
 
 ### Dual publishing mode
 
-Our recommended approach for presenting code suggestions is through a [table](./improve.md#overview) (`--pr_code_suggestions.commitable_code_suggestions=false`).
+Our recommended approach for presenting code suggestions is through a [table](./improve.mdx#overview) (`--pr_code_suggestions.commitable_code_suggestions=false`).
 This method significantly reduces the PR footprint and allows for quick and easy digestion of multiple suggestions.
 
 We also offer a complementary **dual publishing mode**. When enabled, suggestions exceeding a certain score threshold are not only displayed in the table, but also presented as committable PR comments.
@@ -292,11 +313,12 @@ You can set the content of the checkbox text via:
 code_suggestions_self_review_text = "... (your text here) ..."
 ```
 
-![self_review_1](../assets/self_review_1.webp){width=512}
+<img src="/img/self_review_1.webp" alt="self_review_1" width="512" />
 
-!!! note "The checkbox is a visual marker only"
+:::note[The checkbox is a visual marker only]
 
-    PR-Agent renders the checkbox, but does not react to it being ticked. Nothing is folded, and no approval is added, when the PR author clicks it.
+PR-Agent renders the checkbox, but does not react to it being ticked. Nothing is folded, and no approval is added, when the PR author clicks it.
+:::
 
 ### How many code suggestions are generated?
 
@@ -327,85 +349,91 @@ The descriptions below explain each option's behavior. See the relevant sections
 [`configuration.toml`](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml)
 for the authoritative default values.
 
-???+ example "General options"
+<details open>
+<summary>General options</summary>
 
-    <table>
-      <tr>
-        <td><b>extra_instructions</b></td>
-        <td>Optional extra instructions to the tool. For example: "focus on the changes in the file X. Ignore change in ...".</td>
-      </tr>
-      <tr>
-        <td><b>suggestions_heading</b></td>
-        <td>
-          Visible base heading for summary-table improve comments, without the Markdown prefix.
-          For example, <code>suggestions_heading = "Guideline Improvement Suggestions"</code> renders
-          <code>## Guideline Improvement Suggestions ✨</code>. On GitHub, GitLab, and Azure DevOps,
-          changing this value updates the same persistent suggestions comment; it does not create a separate
-          suggestions channel. LocalGit uses the same visible heading in <code>improve.md</code>, without a
-          hidden identity marker. The setting does not affect committable inline suggestions.
-        </td>
-      </tr>
-      <tr>
-        <td><b>commitable_code_suggestions</b></td>
-        <td>If set to true, the tool will display the suggestions as committable code comments.</td>
-      </tr>
-      <tr>
-        <td><b>dual_publishing_score_threshold</b></td>
-        <td>Minimum score threshold for suggestions to be presented as committable PR comments in addition to the table.</td>
-      </tr>
-      <tr>
-        <td><b>focus_only_on_problems</b></td>
-        <td>If set to true, suggestions will focus primarily on identifying and fixing code problems, and less on
-        style considerations like best practices, maintainability, or readability.</td>
-      </tr>
-      <tr>
-        <td><b>persistent_comment</b></td>
-        <td>If set to true, the improve comment will be persistent, meaning that every new improve request will edit the previous one.</td>
-      </tr>
-      <tr>
-        <td><b>suggestions_score_threshold</b></td>
-        <td>Any suggestion with importance score less than this threshold will be removed. Values above 7-8 may clip relevant suggestions.</td>
-      </tr>
-      <tr>
-        <td><b>enable_help_text</b></td>
-        <td>If set to true, the tool will display a help text in the comment.</td>
-      </tr>
-      <tr>
-        <td><b>enable_chat_text</b></td>
-        <td>If set to true, the tool will display a reference to the PR chat in the comment.</td>
-      </tr>
-      <tr>
-        <td><b>publish_output_no_suggestions</b></td>
-        <td>If set to true, the tool will publish a comment even if no suggestions were found.</td>
-      </tr>
-      <tr>
-        <td><b>enable_suggestions_coverage_footer</b></td>
-        <td>
-          If set to true, the tool will display a coverage notice when failed analysis chunks make the
-          suggestions incomplete.
-        </td>
-      </tr>
-    </table>
+<table>
+  <tr>
+    <td><b>extra_instructions</b></td>
+    <td>Optional extra instructions to the tool. For example: "focus on the changes in the file X. Ignore change in ...".</td>
+  </tr>
+  <tr>
+    <td><b>suggestions_heading</b></td>
+    <td>
+      Visible base heading for summary-table improve comments, without the Markdown prefix.
+      For example, <code>suggestions_heading = "Guideline Improvement Suggestions"</code> renders
+      <code>## Guideline Improvement Suggestions ✨</code>. On GitHub, GitLab, and Azure DevOps,
+      changing this value updates the same persistent suggestions comment; it does not create a separate
+      suggestions channel. LocalGit uses the same visible heading in <code>improve.md</code>, without a
+      hidden identity marker. The setting does not affect committable inline suggestions.
+    </td>
+  </tr>
+  <tr>
+    <td><b>commitable_code_suggestions</b></td>
+    <td>If set to true, the tool will display the suggestions as committable code comments.</td>
+  </tr>
+  <tr>
+    <td><b>dual_publishing_score_threshold</b></td>
+    <td>Minimum score threshold for suggestions to be presented as committable PR comments in addition to the table.</td>
+  </tr>
+  <tr>
+    <td><b>focus_only_on_problems</b></td>
+    <td>If set to true, suggestions will focus primarily on identifying and fixing code problems, and less on
+    style considerations like best practices, maintainability, or readability.</td>
+  </tr>
+  <tr>
+    <td><b>persistent_comment</b></td>
+    <td>If set to true, the improve comment will be persistent, meaning that every new improve request will edit the previous one.</td>
+  </tr>
+  <tr>
+    <td><b>suggestions_score_threshold</b></td>
+    <td>Any suggestion with importance score less than this threshold will be removed. Values above 7-8 may clip relevant suggestions.</td>
+  </tr>
+  <tr>
+    <td><b>enable_help_text</b></td>
+    <td>If set to true, the tool will display a help text in the comment.</td>
+  </tr>
+  <tr>
+    <td><b>enable_chat_text</b></td>
+    <td>If set to true, the tool will display a reference to the PR chat in the comment.</td>
+  </tr>
+  <tr>
+    <td><b>publish_output_no_suggestions</b></td>
+    <td>If set to true, the tool will publish a comment even if no suggestions were found.</td>
+  </tr>
+  <tr>
+    <td><b>enable_suggestions_coverage_footer</b></td>
+    <td>
+      If set to true, the tool will display a coverage notice when failed analysis chunks make the
+      suggestions incomplete.
+    </td>
+  </tr>
+</table>
 
-???+ example "Params for number of suggestions and AI calls"
+</details>
 
-    <table>
-      <tr>
-        <td><b>num_code_suggestions_per_chunk</b></td>
-        <td>Number of code suggestions provided by the 'improve' tool, per chunk.</td>
-      </tr>
-      <tr>
-        <td><b>max_suggestions_per_file</b></td>
-        <td>
-          Maximum number of suggestions retained for each file after chunk results are combined. The highest-scored
-          suggestions are retained. Set to <code>0</code> to preserve the uncapped behavior.
-        </td>
-      </tr>
-      <tr>
-        <td><b>max_number_of_calls</b></td>
-        <td>Maximum number of chunks.</td>
-      </tr>
-    </table>
+<details open>
+<summary>Params for number of suggestions and AI calls</summary>
+
+<table>
+  <tr>
+    <td><b>num_code_suggestions_per_chunk</b></td>
+    <td>Number of code suggestions provided by the 'improve' tool, per chunk.</td>
+  </tr>
+  <tr>
+    <td><b>max_suggestions_per_file</b></td>
+    <td>
+      Maximum number of suggestions retained for each file after chunk results are combined. The highest-scored
+      suggestions are retained. Set to <code>0</code> to preserve the uncapped behavior.
+    </td>
+  </tr>
+  <tr>
+    <td><b>max_number_of_calls</b></td>
+    <td>Maximum number of chunks.</td>
+  </tr>
+</table>
+
+</details>
 
 ## Understanding AI Code Suggestions
 
@@ -414,5 +442,5 @@ for the authoritative default values.
     - **Self-reflection:** The suggestions aim to enable developers to _self-reflect_ and improve their pull requests. This process can help to identify blind spots, uncover missed edge cases, and enhance code readability and coherency. Even when a specific code suggestion isn't suitable, the underlying issue it highlights often reveals something important that might deserve attention.
     - **Bug detection:** The suggestions also alert on any _critical bugs_ that may have been identified during the analysis. This provides an additional safety net to catch potential issues before they make it into production. It's perfectly acceptable to implement only the suggestions you find valuable for your specific context.
 - **Hierarchy:** Presenting the suggestions in a structured hierarchical table enables the user to _quickly_ understand them, and to decide which ones are relevant and which are not.
-- **Customization:** To guide the model to suggestions that are more relevant to the specific needs of your project, we recommend using the [`extra_instructions`](./improve.md#extra-instructions-and-best-practices) and [`best practices`](./improve.md#best-practices) fields.
+- **Customization:** To guide the model to suggestions that are more relevant to the specific needs of your project, we recommend using the [`extra_instructions`](./improve.mdx#extra-instructions-and-best-practices) and [`best practices`](./improve.mdx#best-practices) fields.
 - **Model Selection:** For specific programming languages or use cases, some models may perform better than others.

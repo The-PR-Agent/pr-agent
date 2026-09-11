@@ -1,3 +1,8 @@
+---
+title: "Generate Labels"
+sidebar_position: 7
+---
+
 ## Overview
 
 The `generate_labels` tool scans the PR code changes and generates custom labels for the PR based on the content and context of the changes.

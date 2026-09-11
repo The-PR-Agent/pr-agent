@@ -1,3 +1,8 @@
+---
+title: "Usage and Automation"
+sidebar_position: 5
+---
+
 ## Local repo (CLI)
 
 When running from your locally cloned PR-Agent repo (CLI), your local configuration file will be used.
@@ -92,8 +97,9 @@ When this parameter is set to `true`, PR-Agent will not run any automatic tools 
 
 ### GitHub App
 
-!!! note "Configurations for PR-Agent"
-    These settings apply to self-hosted GitHub App, GitLab webhook, and Bitbucket App deployments.
+:::note[Configurations for PR-Agent]
+These settings apply to self-hosted GitHub App, GitLab webhook, and Bitbucket App deployments.
+:::
 
 #### GitHub app automatic tools when a new PR is opened
 
@@ -175,8 +181,10 @@ This means that when new code is pushed to the PR, PR-Agent will run the `descri
 `GitHub Action` is a different way to trigger PR-Agent tools, and uses a different configuration mechanism than `GitHub App`.<br>
 You can configure settings for `GitHub Action` by adding environment variables under the env section in `.github/workflows/pr_agent.yml` file.
 
-!!! tip "Fork/contribution support"
-    To support PRs from forked repositories, use the `pull_request_target` event instead of `pull_request`. See the [fork contribution guide](../installation/github.md#using-with-pull_request_target-forkcontribution-support) for a complete example and security considerations.
+:::tip[Fork/contribution support]
+To support PRs from forked repositories, use the `pull_request_target` event instead of `pull_request`. See the [fork contribution guide](../installation/github.md#using-with-pull_request_target-forkcontribution-support) for a complete example and security considerations.
+:::
+
 Specifically, start by setting the following environment variables:
 
 ```yaml
