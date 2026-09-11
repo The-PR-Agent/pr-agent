@@ -404,12 +404,16 @@ def render_carried_section(
 
 
 _CARRIED_HEADING = "### Carried from earlier runs"
-_CARRIED_CONTINUATION_HEADING = "### Carried from earlier runs (continued)"
+CARRIED_CONTINUATION_HEADER = "### Carried from earlier runs (continued)"
 _CARRIED_CONTINUATION_INTRO = "Continued from the primary review comment."
 
 
 def _parse_carried_entries(carried_section: str) -> tuple[str, list[str]]:
-    """Split a carried section into its heading block and whole `- **` entry lines."""
+    """Split a carried section into its heading block and whole entry blocks.
+
+    An entry starts at a `- **` line; subsequent non-entry-start lines append to that entry
+    so multi-line bullets stay whole under the pagination budget.
+    """
     if not carried_section:
         return "", []
     header_lines: list[str] = []
@@ -419,6 +423,8 @@ def _parse_carried_entries(carried_section: str) -> tuple[str, list[str]]:
             entries.append(line)
         elif not entries:
             header_lines.append(line)
+        else:
+            entries[-1] = f"{entries[-1]}\n{line}"
     header = "\n".join(header_lines).rstrip()
     return header, entries
 
@@ -434,7 +440,7 @@ def _build_carried_continuation(entries: list[str]) -> str:
     if not entries:
         return ""
     return "\n".join([
-        _CARRIED_CONTINUATION_HEADING,
+        CARRIED_CONTINUATION_HEADER,
         "",
         _CARRIED_CONTINUATION_INTRO,
         "",

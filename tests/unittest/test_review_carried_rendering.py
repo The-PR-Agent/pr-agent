@@ -1,6 +1,7 @@
 import json
 
 from pr_agent.algo.review_finding_state import (
+    _parse_carried_entries,
     append_review_state,
     append_review_state_paginated,
     parse_review_state,
@@ -83,7 +84,7 @@ def test_body_exact_fit_is_untouched_and_carried_is_dropped():
 
     out = append_review_state(body, state, max_chars=max_chars, carried_section=carried)
 
-    assert len(out) <= max_chars + 1  # +1 for append_review_state's trailing newline
+    assert len(out) <= max_chars
     assert out.startswith(body)
     assert "..." not in out
     assert "Carried from earlier runs" not in out
@@ -104,7 +105,7 @@ def test_overflow_carried_entries_appear_whole_in_continuation():
         body, state, max_chars=max_chars, carried_section=carried
     )
 
-    assert len(primary) <= max_chars + 1
+    assert len(primary) <= max_chars
     assert primary.startswith(body)
     assert "..." not in primary
     assert "Carried from earlier runs" not in primary.split("<!-- pr-agent-review-state", 1)[0]
@@ -135,7 +136,7 @@ def test_partial_budget_keeps_whole_entries_and_paginates_the_rest():
         body, state, max_chars=max_chars, carried_section=carried
     )
 
-    assert len(primary) <= max_chars + 1
+    assert len(primary) <= max_chars
     assert primary.startswith(body)
     parsed = parse_review_state(primary)
     assert parsed.valid is True
@@ -178,3 +179,18 @@ def test_six_finding_state_visible_count_survives_tight_budget_via_continuation(
     assert visible == 6
     assert parse_review_state(primary).valid is True
     assert "<!-- pr-agent-review-state" not in continuation
+
+
+def test_parse_carried_entries_keeps_continuation_lines():
+    carried = (
+        "### Carried from earlier runs\n\n"
+        "- **A** — `a.py:1` · first seen 2026-01-01 · not re-reviewed this run\n"
+        "  extra detail line\n"
+        "- **B** — `b.py:2` · first seen 2026-01-01 · not re-reviewed this run"
+    )
+    header, entries = _parse_carried_entries(carried)
+    assert header == "### Carried from earlier runs"
+    assert len(entries) == 2
+    assert "extra detail line" in entries[0]
+    assert entries[0].startswith("- **A**")
+    assert entries[1].startswith("- **B**")

@@ -30,6 +30,7 @@ from pr_agent.algo.prompt_fragments import render_diff_hunk_format
 from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.review_coverage import CoverageLedger, FileCoverage, patch_line_counts
 from pr_agent.algo.review_finding_state import (
+    CARRIED_CONTINUATION_HEADER,
     append_review_state_paginated,
     parse_review_state,
     reconcile_review_findings,
@@ -589,11 +590,36 @@ class PRReviewer:
         return result is not None and result is not False
 
     def _publish_carried_continuation(self) -> None:
-        """Publish overflow carried findings that did not fit the primary review comment."""
-        continuation = getattr(self, "_review_carried_continuation", "") or ""
-        if not continuation:
-            return
-        self.git_provider.publish_comment(continuation, is_temporary=False)
+        """Publish or retire the overflow carried-findings comment; never fail the review."""
+        try:
+            continuation = getattr(self, "_review_carried_continuation", "") or ""
+            if continuation:
+                self.git_provider.publish_persistent_comment(
+                    continuation,
+                    initial_header=CARRIED_CONTINUATION_HEADER,
+                    update_header=False,
+                    name="carried findings continuation",
+                    final_update_message=False,
+                )
+                return
+            if not self.git_provider.is_supported("get_issue_comments"):
+                return
+            for comment in self.git_provider.get_issue_comments():
+                body = getattr(comment, "body", None)
+                if body is None and isinstance(comment, dict):
+                    body = comment.get("body", "")
+                body = body or ""
+                if body.startswith(CARRIED_CONTINUATION_HEADER):
+                    self.git_provider.edit_comment(
+                        comment,
+                        f"{CARRIED_CONTINUATION_HEADER}\n\n"
+                        "All carried findings now fit in the main review comment.",
+                    )
+                    return
+        except Exception as error:
+            get_logger().warning(
+                f"Failed to publish carried findings continuation; continuing review: {error}"
+            )
 
     @staticmethod
     def _as_non_authoritative_review(pr_review: str) -> str:
@@ -933,13 +959,24 @@ class PRReviewer:
             # erroring, which is why the transport-level retry never covered it.
             # Filenames actually represented in this single-call diff: covered as "reviewed"
             # by the coverage ledger (all diff files minus remaining minus deletion-only).
-            reviewed_files = [
-                path for path, entry in self.coverage.files.items()
-                if entry.status == "reviewed"
-            ] if self.coverage is not None else [
-                f.filename for f in self.git_provider.get_diff_files()
-                if f.filename not in set(self.remaining_files_list or [])
-            ]
+            if self.coverage is not None:
+                reviewed_files = [
+                    path for path, entry in self.coverage.files.items()
+                    if entry.status == "reviewed"
+                ]
+            else:
+                remaining = set(self.remaining_files_list or [])
+                reviewed_files = []
+                for diff_file in self.git_provider.get_diff_files():
+                    if diff_file.filename in remaining:
+                        continue
+                    if diff_file.num_plus_lines < 0 or diff_file.num_minus_lines < 0:
+                        plus_lines, minus_lines = patch_line_counts(diff_file.patch)
+                    else:
+                        plus_lines, minus_lines = diff_file.num_plus_lines, diff_file.num_minus_lines
+                    if plus_lines == 0 and minus_lines > 0:
+                        continue  # deletion-only
+                    reviewed_files.append(diff_file.filename)
             (self.prediction, self.prediction_data,
              self.review_vote_dropped_count) = await self._get_review_data(
                 model, files=reviewed_files
