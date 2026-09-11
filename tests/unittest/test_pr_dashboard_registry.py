@@ -1,6 +1,28 @@
+import importlib
+from pathlib import Path
+
 import pytest
 
 from pr_dashboard import registry
+
+
+class TestLazyDefaultPath:
+    def test_import_never_calls_path_home(self, monkeypatch):
+        """Reloading the module with a broken Path.home() must not raise -- it is import time"""
+        def boom():
+            raise RuntimeError("HOME is unset and this user has no passwd entry")
+
+        monkeypatch.setattr(Path, "home", boom)
+        importlib.reload(registry)  # must not raise: the module body never calls Path.home()
+
+    def test_default_registry_path_is_only_computed_on_access(self, monkeypatch):
+        """DEFAULT_REGISTRY_PATH still works as an attribute, computed lazily on that access"""
+        def boom():
+            raise RuntimeError("HOME is unset and this user has no passwd entry")
+
+        monkeypatch.setattr(Path, "home", boom)
+        with pytest.raises(RuntimeError):
+            _ = registry.DEFAULT_REGISTRY_PATH
 
 
 class TestRepoValidation:

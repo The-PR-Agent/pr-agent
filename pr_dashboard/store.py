@@ -12,8 +12,28 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Optional
 
-DEFAULT_DB_PATH = Path.home() / ".pr_dashboard" / "usage.db"
 LOCK_TIMEOUT_SECONDS = 5.0
+
+
+def _default_db_path() -> Path:
+    """Compute the default db path lazily, never at import time.
+
+    Path.home() raises RuntimeError (not ImportError) when HOME is unset and there is no
+    passwd entry for the current user, and the guard in pr_agent/agent/pr_agent.py around
+    importing pr_dashboard.recorder only catches ImportError -- so a module-level
+    ``Path.home()`` here would take down every pr-agent command in that environment, not
+    just the dashboard.
+    """
+    return Path.home() / ".pr_dashboard" / "usage.db"
+
+
+def __getattr__(name: str):
+    # PEP 562: keeps `store.DEFAULT_DB_PATH` working as a module attribute for existing
+    # callers (app.py's create_app, tests) while deferring the Path.home() call until
+    # something actually asks for it, instead of at import time.
+    if name == "DEFAULT_DB_PATH":
+        return _default_db_path()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 _SCHEMA = (
     """
@@ -68,8 +88,10 @@ _FINISH_WITH_USAGE = (
 )
 
 
-def connect(db_path: Path | str = DEFAULT_DB_PATH) -> sqlite3.Connection:
+def connect(db_path: Path | str | None = None) -> sqlite3.Connection:
     """Open the store, creating the file and schema when absent."""
+    if db_path is None:
+        db_path = _default_db_path()
     if str(db_path) != ":memory:":
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     # timeout gives the bounded retry the spec asks for on "database is locked": sqlite

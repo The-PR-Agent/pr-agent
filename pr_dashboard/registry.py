@@ -15,7 +15,27 @@ from pathlib import Path
 
 SUPPORTED_PROVIDERS = ("github", "bitbucket")
 SLUG_PATTERN = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
-DEFAULT_REGISTRY_PATH = Path.home() / ".pr_dashboard" / "pr_dashboard.toml"
+
+
+def _default_registry_path() -> Path:
+    """Compute the default registry path lazily, never at import time.
+
+    Path.home() raises RuntimeError (not ImportError) when HOME is unset and there is no
+    passwd entry for the current user, and the guard in pr_agent/agent/pr_agent.py around
+    importing pr_dashboard.recorder only catches ImportError -- so a module-level
+    ``Path.home()`` here would take down every pr-agent command in that environment, not
+    just the dashboard.
+    """
+    return Path.home() / ".pr_dashboard" / "pr_dashboard.toml"
+
+
+def __getattr__(name: str):
+    # PEP 562: keeps `registry.DEFAULT_REGISTRY_PATH` working as a module attribute for
+    # existing callers (app.py's create_app, tests) while deferring the Path.home() call
+    # until something actually asks for it, instead of at import time.
+    if name == "DEFAULT_REGISTRY_PATH":
+        return _default_registry_path()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 class RegistryError(ValueError):
@@ -42,9 +62,9 @@ class Repo:
         return self
 
 
-def load(path: Path | str = DEFAULT_REGISTRY_PATH) -> list[Repo]:
+def load(path: Path | str | None = None) -> list[Repo]:
     """Read the registry, dropping entries a human edit made invalid."""
-    path = Path(path)
+    path = Path(path) if path is not None else _default_registry_path()
     if not path.exists():
         return []
     with path.open("rb") as handle:
@@ -61,9 +81,9 @@ def load(path: Path | str = DEFAULT_REGISTRY_PATH) -> list[Repo]:
     return repos
 
 
-def save(repos: list[Repo], path: Path | str = DEFAULT_REGISTRY_PATH) -> None:
+def save(repos: list[Repo], path: Path | str | None = None) -> None:
     """Rewrite the whole registry file from validated entries."""
-    path = Path(path)
+    path = Path(path) if path is not None else _default_registry_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     blocks = ["# Managed by pr-dashboard. Credentials are NOT stored here.\n"]
     for repo in repos:
@@ -72,7 +92,7 @@ def save(repos: list[Repo], path: Path | str = DEFAULT_REGISTRY_PATH) -> None:
     path.write_text("\n".join(blocks), encoding="utf-8")
 
 
-def add(repo: Repo, path: Path | str = DEFAULT_REGISTRY_PATH) -> list[Repo]:
+def add(repo: Repo, path: Path | str | None = None) -> list[Repo]:
     """Append a repository, refusing a duplicate."""
     repo.validate()
     repos = load(path)
@@ -83,7 +103,7 @@ def add(repo: Repo, path: Path | str = DEFAULT_REGISTRY_PATH) -> list[Repo]:
     return repos
 
 
-def remove(provider: str, slug: str, path: Path | str = DEFAULT_REGISTRY_PATH) -> list[Repo]:
+def remove(provider: str, slug: str, path: Path | str | None = None) -> list[Repo]:
     """Drop a repository, reporting when it was not registered."""
     repos = load(path)
     remaining = [repo for repo in repos if repo.key != f"{provider}:{slug}"]
