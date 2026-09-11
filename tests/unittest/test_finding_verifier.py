@@ -72,6 +72,9 @@ def test_parse_verdict(text, status):
     [
         '{"status":"refuted","evidence":"","reason":"x"}',
         '{"status":"confirmed","evidence":"   ","reason":"y"}',
+        '{"status":"refuted","evidence":null,"reason":"z"}',
+        '{"status":"refuted","evidence":42,"reason":"z"}',
+        '{"status":"confirmed","reason":"no evidence key"}',
     ],
 )
 def test_parse_verdict_requires_evidence_for_confirmed_or_refuted(text):

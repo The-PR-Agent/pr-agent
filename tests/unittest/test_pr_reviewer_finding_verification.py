@@ -218,6 +218,16 @@ async def test_unverified_suffix_is_idempotent_and_stripped_for_state(monkeypatc
     assert "**Unverified Issue**" in finding["body"]
 
 
+def test_untagged_header_ending_like_the_suffix_keeps_its_identity():
+    # Verification off (or a model-written header): no `verification` field, so the header is part
+    # of the finding's identity and must not be altered.
+    issue = {"relevant_file": "lib/a.dart", "start_line": 1, "end_line": 2,
+             "issue_header": "Config path (unverified)", "issue_content": "value is read before load"}
+    finding = PRReviewer._review_finding_from_issue(issue)
+    assert finding is not None
+    assert "**Config path (unverified)**" in finding["body"]
+
+
 @pytest.mark.asyncio
 async def test_run_publishes_without_refuted_finding(monkeypatch):
     settings = _enable_verification(monkeypatch)

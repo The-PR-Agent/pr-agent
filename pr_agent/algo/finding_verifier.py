@@ -73,7 +73,9 @@ def parse_verdict(text: str) -> Verdict:
     status = str(data.get("status", "")).lower()
     if status not in ("confirmed", "refuted", "unverified"):
         status = "unverified"
-    evidence = str(data.get("evidence", ""))[:500]
+    raw_evidence = data.get("evidence")
+    # JSON null or a non-string is not a quoted line; str() would turn None into "None" and pass the check.
+    evidence = raw_evidence[:500] if isinstance(raw_evidence, str) else ""
     reason = str(data.get("reason", ""))[:500]
     if status in ("confirmed", "refuted") and not evidence.strip():
         return Verdict("unverified", evidence=evidence, reason="no evidence quoted")

@@ -704,7 +704,9 @@ class PRReviewer:
         raw_content = issue.get("issue_content") or issue.get("body") or ""
         content = _SUGGESTION_FENCE_RE.sub("```text", str(raw_content).strip())
         header = str(issue.get("issue_header") or "").strip()
-        if header.endswith(UNVERIFIED_HEADER_SUFFIX):
+        # Only the verifier's own display tag is stripped; a header that happens to end the same way
+        # on an untagged finding is part of its identity and must round-trip unchanged.
+        if issue.get("verification") == "unverified" and header.endswith(UNVERIFIED_HEADER_SUFFIX):
             header = header[: -len(UNVERIFIED_HEADER_SUFFIX)].rstrip()
         if header.lower() == "possible bug":
             header = "Possible Issue"
