@@ -1,3 +1,4 @@
+import copy
 from unittest.mock import MagicMock, patch
 from urllib.parse import urlparse
 
@@ -25,15 +26,27 @@ _JIRA_KEYS = (
     "JIRA.JIRA_API_EMAIL",
     "JIRA.JIRA_API_TOKEN",
     "JIRA.JIRA_REQUIREMENTS_FIELD",
+    "JIRA.PROJECT_KEYS",
 )
 
 
 @pytest.fixture(autouse=True)
 def restore_jira_settings():
-    saved = {key: get_settings().get(key, None) for key in _JIRA_KEYS}
+    saved = {key: copy.deepcopy(get_settings().get(key, None)) for key in _JIRA_KEYS}
     yield
     for key, value in saved.items():
+        # Settings are loaded with merge_enabled, so set() merges a list value into the
+        # existing list instead of replacing it (and unset() does not reach a nested key).
+        # Writing a scalar in between turns the restore into a plain replace.
+        get_settings().set(key, "")
         get_settings().set(key, value)
+
+
+def _set_project_keys(value):
+    """Replace the jira.project_keys allowlist (a plain set() would merge lists, see
+    restore_jira_settings)."""
+    get_settings().set("JIRA.PROJECT_KEYS", "")
+    get_settings().set("JIRA.PROJECT_KEYS", value)
 
 
 class TestFindJiraTickets:
@@ -241,6 +254,75 @@ class TestExtractJiraTickets:
             result = extract_jira_tickets(keys)
         assert client.issue.call_count == MAX_JIRA_FETCH_ATTEMPTS
         assert result == []
+
+    def test_project_keys_allowlist_drops_unlisted_prefixes_before_lookup(self):
+        """With jira.project_keys set, key-shaped noise with another prefix ("SHA-256",
+        "UTF-8") is never looked up, so it costs no authenticated 404."""
+        self._configure_jira()
+        _set_project_keys(["PROJ", "OPS"])
+        client = self._fake_client()
+        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client):
+            result = extract_jira_tickets("PROJ-1 uses SHA-256 and UTF-8, see OPS-7 and ISO-8601")
+        assert [call.args[0] for call in client.issue.call_args_list] == ["PROJ-1", "OPS-7"]
+        assert [t["ticket_id"] for t in result] == ["PROJ-1", "OPS-7"]
+
+    def test_project_keys_allowlist_skips_client_when_nothing_is_left(self):
+        """When every detected key is outside the allowlist, no client is built at all."""
+        self._configure_jira()
+        _set_project_keys(["PROJ"])
+        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira") as jira_cls:
+            result = extract_jira_tickets("hash with SHA-256 and UTF-8 text")
+        assert result == []
+        jira_cls.assert_not_called()
+
+    def test_project_keys_empty_keeps_looking_up_every_key(self):
+        """An empty allowlist (the default) changes nothing for existing users."""
+        self._configure_jira()
+        _set_project_keys([])
+        client = self._fake_client()
+        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client):
+            result = extract_jira_tickets("PROJ-1 and SHA-256")
+        assert [call.args[0] for call in client.issue.call_args_list] == ["PROJ-1", "SHA-256"]
+        assert len(result) == 2
+
+    def test_project_keys_match_case_insensitively(self):
+        """Keys are normalized to upper case, so a lowercased allowlist entry still matches."""
+        self._configure_jira()
+        _set_project_keys(["proj"])
+        client = self._fake_client()
+        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client):
+            result = extract_jira_tickets("bugfix/proj-12-x mentions SHA-256")
+        assert [call.args[0] for call in client.issue.call_args_list] == ["PROJ-12"]
+        assert [t["ticket_id"] for t in result] == ["PROJ-12"]
+
+    def test_project_keys_accept_comma_separated_string(self):
+        """Environment-variable overrides arrive as a string (jira__project_keys="PROJ, OPS")."""
+        self._configure_jira()
+        _set_project_keys("PROJ, OPS")
+        client = self._fake_client()
+        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client):
+            extract_jira_tickets("OPS-3 SHA-256 PROJ-4")
+        assert [call.args[0] for call in client.issue.call_args_list] == ["OPS-3", "PROJ-4"]
+
+    @pytest.mark.parametrize("bad_entry", [
+        "https://acme.atlassian.net/browse/PROJ",  # a URL, not a key
+        "PROJ-123",                                # a ticket key, not a project key
+        "P",                                       # too short to ever match a ticket
+        "PROJECT_KEY_TOO_LONG",                    # longer than the ticket pattern allows
+        "pro j",                                   # whitespace
+    ])
+    def test_invalid_project_keys_are_ignored_with_a_warning(self, bad_entry):
+        """A malformed entry cannot widen the allowlist; it is dropped with a warning while
+        the valid entries keep filtering."""
+        self._configure_jira()
+        _set_project_keys([bad_entry, "PROJ"])
+        client = self._fake_client()
+        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client), \
+                patch("pr_agent.tools.ticket_pr_compliance_check.get_logger") as get_logger:
+            extract_jira_tickets("PROJ-1 SHA-256")
+        assert [call.args[0] for call in client.issue.call_args_list] == ["PROJ-1"]
+        warning_calls = [str(c) for c in get_logger.return_value.warning.call_args_list]
+        assert any("project_keys" in c and bad_entry in c for c in warning_calls)
 
     def test_skips_ticket_on_fetch_error(self):
         """A failed fetch for one key does not abort the others."""

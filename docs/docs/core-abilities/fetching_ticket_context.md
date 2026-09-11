@@ -197,6 +197,22 @@ instance (for example `customfield_10127`); leave it empty to skip requirements.
 jira_requirements_field = "customfield_10127"
 ```
 
+#### Project key allowlist (optional)
+
+Ticket detection matches any `PROJECT-123` shaped text, so strings like `SHA-256`,
+`UTF-8` or `ISO-8601` in a title or description each cost an authenticated lookup that
+returns 404. If your repository works with a known set of Jira projects, list their keys
+in `project_keys`; keys with any other prefix are then dropped before any lookup (they are
+named once at debug level in the log). Leave the list empty to look up every key found.
+
+```toml
+[jira]
+project_keys = ["PROJ", "OPS"]
+```
+
+Entries are plain project keys (letters only, matched case-insensitively); anything else is
+ignored with a warning.
+
 ### How to link a PR to a Jira ticket
 
 To integrate with Jira, you can link your PR to a ticket using either of these methods:

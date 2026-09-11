@@ -52,6 +52,12 @@ JIRA_API_VERSION = "2"
 # cannot contain '.', '/', ':', '@' etc. that would let it escape *.atlassian.net.
 JIRA_SITE_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$", re.IGNORECASE)
 
+# A Jira project key as configured in jira.project_keys: the "<PROJECT>" in PROJECT-123.
+# Bounded like the prefix in find_jira_tickets (2-10 letters) so an entry can only ever be
+# a plain label, never a URL or a full ticket key. Matched case-insensitively and
+# normalized to upper case, like the ticket keys themselves.
+JIRA_PROJECT_KEY_PATTERN = re.compile(r"^[a-z]{2,10}$", re.IGNORECASE)
+
 
 def _jira_cloud_base_url():
     """
@@ -71,6 +77,30 @@ def _jira_cloud_base_url():
             f"(the '<site>' in https://<site>.atlassian.net). Skipping Jira ticket lookup.")
         return None
     return f"https://{site}.atlassian.net"
+
+
+def _jira_project_keys():
+    """
+    Return the configured jira.project_keys allowlist as a set of upper-case project keys,
+    or an empty set when the option is unset (look up every key found). Entries that are
+    not plain project keys are ignored with a warning, so a typo cannot widen or silently
+    disable the allowlist without a trace. Accepts a list or a comma-separated string, the
+    latter for environment-variable overrides (jira__project_keys="PROJ,OPS").
+    """
+    configured = get_settings().get("JIRA.PROJECT_KEYS", None) or []
+    if isinstance(configured, str):
+        configured = configured.split(",")
+    allowed = set()
+    for entry in configured:
+        key = str(entry).strip()
+        if not key:
+            continue
+        if not JIRA_PROJECT_KEY_PATTERN.match(key):
+            get_logger().warning(
+                f"Ignoring invalid jira.project_keys entry '{key}'; expected a plain project key like 'PROJ'")
+            continue
+        allowed.add(key.upper())
+    return allowed
 
 
 def find_jira_tickets(text):
@@ -158,6 +188,19 @@ def extract_jira_tickets(text, max_characters=MAX_TICKET_CHARACTERS, max_tickets
     keys = find_jira_tickets(text or "")
     if not keys:
         return []
+
+    # Optional project-key allowlist: a repo normally knows its Jira projects, so keys with
+    # another prefix ("SHA-256", "UTF-8", "ISO-8601") are dropped here, before any lookup,
+    # instead of each costing an authenticated 404. Empty keeps today's behaviour.
+    allowed_projects = _jira_project_keys()
+    if allowed_projects:
+        skipped = [key for key in keys if key.split("-", 1)[0] not in allowed_projects]
+        if skipped:
+            get_logger().debug(
+                f"Skipping Jira lookup for keys outside jira.project_keys: {', '.join(skipped)}")
+            keys = [key for key in keys if key not in skipped]
+        if not keys:
+            return []
 
     jira_client = _get_jira_client()
     if jira_client is None:
