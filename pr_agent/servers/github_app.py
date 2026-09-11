@@ -133,7 +133,10 @@ async def handle_comments_on_pr(body: Dict[str, Any],
             get_logger().info(f"Processing comment on PR {api_url=}, comment_body={comment_body}")
             succeeded = await agent.handle_request(
                 api_url, comment_body,
-                notify=lambda: provider.add_eyes_reaction(comment_id, disable_eyes=disable_eyes))
+                notify=lambda: provider.add_eyes_reaction(comment_id, disable_eyes=disable_eyes),
+                # The tools retain a compatibility mode that publishes a failure and returns
+                # normally. Outcome reactions need the caller-visible failure signal instead.
+                propagate_tool_errors=True)
             # Optional, and disabled by default: tell the author how the command ended without
             # adding another comment to the thread.
             provider.react_to_outcome(comment_id, bool(succeeded))

@@ -309,7 +309,7 @@ async def test_a_successful_comment_command_is_marked(reactions, comment_handler
     github_app, provider = comment_handler
     agent = SimpleNamespace()
 
-    async def handle_request(api_url, command, notify=None):
+    async def handle_request(api_url, command, notify=None, **_kwargs):
         notify()
         return True
 
@@ -326,7 +326,7 @@ async def test_a_failed_comment_command_is_marked(reactions, comment_handler):
     github_app, provider = comment_handler
     agent = SimpleNamespace()
 
-    async def handle_request(api_url, command, notify=None):
+    async def handle_request(api_url, command, notify=None, **_kwargs):
         notify()
         return False
 
@@ -343,7 +343,7 @@ async def test_the_default_configuration_adds_only_the_start_reaction(reactions,
     github_app, provider = comment_handler
     agent = SimpleNamespace()
 
-    async def handle_request(api_url, command, notify=None):
+    async def handle_request(api_url, command, notify=None, **_kwargs):
         notify()
         return True
 
@@ -353,3 +353,47 @@ async def test_the_default_configuration_adds_only_the_start_reaction(reactions,
 
     assert provider.reactions == [(4242, "eyes")]
     assert provider.removed == []
+
+
+@pytest.mark.asyncio
+async def test_a_swallowed_tool_failure_gets_a_failure_outcome(
+    reactions, comment_handler, monkeypatch
+):
+    """The webhook must not turn a tool's compatibility-swallowed failure into success."""
+    import pr_agent.agent.pr_agent as pr_agent_module
+
+    reactions(success="hooray", failure="confused")
+    monkeypatch.setattr(get_settings().config, "propagate_tool_errors", False, raising=False)
+    monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda _pr_url: None)
+    monkeypatch.setattr(pr_agent_module.CliArgs, "validate_user_args", lambda _args: (True, None))
+    monkeypatch.setattr(pr_agent_module, "update_settings_from_args", lambda args: args)
+
+    observed_propagation = []
+
+    class SwallowingReviewTool:
+        def __init__(self, _pr_url, ai_handler=None, args=None):
+            pass
+
+        async def run(self):
+            observed_propagation.append(
+                get_settings().config.get("propagate_tool_errors", False)
+            )
+            try:
+                raise RuntimeError("provider unavailable")
+            except RuntimeError:
+                if get_settings().config.get("propagate_tool_errors", False):
+                    raise
+
+    monkeypatch.setitem(pr_agent_module.command2class, "review", SwallowingReviewTool)
+
+    github_app, provider = comment_handler
+    agent = pr_agent_module.PRAgent(ai_handler="fake-ai")
+
+    await github_app.handle_comments_on_pr(
+        _comment_event(), "issue_comment", "user", "1", "created", {}, agent
+    )
+
+    assert observed_propagation == [True]
+    assert provider.reactions == [(4242, "eyes"), (4242, "confused")]
+    assert provider.removed == [(4242, 1)]
+    assert get_settings().config.get("propagate_tool_errors") is False

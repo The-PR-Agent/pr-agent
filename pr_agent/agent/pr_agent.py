@@ -180,7 +180,9 @@ class PRAgent:
     def __init__(self, ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
         self.ai_handler = ai_handler  # handler factory passed to each tool when it is instantiated
 
-    async def _handle_request(self, pr_url, request, notify=None) -> bool:
+    async def _handle_request(
+        self, pr_url, request, notify=None, propagate_tool_errors: bool | None = None
+    ) -> bool:
         # Exceptions raised inside are caught below, but a BaseException (e.g. the
         # CancelledError a webhook timeout raises) still escapes the span, and the SDK
         # would auto-record its message and stacktrace — request content, so opt-in.
@@ -193,7 +195,11 @@ class PRAgent:
             if get_settings().get("OTEL.INCLUDE_PR_URL", False):
                 span.set_attribute("pr_agent.pr_url", pr_url)
             try:
-                return await self._run_command(pr_url, request, notify, span)
+                if propagate_tool_errors is None:
+                    return await self._run_command(pr_url, request, notify, span)
+                return await self._run_command(
+                    pr_url, request, notify, span, propagate_tool_errors=propagate_tool_errors
+                )
             except Exception as e:
                 get_logger().exception("Failed to process the command.")
                 # Status carries no description: it is free text, and the exception
@@ -205,7 +211,9 @@ class PRAgent:
                     span.record_exception(e)
                 return False
 
-    async def _run_command(self, pr_url, request, notify, span) -> bool:
+    async def _run_command(
+        self, pr_url, request, notify, span, propagate_tool_errors: bool | None = None
+    ) -> bool:
         # First, apply repo specific settings if exists
         apply_repo_settings(pr_url)
 
@@ -276,26 +284,47 @@ class PRAgent:
         span.set_attribute("pr_agent.command", action)
         get_commands_counter().add(1, {"pr_agent.command": action, "vcs.provider.name": _git_provider})
 
-        with get_logger().contextualize(command=action, pr_url=pr_url):
-            get_logger().info("PR-Agent request handler started", analytics=True)
-            if action == "answer":
-                if notify:
-                    notify()
-                await PRReviewer(pr_url, is_answer=True, args=args, ai_handler=self.ai_handler).run()
-            elif action == "auto_review":
-                await PRReviewer(pr_url, is_auto=True, args=args, ai_handler=self.ai_handler).run()
-            else:
-                if notify:
-                    notify()
-
-                await command2class[action](pr_url, ai_handler=self.ai_handler, args=args).run()
-
-            span.set_status(StatusCode.OK)
-            return True
-
-    async def handle_request(self, pr_url, request, notify=None) -> bool:
+        settings = get_settings()
+        missing = object()
+        previous_propagation = missing
+        if propagate_tool_errors is not None:
+            # Apply this after repository and command settings so callers that require an honest
+            # result cannot be overridden by either source. Restore it below for request isolation.
+            previous_propagation = settings.get("CONFIG.PROPAGATE_TOOL_ERRORS", missing)
+            settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", propagate_tool_errors)
         try:
-            return await self._handle_request(pr_url, request, notify)
+            with get_logger().contextualize(command=action, pr_url=pr_url):
+                get_logger().info("PR-Agent request handler started", analytics=True)
+                if action == "answer":
+                    if notify:
+                        notify()
+                    await PRReviewer(pr_url, is_answer=True, args=args, ai_handler=self.ai_handler).run()
+                elif action == "auto_review":
+                    await PRReviewer(pr_url, is_auto=True, args=args, ai_handler=self.ai_handler).run()
+                else:
+                    if notify:
+                        notify()
+
+                    await command2class[action](pr_url, ai_handler=self.ai_handler, args=args).run()
+
+                span.set_status(StatusCode.OK)
+                return True
+        finally:
+            if propagate_tool_errors is not None:
+                if previous_propagation is missing:
+                    settings.unset("CONFIG.PROPAGATE_TOOL_ERRORS", force=True)
+                else:
+                    settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", previous_propagation)
+
+    async def handle_request(
+        self, pr_url, request, notify=None, propagate_tool_errors: bool | None = None
+    ) -> bool:
+        try:
+            if propagate_tool_errors is None:
+                return await self._handle_request(pr_url, request, notify)
+            return await self._handle_request(
+                pr_url, request, notify, propagate_tool_errors=propagate_tool_errors
+            )
         except Exception:
             # _handle_request already catches command failures and annotates the span;
             # this is the outer contract every caller relies on — webhook handlers and
