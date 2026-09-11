@@ -1,4 +1,4 @@
-FROM public.ecr.aws/lambda/python:3.12 AS base
+FROM public.ecr.aws/lambda/python:3.14 AS base
 COPY --from=ghcr.io/astral-sh/uv:0.12.10 /uv /uvx /bin/
 
 RUN dnf update -y && \
