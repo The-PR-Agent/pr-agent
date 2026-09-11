@@ -184,7 +184,11 @@ async def main_async(args) -> int:
         report = score_labels(label_set, review)
         print(json.dumps(report.as_dict(), indent=2))
         if args.out:
-            Path(args.out).write_text(json.dumps({"labels": report.as_dict()}, indent=2))
+            payload: dict = {"labels": report.as_dict()}
+            if args.keep_reviews:
+                # Unknown findings are only adjudicable from the raw review text.
+                payload["review"] = review
+            Path(args.out).write_text(json.dumps(payload, indent=2, default=str))
         return 0
     corpus = list(ALL_DEFECTS) if not args.no_curated else []
     if args.mutants:

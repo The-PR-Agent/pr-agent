@@ -117,3 +117,7 @@ regression and an improvement cancel and you keep both:
 3. The local model, unchanged (`local_profile.toml`). The drop from step 1 is what the rest of
    the plan has to close.
 4. Everything else, one knob at a time. Keep only what moved the number.
+
+## Baseline
+
+Recorded numbers for the labeled real-PR corpus live in [BASELINE.md](BASELINE.md). Run `run_eval.py --labels tests/eval/labels/block_rush_pr1.json --diff-file <diff>` and add a row before merging any plan that claims a quality change.
