@@ -263,16 +263,18 @@ pre.log, pre.diff {
 
 /* ---- notices ----------------------------------------------------------- */
 
+/* Notices are a tinted panel in the signal color, NOT a gutter. The gutter means "this row
+   has a status the system observed"; reusing it here would spend the one device twice and
+   make a transient message look like durable state. */
 .error, .stale {
   padding: 0.7rem 0.9rem;
   border: 1px solid var(--rule);
   border-radius: var(--radius);
   margin-bottom: 1rem;
-  border-left-width: 4px;
 }
 
-.error { border-left-color: var(--fail); background: var(--fail-wash); color: var(--ink); }
-.stale { border-left-color: var(--warn); background: var(--warn-wash); color: var(--ink); }
+.error { border-color: var(--fail); background: var(--fail-wash); color: var(--ink); }
+.stale { border-color: var(--warn); background: var(--warn-wash); color: var(--ink); }
 
 .empty {
   padding: 2rem 1.15rem;
