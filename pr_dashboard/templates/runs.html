@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Runs{% endblock %}
+{% block content %}
+<h1>Runs</h1>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+<form hx-post="/runs" hx-target="body" hx-select="body" hx-swap="outerHTML">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <select name="provider">
+    {% for repo in repos %}
+      <option value="{{ repo.provider }}">{{ repo.provider }}</option>
+    {% endfor %}
+  </select>
+  <select name="slug">
+    {% for repo in repos %}
+      <option value="{{ repo.slug }}">{{ repo.slug }} ({{ repo.provider }})</option>
+    {% endfor %}
+  </select>
+  <input name="number" type="number" min="1" placeholder="PR number" required>
+  <select name="command">
+    {% for command in commands %}
+      <option value="{{ command }}">{{ command }}</option>
+    {% endfor %}
+  </select>
+  <input name="question" placeholder="question (ask only)">
+  <button type="submit">Start run</button>
+</form>
+<div id="run-list">
+  {% include "_run_rows.html" %}
+</div>
+{% endblock %}

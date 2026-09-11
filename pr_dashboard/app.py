@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from pr_dashboard import comments as comments_module
-from pr_dashboard import providers, registry, store, websec
+from pr_dashboard import providers, recorder, redaction, registry, runner, store, websec
 from pr_dashboard import usage as usage_module
 
 _HERE = Path(__file__).parent
@@ -212,6 +212,93 @@ def create_app(*, registry_path: Optional[Path] = None, db_path: Optional[Path] 
         return html(request, "usage.html", {
             "totals": usage_module.totals(conn), "daily": daily, "groups": groups,
         })
+
+    def runs_context(conn, error: Optional[str] = None) -> dict:
+        return {
+            "runs": store.list_ui_runs(conn),
+            "repos": registry.load(application.state.registry_path),
+            "commands": runner.ALLOWED_COMMANDS,
+            "error": error,
+        }
+
+    def run_detail_context(conn, token: str, error: Optional[str] = None) -> Optional[dict]:
+        run = store.get_ui_run(conn, token)
+        if run is None:
+            return None
+        accounting = store.run_for_token(conn, token)
+        # The log is withheld, never shown raw, when the secret inventory cannot be read.
+        # runner.tail_log deliberately lets RedactionUnavailable propagate; the route is where
+        # it becomes a message on the page rather than a 500.
+        try:
+            log_tail, log_unavailable = runner.tail_log(run["log_path"]), False
+        except redaction.RedactionUnavailable as exc:
+            log_tail, log_unavailable = "", str(exc) or "redaction is unavailable"
+        finished = run["finished_at"] is not None
+        return {
+            "run": run,
+            "accounting": accounting,
+            "accounting_cost": store.run_cost(accounting) if accounting is not None else None,
+            "recording_enabled": recorder.recording_enabled(),
+            "log_tail": log_tail,
+            "log_unavailable": log_unavailable,
+            "timeout_seconds": runner.RUN_TIMEOUT_SECONDS,
+            "timed_out": (
+                run["status"] == "failed" and finished
+                and runner.run_duration_seconds(run) >= runner.RUN_TIMEOUT_SECONDS
+            ),
+            "error": error,
+        }
+
+    @application.get("/runs", response_class=HTMLResponse)
+    def runs_page(request: Request):
+        conn = store.connect(application.state.db_path)
+        runner.reap(conn)
+        return html(request, "runs.html", runs_context(conn))
+
+    @application.post("/runs", response_class=HTMLResponse)
+    async def start_run_route(request: Request):
+        values = await _form_values(request)
+        websec.require_safe_request(request, values)
+        conn = store.connect(application.state.db_path)
+        provider = values.get("provider", "")
+        slug = values.get("slug", "")
+        command = values.get("command", "")
+        question = values.get("question") or None
+        raw_number = values.get("number", "")
+        try:
+            number = int(raw_number)
+        except ValueError:
+            return html(request, "runs.html", runs_context(conn, error=f"invalid pull request number {raw_number!r}"))
+        try:
+            repo = runner.validate_target(application.state.registry_path, provider, slug, number)
+            token = runner.launch(conn, repo=repo, number=number, command=command, question=question)
+        except runner.RunError as exc:
+            return html(request, "runs.html", runs_context(conn, error=str(exc)))
+        return html(request, "run_detail.html", run_detail_context(conn, token))
+
+    @application.get("/runs/{token}", response_class=HTMLResponse)
+    def run_detail_page(request: Request, token: str):
+        conn = store.connect(application.state.db_path)
+        runner.reap(conn)
+        context = run_detail_context(conn, token)
+        if context is None:
+            raise HTTPException(status_code=404, detail=f"unknown run {token!r}")
+        return html(request, "run_detail.html", context)
+
+    @application.post("/runs/{token}/cancel", response_class=HTMLResponse)
+    async def cancel_run_route(request: Request, token: str):
+        values = await _form_values(request)
+        websec.require_safe_request(request, values)
+        conn = store.connect(application.state.db_path)
+        error = None
+        try:
+            runner.cancel(conn, token)
+        except runner.RunError as exc:
+            error = str(exc)
+        context = run_detail_context(conn, token, error=error)
+        if context is None:
+            raise HTTPException(status_code=404, detail=f"unknown run {token!r}")
+        return html(request, "run_detail.html", context)
 
     return application
 

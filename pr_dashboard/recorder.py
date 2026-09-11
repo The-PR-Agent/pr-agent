@@ -13,6 +13,7 @@ so it is stated here rather than left implicit.
 from __future__ import annotations
 
 import contextlib
+import os
 import re
 from datetime import datetime, timezone
 from typing import Optional
@@ -72,6 +73,7 @@ def record_run(*, pr_url: Optional[str], command: str):
             repo_slug=repo_slug,
             pr_number=pr_number,
             started_at=_now(),
+            dashboard_token=os.environ.get("PR_DASHBOARD_RUN_TOKEN"),
         )
     except Exception as exc:  # noqa: BLE001 - a dashboard write must never fail a review
         get_logger().warning(f"pr_dashboard: could not start a usage row: {exc}")

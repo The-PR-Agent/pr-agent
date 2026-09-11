@@ -211,3 +211,15 @@ class TestUiRuns:
             conn.execute("UPDATE runs SET dashboard_token = ? WHERE id = 2", ("dash-tok",))
         assert store.run_for_token(conn, "dash-tok")["id"] == 1
         assert store.run_for_token(conn, "missing") is None
+
+    def test_start_run_with_dashboard_token_is_found_by_run_for_token(self):
+        """A run started with dashboard_token= is joinable back by that token"""
+        conn = store.connect(":memory:")
+        run_id = store.start_run(
+            conn, provider="github", command="review", pr_url="https://github.com/o/r/pull/1",
+            repo_slug="o/r", pr_number=1, started_at="2026-09-11T12:00:00Z",
+            dashboard_token="ui-tok-1",
+        )
+        row = store.run_for_token(conn, "ui-tok-1")
+        assert row is not None
+        assert row["id"] == run_id

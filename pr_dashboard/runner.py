@@ -14,12 +14,17 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from pr_agent.algo.utils import encode_user_text_arg
-from pr_dashboard import store
+from pr_dashboard import redaction, store
 from pr_dashboard.registry import SLUG_PATTERN, SUPPORTED_PROVIDERS, Repo, load
 
 ALLOWED_COMMANDS = ("review", "improve", "describe", "ask")
 MAX_CONCURRENT_RUNS = 2
 RUN_TIMEOUT_SECONDS = 1800
+TERMINAL_STATUSES = ("ok", "failed", "cancelled")
+
+# Live Popen handles for ui_runs rows this process spawned, keyed by token. Never durable:
+# a server restart loses this dict, which is exactly the orphan case reap() must handle.
+_PROCESSES: dict[str, subprocess.Popen] = {}
 
 PROVIDER_HOSTS = {
     "github": "github.com",
@@ -166,6 +171,9 @@ def _default_log_dir() -> Path:
 def launch(conn, *, repo: Repo, number: int, command: str, question: str | None = None,
            log_dir: Path | str | None = None, cwd: Path | str | None = None) -> str:
     """Queue a ui_runs row, then spawn the child. Returns the run token."""
+    # Reap first: the cap counts non-terminal rows, so a finished-but-unreaped run would
+    # otherwise consume the budget and refuse a legitimate launch.
+    reap(conn)
     if _active_run_count(conn) >= MAX_CONCURRENT_RUNS:
         raise RunError(f"at most {MAX_CONCURRENT_RUNS} concurrent runs are allowed")
 
@@ -213,4 +221,100 @@ def launch(conn, *, repo: Repo, number: int, command: str, question: str | None 
         "UPDATE ui_runs SET status = ?, pid = ? WHERE token = ?",
         ("running", proc.pid, token),
     )
+    _PROCESSES[token] = proc
     return token
+
+
+def _age_seconds(started_at: str) -> float:
+    """Seconds since `started_at`, or 0.0 when the stored timestamp cannot be parsed."""
+    try:
+        started = datetime.fromisoformat(started_at)
+    except ValueError:
+        return 0.0
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - started).total_seconds()
+
+
+def run_duration_seconds(row) -> float:
+    """Wall time between a ui_runs row's start and finish, or 0.0 when either is unusable."""
+    finished_at = row["finished_at"]
+    if not finished_at:
+        return 0.0
+    try:
+        started = datetime.fromisoformat(row["started_at"])
+        finished = datetime.fromisoformat(finished_at)
+    except ValueError:
+        return 0.0
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    if finished.tzinfo is None:
+        finished = finished.replace(tzinfo=timezone.utc)
+    return (finished - started).total_seconds()
+
+
+def reap(conn) -> None:
+    """Move finished, timed-out or orphaned non-terminal ui_runs rows to a terminal status."""
+    # Its own unbounded query, deliberately NOT list_ui_runs: that one is the paginated view
+    # (LIMIT 50) while _active_run_count counts every non-terminal row. Reaping the newest 50
+    # only would leave older rows stuck in `running` forever, permanently consuming the
+    # MAX_CONCURRENT_RUNS budget with no way to clear them from the UI.
+    rows = conn.execute(
+        "SELECT token, started_at FROM ui_runs WHERE status IN ('queued', 'running')"
+    ).fetchall()
+    for row in rows:
+        token = row["token"]
+        proc = _PROCESSES.get(token)
+        if proc is None:
+            # No Popen handle for a non-terminal row means this process did not spawn it: the
+            # server restarted. The pid is not trustworthy after a restart (it can have been
+            # reused by an unrelated process), so the row is closed as failed rather than
+            # signalled or left running forever.
+            store.finish_ui_run(conn, token=token, status="failed", exit_code=None, finished_at=_now())
+            continue
+        rc = proc.poll()
+        if rc is None:
+            if _age_seconds(row["started_at"]) >= RUN_TIMEOUT_SECONDS:
+                proc.kill()
+                rc = proc.wait()
+                store.finish_ui_run(
+                    conn, token=token, status="failed", exit_code=rc, finished_at=_now(),
+                )
+                del _PROCESSES[token]
+            continue
+        store.finish_ui_run(
+            conn, token=token, status="ok" if rc == 0 else "failed",
+            exit_code=rc, finished_at=_now(),
+        )
+        del _PROCESSES[token]
+
+
+def cancel(conn, token: str) -> None:
+    """Terminate a running child and record the row as cancelled."""
+    row = store.get_ui_run(conn, token)
+    if row is None or row["status"] in TERMINAL_STATUSES:
+        raise RunError("run is not running")
+    proc = _PROCESSES.pop(token, None)
+    rc = None
+    if proc is not None:
+        proc.terminate()
+        try:
+            rc = proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            rc = proc.wait()
+    store.finish_ui_run(conn, token=token, status="cancelled", exit_code=rc, finished_at=_now())
+
+
+def tail_log(path: Path | str, max_bytes: int = 8192) -> str:
+    """Return the redacted last `max_bytes` of a log file, or "" when it does not exist."""
+    path = Path(path)
+    if not path.exists():
+        return ""
+    with path.open("rb") as handle:
+        handle.seek(0, os.SEEK_END)
+        size = handle.tell()
+        handle.seek(max(0, size - max_bytes))
+        data = handle.read()
+    # RedactionUnavailable propagates deliberately: never fall back to the raw text.
+    return redaction.redact(data.decode("utf-8", errors="replace"))

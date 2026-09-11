@@ -252,3 +252,31 @@ class TestMissingDashboardPackage:
         )
         with reloaded.record_run(pr_url="https://github.com/o/r/pull/7", command="review"):
             pass
+
+
+class TestDashboardTokenJoin:
+    """The join between a dashboard invocation and the accounting row the child writes.
+
+    Nothing else pins this: a test that passes dashboard_token= straight to store.start_run
+    proves the column persists, but stays green when recorder.record_run stops reading
+    PR_DASHBOARD_RUN_TOKEN at all, which is the whole join. These go through record_run with
+    the environment variable set, exactly as runner.launch sets it for the child.
+    """
+
+    def test_run_token_in_the_environment_lands_on_the_accounting_row(self, conn, monkeypatch):
+        """record_run reads PR_DASHBOARD_RUN_TOKEN so run_for_token joins the two tables"""
+        monkeypatch.setenv("PR_DASHBOARD_RUN_TOKEN", "ui-token-abc")
+        with recorder.record_run(pr_url="https://github.com/o/r/pull/7", command="review"):
+            pass
+        joined = store.run_for_token(conn, "ui-token-abc")
+        assert joined is not None
+        assert joined["command"] == "review"
+        assert joined["pr_number"] == 7
+
+    def test_no_run_token_in_the_environment_leaves_the_column_null(self, conn, monkeypatch):
+        """A CLI run outside the dashboard records no token rather than a placeholder"""
+        monkeypatch.delenv("PR_DASHBOARD_RUN_TOKEN", raising=False)
+        with recorder.record_run(pr_url="https://github.com/o/r/pull/7", command="review"):
+            pass
+        row = conn.execute("SELECT * FROM runs ORDER BY id DESC LIMIT 1").fetchone()
+        assert row["dashboard_token"] is None

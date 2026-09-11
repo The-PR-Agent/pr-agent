@@ -134,12 +134,13 @@ def migrate(conn: sqlite3.Connection) -> None:
 
 
 def start_run(conn: sqlite3.Connection, *, provider: str, command: str, pr_url: Optional[str],
-              repo_slug: Optional[str], pr_number: Optional[int], started_at: str) -> int:
+              repo_slug: Optional[str], pr_number: Optional[int], started_at: str,
+              dashboard_token: Optional[str] = None) -> int:
     """Record an attempt before the command runs, so failures are not invisible."""
     cursor = conn.execute(
-        "INSERT INTO runs (started_at, status, provider, repo_slug, pr_number, pr_url, command) "
-        "VALUES (?, 'running', ?, ?, ?, ?, ?)",
-        (started_at, provider, repo_slug, pr_number, pr_url, command),
+        "INSERT INTO runs (started_at, status, provider, repo_slug, pr_number, pr_url, command, "
+        "dashboard_token) VALUES (?, 'running', ?, ?, ?, ?, ?, ?)",
+        (started_at, provider, repo_slug, pr_number, pr_url, command, dashboard_token),
     )
     return int(cursor.lastrowid)
 

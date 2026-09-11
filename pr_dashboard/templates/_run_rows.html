@@ -1,0 +1,19 @@
+{% if runs %}
+<table>
+  <thead><tr><th>Repo</th><th>PR</th><th>Command</th><th>Status</th><th>Started</th><th></th></tr></thead>
+  <tbody>
+  {% for run in runs %}
+    <tr>
+      <td>{{ run["provider"] }}/{{ run["repo_slug"] }}</td>
+      <td>{{ run["pr_number"] }}</td>
+      <td>{{ run["command"] }}</td>
+      <td>{{ run["status"] }}</td>
+      <td>{{ run["started_at"] }}</td>
+      <td><a href="/runs/{{ run['token'] }}">View</a></td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">No runs yet. Start one using the form above.</p>
+{% endif %}
