@@ -151,6 +151,9 @@ def extract_jira_tickets(text, max_characters=MAX_TICKET_CHARACTERS, max_tickets
     MAX_JIRA_FETCH_ATTEMPTS lookups have been made. Counting resolved tickets rather than
     truncating the candidate list keeps key-shaped noise ("SHA-256", "UTF-8") from
     displacing a real ticket that appears later in the text.
+
+    When JIRA.JIRA_PROJECT_KEYS is configured, candidates whose prefix isn't in that
+    allowlist are dropped before any lookup, so they don't consume a fetch attempt.
     """
     # Look for keys before building a client: most PRs have none, and building the
     # client first would do needless work (and log a noisy init failure if Jira is
@@ -158,6 +161,20 @@ def extract_jira_tickets(text, max_characters=MAX_TICKET_CHARACTERS, max_tickets
     keys = find_jira_tickets(text or "")
     if not keys:
         return []
+
+    # Optional allowlist: key-shaped false positives like "SHA-256" or "UTF-8" match the
+    # regex but aren't real Jira keys. Filtering by known project prefixes here means they
+    # never consume one of the MAX_JIRA_FETCH_ATTEMPTS lookups below.
+    project_keys = get_settings().get("JIRA.JIRA_PROJECT_KEYS", []) or []
+    if project_keys:
+        allowed = {p.strip().upper() for p in project_keys if p}
+        skipped = [k for k in keys if k.split("-")[0] not in allowed]
+        if skipped:
+            get_logger().debug(
+                f"Skipping key-shaped candidates outside the configured project_keys allowlist: {skipped}")
+        keys = [k for k in keys if k.split("-")[0] in allowed]
+        if not keys:
+            return []
 
     jira_client = _get_jira_client()
     if jira_client is None:

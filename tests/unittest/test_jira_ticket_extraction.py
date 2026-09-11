@@ -25,6 +25,7 @@ _JIRA_KEYS = (
     "JIRA.JIRA_API_EMAIL",
     "JIRA.JIRA_API_TOKEN",
     "JIRA.JIRA_REQUIREMENTS_FIELD",
+    "JIRA.JIRA_PROJECT_KEYS",
 )
 
 
@@ -270,6 +271,37 @@ class TestExtractJiraTickets:
         with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client):
             result = extract_jira_tickets("abc-123 utf-8")
         assert [t["ticket_id"] for t in result] == ["ABC-123"]
+    
+    def test_project_keys_allowlist_filters_noise_before_fetch(self):
+        """When JIRA.JIRA_PROJECT_KEYS is set, key-shaped noise outside the allowlist is
+        dropped before any lookup — it never reaches jira_client.issue()."""
+        self._configure_jira()
+        get_settings().set("JIRA.JIRA_PROJECT_KEYS", ["PROJ"])
+        client = self._fake_client()
+        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client):
+            result = extract_jira_tickets("Switch SHA-256 digest per PROJ-4242")
+        client.issue.assert_called_once_with("PROJ-4242")
+        assert [t["ticket_id"] for t in result] == ["PROJ-4242"]
+
+    def test_project_keys_allowlist_empty_result_skips_client(self):
+        """When every candidate is filtered out by the allowlist, no Jira client is
+        built at all — same early-exit as having no keys in the text."""
+        self._configure_jira()
+        get_settings().set("JIRA.JIRA_PROJECT_KEYS", ["PROJ"])
+        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira") as jira_cls:
+            result = extract_jira_tickets("SHA-256 and UTF-8 only, no real ticket")
+        assert result == []
+        jira_cls.assert_not_called()
+
+    def test_project_keys_case_insensitive(self):
+        """Allowlist entries are matched case-insensitively, same as the keys themselves."""
+        self._configure_jira()
+        get_settings().set("JIRA.JIRA_PROJECT_KEYS", ["proj"])
+        client = self._fake_client()
+        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client):
+            result = extract_jira_tickets("PROJ-1")
+        client.issue.assert_called_once_with("PROJ-1")
+        assert len(result) == 1
 
 
 class TestGetJiraClient:
