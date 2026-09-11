@@ -1,19 +1,42 @@
-"""The opt-in gate and wiring of the chunked `/review` flow.
+"""The gate and wiring of the chunked `/review` flow.
 
 The merge rules themselves live in tests/unittest/test_review_chunk_merge.py; what is
 covered here is when chunking runs at all, what it does with a chunk that fails, and what
 the published review says about having been assembled from several calls.
 """
 
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
+from pr_agent.algo.pr_processing import ChunkPlan
 from pr_agent.algo.review_finding_state import ParsedReviewState, reconcile_review_findings
+from pr_agent.algo.run_details import record_ai_call
+from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import get_settings
 from pr_agent.tools.pr_reviewer import PRReviewer
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
+
+_LEDGER_DIFF = """diff --git a/foo.py b/foo.py
+index 1111111..2222222 100644
+--- a/foo.py
++++ b/foo.py
+@@ -1,3 +1,3 @@
+ line1
+-line2
++line2-changed
+ line3
+"""
+
+
+def _plans(*diffs):
+    """Build ChunkPlan stubs for tests that only care about the diff strings and chunk count,
+    not the per-file breakdown."""
+    return [ChunkPlan(diff=diff, files=(), clipped=()) for diff in diffs]
+
 
 _TRACKED_KEYS = ("pr_reviewer.enable_large_pr_chunking", "pr_reviewer.max_number_of_calls")
 
@@ -60,18 +83,44 @@ def chunking_enabled():
     restore_settings(snapshot)
 
 
+@pytest.fixture
+def chunking_disabled():
+    snapshot = snapshot_settings(_TRACKED_KEYS)
+    get_settings().set("pr_reviewer.enable_large_pr_chunking", False)
+    yield
+    restore_settings(snapshot)
+
+
 @pytest.mark.asyncio
-async def test_chunking_is_off_by_default_even_when_the_token_budget_truncated_the_diff():
+async def test_chunking_runs_by_default_when_the_token_budget_truncated_the_diff():
+    """The default flipped to on: a truncated diff used to be reviewed in part and the files
+    the budget left out were never looked at (tests/eval/BASELINE.md). max_number_of_calls
+    still bounds what chunking costs."""
     reviewer = _make_reviewer()
     reviewer._get_prediction = AsyncMock(return_value=CHUNK_A)
 
     with (
         patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["left_out.py"])),
-        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs") as get_pr_multi_diffs,
+        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs_with_files") as get_pr_multi_diffs_with_files,
+    ):
+        get_pr_multi_diffs_with_files.return_value = ([], ["left_out.py"])
+        await reviewer._prepare_prediction("model")
+
+    get_pr_multi_diffs_with_files.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_chunking_can_still_be_turned_off(chunking_disabled):
+    reviewer = _make_reviewer()
+    reviewer._get_prediction = AsyncMock(return_value=CHUNK_A)
+
+    with (
+        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["left_out.py"])),
+        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs_with_files") as get_pr_multi_diffs_with_files,
     ):
         await reviewer._prepare_prediction("model")
 
-    get_pr_multi_diffs.assert_not_called()
+    get_pr_multi_diffs_with_files.assert_not_called()
     assert reviewer.prediction == CHUNK_A
     assert reviewer.review_chunk_count == 1  # the single-call flow, not a merge
 
@@ -83,11 +132,11 @@ async def test_a_diff_that_fits_is_never_chunked(chunking_enabled):
 
     with (
         patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", [])),
-        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs") as get_pr_multi_diffs,
+        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs_with_files") as get_pr_multi_diffs_with_files,
     ):
         await reviewer._prepare_prediction("model")
 
-    get_pr_multi_diffs.assert_not_called()
+    get_pr_multi_diffs_with_files.assert_not_called()
     assert reviewer.review_chunk_count == 1
 
 
@@ -98,18 +147,19 @@ async def test_a_truncated_diff_is_reviewed_chunk_by_chunk_and_merged(chunking_e
 
     with (
         patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
-        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
-              return_value=(["chunk-a", "chunk-b"], ["still_left_out.py"])) as get_pr_multi_diffs,
+        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs_with_files",
+              return_value=(_plans("chunk-a", "chunk-b"), ["still_left_out.py"])) as get_pr_multi_diffs_with_files,
     ):
         await reviewer._prepare_prediction("model")
 
-    get_pr_multi_diffs.assert_called_once_with(
+    get_pr_multi_diffs_with_files.assert_called_once_with(
         reviewer.git_provider,
         reviewer.token_handler,
         "model",
         max_calls=3,
         add_line_numbers=True,
-        return_remaining_files=True,
+        diff_files=[],
+        preserve_order=True,
     )
     assert [call.args[1] for call in reviewer._get_prediction.await_args_list] == ["chunk-a", "chunk-b"]
 
@@ -131,12 +181,12 @@ async def test_max_number_of_calls_bounds_the_number_of_chunks(chunking_enabled)
 
     with (
         patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
-        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
-              return_value=(["chunk-a", "chunk-b"], [])) as get_pr_multi_diffs,
+        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs_with_files",
+              return_value=(_plans("chunk-a", "chunk-b"), [])) as get_pr_multi_diffs_with_files,
     ):
         await reviewer._prepare_prediction("model")
 
-    assert get_pr_multi_diffs.call_args.kwargs["max_calls"] == 7
+    assert get_pr_multi_diffs_with_files.call_args.kwargs["max_calls"] == 7
 
 
 @pytest.mark.asyncio
@@ -146,11 +196,13 @@ async def test_a_diff_that_fits_in_one_chunk_is_reviewed_by_the_single_call_flow
 
     with (
         patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
-        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs", return_value=(["only-chunk"], [])),
+        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs_with_files", return_value=(_plans("only-chunk"), [])),
     ):
         await reviewer._prepare_prediction("model")
 
-    reviewer._get_prediction.assert_awaited_once_with("model")
+    reviewer._get_prediction.assert_awaited_once_with(
+        "model", None, chunk_index=None, files=[],
+    )
     assert reviewer.prediction == CHUNK_A
     assert reviewer.review_chunk_count == 1  # the single-call flow, not a merge
     assert reviewer.remaining_files_list == ["b.py"]
@@ -163,14 +215,41 @@ async def test_a_chunk_that_fails_does_not_lose_the_chunks_that_succeeded(chunki
 
     with (
         patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
-        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
-              return_value=(["chunk-a", "chunk-b"], [])),
+        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs_with_files",
+              return_value=(_plans("chunk-a", "chunk-b"), [])),
     ):
         await reviewer._prepare_prediction("model")
 
     assert reviewer.prediction_data["review"]["score"] == "40"
     assert reviewer.review_chunk_count == 2
     assert reviewer.review_failed_chunk_count == 1
+
+
+@pytest.mark.asyncio
+async def test_a_failed_chunks_files_are_marked_chunk_failed_in_the_coverage_ledger(chunking_enabled):
+    """A file whose chunk never came back must not be counted as reviewed, even though a
+    clipped-but-successful file in a different chunk should be."""
+    reviewer = _make_reviewer()
+    reviewer._get_prediction = AsyncMock(side_effect=[RuntimeError("model refused"), CHUNK_B])
+    reviewer.git_provider.get_diff_files.return_value = [
+        FilePatchInfo(base_file="", head_file="", patch="p", filename="a.py",
+                     num_plus_lines=10, num_minus_lines=0),
+        FilePatchInfo(base_file="", head_file="", patch="p", filename="b.py",
+                     num_plus_lines=5, num_minus_lines=0),
+    ]
+    plans = [
+        ChunkPlan(diff="chunk-a", files=("a.py",), clipped=()),
+        ChunkPlan(diff="chunk-b", files=("b.py",), clipped=("b.py",)),
+    ]
+
+    with (
+        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
+        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs_with_files", return_value=(plans, [])),
+    ):
+        await reviewer._prepare_prediction("model")
+
+    assert reviewer.coverage.files["a.py"].status == "chunk_failed"
+    assert reviewer.coverage.files["b.py"].status == "clipped"
 
 
 @pytest.mark.asyncio
@@ -181,8 +260,8 @@ async def test_a_failed_chunk_blocks_persistent_finding_resolution(chunking_enab
 
     with (
         patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
-        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
-              return_value=(["chunk-a", "chunk-b"], [])),
+        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs_with_files",
+              return_value=(_plans("chunk-a", "chunk-b"), [])),
     ):
         await reviewer._prepare_prediction("model")
 
@@ -205,23 +284,33 @@ async def test_a_failed_chunk_blocks_persistent_finding_resolution(chunking_enab
     assert reviewer._review_state_result is not None
     assert reviewer._review_state_result.resolved_ids == ()
     assert reviewer._review_state_result.state["last_run"]["complete"] is False
-    assert reviewer._review_state_result.state["findings"][0]["state"] == "ACTIVE"
+    assert reviewer._review_state_result.state["findings"][0]["state"] == "UNCONFIRMED"
 
 
 @pytest.mark.asyncio
 async def test_an_empty_chunk_does_not_lose_a_valid_sibling_or_trigger_fallback(chunking_enabled):
+    """"Fallback" here is the whole-review fallback `retry_with_fallback_models` would run if
+    `_prepare_chunked_prediction` raised or returned False - it must not, since chunk-b succeeded.
+    The chunk itself does now get one attempt on a fallback model as part of its own bounded
+    recovery (R-7) before giving up on it - a 4th call, still unparsable here."""
+    snapshot = snapshot_settings(("config.fallback_models",))
+    get_settings().set("config.fallback_models", ["fallback-model"])
     reviewer = _make_reviewer()
-    # the empty chunk is retried once, and stays failed when the retry is empty too
-    reviewer._get_prediction = AsyncMock(side_effect=["review: {}", CHUNK_B, "review: {}"])
+    try:
+        # the empty chunk is retried once, then tried once more on the (pinned) fallback model,
+        # and stays failed when every one of those is empty too
+        reviewer._get_prediction = AsyncMock(side_effect=["review: {}", CHUNK_B, "review: {}", "review: {}"])
 
-    with (
-        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
-        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
-              return_value=(["chunk-a", "chunk-b"], [])),
-    ):
-        await reviewer._prepare_prediction("model")
+        with (
+            patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
+            patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs_with_files",
+                  return_value=(_plans("chunk-a", "chunk-b"), [])),
+        ):
+            await reviewer._prepare_prediction("model")
+    finally:
+        restore_settings(snapshot)
 
-    assert reviewer._get_prediction.await_count == 3
+    assert reviewer._get_prediction.await_count == 4
     assert reviewer.prediction_data["review"]["score"] == "40"
     assert reviewer.review_chunk_count == 2
     assert reviewer.review_failed_chunk_count == 1
@@ -235,8 +324,8 @@ async def test_a_chunk_that_fails_once_is_retried_and_its_findings_are_kept(chun
 
     with (
         patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
-        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
-              return_value=(["chunk-a", "chunk-b"], [])),
+        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs_with_files",
+              return_value=(_plans("chunk-a", "chunk-b"), [])),
     ):
         await reviewer._prepare_prediction("model")
 
@@ -260,8 +349,8 @@ async def test_a_review_where_every_chunk_failed_raises_so_a_fallback_model_is_t
 
     with (
         patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
-        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
-              return_value=(["chunk-a", "chunk-b"], [])),
+        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs_with_files",
+              return_value=(_plans("chunk-a", "chunk-b"), [])),
         pytest.raises(RuntimeError, match="model refused"),
     ):
         await reviewer._prepare_prediction("model")
@@ -274,18 +363,25 @@ async def test_a_review_where_every_chunk_failed_raises_so_a_fallback_model_is_t
 ])
 async def test_chunks_without_nonempty_reviews_fall_back_to_a_single_call_review(chunking_enabled,
                                                                                  chunk_predictions):
+    snapshot = snapshot_settings(("config.fallback_models",))
+    get_settings().set("config.fallback_models", ["fallback-model"])
     reviewer = _make_reviewer()
-    # both chunks are attempted twice before the flow gives up and reviews the diff in one call
-    reviewer._get_prediction = AsyncMock(side_effect=[*chunk_predictions, *chunk_predictions, CHUNK_A])
+    try:
+        # both chunks are attempted twice, then once more each on the (pinned) fallback model,
+        # before the flow gives up on chunking entirely and reviews the diff in one call
+        reviewer._get_prediction = AsyncMock(
+            side_effect=[*chunk_predictions, *chunk_predictions, *chunk_predictions, CHUNK_A])
 
-    with (
-        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
-        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
-              return_value=(["chunk-a", "chunk-b"], [])),
-    ):
-        await reviewer._prepare_prediction("model")
+        with (
+            patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
+            patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs_with_files",
+                  return_value=(_plans("chunk-a", "chunk-b"), [])),
+        ):
+            await reviewer._prepare_prediction("model")
+    finally:
+        restore_settings(snapshot)
 
-    assert reviewer._get_prediction.await_count == 5
+    assert reviewer._get_prediction.await_count == 7
     assert reviewer.prediction == CHUNK_A
     assert reviewer.review_chunk_count == 1
 
@@ -345,3 +441,124 @@ def test_the_chunk_note_comes_before_the_review_coverage_footer():
 
     assert review.index("Chunked review:") < review.index("⚠️ **Review coverage:**")
     assert "- `left_out.py`" in review
+
+
+_LEDGER_TRACKED_KEYS = _TRACKED_KEYS + (
+    "config.git_provider", "plain_diff.content", "plain_diff.output_path",
+    "config.publish_output", "config.run_ledger_path",
+)
+
+
+@pytest.mark.asyncio
+async def test_run_writes_a_run_ledger_row_per_chunk_with_stage_and_run_id(tmp_path):
+    """Reviewer-level wiring: PRReviewer.run(), driven end-to-end through a real diff
+    provider and a fake AI handler that records each call the way a real handler does,
+    must leave one JSONL ledger row per chunk, tagged with the review stage, its chunk
+    index, and the run's id and tool name."""
+
+    class RecordingAiHandler(BaseAiHandler):
+        def __init__(self):
+            self.main_pr_language = None
+
+        @property
+        def deployment_id(self):
+            return "fake"
+
+        async def chat_completion(self, model, system, user, temperature=0.2, img_path=None, *,
+                                  stage=None, chunk_index=None, sample_index=None, files=None):
+            record_ai_call(model=model, stage=stage, chunk_index=chunk_index,
+                           sample_index=sample_index, files=files, latency_ms=1)
+            body = CHUNK_A if chunk_index == 0 else CHUNK_B
+            return body, "stop"
+
+    snapshot = snapshot_settings(_LEDGER_TRACKED_KEYS)
+    ledger_path = tmp_path / "ledger.jsonl"
+    try:
+        get_settings().set("pr_reviewer.enable_large_pr_chunking", True)
+        get_settings().set("pr_reviewer.max_number_of_calls", 3)
+        get_settings().set("config.git_provider", "plain-diff")
+        get_settings().set("plain_diff.content", _LEDGER_DIFF)
+        get_settings().set("plain_diff.output_path", None)
+        get_settings().set("config.publish_output", False)
+        get_settings().set("config.run_ledger_path", str(ledger_path))
+
+        with (
+            patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("full diff", ["b.py"])),
+            patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs_with_files",
+                  return_value=(_plans("chunk-a", "chunk-b"), [])),
+        ):
+            reviewer = PRReviewer("local_diff", ai_handler=RecordingAiHandler, args=[])
+            await reviewer.run()
+    finally:
+        restore_settings(snapshot)
+
+    assert ledger_path.exists()
+    rows = [json.loads(line) for line in ledger_path.read_text().splitlines()]
+    assert len(rows) == 2
+    assert {row["chunk_index"] for row in rows} == {0, 1}
+    assert all(row["stage"] == "review" for row in rows)
+    assert all(row["tool"] == "review" for row in rows)
+    # both rows belong to the one run() call, so they share a run_id
+    assert len({row["run_id"] for row in rows}) == 1
+    # findings_emitted is populated from each chunk's own parsed review, matched by
+    # (stage, chunk_index, sample_index) rather than assumed from completion order
+    by_chunk = {row["chunk_index"]: row for row in rows}
+    assert by_chunk[0]["findings_emitted"] == 1  # CHUNK_A has one key issue
+    assert by_chunk[1]["findings_emitted"] == 0  # CHUNK_B has none
+
+
+@pytest.mark.asyncio
+async def test_single_call_ledger_row_lists_reviewed_files(tmp_path):
+    """Whole-diff (non-chunked) review ledger rows must record the files in the diff."""
+
+    class RecordingAiHandler(BaseAiHandler):
+        def __init__(self):
+            self.main_pr_language = None
+
+        @property
+        def deployment_id(self):
+            return "fake"
+
+        async def chat_completion(self, model, system, user, temperature=0.2, img_path=None, *,
+                                  stage=None, chunk_index=None, sample_index=None, files=None):
+            record_ai_call(model=model, stage=stage, chunk_index=chunk_index,
+                           sample_index=sample_index, files=files, latency_ms=1)
+            return CHUNK_A, "stop"
+
+    snapshot = snapshot_settings(_LEDGER_TRACKED_KEYS + ("pr_reviewer.enable_large_pr_chunking",))
+    ledger_path = tmp_path / "ledger.jsonl"
+    try:
+        get_settings().set("pr_reviewer.enable_large_pr_chunking", False)
+        get_settings().set("config.git_provider", "plain-diff")
+        get_settings().set("plain_diff.content", _LEDGER_DIFF)
+        get_settings().set("plain_diff.output_path", None)
+        get_settings().set("config.publish_output", False)
+        get_settings().set("config.run_ledger_path", str(ledger_path))
+
+        diff_files = [
+            FilePatchInfo(base_file="a", head_file="a2", patch="p", filename="reviewed.py",
+                          num_plus_lines=3, num_minus_lines=1),
+            FilePatchInfo(base_file="b", head_file="", patch="p", filename="deleted.py",
+                          num_plus_lines=0, num_minus_lines=5),
+            FilePatchInfo(base_file="c", head_file="c2", patch="p", filename="skipped.py",
+                          num_plus_lines=2, num_minus_lines=0),
+        ]
+
+        with (
+            patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("full diff", ["skipped.py"])),
+        ):
+            reviewer = PRReviewer("local_diff", ai_handler=RecordingAiHandler, args=[])
+            reviewer.git_provider.get_diff_files = MagicMock(return_value=diff_files)
+            await reviewer.run()
+    finally:
+        restore_settings(snapshot)
+
+    assert ledger_path.exists()
+    rows = [json.loads(line) for line in ledger_path.read_text().splitlines()]
+    review_rows = [row for row in rows if row.get("stage") == "review"]
+    assert len(review_rows) == 1
+    assert review_rows[0]["files"]  # non-empty
+    assert "reviewed.py" in review_rows[0]["files"]
+    assert "skipped.py" not in review_rows[0]["files"]
+    assert "deleted.py" not in review_rows[0]["files"]
+

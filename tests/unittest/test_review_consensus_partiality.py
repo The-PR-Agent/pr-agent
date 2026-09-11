@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import yaml
 
+from pr_agent.algo.review_coverage import CoverageLedger
 from pr_agent.algo.review_finding_state import ParsedReviewState, reconcile_review_findings
 from pr_agent.config_loader import get_settings
 from pr_agent.tools.pr_reviewer import PRReviewer
@@ -34,6 +35,7 @@ def _make_reviewer():
     reviewer.incremental = SimpleNamespace(is_incremental=False)
     reviewer.remaining_files_list = []
     reviewer.prediction = None
+    reviewer.coverage = CoverageLedger()
     return reviewer
 
 
@@ -95,11 +97,14 @@ async def test_a_dropped_finding_stops_the_run_resolving_the_previous_one(sampli
     reviewer._load_review_finding_state = lambda: ParsedReviewState(previous, present=True, valid=True)
     reviewer._review_head_sha = lambda: "head-2"
     reviewer._review_run_id = lambda: "run-2"
+    # The file itself was fully reviewed - only the vote-drop guard, not missing coverage
+    # evidence, may be why this does not resolve.
+    reviewer.coverage.mark("lonely.py", "reviewed")
 
     reviewer._prepare_review_finding_state(reviewer.prediction_data)
 
     assert reviewer._review_state_result.resolved_ids == ()
-    assert reviewer._review_state_result.state["findings"][0]["state"] == "ACTIVE"
+    assert reviewer._review_state_result.state["findings"][0]["state"] == "UNCONFIRMED"
 
 
 @pytest.mark.asyncio
@@ -119,6 +124,7 @@ async def test_a_run_that_dropped_nothing_still_resolves(sampling):
     reviewer._load_review_finding_state = lambda: ParsedReviewState(previous, present=True, valid=True)
     reviewer._review_head_sha = lambda: "head-2"
     reviewer._review_run_id = lambda: "run-2"
+    reviewer.coverage.mark("gone.py", "reviewed")
 
     reviewer._prepare_review_finding_state(reviewer.prediction_data)
 

@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
+from pr_agent.algo.pr_processing import ChunkPlan
 from pr_agent.config_loader import get_settings
 from pr_agent.tools.pr_reviewer import PRReviewer
 
@@ -65,8 +66,8 @@ async def _run_chunked(reviewer, chunks):
     reviewer.vars = {"diff": ""}
     with (
         patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
-        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
-              return_value=([f"chunk-{i}" for i in range(chunks)], [])),
+        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs_with_files",
+              return_value=([ChunkPlan(diff=f"chunk-{i}", files=(), clipped=()) for i in range(chunks)], [])),
         patch("pr_agent.tools.pr_reviewer.Environment") as environment,
     ):
         environment.return_value.from_string.return_value.render.return_value = "prompt"

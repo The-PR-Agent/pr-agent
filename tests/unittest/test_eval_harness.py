@@ -142,7 +142,7 @@ class _StubHandler(BaseAiHandler):
     def deployment_id(self):
         return None
 
-    async def chat_completion(self, model, system, user, temperature=0.2, img_path=None):
+    async def chat_completion(self, model, system, user, temperature=0.2, img_path=None, **_kwargs):
         return self.response, "stop"
 
 

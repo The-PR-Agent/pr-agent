@@ -104,7 +104,7 @@ for the authoritative default values.
       </tr>
       <tr>
         <td><b>enable_large_pr_chunking</b></td>
-        <td>If set to true, and the token budget leaves files out of the review, the diff is split into chunks, each chunk is reviewed separately, and the per-chunk results are merged into one review. See <a href="#reviewing-a-pr-that-does-not-fit-in-one-call">Reviewing a PR that does not fit in one call</a>. Default is false.</td>
+        <td>If set to true, and the token budget leaves files out of the review, the diff is split into chunks, each chunk is reviewed separately, and the per-chunk results are merged into one review. See <a href="#reviewing-a-pr-that-does-not-fit-in-one-call">Reviewing a PR that does not fit in one call</a>. Default is true.</td>
       </tr>
       <tr>
         <td><b>max_number_of_calls</b></td>
@@ -271,7 +271,7 @@ for the authoritative default values.
     When a PR diff is larger than the model's token budget, the `review` tool drops whole files
     until the diff fits, and lists the dropped files in the review coverage footer.
 
-    Setting `enable_large_pr_chunking = true` changes what happens next: the diff is split into up
+    Chunking (`enable_large_pr_chunking`, on by default) changes what happens next: the diff is split into up
     to `max_number_of_calls` chunks, each chunk is reviewed on its own, and the answers are merged
     into a single review that says how many chunks it was built from. Files that do not fit even
     after chunking are still listed in the coverage footer. Every chunk is a separate model call,

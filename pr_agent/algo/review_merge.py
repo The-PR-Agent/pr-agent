@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, Callable, Hashable, List, Optional
+from typing import Any, Callable, Hashable, List, Mapping, Optional
 
 from pr_agent.algo.utils import as_review_text, is_value_no
 from pr_agent.log import get_logger
@@ -586,6 +586,48 @@ def _same_finding(a: dict, b: dict) -> bool:
     if lines_a and lines_b:
         return line_ranges_overlap(lines_a, lines_b)
     return _similar_wording(a, b)
+
+
+_HEADER_RE = re.compile(r"\*\*(.+?)\*\*")
+
+
+def normalized_header(body: str) -> str:
+    """The finding's bold header, lowercased and stripped of punctuation, or its first line."""
+    match = _HEADER_RE.search(body or "")
+    text = match.group(1) if match else ((body or "").splitlines()[0] if body else "")
+    return re.sub(r"[^a-z0-9 ]+", "", text.lower()).strip()
+
+
+def _state_range(record: Mapping) -> Optional[tuple[int, int]]:
+    start, end = record.get("line_start"), record.get("line_end")
+    if start is None:
+        return None
+    return int(start), int(end if end is not None else start)
+
+
+def same_finding_across_runs(a: Mapping, b: Mapping) -> bool:
+    """Is `b` a reworded restatement of the same defect `a` reported, in an earlier run?
+
+    Stricter than `_same_finding`: that matcher accepts any line-range overlap, which is fine for
+    samples of the *same* diff (identical prompt, identical diff, so an overlapping neighbour is
+    implausible) but is too permissive across commits - a wide range like 67-87 overlaps almost
+    anything nearby, so two distinct defects three lines apart would wrongly merge. Here the path
+    must match exactly, both records must carry a line range and their start lines must sit within
+    `VOTE_LINE_TOLERANCE` of each other, and only then does wording decide: either the same
+    normalized bold header, or `_similar_wording`'s Jaccard test (`VOTE_TEXT_SIMILARITY`) on the
+    whole body text. A finding with no line range never fuzzy-matches; it keeps exact-hash
+    identity only.
+    """
+    if normalize_finding_path(a.get("path")) != normalize_finding_path(b.get("path")):
+        return False
+    range_a, range_b = _state_range(a), _state_range(b)
+    if range_a is None or range_b is None or abs(range_a[0] - range_b[0]) > VOTE_LINE_TOLERANCE:
+        return False
+    body_a, body_b = a.get("body", ""), b.get("body", "")
+    header_a, header_b = normalized_header(body_a), normalized_header(body_b)
+    if header_a and header_a == header_b:
+        return True
+    return _similar_wording({"issue_content": body_a}, {"issue_content": body_b})
 
 
 @dataclass(frozen=True)

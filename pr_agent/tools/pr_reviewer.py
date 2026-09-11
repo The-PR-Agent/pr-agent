@@ -3,6 +3,7 @@ import contextlib
 import copy
 import datetime
 import re
+import uuid
 from functools import partial
 from typing import Any, List, Optional, Tuple
 
@@ -10,6 +11,7 @@ from jinja2 import Environment, StrictUndefined
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
+from pr_agent.algo.finding_verifier import UNVERIFIED_HEADER_SUFFIX, verify_findings
 from pr_agent.algo.inline_comment_dedup import (
     InlineCommentStore,
     can_verify_inline_comment_publication,
@@ -19,20 +21,34 @@ from pr_agent.algo.inline_comment_dedup import (
     key_issue_location_fingerprint,
 )
 from pr_agent.algo.pr_processing import (
+    ChunkPlan,
     add_ai_metadata_to_diff_files,
     get_pr_diff,
-    get_pr_multi_diffs,
+    get_pr_multi_diffs_with_files,
     retry_with_fallback_models,
 )
 from pr_agent.algo.prompt_fragments import render_diff_hunk_format
 from pr_agent.algo.repo_context import build_repo_context
+from pr_agent.algo.review_coverage import CoverageLedger, FileCoverage, patch_line_counts
 from pr_agent.algo.review_finding_state import (
-    append_review_state,
+    CARRIED_CONTINUATION_HEADER,
+    append_review_state_paginated,
     parse_review_state,
     reconcile_review_findings,
+    render_carried_section,
 )
 from pr_agent.algo.review_merge import merge_review_chunks, vote_review_samples
-from pr_agent.algo.run_details import get_run_details, init_run_details
+from pr_agent.algo.run_details import get_run_details, init_run_details, set_call_findings
+from pr_agent.algo.run_ledger import write_ledger
+from pr_agent.algo.ship_scope import (
+    DEFAULT_LOW_PRIORITY_GLOBS,
+    DEFAULT_LOW_PRIORITY_MAX_TOKENS_PER_FILE,
+    cap_low_priority_files,
+    is_low_priority,
+    order_files_by_priority,
+    propose_ignore_globs,
+    render_ignore_proposal,
+)
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (
@@ -142,6 +158,14 @@ _STATE_BLOCK_READ_ERROR = "read_error"
 _STATE_BLOCK_REVIEW_DATA = "review_data"
 _STATE_BLOCK_SIZE = "state_size"
 
+
+def _review_findings_count(data: Any) -> int:
+    """How many key issues a parsed review dict reports, or 0 when the shape is missing/wrong."""
+    review = data.get("review") if isinstance(data, dict) else None
+    issues = review.get("key_issues_to_review") if isinstance(review, dict) else None
+    return len(issues) if isinstance(issues, list) else 0
+
+
 class UnparsableReview(ValueError):
     """The model answered, but nothing the YAML repair heuristics could rescue.
 
@@ -153,6 +177,38 @@ class UnparsableReview(ValueError):
 # One retry per failed chunk. Chunk failures cost findings, and both an unanswered call and
 # unparsable YAML are usually transient; more attempts would multiply latency on a large PR.
 CHUNK_REVIEW_ATTEMPTS = 2
+
+
+def split_chunk_plan(plan: ChunkPlan, git_provider, token_handler, model: str) -> list[ChunkPlan]:
+    """Split a chunk that failed every attempt on `model` into up to two smaller chunks, one per
+    half of its files, each with its diff regenerated from scratch (so the token budget is
+    re-applied to just that half rather than reusing the failed chunk's possibly-clipped diff).
+
+    Returns `[plan]` unchanged - the exact same object - when it has only one file left to split,
+    or when regenerating *every* half's diff produced nothing (e.g. every file turned out to be
+    delete-only). That makes `result == [plan]` the caller's test for "could not usefully split
+    this"; anything else is a valid split, including a single returned plan when only one of the
+    two halves regenerated to content (the other half's files are the caller's to account for,
+    e.g. as deletion_only or skipped_budget, since they are not covered by the returned plan(s)).
+    """
+    if len(plan.files) <= 1:
+        return [plan]
+    mid = len(plan.files) // 2
+    file_halves = (plan.files[:mid], plan.files[mid:])
+    all_diff_files = git_provider.get_diff_files()
+
+    halves: list[ChunkPlan] = []
+    for files_subset in file_halves:
+        wanted = set(files_subset)
+        subset_diff_files = [f for f in all_diff_files if f.filename in wanted]
+        # max_calls=1: if a half still does not fit in one model call, take its first plan and
+        # let whatever it could not fit go uncovered, same as the top-level chunker would.
+        sub_plans, _ = get_pr_multi_diffs_with_files(
+            git_provider, token_handler, model, max_calls=1, add_line_numbers=True,
+            diff_files=subset_diff_files)
+        if sub_plans:
+            halves.append(sub_plans[0])
+    return halves if halves else [plan]
 
 
 class PRReviewer:
@@ -169,6 +225,18 @@ class PRReviewer:
     # num_max_findings. Non-zero means this review is partial in the same way a failed chunk
     # makes it partial.
     review_vote_dropped_count = 0
+    # Premise-verification outcomes (R-8). Reset when verification runs; zero when the flag is off.
+    review_refuted_count = 0
+    review_unverified_count = 0
+    # Line-weighted record of what the review actually looked at, built once _prepare_prediction
+    # has a diff to review. None means the run never got that far (parsing/plumbing tests that
+    # exercise _prepare_pr_review directly, without going through _prepare_prediction first).
+    coverage: Optional[CoverageLedger] = None
+    # Per-chunk file/clip breakdown from the chunked flow; empty when the diff was not chunked.
+    chunk_plans: list = None
+    # Ship-scope (R-9): low-priority files summarized under budget, plus an optional [ignore] proposal.
+    _ship_scope_summary_paths: list = None
+    _ship_scope_ignore_footer: str = ""
 
     def __init__(self, pr_url: str, is_answer: bool = False, is_auto: bool = False, args: list = None,
                  ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
@@ -201,6 +269,8 @@ class PRReviewer:
         self.ai_handler.main_pr_language = self.main_language
         self.patches_diff = None
         self.remaining_files_list = []
+        self.coverage = None
+        self.chunk_plans = []
         self.prediction = None
         self._review_state_result = None
         self._review_state_blocked = False
@@ -324,6 +394,7 @@ class PRReviewer:
             if not self.prediction:
                 return None
 
+            await self._verify_prediction_findings()
             pr_review = self._prepare_pr_review()
             get_logger().debug("PR output", artifact=pr_review)
 
@@ -379,6 +450,8 @@ class PRReviewer:
                 persistent_write_failed = not self._persistent_publish_succeeded(result)
                 if persistent_write_failed:
                     review_failed = True
+                else:
+                    self._publish_carried_continuation()
             elif state_blocked:
                 get_logger().warning(
                     "Review finding state is blocked by review data or provider read failure; "
@@ -388,6 +461,7 @@ class PRReviewer:
                     self._as_non_authoritative_review(pr_review),
                     **review_thread_kwargs,
                 )
+                self._publish_carried_continuation()
             elif get_settings().pr_reviewer.persistent_comment and not self.incremental.is_incremental:
                 final_update_message = get_settings().pr_reviewer.final_update_message
                 persistent_args = dict(
@@ -400,6 +474,7 @@ class PRReviewer:
                 )
                 if not self._review_finding_state_in_play():
                     self.git_provider.publish_persistent_comment(pr_review, **persistent_args)
+                    self._publish_carried_continuation()
                 elif state_result is not None:
                     persistent_args["require_agent_authorship"] = True
                     persistent_args["fallback_on_error"] = False
@@ -410,6 +485,8 @@ class PRReviewer:
                     persistent_write_failed = not self._persistent_publish_succeeded(result)
                     if persistent_write_failed:
                         review_failed = True
+                    else:
+                        self._publish_carried_continuation()
                 elif self._publish_review_check_run(pr_review):
                     pass
                 elif self._review_comment_authorship_available():
@@ -422,17 +499,21 @@ class PRReviewer:
                     persistent_write_failed = not self._persistent_publish_succeeded(result)
                     if persistent_write_failed:
                         review_failed = True
+                    else:
+                        self._publish_carried_continuation()
                 elif self._persistent_review_comment_exists() is False:
                     # There is no review comment to replace, so creating one cannot overwrite
                     # a comment PR-Agent did not author. An identity this deployment cannot
                     # resolve is not a reason to demote the canonical review.
                     self.git_provider.publish_persistent_comment(pr_review, **persistent_args)
+                    self._publish_carried_continuation()
                 else:
                     # An unverified provider identity must never update a canonical review.
                     self.git_provider.publish_comment(
                         self._as_non_authoritative_review(pr_review),
                         **review_thread_kwargs,
                     )
+                    self._publish_carried_continuation()
 
             else:
                 if self.git_provider.supports_review_comment_identity() is True:
@@ -443,6 +524,7 @@ class PRReviewer:
                     )
                     pr_review = add_pr_review_identity(pr_review, identity_marker)
                 self.git_provider.publish_comment(pr_review, **review_thread_kwargs)
+                self._publish_carried_continuation()
         except Exception as e:
             review_error = e
             review_failed = True
@@ -467,6 +549,14 @@ class PRReviewer:
                     self.git_provider.publish_comment(_review_failure_comment(review_error))
                 except Exception as e:
                     get_logger().exception(f"Failed to publish review failure result, error: {e}")
+            ledger_path = get_settings().config.get("run_ledger_path")
+            if ledger_path:
+                try:
+                    details = get_run_details()
+                    if details is not None:
+                        write_ledger(details, ledger_path, run_id=self._ledger_run_id(), tool="review")
+                except Exception as e:
+                    get_logger().exception(f"Failed to write run ledger, error: {e}")
 
     def _review_finding_state_enabled(self) -> bool:
         settings = get_settings()
@@ -501,6 +591,38 @@ class PRReviewer:
     @staticmethod
     def _persistent_publish_succeeded(result) -> bool:
         return result is not None and result is not False
+
+    def _publish_carried_continuation(self) -> None:
+        """Publish or retire the overflow carried-findings comment; never fail the review."""
+        try:
+            continuation = getattr(self, "_review_carried_continuation", "") or ""
+            if continuation:
+                self.git_provider.publish_persistent_comment(
+                    continuation,
+                    initial_header=CARRIED_CONTINUATION_HEADER,
+                    update_header=False,
+                    name="carried findings continuation",
+                    final_update_message=False,
+                )
+                return
+            if not self.git_provider.is_supported("get_issue_comments"):
+                return
+            for comment in self.git_provider.get_issue_comments():
+                body = getattr(comment, "body", None)
+                if body is None and isinstance(comment, dict):
+                    body = comment.get("body", "")
+                body = body or ""
+                if body.startswith(CARRIED_CONTINUATION_HEADER):
+                    self.git_provider.edit_comment(
+                        comment,
+                        f"{CARRIED_CONTINUATION_HEADER}\n\n"
+                        "All carried findings now fit in the main review comment.",
+                    )
+                    return
+        except Exception as error:
+            get_logger().warning(
+                f"Failed to publish carried findings continuation; continuing review: {error}"
+            )
 
     @staticmethod
     def _as_non_authoritative_review(pr_review: str) -> str:
@@ -629,6 +751,10 @@ class PRReviewer:
         raw_content = issue.get("issue_content") or issue.get("body") or ""
         content = _SUGGESTION_FENCE_RE.sub("```text", str(raw_content).strip())
         header = str(issue.get("issue_header") or "").strip()
+        # Only the verifier's own display tag is stripped; a header that happens to end the same way
+        # on an untagged finding is part of its identity and must round-trip unchanged.
+        if issue.get("verification") == "unverified" and header.endswith(UNVERIFIED_HEADER_SUFFIX):
+            header = header[: -len(UNVERIFIED_HEADER_SUFFIX)].rstrip()
         if header.lower() == "possible bug":
             header = "Possible Issue"
         if not path or not content:
@@ -688,6 +814,24 @@ class PRReviewer:
             return ""
         return value if isinstance(value, str) else ""
 
+    def _ledger_run_id(self) -> str:
+        """Identity stamped on every ledger row for this run.
+
+        Providers without a hosting platform (plain diff, local) have no commit URL, so
+        `_review_run_id()` is empty there and every row would be unattributable. Prefer an
+        explicit `config.run_ledger_run_id` when the caller sets one (eval harness, CI job
+        id), otherwise mint one id per reviewer instance so a run's rows stay correlatable.
+        """
+        commit_url = self._review_run_id()
+        if commit_url:
+            return commit_url
+        configured = get_settings().config.get("run_ledger_run_id", "")
+        if isinstance(configured, str) and configured.strip():
+            return configured.strip()
+        if not getattr(self, "_ledger_fallback_run_id", None):
+            self._ledger_fallback_run_id = f"local-{uuid.uuid4().hex[:12]}"
+        return self._ledger_fallback_run_id
+
     def _review_comment_max_chars(self) -> int | None:
         for attribute in ("max_comment_chars", "max_comment_length"):
             value = getattr(self.git_provider, attribute, None)
@@ -706,6 +850,7 @@ class PRReviewer:
         self._review_state_block_reason = None
         self._review_finding_previous_state = None
         self._review_state_preserved = False
+        self._review_fully_reviewed_files = []
         if not self._review_finding_state_enabled():
             return
         if not isinstance(data.get("review"), dict):
@@ -725,6 +870,12 @@ class PRReviewer:
             self._review_state_block_reason = _STATE_BLOCK_REVIEW_DATA
             get_logger().warning("Review finding data is invalid; skipping persistent state update")
             return
+        coverage = getattr(self, "coverage", None) or CoverageLedger()
+        fully_reviewed = [path for path, file_coverage in coverage.files.items()
+                          if file_coverage.status == "reviewed"]
+        # _prepare_pr_review needs this to render the carried-findings section from the same
+        # state result, without recomputing it from self.coverage a second time.
+        self._review_fully_reviewed_files = fully_reviewed
         if self._review_state_blocked:
             if self._review_state_block_reason == _STATE_BLOCK_INVALID_MARKER:
                 self._review_state_result = reconcile_review_findings(
@@ -732,6 +883,7 @@ class PRReviewer:
                     current_findings,
                     allow_resolution=False,
                     excluded_files=self.remaining_files_list,
+                    fully_reviewed_files=fully_reviewed,
                     head_sha=self._review_head_sha(),
                     run_id=self._review_run_id(),
                 )
@@ -766,6 +918,7 @@ class PRReviewer:
             current_findings,
             allow_resolution=allow_resolution,
             excluded_files=self.remaining_files_list,
+            fully_reviewed_files=fully_reviewed,
             head_sha=self._review_head_sha(),
             run_id=self._review_run_id(),
         )
@@ -785,17 +938,27 @@ class PRReviewer:
                 get_settings().pr_review_prompt.user,
                 model,
             )
+        review_files, summarized_low_priority = self._cap_low_priority_diff_files()
+        # Reused by _prepare_chunked_prediction below: pricing every low-priority patch is not
+        # free, and retry_with_fallback_models runs this function once per model.
+        self._ship_scope_cap = (review_files, list(summarized_low_priority))
         output = get_pr_diff(self.git_provider,
                              self.token_handler,
                              model,
                              add_line_numbers_to_hunks=True,
                              disable_extra_lines=False,
-                             return_remaining_files=True,)
+                             return_remaining_files=True,
+                             diff_files=review_files,)
         if isinstance(output, tuple):
             self.patches_diff, self.remaining_files_list = output
         else:
             self.patches_diff = output
             self.remaining_files_list = []
+        # The single-call ledger. _prepare_chunked_prediction below replaces this with a more
+        # granular one (clipped/chunk_failed per file) when chunking actually runs.
+        self.coverage = self._build_coverage_ledger(self.remaining_files_list)
+        for filename in summarized_low_priority:
+            self.coverage.mark(filename, "low_priority_summary")
 
         # retry_with_fallback_models calls this once per model, so clear the previous attempt's
         # merged verdict; otherwise a chunked run that failed on model A would be read back as
@@ -804,6 +967,8 @@ class PRReviewer:
         self.review_chunk_count = 1  # the single-call default; the chunked flow rebinds it
         self.review_failed_chunk_count = 0
         self.review_vote_dropped_count = 0
+        self._ship_scope_summary_paths = list(summarized_low_priority)
+        self._ship_scope_ignore_footer = ""
         # One cap for the whole run, so nested fan-out (chunks x samples) cannot burst past it.
         # Rebuilt per model attempt: a semaphore is not reusable across event loops.
         self._call_semaphore = self._build_call_semaphore()
@@ -820,8 +985,30 @@ class PRReviewer:
             # model being tried. load_yaml returns {} for output its repair heuristics cannot
             # rescue, and models that struggle with structured output fail that way rather than by
             # erroring, which is why the transport-level retry never covered it.
+            # Filenames actually represented in this single-call diff: covered as "reviewed"
+            # by the coverage ledger (all diff files minus remaining minus deletion-only).
+            if self.coverage is not None:
+                reviewed_files = [
+                    path for path, entry in self.coverage.files.items()
+                    if entry.status == "reviewed"
+                ]
+            else:
+                remaining = set(self.remaining_files_list or [])
+                reviewed_files = []
+                for diff_file in self.git_provider.get_diff_files():
+                    if diff_file.filename in remaining:
+                        continue
+                    if diff_file.num_plus_lines < 0 or diff_file.num_minus_lines < 0:
+                        plus_lines, minus_lines = patch_line_counts(diff_file.patch)
+                    else:
+                        plus_lines, minus_lines = diff_file.num_plus_lines, diff_file.num_minus_lines
+                    if plus_lines == 0 and minus_lines > 0:
+                        continue  # deletion-only
+                    reviewed_files.append(diff_file.filename)
             (self.prediction, self.prediction_data,
-             self.review_vote_dropped_count) = await self._get_review_data(model)
+             self.review_vote_dropped_count) = await self._get_review_data(
+                model, files=reviewed_files
+            )
         else:
             get_logger().warning(f"Empty diff for PR: {self.pr_url}")
             self.prediction = None
@@ -845,65 +1032,283 @@ class PRReviewer:
         """Is this parsed output a review the rest of the tool can render?"""
         return isinstance(data, dict) and isinstance(data.get("review"), dict) and bool(data["review"])
 
+    def _cap_low_priority_diff_files(self) -> tuple[list, list[str]]:
+        """Order the diff by ship-scope priority and summarize oversized low-priority files.
+
+        Ordering only pays off when the token budget binds. Applied here, before either the
+        single-call or the chunked diff is built, so a large mockup or design document cannot
+        take half a run's tokens on a PR whose budget never binds (R-9).
+        """
+        settings = get_settings()
+        globs = list(settings.pr_reviewer.get("low_priority_globs", DEFAULT_LOW_PRIORITY_GLOBS))
+        ordered = order_files_by_priority(self.git_provider.get_diff_files(), globs)
+        max_tokens = settings.pr_reviewer.get(
+            "low_priority_max_tokens_per_file", DEFAULT_LOW_PRIORITY_MAX_TOKENS_PER_FILE
+        )
+        try:
+            max_tokens = int(max_tokens)
+        except (TypeError, ValueError):
+            get_logger().warning(
+                f"Ignoring invalid pr_reviewer.low_priority_max_tokens_per_file: {max_tokens!r}")
+            max_tokens = DEFAULT_LOW_PRIORITY_MAX_TOKENS_PER_FILE
+        count_tokens = getattr(self.token_handler, "count_tokens", None)
+        if not callable(count_tokens):
+            # Some flows swap in a budget-fitted handler; without a counter there is no safe way
+            # to price a patch, and ship scope never drops a file it cannot price.
+            return ordered, []
+        kept, summarized = cap_low_priority_files(ordered, globs, max_tokens, count_tokens)
+        if summarized:
+            get_logger().info(
+                f"Ship scope: summarizing {len(summarized)} low-priority file(s) over "
+                f"{max_tokens} tokens instead of reviewing them")
+        return kept, summarized
+
+    def _build_coverage_ledger(self, remaining_files: list) -> CoverageLedger:
+        """A file the model saw whole is reviewed by default; the caller marks the exceptions
+        (clipped, skipped for budget, or lost to a failed chunk) on top of this base ledger."""
+        ledger = CoverageLedger()
+        for file in self.git_provider.get_diff_files():
+            # FilePatchInfo defaults num_plus_lines/num_minus_lines to -1; several providers
+            # (local/plain-diff, gerrit, bitbucket, codecommit) never populate them at all.
+            if file.num_plus_lines < 0 or file.num_minus_lines < 0:
+                # Last resort when the provider gave us nothing usable: derive both the counts
+                # and the deletion-only classification from the patch text itself, rather than a
+                # raw clamp that would silently zero this file out of the ratio (hiding
+                # clipping/skips/failures on these providers) or misclassify a real
+                # deletion-only file as fully reviewed.
+                plus_lines, minus_lines = patch_line_counts(file.patch)
+            else:
+                plus_lines, minus_lines = file.num_plus_lines, file.num_minus_lines
+            status = "deletion_only" if plus_lines == 0 and minus_lines > 0 else "reviewed"
+            # STATUS_CREDIT gives deletion_only 0.0 credit, so it must also carry 0 changed
+            # lines - otherwise it drags reviewed_ratio down as if those lines went unread.
+            changed_lines = 0 if status == "deletion_only" else plus_lines + minus_lines
+            ledger.add(FileCoverage(file.filename, changed_lines=changed_lines, status=status))
+        for filename in remaining_files:
+            ledger.mark(filename, "skipped_budget")
+        return ledger
+
     async def _prepare_chunked_prediction(self, model: str) -> bool:
         """Review a too-large diff in chunks and merge the per-chunk verdicts.
 
         Returns False when chunking does not apply, leaving the single-call flow in place.
         """
-        patches_diff_list, remaining_files_list = get_pr_multi_diffs(
+        globs = list(get_settings().pr_reviewer.get("low_priority_globs", DEFAULT_LOW_PRIORITY_GLOBS))
+        cached = getattr(self, "_ship_scope_cap", None)
+        diff_files, capped_low_priority = cached if cached else self._cap_low_priority_diff_files()
+        plans, remaining_files_list = get_pr_multi_diffs_with_files(
             self.git_provider,
             self.token_handler,
             model,
             max_calls=get_settings().pr_reviewer.get("max_number_of_calls", 3),
             add_line_numbers=True,
-            return_remaining_files=True)
-        if len(patches_diff_list) < 2:
+            diff_files=diff_files,
+            preserve_order=True)
+        if len(plans) < 2:
             get_logger().info("Large-diff chunking produced a single chunk, reviewing the PR in one call")
             return False
 
-        get_logger().info(f"Number of PR chunk calls: {len(patches_diff_list)}")
-        get_logger().debug("PR diff chunks", artifact=patches_diff_list)
-        # A dropped chunk loses every finding in its slice of the diff, and both failure modes
-        # here (no answer, or an answer whose YAML cannot be repaired) are usually transient, so
-        # give the failures one more pass before giving up on them.
-        chunk_results: dict[int, tuple[str, dict]] = {}
-        # Per chunk index, not a running total: a chunk that is retried, or a model attempt that
-        # fails after a later one succeeds, must not add its drops twice.
-        chunk_dropped: dict[int, int] = {}
-        pending_indices = list(range(len(patches_diff_list)))
+        self.chunk_plans = plans
+        get_logger().info(f"Number of PR chunk calls: {len(plans)}")
+        get_logger().debug("PR diff chunks", artifact=[plan.diff for plan in plans])
+
+        # Built here, before the chunk loop runs, so _review_chunk_plans can mark chunk_failed on
+        # it directly as plans exhaust their recovery stages, rather than the caller reassembling
+        # the same information afterwards. previous_coverage is restored below if chunking ends up
+        # producing no output at all: that path falls back to the single-call flow, which must see
+        # the coverage ledger _prepare_prediction built before chunking was ever attempted, not
+        # this one's clipped marks for a chunking attempt that never actually reviewed anything.
+        previous_coverage = self.coverage
+        previous_summary_paths = list(self._ship_scope_summary_paths)
+        coverage = self._build_coverage_ledger(remaining_files_list)
+        for plan in plans:
+            for filename in plan.clipped:
+                coverage.mark(filename, "clipped")
+        summarize_low = get_settings().pr_reviewer.get("low_priority_summarize_when_over_budget", True)
+        if summarize_low:
+            for filename in remaining_files_list:
+                if is_low_priority(filename, globs):
+                    coverage.mark(filename, "low_priority_summary")
+        # Files the per-file cap took out of the diff are not in remaining_files_list (the token
+        # budget never saw them), so they are marked here or they would count as reviewed.
+        for filename in capped_low_priority:
+            coverage.mark(filename, "low_priority_summary")
+        self.coverage = coverage
+        self._record_ship_scope_footer(plans, remaining_files_list, globs, summarize_low,
+                                       capped_low_priority)
+
+        fallback_models = get_settings().config.get("fallback_models", [])
+        if not isinstance(fallback_models, list):
+            fallback_models = [m.strip() for m in fallback_models.split(",")] if fallback_models else []
+        ok = await self._review_chunk_plans(model, fallback_models)
+        if ok:
+            self.remaining_files_list = remaining_files_list
+        else:
+            self.coverage = previous_coverage
+            # The single-call flow this falls back to excludes the capped files too, so its
+            # footer lines have to come back with its ledger - not be cleared along with the
+            # chunking attempt's own bookkeeping.
+            self._ship_scope_summary_paths = previous_summary_paths
+            self._ship_scope_ignore_footer = ""
+        return ok
+
+    def _record_ship_scope_footer(
+        self,
+        plans: list,
+        remaining_files_list: list,
+        globs: list,
+        summarize_low: bool,
+        capped_low_priority: list = None,
+    ) -> None:
+        """Stash low-priority summary lines and an optional [ignore] proposal for the review footer."""
+        summary_paths = [
+            path for path in remaining_files_list
+            if summarize_low and is_low_priority(path, globs)
+        ]
+        for path in capped_low_priority or []:
+            if path not in summary_paths:
+                summary_paths.append(path)
+        self._ship_scope_summary_paths = summary_paths
+        reviewed_paths = {path for plan in plans for path in plan.files}
+        low_in_chunks = [path for path in reviewed_paths if is_low_priority(path, globs)]
+        # Only propose ignore for low-priority files that actually burned tokens in a reviewed chunk.
+        if not low_in_chunks:
+            self._ship_scope_ignore_footer = ""
+            return
+        tokens_by_file = {
+            f.filename: self.token_handler.count_tokens(f.patch or "")
+            for f in self.git_provider.get_diff_files()
+            if f.filename in low_in_chunks
+        }
+        self._ship_scope_ignore_footer = render_ignore_proposal(
+            propose_ignore_globs(low_in_chunks, tokens_by_file)
+        )
+
+    async def _review_chunk_plans(self, model: str, fallback_models: list) -> bool:
+        """Review `self.chunk_plans`, recovering a chunk that fails every attempt on `model` in
+        stages, each only as expensive as it needs to be:
+
+        1. `CHUNK_REVIEW_ATTEMPTS` attempts on `model` (a transient failure or unparsable answer
+           usually survives a second try).
+        2. `pr_reviewer.chunk_split_on_failure`: split whatever is still pending in half by file
+           (`split_chunk_plan`) and give the halves one attempt on `model` - a chunk that failed
+           because it was too large, not because the diff itself was hard, gets a smaller bite.
+        3. `pr_reviewer.chunk_fallback_model_on_failure`: one attempt on `fallback_models[0]` for
+           whatever is still pending, skipped when that is the model just tried (retry_with_fallback
+           models will already give it its own attempt at the top level in that case).
+        4. Anything still pending after all of that has its files marked chunk_failed - but only
+           when at least one other chunk in this run produced output; if every chunk failed
+           outright, this returns False (or raises the first transport error) so the single-call
+           flow gets a turn on the whole diff, as it did before chunking existed.
+
+        Mutates `self.coverage` directly (marking chunk_failed on it) so a caller that pre-built
+        the ledger, or a test that hands one in, sees the final state without a second pass.
+        """
+        original_plans = list(self.chunk_plans)
+        # One "leaf" per plan still being tracked, keyed by a stable id: a plan that is split
+        # keeps its parent's original index (for review_failed_chunk_count) and takes its
+        # parent's place in `order`, so a partial success/failure still merges in diff order and
+        # a split plan's failure still counts as one failed original chunk, not two.
+        order: list[int] = list(range(len(original_plans)))
+        leaf_plan: dict[int, ChunkPlan] = dict(enumerate(original_plans))
+        leaf_parent: dict[int, int] = {i: i for i in range(len(original_plans))}
+        next_id = len(original_plans)
+
+        results: dict[int, tuple[str, dict, int]] = {}
         # The first failure is the one worth reporting; a retry's error is usually a repeat.
         first_chunk_error: Exception | None = None
-        for attempt in range(CHUNK_REVIEW_ATTEMPTS):
-            if not pending_indices:
-                break
-            if attempt:
-                get_logger().info(f"Retrying {len(pending_indices)} failed review chunk(s)")
-            results = await asyncio.gather(
-                *[self._get_review_data(model, patches_diff_list[i]) for i in pending_indices],
-                return_exceptions=True)
 
-            retry_indices = []
-            for chunk_index, result in zip(pending_indices, results, strict=True):
-                if isinstance(result, Exception):
+        async def _attempt(pending_ids: list, call_model: str) -> list:
+            nonlocal first_chunk_error
+            positions = {lid: idx for idx, lid in enumerate(order)}
+            outcomes = await asyncio.gather(
+                *[self._get_review_data(call_model, leaf_plan[lid].diff, chunk_index=positions[lid],
+                                        files=list(leaf_plan[lid].files)) for lid in pending_ids],
+                return_exceptions=True)
+            still_pending = []
+            for lid, outcome in zip(pending_ids, outcomes, strict=True):
+                if isinstance(outcome, Exception):
                     # An unparsable chunk is not a failed call: if every chunk ends up unparsable
                     # the single-call flow still gets its turn, whereas a transport error is the
                     # run's error and is re-raised below.
-                    if first_chunk_error is None and not isinstance(result, UnparsableReview):
-                        first_chunk_error = result
-                    get_logger().warning(f"Failed to review chunk {chunk_index + 1}; retaining successful chunks",
-                                         artifact={"error": result})
-                    retry_indices.append(chunk_index)
+                    if first_chunk_error is None and not isinstance(outcome, UnparsableReview):
+                        first_chunk_error = outcome
+                    get_logger().warning(
+                        f"Failed to review chunk {positions[lid] + 1}; retaining successful chunks",
+                        artifact={"error": outcome})
+                    still_pending.append(lid)
                     continue
-                if isinstance(result, BaseException):
-                    raise result
-                prediction, data, dropped = result
-                chunk_results[chunk_index] = (prediction, data)
-                chunk_dropped[chunk_index] = dropped
-            pending_indices = retry_indices
+                if isinstance(outcome, BaseException):
+                    raise outcome
+                results[lid] = outcome
+            return still_pending
 
-        # keep the chunks in diff order, not completion order
-        raw_predictions = [chunk_results[i][0] for i in sorted(chunk_results)]
-        chunk_outputs = [chunk_results[i][1] for i in sorted(chunk_results)]
+        # Stage 1: CHUNK_REVIEW_ATTEMPTS attempts on the model this review is running as.
+        pending = list(order)
+        for attempt in range(CHUNK_REVIEW_ATTEMPTS):
+            if not pending:
+                break
+            if attempt:
+                get_logger().info(f"Retrying {len(pending)} failed review chunk(s)")
+            pending = await _attempt(pending, model)
+
+        # Stage 2: split what is still pending in half by file, and give the halves one attempt
+        # on the same model. A plan that could not be split (one file, or split_chunk_plan handed
+        # it back unchanged) already got its fair shake in stage 1 on the exact same diff, so it
+        # is left pending rather than spending another call re-asking the same question.
+        if pending and get_settings().pr_reviewer.get("chunk_split_on_failure", True):
+            split_ids = []
+            for lid in list(pending):
+                plan = leaf_plan[lid]
+                if len(plan.files) <= 1:
+                    continue
+                halves = split_chunk_plan(plan, getattr(self, "git_provider", None),
+                                          getattr(self, "token_handler", None), model)
+                if halves == [plan]:
+                    continue  # unsplittable in practice (or nothing regenerated); leave pending
+                parent = leaf_parent[lid]
+                new_ids = []
+                covered = set()
+                for half in halves:
+                    leaf_plan[next_id] = half
+                    leaf_parent[next_id] = parent
+                    new_ids.append(next_id)
+                    next_id += 1
+                    covered.update(half.files)
+                    for filename in half.clipped:
+                        self.coverage.mark(filename, "clipped")
+                # split_chunk_plan re-chunks each half with max_calls=1: a file that does not fit
+                # even alone (or turned out delete-only in isolation) is dropped from the half
+                # rather than clipped, so it needs its own mark here (stage 4 overwrites it with
+                # chunk_failed if the half goes on to fail anyway). A deletion-only file is already
+                # correctly marked by _build_coverage_ledger's base pass, so it is left alone here
+                # instead of being downgraded to skipped_budget.
+                for filename in set(plan.files) - covered:
+                    if self.coverage.files[filename].status != "deletion_only":
+                        self.coverage.mark(filename, "skipped_budget")
+                pos = order.index(lid)
+                order[pos:pos + 1] = new_ids
+                pending.remove(lid)
+                pending.extend(new_ids)
+                split_ids.extend(new_ids)
+                del leaf_plan[lid]
+            if split_ids:
+                get_logger().info(f"Split {len(split_ids)} chunk half(s) from a failed review chunk; retrying them")
+                retried = await _attempt(split_ids, model)
+                pending = [lid for lid in pending if lid not in split_ids] + retried
+
+        # Stage 3: one attempt on the first fallback model, unless it is the model already tried
+        # (retry_with_fallback_models gives that its own full attempt at the top level).
+        if (pending and fallback_models
+                and get_settings().pr_reviewer.get("chunk_fallback_model_on_failure", True)):
+            fallback_model = fallback_models[0]
+            if fallback_model != model:
+                get_logger().info(f"Trying fallback model {fallback_model} for {len(pending)} failed chunk(s)")
+                pending = await _attempt(pending, fallback_model)
+
+        # keep the chunks in diff order, not completion order; halves keep their parent's position
+        raw_predictions = [results[lid][0] for lid in order if lid in results]
+        chunk_outputs = [results[lid][1] for lid in order if lid in results]
 
         if not chunk_outputs:
             if first_chunk_error is not None:
@@ -911,17 +1316,28 @@ class PRReviewer:
             get_logger().warning("No chunk produced a parsable review, falling back to a single review call")
             return False
 
+        # Stage 4: whatever is still pending exhausted every recovery stage - its files are not
+        # covered by this review.
+        failed_parents = set()
+        for lid in pending:
+            failed_parents.add(leaf_parent[lid])
+            for filename in leaf_plan[lid].files:
+                self.coverage.mark(filename, "chunk_failed")
+
         # the raw text is kept for logging only; the merged verdict is in self.prediction_data
         self.prediction = "\n".join(raw_predictions)
         self.prediction_data = merge_review_chunks(chunk_outputs)
-        self.review_chunk_count = len(patches_diff_list)
-        self.review_failed_chunk_count = len(patches_diff_list) - len(chunk_outputs)
-        self.review_vote_dropped_count = sum(chunk_dropped.values())
-        self.remaining_files_list = remaining_files_list
+        self.review_chunk_count = len(original_plans)
+        # Counted by ORIGINAL plan, not by leaf: a parent whose halves both succeeded counts 0,
+        # one whose split left one half still failing (or that could not be split at all) counts 1
+        # - never 2, even though it may now be tracked as two leaves.
+        self.review_failed_chunk_count = len(failed_parents)
+        self.review_vote_dropped_count = sum(result[2] for result in results.values())
         return True
 
-    async def _get_review_data(self, model: str,
-                               patches_diff: Optional[str] = None) -> tuple[str, dict, int]:
+    async def _get_review_data(self, model: str, patches_diff: Optional[str] = None,
+                               chunk_index: Optional[int] = None,
+                               files: Optional[list] = None) -> tuple[str, dict, int]:
         """Review the diff, returning `(raw response text, parsed review dict, findings dropped)`.
 
         With `pr_reviewer.num_samples` at its default of 1 this is one call, parsed once. With
@@ -945,10 +1361,12 @@ class PRReviewer:
             num_samples = 1
 
         if num_samples <= 1:
-            # keep the one-argument call for the whole-diff case: patches_diff defaults to it
-            prediction = await (self._get_prediction(model) if patches_diff is None
-                                else self._get_prediction(model, patches_diff))
+            # patches_diff defaults to the whole prepared diff inside _get_prediction
+            prediction = await self._get_prediction(
+                model, patches_diff, chunk_index=chunk_index, files=files
+            )
             data = self._load_review_yaml(prediction)
+            set_call_findings("review", chunk_index, None, _review_findings_count(data))
             if not self._is_parsable_review(data):
                 get_logger().warning(f"Unparsable review from {model}", artifact={"data": data})
                 raise UnparsableReview(f"Failed to parse the review produced by {model}")
@@ -959,10 +1377,11 @@ class PRReviewer:
                                  "the samples will be identical and the vote is a no-op")
 
         responses = await asyncio.gather(
-            *[self._get_prediction(model, patches_diff) for _ in range(num_samples)],
+            *[self._get_prediction(model, patches_diff, chunk_index=chunk_index, sample_index=i, files=files)
+              for i in range(num_samples)],
             return_exceptions=True)
         parsed, raw, first_error = [], [], None
-        for response in responses:
+        for sample_index, response in enumerate(responses):
             if isinstance(response, BaseException):
                 if not isinstance(response, Exception):
                     raise response
@@ -970,6 +1389,7 @@ class PRReviewer:
                 get_logger().warning(f"Review sample failed: {response}")
                 continue
             data = self._load_review_yaml(response)
+            set_call_findings("review", chunk_index, sample_index, _review_findings_count(data))
             if self._is_parsable_review(data):
                 parsed.append(data)
                 raw.append(response)
@@ -994,7 +1414,9 @@ class PRReviewer:
         consensus = vote_review_samples(parsed, min_votes, max_findings=max_findings)
         return "\n".join(raw), consensus.review, consensus.dropped
 
-    async def _get_prediction(self, model: str, patches_diff: Optional[str] = None) -> str:
+    async def _get_prediction(self, model: str, patches_diff: Optional[str] = None, *,
+                              chunk_index: Optional[int] = None, sample_index: Optional[int] = None,
+                              files: Optional[list] = None) -> str:
         """
         Generate an AI prediction for the pull request review.
 
@@ -1002,6 +1424,12 @@ class PRReviewer:
             model: A string representing the AI model to be used for the prediction.
             patches_diff: The diff to review. Defaults to the whole prepared diff; the chunked
                 flow passes one chunk per call.
+            chunk_index: The diff chunk this call reviews, for run-ledger attribution. None
+                when the diff was not chunked.
+            sample_index: The consensus sample this call produces, for run-ledger attribution.
+                None when `pr_reviewer.num_samples` is 1.
+            files: The files this call's diff covers, for run-ledger attribution. The whole-diff
+                path passes filenames actually represented in the prepared patch.
 
         Returns:
             A string representing the AI prediction for the pull request review.
@@ -1019,7 +1447,11 @@ class PRReviewer:
                 model=model,
                 temperature=get_settings().config.temperature,
                 system=system_prompt,
-                user=user_prompt
+                user=user_prompt,
+                stage="review",
+                chunk_index=chunk_index,
+                sample_index=sample_index,
+                files=files,
             )
 
         return response
@@ -1031,6 +1463,121 @@ class PRReviewer:
                                         "merge_recommendation:", "security_concerns:", "key_issues_to_review:",
                                         "relevant_file:", "relevant_line:", "suggestion:"],
                          first_key='review', last_key='security_concerns')
+
+    async def _verify_prediction_findings(self) -> None:
+        """Drop refuted findings and tag unverified ones when premise verification is enabled."""
+        self.review_refuted_count = 0
+        self.review_unverified_count = 0
+        if not get_settings().pr_reviewer.get("enable_finding_verification", False):
+            return
+
+        # Snapshot before any mutation so a whole-pass failure leaves findings untouched.
+        original_prediction_data = self.prediction_data
+        try:
+            data = (
+                self.prediction_data
+                if self.prediction_data is not None
+                else self._load_review_yaml(self.prediction)
+            )
+            if not isinstance(data, dict) or not isinstance(data.get("review"), dict):
+                return
+            # Work on a deep copy so failures never partially mutate prediction_data.
+            data = copy.deepcopy(data)
+            issues = list(data["review"].get("key_issues_to_review") or [])
+            if not issues:
+                self.prediction_data = data
+                return
+
+            pr_files = [f.filename for f in self.git_provider.get_diff_files()]
+            model = (
+                get_settings().pr_reviewer.get("verification_model")
+                or get_settings().config.get("model_weak")
+                or get_settings().config.model
+            )
+            head_sha = self._review_head_sha()
+            system_text = get_settings().pr_finding_verifier_prompt.system
+            user_text = get_settings().pr_finding_verifier_prompt.user
+            try:
+                max_chars = int(get_settings().pr_reviewer.get("verify_max_context_chars", 200000))
+            except (TypeError, ValueError):
+                max_chars = 200000
+
+            async def fetch(path: str) -> str:
+                if not path:
+                    return ""
+                try:
+                    get_pr = getattr(self.git_provider, "get_pr_file_content", None)
+                    if callable(get_pr):
+                        return get_pr(path, head_sha) or ""
+                    get_repo = getattr(self.git_provider, "get_repo_file_content", None)
+                    if callable(get_repo):
+                        return get_repo(path) or ""
+                except Exception:
+                    return ""
+                return ""
+
+            verify_call_index = 0
+
+            async def call_model(system: str, user: str, files: list[str]) -> str:
+                nonlocal verify_call_index
+                chunk_index = verify_call_index
+                verify_call_index += 1
+                response, _ = await self.ai_handler.chat_completion(
+                    model=model,
+                    system=system,
+                    user=user,
+                    temperature=0.0,
+                    stage="verify",
+                    chunk_index=chunk_index,
+                    files=files,
+                )
+                # Verification filters findings; it does not emit new ones.
+                set_call_findings("verify", chunk_index, None, 0)
+                return response
+
+            verified = await verify_findings(
+                issues,
+                fetch,
+                pr_files,
+                call_model,
+                max_findings=int(get_settings().pr_reviewer.get("verify_max_findings", 10)),
+                system_prompt=system_text,
+                user_template=user_text,
+                max_chars=max_chars,
+            )
+            kept = []
+            refuted = 0
+            unverified = 0
+            for issue, verdict in verified:
+                if verdict.status == "refuted":
+                    refuted += 1
+                    get_logger().info(
+                        "Dropping refuted finding",
+                        artifact={
+                            "issue": issue,
+                            "evidence": verdict.evidence,
+                            "reason": verdict.reason,
+                        },
+                    )
+                    continue
+                issue["verification"] = verdict.status
+                if verdict.status == "unverified":
+                    unverified += 1
+                    header = str(issue.get("issue_header", "") or "")
+                    if not header.endswith(UNVERIFIED_HEADER_SUFFIX):
+                        issue["issue_header"] = f"{header}{UNVERIFIED_HEADER_SUFFIX}".strip()
+                kept.append(issue)
+            data["review"]["key_issues_to_review"] = kept
+            self.prediction_data = data
+            self.review_refuted_count = refuted
+            self.review_unverified_count = unverified
+        except Exception as exc:
+            get_logger().warning(
+                f"Finding verification pass failed ({type(exc).__name__}); keeping all findings"
+            )
+            self.prediction_data = original_prediction_data
+            self.review_refuted_count = 0
+            self.review_unverified_count = 0
 
     def _prepare_pr_review(self) -> str:
         """
@@ -1087,6 +1634,14 @@ class PRReviewer:
                                                git_provider=self.git_provider,
                                                files=self.git_provider.get_diff_files())
 
+        if self.coverage is not None and self.coverage.reviewed_ratio < 0.95:
+            # A partial review must say so before the findings, not after: a reader who stops at
+            # the findings list would otherwise take a partial pass for a complete one.
+            warning = (f"> ⚠️ **Partial review.** {self.coverage.render_footer()}. "
+                      "Findings below cover only the reviewed lines; a follow-up run is needed.")
+            heading, separator, rest = markdown_text.partition("\n\n")
+            markdown_text = f"{heading}{separator}{warning}\n\n{rest}"
+
         if self.review_chunk_count > 1:
             markdown_text += (
                 "\n\n<hr>\n\n"
@@ -1108,7 +1663,8 @@ class PRReviewer:
                 "`pr_reviewer.num_max_findings`."
             )
 
-        if self.remaining_files_list and get_settings().pr_reviewer.enable_review_coverage_footer:
+        enable_coverage_footer = get_settings().pr_reviewer.enable_review_coverage_footer
+        if self.remaining_files_list and enable_coverage_footer:
             displayed_files = self.remaining_files_list[:MAX_REVIEW_COVERAGE_FILES]
             markdown_text += (
                 "\n\n<hr>\n\n"
@@ -1119,6 +1675,22 @@ class PRReviewer:
             remaining_count = len(self.remaining_files_list) - len(displayed_files)
             if remaining_count:
                 markdown_text += f"\n... and {remaining_count} more"
+            if self.coverage is not None:
+                markdown_text += f"\n\n{self.coverage.render_footer()}"
+        elif enable_coverage_footer and self.coverage is not None and self.coverage.not_fully_reviewed():
+            # A PR whose only gaps are clipped/failed chunks (nothing skipped for budget) would
+            # otherwise show no coverage signal at all, since the block above never fires.
+            markdown_text += f"\n\n<hr>\n\n{self.coverage.render_footer()}"
+
+        if enable_coverage_footer:
+            summary_paths = getattr(self, "_ship_scope_summary_paths", None) or []
+            if summary_paths:
+                markdown_text += "\n" + "\n".join(
+                    f"- `{path}` (low-priority file, not reviewed)" for path in summary_paths
+                )
+            ignore_footer = getattr(self, "_ship_scope_ignore_footer", "") or ""
+            if ignore_footer:
+                markdown_text += f"\n\n{ignore_footer}"
 
         # Add help text if gfm_markdown is supported
         if self.git_provider.is_supported("gfm_markdown") and get_settings().pr_reviewer.enable_help_text:
@@ -1134,14 +1706,20 @@ class PRReviewer:
         if get_settings().get('config', {}).get('output_run_details', False):
             markdown_text += show_run_details(self.git_provider.is_supported("gfm_markdown"))
 
+        self._review_carried_continuation = ""
         if self._review_state_result is not None:
             state_result = self._review_state_result
+            fully_reviewed = getattr(self, "_review_fully_reviewed_files", [])
+            current_ids = set(state_result.current_ids)
+            carried_section = render_carried_section(state_result.state, current_ids, fully_reviewed)
             try:
-                markdown_text = append_review_state(
+                markdown_text, continuation = append_review_state_paginated(
                     markdown_text or "",
                     state_result.state,
                     max_chars=self._review_comment_max_chars(),
+                    carried_section=carried_section,
                 )
+                self._review_carried_continuation = continuation
             except ValueError as error:
                 previous_state = getattr(self, "_review_finding_previous_state", None)
                 self._review_state_result = None
@@ -1153,11 +1731,16 @@ class PRReviewer:
                 )
                 if previous_state is not None:
                     try:
-                        markdown_text = append_review_state(
+                        previous_carried_section = render_carried_section(
+                            previous_state, current_ids, fully_reviewed
+                        )
+                        markdown_text, continuation = append_review_state_paginated(
                             markdown_text or "",
                             previous_state,
                             max_chars=self._review_comment_max_chars(),
+                            carried_section=previous_carried_section,
                         )
+                        self._review_carried_continuation = continuation
                     except ValueError as previous_error:
                         get_logger().warning(
                             f"Previous persistent review state also did not fit the provider "

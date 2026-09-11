@@ -69,6 +69,7 @@ def test_complete_full_review_marks_absent_active_finding_resolved():
         head_sha="head-2",
         run_id="run-2",
         timestamp="2026-01-01T00:01:00Z",
+        fully_reviewed_files=["app.py"],
     )
 
     finding = result.state["findings"][0]
@@ -93,10 +94,11 @@ def test_same_head_absence_does_not_resolve_active_finding():
         allow_resolution=True,
         head_sha="head-1",
         timestamp="2026-01-01T00:01:00Z",
+        fully_reviewed_files=["app.py"],
     )
 
     finding = result.state["findings"][0]
-    assert finding["state"] == "ACTIVE"
+    assert finding["state"] == "UNCONFIRMED"
     assert result.resolved_ids == ()
     assert "resolved_at" not in finding
     assert "resolved_head_sha" not in finding
@@ -124,9 +126,10 @@ def test_different_head_with_resolution_disabled_preserves_active_finding():
         allow_resolution=False,
         head_sha="head-2",
         timestamp="2026-01-01T00:01:00Z",
+        fully_reviewed_files=["app.py"],
     )
 
-    assert result.state["findings"][0]["state"] == "ACTIVE"
+    assert result.state["findings"][0]["state"] == "UNCONFIRMED"
     assert result.resolved_ids == ()
 
 
@@ -144,9 +147,10 @@ def test_missing_previous_head_sha_preserves_active_finding():
         allow_resolution=True,
         head_sha="head-2",
         timestamp="2026-01-01T00:01:00Z",
+        fully_reviewed_files=["app.py"],
     )
 
-    assert result.state["findings"][0]["state"] == "ACTIVE"
+    assert result.state["findings"][0]["state"] == "UNCONFIRMED"
     assert result.resolved_ids == ()
 
 
@@ -165,9 +169,10 @@ def test_missing_current_head_sha_preserves_active_finding():
         allow_resolution=True,
         head_sha="",
         timestamp="2026-01-01T00:01:00Z",
+        fully_reviewed_files=["app.py"],
     )
 
-    assert result.state["findings"][0]["state"] == "ACTIVE"
+    assert result.state["findings"][0]["state"] == "UNCONFIRMED"
     assert result.resolved_ids == ()
 
 
@@ -185,6 +190,7 @@ def test_same_head_then_changed_head_resolves_only_after_code_changes():
         allow_resolution=True,
         head_sha="head-1",
         timestamp="2026-01-01T00:01:00Z",
+        fully_reviewed_files=["app.py"],
     )
     changed_head = reconcile_review_findings(
         same_head.state,
@@ -192,10 +198,11 @@ def test_same_head_then_changed_head_resolves_only_after_code_changes():
         allow_resolution=True,
         head_sha="head-2",
         timestamp="2026-01-01T00:02:00Z",
+        fully_reviewed_files=["app.py"],
     )
 
     assert first.state["findings"][0]["state"] == "ACTIVE"
-    assert same_head.state["findings"][0]["state"] == "ACTIVE"
+    assert same_head.state["findings"][0]["state"] == "UNCONFIRMED"
     assert same_head.resolved_ids == ()
     assert changed_head.state["findings"][0]["state"] == "RESOLVED"
     assert changed_head.resolved_ids == (
@@ -218,7 +225,7 @@ def test_incremental_absence_is_not_negative_evidence():
         timestamp="2026-01-01T00:01:00Z",
     )
 
-    assert result.state["findings"][0]["state"] == "ACTIVE"
+    assert result.state["findings"][0]["state"] == "UNCONFIRMED"
     assert result.resolved_ids == ()
 
 
@@ -238,7 +245,7 @@ def test_token_budget_exclusion_is_not_negative_evidence():
         timestamp="2026-01-01T00:01:00Z",
     )
 
-    assert result.state["findings"][0]["state"] == "ACTIVE"
+    assert result.state["findings"][0]["state"] == "UNCONFIRMED"
     assert result.state["last_run"]["excluded_files"] == ["app.py"]
 
 
@@ -256,6 +263,7 @@ def test_resolved_finding_reappearing_becomes_active_with_reopen_metadata():
         allow_resolution=True,
         head_sha="head-2",
         timestamp="2026-01-01T00:01:00Z",
+        fully_reviewed_files=["app.py"],
     ).state
 
     result = reconcile_review_findings(
@@ -290,6 +298,7 @@ def test_multiple_findings_reconcile_independently():
         allow_resolution=True,
         head_sha="head-2",
         timestamp="2026-01-01T00:01:00Z",
+        fully_reviewed_files=["b.py"],
     )
     states = {item["path"]: item["state"] for item in result.state["findings"]}
 
@@ -372,6 +381,7 @@ def test_resolved_render_is_collapsed_and_state_marker_is_hidden():
         allow_resolution=True,
         head_sha="head-2",
         timestamp="2026-01-01T00:01:00Z",
+        fully_reviewed_files=["app.py"],
     ).state
 
     body = append_review_state("## PR Reviewer Guide\n\nCurrent review", resolved)
@@ -379,7 +389,7 @@ def test_resolved_render_is_collapsed_and_state_marker_is_hidden():
     assert "<details>" in body
     assert "Resolved findings" in body
     assert "The lock is never released." in body
-    assert "<!-- pr-agent-review-state:v1" in body
+    assert "<!-- pr-agent-review-state:v2" in body
 
 
 def test_append_review_state_reserves_space_for_complete_marker():
@@ -423,6 +433,7 @@ def test_resolved_retention_never_drops_active_findings():
         head_sha="head-2",
         timestamp="2026-01-01T00:01:00Z",
         max_resolved_findings=20,
+        fully_reviewed_files=[f"resolved-{index}.py" for index in range(25)],
     ).state
 
     paths = {item["path"] for item in previous["findings"]}

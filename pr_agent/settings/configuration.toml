@@ -36,7 +36,11 @@ repo_context_max_lines = 500 # Maximum total rendered lines for repo context, in
 # token limits
 max_description_tokens = 500
 max_commits_tokens = 500
-max_model_tokens = 32000 # Limits the maximum number of tokens that can be used by any model, regardless of the model's default capabilities.
+# Caps the input tokens any model may use, regardless of its own context window. 32000 (the
+# historical default) starved large PRs: on a 294-file PR it reached 5 files and found
+# nothing (tests/eval/BASELINE.md). 200000 lets a big-context model use its own window
+# while still bounding models that would degrade on a very long input.
+max_model_tokens = 200000
 custom_model_max_tokens=-1 # for models not in the default list
 # Sent as max_completion_tokens for GPT-6 Astra, otherwise max_tokens; use a limit supported by the model.
 max_output_tokens = 0 # 0 = unset (the provider's own default applies)
@@ -60,6 +64,11 @@ cli_mode=false
 output_relevant_configurations=false
 output_run_details=false # if true, append an agent run details section (model, tokens, time cost, AI calls) to generated PR comments
 output_run_cost=false # if true, collect estimated LiteLLM API cost and include it inside the enabled run details section
+# When set, append one JSON line per model call (stage, chunk, files, tokens, cost, latency) to this file.
+run_ledger_path = ""
+# Identity stamped on ledger rows. Defaults to the latest commit URL; set this when the
+# provider has none (plain diff, local) to attribute rows to a job or eval run.
+run_ledger_run_id = ""
 large_patch_policy = "clip" # "clip", "skip"
 duplicate_prompt_examples = false
 # Persistent inline comments (issue #2037): when true, the GitHub, GitLab, and Azure DevOps providers
@@ -182,10 +191,32 @@ minimal_minutes_for_incremental_review=0
 enable_intro_text=true
 enable_help_text=false # Determines whether to include help text in the PR review. Enabled by default.
 enable_review_coverage_footer=true
-# large-diff chunking (opt-in). When the token budget leaves files out of the review, split the diff
+# Files matching these globs are reviewed last and, when the token budget is tight, summarized in one line
+# instead of reviewed. Nothing is dropped; an [ignore] snippet is proposed in the comment for a human to accept.
+low_priority_globs = ["docs/**", "design/**", "mockups/**", "**/fixtures/**", "**/*.md"]
+low_priority_summarize_when_over_budget = true
+# Per-file cap for low-priority files, applied whether or not the budget binds: a matching
+# file whose patch exceeds this is summarized instead of reviewed. 0 disables the cap.
+low_priority_max_tokens_per_file = 3000
+# large-diff chunking. When the token budget leaves files out of the review, split the diff
 # into chunks, review each chunk, and merge the per-chunk results into one review.
-enable_large_pr_chunking=false
+# On by default: without chunking a PR larger than one model call is silently reviewed in
+# part, and the unreviewed files are never reported. max_number_of_calls bounds the cost.
+enable_large_pr_chunking=true
 max_number_of_calls=3 # maximum number of chunk review calls, used only when enable_large_pr_chunking is true
+# On a chunk that fails every attempt: split it in half by file and retry, then try the first fallback model,
+# and only then mark its files as not reviewed.
+chunk_split_on_failure = true
+chunk_fallback_model_on_failure = true
+# Verify each finding's premise against the full content of its file and any PR file it references,
+# using a cheap model; refuted findings are dropped (logged with evidence), unverified ones are tagged.
+enable_finding_verification = false
+verify_max_findings = 10
+verification_model = ""   # empty = config.model_weak, else config.model
+# Max characters of file content packed into one verification prompt (own file + referenced).
+# If any file is truncated, a refuted verdict is downgraded to unverified so findings are never
+# dropped on partial evidence.
+verify_max_context_chars = 200000
 
 [pr_description] # /describe #
 publish_labels=false

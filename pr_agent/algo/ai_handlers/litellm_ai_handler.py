@@ -3,6 +3,7 @@ import contextlib
 import json
 import os
 import re
+import time
 
 import httpx
 import litellm
@@ -448,7 +449,9 @@ class LiteLLMAIHandler(BaseAiHandler):
         return response_log
 
     @staticmethod
-    def _record_completion_metadata(response, model=None, display_model=None) -> None:
+    def _record_completion_metadata(response, model=None, display_model=None, *, stage=None,
+                                     chunk_index=None, sample_index=None, files=None,
+                                     latency_ms=None) -> None:
         """Count a successful call and synchronously collect usage-based cost when possible."""
         usage = _response_field(response, "usage")
 
@@ -474,7 +477,9 @@ class LiteLLMAIHandler(BaseAiHandler):
                 get_logger().debug(f"Unable to estimate API cost for model {model}: {type(e).__name__}")
 
         recorded_model = display_model if display_model is not None else model
-        record_ai_call(usage, model=recorded_model, cost_usd=cost_usd)
+        record_ai_call(usage, model=recorded_model, cost_usd=cost_usd, stage=stage,
+                       chunk_index=chunk_index, sample_index=sample_index, files=files,
+                       latency_ms=latency_ms)
 
     @staticmethod
     def _read_positive_response_cost(response, usage):
@@ -772,7 +777,9 @@ class LiteLLMAIHandler(BaseAiHandler):
         stop=stop_after_attempt(MODEL_RETRIES),
         reraise=True,  # surface the provider's error; RetryError hides the reason
     )
-    async def chat_completion(self, model: str, system: str, user: str, temperature: float = 0.2, img_path: str = None):
+    async def chat_completion(self, model: str, system: str, user: str, temperature: float = 0.2,
+                              img_path: str = None, *, stage: str = None, chunk_index: int = None,
+                              sample_index: int = None, files=None):
         # Serialize env-var mutation + Bedrock call for IMDS mode to prevent concurrent
         # requests from interleaving os.environ credentials during asyncio.gather usage.
         # Validate config-derived kwargs before the try/except below, so a malformed value raises a
@@ -788,6 +795,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                 if not self._refresh_aws_imds_credentials() and self._aws_static_creds:
                     self._activate_static_aws_fallback()
                     self._aws_imds_fell_back = True
+            started = time.monotonic()
             try:
                 resp, finish_reason = None, None
                 deployment_id = self.deployment_id
@@ -1263,7 +1271,10 @@ class LiteLLMAIHandler(BaseAiHandler):
         if get_verbosity_level() >= 2:
             get_logger().info(f"\nAI response:\n{resp}")
 
-        self._record_completion_metadata(response_obj, model=model, display_model=user_model)
+        latency_ms = int((time.monotonic() - started) * 1000)
+        self._record_completion_metadata(response_obj, model=model, display_model=user_model, stage=stage,
+                                         chunk_index=chunk_index, sample_index=sample_index, files=files,
+                                         latency_ms=latency_ms)
 
         return resp, finish_reason
 

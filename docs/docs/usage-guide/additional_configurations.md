@@ -38,6 +38,8 @@ API-cost collection is a separate, default-off option controlled by `config.outp
 
 `config.output_run_details` remains the public-output gate: setting only `config.output_run_cost=true` collects run-level cost data but never adds it to a PR comment.
 
+For offline analysis across many runs, set `config.run_ledger_path` to a file path: each successful model call is appended there as one JSON line (stage, chunk index, files, token counts, cost, latency), independent of `output_run_details`/`output_run_cost` and never posted to the PR.
+
 On providers that support GitHub-Flavored Markdown this appends a collapsible section to the generated comment; elsewhere `/review` and `/describe` append the same information as plain text:
 
 ```
