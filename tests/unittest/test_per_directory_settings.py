@@ -150,6 +150,39 @@ class TestResolvePerDirectorySettings:
             "services/billing/.pr_agent.toml",
         ]
 
+    def test_sibling_overlap_is_detected_and_warned(self):
+        from loguru import logger as loguru_logger
+
+        ordered = ["services/auth", "services/billing"]
+        contents = {
+            "services/auth/.pr_agent.toml": SERVICES_AUTH_TOML,
+            "services/billing/.pr_agent.toml": SERVICES_BILLING_TOML,
+        }
+
+        captured_lines = []
+        sink_id = loguru_logger.add(
+            lambda msg: captured_lines.append(str(msg)),
+            level="WARNING",
+        )
+        try:
+            conflicts = git_utils._warn_on_sibling_key_conflicts(ordered, contents)
+        finally:
+            loguru_logger.remove(sink_id)
+
+        assert conflicts == [("pr_reviewer", "num_max_findings", "services/billing")]
+        assert any("pr_reviewer.num_max_findings" in line for line in captured_lines)
+
+    def test_sibling_conflict_ignores_disjoint_keys(self):
+        ordered = ["services/auth", "services/billing"]
+        contents = {
+            "services/auth/.pr_agent.toml": SERVICES_AUTH_TOML,
+            "services/billing/.pr_agent.toml": b"[pr_description]\nuse_description_markers = true\n",
+        }
+
+        conflicts = git_utils._warn_on_sibling_key_conflicts(ordered, contents)
+
+        assert conflicts == []
+
     def test_no_config_crossed_returns_empty(self, per_dir_settings):
         provider = _provider(
             tree_paths=["services/auth/.pr_agent.toml"],
@@ -443,6 +476,45 @@ class TestGithubProviderPerDirectory:
 
         assert resolved_ref == "cfg-branch"
         repo_obj.get_git_tree.assert_called_once_with("cfg-branch", recursive=True)
+
+    def test_resolved_config_branch_beats_explicit_ref(self):
+        # get_repo_settings() stores the branch it actually read the root config
+        # from (already fallback-resolved), so it must win over a CONFIG_BRANCH hint:
+        # when that branch exists without a root .pr_agent.toml the tree must follow
+        # the root config onto the default branch instead of reading a stale branch.
+        repo_obj = MagicMock()
+        repo_obj.get_git_tree.return_value = SimpleNamespace(tree=[], truncated=False)
+        provider = _github_provider(repo_obj)
+        provider._resolved_config_branch = "resolved-default"
+
+        _, resolved_ref = provider.get_repo_settings_tree("stale-config-branch")
+
+        assert resolved_ref == "resolved-default"
+        repo_obj.get_git_tree.assert_called_once_with("resolved-default", recursive=True)
+
+    def test_truncated_tree_skips_per_directory_settings(self):
+        from loguru import logger as loguru_logger
+
+        repo_obj = MagicMock()
+        repo_obj.get_git_tree.return_value = SimpleNamespace(
+            tree=[SimpleNamespace(path="svc/.pr_agent.toml", type="blob")],
+            truncated=True,
+        )
+        provider = _github_provider(repo_obj)
+
+        captured_lines = []
+        sink_id = loguru_logger.add(
+            lambda msg: captured_lines.append(str(msg)),
+            level="WARNING",
+        )
+        try:
+            paths, resolved_ref = provider.get_repo_settings_tree("big-branch")
+        finally:
+            loguru_logger.remove(sink_id)
+
+        assert paths == []
+        assert resolved_ref == "big-branch"
+        assert any("truncated" in line for line in captured_lines)
 
     def test_get_repo_settings_tree_falls_back_to_default_on_404(self):
         repo_obj = MagicMock()

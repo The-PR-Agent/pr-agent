@@ -1,4 +1,5 @@
 import copy
+import itertools
 import os
 import posixpath
 import re
@@ -475,8 +476,17 @@ def _get_per_directory_settings(git_provider) -> list:
     applied through get_repo_settings()). Results are returned ordered
     shallowest-directory-first so a nearer (more specific) file overrides a farther
     one on shared keys; list/dict values replace rather than concatenate, matching
-    the loader. Returns [] when the feature is disabled, the provider lacks
-    per-directory support, the tree has no nested configs, or nothing is crossed.
+    the loader.
+
+    With a diff spanning several sibling directories (e.g. ``services/auth`` and
+    ``services/billing``), all of their configs apply to the whole MR: an explicit
+    deterministic tie-break orders equal-depth directories by path, so the
+    lexicographically-last sibling wins on a shared key. That is only meaningful as
+    a fallback, so overlapping keys between same-depth configs applied to one MR are
+    reported with a warning naming the conflict and the winner.
+
+    Returns [] when the feature is disabled, the provider lacks per-directory support,
+    the tree has no nested configs, or nothing is crossed.
     """
     settings = get_settings()
     if not settings.config.get("enable_per_directory_settings", False):
@@ -526,7 +536,9 @@ def _get_per_directory_settings(git_provider) -> list:
             f"only the shallowest {max_configs} will be applied"
         )
     # Shallowest (closest to root) first: later files override earlier ones, so the
-    # nearest directory wins on scalar keys.
+    # nearest directory wins on scalar keys. Equal-depth siblings are ordered by
+    # path, so the lexicographically-last directory wins deterministically (any
+    # overlap is surfaced by _warn_on_sibling_key_conflicts).
     ordered = sorted(crossed, key=lambda directory: (directory.count("/"), directory))[:max_configs]
     if not ordered:
         return []
@@ -536,6 +548,7 @@ def _get_per_directory_settings(git_provider) -> list:
         return []
     config_paths = [f"{directory}/.pr_agent.toml" for directory in ordered]
     contents = contents_method(config_paths, resolved_ref) or {}
+    _warn_on_sibling_key_conflicts(ordered, contents)
     resolved = []
     for path in config_paths:
         content = contents.get(path)
@@ -548,6 +561,53 @@ def _get_per_directory_settings(git_provider) -> list:
             f"{sorted(entry[0] for entry in resolved)}"
         )
     return resolved
+
+
+def _warn_on_sibling_key_conflicts(ordered: list[str], contents: dict[str, bytes]) -> list[tuple[str, str, str]]:
+    """Log (section, key) collisions between equal-depth sibling configs.
+
+    Equal-depth directories are applied in path order (see _get_per_directory_settings),
+    so the lexicographically-last sibling wins on a shared key. Surface any such overlap
+    instead of letting it stay an arbitrary-looking silent choice. Returns the detected
+    conflicts as ``(section, key, winning_directory)`` for tests; parsing failures are
+    ignored here, since the real file is validated when applied and then reported
+    through handle_configurations_errors().
+    """
+    conflicts: list[tuple[str, str, str]] = []
+    grouped = itertools.groupby(sorted(ordered, key=lambda d: d.count("/")),
+                                key=lambda d: d.count("/"))
+    for _, group in grouped:
+        group = list(group)
+        if len(group) < 2:
+            continue
+        parsed = {}
+        for directory in group:
+            content = contents.get(f"{directory}/.pr_agent.toml")
+            if not content:
+                continue
+            try:
+                parsed[directory] = tomllib.loads(content.decode("utf-8"))
+            except Exception:
+                continue
+        key_sets = [
+            {(section.lower(), key.lower())
+             for section, table in data.items()
+             if isinstance(table, dict)
+             for key in table}
+            for data in parsed.values()
+        ]
+        if len(key_sets) < 2:
+            continue
+        common = set.intersection(*key_sets)
+        winner_directory = group[-1]
+        for section, key in sorted(common):
+            get_logger().warning(
+                f"Per-directory settings at the same depth set the same key "
+                f"'{section}.{key}': sibling configs {sorted(group)} all apply to this PR "
+                f"and '{winner_directory}/.pr_agent.toml' wins (later path overrides)"
+            )
+            conflicts.append((section, key, winner_directory))
+    return conflicts
 
 
 def handle_configurations_errors(config_errors, git_provider):

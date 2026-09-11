@@ -45,7 +45,7 @@ to-do list.
 | --- | --- | --- |
 | `use_repo_settings_file` | true |  |
 | `use_global_settings_file` | true |  |
-| `enable_per_directory_settings` | false | when true, merge per-directory .pr_agent.toml files found by walking up from the PR's changed files (monorepo support). Adds one recursive tree lookup per MR; per-directory files may only override non-critical sections (see REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS). |
+| `enable_per_directory_settings` | false | when true, merge per-directory .pr_agent.toml files found by walking up from the PR's changed files (monorepo support). Adds one recursive tree lookup per MR; per-directory files may only override non-critical sections (see REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS). Shallowest directory wins on shared keys; equal-depth siblings resolve to the lexicographically-last path and any overlap is logged as a warning. |
 | `per_directory_settings_max_files` | 20 | hard ceiling on the number of per-directory .pr_agent.toml files applied per MR (deeper configs beyond the cap are skipped with a warning) |
 | `extra_config_url` | "" | optional URL or path to an additional .pr_agent.toml merged before the repo-local config; also settable via --extra_config_url or PR_AGENT_EXTRA_CONFIG_URL. See docs/docs/usage-guide/configuration_options.md#external-configuration-url. |
 | `disable_auto_feedback` | false |  |
