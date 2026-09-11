@@ -3,7 +3,7 @@ import io
 
 import pytest
 
-from pr_agent.cli import commands, run, set_parser
+from pr_agent.cli import _resolve_output_option, commands, run, set_parser
 from pr_agent.config_loader import get_settings
 
 # Keys run() mutates on the process-wide settings singleton, directly or via the
@@ -28,26 +28,45 @@ _DIFF = (
     "@@ -1,3 +1,3 @@\n"
     " line1\n-line2\n+line2-changed\n line3\n"
 )
+_REVIEW_MARKER = "plain-diff auto-review output"
+_CANNED_REVIEW = f"""\
+review:
+  estimated_effort_to_review_[1-5]: '1'
+  score: '90'
+  relevant_tests: 'No'
+  key_issues_to_review:
+    - relevant_file: foo.py
+      issue_header: '{_REVIEW_MARKER}'
+      issue_content: 'Verify the changed line.'
+      start_line: 2
+      end_line: 2
+  security_concerns: 'No'
+"""
+_OUTPUT_OPTION_PREFIXES = [
+    (option[:length], option)
+    for option in ("--output", "--json-output")
+    for length in range(3, len(option) + 1)
+]
 
 _MARKDOWN_COMMANDS = [
     "review",
     "review_pr",
+    "auto_review",
     "describe",
     "describe_pr",
     "improve",
     "improve_code",
     "ask",
     "ask_question",
-]
-
-_NON_MARKDOWN_COMMANDS = [
-    "auto_review",
-    "answer",
-    "ask_line",
-    "update_changelog",
     "config",
     "settings",
     "help",
+]
+
+_NON_MARKDOWN_COMMANDS = [
+    "answer",
+    "ask_line",
+    "update_changelog",
     "similar_issue",
     "add_docs",
     "generate_labels",
@@ -128,6 +147,28 @@ def test_parser_stdin_flag():
     parser = set_parser()
     args = parser.parse_args(["--stdin", "review"])
     assert args.stdin is True
+
+
+@pytest.mark.parametrize(
+    ("option_spelling", "option"),
+    _OUTPUT_OPTION_PREFIXES,
+)
+def test_parser_accepts_unambiguous_output_abbreviations_before_command(
+    option_spelling, option,
+):
+    parser = set_parser()
+    args = parser.parse_args(["--stdin", option_spelling, "result", "review"])
+
+    destination = option[2:].replace("-", "_")
+    assert getattr(args, destination) == "result"
+
+
+def test_misplaced_output_abbreviation_must_be_unambiguous():
+    parser = set_parser()
+    parser.add_argument("--outcome")
+
+    assert _resolve_output_option(parser, "--out=value") is None
+    assert _resolve_output_option(parser, "--output=value") == "--output"
 
 
 def test_missing_diff_file_fails_fast(tmp_path, capsys):
@@ -218,7 +259,7 @@ def test_markdown_output_rejects_unsupported_plain_diff_commands_before_read(
 
 @pytest.mark.parametrize("command", _MARKDOWN_COMMANDS)
 @pytest.mark.parametrize("input_mode", ["stdin", "file"])
-def test_markdown_output_accepts_documented_plain_diff_commands(
+def test_markdown_output_accepts_compatible_plain_diff_commands(
     command, input_mode, monkeypatch, tmp_path,
 ):
     captured = {}
@@ -241,6 +282,48 @@ def test_markdown_output_accepts_documented_plain_diff_commands(
         "request": [command],
         "output_path": str(output),
     }
+
+
+@pytest.mark.parametrize("command", ["config", "settings", "help"])
+def test_compatible_non_model_commands_write_markdown_artifacts(
+    command, monkeypatch, tmp_path,
+):
+    monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
+    output = tmp_path / f"{command}.md"
+
+    run(inargs=["--stdin", "--output", str(output), command])
+
+    assert output.read_text(encoding="utf-8").strip()
+
+
+def test_auto_review_writes_markdown_artifact_with_stubbed_model(
+    monkeypatch, tmp_path,
+):
+    async def fake_chat_completion(self, model, system, user, temperature=0.2, **kwargs):
+        return _CANNED_REVIEW, "stop"
+
+    monkeypatch.setattr(
+        "pr_agent.algo.ai_handlers.litellm_ai_handler.LiteLLMAIHandler.chat_completion",
+        fake_chat_completion,
+    )
+    monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
+    output = tmp_path / "auto-review.md"
+
+    run(inargs=["--stdin", "--output", str(output), "auto_review"])
+
+    assert _REVIEW_MARKER in output.read_text(encoding="utf-8")
+
+
+def test_answer_output_is_rejected_without_creating_artifact(monkeypatch, tmp_path, capsys):
+    input_args = _rejecting_input_args("stdin", monkeypatch)
+    output = tmp_path / "answer.md"
+
+    with pytest.raises(SystemExit) as exc_info:
+        run(inargs=[*input_args, "--output", str(output), "answer"])
+
+    assert exc_info.value.code == 2
+    assert "--output is not supported for" in capsys.readouterr().err
+    assert not output.exists()
 
 
 @pytest.mark.parametrize("command", ["review", "review_pr"])
@@ -281,20 +364,24 @@ def test_json_output_rejects_non_review_commands_before_read(
 
 
 @pytest.mark.parametrize(
-    ("trailing_args", "option"),
-    [
-        (["--output", "out.md"], "--output"),
-        (["--output=out.md"], "--output"),
-        (["--json-output", "out.json"], "--json-output"),
-        (["--json-output=out.json"], "--json-output"),
-    ],
+    ("option_spelling", "option"),
+    _OUTPUT_OPTION_PREFIXES,
 )
-def test_output_options_after_command_fail_before_read(trailing_args, option, monkeypatch, capsys):
+@pytest.mark.parametrize("value_form", ["separate", "equals"])
+def test_output_options_after_command_fail_before_read(
+    option_spelling, option, value_form, monkeypatch, capsys,
+):
     class UnreadableStdin:
         def read(self):
             pytest.fail("stdin must not be read for misplaced output options")
 
     monkeypatch.setattr("sys.stdin", UnreadableStdin())
+    value = "out.json" if option == "--json-output" else "out.md"
+    trailing_args = (
+        [option_spelling, value]
+        if value_form == "separate"
+        else [f"{option_spelling}={value}"]
+    )
 
     with pytest.raises(SystemExit) as exc_info:
         run(inargs=["--stdin", "review", *trailing_args])

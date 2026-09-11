@@ -26,7 +26,7 @@ python -m pr_agent.cli --diff-file changes.diff --output review.md review
 |---|---|
 | `--stdin` | Read a unified diff from stdin |
 | `--diff-file <path>` | Read a unified diff from a file |
-| `--output <path>` | Write Markdown from `review`, `describe`, `improve`, or `ask` to a file in addition to stdout |
+| `--output <path>` | Write Markdown produced by a compatible Plain Diff command to a file in addition to stdout |
 | `--json-output <path>` | Write the parsed review and token usage to a JSON file (`review` only) |
 
 `--stdin` and `--diff-file` are mutually exclusive. At least one must be provided to
@@ -42,6 +42,11 @@ platform to push to, `improve` renders its code suggestions as a single markdown
 document to stdout (and to `--output`, if given) instead of as committable inline
 suggestions. Commands that require live platform interaction (such as
 `update_changelog` or `similar_issue`) are not meaningful in this mode.
+
+Existing command variants that publish Markdown without additional platform
+state (`auto_review`, `config`, `settings`, and `help`) also honor `--output`.
+`answer` does not: it requires issue-comment history, which is unavailable when
+the input is a standalone diff.
 
 ## How it works
 

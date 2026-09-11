@@ -19,19 +19,35 @@ log_level = os.environ.get("LOG_LEVEL", "INFO")
 setup_logger(log_level)
 
 _PLAIN_DIFF_MARKDOWN_COMMANDS = frozenset({
-    "review", "review_pr",
+    "review", "review_pr", "auto_review",
     "describe", "describe_pr",
     "improve", "improve_code",
     "ask", "ask_question",
+    "config", "settings", "help",
 })
 _PLAIN_DIFF_JSON_COMMANDS = frozenset({"review", "review_pr"})
 _OUTPUT_OPTIONS = ("--output", "--json-output")
 
 
+def _resolve_output_option(parser, arg):
+    option_text = arg.partition("=")[0]
+    if option_text in _OUTPUT_OPTIONS:
+        return option_text
+    if not option_text.startswith("--") or not parser.allow_abbrev:
+        return None
+
+    # argparse has no public API for resolving one option spelling. Reuse its
+    # own option table so misplaced options follow the parser's abbreviation
+    # rules and future ambiguous prefixes are left untouched.
+    matches = parser._get_option_tuples(option_text)
+    if len(matches) == 1 and matches[0][1] in _OUTPUT_OPTIONS:
+        return matches[0][1]
+    return None
+
+
 def _validate_output_options(parser, args, diff_mode):
     for arg in getattr(args, "rest", []):
-        option = next((name for name in _OUTPUT_OPTIONS
-                       if arg == name or arg.startswith(f"{name}=")), None)
+        option = _resolve_output_option(parser, arg)
         if option:
             parser.error(
                 f"{option} must appear before the command "
@@ -110,7 +126,7 @@ def set_parser():
     parser.add_argument("--stdin", action="store_true", default=False,
                         help="Read a unified diff from stdin (plain-diff local mode)")
     parser.add_argument("--output", dest="output", type=str, default=None,
-                        help=("Write Plain Diff review/describe/improve/ask Markdown to this file "
+                        help=("Write Plain Diff Markdown output to this file "
                               "(place before the command)"))
     parser.add_argument("--json-output", dest="json_output", type=str, default=None,
                         help=("Write a Plain Diff review and token usage to this JSON file "
