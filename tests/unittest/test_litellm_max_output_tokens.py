@@ -12,27 +12,28 @@ import pytest
 
 import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_handler
 
-# Environment variables that LiteLLMAIHandler.__init__ reads or mutates: the AWS
-# credential path (entered when AWS_USE_IMDS is set) writes the AWS_* variables,
-# and OPENAI_API_KEY influences the litellm.api_key fallback.
+# Clear these credential environment variables before constructing handlers
+# to keep the tests independent of deployment-specific AWS or OpenAI credentials.
 _HANDLER_ENV_VARS = (
+    *litellm_handler.AWS_CREDENTIAL_CHAIN_ENV_VARS,
     "AWS_USE_IMDS",
     "AWS_ACCESS_KEY_ID",
     "AWS_SECRET_ACCESS_KEY",
     "AWS_SESSION_TOKEN",
     "AWS_REGION_NAME",
+    "AWS_BEARER_TOKEN_BEDROCK",
     "OPENAI_API_KEY",
 )
 
 
 @pytest.fixture(autouse=True)
 def _restore_litellm_globals():
-    """LiteLLMAIHandler.__init__ mutates global litellm/openai state and, when
-    AWS_USE_IMDS is set, os.environ; snapshot and restore both, and drop
-    AWS_USE_IMDS so the AWS credential path never runs in these tests."""
+    """Clear credential environment and the shared LiteLLM key; restore saved state after each test."""
     saved = (litellm.api_key, getattr(litellm, "openai_key", None), openai.api_key)
     saved_env = {name: os.environ.get(name) for name in _HANDLER_ENV_VARS}
-    os.environ.pop("AWS_USE_IMDS", None)
+    for name in _HANDLER_ENV_VARS:
+        os.environ.pop(name, None)
+    litellm.api_key = None
     try:
         yield
     finally:
@@ -46,9 +47,26 @@ def _restore_litellm_globals():
                 os.environ[name] = value
 
 
+def test_fixture_clears_and_restores_ambient_litellm_key(monkeypatch):
+    monkeypatch.setattr(litellm, "api_key", "test-ambient-key")
+    fixture = _restore_litellm_globals.__wrapped__()
+    next(fixture)
+    try:
+        assert litellm.api_key is None
+    finally:
+        with pytest.raises(StopIteration):
+            next(fixture)
+    assert litellm.api_key == "test-ambient-key"
+
+
 def _make_settings(config_values=None):
     """Minimal settings whose `config.get(key, ...)` serves the given dict."""
     config_values = config_values or {}
+    settings_values = {
+        "aws.AWS_ACCESS_KEY_ID": "test-access-key",
+        "aws.AWS_SECRET_ACCESS_KEY": "test-secret-key",
+        "aws.AWS_REGION_NAME": "us-east-1",
+    }
 
     class Config:
         reasoning_effort = None
@@ -66,7 +84,7 @@ def _make_settings(config_values=None):
         "litellm": type("LiteLLM", (), {
             "get": lambda self, key, default=None: default,
         })(),
-        "get": lambda self, key, default=None: default,
+        "get": lambda self, key, default=None: settings_values.get(key, default),
     })()
 
 

@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Optional, Tuple
 from urllib.parse import urlparse
 
-from github import AppAuthentication, Auth, Github, GithubException, GithubIntegration
+from github import Auth, Github, GithubException, GithubIntegration, GithubRetry
 from github.Issue import Issue
 from retry.api import retry_call
 from starlette_context import context
@@ -126,6 +126,22 @@ class GithubProvider(GitProvider):
         return True
 
     def supports_checkbox_commands(self) -> bool:
+        return True
+
+    def supports_inline_help_footer(self) -> bool:
+        return True
+
+    def supports_pr_chat(self) -> bool:
+        return True
+
+    @classmethod
+    def supports_issue_indexing(cls) -> bool:
+        return True
+
+    def supports_changelog_update_review(self) -> bool:
+        return True
+
+    def supports_issue_url_tickets(self) -> bool:
         return True
 
     def _get_owner_and_repo_path(self, given_url: str) -> str:
@@ -417,17 +433,19 @@ class GithubProvider(GitProvider):
                                    update_header: bool = True,
                                    name='review',
                                    final_update_message=True,
+                                   as_thread: bool = False,
                                    identity_marker: str | None = None,
                                    legacy_initial_header: str | None = None):
         if get_settings().github.publish_as_check_run:
             if self._publish_check_run(pr_comment, name):
                 return
-        self.publish_persistent_comment_full(
+        return self.publish_persistent_comment_full(
             pr_comment,
             initial_header,
             update_header,
             name,
             final_update_message,
+            as_thread=as_thread,
             identity_marker=identity_marker,
             legacy_initial_header=legacy_initial_header,
         )
@@ -463,8 +481,10 @@ class GithubProvider(GitProvider):
             return cached
         try:
             integration = GithubIntegration(
-                integration_id=str(get_settings().github.app_id),
-                private_key=get_settings().github.private_key,
+                auth=Auth.AppAuth(
+                    app_id=str(get_settings().github.app_id),
+                    private_key=get_settings().github.private_key,
+                ),
                 base_url=self.base_url,
             )
             slug = (getattr(integration.get_app(), "slug", "") or "").strip()
@@ -1093,40 +1113,6 @@ class GithubProvider(GitProvider):
             get_logger().exception(f"Failed to edit comment, error: {e}")
             return None
 
-    def publish_file_comments(self, file_comments: list) -> bool:
-        try:
-            headers, existing_comments = self.pr._requester.requestJsonAndCheck(
-                "GET", f"{self.pr.url}/comments"
-            )
-            for comment in file_comments:
-                comment['commit_id'] = self.last_commit_id.sha
-                comment['body'] = self.limit_output_characters(comment['body'], self.max_comment_chars)
-
-                found = False
-                for existing_comment in existing_comments:
-                    comment['commit_id'] = self.last_commit_id.sha
-                    our_app_name = get_settings().get("GITHUB.APP_NAME", "")
-                    same_comment_creator = False
-                    if self.deployment_type == 'app':
-                        same_comment_creator = our_app_name.lower() in existing_comment['user']['login'].lower()
-                    elif self.deployment_type == 'user':
-                        same_comment_creator = self.github_user_id == existing_comment['user']['login']
-                    if existing_comment['subject_type'] == 'file' and comment['path'] == existing_comment['path'] and same_comment_creator:
-
-                        headers, data_patch = self.pr._requester.requestJsonAndCheck(
-                            "PATCH", f"{self.base_url}/repos/{self.repo}/pulls/comments/{existing_comment['id']}", input={"body":comment['body']}
-                        )
-                        found = True
-                        break
-                if not found:
-                    headers, data_post = self.pr._requester.requestJsonAndCheck(
-                        "POST", f"{self.pr.url}/comments", input=comment
-                    )
-            return True
-        except Exception as e:
-            get_logger().error(f"Failed to publish diffview file summary, error: {e}")
-            return False
-
     def remove_initial_comment(self):
         try:
             for comment in getattr(self.pr, 'comments_list', []):
@@ -1280,6 +1266,25 @@ class GithubProvider(GitProvider):
                 return ""
             raise
 
+    def get_repo_context_ref(self, from_default_branch: bool = False) -> Optional[str]:
+        # Match get_repo_file_content: the PR target (base) commit is the cached revision.
+        # When the default branch is read (explicitly, or because no PR base exists) resolve
+        # its head commit so a push to the default branch invalidates cached content within
+        # the TTL instead of serving it from a moved commit.
+        if not from_default_branch:
+            base = getattr(getattr(self, "pr", None), "base", None)
+            ref = getattr(base, "sha", None) or getattr(base, "ref", None)
+            if ref:
+                return ref
+        repo_obj = getattr(self, "repo_obj", None)
+        if repo_obj is None:
+            return None
+        try:
+            return repo_obj.get_branch(repo_obj.default_branch).commit.sha
+        except Exception as e:
+            get_logger().debug(f"Could not resolve the default branch revision for repo context: {e}")
+            return None
+
     def get_workspace_name(self):
         return self.repo.split('/')[0]
 
@@ -1376,15 +1381,18 @@ class GithubProvider(GitProvider):
         if self.deployment_type == 'app':
             try:
                 private_key = get_settings().github.private_key
-                # The app id is an integer in the settings toml, but PyJWT >=2.11 requires a
-                # string `iss` claim, and PyGithub 1.59 passes it through raw (#2955).
+                # The app id is an integer in the settings toml. PyJWT >=2.11 requires a
+                # string `iss` claim; PyGithub 2.7+ normalizes an int app id to a string
+                # upstream (#2955, PyGithub#3272), so the cast is harmless on the 2.10 pin.
                 app_id = str(get_settings().github.app_id)
             except AttributeError as e:
                 raise ValueError("GitHub app ID and private key are required when using GitHub app deployment") from e
             if not self.installation_id:
                 raise ValueError("GitHub app installation ID is required when using GitHub app deployment")
-            auth = AppAuthentication(app_id=app_id, private_key=private_key,
-                                     installation_id=self.installation_id)
+            auth = Auth.AppInstallationAuth(
+                Auth.AppAuth(app_id=app_id, private_key=private_key),
+                installation_id=self.installation_id,
+            )
             self.auth = auth
         elif self.deployment_type == 'user':
             try:
@@ -1395,7 +1403,21 @@ class GithubProvider(GitProvider):
                     "https://github.com/Codium-ai/pr-agent#method-2-run-from-source") from e
             self.auth = Auth.Token(token)
         if self.auth:
-            return Github(auth=self.auth, base_url=self.base_url)
+            github_config = get_settings().github
+            # PyGithub 2.x defaults to pacing and retries (0.25s between requests, 1s between
+            # writes, 10 retries); these had no equivalent on 1.59. The settings mirror the
+            # 1.59 behaviour, so the upgrade stays behaviour-neutral unless an operator opts in.
+            seconds_between_requests = github_config.get("seconds_between_requests", 0)
+            seconds_between_writes = github_config.get("seconds_between_writes", 0)
+            api_retries = github_config.get("api_retries", 0)
+            retry = GithubRetry(total=api_retries) if api_retries else None
+            return Github(
+                auth=self.auth,
+                base_url=self.base_url,
+                seconds_between_requests=seconds_between_requests,
+                seconds_between_writes=seconds_between_writes,
+                retry=retry,
+            )
         else:
             raise ValueError("Could not authenticate to GitHub")
 
@@ -1684,7 +1706,7 @@ class GithubProvider(GitProvider):
                         if not hasattr(file, 'patches_range'):
                             file.patches_range = []
                             patch_lines = patch_str.splitlines()
-                            for i, line in enumerate(patch_lines):
+                            for line in patch_lines:
                                 if line.startswith('@@'):
                                     match = RE_HUNK_HEADER.match(line)
                                     # identify hunk header
@@ -1704,7 +1726,7 @@ class GithubProvider(GitProvider):
                         min_distance = float('inf')
                         patch_range_min = None
                         # find the hunk that contains the comment, or the closest one
-                        for i, patch_range in enumerate(patches_range):
+                        for patch_range in patches_range:
                             d1 = comment_start_line - patch_range['start']
                             d2 = patch_range['end'] - comment_end_line
                             if d1 >= 0 and d2 >= 0:  # found a valid hunk

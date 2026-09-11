@@ -1,9 +1,10 @@
 from pr_agent.algo.utils import get_version
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
+from pr_agent.telemetry.prometheus_multiproc import ensure_prometheus_multiproc_dir
 from pr_agent.telemetry.types import ExporterType, OtlpProtocol, TelemetryConfig
 
-VALID_EXPORTER_TYPES = {ExporterType.CONSOLE, ExporterType.OTLP, ExporterType.NONE}
+VALID_EXPORTER_TYPES = {ExporterType.CONSOLE, ExporterType.OTLP, ExporterType.PROMETHEUS, ExporterType.NONE}
 VALID_OTLP_PROTOCOLS = {OtlpProtocol.HTTP, OtlpProtocol.GRPC}
 
 
@@ -42,13 +43,23 @@ def get_otel_config() -> TelemetryConfig:
         return TelemetryConfig()
 
     # Fail closed: opted-in telemetry content was consented for the OTLP destination
-    # only — never redirect it to another exporter (console = process logs).
+    # only — never redirect it to another exporter (console = process logs;
+    # prometheus = a local scrape endpoint the operator explicitly selected).
     if exporter_type == ExporterType.OTLP and not otlp_endpoint:
         get_logger().warning(
             "OTEL.EXPORTER_TYPE is 'otlp' but OTEL.OTLP_ENDPOINT is not configured. "
             "Telemetry disabled — not falling back to another exporter."
         )
         return TelemetryConfig()
+
+    # A multiprocess scrape must write per-pid state files into a shared dir.
+    # The env var has to be set before prometheus_client is imported in any
+    # worker (gunicorn master also provisions it in `when_ready`).
+    prometheus_multiproc_dir = None
+    if exporter_type == ExporterType.PROMETHEUS:
+        prometheus_multiproc_dir = ensure_prometheus_multiproc_dir(
+            str(settings.get("OTEL.PROMETHEUS_MULTIPROC_DIR", "/tmp/pr-agent-prometheus"))
+        )
 
     return TelemetryConfig(
         is_enabled=True,
@@ -59,7 +70,8 @@ def get_otel_config() -> TelemetryConfig:
         otlp_endpoint=otlp_endpoint,
         otlp_headers=_parse_otlp_headers(otlp_headers_raw) if otlp_headers_raw else None,
         otlp_timeout=int(settings.get("OTEL.OTLP_TIMEOUT", 3)),
-        otlp_protocol=otlp_protocol
+        otlp_protocol=otlp_protocol,
+        prometheus_multiproc_dir=prometheus_multiproc_dir,
     )
 
 

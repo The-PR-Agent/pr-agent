@@ -280,3 +280,36 @@ class TestDashboardTokenJoin:
             pass
         row = conn.execute("SELECT * FROM runs ORDER BY id DESC LIMIT 1").fetchone()
         assert row["dashboard_token"] is None
+
+
+class TestErrorTextRedaction:
+    """`runs.error_text` is written to disk and rendered back in the dashboard.
+
+    Provider errors quote the failing request, so an auth failure can carry an API key or an
+    Authorization header in its message. Nothing else pins this: the run log is redacted in
+    runner.py, but a row written straight from the exception bypasses that path entirely.
+    """
+
+    def test_a_configured_secret_never_reaches_the_stored_error_text(self, conn, monkeypatch):
+        """A secret quoted by a provider error is replaced before the row is written"""
+        secret = "sk-live-abcdefghijklmnopqrstuvwxyz0123456789"
+        monkeypatch.setattr(recorder.redaction, "secret_values", lambda: [secret])
+        with pytest.raises(RuntimeError):
+            with recorder.record_run(pr_url="https://github.com/o/r/pull/7", command="review"):
+                raise RuntimeError(f"401 invalid key {secret}")
+        row = conn.execute("SELECT * FROM runs ORDER BY id DESC LIMIT 1").fetchone()
+        assert secret not in row["error_text"]
+        assert "RuntimeError" in row["error_text"]
+
+    def test_an_unreadable_secret_inventory_stores_no_provider_text(self, conn, monkeypatch):
+        """Redaction failing closed keeps raw provider text out of the row entirely"""
+        def _unavailable():
+            raise recorder.redaction.RedactionUnavailable("inventory unavailable")
+
+        monkeypatch.setattr(recorder.redaction, "secret_values", _unavailable)
+        with pytest.raises(RuntimeError):
+            with recorder.record_run(pr_url="https://github.com/o/r/pull/7", command="review"):
+                raise RuntimeError("401 invalid key sk-live-secret")
+        row = conn.execute("SELECT * FROM runs ORDER BY id DESC LIMIT 1").fetchone()
+        assert "sk-live-secret" not in row["error_text"]
+        assert row["error_text"] == "RuntimeError: <redaction unavailable>"

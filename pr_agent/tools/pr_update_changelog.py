@@ -180,7 +180,7 @@ class PRUpdateChangelog:
 
         sleep(5)  # wait for the file to be updated
         try:
-            if get_settings().config.git_provider == "github":
+            if self.git_provider.supports_changelog_update_review():
                 last_commit_id = list(self.git_provider.pr.get_commits())[-1]
                 d = dict(
                     body="CHANGELOG.md update",

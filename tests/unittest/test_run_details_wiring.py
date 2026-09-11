@@ -137,7 +137,7 @@ async def test_pr_description_appends_run_details_only_when_enabled(monkeypatch)
         description.git_provider.is_supported.side_effect = lambda cap: cap == "gfm_markdown"
 
         description._prepare_data = MagicMock()
-        description._prepare_pr_answer = MagicMock(return_value=("AI title", "Base description body", "", []))
+        description._prepare_pr_answer = MagicMock(return_value=("AI title", "Base description body", ""))
 
         monkeypatch.setattr("pr_agent.tools.pr_description.init_run_details", _seeded_init_run_details)
         monkeypatch.setattr("pr_agent.tools.pr_description.extract_and_cache_pr_tickets", _noop_async)

@@ -121,8 +121,11 @@ class BitbucketProvider(GitProvider):
     def get_repo_file_content(self, file_path: str, from_default_branch: bool = False):
         # Read from the PR destination (target) branch, matching the other providers,
         # or from the repository default branch when from_default_branch is requested.
-        branch = self.get_repo_default_branch() if from_default_branch else self.pr.destination_branch
+        branch = self.get_repo_context_ref(from_default_branch)
         return self.get_pr_file_content(file_path, branch, propagate_errors=True)
+
+    def get_repo_context_ref(self, from_default_branch: bool = False) -> Optional[str]:
+        return self.get_repo_default_branch() if from_default_branch else self.pr.destination_branch
 
     def get_git_repo_url(self, pr_url: str=None) -> str: #bitbucket does not support issue url, so ignore param
         try:
@@ -219,12 +222,8 @@ class BitbucketProvider(GitProvider):
             get_logger().error(f"Bitbucket failed to publish code suggestion, error: {e}")
             return False
 
-    def publish_file_comments(self, file_comments: list) -> bool:
-        pass
-
     def is_supported(self, capability: str) -> bool:
-        if capability in ['publish_inline_comments', 'get_labels',
-                  'gfm_markdown', 'publish_file_comments']:
+        if capability in ['publish_inline_comments', 'get_labels', 'gfm_markdown']:
             return False
         if capability == "push_code" and get_settings().config.restricted_mode:
             return False
@@ -391,28 +390,6 @@ class BitbucketProvider(GitProvider):
         except Exception as e:
             get_logger().exception(f"Failed to update comment, error: {e}")
             return False
-
-    def publish_persistent_comment(
-        self,
-        pr_comment: str,
-        initial_header: str,
-        update_header: bool = True,
-        name='review',
-        final_update_message=True,
-        as_thread: bool = False,
-        identity_marker: str | None = None,
-        legacy_initial_header: str | None = None,
-    ):
-        return self.publish_persistent_comment_full(
-            pr_comment,
-            initial_header,
-            update_header,
-            name,
-            final_update_message,
-            as_thread=as_thread,
-            identity_marker=identity_marker,
-            legacy_initial_header=legacy_initial_header,
-        )
 
     def publish_comment(self, pr_comment: str, is_temporary: bool = False):
         if is_temporary and not get_settings().config.publish_output_progress:

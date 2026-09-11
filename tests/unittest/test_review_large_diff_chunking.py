@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
-from pr_agent.algo.pr_processing import ChunkPlan
+from pr_agent.algo.pr_processing import ChunkPlan, PreparedPRDiff
 from pr_agent.algo.review_finding_state import ParsedReviewState, reconcile_review_findings
 from pr_agent.algo.run_details import record_ai_call
 from pr_agent.algo.types import FilePatchInfo
@@ -170,6 +170,29 @@ async def test_a_truncated_diff_is_reviewed_chunk_by_chunk_and_merged(chunking_e
     assert reviewer.review_chunk_count == 2
     assert reviewer.review_failed_chunk_count == 0
     # the coverage footer keeps reporting what even chunking could not fit
+    assert reviewer.remaining_files_list == ["still_left_out.py"]
+
+
+@pytest.mark.asyncio
+async def test_chunked_review_reuses_the_prepared_diff_for_the_same_model_attempt(chunking_enabled):
+    reviewer = _make_reviewer()
+    reviewer._get_prediction = AsyncMock(side_effect=[CHUNK_A, CHUNK_B])
+    prepared = PreparedPRDiff(
+        diff="first compressed diff",
+        remaining_files_list=["b.py"],
+        file_dict={"a.py": {"patch": "chunk-a", "tokens": 10}},
+    )
+
+    with (
+        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=prepared) as get_pr_diff,
+        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs_with_files",
+              return_value=(_plans("chunk-a", "chunk-b"), ["still_left_out.py"])) as get_pr_multi_diffs_with_files,
+    ):
+        await reviewer._prepare_prediction("model")
+
+    assert get_pr_diff.call_args.kwargs["return_prepared"] is True
+    assert get_pr_multi_diffs_with_files.call_args.kwargs["prepared_diff"] is prepared
+    assert reviewer.review_chunk_count == 2
     assert reviewer.remaining_files_list == ["still_left_out.py"]
 
 

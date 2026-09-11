@@ -185,3 +185,19 @@ def test_release_version_cannot_inject_workflow_outputs(tmp_path: Path, line_bre
 
     assert result.returncode != 0
     assert output.read_text() == "existing-output\n"
+
+
+def test_release_finalize_keeps_uv_lock_in_sync() -> None:
+    workflow = yaml.safe_load(PUBLISH_WORKFLOW.read_text())
+    finalize_steps = workflow["jobs"]["finalize"]["steps"]
+    bump_step = next(
+        step for step in finalize_steps if step.get("name") == "Bump pyproject.toml and sync uv.lock"
+    )
+    commit_step = next(
+        step for step in finalize_steps if step.get("name") == "Commit & push bump (fast-forward only)"
+    )
+
+    run = bump_step["run"]
+    assert run.index("scripts/set_pyproject_version.py") < run.index("uv lock")
+    assert "git diff --quiet pyproject.toml uv.lock" in commit_step["run"]
+    assert "git add pyproject.toml uv.lock" in commit_step["run"]

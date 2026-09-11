@@ -3,9 +3,8 @@ import re
 from functools import partial
 from pathlib import Path
 
-from jinja2 import Environment, StrictUndefined
+from jinja2 import Environment, StrictUndefined, select_autoescape
 
-from pr_agent.algo import MAX_TOKENS
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.pr_processing import retry_with_fallback_models
@@ -16,19 +15,8 @@ from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.log import get_logger
 
+DOCS_SITE_URL = "https://docs.pr-agent.ai"
 
-def extract_header(snippet):
-    res = ''
-    lines = snippet.split('===Snippet content===')[0].split('\n')
-    highest_header = ''
-    highest_level = float('inf')
-    for line in lines[::-1]:
-        line = line.strip()
-        if line.startswith('Header '):
-            highest_header = line.split(': ')[1]
-    if highest_header:
-        res = f"#{highest_header.lower().replace(' ', '-')}"
-    return res
 
 class PRHelpMessage:
     def __init__(self, pr_url: str, args=None, ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler, return_as_string=False):
@@ -47,17 +35,17 @@ class PRHelpMessage:
                                               get_settings().pr_help_prompts.user)
 
     async def _prepare_prediction(self, model: str):
-        try:
-            variables = copy.deepcopy(self.vars)
-            environment = Environment(undefined=StrictUndefined)
-            system_prompt = environment.from_string(get_settings().pr_help_prompts.system).render(variables)
-            user_prompt = environment.from_string(get_settings().pr_help_prompts.user).render(variables)
-            response, finish_reason = await self.ai_handler.chat_completion(
-                model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
-            return response
-        except Exception as e:
-            get_logger().error(f"Error while preparing prediction: {e}")
-            return ""
+        variables = copy.deepcopy(self.vars)
+        # These string templates produce plain-text model prompts, not HTML.
+        environment = Environment(
+            autoescape=select_autoescape(default_for_string=False),
+            undefined=StrictUndefined,
+        )
+        system_prompt = environment.from_string(get_settings().pr_help_prompts.system).render(variables)
+        user_prompt = environment.from_string(get_settings().pr_help_prompts.user).render(variables)
+        response, finish_reason = await self.ai_handler.chat_completion(
+            model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
+        return response
 
     def parse_args(self, args):
         if args and len(args) > 0:
@@ -93,26 +81,32 @@ class PRHelpMessage:
             get_logger().exception("Error while formatting markdown header", artifacts={'header': header})
             return ""
 
+    def format_docs_url(self, file_name: str, header: str) -> str:
+        relative_path = file_name.strip().lstrip('/').removesuffix('.md')
+        if relative_path == 'index':
+            relative_path = ''
+        elif relative_path.endswith('/index'):
+            relative_path = relative_path.removesuffix('index')
+        elif relative_path:
+            relative_path += '/'
+
+        docs_url = f"{DOCS_SITE_URL}/{relative_path}"
+        if str(header).strip():
+            docs_url += f"#{self.format_markdown_header(header)}"
+        return docs_url
+
 
     async def run(self):
         try:
             if self.question_str:
                 get_logger().info(f'Answering a PR question about the PR {self.git_provider.pr_url} ')
 
-                if not get_settings().get('openai.key'):
-                    if get_settings().config.publish_output:
-                        self.git_provider.publish_comment(
-                            "The `Help` tool chat feature requires an OpenAI API key for calculating embeddings")
-                    else:
-                        get_logger().error("The `Help` tool chat feature requires an OpenAI API key for calculating embeddings")
-                    return
-
                 # current path
                 docs_path= Path(__file__).parent.parent.parent / 'docs' / 'docs'
                 # get all the 'md' files inside docs_path and its subdirectories
                 md_files = list(docs_path.glob('**/*.md'))
                 folders_to_exclude = ['/finetuning_benchmark/']
-                files_to_exclude = {'EXAMPLE_BEST_PRACTICE.md', 'compression_strategy.md', '/docs/overview/index.md'}
+                files_to_exclude = {'compression_strategy.md', '/docs/overview/index.md'}
                 md_files = [file for file in md_files if not any(folder in str(file) for folder in folders_to_exclude) and not any(file.name == file_to_exclude for file_to_exclude in files_to_exclude)]
 
                 # sort the 'md_files' so that 'priority_files' will be at the top
@@ -134,11 +128,9 @@ class PRHelpMessage:
                 token_count = self.token_handler.count_tokens(docs_prompt)
                 get_logger().debug(f"Token count of full documentation website: {token_count}")
 
-                model = get_settings().config.model
-                if model in MAX_TOKENS:
-                    max_tokens_full = MAX_TOKENS[model] # note - here we take the actual max tokens, without any reductions. we do aim to get the full documentation website in the prompt
-                else:
-                    max_tokens_full = get_max_tokens(model)
+                # take the actual max tokens, without any reductions. we do aim to get
+                # the full documentation website in the prompt
+                max_tokens_full = get_max_tokens(get_settings().config.model, ignore_max_model_tokens=True)
                 delta_output = 2000
                 if token_count > max_tokens_full - delta_output:
                     get_logger().info(f"Token count {token_count} exceeds the limit {max_tokens_full - delta_output}. Skipping the PR Help message.")
@@ -174,14 +166,12 @@ class PRHelpMessage:
                     answer_str += f"### Question: \n{self.question_str}\n\n"
                     answer_str += f"### Answer:\n{response_str.strip()}\n\n"
                     answer_str += "#### Relevant Sources:\n\n"
-                    base_path = "https://qodo-merge-docs.qodo.ai/"
                     for section in relevant_sections:
-                        file = section.get('file_name').strip().removesuffix('.md')
-                        if str(section['relevant_section_header_string']).strip():
-                            markdown_header = self.format_markdown_header(section['relevant_section_header_string'])
-                            answer_str += f"> - {base_path}{file}#{markdown_header}\n"
-                        else:
-                            answer_str += f"> - {base_path}{file}\n"
+                        docs_url = self.format_docs_url(
+                            section.get('file_name'),
+                            section['relevant_section_header_string'],
+                        )
+                        answer_str += f"> - {docs_url}\n"
 
 
                 # publish the answer
@@ -203,7 +193,7 @@ class PRHelpMessage:
                 pr_comment = "## PR Agent Walkthrough 🤖\n\n"
                 pr_comment += "Welcome to the PR Agent, an AI-powered tool for automated pull request analysis, feedback, suggestions and more."""
                 pr_comment += "\n\nHere is a list of tools you can use to interact with the PR Agent:\n"
-                base_path = "https://pr-agent-docs.codium.ai/tools"
+                base_path = f"{DOCS_SITE_URL}/tools"
 
                 tool_names = []
                 tool_names.append(f"[DESCRIBE]({base_path}/describe/)")
@@ -249,7 +239,7 @@ class PRHelpMessage:
                     for i in range(len(tool_names)):
                         pr_comment += f"\n<tr><td align='left'>\n\n<strong>{tool_names[i]}</strong></td>\n<td>{descriptions[i]}</td>\n<td>\n\n{checkbox_list[i]}\n</td></tr>"
                     pr_comment += "</table>\n\n"
-                    pr_comment += """\n\n(1) Note that each tool can be [triggered automatically](https://pr-agent-docs.codium.ai/usage-guide/automations_and_usage/#github-app-automatic-tools-when-a-new-pr-is-opened) when a new PR is opened, or called manually by [commenting on a PR](https://pr-agent-docs.codium.ai/usage-guide/automations_and_usage/#online-usage)."""
+                    pr_comment += """\n\n(1) Note that each tool can be [triggered automatically](https://docs.pr-agent.ai/usage-guide/automations_and_usage/#github-app-automatic-tools-when-a-new-pr-is-opened) when a new PR is opened, or called manually by [commenting on a PR](https://docs.pr-agent.ai/usage-guide/automations_and_usage/#online-usage)."""
                     pr_comment += """\n\n(2) Tools marked with [*] require additional parameters to be passed. For example, to invoke the `/ask` tool, you need to comment on a PR: `/ask "<question content>"`. See the relevant documentation for each tool for more details."""
                 elif not supports_gfm_markdown:
                     # only basic commands, in a plain markdown table (e.g. BBDC)
@@ -259,33 +249,13 @@ class PRHelpMessage:
                     for i in range(len(tool_names)):
                         pr_comment += f"\n<tr><td align='left'>\n\n<strong>{tool_names[i]}</strong></td><td>{commands[i]}</td><td>{descriptions[i]}</td></tr>"
                     pr_comment += "</table>\n\n"
-                    pr_comment += """\n\nNote that each tool can be [invoked automatically](https://pr-agent-docs.codium.ai/usage-guide/automations_and_usage/) when a new PR is opened, or called manually by [commenting on a PR](https://pr-agent-docs.codium.ai/usage-guide/automations_and_usage/#online-usage)."""
+                    pr_comment += """\n\nNote that each tool can be [invoked automatically](https://docs.pr-agent.ai/usage-guide/automations_and_usage/) when a new PR is opened, or called manually by [commenting on a PR](https://docs.pr-agent.ai/usage-guide/automations_and_usage/#online-usage)."""
 
                 if get_settings().config.publish_output:
                     self.git_provider.publish_comment(pr_comment)
         except Exception as e:
             get_logger().exception(f"Error while running PRHelpMessage: {e}")
         return ""
-
-    async def prepare_relevant_snippets(self, sim_results):
-        # Get relevant snippets
-        relevant_snippets_full = []
-        relevant_pages_full = []
-        relevant_snippets_full_header = []
-        th = 0.75
-        for s in sim_results:
-            page = s[0].metadata['source']
-            content = s[0].page_content
-            score = s[1]
-            relevant_snippets_full.append(content)
-            relevant_snippets_full_header.append(extract_header(content))
-            relevant_pages_full.append(page)
-        # build the snippets string
-        relevant_snippets_str = ""
-        for i, s in enumerate(relevant_snippets_full):
-            relevant_snippets_str += f"Snippet {i+1}:\n\n{s}\n\n"
-            relevant_snippets_str += "-------------------\n\n"
-        return relevant_pages_full, relevant_snippets_full_header, relevant_snippets_str
 
 
 def generate_bbdc_table(column_arr_1, column_arr_2):

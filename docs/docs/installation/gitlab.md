@@ -88,6 +88,7 @@ Note that if your base branches are not protected, don't set the variables as `p
 
 > **Note**: The `gitlab__SSL_VERIFY` environment variable can be used to specify the path to a custom CA certificate bundle for SSL verification. GitLab exposes the `$CI_SERVER_TLS_CA_FILE` variable, which points to the custom CA certificate file configured in your GitLab instance.
 > Alternatively, SSL verification can be disabled entirely by setting `gitlab__SSL_VERIFY=false`, although this is not recommended.
+> This setting affects only the GitLab API client. For certificate issues with LLM calls or git clone operations, see [Custom CA and Self-Signed Certificates](../usage-guide/custom_ca_and_self_signed_certificates.md).
 
 ## Run a GitLab webhook server
 

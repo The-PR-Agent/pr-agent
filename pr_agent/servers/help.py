@@ -11,7 +11,7 @@ class HelpMessage:
                 "> - **/update_changelog**: Update the changelog based on the PR's contents.   \n" \
                 "> - **/add_docs**: Generate docstring for new components introduced in the PR.   \n" \
                 "> - **/generate_labels**: Generate labels for the PR based on the PR's contents.   \n\n" \
-                ">See the [tools guide](https://pr-agent-docs.codium.ai/tools/) for more details.\n" \
+                ">See the [tools guide](https://docs.pr-agent.ai/tools/) for more details.\n" \
                 ">To list the possible configuration parameters, add a **/config** comment.   \n"
        return commands_text
 
@@ -25,14 +25,14 @@ class HelpMessage:
     def get_review_usage_guide():
         output ="**Overview:**\n"
         output += (f"{COMMAND_DESCRIPTIONS['review']} "
-                  "More feedback can be [added](https://pr-agent-docs.codium.ai/tools/review/#general-configurations) by configuring the tool.\n\n"
-                  "The tool can be triggered [automatically](https://pr-agent-docs.codium.ai/usage-guide/automations_and_usage/#github-app-automatic-tools-when-a-new-pr-is-opened) every time a new PR is opened, or can be invoked manually by commenting on any PR.\n")
+                  "More feedback can be [added](https://docs.pr-agent.ai/tools/review/#configuration-options) by configuring the tool.\n\n"
+                  "The tool can be triggered [automatically](https://docs.pr-agent.ai/usage-guide/automations_and_usage/#github-app-automatic-tools-when-a-new-pr-is-opened) every time a new PR is opened, or can be invoked manually by commenting on any PR.\n")
         output +="""\
 - When commenting, to edit [configurations](https://github.com/Codium-ai/pr-agent/blob/main/pr_agent/settings/configuration.toml#L23) related to the review tool (`pr_reviewer` section), use the following template:
 ```
 /review --pr_reviewer.some_config1=... --pr_reviewer.some_config2=...
 ```
-- With a [configuration file](https://pr-agent-docs.codium.ai/usage-guide/configuration_options/), use the following template:
+- With a [configuration file](https://docs.pr-agent.ai/usage-guide/configuration_options/), use the following template:
 ```
 [pr_reviewer]
 some_config1=...
@@ -40,7 +40,7 @@ some_config2=...
 ```
     """
 
-        output += "\n\nSee the review [usage page](https://pr-agent-docs.codium.ai/tools/review/) for a comprehensive guide on using this tool.\n\n"
+        output += "\n\nSee the review [usage page](https://docs.pr-agent.ai/tools/review/) for a comprehensive guide on using this tool.\n\n"
 
         return output
 
@@ -50,14 +50,14 @@ some_config2=...
     def get_describe_usage_guide():
         output = "**Overview:**\n"
         output += f"{COMMAND_DESCRIPTIONS['describe']} "
-        output += "The tool can be triggered [automatically](https://pr-agent-docs.codium.ai/usage-guide/automations_and_usage/#github-app-automatic-tools-when-a-new-pr-is-opened) every time a new PR is opened, or can be invoked manually by commenting on a PR.\n"
+        output += "The tool can be triggered [automatically](https://docs.pr-agent.ai/usage-guide/automations_and_usage/#github-app-automatic-tools-when-a-new-pr-is-opened) every time a new PR is opened, or can be invoked manually by commenting on a PR.\n"
         output += """\
 
 When commenting, to edit [configurations](https://github.com/Codium-ai/pr-agent/blob/main/pr_agent/settings/configuration.toml#L46) related to the describe tool (`pr_description` section), use the following template:
 ```
 /describe --pr_description.some_config1=... --pr_description.some_config2=...
 ```
-With a [configuration file](https://pr-agent-docs.codium.ai/usage-guide/configuration_options/), use the following template:
+With a [configuration file](https://docs.pr-agent.ai/usage-guide/configuration_options/), use the following template:
 ```
 [pr_description]
 some_config1=...
@@ -69,7 +69,7 @@ some_config2=...
         # automation
         output += "<tr><td><details> <summary><strong> Enabling\\disabling automation </strong></summary><hr>\n\n"
         output += """\
-- When you first install the app, the [default mode](https://pr-agent-docs.codium.ai/usage-guide/automations_and_usage/#github-app-automatic-tools-when-a-new-pr-is-opened) for the describe tool is:
+- When you first install the app, the [default mode](https://docs.pr-agent.ai/usage-guide/automations_and_usage/#github-app-automatic-tools-when-a-new-pr-is-opened) for the describe tool is:
 ```
 pr_commands = ["/describe", ...]
 ```
@@ -95,7 +95,7 @@ Note that when markers are enabled, if the original PR description does not cont
         output += """\
 The default labels of the `describe` tool are quite generic: [`Bug fix`, `Tests`, `Enhancement`, `Documentation`, `Other`].
 
-If you specify [custom labels](https://pr-agent-docs.codium.ai/tools/describe/#handle-custom-labels-from-the-repos-labels-page) in the repo's labels page or via configuration file, you can get tailored labels for your use cases.
+If you specify [custom labels](https://docs.pr-agent.ai/tools/describe/#handle-custom-labels-from-the-repos-labels-page) in the repo's labels page or via configuration file, you can get tailored labels for your use cases.
 Examples for custom labels:
 - `Main topic:performance` - pr_agent:The main topic of this PR is performance
 - `New endpoint` - pr_agent:A new endpoint was added in this PR
@@ -137,7 +137,7 @@ Use triple quotes to write multi-line instructions. Use bullet points to make th
 
         output += "</table>"
 
-        output += "\n\nSee the [describe usage](https://pr-agent-docs.codium.ai/tools/describe/) page for a comprehensive guide on using this tool.\n\n"
+        output += "\n\nSee the [describe usage](https://docs.pr-agent.ai/tools/describe/) page for a comprehensive guide on using this tool.\n\n"
 
         return output
 
@@ -163,7 +163,7 @@ You can ask questions about the entire PR, about specific code lines, or about a
         #
         # output += "</table>"
 
-        output += "\n\nSee the [ask usage](https://pr-agent-docs.codium.ai/tools/ask/) page for a comprehensive guide on using this tool.\n\n"
+        output += "\n\nSee the [ask usage](https://docs.pr-agent.ai/tools/ask/) page for a comprehensive guide on using this tool.\n\n"
 
         return output
 
@@ -172,7 +172,7 @@ You can ask questions about the entire PR, about specific code lines, or about a
     def get_improve_usage_guide():
         output = "**Overview:**\n"
         output += f"{COMMAND_DESCRIPTIONS['improve']} "
-        output += "The tool can be triggered [automatically](https://pr-agent-docs.codium.ai/usage-guide/automations_and_usage/#github-app-automatic-tools-when-a-new-pr-is-opened) every time a new PR is opened, or can be invoked manually by commenting on a PR.\n"
+        output += "The tool can be triggered [automatically](https://docs.pr-agent.ai/usage-guide/automations_and_usage/#github-app-automatic-tools-when-a-new-pr-is-opened) every time a new PR is opened, or can be invoked manually by commenting on a PR.\n"
         output += """\
 - When commenting, to edit [configurations](https://github.com/Codium-ai/pr-agent/blob/main/pr_agent/settings/configuration.toml#L78) related to the improve tool (`pr_code_suggestions` section), use the following template:
 
@@ -180,7 +180,7 @@ You can ask questions about the entire PR, about specific code lines, or about a
 /improve --pr_code_suggestions.some_config1=... --pr_code_suggestions.some_config2=...
 ```
 
-- With a [configuration file](https://pr-agent-docs.codium.ai/usage-guide/configuration_options/), use the following template:
+- With a [configuration file](https://docs.pr-agent.ai/usage-guide/configuration_options/), use the following template:
 
 ```
 [pr_code_suggestions]
@@ -190,7 +190,7 @@ some_config2=...
 
 """
 
-        output += "\n\nSee the improve [usage page](https://pr-agent-docs.codium.ai/tools/improve/) for a comprehensive guide on using this tool.\n\n"
+        output += "\n\nSee the improve [usage page](https://docs.pr-agent.ai/tools/improve/) for a comprehensive guide on using this tool.\n\n"
 
         return output
 
@@ -205,5 +205,5 @@ It can be invoked manually by commenting on any PR:
 /help_docs "..."
 ```
 """
-        output += "\n\nSee the [help_docs usage](https://pr-agent-docs.codium.ai/tools/help_docs/) page for a comprehensive guide on using this tool.\n\n"
+        output += "\n\nSee the [help_docs usage](https://docs.pr-agent.ai/tools/help_docs/) page for a comprehensive guide on using this tool.\n\n"
         return output

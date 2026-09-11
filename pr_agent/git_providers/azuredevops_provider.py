@@ -480,6 +480,9 @@ class AzureDevopsProvider(GitProvider):
     def supports_thread_resolution(self) -> bool:
         return True
 
+    def supports_linked_work_item_tickets(self) -> bool:
+        return True
+
     def set_pr(self, pr_url: str):
         self.diff_files = None
         self._diff_path_map = None
@@ -728,6 +731,13 @@ class AzureDevopsProvider(GitProvider):
                 return ""
             raise
 
+    def get_repo_context_ref(self, from_default_branch: bool = False) -> Optional[str]:
+        # The PR target (base) commit is the cached revision; the default branch is selected by
+        # omitting the version, so it carries no explicit ref, mirroring get_repo_file_content.
+        if from_default_branch:
+            return None
+        return self.pr.last_merge_target_commit.commit_id
+
     def get_files(self):
         if (isinstance(getattr(self, "incremental", None), IncrementalPR)
                 and self.incremental.is_incremental
@@ -975,23 +985,6 @@ class AzureDevopsProvider(GitProvider):
         if is_temporary:
             self.temp_comments.append(created_comment)
         return created_comment
-
-    def publish_persistent_comment(self, pr_comment: str,
-                                   initial_header: str,
-                                   update_header: bool = True,
-                                   name='review',
-                                   final_update_message=True,
-                                   identity_marker: str | None = None,
-                                   legacy_initial_header: str | None = None):
-        return self.publish_persistent_comment_full(
-            pr_comment,
-            initial_header,
-            update_header,
-            name,
-            final_update_message,
-            identity_marker=identity_marker,
-            legacy_initial_header=legacy_initial_header,
-        )
 
     def supports_review_comment_identity(self) -> bool:
         return True
@@ -1651,9 +1644,6 @@ class AzureDevopsProvider(GitProvider):
             if get_verbosity_level() >= 2:
                 get_logger().info(f"Failed to get PR id, error: {e}")
             return ""
-
-    def publish_file_comments(self, file_comments: list) -> bool:
-        pass
 
     def get_line_link(self, relevant_file: str, relevant_line_start: int, relevant_line_end: int = None) -> str:
         return self.pr_url+f"?_a=files&path={relevant_file}"

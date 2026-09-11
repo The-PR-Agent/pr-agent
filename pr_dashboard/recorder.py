@@ -21,7 +21,7 @@ from typing import Optional
 from pr_agent.algo.run_details import get_run_details
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
-from pr_dashboard import store
+from pr_dashboard import redaction, store
 
 _GITHUB_PR = re.compile(r"https?://[^/]+/([^/]+/[^/]+)/pull/(\d+)")
 _BITBUCKET_PR = re.compile(r"https?://[^/]+/([^/]+/[^/]+)/pull-requests/(\d+)")
@@ -81,10 +81,26 @@ def record_run(*, pr_url: Optional[str], command: str):
     try:
         yield
     except Exception as exc:
-        _finish(conn, run_id, status="failed", error_text=f"{type(exc).__name__}: {exc}")
+        _finish(conn, run_id, status="failed", error_text=_safe_error_text(exc))
         raise
     else:
         _finish(conn, run_id, status="ok", error_text=None)
+
+
+def _safe_error_text(exc: BaseException) -> str:
+    """Render an exception for storage with secrets removed.
+
+    Provider errors quote the request that failed, so an auth failure can carry an API key or an
+    Authorization header in its message. `runs.error_text` is written to disk and rendered back in
+    the dashboard, so it goes through the same redaction the run log uses (runner.py). Fails
+    closed: if the secret inventory cannot be read, store nothing rather than raw provider text.
+    """
+    raw = f"{type(exc).__name__}: {exc}"
+    try:
+        return redaction.redact(raw)
+    except Exception as redaction_exc:  # noqa: BLE001 - a dashboard write must never fail a review
+        get_logger().warning(f"pr_dashboard: could not redact error text: {redaction_exc}")
+        return f"{type(exc).__name__}: <redaction unavailable>"
 
 
 def _finish(conn, run_id, *, status: str, error_text: Optional[str]) -> None:

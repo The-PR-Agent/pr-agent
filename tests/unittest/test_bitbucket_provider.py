@@ -1157,6 +1157,24 @@ class TestBitbucketServerProvider:
         with pytest.raises(HTTPError, match="500 Internal Server Error"):
             provider.get_repo_file_content("AGENTS.md")
 
+    def test_get_languages_returns_language_names(self):
+        # get_languages() must key on language NAMES (e.g. "Python"), not raw
+        # extensions ("py"): sort_files_by_main_languages() maps names back to
+        # extensions, so extension keys would drop every file into "Other".
+        provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
+        provider.get_files = MagicMock(return_value=["a.py", "b.py", "c.py", "d.js", "weird.zzz"])
+
+        languages = provider.get_languages()
+
+        # 3 Python + 1 JavaScript known; .zzz is unknown and excluded from the total.
+        assert languages == {"Python": 75.0, "JavaScript": 25.0}
+
+    def test_get_languages_returns_empty_map_when_nothing_matches(self):
+        provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
+        provider.get_files = MagicMock(return_value=["weird.zzz", ""])
+
+        assert provider.get_languages() == {}
+
     def _make_provider_for_repo_settings(self, get_content_side_effect):
         # Bypass __init__ (which performs live API calls) and only wire up the
         # attributes get_repo_settings() relies on.

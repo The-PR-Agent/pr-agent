@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
@@ -13,6 +14,14 @@ from pr_agent.algo.repo_context import (
     render_instruction_files_with_line_budget,
 )
 from pr_agent.config_loader import get_settings
+from pr_agent.git_providers import (
+    AzureDevopsProvider,
+    BitbucketProvider,
+    BitbucketServerProvider,
+    GiteaProvider,
+    GitLabProvider,
+)
+from pr_agent.git_providers.codecommit_provider import CodeCommitProvider
 from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.git_providers.github_provider import GithubProvider
 
@@ -28,6 +37,11 @@ class FakeProvider:
         self.requested_paths.append(file_path)
         self.from_default_branch_calls.append(from_default_branch)
         return self.files.get(file_path)
+
+    def get_repo_context_ref(self, from_default_branch: bool = False):
+        # Simulate a provider that keys its content on a revision: the default branch uses a
+        # stable name, and the target/base branch uses a commit-derived value.
+        return "default" if from_default_branch else "target-sha"
 
 
 class UnsupportedProvider:
@@ -662,3 +676,186 @@ def test_prompt_templates_render_configured_repo_context(prompt_name, variables)
 
     assert "Repository context:" in rendered
     assert '<file path="AGENTS.md" scope="repo-root">' in rendered
+
+
+class RefishProvider(FakeProvider):
+    """A provider whose repo-context revision can move between calls, like a rebased base branch."""
+
+    def __init__(self, files, pr_url=None):
+        super().__init__(files, pr_url)
+        self.context_ref = "sha-1"
+
+    def get_repo_context_ref(self, from_default_branch: bool = False):
+        return self.context_ref
+
+
+def test_build_repo_context_process_cache_refreshes_when_revision_changes(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["AGENTS.md"])
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 500)
+    pr_url = "https://example.com/org/repo/pull/1"
+    provider = RefishProvider({"AGENTS.md": "before rebase"}, pr_url=pr_url)
+
+    first_context = build_repo_context(provider)
+    assert "before rebase" in first_context
+
+    # The base branch moved (rebase/push within the TTL): the revision the cache is keyed on
+    # changes, so the stale entry must not be served.
+    provider.context_ref = "sha-2"
+    provider.files["AGENTS.md"] = "after rebase"
+
+    second_context = build_repo_context(provider)
+
+    assert "after rebase" in second_context
+    assert "before rebase" not in second_context
+    assert provider.requested_paths == ["AGENTS.md", "AGENTS.md"]
+
+
+def test_build_repo_context_provider_cache_refreshes_when_revision_changes(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["AGENTS.md"])
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 500)
+    provider = RefishProvider({"AGENTS.md": "before rebase"})
+
+    first_context = build_repo_context(provider)
+    assert "before rebase" in first_context
+
+    provider.context_ref = "sha-3"
+    provider.files["AGENTS.md"] = "after push"
+
+    second_context = build_repo_context(provider)
+
+    assert "after push" in second_context
+    assert provider.requested_paths == ["AGENTS.md", "AGENTS.md"]
+
+
+def test_get_repo_context_ref_github_returns_base_sha():
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.base_url = "https://api.github.com"
+    provider.provider_id = None
+    provider.pr = Mock(base=Mock(sha="base-sha", ref="release/1.0"))
+
+    assert provider.get_repo_context_ref() == "base-sha"
+
+
+def test_get_repo_context_ref_github_resolves_default_branch_head():
+    """Reading the default branch keys the cache on its head commit, so a push to it
+    invalidates cached content within the TTL instead of serving a moved commit."""
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.repo_obj = Mock()
+    provider.repo_obj.default_branch = "main"
+    provider.repo_obj.get_branch.return_value.commit.sha = "default-sha"
+
+    assert provider.get_repo_context_ref(from_default_branch=True) == "default-sha"
+    provider.repo_obj.get_branch.assert_called_once_with("main")
+
+
+def test_get_repo_context_ref_github_without_pr_base_reads_default_branch_head():
+    """Without a PR base the fallback read also comes from the default branch, so the
+    same key rule applies."""
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.pr = None
+    provider.repo_obj = Mock()
+    provider.repo_obj.default_branch = "main"
+    provider.repo_obj.get_branch.return_value.commit.sha = "default-sha"
+
+    assert provider.get_repo_context_ref() == "default-sha"
+    provider.repo_obj.get_branch.assert_called_once_with("main")
+
+
+def test_get_repo_context_ref_github_falls_back_to_none_without_repo_obj():
+    provider = GithubProvider.__new__(GithubProvider)
+
+    assert provider.get_repo_context_ref(from_default_branch=True) is None
+    assert provider.get_repo_context_ref() is None
+
+
+def test_build_repo_context_github_invalidates_default_branch_cache_when_head_moves(repo_context_settings):
+    """The shipping default reads repo-context from the default branch; a push to it
+    within the TTL must not serve the previous head's content. Keying the cache on the
+    resolved head commit closes the gap the review called out on GitHub."""
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["AGENTS.md"])
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 500)
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FROM_DEFAULT_BRANCH", True)
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.pr = Mock(base=Mock(sha="base-sha", ref="release/1.0"))
+    provider.repo_obj = Mock()
+    provider.repo_obj.default_branch = "main"
+    provider.repo_obj.get_contents.return_value.decoded_content = b"before push"
+    provider.repo_obj.get_branch.return_value.commit.sha = "head-1"
+
+    first_context = build_repo_context(provider)
+    assert "before push" in first_context
+
+    provider.repo_obj.get_contents.return_value.decoded_content = b"after push"
+    provider.repo_obj.get_branch.return_value.commit.sha = "head-2"
+
+    second_context = build_repo_context(provider)
+
+    assert "after push" in second_context
+    assert "before push" not in second_context
+    assert provider.repo_obj.get_contents.call_count == 2
+
+
+def test_get_repo_context_ref_gitlab_returns_target_branch():
+    provider = GitLabProvider.__new__(GitLabProvider)
+    provider.id_project = "owner/repo"
+    provider.mr = Mock(target_branch="main")
+    provider.gl = Mock()
+    provider.gl.projects.get.return_value.default_branch = "project-default"
+
+    assert provider.get_repo_context_ref() == "main"
+    assert provider.get_repo_context_ref(from_default_branch=True) == "project-default"
+
+
+def test_get_repo_context_ref_azure_returns_base_commit():
+    provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+    provider.workspace_slug = "my-project"
+    provider.repo_slug = "my-repo"
+    provider.pr = Mock(last_merge_target_commit=Mock(commit_id="base-sha"))
+
+    assert provider.get_repo_context_ref() == "base-sha"
+    assert provider.get_repo_context_ref(from_default_branch=True) is None
+
+
+def test_get_repo_context_ref_bitbucket_server_returns_base_commit():
+    provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
+    provider.workspace_slug = "PRJ"
+    provider.repo_slug = "repo"
+    provider.pr = SimpleNamespace(toRef={"latestCommit": "base-sha"})
+    provider.bitbucket_client = Mock()
+
+    assert provider.get_repo_context_ref() == "base-sha"
+    provider.bitbucket_client.get_default_branch.return_value = {"displayId": "develop"}
+    assert provider.get_repo_context_ref(from_default_branch=True) == "develop"
+
+
+def test_get_repo_context_ref_gitea_returns_base_ref():
+    provider = GiteaProvider.__new__(GiteaProvider)
+    provider.logger = Mock()
+    provider.owner = "owner"
+    provider.repo = "repo"
+    provider.base_sha = "base-sha"
+    provider.base_ref = None
+    provider.repo_api = Mock()
+
+    assert provider.get_repo_context_ref() == "base-sha"
+    provider.repo_api.repo_get.return_value.default_branch = "main"
+    assert provider.get_repo_context_ref(from_default_branch=True) == "main"
+
+
+def test_get_repo_context_ref_bitbucket_cloud_returns_destination_branch():
+    provider = BitbucketProvider.__new__(BitbucketProvider)
+    provider.workspace_slug = "myws"
+    provider.repo_slug = "myrepo"
+    provider.pr = Mock(destination_branch="main")
+    provider.token = None
+
+    assert provider.get_repo_context_ref() == "main"
+    provider.get_repo_default_branch = Mock(return_value="develop")
+    assert provider.get_repo_context_ref(from_default_branch=True) == "develop"
+
+
+def test_get_repo_context_ref_inherits_none_for_providers_without_repo_context():
+    provider = CodeCommitProvider.__new__(CodeCommitProvider)
+
+    assert provider.get_repo_context_ref() is None
+    assert provider.get_repo_context_ref(from_default_branch=True) is None
