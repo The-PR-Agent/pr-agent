@@ -2,6 +2,7 @@ import json
 
 from pr_agent.algo.review_finding_state import (
     append_review_state,
+    append_review_state_paginated,
     parse_review_state,
     reconcile_review_findings,
     render_carried_section,
@@ -89,43 +90,91 @@ def test_body_exact_fit_is_untouched_and_carried_is_dropped():
     assert parse_review_state(out).valid is True
 
 
-def test_carried_dropped_entirely_when_budget_only_covers_body_and_marker():
-    """A little slack beyond the exact fit still isn't enough for even a shortened carried section."""
+def test_overflow_carried_entries_appear_whole_in_continuation():
+    """When the primary only has room for body+marker, carried entries move whole to continuation."""
     state = _single_active_state()
     marker = serialize_review_state(state)
     body = "x" * 400
-    carried = "### Carried from earlier runs\n\n- **B** — `other.py:1` · first seen 2026-01-01 · " \
-              "not re-reviewed this run"
+    entry = "- **B** — `other.py:1` · first seen 2026-01-01 · not re-reviewed this run"
+    carried = f"### Carried from earlier runs\n\n{entry}"
     # One spare char beyond the exact fit: not enough for the "\n\n" separator plus any carried text.
     max_chars = len(body) + 1 + len(marker) + 3
 
-    out = append_review_state(body, state, max_chars=max_chars, carried_section=carried)
+    primary, continuation = append_review_state_paginated(
+        body, state, max_chars=max_chars, carried_section=carried
+    )
 
-    assert len(out) <= max_chars + 1
-    assert out.startswith(body)
-    assert "..." not in out
-    assert "Carried from earlier runs" not in out
-    assert parse_review_state(out).valid is True
+    assert len(primary) <= max_chars + 1
+    assert primary.startswith(body)
+    assert "..." not in primary
+    assert "Carried from earlier runs" not in primary.split("<!-- pr-agent-review-state", 1)[0]
+    assert parse_review_state(primary).valid is True
+    assert "### Carried from earlier runs (continued)" in continuation
+    assert "Continued from the primary review comment." in continuation
+    assert entry in continuation
+    assert "<!-- pr-agent-review-state" not in continuation
 
 
-def test_carried_section_is_truncated_with_ellipsis_when_partially_over_budget():
-    """Enough slack for part of the carried section: body stays whole, carried is shortened."""
+def test_partial_budget_keeps_whole_entries_and_paginates_the_rest():
+    """Enough slack for some whole entries: those stay on primary; overflow is not ellipsis-cut."""
     state = _single_active_state()
     marker = serialize_review_state(state)
     body = "x" * 400
-    carried = "### Carried from earlier runs\n\n" + "- **B** — `other.py:1` · not re-reviewed this run " * 5
-    carried_room = 20  # enough for a truncated "..." remainder, not the whole carried section
+    entries = [
+        f"- **F{i}** — `f{i}.py:1` · first seen 2026-01-01 · not re-reviewed this run"
+        for i in range(5)
+    ]
+    carried = "### Carried from earlier runs\n\n" + "\n".join(entries)
+    # Room for heading + blank line + one whole entry, but not the full section.
+    one_entry_section = "### Carried from earlier runs\n\n" + entries[0]
+    carried_room = len(one_entry_section) + 5
     assert carried_room < len(carried)
     max_chars = len(body) + 2 + carried_room + len(marker) + 3
 
-    out = append_review_state(body, state, max_chars=max_chars, carried_section=carried)
+    primary, continuation = append_review_state_paginated(
+        body, state, max_chars=max_chars, carried_section=carried
+    )
 
-    assert len(out) <= max_chars + 1
-    assert out.startswith(body)
-    parsed = parse_review_state(out)
+    assert len(primary) <= max_chars + 1
+    assert primary.startswith(body)
+    parsed = parse_review_state(primary)
     assert parsed.valid is True
-    human_only = out.split("<!-- pr-agent-review-state", 1)[0]
-    truncated_carried = human_only[len(body):].strip("\n")
-    assert truncated_carried.endswith("...")
-    assert len(truncated_carried) == carried_room
-    assert truncated_carried != carried[:carried_room]  # confirms it was actually shortened, not coincidental
+    human_only = primary.split("<!-- pr-agent-review-state", 1)[0]
+    assert "..." not in human_only
+    primary_entries = [line for line in human_only.splitlines() if line.startswith("- **")]
+    assert primary_entries  # at least one whole entry fitted
+    assert all(entry in entries for entry in primary_entries)
+    cont_entries = [line for line in continuation.splitlines() if line.startswith("- **")]
+    assert cont_entries
+    assert all(entry in entries for entry in cont_entries)
+    assert set(primary_entries) | set(cont_entries) == set(entries)
+    assert set(primary_entries).isdisjoint(cont_entries)
+    assert "<!-- pr-agent-review-state" not in continuation
+
+
+def test_six_finding_state_visible_count_survives_tight_budget_via_continuation():
+    findings = [
+        {"path": f"lib/f{i}.dart", "line_start": i + 1, "line_end": i + 1,
+         "body": f"**Issue {i}**\n\ndetail {i}"}
+        for i in range(6)
+    ]
+    state = reconcile_review_findings(
+        None, findings, allow_resolution=False, head_sha="s1", run_id="r1"
+    ).state
+    # Treat all six as carried (none reported this run).
+    carried = render_carried_section(state, current_ids=set(), fully_reviewed_files=[])
+    assert carried.count("- **") == 6
+    marker = serialize_review_state(state)
+    body = "review body"
+    # Tight: body + marker + room for about two entries.
+    first_entry = [line for line in carried.splitlines() if line.startswith("- **")][0]
+    max_chars = len(body) + 2 + len(first_entry) * 2 + 20 + len(marker) + 3
+
+    primary, continuation = append_review_state_paginated(
+        body, state, max_chars=max_chars, carried_section=carried
+    )
+
+    visible = primary.count("- **") + continuation.count("- **")
+    assert visible == 6
+    assert parse_review_state(primary).valid is True
+    assert "<!-- pr-agent-review-state" not in continuation

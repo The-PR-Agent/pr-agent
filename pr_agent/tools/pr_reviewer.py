@@ -30,7 +30,7 @@ from pr_agent.algo.prompt_fragments import render_diff_hunk_format
 from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.review_coverage import CoverageLedger, FileCoverage, patch_line_counts
 from pr_agent.algo.review_finding_state import (
-    append_review_state,
+    append_review_state_paginated,
     parse_review_state,
     reconcile_review_findings,
     render_carried_section,
@@ -446,6 +446,8 @@ class PRReviewer:
                 persistent_write_failed = not self._persistent_publish_succeeded(result)
                 if persistent_write_failed:
                     review_failed = True
+                else:
+                    self._publish_carried_continuation()
             elif state_blocked:
                 get_logger().warning(
                     "Review finding state is blocked by review data or provider read failure; "
@@ -455,6 +457,7 @@ class PRReviewer:
                     self._as_non_authoritative_review(pr_review),
                     **review_thread_kwargs,
                 )
+                self._publish_carried_continuation()
             elif get_settings().pr_reviewer.persistent_comment and not self.incremental.is_incremental:
                 final_update_message = get_settings().pr_reviewer.final_update_message
                 persistent_args = dict(
@@ -467,6 +470,7 @@ class PRReviewer:
                 )
                 if not self._review_finding_state_in_play():
                     self.git_provider.publish_persistent_comment(pr_review, **persistent_args)
+                    self._publish_carried_continuation()
                 elif state_result is not None:
                     persistent_args["require_agent_authorship"] = True
                     persistent_args["fallback_on_error"] = False
@@ -477,6 +481,8 @@ class PRReviewer:
                     persistent_write_failed = not self._persistent_publish_succeeded(result)
                     if persistent_write_failed:
                         review_failed = True
+                    else:
+                        self._publish_carried_continuation()
                 elif self._publish_review_check_run(pr_review):
                     pass
                 elif self._review_comment_authorship_available():
@@ -489,17 +495,21 @@ class PRReviewer:
                     persistent_write_failed = not self._persistent_publish_succeeded(result)
                     if persistent_write_failed:
                         review_failed = True
+                    else:
+                        self._publish_carried_continuation()
                 elif self._persistent_review_comment_exists() is False:
                     # There is no review comment to replace, so creating one cannot overwrite
                     # a comment PR-Agent did not author. An identity this deployment cannot
                     # resolve is not a reason to demote the canonical review.
                     self.git_provider.publish_persistent_comment(pr_review, **persistent_args)
+                    self._publish_carried_continuation()
                 else:
                     # An unverified provider identity must never update a canonical review.
                     self.git_provider.publish_comment(
                         self._as_non_authoritative_review(pr_review),
                         **review_thread_kwargs,
                     )
+                    self._publish_carried_continuation()
 
             else:
                 if self.git_provider.supports_review_comment_identity() is True:
@@ -510,6 +520,7 @@ class PRReviewer:
                     )
                     pr_review = add_pr_review_identity(pr_review, identity_marker)
                 self.git_provider.publish_comment(pr_review, **review_thread_kwargs)
+                self._publish_carried_continuation()
         except Exception as e:
             review_error = e
             review_failed = True
@@ -576,6 +587,13 @@ class PRReviewer:
     @staticmethod
     def _persistent_publish_succeeded(result) -> bool:
         return result is not None and result is not False
+
+    def _publish_carried_continuation(self) -> None:
+        """Publish overflow carried findings that did not fit the primary review comment."""
+        continuation = getattr(self, "_review_carried_continuation", "") or ""
+        if not continuation:
+            return
+        self.git_provider.publish_comment(continuation, is_temporary=False)
 
     @staticmethod
     def _as_non_authoritative_review(pr_review: str) -> str:
@@ -913,8 +931,19 @@ class PRReviewer:
             # model being tried. load_yaml returns {} for output its repair heuristics cannot
             # rescue, and models that struggle with structured output fail that way rather than by
             # erroring, which is why the transport-level retry never covered it.
+            # Filenames actually represented in this single-call diff: covered as "reviewed"
+            # by the coverage ledger (all diff files minus remaining minus deletion-only).
+            reviewed_files = [
+                path for path, entry in self.coverage.files.items()
+                if entry.status == "reviewed"
+            ] if self.coverage is not None else [
+                f.filename for f in self.git_provider.get_diff_files()
+                if f.filename not in set(self.remaining_files_list or [])
+            ]
             (self.prediction, self.prediction_data,
-             self.review_vote_dropped_count) = await self._get_review_data(model)
+             self.review_vote_dropped_count) = await self._get_review_data(
+                model, files=reviewed_files
+            )
         else:
             get_logger().warning(f"Empty diff for PR: {self.pr_url}")
             self.prediction = None
@@ -1222,10 +1251,10 @@ class PRReviewer:
             num_samples = 1
 
         if num_samples <= 1:
-            # keep the one-argument call for the whole-diff case: patches_diff defaults to it
-            prediction = await (self._get_prediction(model) if patches_diff is None
-                                else self._get_prediction(model, patches_diff, chunk_index=chunk_index,
-                                                          files=files))
+            # patches_diff defaults to the whole prepared diff inside _get_prediction
+            prediction = await self._get_prediction(
+                model, patches_diff, chunk_index=chunk_index, files=files
+            )
             data = self._load_review_yaml(prediction)
             set_call_findings("review", chunk_index, None, _review_findings_count(data))
             if not self._is_parsable_review(data):
@@ -1289,8 +1318,8 @@ class PRReviewer:
                 when the diff was not chunked.
             sample_index: The consensus sample this call produces, for run-ledger attribution.
                 None when `pr_reviewer.num_samples` is 1.
-            files: The files this call's diff covers, for run-ledger attribution. None when the
-                diff was not chunked (the whole-diff case does not narrow it down further).
+            files: The files this call's diff covers, for run-ledger attribution. The whole-diff
+                path passes filenames actually represented in the prepared patch.
 
         Returns:
             A string representing the AI prediction for the pull request review.
@@ -1377,15 +1406,23 @@ class PRReviewer:
                     return ""
                 return ""
 
+            verify_call_index = 0
+
             async def call_model(system: str, user: str, files: list[str]) -> str:
+                nonlocal verify_call_index
+                chunk_index = verify_call_index
+                verify_call_index += 1
                 response, _ = await self.ai_handler.chat_completion(
                     model=model,
                     system=system,
                     user=user,
                     temperature=0.0,
                     stage="verify",
+                    chunk_index=chunk_index,
                     files=files,
                 )
+                # Verification filters findings; it does not emit new ones.
+                set_call_findings("verify", chunk_index, None, 0)
                 return response
 
             verified = await verify_findings(
@@ -1559,18 +1596,20 @@ class PRReviewer:
         if get_settings().get('config', {}).get('output_run_details', False):
             markdown_text += show_run_details(self.git_provider.is_supported("gfm_markdown"))
 
+        self._review_carried_continuation = ""
         if self._review_state_result is not None:
             state_result = self._review_state_result
             fully_reviewed = getattr(self, "_review_fully_reviewed_files", [])
             current_ids = set(state_result.current_ids)
             carried_section = render_carried_section(state_result.state, current_ids, fully_reviewed)
             try:
-                markdown_text = append_review_state(
+                markdown_text, continuation = append_review_state_paginated(
                     markdown_text or "",
                     state_result.state,
                     max_chars=self._review_comment_max_chars(),
                     carried_section=carried_section,
                 )
+                self._review_carried_continuation = continuation
             except ValueError as error:
                 previous_state = getattr(self, "_review_finding_previous_state", None)
                 self._review_state_result = None
@@ -1585,12 +1624,13 @@ class PRReviewer:
                         previous_carried_section = render_carried_section(
                             previous_state, current_ids, fully_reviewed
                         )
-                        markdown_text = append_review_state(
+                        markdown_text, continuation = append_review_state_paginated(
                             markdown_text or "",
                             previous_state,
                             max_chars=self._review_comment_max_chars(),
                             carried_section=previous_carried_section,
                         )
+                        self._review_carried_continuation = continuation
                     except ValueError as previous_error:
                         get_logger().warning(
                             f"Previous persistent review state also did not fit the provider "

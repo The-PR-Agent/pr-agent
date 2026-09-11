@@ -335,7 +335,9 @@ async def test_one_sample_is_the_plain_single_call(sampling):
     with patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", [])):
         await reviewer._prepare_prediction("model")
 
-    reviewer._get_prediction.assert_awaited_once_with("model")
+    reviewer._get_prediction.assert_awaited_once_with(
+        "model", None, chunk_index=None, files=[],
+    )
     assert reviewer.prediction == SAMPLE_C  # untouched, not re-serialised
 
 

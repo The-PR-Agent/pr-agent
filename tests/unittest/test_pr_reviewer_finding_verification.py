@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from pr_agent.algo.finding_verifier import UNVERIFIED_HEADER_SUFFIX
+from pr_agent.algo.run_details import get_run_details, init_run_details, record_ai_call
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import get_settings
 from pr_agent.tools.pr_reviewer import PRReviewer
@@ -297,3 +298,37 @@ async def test_run_publishes_without_refuted_finding(monkeypatch):
     body = published[-1]
     assert "Refuted Issue" not in body
     assert "Kept Issue" in body
+
+
+@pytest.mark.asyncio
+async def test_verify_ledger_rows_record_findings_emitted_zero(monkeypatch):
+    _enable_verification(monkeypatch)
+    init_run_details()
+
+    provider = MagicMock()
+    provider.last_commit_id = "head-sha"
+    provider.get_diff_files.return_value = [
+        FilePatchInfo(base_file="", head_file="", patch="", filename="lib/a.dart"),
+        FilePatchInfo(base_file="", head_file="", patch="", filename="lib/b.dart"),
+        FilePatchInfo(base_file="", head_file="", patch="", filename="lib/c.dart"),
+    ]
+    provider.get_pr_file_content = MagicMock(side_effect=lambda path, _sha: f"content:{path}")
+
+    async def fake_chat_completion(model, system, user, temperature=0.0, stage=None,
+                                   chunk_index=None, files=None, **_kwargs):
+        record_ai_call(model=model, stage=stage, chunk_index=chunk_index, files=files)
+        return '{"status":"confirmed","evidence":"y","reason":"yes"}', "stop"
+
+    ai_handler = MagicMock()
+    ai_handler.chat_completion = AsyncMock(side_effect=fake_chat_completion)
+
+    reviewer = _make_reviewer(provider, ai_handler)
+    reviewer.prediction_data = {"review": {"key_issues_to_review": _issues()}}
+
+    await reviewer._verify_prediction_findings()
+
+    details = get_run_details()
+    verify_rows = [call for call in details.calls if call.stage == "verify"]
+    assert len(verify_rows) == 3
+    assert all(call.findings_emitted == 0 for call in verify_rows)
+

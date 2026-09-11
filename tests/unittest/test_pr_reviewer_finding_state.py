@@ -1554,3 +1554,188 @@ async def test_persistent_publish_exception_is_visible_for_auto_review(monkeypat
     assert [body for body, temporary, _ in provider.published if not temporary] == [
         "Failed to review PR",
     ]
+
+
+@pytest.mark.asyncio
+async def test_overflow_carried_publishes_continuation_comment(monkeypatch):
+    """When carried entries cannot all fit the primary, publish_comment posts the overflow once."""
+    settings = _settings(monkeypatch)
+    monkeypatch.setattr(settings.config, "is_auto_command", True, raising=False)
+    monkeypatch.setattr(settings.github, "publish_as_check_run", False, raising=False)
+
+    findings = [
+        {
+            "body": f"**Issue {i}**\n\ndetail {i} " + ("y" * 30),
+            "path": f"file-{i}.py",
+            "line_start": i + 1,
+            "line_end": i + 1,
+        }
+        for i in range(6)
+    ]
+    previous = reconcile_review_findings(
+        None,
+        findings,
+        allow_resolution=True,
+        head_sha="head-1",
+        timestamp="2026-01-01T00:00:00Z",
+    ).state
+    header = PRReviewHeader.REGULAR.value + " " + chr(0x1F50D)
+    old = SimpleNamespace(
+        body=_state_body(previous, header, PRReviewIdentity.REGULAR.value),
+        user=SimpleNamespace(login="agent"),
+    )
+
+    provider = MagicMock()
+    provider.get_issue_comments.return_value = [old]
+    provider.get_diff_files.return_value = []
+    provider.is_supported.side_effect = lambda capability: capability == "get_issue_comments"
+    provider.last_commit_id = "head-1"
+    # Fit marker + short body + a couple of carried lines, but not all six entries.
+    marker = serialize_review_state(previous)
+    body = "short review body"
+    entry = (
+        "- **Issue 0** — `file-0.py:1` · first seen 2026-01-01 · not re-reviewed this run"
+    )
+    # max_comment_chars is reduced by update suffix + identity in _review_comment_max_chars.
+    provider.max_comment_chars = (
+        len(body) + 2 + len(entry) * 2 + 80 + len(marker) + 3
+        + len("\n\n#### (Review updated until commit x)\n")
+        + len(PRReviewIdentity.REGULAR.value) + 2
+        + 50
+    )
+    provider.get_files.return_value = ["app.py"]
+    provider.should_publish_review_as_thread.return_value = False
+    provider.publish_persistent_comment_full = MagicMock(return_value=object())
+    provider.publish_comment = MagicMock()
+    provider.supports_review_finding_state.return_value = True
+    provider.is_comment_authored_by_pr_agent.return_value = True
+    provider.get_issue_comments_newest_first.side_effect = (
+        lambda: list(reversed(provider.get_issue_comments()))
+    )
+
+    reviewer = _reviewer(provider)
+    reviewer.vars = {}
+    reviewer.prediction = "review: {}"
+    reviewer._review_state_preserved = False
+
+    async def fake_extract_tickets(git_provider, vars):
+        return None
+
+    async def fake_retry(prepare_fn, model_type=None, git_provider=None):
+        reviewer.prediction = "prediction"
+        reviewer.prediction_data = {"review": {"key_issues_to_review": []}}
+
+    monkeypatch.setattr(
+        "pr_agent.tools.pr_reviewer.extract_and_cache_pr_tickets",
+        fake_extract_tickets,
+    )
+    monkeypatch.setattr(
+        "pr_agent.tools.pr_reviewer.retry_with_fallback_models",
+        fake_retry,
+    )
+
+    with (
+        patch(
+            "pr_agent.tools.pr_reviewer.load_yaml",
+            return_value={"review": {"key_issues_to_review": []}},
+        ),
+        patch("pr_agent.tools.pr_reviewer.github_action_output"),
+        patch(
+            "pr_agent.tools.pr_reviewer.convert_to_markdown_v2",
+            return_value=header + "\n\nshort review body",
+        ),
+        patch("pr_agent.tools.pr_reviewer.push_outputs"),
+    ):
+        await reviewer.run()
+
+    provider.publish_persistent_comment_full.assert_called_once()
+    primary = provider.publish_persistent_comment_full.call_args.args[0]
+    assert parse_review_state(primary).valid is True
+    continuation_calls = [
+        call
+        for call in provider.publish_comment.call_args_list
+        if call.args and "Carried from earlier runs (continued)" in call.args[0]
+    ]
+    assert len(continuation_calls) == 1
+    assert continuation_calls[0].kwargs.get("is_temporary") is False
+    assert "<!-- pr-agent-review-state" not in continuation_calls[0].args[0]
+
+
+@pytest.mark.asyncio
+async def test_fitting_carried_section_does_not_publish_continuation(monkeypatch):
+    settings = _settings(monkeypatch)
+    monkeypatch.setattr(settings.config, "is_auto_command", True, raising=False)
+    monkeypatch.setattr(settings.github, "publish_as_check_run", False, raising=False)
+
+    previous = reconcile_review_findings(
+        None,
+        [_finding("only one carried")],
+        allow_resolution=True,
+        head_sha="head-1",
+        timestamp="2026-01-01T00:00:00Z",
+    ).state
+    header = PRReviewHeader.REGULAR.value + " " + chr(0x1F50D)
+    old = SimpleNamespace(
+        body=_state_body(previous, header, PRReviewIdentity.REGULAR.value),
+        user=SimpleNamespace(login="agent"),
+    )
+
+    provider = MagicMock()
+    provider.get_issue_comments.return_value = [old]
+    provider.get_diff_files.return_value = []
+    provider.is_supported.side_effect = lambda capability: capability == "get_issue_comments"
+    provider.last_commit_id = "head-1"
+    provider.max_comment_chars = 50_000
+    provider.get_files.return_value = ["app.py"]
+    provider.should_publish_review_as_thread.return_value = False
+    provider.publish_persistent_comment_full = MagicMock(return_value=object())
+    provider.publish_comment = MagicMock()
+    provider.supports_review_finding_state.return_value = True
+    provider.is_comment_authored_by_pr_agent.return_value = True
+    provider.get_issue_comments_newest_first.side_effect = (
+        lambda: list(reversed(provider.get_issue_comments()))
+    )
+
+    reviewer = _reviewer(provider)
+    reviewer.vars = {}
+    reviewer.prediction = "review: {}"
+
+    async def fake_extract_tickets(git_provider, vars):
+        return None
+
+    async def fake_retry(prepare_fn, model_type=None, git_provider=None):
+        reviewer.prediction = "prediction"
+        reviewer.prediction_data = {"review": {"key_issues_to_review": []}}
+
+    monkeypatch.setattr(
+        "pr_agent.tools.pr_reviewer.extract_and_cache_pr_tickets",
+        fake_extract_tickets,
+    )
+    monkeypatch.setattr(
+        "pr_agent.tools.pr_reviewer.retry_with_fallback_models",
+        fake_retry,
+    )
+
+    with (
+        patch(
+            "pr_agent.tools.pr_reviewer.load_yaml",
+            return_value={"review": {"key_issues_to_review": []}},
+        ),
+        patch("pr_agent.tools.pr_reviewer.github_action_output"),
+        patch(
+            "pr_agent.tools.pr_reviewer.convert_to_markdown_v2",
+            return_value=header + "\n\nshort review body",
+        ),
+        patch("pr_agent.tools.pr_reviewer.push_outputs"),
+    ):
+        await reviewer.run()
+
+    provider.publish_persistent_comment_full.assert_called_once()
+    assert getattr(reviewer, "_review_carried_continuation", "") == ""
+    continuation_calls = [
+        call
+        for call in provider.publish_comment.call_args_list
+        if call.args and "Carried from earlier runs (continued)" in call.args[0]
+    ]
+    assert continuation_calls == []
+

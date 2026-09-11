@@ -403,21 +403,64 @@ def render_carried_section(
     return "\n".join(lines)
 
 
-def append_review_state(
+_CARRIED_HEADING = "### Carried from earlier runs"
+_CARRIED_CONTINUATION_HEADING = "### Carried from earlier runs (continued)"
+_CARRIED_CONTINUATION_INTRO = "Continued from the primary review comment."
+
+
+def _parse_carried_entries(carried_section: str) -> tuple[str, list[str]]:
+    """Split a carried section into its heading block and whole `- **` entry lines."""
+    if not carried_section:
+        return "", []
+    header_lines: list[str] = []
+    entries: list[str] = []
+    for line in carried_section.split("\n"):
+        if line.startswith("- **"):
+            entries.append(line)
+        elif not entries:
+            header_lines.append(line)
+    header = "\n".join(header_lines).rstrip()
+    return header, entries
+
+
+def _rebuild_carried_section(header: str, entries: list[str]) -> str:
+    if not entries:
+        return ""
+    heading = header or _CARRIED_HEADING
+    return "\n".join([heading, "", *entries])
+
+
+def _build_carried_continuation(entries: list[str]) -> str:
+    if not entries:
+        return ""
+    return "\n".join([
+        _CARRIED_CONTINUATION_HEADING,
+        "",
+        _CARRIED_CONTINUATION_INTRO,
+        "",
+        *entries,
+    ])
+
+
+def append_review_state_paginated(
     review_body: str,
     state: Mapping[str, Any],
     max_chars: int | None = None,
     *,
     carried_section: str = "",
-) -> str:
-    """Append the carried section, resolved section and hidden marker within an optional limit.
+) -> tuple[str, str]:
+    """Append carried/resolved/marker within an optional limit; overflow carried becomes a second comment.
 
     Section order (highest priority for the reader first): the human review body, the carried
     section, the resolved section, then the hidden marker. When `max_chars` does not fit
     everything, sections give way in the opposite order: RESOLVED findings are dropped from the
-    marker (and the resolved section, which mirrors it) first, then the carried section is
-    truncated, and only as a last resort is the human body itself truncated. `ValueError` is
-    raised only when the marker, stripped of RESOLVED findings, still does not fit.
+    marker (and the resolved section, which mirrors it) first, then whole carried entries that
+    do not fit move to a continuation comment, and only as a last resort is the human body
+    itself truncated. `ValueError` is raised only when the marker, stripped of RESOLVED
+    findings, still does not fit.
+
+    Returns `(primary_comment, continuation_comment)`. The state marker appears only in the
+    primary. Continuation is empty when there is no carried overflow.
     """
     raw_body = review_body or ""
     namespace_count = raw_body.count(_STATE_MARKER_NAMESPACE)
@@ -432,12 +475,19 @@ def append_review_state(
     carried = carried_section or ""
     resolved_section = _render_resolved_section(state)
     marker = serialize_review_state(state)
+    continuation = ""
+    carried_header, carried_entries = _parse_carried_entries(carried)
 
     def _compose(b: str, c: str, r: str) -> str:
         return "\n\n".join(section for section in (b, c, r) if section)
 
     def _total_length(human: str, mark: str) -> int:
         return len(mark) + 1 if not human else len(human) + len(mark) + 3
+
+    def _finalize(b: str, c: str, r: str, mark: str) -> str:
+        human_body = _compose(b, c, r)
+        sections = [section for section in (human_body, mark) if section]
+        return "\n\n".join(sections).rstrip() + "\n"
 
     if max_chars is not None:
         if not isinstance(max_chars, int):
@@ -459,8 +509,8 @@ def append_review_state(
                     "review state marker"
                 )
             if _total_length(_compose(body, carried, resolved_section), marker) > max_chars:
-                # Step 2/3: shrink the carried section (down to nothing) before ever touching
-                # the human review body; only truncate the body if it alone still doesn't fit.
+                # Step 2: keep whole carried entries that fit; overflow goes to a continuation.
+                # Step 3: truncate the human body only when even zero carried entries fit.
                 budget = max(0, max_chars - len(marker) - 3)
                 if len(body) > budget:
                     carried = ""
@@ -470,15 +520,39 @@ def append_review_state(
                         body = body[:budget]
                     else:
                         body = body[: budget - 3] + "..."
+                    continuation = _build_carried_continuation(carried_entries)
                 else:
-                    carried_budget = budget - len(body) - (2 if carried else 0)
-                    if carried_budget <= 0:
-                        carried = ""
-                    elif len(carried) > carried_budget:
-                        if carried_budget < 3:
-                            carried = carried[:carried_budget]
+                    fitted: list[str] = []
+                    overflow = list(carried_entries)
+                    for index, entry in enumerate(carried_entries):
+                        trial = _rebuild_carried_section(carried_header, fitted + [entry])
+                        if len(_compose(body, trial, resolved_section)) <= budget:
+                            fitted.append(entry)
+                            overflow = carried_entries[index + 1 :]
                         else:
-                            carried = carried[: carried_budget - 3] + "..."
-    human_body = _compose(body, carried, resolved_section)
-    sections = [section for section in (human_body, marker) if section]
-    return "\n\n".join(sections).rstrip() + "\n"
+                            overflow = carried_entries[index:]
+                            break
+                    carried = _rebuild_carried_section(carried_header, fitted)
+                    continuation = _build_carried_continuation(overflow)
+    return _finalize(body, carried, resolved_section, marker), continuation
+
+
+def append_review_state(
+    review_body: str,
+    state: Mapping[str, Any],
+    max_chars: int | None = None,
+    *,
+    carried_section: str = "",
+) -> str:
+    """Append the carried section, resolved section and hidden marker within an optional limit.
+
+    Wrapper around `append_review_state_paginated` that returns only the primary comment. Callers
+    that need overflow pagination should use the paginated form instead.
+    """
+    primary, _continuation = append_review_state_paginated(
+        review_body,
+        state,
+        max_chars,
+        carried_section=carried_section,
+    )
+    return primary

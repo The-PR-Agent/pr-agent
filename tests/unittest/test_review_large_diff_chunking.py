@@ -174,7 +174,9 @@ async def test_a_diff_that_fits_in_one_chunk_is_reviewed_by_the_single_call_flow
     ):
         await reviewer._prepare_prediction("model")
 
-    reviewer._get_prediction.assert_awaited_once_with("model")
+    reviewer._get_prediction.assert_awaited_once_with(
+        "model", None, chunk_index=None, files=[],
+    )
     assert reviewer.prediction == CHUNK_A
     assert reviewer.review_chunk_count == 1  # the single-call flow, not a merge
     assert reviewer.remaining_files_list == ["b.py"]
@@ -477,3 +479,60 @@ async def test_run_writes_a_run_ledger_row_per_chunk_with_stage_and_run_id(tmp_p
     by_chunk = {row["chunk_index"]: row for row in rows}
     assert by_chunk[0]["findings_emitted"] == 1  # CHUNK_A has one key issue
     assert by_chunk[1]["findings_emitted"] == 0  # CHUNK_B has none
+
+
+@pytest.mark.asyncio
+async def test_single_call_ledger_row_lists_reviewed_files(tmp_path):
+    """Whole-diff (non-chunked) review ledger rows must record the files in the diff."""
+
+    class RecordingAiHandler(BaseAiHandler):
+        def __init__(self):
+            self.main_pr_language = None
+
+        @property
+        def deployment_id(self):
+            return "fake"
+
+        async def chat_completion(self, model, system, user, temperature=0.2, img_path=None, *,
+                                  stage=None, chunk_index=None, sample_index=None, files=None):
+            record_ai_call(model=model, stage=stage, chunk_index=chunk_index,
+                           sample_index=sample_index, files=files, latency_ms=1)
+            return CHUNK_A, "stop"
+
+    snapshot = snapshot_settings(_LEDGER_TRACKED_KEYS + ("pr_reviewer.enable_large_pr_chunking",))
+    ledger_path = tmp_path / "ledger.jsonl"
+    try:
+        get_settings().set("pr_reviewer.enable_large_pr_chunking", False)
+        get_settings().set("config.git_provider", "plain-diff")
+        get_settings().set("plain_diff.content", _LEDGER_DIFF)
+        get_settings().set("plain_diff.output_path", None)
+        get_settings().set("config.publish_output", False)
+        get_settings().set("config.run_ledger_path", str(ledger_path))
+
+        diff_files = [
+            FilePatchInfo(base_file="a", head_file="a2", patch="p", filename="reviewed.py",
+                          num_plus_lines=3, num_minus_lines=1),
+            FilePatchInfo(base_file="b", head_file="", patch="p", filename="deleted.py",
+                          num_plus_lines=0, num_minus_lines=5),
+            FilePatchInfo(base_file="c", head_file="c2", patch="p", filename="skipped.py",
+                          num_plus_lines=2, num_minus_lines=0),
+        ]
+
+        with (
+            patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("full diff", ["skipped.py"])),
+        ):
+            reviewer = PRReviewer("local_diff", ai_handler=RecordingAiHandler, args=[])
+            reviewer.git_provider.get_diff_files = MagicMock(return_value=diff_files)
+            await reviewer.run()
+    finally:
+        restore_settings(snapshot)
+
+    assert ledger_path.exists()
+    rows = [json.loads(line) for line in ledger_path.read_text().splitlines()]
+    review_rows = [row for row in rows if row.get("stage") == "review"]
+    assert len(review_rows) == 1
+    assert review_rows[0]["files"]  # non-empty
+    assert "reviewed.py" in review_rows[0]["files"]
+    assert "skipped.py" not in review_rows[0]["files"]
+    assert "deleted.py" not in review_rows[0]["files"]
+
