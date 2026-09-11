@@ -939,6 +939,9 @@ class PRReviewer:
                 model,
             )
         review_files, summarized_low_priority = self._cap_low_priority_diff_files()
+        # Reused by _prepare_chunked_prediction below: pricing every low-priority patch is not
+        # free, and retry_with_fallback_models runs this function once per model.
+        self._ship_scope_cap = (review_files, list(summarized_low_priority))
         output = get_pr_diff(self.git_provider,
                              self.token_handler,
                              model,
@@ -1091,7 +1094,8 @@ class PRReviewer:
         Returns False when chunking does not apply, leaving the single-call flow in place.
         """
         globs = list(get_settings().pr_reviewer.get("low_priority_globs", DEFAULT_LOW_PRIORITY_GLOBS))
-        diff_files, capped_low_priority = self._cap_low_priority_diff_files()
+        cached = getattr(self, "_ship_scope_cap", None)
+        diff_files, capped_low_priority = cached if cached else self._cap_low_priority_diff_files()
         plans, remaining_files_list = get_pr_multi_diffs_with_files(
             self.git_provider,
             self.token_handler,

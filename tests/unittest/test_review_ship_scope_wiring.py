@@ -225,3 +225,34 @@ async def test_the_per_file_cap_also_applies_on_the_single_call_path(per_file_ca
     assert [f.filename for f in get_pr_diff.call_args.kwargs["diff_files"]] == ["lib/a.dart"]
     assert reviewer.coverage.files["design/a.html"].status == "low_priority_summary"
     assert reviewer._ship_scope_summary_paths == ["design/a.html"]
+
+
+@pytest.mark.asyncio
+async def test_a_capped_file_is_still_reported_when_chunking_falls_back_to_one_call(per_file_cap):
+    """`len(plans) < 2` sends the review back to the single-call flow. The capped file is out of
+    that diff too, so its ledger mark and footer line have to survive the fallback - "nothing is
+    excluded without being reported" is the invariant the whole cap rests on."""
+    design = _file("design/a.html")
+    lib = _file("lib/a.dart")
+    reviewer = _make_reviewer([design, lib])
+    reviewer.token_handler.count_tokens.side_effect = (
+        lambda patch, *a, **kw: 900 if patch is design.patch else 10
+    )
+    reviewer._get_review_data = AsyncMock(
+        return_value=("raw", {"review": {"score": "80", "key_issues_to_review": []}}, 0)
+    )
+
+    with (
+        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["lib/a.dart"])),
+        patch(
+            "pr_agent.tools.pr_reviewer.get_pr_multi_diffs_with_files",
+            return_value=([ChunkPlan(diff="only-chunk", files=("lib/a.dart",), clipped=())], []),
+        ),
+    ):
+        await reviewer._prepare_prediction("model")
+
+    assert reviewer.review_chunk_count == 1  # the single-call flow ran
+    assert reviewer.coverage.files["design/a.html"].status == "low_priority_summary"
+    review = _render_review(reviewer)
+    assert "design/a.html" in review
+    assert "(low-priority file, not reviewed)" in review
