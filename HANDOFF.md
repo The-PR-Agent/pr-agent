@@ -68,7 +68,10 @@ table, adjudication and caveats in `tests/eval/BASELINE.md`.
   That points at the prompt/provider path, not at any knob tuned so far - investigate it before
   more tuning.
 
-Item 5 (merge `fix/review-p0`) is still held; the baseline it was waiting on now exists.
+**Item 5 (merge) is done.** `main` was fast-forwarded to `fix/review-p0` locally on the user's
+instruction (`git fetch . fix/review-p0:main`, so a non-fast-forward would have been refused
+rather than forced). `main` is 42 commits ahead of `origin/main` and **was not pushed**.
+`fix/review-p0` still points at the same commit.
 Rotate the Cursor API key used for these runs - it was pasted into a chat transcript.
 
 ## Session 2 addendum — Codex review of the session-2 diff
@@ -105,7 +108,7 @@ Repeating the baseline needs a paid Google key or another provider — nothing e
 2. ~~**Stock defaults starve large PRs.**~~ **Done** (`49857ec2`) — needs a BASELINE row on the new defaults.
 3. ~~**R-9 target not met**~~ **Partly done** (`49857ec2`, the per-file cap) — the < 5% design/** target is still unmeasured.
 4. ~~**Ledger `run_id` empty under the eval harness**~~ **Done** (`00fcd5f1`).
-5. **Merge**: held until the baseline is verified (user's call, 2026-09-11). Then `fix/review-p0` → `fix/review-finding-loss` or `main`. Two docs commits (spec+plan) are on the branch too.
+5. ~~**Merge**~~ Done 2026-09-11: `main` fast-forwarded to `fix/review-p0` locally, not pushed. See session 3 above.
 6. **Next tiers** per spec: P1 `/setup` repo profile (R-10…R-15), P2 symbol retrieval (R-16…R-18), P3 lenses/PR-level assessment (R-19…R-22), P4 self-tune (R-23/24), P5 sandbox (R-25). Each needs its own plan, and a BASELINE.md row before merge.
 
 ## How the work was run (repeat this)
