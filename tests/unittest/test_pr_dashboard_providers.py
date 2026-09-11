@@ -62,6 +62,22 @@ class TestCredentialStatus:
         assert status.configured is False
         assert "gitlab" in status.detail.lower()
 
+    def test_github_app_deployment_reports_unusable_not_configured(self, monkeypatch):
+        """An app-type deployment is reported as not usable by the dashboard, never as configured
+
+        _github_client always reads GITHUB.USER_TOKEN regardless of deployment type, so app
+        credentials alone (APP_ID/PRIVATE_KEY) can never make the dashboard's read path work --
+        reporting configured=True from them was the green-then-blank-error bug.
+        """
+        monkeypatch.setattr(providers, "_setting", lambda key, default=None: {
+            "GITHUB.DEPLOYMENT_TYPE": "app",
+            "GITHUB.APP_ID": "123",
+            "GITHUB.PRIVATE_KEY": "-----BEGIN RSA PRIVATE KEY-----",
+        }.get(key, default))
+        status = providers.credential_status("github")
+        assert status.configured is False
+        assert "USER_TOKEN" in status.detail
+
 
 class TestCache:
     def test_miss_then_hit(self, tmp_path):
@@ -148,6 +164,35 @@ class TestCommentFiltering:
         assert len(calls) == 1
         assert len(result) == 1
         assert stale is False
+
+
+class TestEmptyExceptionMessageFallback:
+    """An exception whose str() is empty must never surface as a bare "provider: " message."""
+
+    def test_github_fetch_falls_back_to_exception_type_name(self, monkeypatch):
+        """AssertionError('') (what Auth.Token(None) raises) still yields a readable message"""
+        def boom():
+            raise AssertionError("")
+
+        monkeypatch.setattr(providers, "_github_client", boom)
+        with pytest.raises(providers.ProviderError) as exc_info:
+            providers._fetch_github_pull_requests(registry.Repo("github", "o/r"), "open", 50)
+        assert str(exc_info.value) == "github: AssertionError"
+
+    def test_bitbucket_fetch_falls_back_to_exception_type_name(self, monkeypatch):
+        """A requests exception with an empty message still yields a readable message"""
+        monkeypatch.setattr(providers, "_setting", lambda key, default=None: {
+            "BITBUCKET.AUTH_TYPE": "bearer",
+            "BITBUCKET.BEARER_TOKEN": "t",
+        }.get(key, default))
+
+        def raise_empty(*args, **kwargs):
+            raise requests.ConnectionError("")
+
+        monkeypatch.setattr(providers.requests, "get", raise_empty)
+        with pytest.raises(providers.ProviderError) as exc_info:
+            providers._bitbucket_get("/repositories/o/r/pullrequests")
+        assert str(exc_info.value) == "bitbucket: ConnectionError"
 
 
 class TestBitbucketGet:

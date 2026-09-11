@@ -67,15 +67,30 @@ def _setting(key: str, default=None):
     return get_settings().get(key, default)
 
 
+def _exc_text(exc: BaseException) -> str:
+    """str(exc), falling back to the exception's type name when that string is empty.
+
+    Some exceptions (e.g. `AssertionError('')`, as PyGithub's Auth.Token raises for a None
+    token) stringify to "", which would otherwise surface as a bare "github: " with no
+    information at all.
+    """
+    return str(exc) or type(exc).__name__
+
+
 def credential_status(provider: str) -> CredentialStatus:
     """Report whether a provider is usable, never echoing the credential itself."""
     if provider == "github":
         deployment = _setting("GITHUB.DEPLOYMENT_TYPE", "user")
         if deployment == "app":
-            configured = bool(_setting("GITHUB.APP_ID")) and bool(_setting("GITHUB.PRIVATE_KEY"))
-            detail = "github app credentials configured" if configured else (
-                "github app deployment needs GITHUB.APP_ID and GITHUB.PRIVATE_KEY")
-            return CredentialStatus("github", configured, detail)
+            # The dashboard reads pull requests and comments with a plain user token
+            # (_github_client always reads GITHUB.USER_TOKEN); it never builds an installation
+            # client for an app deployment, so app credentials alone can never make it usable
+            # here, regardless of whether APP_ID/PRIVATE_KEY are configured.
+            return CredentialStatus(
+                "github", False,
+                "github app deployment is not usable by the dashboard (it reads with a user "
+                "token, not an app installation); set GITHUB.USER_TOKEN to enable it here",
+            )
         configured = bool(_setting("GITHUB.USER_TOKEN"))
         detail = "github user token configured" if configured else (
             "no token configured for github; set GITHUB.USER_TOKEN in .secrets.toml")
@@ -149,10 +164,10 @@ def _bitbucket_get(path: str, params: Optional[dict] = None) -> dict:
         # reaches the status_code check above. Wrap it so an unreachable host degrades the
         # same way GitHub's fetch functions do: as a ProviderError cached() can catch and
         # fall back on, instead of a raw exception that defeats the stale-cache fallback.
-        raise ProviderError(f"bitbucket: {exc}") from exc
+        raise ProviderError(f"bitbucket: {_exc_text(exc)}") from exc
     except ValueError as exc:
         # response.json() raises ValueError (json.JSONDecodeError) on a malformed body.
-        raise ProviderError(f"bitbucket: invalid response body for {path}: {exc}") from exc
+        raise ProviderError(f"bitbucket: invalid response body for {path}: {_exc_text(exc)}") from exc
 
 
 def _fetch_github_pull_requests(repo: registry.Repo, state: str, limit: int) -> list[dict]:
@@ -173,7 +188,7 @@ def _fetch_github_pull_requests(repo: registry.Repo, state: str, limit: int) -> 
         raise
     except Exception as exc:  # noqa: BLE001 - PyGithub raises a wide range of transport errors
         status = getattr(exc, "status", None)
-        raise ProviderError(f"github: {exc}", status=status) from exc
+        raise ProviderError(f"github: {_exc_text(exc)}", status=status) from exc
 
 
 def _fetch_bitbucket_pull_requests(repo: registry.Repo, state: str, limit: int) -> list[dict]:
@@ -229,7 +244,7 @@ def _fetch_github_issue_comments(repo: registry.Repo, number: int) -> list[dict]
     except ProviderError:
         raise
     except Exception as exc:  # noqa: BLE001 - see _fetch_github_pull_requests
-        raise ProviderError(f"github: {exc}", status=getattr(exc, "status", None)) from exc
+        raise ProviderError(f"github: {_exc_text(exc)}", status=getattr(exc, "status", None)) from exc
 
 
 def _fetch_bitbucket_comments(repo: registry.Repo, number: int) -> list[dict]:
