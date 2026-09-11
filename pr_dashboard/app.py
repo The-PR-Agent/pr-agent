@@ -17,10 +17,11 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from pr_dashboard import comments as comments_module
-from pr_dashboard import providers, recorder, redaction, registry, runner, store, websec
+from pr_dashboard import config_files, config_writer, providers, recorder, redaction, registry, runner, store, websec
 from pr_dashboard import usage as usage_module
 
 _HERE = Path(__file__).parent
+_REPO_ROOT = _HERE.parent
 _OPEN_PRS_DISPLAY_LIMIT = 50
 
 
@@ -39,13 +40,19 @@ async def _form_values(request: Request) -> dict[str, str]:
     return {key: values[0] for key, values in parsed.items()}
 
 
-def create_app(*, registry_path: Optional[Path] = None, db_path: Optional[Path] = None) -> FastAPI:
+def create_app(
+    *,
+    registry_path: Optional[Path] = None,
+    db_path: Optional[Path] = None,
+    repo_root: Optional[Path] = None,
+) -> FastAPI:
     application = FastAPI(title="PR-Agent Dashboard")
     application.mount("/static", StaticFiles(directory=_HERE / "static"), name="static")
     templates = Jinja2Templates(directory=str(_HERE / "templates"))
 
     application.state.registry_path = registry_path or registry.DEFAULT_REGISTRY_PATH
     application.state.db_path = db_path or store.DEFAULT_DB_PATH
+    application.state.repo_root = repo_root or _REPO_ROOT
     application.state.templates = templates
     application.state.csrf_sessions = {}
 
@@ -299,6 +306,132 @@ def create_app(*, registry_path: Optional[Path] = None, db_path: Optional[Path] 
         if context is None:
             raise HTTPException(status_code=404, detail=f"unknown run {token!r}")
         return html(request, "run_detail.html", context)
+
+    _CONFIG_GROUP_ORDER = ("repository", "defaults", "prompts")
+    # Both, everywhere: config_writer raises ConfigWriteError, but the safety check it calls
+    # raises ConfigFileError, and a discovered entry that is a symlink or a FIFO reaches it
+    # from ordinary user input. Catching only the first makes that case a 500.
+    _CONFIG_ERRORS = (config_writer.ConfigWriteError, config_files.ConfigFileError)
+
+    def discover_config_files():
+        return config_files.discover(application.state.repo_root)
+
+    def grouped_config_files(files: list[config_files.ConfigFile]) -> list[tuple[str, list[config_files.ConfigFile]]]:
+        buckets: dict[str, list[config_files.ConfigFile]] = {name: [] for name in _CONFIG_GROUP_ORDER}
+        for entry in files:
+            buckets.setdefault(entry.group, []).append(entry)
+        return [(name, buckets[name]) for name in _CONFIG_GROUP_ORDER if buckets[name]]
+
+    def config_edit_context(
+        config_file: Optional[config_files.ConfigFile],
+        content: str,
+        *,
+        error: Optional[str] = None,
+        diff: Optional[str] = None,
+        preview_token: Optional[str] = None,
+        applied_backup: Optional[Path] = None,
+    ) -> dict:
+        return {
+            "config_file": config_file,
+            "content": content,
+            "error": error,
+            "diff": diff,
+            "preview_token": preview_token,
+            "applied_backup": applied_backup,
+        }
+
+    def read_config_content(path: Path) -> str:
+        # Safety-check BEFORE reading, not only before writing. Opening a FIFO for read blocks
+        # until someone writes to it, so a non-regular file in the editable set would hang the
+        # request thread forever rather than raising -- a worse failure than a 500.
+        config_files.assert_safe_target(path)
+        if not path.exists():
+            return ""
+        return path.read_text(encoding="utf-8")
+
+    @application.get("/config", response_class=HTMLResponse)
+    def config_list_page(request: Request):
+        files = discover_config_files()
+        return html(request, "config_list.html", {"groups": grouped_config_files(files), "error": None})
+
+    @application.get("/config/backups", response_class=HTMLResponse)
+    def config_backups_page(request: Request):
+        return html(request, "config_backups.html", {"backups": config_writer.list_backups(), "error": None})
+
+    @application.post("/config/backups/{backup_id}/restore", response_class=HTMLResponse)
+    async def restore_config_backup(request: Request, backup_id: str):
+        values = await _form_values(request)
+        websec.require_safe_request(request, values)
+        error = None
+        try:
+            config_writer.restore(backup_id)
+        except _CONFIG_ERRORS as exc:
+            error = str(exc)
+        return html(request, "config_backups.html", {"backups": config_writer.list_backups(), "error": error})
+
+    @application.get("/config/{index}", response_class=HTMLResponse)
+    def config_edit_page(request: Request, index: int):
+        try:
+            discover_config_files()
+            config_file = config_files.resolve(index)
+        except config_files.ConfigFileError as exc:
+            return html(request, "config_edit.html", config_edit_context(None, "", error=str(exc)))
+        try:
+            content = read_config_content(config_file.path)
+        except config_files.ConfigFileError as exc:
+            return html(request, "config_edit.html", config_edit_context(config_file, "", error=str(exc)))
+        return html(request, "config_edit.html", config_edit_context(config_file, content))
+
+    @application.post("/config/{index}/preview", response_class=HTMLResponse)
+    async def config_preview_route(request: Request, index: int):
+        values = await _form_values(request)
+        websec.require_safe_request(request, values)
+        submitted = values.get("content", "")
+        try:
+            discover_config_files()
+            config_file = config_files.resolve(index)
+        except config_files.ConfigFileError as exc:
+            return html(request, "config_edit.html", config_edit_context(None, submitted, error=str(exc)))
+        try:
+            diff, token = config_writer.make_preview(config_file, submitted)
+        except _CONFIG_ERRORS as exc:
+            return html(
+                request,
+                "config_edit.html",
+                config_edit_context(config_file, submitted, error=str(exc)),
+            )
+        return html(
+            request,
+            "config_edit.html",
+            config_edit_context(config_file, submitted, diff=diff, preview_token=token.value),
+        )
+
+    @application.post("/config/{index}", response_class=HTMLResponse)
+    async def config_apply_route(request: Request, index: int):
+        values = await _form_values(request)
+        websec.require_safe_request(request, values)
+        submitted = values.get("content", "")
+        token_value = values.get("preview_token", "")
+        try:
+            discover_config_files()
+            config_file = config_files.resolve(index)
+        except config_files.ConfigFileError as exc:
+            return html(request, "config_edit.html", config_edit_context(None, submitted, error=str(exc)))
+        try:
+            backup_path = config_writer.apply(token_value, submitted)
+        except _CONFIG_ERRORS as exc:
+            return html(
+                request,
+                "config_edit.html",
+                config_edit_context(config_file, submitted, error=str(exc)),
+            )
+        return html(
+            request,
+            "config_edit.html",
+            config_edit_context(
+                config_file, read_config_content(config_file.path), applied_backup=backup_path,
+            ),
+        )
 
     return application
 

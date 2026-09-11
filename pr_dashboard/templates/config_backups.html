@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Configuration backups{% endblock %}
+{% block content %}
+<h1>Configuration backups</h1>
+<p><a href="/config">Back to configuration list</a></p>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+{% if backups %}
+  <table>
+    <thead>
+      <tr>
+        <th>Backup</th>
+        <th>Target</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for backup in backups %}
+        <tr>
+          <td>{{ backup.backup_id }}</td>
+          <td>{{ backup.relative }}</td>
+          <td>
+            <form method="post" action="/config/backups/{{ backup.backup_id }}/restore">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button type="submit">Restore</button>
+            </form>
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% else %}
+  <p class="muted">No backups yet.</p>
+{% endif %}
+{% endblock %}

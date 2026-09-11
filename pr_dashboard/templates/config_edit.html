@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Edit configuration{% endblock %}
+{% block content %}
+<h1>Edit configuration</h1>
+<p><a href="/config">Back to configuration list</a></p>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+{% if applied_backup %}
+  <div class="stale">
+    Written to the working tree. The previous content is backed up at
+    <code>{{ applied_backup }}</code>. Nothing was staged or committed — review the change
+    with your own tools.
+  </div>
+{% endif %}
+{% if config_file %}
+  <p class="muted">{{ config_file.path }}</p>
+  {% if config_file.is_prompt %}
+    <p class="stale">
+      This file is a prompt. Jinja2 renders it with <code>StrictUndefined</code>, so a variable
+      that is referenced but not supplied raises at render time rather than being silently empty.
+      A malformed prompt does not fail loudly — it produces worse reviews.
+    </p>
+  {% endif %}
+  <form method="post" action="/config/{{ config_file.index }}/preview">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <textarea name="content" rows="24" style="width: 100%; font-family: monospace;">{{ content }}</textarea>
+    <p><button type="submit">Preview changes</button></p>
+  </form>
+  {% if diff %}
+    <h2>Preview</h2>
+    <pre>{{ diff }}</pre>
+    <form method="post" action="/config/{{ config_file.index }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="preview_token" value="{{ preview_token }}">
+      {# Hidden, not a second textarea: the token binds a hash of the previewed text, so an
+         edit made here would be refused rather than written. Offering the edit invites it. #}
+      <input type="hidden" name="content" value="{{ content }}">
+      <p><button type="submit">Confirm and write</button></p>
+    </form>
+  {% endif %}
+{% endif %}
+{% endblock %}

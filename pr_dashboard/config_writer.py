@@ -79,6 +79,10 @@ def validate(text: str, is_prompt: bool) -> None:
 
 
 def _read_original(path: Path) -> str:
+    # assert_safe_target BEFORE the read, not only before the write. Opening a FIFO for read
+    # blocks until someone writes to it, so a non-regular file in the editable set would hang
+    # the caller forever instead of raising -- a worse failure mode than any refusal.
+    assert_safe_target(path)
     if not path.exists():
         return ""
     return path.read_text(encoding="utf-8")

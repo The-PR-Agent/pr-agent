@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Configuration{% endblock %}
+{% block content %}
+<h1>Configuration</h1>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+<p><a href="/config/backups">Backups</a></p>
+{% for group, files in groups %}
+  <h2>{{ group }}</h2>
+  <ul>
+    {% for entry in files %}
+      <li><a href="/config/{{ entry.index }}">{{ entry.path.name }}</a> <span class="muted">({{ entry.path }})</span></li>
+    {% endfor %}
+  </ul>
+{% endfor %}
+{% endblock %}
