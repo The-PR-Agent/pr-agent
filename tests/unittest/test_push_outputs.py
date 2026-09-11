@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,6 +15,7 @@ def _reset_push_outputs():
     s = get_settings()
     s.set('PUSH_OUTPUTS.ENABLE', False)
     s.set('PUSH_OUTPUTS.CHANNELS', [])
+    s.set('PUSH_OUTPUTS.FILE_PATH', 'pr-agent-outputs/reviews.jsonl')
     s.set('PUSH_OUTPUTS.WEBHOOK_URL', '')
     s.set('PUSH_OUTPUTS.SLACK_WEBHOOK_URL', '')
 
@@ -65,6 +67,7 @@ class TestPushOutputs:
         def fake_post(url, json=None, timeout=None, **kwargs):
             captured['url'] = url
             captured['json'] = json
+            return SimpleNamespace(status_code=200)
 
         monkeypatch.setattr(utils.requests, 'post', fake_post)
 
@@ -103,7 +106,7 @@ class TestPushOutputs:
     def test_errors_are_non_fatal(self, monkeypatch):
         get_settings().set('PUSH_OUTPUTS.ENABLE', True)
         get_settings().set('PUSH_OUTPUTS.CHANNELS', ['webhook'])
-        get_settings().set('PUSH_OUTPUTS.WEBHOOK_URL', 'http://example.invalid/hook')
+        get_settings().set('PUSH_OUTPUTS.WEBHOOK_URL', 'https://example.invalid/hook')
 
         def boom(*args, **kwargs):
             raise ConnectionError("no network")
@@ -128,7 +131,7 @@ class TestPushOutputs:
 
         posts = []
         monkeypatch.setattr(utils.requests, 'post',
-                            lambda url, **kwargs: posts.append(url))
+                            lambda url, **kwargs: posts.append(url) or SimpleNamespace(status_code=200))
 
         push_outputs("review", payload={"a": 1}, markdown="hi")
 
@@ -141,8 +144,210 @@ class TestPushOutputs:
 
         posts = []
         monkeypatch.setattr(utils.requests, 'post',
-                            lambda url, **kwargs: posts.append(url))
+                            lambda url, **kwargs: posts.append(url) or SimpleNamespace(status_code=200))
 
         push_outputs("review", payload={"a": 1}, markdown="hi")
 
         assert posts == ['https://example.test/hook']
+
+    def test_setup_errors_remain_non_fatal_and_secret_safe(self, monkeypatch):
+        warnings = []
+
+        def fail_settings():
+            raise RuntimeError("secret setup marker")
+
+        monkeypatch.setattr(utils, 'get_settings', fail_settings)
+        monkeypatch.setattr(utils, 'get_logger',
+                            lambda: SimpleNamespace(warning=warnings.append))
+
+        push_outputs("review", payload={"payload-secret": 1}, markdown="markdown-secret")
+
+        assert warnings == ["push_outputs failed: RuntimeError"]
+        assert "secret" not in warnings[0]
+
+    def test_webhook_exception_does_not_skip_slack(self, monkeypatch):
+        get_settings().set('PUSH_OUTPUTS.ENABLE', True)
+        get_settings().set('PUSH_OUTPUTS.CHANNELS', ['webhook', 'slack'])
+        webhook_url = 'https://example.test/webhook-secret'
+        slack_url = 'https://example.test/slack-secret'
+        get_settings().set('PUSH_OUTPUTS.WEBHOOK_URL', webhook_url)
+        get_settings().set('PUSH_OUTPUTS.SLACK_WEBHOOK_URL', slack_url)
+        posts = []
+        warnings = []
+
+        def fake_post(url, **kwargs):
+            posts.append((url, kwargs))
+            if url == webhook_url:
+                raise ConnectionError("transport-secret")
+            return SimpleNamespace(status_code=200)
+
+        monkeypatch.setattr(utils.requests, 'post', fake_post)
+        monkeypatch.setattr(utils, 'get_logger',
+                            lambda: SimpleNamespace(warning=warnings.append))
+
+        push_outputs("review", payload={"payload-secret": 1}, markdown="markdown-secret")
+
+        assert [url for url, _ in posts] == [webhook_url, slack_url]
+        assert posts[0][1]['timeout'] == 5
+        assert posts[0][1]['allow_redirects'] is False
+        assert posts[1][1]['timeout'] == 5
+        assert posts[1][1]['allow_redirects'] is False
+        assert warnings == ["push_outputs: webhook failed: ConnectionError"]
+        assert not any(secret in warnings[0] for secret in
+                       (webhook_url, slack_url, "transport-secret", "payload-secret", "markdown-secret"))
+
+    @pytest.mark.parametrize("status_code", [302, 500])
+    def test_webhook_non_2xx_warns_and_does_not_skip_slack(self, monkeypatch, status_code):
+        get_settings().set('PUSH_OUTPUTS.ENABLE', True)
+        get_settings().set('PUSH_OUTPUTS.CHANNELS', ['webhook', 'slack'])
+        webhook_url = 'https://example.test/webhook'
+        slack_url = 'https://example.test/slack'
+        get_settings().set('PUSH_OUTPUTS.WEBHOOK_URL', webhook_url)
+        get_settings().set('PUSH_OUTPUTS.SLACK_WEBHOOK_URL', slack_url)
+        posts = []
+        warnings = []
+
+        def fake_post(url, **kwargs):
+            posts.append(url)
+            if url == webhook_url:
+                return SimpleNamespace(status_code=status_code, text="response-secret")
+            return SimpleNamespace(status_code=204)
+
+        monkeypatch.setattr(utils.requests, 'post', fake_post)
+        monkeypatch.setattr(utils, 'get_logger',
+                            lambda: SimpleNamespace(warning=warnings.append))
+
+        push_outputs("review", payload={"a": 1}, markdown="hi")
+
+        assert posts == [webhook_url, slack_url]
+        assert warnings == [f"push_outputs: webhook failed with status {status_code}"]
+        assert "response-secret" not in warnings[0]
+
+    @pytest.mark.parametrize("status_code", [200, 204])
+    def test_remote_2xx_responses_are_silent(self, monkeypatch, status_code):
+        get_settings().set('PUSH_OUTPUTS.ENABLE', True)
+        get_settings().set('PUSH_OUTPUTS.CHANNELS', ['webhook', 'slack'])
+        get_settings().set('PUSH_OUTPUTS.WEBHOOK_URL', 'https://example.test/webhook')
+        get_settings().set('PUSH_OUTPUTS.SLACK_WEBHOOK_URL', 'https://example.test/slack')
+        warnings = []
+        monkeypatch.setattr(utils.requests, 'post',
+                            lambda *args, **kwargs: SimpleNamespace(status_code=status_code))
+        monkeypatch.setattr(utils, 'get_logger',
+                            lambda: SimpleNamespace(warning=warnings.append))
+
+        push_outputs("review", payload={"a": 1}, markdown="hi")
+
+        assert warnings == []
+
+    def test_malformed_webhook_url_does_not_skip_slack(self, monkeypatch):
+        get_settings().set('PUSH_OUTPUTS.ENABLE', True)
+        get_settings().set('PUSH_OUTPUTS.CHANNELS', ['webhook', 'slack'])
+        get_settings().set('PUSH_OUTPUTS.WEBHOOK_URL', 'https://[')
+        slack_url = 'https://example.test/slack'
+        get_settings().set('PUSH_OUTPUTS.SLACK_WEBHOOK_URL', slack_url)
+        posts = []
+        warnings = []
+        monkeypatch.setattr(utils.requests, 'post',
+                            lambda url, **kwargs: posts.append(url) or SimpleNamespace(status_code=200))
+        monkeypatch.setattr(utils, 'get_logger',
+                            lambda: SimpleNamespace(warning=warnings.append))
+
+        push_outputs("review", payload={"a": 1}, markdown="hi")
+
+        assert posts == [slack_url]
+        assert warnings == ["push_outputs: webhook failed: ValueError"]
+        assert "https://[" not in warnings[0]
+
+    def test_stdout_failure_does_not_skip_later_destinations(self, monkeypatch, tmp_path):
+        get_settings().set('PUSH_OUTPUTS.ENABLE', True)
+        get_settings().set('PUSH_OUTPUTS.CHANNELS', ['stdout', 'file', 'webhook', 'slack'])
+        out = tmp_path / 'out.jsonl'
+        get_settings().set('PUSH_OUTPUTS.FILE_PATH', str(out))
+        get_settings().set('PUSH_OUTPUTS.WEBHOOK_URL', 'https://example.test/webhook')
+        get_settings().set('PUSH_OUTPUTS.SLACK_WEBHOOK_URL', 'https://example.test/slack')
+        posts = []
+        warnings = []
+
+        def fail_print(*args, **kwargs):
+            raise OSError("stdout-secret")
+
+        monkeypatch.setattr('builtins.print', fail_print)
+        monkeypatch.setattr(utils.requests, 'post',
+                            lambda url, **kwargs: posts.append(url) or SimpleNamespace(status_code=200))
+        monkeypatch.setattr(utils, 'get_logger',
+                            lambda: SimpleNamespace(warning=warnings.append))
+
+        push_outputs("review", payload={"a": 1}, markdown="hi")
+
+        assert out.exists()
+        assert posts == ['https://example.test/webhook', 'https://example.test/slack']
+        assert warnings == ["push_outputs: stdout failed: OSError"]
+
+    def test_file_failure_does_not_skip_remote_destinations(self, monkeypatch, tmp_path):
+        get_settings().set('PUSH_OUTPUTS.ENABLE', True)
+        get_settings().set('PUSH_OUTPUTS.CHANNELS', ['file', 'webhook', 'slack'])
+        get_settings().set('PUSH_OUTPUTS.FILE_PATH', str(tmp_path))
+        get_settings().set('PUSH_OUTPUTS.WEBHOOK_URL', 'https://example.test/webhook')
+        get_settings().set('PUSH_OUTPUTS.SLACK_WEBHOOK_URL', 'https://example.test/slack')
+        posts = []
+        warnings = []
+        monkeypatch.setattr(utils.requests, 'post',
+                            lambda url, **kwargs: posts.append(url) or SimpleNamespace(status_code=200))
+        monkeypatch.setattr(utils, 'get_logger',
+                            lambda: SimpleNamespace(warning=warnings.append))
+
+        push_outputs("review", payload={"a": 1}, markdown="hi")
+
+        assert posts == ['https://example.test/webhook', 'https://example.test/slack']
+        assert warnings == ["push_outputs: file failed: IsADirectoryError"]
+
+    def test_slack_failure_is_non_fatal_and_secret_safe(self, monkeypatch):
+        get_settings().set('PUSH_OUTPUTS.ENABLE', True)
+        get_settings().set('PUSH_OUTPUTS.CHANNELS', ['webhook', 'slack'])
+        get_settings().set('PUSH_OUTPUTS.WEBHOOK_URL', 'https://example.test/webhook')
+        slack_url = 'https://example.test/slack-secret'
+        get_settings().set('PUSH_OUTPUTS.SLACK_WEBHOOK_URL', slack_url)
+        warnings = []
+
+        def fake_post(url, **kwargs):
+            if url == slack_url:
+                raise TimeoutError("slack-timeout-secret")
+            return SimpleNamespace(status_code=200)
+
+        monkeypatch.setattr(utils.requests, 'post', fake_post)
+        monkeypatch.setattr(utils, 'get_logger',
+                            lambda: SimpleNamespace(warning=warnings.append))
+
+        push_outputs("review", payload={"a": 1}, markdown="hi")
+
+        assert warnings == ["push_outputs: slack failed: TimeoutError"]
+        assert slack_url not in warnings[0]
+        assert "slack-timeout-secret" not in warnings[0]
+
+    def test_slack_non_2xx_warns_without_response_content(self, monkeypatch):
+        get_settings().set('PUSH_OUTPUTS.ENABLE', True)
+        get_settings().set('PUSH_OUTPUTS.CHANNELS', ['slack'])
+        get_settings().set('PUSH_OUTPUTS.SLACK_WEBHOOK_URL', 'https://example.test/slack')
+        warnings = []
+        monkeypatch.setattr(utils.requests, 'post',
+                            lambda *args, **kwargs: SimpleNamespace(status_code=429, text="response-secret"))
+        monkeypatch.setattr(utils, 'get_logger',
+                            lambda: SimpleNamespace(warning=warnings.append))
+
+        push_outputs("review", payload={"a": 1}, markdown="hi")
+
+        assert warnings == ["push_outputs: slack failed with status 429"]
+        assert "response-secret" not in warnings[0]
+
+    def test_unknown_and_duplicate_channels_do_not_duplicate_delivery(self, monkeypatch):
+        get_settings().set('PUSH_OUTPUTS.ENABLE', True)
+        get_settings().set('PUSH_OUTPUTS.CHANNELS', ['unknown', 'webhook', 'webhook'])
+        webhook_url = 'https://example.test/webhook'
+        get_settings().set('PUSH_OUTPUTS.WEBHOOK_URL', webhook_url)
+        posts = []
+        monkeypatch.setattr(utils.requests, 'post',
+                            lambda url, **kwargs: posts.append(url) or SimpleNamespace(status_code=200))
+
+        push_outputs("review", payload={"a": 1}, markdown="hi")
+
+        assert posts == [webhook_url]
