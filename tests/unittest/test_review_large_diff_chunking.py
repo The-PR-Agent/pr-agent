@@ -261,19 +261,24 @@ async def test_a_failed_chunk_blocks_persistent_finding_resolution(chunking_enab
 async def test_an_empty_chunk_does_not_lose_a_valid_sibling_or_trigger_fallback(chunking_enabled):
     """"Fallback" here is the whole-review fallback `retry_with_fallback_models` would run if
     `_prepare_chunked_prediction` raised or returned False - it must not, since chunk-b succeeded.
-    The chunk itself does now get one attempt on the (default) fallback model as part of its own
-    bounded recovery (R-7) before giving up on it - a 4th call, still unparsable here."""
+    The chunk itself does now get one attempt on a fallback model as part of its own bounded
+    recovery (R-7) before giving up on it - a 4th call, still unparsable here."""
+    snapshot = snapshot_settings(("config.fallback_models",))
+    get_settings().set("config.fallback_models", ["fallback-model"])
     reviewer = _make_reviewer()
-    # the empty chunk is retried once, then tried once more on the fallback model (config default
-    # `fallback_models=["gpt-5.6-terra"]`), and stays failed when every one of those is empty too
-    reviewer._get_prediction = AsyncMock(side_effect=["review: {}", CHUNK_B, "review: {}", "review: {}"])
+    try:
+        # the empty chunk is retried once, then tried once more on the (pinned) fallback model,
+        # and stays failed when every one of those is empty too
+        reviewer._get_prediction = AsyncMock(side_effect=["review: {}", CHUNK_B, "review: {}", "review: {}"])
 
-    with (
-        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
-        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs_with_files",
-              return_value=(_plans("chunk-a", "chunk-b"), [])),
-    ):
-        await reviewer._prepare_prediction("model")
+        with (
+            patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
+            patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs_with_files",
+                  return_value=(_plans("chunk-a", "chunk-b"), [])),
+        ):
+            await reviewer._prepare_prediction("model")
+    finally:
+        restore_settings(snapshot)
 
     assert reviewer._get_prediction.await_count == 4
     assert reviewer.prediction_data["review"]["score"] == "40"
@@ -328,18 +333,23 @@ async def test_a_review_where_every_chunk_failed_raises_so_a_fallback_model_is_t
 ])
 async def test_chunks_without_nonempty_reviews_fall_back_to_a_single_call_review(chunking_enabled,
                                                                                  chunk_predictions):
+    snapshot = snapshot_settings(("config.fallback_models",))
+    get_settings().set("config.fallback_models", ["fallback-model"])
     reviewer = _make_reviewer()
-    # both chunks are attempted twice, then once more each on the (default) fallback model, before
-    # the flow gives up on chunking entirely and reviews the diff in one call
-    reviewer._get_prediction = AsyncMock(
-        side_effect=[*chunk_predictions, *chunk_predictions, *chunk_predictions, CHUNK_A])
+    try:
+        # both chunks are attempted twice, then once more each on the (pinned) fallback model,
+        # before the flow gives up on chunking entirely and reviews the diff in one call
+        reviewer._get_prediction = AsyncMock(
+            side_effect=[*chunk_predictions, *chunk_predictions, *chunk_predictions, CHUNK_A])
 
-    with (
-        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
-        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs_with_files",
-              return_value=(_plans("chunk-a", "chunk-b"), [])),
-    ):
-        await reviewer._prepare_prediction("model")
+        with (
+            patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
+            patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs_with_files",
+                  return_value=(_plans("chunk-a", "chunk-b"), [])),
+        ):
+            await reviewer._prepare_prediction("model")
+    finally:
+        restore_settings(snapshot)
 
     assert reviewer._get_prediction.await_count == 7
     assert reviewer.prediction == CHUNK_A

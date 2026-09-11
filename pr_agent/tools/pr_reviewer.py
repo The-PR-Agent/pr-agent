@@ -168,12 +168,16 @@ CHUNK_REVIEW_ATTEMPTS = 2
 
 
 def split_chunk_plan(plan: ChunkPlan, git_provider, token_handler, model: str) -> list[ChunkPlan]:
-    """Split a chunk that failed every attempt on `model` into two smaller chunks, one per half of
-    its files, each with its diff regenerated from scratch (so the token budget is re-applied to
-    just that half rather than reusing the failed chunk's possibly-clipped diff).
+    """Split a chunk that failed every attempt on `model` into up to two smaller chunks, one per
+    half of its files, each with its diff regenerated from scratch (so the token budget is
+    re-applied to just that half rather than reusing the failed chunk's possibly-clipped diff).
 
-    Returns `[plan]` unchanged when it has only one file left to split, or when regenerating a
-    half's diff produced nothing (e.g. every file in it turned out to be delete-only).
+    Returns `[plan]` unchanged - the exact same object - when it has only one file left to split,
+    or when regenerating *every* half's diff produced nothing (e.g. every file turned out to be
+    delete-only). That makes `result == [plan]` the caller's test for "could not usefully split
+    this"; anything else is a valid split, including a single returned plan when only one of the
+    two halves regenerated to content (the other half's files are the caller's to account for,
+    e.g. as deletion_only or skipped_budget, since they are not covered by the returned plan(s)).
     """
     if len(plan.files) <= 1:
         return [plan]
@@ -1060,8 +1064,8 @@ class PRReviewer:
                     continue
                 halves = split_chunk_plan(plan, getattr(self, "git_provider", None),
                                           getattr(self, "token_handler", None), model)
-                if len(halves) <= 1:
-                    continue  # unsplittable in practice; leave it pending as-is
+                if halves == [plan]:
+                    continue  # unsplittable in practice (or nothing regenerated); leave pending
                 parent = leaf_parent[lid]
                 new_ids = []
                 covered = set()
@@ -1074,10 +1078,14 @@ class PRReviewer:
                     for filename in half.clipped:
                         self.coverage.mark(filename, "clipped")
                 # split_chunk_plan re-chunks each half with max_calls=1: a file that does not fit
-                # even alone is dropped from the half rather than clipped, so it needs its own mark
-                # here (stage 4 overwrites it with chunk_failed if the half goes on to fail anyway).
+                # even alone (or turned out delete-only in isolation) is dropped from the half
+                # rather than clipped, so it needs its own mark here (stage 4 overwrites it with
+                # chunk_failed if the half goes on to fail anyway). A deletion-only file is already
+                # correctly marked by _build_coverage_ledger's base pass, so it is left alone here
+                # instead of being downgraded to skipped_budget.
                 for filename in set(plan.files) - covered:
-                    self.coverage.mark(filename, "skipped_budget")
+                    if self.coverage.files[filename].status != "deletion_only":
+                        self.coverage.mark(filename, "skipped_budget")
                 pos = order.index(lid)
                 order[pos:pos + 1] = new_ids
                 pending.remove(lid)
