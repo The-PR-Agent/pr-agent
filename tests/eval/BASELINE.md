@@ -256,6 +256,41 @@ so that branch needs a provider key with quota.
 this rules out a large wording effect, not a small one. A wording change worth < 3 true positives
 would not be visible here and is not worth chasing at this recall level anyway.
 
+## 2026-09-11: diff-order permutation + vote - pre-registration
+
+**Written before the rows ran.** Step 1 exonerated the wording; R-22 is untestable on this provider
+(no `response_format`). This is the next recall play that *is* testable here, and it has a vendor
+precedent: BugBot runs passes over differently ordered diffs and combines them, crediting that plus
+a validator for 52% -> 70% on its resolution-rate metric (<https://cursor.com/blog/building-bugbot>).
+
+**Mechanism.** `pr_reviewer.permute_diff_order_across_samples` (commit `6cae88f7`) reorders the
+per-file blocks between consensus samples. Sample 0 keeps the original order. Diversity comes from
+ordering, not temperature, which stays at 0 - so the samples differ only in where each file sits in
+the prompt.
+
+**Rows.** Flags identical to the Step 1 rows except `num_samples=3` and the permutation flag:
+
+| Row | num_samples | min_votes | Reads as |
+|---|---|---|---|
+| P-union rep1/rep2 | 3 | 1 | union of three orderings - the recall ceiling of this mechanism |
+| P-vote rep1/rep2 | 3 | 2 | the same three samples filtered by agreement - the precision guard |
+
+Control is the Step 1 A rows (num_samples=1): 1 and 0 of 23.
+
+**Decision rule (pre-registered).**
+- **Win:** >= 4 of 23 matched on both reps of P-union, with zero control false flags.
+- **Promising, needs 3 more reps before it is called anything:** >= 3 on both reps.
+- **No signal:** anything at or below 2, which is inside the +/-1 spread the six Step 1 rows showed.
+- P-vote is not scored for a win. It answers a second question: how much of P-union's recall
+  survives requiring two of three samples to agree. If union gains nothing, P-vote is moot.
+
+**Cost.** Three review calls per chunk instead of one: roughly 1.3M prompt tokens per row, about
+5.4M for the four rows. If union gains nothing at 3x the budget, the mechanism is dead on this
+corpus and the next move is retrieval (R-16/R-17), not more sampling.
+
+**What it cannot show.** Whether ordering or sheer repetition produced any gain - three samples in
+the *same* order would separate those, and is the row to add if this one moves.
+
 ## Reproduce
 
 To reproduce the Cursor rows, start the shim first and point the run at it instead of Gemini:
