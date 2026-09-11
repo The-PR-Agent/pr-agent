@@ -455,6 +455,13 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `url` | "" | URL to the BitBucket Server instance |
 
 
+## `[jira]`
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `jira_requirements_field` | "" | Custom field id holding acceptance criteria / requirements, mapped to the ticket "requirements" section. Instance-specific (e.g. "customfield_10127"); empty disables it. |
+
+
 ## `[litellm]`
 
 | Key | Default | Description |
