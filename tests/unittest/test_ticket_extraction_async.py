@@ -679,7 +679,7 @@ class TestGitLabExtraction:
                 "labels": "bug, backend",
             }
         ]
-        provider.gl.projects.get.assert_called_once_with("group/repo")
+        provider.gl.projects.get.assert_called_once_with("group/repo", lazy=True)
         project.issues.get.assert_called_once_with(7)
 
 
