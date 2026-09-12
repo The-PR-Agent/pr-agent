@@ -31,6 +31,10 @@ def configured():
         "pr_code_suggestions.recover_failed_chunks": True,
         "pr_code_suggestions.suggestions_score_threshold": 0,
         "pr_code_suggestions.max_suggestions_per_file": 0,
+        # Not used by most tests here, but snapshotted so the routed-primary test's
+        # writes are restored and no routing state leaks into later tests.
+        "model_routing.enable": False,
+        "model_routing.rules": [],
     }
     snapshot = snapshot_settings(tuple(values))
     for key, value in values.items():
@@ -392,7 +396,7 @@ async def test_routed_primary_recovers_failed_slots_with_configured_fallback(con
     get_settings().set("model_routing.rules",
                        [{"model": "gpt-4o-mini", "max_files": 10, "deployment_id": "secondary"}])
     tool, calls = make_tool(monkeypatch, {("gpt-4o-mini", "b"): RuntimeError("failure")})
-    tool.git_provider.diff_files = [FilePatchInfo("old()\n", "old()\n", "", c + ".py") for c in "abc"]
+    tool.git_provider.get_diff_files.return_value = [FilePatchInfo("old()\n", "old()\n", "", c + ".py") for c in "abc"]
     result = await retry_with_fallback_models(tool.prepare_prediction_main,
                                               git_provider=tool.git_provider)
     assert [s["relevant_file"] for s in result["code_suggestions"]] == ["a.py", "b.py", "c.py"]
