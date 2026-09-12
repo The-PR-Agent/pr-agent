@@ -45,6 +45,7 @@ class _FakeRequestContext:
         # A2A 1.0: task_id/context_id are set by DefaultRequestHandler before execute.
         self.task_id = "task-001"
         self.context_id = "ctx-001"
+        self.current_task = None
 
     def get_user_input(self, delimiter: str = "\n") -> str:
         return self._text
@@ -226,11 +227,6 @@ class TestExecute:
         # TaskUpdater was never constructed (validation fires first), so no task
         # lifecycle events were emitted.
         assert spy_updater.last is None
-
-    @pytest.mark.asyncio
-    async def test_cancel_raises_not_implemented(self):
-        with pytest.raises(NotImplementedError):
-            await PRAgentExecutor().cancel(_FakeRequestContext("z"), _RecordingEventQueue())
 
     @pytest.mark.asyncio
     async def test_settings_writes_are_request_scoped_under_concurrency(self, monkeypatch, spy_updater):

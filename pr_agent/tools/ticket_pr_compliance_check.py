@@ -1,3 +1,4 @@
+import asyncio
 import copy
 import math
 import re
@@ -5,32 +6,88 @@ import traceback
 from urllib.parse import urlparse
 
 import aiohttp
+from atlassian import Jira
 
 from pr_agent.algo.pr_processing import OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import get_max_tokens
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers import AzureDevopsProvider, GithubProvider, GitLabProvider
+from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.log import get_logger
 
 # Compile the regex pattern once, outside the function
 GITHUB_TICKET_PATTERN = re.compile(
-     r'(https://github[^/]+/[^/]+/[^/]+/issues/\d+)|(\b(\w+)/(\w+)#(\d+)\b)|(#\d+)'
+    r'(https://github[^/]+/[^/]+/[^/]+/issues/\d+)'
+    r'|((?<![\w./-])([A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)/([A-Za-z0-9._-]+)#(\d+)\b)'
+    r'|(#\d+)'
 )
 # Option A: issue number at start of branch or after /, followed by - or end (e.g. feature/1-test-issue, 123-fix)
 BRANCH_ISSUE_PATTERN = re.compile(r"(?:^|/)(\d{1,6})(?=-|$)")
+# A bare "#12345" is as likely to be an error code as an issue, so a shorthand reference is
+# only followed up to this many digits. The bound matches BRANCH_ISSUE_PATTERN above: the same
+# number written in a branch name and in the description should resolve the same way.
+MAX_SHORTHAND_ISSUE_DIGITS = 6
+
+# Cap on the total tickets analysed per PR, enforced at the Jira step (see add_jira_tickets).
+# The provider-native lookups keep their own budgets (MAX_GITHUB_TICKETS, MAX_GITLAB_TICKETS,
+# MAX_ASANA_TICKETS).
+MAX_TICKETS = 5
+# Upper bound on Jira lookups per PR. The key pattern also matches strings like "SHA-256"
+# and "UTF-8", so candidates are tried until MAX_TICKETS resolve rather than truncated up
+# front; this bounds the cost of a PR whose text is mostly key-shaped noise.
+MAX_JIRA_FETCH_ATTEMPTS = 10
+# Max characters kept from any ticket body or requirements field.
+MAX_TICKET_CHARACTERS = 10000
+
+# Jira REST API version. Pinned to "2" because extract_jira_tickets() reads description
+# and custom fields as plain strings. v2 returns them that way; v3 returns ADF JSON dicts
+# that would need separate parsing. The atlassian-python-api client defaults to "2" today,
+# but pinning keeps the contract stable across dependency upgrades.
+JIRA_API_VERSION = "2"
+
+# Jira Cloud site name (the "<site>" in https://<site>.atlassian.net). Only Jira Cloud is
+# supported: the base URL is built from this name rather than taken as a free-form URL, so
+# repo-controlled config cannot redirect the authenticated request (and the token) to an
+# arbitrary host. The name must be a single DNS label (letters, digits, hyphens) so it
+# cannot contain '.', '/', ':', '@' etc. that would let it escape *.atlassian.net.
+JIRA_SITE_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$", re.IGNORECASE)
+
+
+def _jira_cloud_base_url():
+    """
+    Return the Jira Cloud base URL built from the configured site name, or None if the
+    site is missing or invalid. Building the URL from a validated site name (rather than
+    accepting a free-form base URL from settings) ensures the authenticated request can
+    only ever go to https://<site>.atlassian.net, even if settings were overridden by
+    untrusted repo configuration.
+    """
+    site = get_settings().get("JIRA.JIRA_SITE", None)
+    if not site:
+        return None
+    site = str(site).strip()
+    if not JIRA_SITE_PATTERN.match(site):
+        get_logger().warning(
+            f"Invalid jira_site '{site}'; expected a Jira Cloud site name like 'mycompany' "
+            f"(the '<site>' in https://<site>.atlassian.net). Skipping Jira ticket lookup.")
+        return None
+    return f"https://{site}.atlassian.net"
 
 
 def find_jira_tickets(text):
-    # Regular expression patterns for JIRA tickets
+    # Regular expression patterns for JIRA tickets. Matching is case-insensitive so
+    # lowercased branch names (e.g. bugfix/abc-123-description) are detected; keys are
+    # normalized to upper case to match Jira's canonical form.
     patterns = [
         r'\b[A-Z]{2,10}-\d{1,7}\b',  # Standard JIRA ticket format (e.g., PROJ-123)
         r'(?:https?://[^\s/]+/browse/)?([A-Z]{2,10}-\d{1,7})\b'  # JIRA URL or just the ticket
     ]
 
-    tickets = set()
+    # Preserve first-seen order while de-duplicating, so the MAX_TICKETS cap applied
+    # later is deterministic across runs (a plain set would fetch arbitrary tickets).
+    seen = set()
+    tickets = []
     for pattern in patterns:
-        matches = re.findall(pattern, text)
+        matches = re.findall(pattern, text, flags=re.IGNORECASE)
         for match in matches:
             if isinstance(match, tuple):
                 # If it's a tuple (from the URL pattern), take the last non-empty group
@@ -38,9 +95,164 @@ def find_jira_tickets(text):
             else:
                 ticket = match
             if ticket:
-                tickets.add(ticket)
+                ticket = ticket.upper()
+                if ticket not in seen:
+                    seen.add(ticket)
+                    tickets.append(ticket)
 
-    return list(tickets)
+    return tickets
+
+
+def _get_jira_client():
+    """
+    Build a Jira Cloud client from the [jira] settings. Returns None if Jira is not
+    configured. Only Jira Cloud is supported: the base URL is derived from a validated
+    site name (jira_site) so untrusted repo configuration cannot redirect the
+    authenticated request to an arbitrary host. Cloud authenticates with the account
+    email + API token. The REST API version is pinned via JIRA_API_VERSION (see its
+    definition for why).
+    """
+    site = get_settings().get("JIRA.JIRA_SITE", None)
+    api_email = get_settings().get("JIRA.JIRA_API_EMAIL", None)
+    api_token = get_settings().get("JIRA.JIRA_API_TOKEN", None)
+    base_url = _jira_cloud_base_url()  # None if site is missing or invalid (already warned if invalid)
+    if not (base_url and api_email and api_token):
+        # Warn when Jira is partially configured: some [jira] value is set but the required
+        # site + email + token are incomplete, which is likely a mistake. Stay silent when
+        # nothing is set (Jira simply not in use), and don't double-warn when the site was
+        # set but invalid (_jira_cloud_base_url already warned about that).
+        site_set_but_invalid = site and not base_url
+        if any([site, api_email, api_token]) and not site_set_but_invalid:
+            missing = [
+                name for name, value in (
+                    ("jira_site", site),
+                    ("jira_api_email", api_email),
+                    ("jira_api_token", api_token),
+                ) if not value
+            ]
+            get_logger().warning(
+                f"Jira is partially configured; skipping Jira ticket lookup. Missing: {', '.join(missing)}")
+        return None
+    try:
+        return Jira(url=base_url, username=api_email, password=api_token, api_version=JIRA_API_VERSION)
+    except Exception as e:
+        get_logger().error(f"Failed to initialize Jira client: {e}",
+                           artifact={"traceback": traceback.format_exc()})
+        return None
+
+
+def extract_jira_tickets(text, max_characters=MAX_TICKET_CHARACTERS, max_tickets=MAX_TICKETS):
+    """
+    Find Jira ticket keys in the given text and fetch their content. Returns a list of
+    ticket dicts in the same shape used by the rest of the ticket-analysis flow. Returns
+    an empty list when no keys are found or when Jira is not configured.
+
+    Candidates are tried in first-seen order until max_tickets resolve or
+    MAX_JIRA_FETCH_ATTEMPTS lookups have been made. Counting resolved tickets rather than
+    truncating the candidate list keeps key-shaped noise ("SHA-256", "UTF-8") from
+    displacing a real ticket that appears later in the text.
+    """
+    # Look for keys before building a client: most PRs have none, and building the
+    # client first would do needless work (and log a noisy init failure if Jira is
+    # misconfigured) even when there is nothing to fetch.
+    keys = find_jira_tickets(text or "")
+    if not keys:
+        return []
+
+    jira_client = _get_jira_client()
+    if jira_client is None:
+        return []
+
+    base_url = _jira_cloud_base_url() or ""
+    # Custom field that holds acceptance criteria / requirements. The field id is
+    # instance-specific (e.g. "customfield_10127"), so it must be configured; empty
+    # means no requirements are extracted.
+    requirements_field = get_settings().get("JIRA.JIRA_REQUIREMENTS_FIELD", "") or ""
+    tickets_content = []
+    for attempt, key in enumerate(keys, start=1):
+        if len(tickets_content) >= max_tickets:
+            get_logger().info(f"Reached the cap of {max_tickets} Jira tickets; skipping remaining keys")
+            break
+        if attempt > MAX_JIRA_FETCH_ATTEMPTS:
+            get_logger().info(
+                f"Stopped after {MAX_JIRA_FETCH_ATTEMPTS} Jira lookups; skipping remaining keys")
+            break
+        try:
+            issue = jira_client.issue(key)
+        except Exception as e:
+            get_logger().warning(f"Failed to fetch Jira ticket {key}: {e}")
+            continue
+        if not issue:
+            continue
+
+        fields = issue.get("fields", {}) or {}
+        # The client is pinned to REST v2 (see _get_jira_client), which returns
+        # description and rich-text custom fields as plain wiki-markup strings. The
+        # isinstance guards below defend against anything non-string (e.g. v3 ADF dicts).
+        body = fields.get("description") or ""
+        if not isinstance(body, str):
+            body = ""
+        if len(body) > max_characters:
+            body = body[:max_characters] + "..."
+
+        requirements = ""
+        if requirements_field:
+            requirements = fields.get(requirements_field) or ""
+            if not isinstance(requirements, str):
+                requirements = ""
+            if len(requirements) > max_characters:
+                requirements = requirements[:max_characters] + "..."
+
+        labels = fields.get("labels", []) or []
+        tickets_content.append({
+            "ticket_id": key,
+            "ticket_url": f"{base_url}/browse/{key}" if base_url else "",
+            "title": fields.get("summary", ""),
+            "body": body,
+            "requirements": requirements,
+            "labels": ", ".join(labels),
+        })
+    return tickets_content
+
+
+def _get_pr_title(git_provider) -> str:
+    """Return the PR/MR title across providers (GitHub/Bitbucket use .pr, GitLab .mr)."""
+    for attr in ("pr", "mr"):
+        obj = getattr(git_provider, attr, None)
+        title = getattr(obj, "title", None)
+        if title:
+            return title
+    return ""
+
+
+def add_jira_tickets(git_provider, tickets_content):
+    """
+    Provider-agnostic Jira lookup. Scans the PR title, description and branch name for
+    Jira ticket keys and appends any found tickets to tickets_content (de-duplicated by
+    ticket_url). No-op when Jira is not configured. Works for any git provider, since it
+    only relies on get_user_description() and get_pr_branch().
+
+    MAX_TICKETS is the overall per-PR cap, so any provider-native tickets already in
+    tickets_content count against it: only the remaining budget is offered to the Jira
+    lookup, keeping the existing tickets first.
+    """
+    try:
+        if len(tickets_content) >= MAX_TICKETS:
+            return tickets_content
+        jira_context = "\n".join(filter(None, [
+            _get_pr_title(git_provider),
+            git_provider.get_user_description() or "",
+            git_provider.get_pr_branch() or "",
+        ]))
+        existing_urls = {t.get("ticket_url") for t in tickets_content}
+        remaining = MAX_TICKETS - len(tickets_content)
+        for jira_ticket in extract_jira_tickets(jira_context, MAX_TICKET_CHARACTERS, remaining):
+            if jira_ticket.get("ticket_url") not in existing_urls:
+                tickets_content.append(jira_ticket)
+    except Exception as e:
+        get_logger().error(f"Error extracting Jira tickets: {e}",
+                           artifact={"traceback": traceback.format_exc()})
+    return tickets_content
 
 
 _ASANA_TASK_URL_PATTERN = re.compile(
@@ -220,26 +432,39 @@ async def _fetch_asana_ticket_contents(
 
     timeout = aiohttp.ClientTimeout(total=_get_asana_request_timeout())
     headers = {"Authorization": f"Bearer {api_token.strip()}"}
-    tickets_content = []
     async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
         # Bound attempts as well as successful results so invalid references cannot
         # multiply request latency, rate-limit usage, or warning logs.
+        selected_tickets = []
         for ticket_url in ticket_urls[:max_tickets]:
-            if len(tickets_content) >= max_tickets:
-                break
-            task_gid = None
             try:
                 task_gid = _get_asana_task_gid(ticket_url)
-                ticket_content = await _fetch_asana_ticket_content(
-                    session,
-                    ticket_url,
-                    max_body_characters,
-                )
             except Exception as e:
-                task_label = task_gid or "invalid reference"
-                get_logger().warning(f"Failed to fetch Asana task {task_label}: {e}")
+                get_logger().warning(f"Failed to fetch Asana task invalid reference: {e}")
                 continue
-            tickets_content.append(ticket_content)
+            selected_tickets.append((ticket_url, task_gid))
+
+        async def fetch_ticket(ticket_url):
+            try:
+                return await _fetch_asana_ticket_content(session, ticket_url, max_body_characters), None
+            except Exception as e:
+                return None, e
+
+        tasks = [asyncio.create_task(fetch_ticket(ticket_url)) for ticket_url, _task_gid in selected_tickets]
+        try:
+            results = await asyncio.gather(*tasks)
+        except BaseException:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+
+    tickets_content = []
+    for (_ticket_url, task_gid), (ticket_content, error) in zip(selected_tickets, results, strict=True):
+        if error is not None:
+            get_logger().warning(f"Failed to fetch Asana task {task_gid}: {error}")
+            continue
+        tickets_content.append(ticket_content)
     return tickets_content
 
 
@@ -336,7 +561,8 @@ def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url
                 _add(f"{base_url_html.strip('/')}/{owner}/{repo}/issues/{issue_number}")
             else:  # #123 format
                 issue_number = match[5][1:]  # remove #
-                if issue_number.isdigit() and len(issue_number) < 5 and repo_path:
+                if (issue_number.isdigit() and repo_path
+                        and len(issue_number) <= MAX_SHORTHAND_ISSUE_DIGITS):
                     _add(f"{base_url_html.strip('/')}/{repo_path}/issues/{issue_number}")
 
         if len(github_tickets) > MAX_GITHUB_TICKETS:
@@ -455,8 +681,23 @@ def _get_repo_obj_for_ticket(git_provider, ticket_url, repo_name, repo_obj_cache
     return repo_obj
 
 
+def _provider_supports(git_provider, capability: str) -> bool:
+    """Read an opt-in ticket capability from a provider.
+
+    Objects outside the GitProvider hierarchy (test doubles, minimal adapters) may not
+    define the method at all; absence means the capability is not supported, which keeps
+    the previous behaviour for providers that matched none of the concrete classes.
+
+    A permissive double such as a bare MagicMock answers every valid capability truthily and
+    so takes the first branch. Unknown capabilities raise to expose misspelled names.
+    """
+    if not hasattr(GitProvider, capability):
+        raise AttributeError(f"unknown provider capability: {capability!r}")
+    check = getattr(git_provider, capability, None)
+    return bool(check()) if callable(check) else False
+
+
 async def extract_tickets(git_provider):
-    MAX_TICKET_CHARACTERS = 10000
     try:
         user_description = _get_user_description_for_asana(git_provider)
         asana_ticket_urls = find_asana_tickets(user_description)
@@ -470,7 +711,7 @@ async def extract_tickets(git_provider):
             get_logger().warning(f"Failed to initialize Asana task fetching: {e}")
             asana_tickets_content = []
 
-        if isinstance(git_provider, GithubProvider):
+        if _provider_supports(git_provider, "supports_issue_url_tickets"):
             description_tickets = extract_ticket_links_from_pr_description(
                 user_description, git_provider.repo, git_provider.base_url_html
             )
@@ -565,9 +806,11 @@ async def extract_tickets(git_provider):
                     })
 
             tickets_content.extend(asana_tickets_content)
+            # Provider-agnostic Jira lookup (see add_jira_tickets); no-op when Jira is unconfigured.
+            add_jira_tickets(git_provider, tickets_content)
             return tickets_content
 
-        elif isinstance(git_provider, GitLabProvider):
+        elif _provider_supports(git_provider, "supports_issue_reference_tickets"):
             references = extract_gitlab_ticket_references(
                 user_description,
                 git_provider.id_project,
@@ -600,9 +843,11 @@ async def extract_tickets(git_provider):
                 )
 
             tickets_content.extend(asana_tickets_content)
+            # Provider-agnostic Jira lookup (see add_jira_tickets); no-op when Jira is unconfigured.
+            add_jira_tickets(git_provider, tickets_content)
             return tickets_content
 
-        elif isinstance(git_provider, AzureDevopsProvider):
+        elif _provider_supports(git_provider, "supports_linked_work_item_tickets"):
             tickets_info = git_provider.get_linked_work_items()
             tickets_content = []
             for ticket in tickets_info:
@@ -611,13 +856,21 @@ async def extract_tickets(git_provider):
                     if len(ticket_body_str) > MAX_TICKET_CHARACTERS:
                         ticket_body_str = ticket_body_str[:MAX_TICKET_CHARACTERS] + "..."
 
+                    # Cap acceptance criteria like the body, so a large work-item field
+                    # can't push an unbounded blob into the review prompt.
+                    requirements_str = ticket.get("acceptance_criteria", "") or ""
+                    if not isinstance(requirements_str, str):
+                        requirements_str = ""
+                    if len(requirements_str) > MAX_TICKET_CHARACTERS:
+                        requirements_str = requirements_str[:MAX_TICKET_CHARACTERS] + "..."
+
                     tickets_content.append(
                         {
                             "ticket_id": ticket.get("id"),
                             "ticket_url": ticket.get("url"),
                             "title": ticket.get("title"),
                             "body": ticket_body_str,
-                            "requirements": ticket.get("acceptance_criteria", ""),
+                            "requirements": requirements_str,
                             "labels": ", ".join(ticket.get("labels", [])),
                         }
                     )
@@ -629,10 +882,18 @@ async def extract_tickets(git_provider):
             # Preserve the existing Azure work-item result set. The independently bounded
             # Asana results add context without imposing a new cap on Azure's established behaviour.
             tickets_content.extend(asana_tickets_content)
+            # Provider-agnostic Jira lookup (see add_jira_tickets); no-op when Jira is unconfigured.
+            add_jira_tickets(git_provider, tickets_content)
             return tickets_content
 
-        if asana_ticket_urls:
-            return asana_tickets_content
+        # Providers with no ticket integration of their own still reach Jira: keys are
+        # usually referenced in the PR title, description or branch name rather than by a
+        # provider-native link. The Asana results seed the list so they count against
+        # MAX_TICKETS, as on the provider-specific paths. Returning None when nothing at
+        # all was found keeps the "provider unsupported" contract intact.
+        tickets_content = add_jira_tickets(git_provider, list(asana_tickets_content))
+        if asana_ticket_urls or tickets_content:
+            return tickets_content
 
     except Exception as e:
         get_logger().error(f"Error extracting tickets error= {e}",
@@ -668,7 +929,3 @@ async def extract_and_cache_pr_tickets(git_provider, vars):
     else:
         get_logger().info("Using cached tickets", artifact={"tickets": related_tickets})
         vars['related_tickets'] = related_tickets
-
-
-def check_tickets_relevancy():
-    return True

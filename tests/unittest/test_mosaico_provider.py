@@ -39,13 +39,25 @@ class TestParseUnifiedDiff:
         assert added.filename == "added.py"
         assert added.edit_type == EDIT_TYPE.ADDED
         assert "def hello():" in added.patch
-        assert added.patch.startswith("diff --git a/added.py b/added.py")
+        assert added.patch.startswith("@@")
 
         assert existing.filename == "existing.py"
         assert existing.edit_type == EDIT_TYPE.MODIFIED
-        # patch preserved verbatim for the section
+        assert existing.patch.startswith("@@")
         assert "-x = 1" in existing.patch
         assert "+x = 2" in existing.patch
+        for diff_file in files:
+            assert "diff --git" not in diff_file.patch
+            assert "--- " not in diff_file.patch
+            assert "+++ " not in diff_file.patch
+
+    def test_crlf_input_stores_hunk_only_patch(self):
+        files = parse_unified_diff(TWO_FILE_DIFF.replace("\n", "\r\n"))
+
+        assert len(files) == 2
+        assert all(diff_file.patch.startswith("@@") for diff_file in files)
+        assert all("\r\n" in diff_file.patch for diff_file in files)
+        assert all("diff --git" not in diff_file.patch for diff_file in files)
 
     def test_head_base_reconstruction(self):
         files = parse_unified_diff(TWO_FILE_DIFF)
@@ -75,6 +87,26 @@ class TestParseUnifiedDiff:
         assert files[0].edit_type == EDIT_TYPE.RENAMED
         assert files[0].filename == "new.py"
         assert files[0].old_filename == "old.py"
+        assert files[0].patch == ""
+
+    def test_paths_with_spaces_are_read_from_file_headers(self):
+        diff = (
+            "diff --git a/src/a b/file.py b/src/a b/file.py\n"
+            "index 1111111..2222222 100644\n"
+            "--- a/src/a b/file.py\n"
+            "+++ b/src/a b/file.py\n"
+            "@@ -1 +1 @@\n"
+            "-old\n"
+            "+new\n"
+        )
+
+        files = parse_unified_diff(diff)
+
+        assert len(files) == 1
+        assert files[0].filename == "src/a b/file.py"
+        assert files[0].old_filename is None
+        assert "-old" in files[0].patch
+        assert "+new" in files[0].patch
 
 
 class TestProviderRegistration:

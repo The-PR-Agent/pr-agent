@@ -15,6 +15,32 @@ from pr_agent.git_providers.azuredevops_provider import (
 from pr_agent.log import get_logger
 
 
+def test_publish_description_propagates_update_failure():
+    provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+    provider.workspace_slug = "my-project"
+    provider.repo_slug = "my-repo"
+    provider.pr_num = 1
+    provider.azure_devops_client = MagicMock()
+    provider.azure_devops_client.update_pull_request.side_effect = RuntimeError("permission denied")
+
+    with pytest.raises(RuntimeError, match="permission denied"):
+        provider.publish_description("AI title", "Updated description")
+
+
+def test_azure_supports_thread_resolution():
+    provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+
+    assert provider.supports_thread_resolution() is True
+
+
+def test_azure_resolve_comment_thread_closes_thread():
+    provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+    provider.set_thread_status = MagicMock(return_value=True)
+
+    assert provider.resolve_comment_thread(42) is True
+    provider.set_thread_status.assert_called_once_with(42, "closed")
+
+
 class TestAzureDevopsProviderRepoContext:
     def test_get_repo_file_content_reads_from_target_commit(self):
         # Repo-context files must be read from the PR target (base) commit, matching
@@ -1604,3 +1630,105 @@ def test_azure_raw_comment_order_uses_updates_and_thread_id_ties():
         assert [comment["body"] for comment in comments] == [
             "edited-newest", "tied-newer-thread", "tied-older-thread",
         ]
+
+
+class TestAzureDevopsGlobalSettings:
+    @pytest.fixture(autouse=True)
+    def _clear_global_settings_cache(self):
+        # The org global-settings cache is process-level; clear it between tests.
+        from pr_agent.git_providers import git_provider as _gp
+        _gp._GLOBAL_SETTINGS_CACHE.clear()
+        yield
+        _gp._GLOBAL_SETTINGS_CACHE.clear()
+
+    def _make_provider(self):
+        provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+        provider.workspace_slug = "my-project"
+        provider.repo_slug = "my-repo"
+        provider.azure_devops_client = MagicMock()
+        return provider
+
+    @staticmethod
+    def _set_org_settings(ms, org):
+        ms.return_value.config.use_global_settings_file = True
+        ms.return_value.azure_devops.get.return_value = org
+
+    def test_get_owning_namespace_returns_configured_org(self):
+        provider = self._make_provider()
+        with patch("pr_agent.git_providers.azuredevops_provider.get_settings") as ms:
+            self._set_org_settings(ms, "myorg")
+            assert provider.get_owning_namespace() == "myorg"
+
+    def test_get_owning_namespace_parses_org_from_collection_url(self):
+        provider = self._make_provider()
+        with patch("pr_agent.git_providers.azuredevops_provider.get_settings") as ms:
+            self._set_org_settings(ms, "https://dev.azure.com/myorg")
+            assert provider.get_owning_namespace() == "myorg"
+
+    def test_get_owning_namespace_none_when_org_unset(self):
+        provider = self._make_provider()
+        with patch("pr_agent.git_providers.azuredevops_provider.get_settings") as ms:
+            self._set_org_settings(ms, None)
+            assert provider.get_owning_namespace() is None
+
+    def test_fetch_global_repo_settings_reads_pr_agent_settings_from_pr_project(self):
+        provider = self._make_provider()
+        provider.azure_devops_client.get_item_content.return_value = [b"[pr_reviewer]"]
+        result = provider._fetch_global_repo_settings("myorg")
+
+        assert result == b"[pr_reviewer]"
+        provider.azure_devops_client.get_item_content.assert_called_once_with(
+            repository_id="pr-agent-settings",
+            project="my-project",
+            download=False,
+            include_content_metadata=False,
+            include_content=True,
+            path=".pr_agent.toml",
+        )
+
+    def test_fetch_global_repo_settings_404_returns_empty_and_propagates_other_errors(self):
+        provider = self._make_provider()
+        provider.azure_devops_client.get_item_content.side_effect = Exception(
+            "Operation returned a 404 status code."
+        )
+        assert provider._fetch_global_repo_settings("myorg") == ""
+
+    def test_get_repo_settings_merges_global_then_local(self):
+        provider = self._make_provider()
+        provider.azure_devops_client.get_item_content.side_effect = [
+            [b"[pr_reviewer]\nextra_instructions = \"global\"\n"],
+            [b"[pr_reviewer]\nextra_instructions = \"local\"\n"],
+        ]
+        with patch("pr_agent.git_providers.git_provider.get_settings") as ms, \
+             patch("pr_agent.git_providers.azuredevops_provider.get_settings") as az:
+            az.return_value.azure_devops.get.return_value = "myorg"
+            ms.return_value.config.use_global_settings_file = True
+            result = provider.get_repo_settings()
+
+        assert result == [
+            ("global", b"[pr_reviewer]\nextra_instructions = \"global\"\n"),
+            ("local", b"[pr_reviewer]\nextra_instructions = \"local\"\n"),
+        ]
+
+    def test_get_repo_settings_only_local_when_global_disabled(self):
+        provider = self._make_provider()
+        provider.azure_devops_client.get_item_content.side_effect = [
+            [b"[pr_reviewer]\ntemperature = 0.2\n"],
+        ]
+        with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = False
+            result = provider.get_repo_settings()
+
+        assert result == [("local", b"[pr_reviewer]\ntemperature = 0.2\n")]
+
+    def test_global_settings_result_is_cached(self):
+        provider = self._make_provider()
+        provider.azure_devops_client.get_item_content.return_value = [b"[pr_reviewer]\nnum_max_findings = 5\n"]
+        with patch("pr_agent.git_providers.git_provider.get_settings") as ms, \
+             patch("pr_agent.git_providers.azuredevops_provider.get_settings") as az:
+            az.return_value.azure_devops.get.return_value = "myorg"
+            ms.return_value.config.use_global_settings_file = True
+            assert provider._get_global_repo_settings() == b"[pr_reviewer]\nnum_max_findings = 5\n"
+            assert provider._get_global_repo_settings() == b"[pr_reviewer]\nnum_max_findings = 5\n"  # cached
+
+        assert provider.azure_devops_client.get_item_content.call_count == 1

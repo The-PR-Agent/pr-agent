@@ -32,7 +32,11 @@ def is_valid_file(filename:str, bad_extensions=None) -> bool:
     if filename.endswith(auto_generated_suffixes):
         return False
 
-    return filename.split('.')[-1] not in bad_extensions
+    # Compare case-insensitively: bad_extensions lists binary and asset types (png, zip, svg),
+    # and 'logo.SVG' is the same kind of file as 'logo.svg'. The list is spelled in lower case,
+    # so a file named with an uppercase extension would otherwise slip into the diff.
+    bad_extensions_lower = {str(extension).lower() for extension in bad_extensions}
+    return filename.split('.')[-1].lower() not in bad_extensions_lower
 
 
 def build_language_file_matcher(language_extension_map: Dict) -> Callable[[str], str | None]:
@@ -73,10 +77,19 @@ def build_language_file_matcher(language_extension_map: Dict) -> Callable[[str],
     return get_language
 
 
+def numeric_languages(languages: Dict) -> Dict:
+    """
+    Keep only the {language: size} entries of a provider's get_languages() result. PyGithub 2.x
+    adds a "url" string to every GET dict it returns, and a str cannot be ranked against sizes.
+    """
+    return {k: v for k, v in (languages or {}).items() if isinstance(v, (int, float))}
+
+
 def sort_files_by_main_languages(languages: Dict, files: list):
     """
     Sort files by their main language, put the files that are in the main language first and the rest files after
     """
+    languages = numeric_languages(languages)
     # sort languages by their size
     languages_sorted_list = [k for k, v in sorted(languages.items(), key=lambda item: item[1], reverse=True)]
     # languages_sorted = sorted(languages, key=lambda x: x[1], reverse=True)

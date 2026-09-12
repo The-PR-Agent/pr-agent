@@ -1,4 +1,3 @@
-import asyncio.locks
 import copy
 import os
 import re
@@ -19,7 +18,8 @@ from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.identity_providers import get_identity_provider
 from pr_agent.identity_providers.identity_provider import Eligibility
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
-from pr_agent.servers.utils import DefaultDictWithTimeout, get_pr_commands, verify_signature
+from pr_agent.servers.utils import get_pr_commands, push_trigger_slot, verify_signature
+from pr_agent.telemetry.prometheus import attach_metrics_endpoint, prometheus_metrics_enabled
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
 base_path = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
@@ -92,9 +92,6 @@ async def get_body(request):
     return body
 
 
-_duplicate_push_triggers = DefaultDictWithTimeout(int, ttl=get_settings().github_app.push_trigger_pending_tasks_ttl)
-_pending_task_duplicate_push_conditions = DefaultDictWithTimeout(asyncio.locks.Condition, ttl=get_settings().github_app.push_trigger_pending_tasks_ttl)
-
 async def handle_comments_on_pr(body: Dict[str, Any],
                                 event: str,
                                 sender: str,
@@ -134,8 +131,12 @@ async def handle_comments_on_pr(body: Dict[str, Any],
     with get_logger().contextualize(**log_context):
         if get_identity_provider().verify_eligibility("github", sender_id, api_url) is not Eligibility.NOT_ELIGIBLE:
             get_logger().info(f"Processing comment on PR {api_url=}, comment_body={comment_body}")
-            await agent.handle_request(api_url, comment_body,
-                        notify=lambda: provider.add_eyes_reaction(comment_id, disable_eyes=disable_eyes))
+            succeeded = await agent.handle_request(
+                api_url, comment_body,
+                notify=lambda: provider.add_eyes_reaction(comment_id, disable_eyes=disable_eyes))
+            # Optional, and disabled by default: tell the author how the command ended without
+            # adding another comment to the thread.
+            provider.react_to_outcome(comment_id, bool(succeeded))
         else:
             get_logger().info(f"User {sender=} is not eligible to process comment on PR {api_url=}")
 
@@ -257,44 +258,16 @@ async def handle_push_trigger_for_new_commits(body: Dict[str, Any],
     if get_settings().github_app.push_trigger_ignore_merge_commits and after_sha == merge_commit_sha:
         return {}
 
-    # Prevent triggering multiple times for subsequent push triggers when one is enough:
-    # The first push will trigger the processing, and if there's a second push in the meanwhile it will wait.
-    # Any more events will be discarded, because they will all trigger the exact same processing on the PR.
-    # We let the second event wait instead of discarding it because while the first event was being processed,
-    # more commits may have been pushed that led to the subsequent events,
-    # so we keep just one waiting as a delegate to trigger the processing for the new commits when done waiting.
-    current_active_tasks = _duplicate_push_triggers.setdefault(api_url, 0)
-    max_active_tasks = 2 if get_settings().github_app.push_trigger_pending_tasks_backlog else 1
-    if current_active_tasks < max_active_tasks:
-        # first task can enter, and second tasks too if backlog is enabled
-        get_logger().info(
-            f"Continue processing push trigger for {api_url=} because there are {current_active_tasks} active tasks"
-        )
-        _duplicate_push_triggers[api_url] += 1
-    else:
-        get_logger().info(
-            f"Skipping push trigger for {api_url=} because another event already triggered the same processing"
-        )
-        return {}
-    try:
-        async with _pending_task_duplicate_push_conditions[api_url]:
-            if current_active_tasks == 1:
-                # second task waits
-                get_logger().info(
-                    f"Waiting to process push trigger for {api_url=} because the first task is still in progress"
-                )
-                await _pending_task_duplicate_push_conditions[api_url].wait()
-                get_logger().info(f"Finished waiting to process push trigger for {api_url=} - continue with flow")
-
+    async with push_trigger_slot(
+        api_url,
+        allow_backlog=get_settings().github_app.push_trigger_pending_tasks_backlog,
+        ttl=get_settings().github_app.push_trigger_pending_tasks_ttl,
+    ) as proceed:
+        if not proceed:
+            return {}
         if get_identity_provider().verify_eligibility("github", sender_id, api_url) is not Eligibility.NOT_ELIGIBLE:
             get_logger().info(f"Performing incremental review for {api_url=} because of {event=} and {action=}")
             await _perform_auto_commands_github("push_commands", agent, body, api_url, log_context)
-
-    finally:
-        # release the waiting task block
-        async with _pending_task_duplicate_push_conditions[api_url]:
-            _pending_task_duplicate_push_conditions[api_url].notify(1)
-            _duplicate_push_triggers[api_url] = max(0, _duplicate_push_triggers[api_url] - 1)
 
 
 def handle_closed_pr(body, event, action, log_context):
@@ -332,7 +305,10 @@ def get_log_context(body, event, action, build_number):
 def is_bot_user(sender, sender_type):
     try:
         # logic to ignore PRs opened by bot
-        if get_settings().get("GITHUB_APP.IGNORE_BOT_PR", False) and sender_type == "Bot":
+        ignore_bot_pr = get_settings().get("GITHUB_APP.IGNORE_BOT_PR", None)
+        if ignore_bot_pr is None:
+            ignore_bot_pr = get_settings().get("GITHUB.IGNORE_BOT_PR", False)
+        if ignore_bot_pr and sender_type == "Bot":
             if 'pr-agent' not in sender:
                 get_logger().info(f"Ignoring PR from '{sender=}' because it is a bot")
             return True
@@ -549,6 +525,8 @@ if get_settings().github_app.override_deployment_type:
     get_settings().set("GITHUB.DEPLOYMENT_TYPE", "app")
 # get_settings().set("CONFIG.PUBLISH_OUTPUT_PROGRESS", False)
 middleware = [Middleware(RawContextMiddleware)]
+if prometheus_metrics_enabled():
+    attach_metrics_endpoint(router)
 app = FastAPI(middleware=middleware)
 app.include_router(router)
 

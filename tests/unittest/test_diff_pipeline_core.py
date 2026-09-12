@@ -12,7 +12,6 @@ rather than on full golden strings, so they remain robust to minor
 formatting tweaks.
 """
 
-from unittest.mock import patch
 
 import pytest
 
@@ -36,6 +35,13 @@ class FakeTokenHandler:
 
     def count_tokens(self, patch: str) -> int:
         return len(patch.split())
+
+
+class Utf8TokenHandler(FakeTokenHandler):
+    """Deterministic token handler that makes filename length visible."""
+
+    def count_tokens(self, patch: str) -> int:
+        return len(patch.encode())
 
 
 MULTI_HUNK_PATCH = (
@@ -281,10 +287,9 @@ class TestGenerateFullPatch:
 
     def test_oversized_patch_is_deferred_to_remaining_list(self):
         token_handler = FakeTokenHandler(prompt_tokens=10)
-        big_tokens = 5000  # exceeds (max_tokens - SOFT=1500) when added on top of prompt
         file_dict = {
             "small.py": {"patch": "+ small", "tokens": 5, "edit_type": EDIT_TYPE.MODIFIED},
-            "huge.py":  {"patch": "+ huge",  "tokens": big_tokens, "edit_type": EDIT_TYPE.MODIFIED},
+            "huge.py": {"patch": "+ " + "huge " * 5_000, "tokens": 5_000, "edit_type": EDIT_TYPE.MODIFIED},
         }
         total, patches, remaining, files_in = pr_processing.generate_full_patch(
             convert_hunks_to_line_numbers=False,
@@ -296,6 +301,49 @@ class TestGenerateFullPatch:
         assert "small.py" in files_in
         assert "huge.py" not in files_in
         assert remaining == ["huge.py"]
+
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "src/app.py",
+            "src/" + "long-segment/" * 12 + "app.py",
+            "src/quoted-'module'.py",
+            "src/非常に長い名前.py",
+        ],
+    )
+    def test_file_wrapper_is_counted_before_soft_budget_admission(self, filename):
+        token_handler = Utf8TokenHandler(prompt_tokens=100)
+        patch = "+ value"
+        patch_final = f"\n\n## File: '{filename}'\n\n{patch}\n"
+        max_tokens_model = (
+            pr_processing.OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD
+            + token_handler.prompt_tokens
+            + token_handler.count_tokens(patch_final)
+            - 1
+        )
+        file_dict = {
+            filename: {
+                "patch": patch,
+                "tokens": token_handler.count_tokens(patch),
+                "edit_type": EDIT_TYPE.MODIFIED,
+            }
+        }
+
+        total, patches, remaining, files_in = pr_processing.generate_full_patch(
+            convert_hunks_to_line_numbers=False,
+            file_dict=file_dict,
+            max_tokens_model=max_tokens_model,
+            remaining_files_list_prev=[filename],
+            token_handler=token_handler,
+        )
+
+        assert token_handler.prompt_tokens + file_dict[filename]["tokens"] <= (
+            max_tokens_model - pr_processing.OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD
+        )
+        assert total == token_handler.prompt_tokens
+        assert patches == []
+        assert remaining == [filename]
+        assert files_in == []
 
     def test_remaining_files_list_prev_filters_input(self):
         token_handler = FakeTokenHandler(prompt_tokens=10)
@@ -319,7 +367,7 @@ class TestGenerateFullPatch:
         file_dict = {
             "a.py": {"patch": prebuilt, "tokens": 5, "edit_type": EDIT_TYPE.MODIFIED},
         }
-        _, patches, _, _ = pr_processing.generate_full_patch(
+        total, patches, _, _ = pr_processing.generate_full_patch(
             convert_hunks_to_line_numbers=True,
             file_dict=file_dict,
             max_tokens_model=10_000,
@@ -328,6 +376,7 @@ class TestGenerateFullPatch:
         )
         # In line-numbered mode, the function does not wrap with another header.
         assert patches[0].count("## File: 'a.py'") == 1
+        assert total == token_handler.prompt_tokens + token_handler.count_tokens(patches[0])
 
 
 # ---------------------------------------------------------------------------
@@ -383,7 +432,7 @@ class TestPrGenerateCompressedDiff:
         prompt_tokens = 100
         token_handler = FakeTokenHandler(prompt_tokens=prompt_tokens)
         patch_str = "@@ -1,1 +1,1 @@\n+" + " ".join(["tok"] * 100) + "\n"
-        patch_tokens = token_handler.count_tokens(patch_str)
+        patch_tokens = token_handler.count_tokens(f"\n\n## File: 'f0.py'\n\n{patch_str.strip()}\n")
         soft_threshold = pr_processing.OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD
         # Budget allows exactly one patch per iteration (prompt + patch fits,
         # but prompt + 2*patch does not):
@@ -424,69 +473,55 @@ class TestPrGenerateCompressedDiff:
         finally:
             settings.pr_description.max_ai_calls = original_max_ai_calls
 
-    def test_large_pr_handling_retries_file_after_hard_stop(self, monkeypatch):
-        """A hard-stopped file remains eligible for the next large-PR iteration."""
-
+    def test_large_pr_handling_retries_file_when_wrapper_crosses_soft_budget(self, monkeypatch):
         prompt_tokens = 100
-        max_tokens = 3_000
+        token_handler = Utf8TokenHandler(prompt_tokens=prompt_tokens)
+        patch_str = "@@ -1 +1 @@\n+" + "value " * 100
+        filenames = [
+            "src/quoted-'one'/非常に長い名前_" + "segment_" * 10 + "a.py",
+            "src/quoted-'two'/非常に長い名前_" + "segment_" * 10 + "b.py",
+        ]
+        bare_patch_tokens = token_handler.count_tokens(patch_str)
+        rendered_patch_tokens = token_handler.count_tokens(
+            f"\n\n## File: '{filenames[0]}'\n\n{patch_str.strip()}\n"
+        )
+        max_tokens = (
+            pr_processing.OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD
+            + prompt_tokens
+            + rendered_patch_tokens
+            + bare_patch_tokens
+        )
         monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: max_tokens)
-
-        class HardStopAcrossIterationsTokenHandler(FakeTokenHandler):
-            def __init__(self):
-                super().__init__(prompt_tokens=prompt_tokens)
-                self.first_marker_calls = 0
-
-            def count_tokens(self, patch):
-                if "FIRST_MARKER" in patch:
-                    self.first_marker_calls += 1
-                    # The compressed file entry fits, and its final rendered
-                    # patch count crosses the hard-stop threshold after the
-                    # first file is included.
-                    return {1: 100, 2: 2_500}[self.first_marker_calls]
-                return super().count_tokens(patch)
-
-        token_handler = HardStopAcrossIterationsTokenHandler()
         settings = self._settings()
         original_max_ai_calls = settings.pr_description.max_ai_calls
         settings.pr_description.max_ai_calls = 3
 
         try:
             files = [
-                _make_file(
-                    filename="first.py",
-                    patch="@@ -1 +1 @@\n+FIRST_MARKER\n",
-                    tokens=10,
-                ),
-                _make_file(
-                    filename="hard_stop.py",
-                    patch="@@ -1 +1 @@\n+SECOND_MARKER\n",
-                    tokens=5,
-                ),
+                _make_file(filename=filename, patch=patch_str, tokens=10)
+                for filename in filenames
             ]
 
-            with patch.object(pr_processing, "get_logger") as logger:
-                (patches_list, _, deleted_files_list, remaining_files_list,
-                 file_dict, files_in_patches_list) = \
-                    pr_processing.pr_generate_compressed_diff(
-                        top_langs=[{"files": files}],
-                        token_handler=token_handler,
-                        model="some-model",
-                        convert_hunks_to_line_numbers=False,
-                        large_pr_handling=True,
-                    )
-
-            assert token_handler.first_marker_calls == 2
-            assert prompt_tokens + 2_500 > max_tokens - pr_processing.OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD
-            logger.return_value.warning.assert_any_call(
-                "File was fully skipped, no more tokens: hard_stop.py."
+            (patches_list, total_tokens_list, deleted_files_list, remaining_files_list,
+             file_dict, files_in_patches_list) = pr_processing.pr_generate_compressed_diff(
+                top_langs=[{"files": files}],
+                token_handler=token_handler,
+                model="some-model",
+                convert_hunks_to_line_numbers=False,
+                large_pr_handling=True,
             )
-            assert file_dict["first.py"]["tokens"] == 100
+
+            assert file_dict[filenames[0]]["tokens"] == bare_patch_tokens
             assert len(patches_list) == 2
-            assert files_in_patches_list == [["first.py"], ["hard_stop.py"]]
+            assert files_in_patches_list == [[filenames[0]], [filenames[1]]]
+            assert all(
+                total <= max_tokens - pr_processing.OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD
+                for total in total_tokens_list
+            )
             assert remaining_files_list == []
             assert deleted_files_list == []
             processed_files = [filename for batch in files_in_patches_list for filename in batch]
-            assert processed_files == ["first.py", "hard_stop.py"]
+            assert processed_files == filenames
             assert len(processed_files) == len(set(processed_files))
         finally:
             settings.pr_description.max_ai_calls = original_max_ai_calls

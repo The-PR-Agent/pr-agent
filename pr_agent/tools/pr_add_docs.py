@@ -59,7 +59,7 @@ class PRAddDocs:
                 self.git_provider.publish_comment("Generating Documentation...", is_temporary=True)
 
             get_logger().info('Preparing PR documentation...')
-            await retry_with_fallback_models(self._prepare_prediction)
+            await retry_with_fallback_models(self._prepare_prediction, git_provider=self.git_provider)
             data = self._prepare_pr_code_docs()
             if (not data) or ("Code Documentation" not in data):
                 get_logger().info('No code documentation found for PR.')

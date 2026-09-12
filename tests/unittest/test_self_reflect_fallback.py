@@ -131,6 +131,22 @@ class TestSelfReflectFallback:
         assert reflect.call_args.kwargs["model"] == "fallback-model"
 
     @pytest.mark.asyncio
+    async def test_routed_primary_reflects_on_itself_before_the_fallbacks(
+            self, settings_no_reasoning_model):
+        # [model_routing] can put a model from outside the configured chain in front of the same
+        # fallbacks. Reflection then starts on that model, not on the config.model it replaced.
+        tool = _tool()
+        with patch.object(PRCodeSuggestions, "self_reflect_on_suggestions",
+                          new_callable=AsyncMock) as reflect:
+            reflect.side_effect = ["", "reflection"]
+            result = await tool._self_reflect_with_fallback([{"suggestion": "a"}], "diff",
+                                                            "routed-model")
+
+        assert result == "reflection"
+        assert [call.kwargs["model"] for call in reflect.call_args_list] == [
+            "routed-model", "fallback-model"]
+
+    @pytest.mark.asyncio
     async def test_pinned_deployments_do_not_retry_other_models(self, settings_pinned_deployments):
         # With fallback_deployments configured each model lives on its own deployment, and
         # openai.deployment_id is global. Retrying the next model here would send it to the

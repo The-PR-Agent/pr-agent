@@ -9,6 +9,7 @@ from pr_agent.algo.ai_handlers.litellm_helpers import (
     drain_litellm_callbacks,
     litellm_callbacks_registered,
 )
+from pr_agent.algo.artifacts import inject_artifact_context as _inject_artifact_context
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.utils import apply_repo_settings
@@ -52,53 +53,6 @@ def get_list_setting_or_env(key, fallback=None):
     if isinstance(value, (list, tuple, set)):
         return list(value)
     return [value]
-
-
-def _inject_artifact_context():
-    """Inject CI artifact content into extra_instructions for configured tools."""
-    artifact_path_env = (
-        os.environ.get("ARTIFACT_PATH") or os.environ.get("PR_AGENT_ARTIFACT_PATH") or ""
-    ).strip()
-    artifact_instructions_env = (
-        os.environ.get("ARTIFACT_INSTRUCTIONS") or os.environ.get("PR_AGENT_ARTIFACT_INSTRUCTIONS") or ""
-    ).strip()
-    if artifact_path_env:
-        get_settings().set("ARTIFACTS.ENABLE", True)
-        get_settings().set("ARTIFACTS.ARTIFACT_PATH", artifact_path_env)
-        if artifact_instructions_env:
-            get_settings().set("ARTIFACTS.ARTIFACT_INSTRUCTIONS", artifact_instructions_env)
-
-    artifacts_enabled = get_settings().get("ARTIFACTS.ENABLE", False)
-    if not is_true(artifacts_enabled):
-        return
-
-    try:
-        from pr_agent.algo.artifacts import load_artifact
-
-        artifact_text = load_artifact()
-        if not artifact_text:
-            return
-        target_tools = get_settings().get(
-            "ARTIFACTS.TARGET_TOOLS",
-            ["pr_reviewer", "pr_description", "pr_code_suggestions"]
-        )
-        if isinstance(target_tools, str):
-            target_tools = [t.strip() for t in target_tools.split(",") if t.strip()]
-        target_tools = {str(t).lower() for t in target_tools}
-        separator = "\n======\n\n"
-        for key in get_settings():
-            setting = get_settings().get(key)
-            if str(type(setting)) == "<class 'dynaconf.utils.boxing.DynaBox'>":
-                if key.lower() in target_tools and hasattr(setting, 'extra_instructions'):
-                    extra_instructions = str(setting.extra_instructions or "")
-                    if artifact_text not in extra_instructions:
-                        setting.extra_instructions = (
-                            extra_instructions + separator + artifact_text
-                            if extra_instructions else artifact_text
-                        )
-        get_logger().info(f"Injected artifact context into tools: {target_tools}")
-    except (OSError, ValueError, TypeError) as e:
-        get_logger().warning(f"github action: failed to process artifacts: {e}", exc_info=True)
 
 
 async def _run_review_commands(event_payload):

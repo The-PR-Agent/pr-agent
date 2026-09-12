@@ -20,17 +20,22 @@ bad-URL assertion to TASK_STATE_COMPLETED — making test_bad_url_roundtrip fail
 
 Note: import pr_agent.config_loader first to avoid the pr_agent.log <->
 custom_merge_loader circular import (mirrors server.py)."""
+import asyncio
 import os
+from contextlib import suppress
 
 import pr_agent.config_loader  # noqa: F401  (import-order load; see module docstring)
+import pr_agent.mosaico.executor as executor_mod
 
 # isort: split
 
 import httpx
 import pytest
-from a2a.types import Message, Part, Role, SendMessageRequest
+from a2a.types import CancelTaskRequest, GetTaskRequest, Message, Part, Role, SendMessageRequest
 from google.protobuf.json_format import MessageToDict
 from httpx import ASGITransport
+
+from pr_agent.mosaico.dispatch import RouteResult
 
 # A small, valid unified diff wrapped in a ```diff fence -> the supplied-diff (path b)
 # of the router: no PR URL, no network, parsed by the mosaico_diff provider.
@@ -73,7 +78,7 @@ review:
 _A2A_HEADERS = {"A2A-Version": "1.0"}
 
 
-def _message_send_body(text: str) -> dict:
+def _message_send_body(text: str, return_immediately: bool = False) -> dict:
     """Build a genuine A2A 1.0 JSON-RPC message/send body from the SDK's own types.
 
     Using MessageToDict(SendMessageRequest(...)) ensures the payload shape is identical
@@ -84,10 +89,32 @@ def _message_send_body(text: str) -> dict:
         parts=[Part(text=text)],
     )
     req = SendMessageRequest(message=msg)
+    if return_immediately:
+        req.configuration.return_immediately = True
     return {
         "id": "rt-1",
         "jsonrpc": "2.0",
         "method": "SendMessage",
+        "params": MessageToDict(req),
+    }
+
+
+def _cancel_task_body(task_id: str) -> dict:
+    req = CancelTaskRequest(id=task_id)
+    return {
+        "id": "rt-cancel-1",
+        "jsonrpc": "2.0",
+        "method": "CancelTask",
+        "params": MessageToDict(req),
+    }
+
+
+def _get_task_body(task_id: str) -> dict:
+    req = GetTaskRequest(id=task_id)
+    return {
+        "id": "rt-get-1",
+        "jsonrpc": "2.0",
+        "method": "GetTask",
         "params": MessageToDict(req),
     }
 
@@ -127,6 +154,66 @@ def _live_llm_creds_absent() -> bool:
 
 
 class TestA2ARoundTripStubbedLLM:
+    @pytest.mark.asyncio
+    async def test_cancel_running_task_roundtrip(self, monkeypatch):
+        """CancelTask must return and persist TASK_STATE_CANCELED for active work."""
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+        release = asyncio.Event()
+
+        async def blocking_route(_text):
+            started.set()
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+            return RouteResult("released", True)
+
+        monkeypatch.setattr(executor_mod, "route_and_run_result", blocking_route)
+
+        from pr_agent.mosaico.server import build_app
+
+        app = build_app()
+        async with _build_client(app) as client:
+            send_task = asyncio.create_task(
+                client.post(
+                    "/",
+                    json=_message_send_body(
+                        "review this", return_immediately=True
+                    ),
+                )
+            )
+            try:
+                send_resp = await asyncio.wait_for(asyncio.shield(send_task), timeout=1)
+                assert send_resp.status_code == 200, send_resp.text
+                send_payload = send_resp.json()
+                assert "error" not in send_payload, send_payload
+                task = send_payload["result"]["task"]
+                task_id = task["id"]
+                assert task["status"]["state"] == "TASK_STATE_WORKING"
+
+                await asyncio.wait_for(started.wait(), timeout=1)
+
+                cancel_resp = await client.post("/", json=_cancel_task_body(task_id))
+                assert cancel_resp.status_code == 200, cancel_resp.text
+                cancel_payload = cancel_resp.json()
+                assert "error" not in cancel_payload, cancel_payload
+                assert _get_task_state(cancel_payload["result"]) == "TASK_STATE_CANCELED"
+
+                await asyncio.wait_for(cancelled.wait(), timeout=1)
+
+                get_resp = await client.post("/", json=_get_task_body(task_id))
+                assert get_resp.status_code == 200, get_resp.text
+                get_payload = get_resp.json()
+                assert "error" not in get_payload, get_payload
+                assert _get_task_state(get_payload["result"]) == "TASK_STATE_CANCELED"
+            finally:
+                release.set()
+                if not send_task.done():
+                    with suppress(asyncio.TimeoutError):
+                        await asyncio.wait_for(send_task, timeout=1)
+
     @pytest.mark.asyncio
     async def test_warmup_health_and_card(self, monkeypatch):
         """Warm-up: /health and the agent card respond over the same transport."""

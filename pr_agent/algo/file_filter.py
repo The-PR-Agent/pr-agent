@@ -85,7 +85,7 @@ def filter_ignored(files, platform = 'github'):
 
 
     except Exception as e:
-        print(f"Could not filter file list: {e}")
+        get_logger().error(f"Could not filter file list: {e}")
 
     return files
 

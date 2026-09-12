@@ -1,6 +1,7 @@
 import copy
 import json
 import tomllib
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
@@ -279,3 +280,70 @@ async def test_bitbucket_app_default_profile_passes_the_early_gate(monkeypatch):
     assert result == "OK"
     assert len(calls) == 1
     assert calls[0][0] == "pr_commands"
+
+
+@pytest.mark.parametrize("proceed", [True, False])
+async def test_bitbucket_app_push_uses_shared_dedupe_slot(monkeypatch, proceed):
+    calls = []
+    slots = []
+    pr_url = "https://example.test/pr/1"
+    payload = {
+        "event": "pullrequest:updated",
+        "data": {
+            "actor": {"type": "user", "account_id": "account"},
+            "pullrequest": {"links": {"html": {"href": pr_url}}},
+        },
+    }
+    secret_provider = type(
+        "SecretProvider",
+        (),
+        {"get_secret": lambda self, _key: json.dumps({"shared_secret": "secret"})},
+    )()
+
+    async def get_bearer_token(_shared_secret, _client_key):
+        return "bearer"
+
+    async def run_commands(*args):
+        calls.append(args)
+
+    @asynccontextmanager
+    async def record_slot(key, **kwargs):
+        slots.append((key, kwargs))
+        yield proceed
+
+    monkeypatch.setattr(bitbucket_app, "is_bot_user", lambda _data: False)
+    monkeypatch.setattr(bitbucket_app, "get_fork_safe_secret_provider", lambda: secret_provider)
+    monkeypatch.setattr(bitbucket_app, "get_bearer_token", get_bearer_token)
+    monkeypatch.setattr(bitbucket_app.jwt, "decode", lambda *args, **kwargs: {})
+    monkeypatch.setattr(bitbucket_app, "get_identity_provider", _IdentityProvider)
+    monkeypatch.setattr(bitbucket_app, "_run_commands_bitbucket", run_commands)
+    monkeypatch.setattr(bitbucket_app, "apply_repo_settings", lambda _url: None)
+
+    async def valid_push(_data):
+        return True
+
+    monkeypatch.setattr(bitbucket_app, "_validate_time_from_last_commit_to_pr_update", valid_push)
+    monkeypatch.setattr(bitbucket_app, "push_trigger_slot", record_slot)
+    endpoint = next(route.endpoint for route in bitbucket_app.router.routes if route.path == "/webhook")
+    background_tasks = BackgroundTasks()
+    original_push_commands = global_settings.get("BITBUCKET_APP.PUSH_COMMANDS", None)
+    original_handle_push = global_settings.get("BITBUCKET_APP.HANDLE_PUSH_TRIGGER", None)
+    global_settings.set("BITBUCKET_APP.HANDLE_PUSH_TRIGGER", True)
+    original_base_url = global_settings.get("BITBUCKET.BASE_URL", None)
+    global_settings.set("BITBUCKET_APP.PUSH_COMMANDS", ["/review"])
+    global_settings.set("BITBUCKET.BASE_URL", "https://example.test/app")
+
+    try:
+        with request_cycle_context({}):
+            result = await endpoint(background_tasks, _Request(payload))
+            await background_tasks()
+    finally:
+        global_settings.set("BITBUCKET_APP.PUSH_COMMANDS", original_push_commands)
+        global_settings.set("BITBUCKET_APP.HANDLE_PUSH_TRIGGER", original_handle_push)
+        global_settings.set("BITBUCKET.BASE_URL", original_base_url)
+
+    assert result == "OK"
+    assert slots == [(pr_url, {"allow_backlog": True, "ttl": 300})]
+    assert len(calls) == int(proceed)
+    if proceed:
+        assert calls[0][0] == ["/review"]

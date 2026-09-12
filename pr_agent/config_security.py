@@ -24,3 +24,10 @@ REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION = {
     "push_outputs": frozenset(),
     "prompt_fragments": frozenset(),
 }
+
+# Individual settings in otherwise repository-configurable sections may also be
+# host-only. publish_error_details controls what service-side failure state is
+# disclosed in a PR comment, so the PR author must not be able to enable it.
+REPO_HOST_ONLY_KEYS_BY_SECTION = {
+    "pr_reviewer": frozenset({"publish_error_details"}),
+}

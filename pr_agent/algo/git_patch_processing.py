@@ -13,6 +13,20 @@ RE_HUNK_HEADER = re.compile(
     r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@[ ]?(.*)")
 
 
+def to_hunk_only_patch(patch_str: str) -> str:
+    """Drop unified-diff file metadata before the first hunk.
+
+    ``FilePatchInfo.patch`` consumers expect hunk-only patches and may otherwise
+    treat ``---``/``+++`` file headers as changed source lines. Returns an empty
+    string when the diff has no textual hunk, for example a rename-only change.
+    """
+    lines = patch_str.splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        if line.startswith("@@"):
+            return "".join(lines[i:])
+    return ""
+
+
 def extend_patch(original_file_str, patch_str, patch_extra_lines_before=0,
                  patch_extra_lines_after=0, filename: str = "", new_file_str="") -> str:
     if not patch_str or (patch_extra_lines_before == 0 and patch_extra_lines_after == 0) or not original_file_str:
@@ -386,6 +400,9 @@ __old hunk__
             section_header, size1, size2, start1, start2 = extract_hunk_headers(match)
 
         elif skip_hunk:
+            continue
+        elif match is None:
+            # Ignore unified-diff file metadata before the first valid hunk.
             continue
         elif line.startswith('+'):
             new_content_lines.append(line)

@@ -10,7 +10,6 @@ from typing import Dict, List, Optional
 
 from jinja2 import Environment, StrictUndefined
 
-from pr_agent.algo import MAX_TOKENS
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.git_patch_processing import decouple_and_convert_to_hunks_with_lines_numbers
@@ -37,15 +36,13 @@ from pr_agent.algo.utils import (
     get_max_tokens,
     get_model,
     load_yaml,
+    push_outputs,
     replace_code_tags,
     show_relevant_configurations,
     show_run_details,
 )
 from pr_agent.config_loader import get_settings, get_verbosity_level
-from pr_agent.git_providers import (
-    GithubProvider,
-    get_git_provider_with_context,
-)
+from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.git_provider import GitProvider, IncrementalPR, get_main_pr_language
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
@@ -69,6 +66,40 @@ def get_suggestions_score_threshold() -> int:
 
 def get_dual_publishing_score_threshold() -> int:
     return _as_threshold("pr_code_suggestions.dual_publishing_score_threshold", 0, 0)
+
+
+def render_suggestions_markdown(data: dict) -> str:
+    """Render the suggestions as plain markdown, for a sink that is not a git provider.
+
+    `generate_summarized_suggestions` builds a GFM table wrapped in <table>/<details> HTML and is
+    only produced for providers that support gfm_markdown. Slack and Telegram render neither, so
+    the sinks get this instead: a flat list that survives being read as plain text.
+    """
+    suggestions = data.get("code_suggestions") or []
+    lines = []
+    for suggestion in suggestions:
+        if not isinstance(suggestion, dict):
+            continue
+        location = str(suggestion.get("relevant_file") or "").strip() or "(file not reported)"
+        start = suggestion.get("relevant_lines_start")
+        end = suggestion.get("relevant_lines_end")
+        if start and end:
+            location += f":{start}-{end}" if start != end else f":{start}"
+        header = f"**{location}**"
+        label = str(suggestion.get("label") or "").strip()
+        if label:
+            header += f" — {label}"
+        score = suggestion.get("score")
+        if score not in (None, ""):
+            header += f" (score {score})"
+        lines.append(header)
+        summary = str(suggestion.get("one_sentence_summary") or suggestion.get("suggestion_content") or "").strip()
+        if summary:
+            lines.append(summary)
+        lines.append("")
+    if not lines:
+        return "## PR Code Suggestions\n\nNo suggestions to report."
+    return "## PR Code Suggestions\n\n" + "\n".join(lines).strip()
 
 
 def _supports_code_suggestion_state(git_provider) -> bool:
@@ -260,7 +291,8 @@ class PRCodeSuggestions:
             # if not self.is_extended:
             #     data = await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.REGULAR)
             # else:
-            data = await retry_with_fallback_models(self.prepare_prediction_main, model_type=ModelType.REGULAR)
+            data = await retry_with_fallback_models(self.prepare_prediction_main, model_type=ModelType.REGULAR,
+                                                    git_provider=self.git_provider)
             if not data:
                 data = {"code_suggestions": []}
             self.data = data
@@ -272,6 +304,9 @@ class PRCodeSuggestions:
 
             # publish the suggestions
             if get_settings().config.publish_output:
+                # Emit to the optional external sinks before touching the provider, so a sink
+                # still receives the suggestions if publishing them to the PR fails.
+                push_outputs("improve", payload=data, markdown=render_suggestions_markdown(data))
                 # If a temporary comment was published, remove it
                 self.git_provider.remove_initial_comment()
 
@@ -290,7 +325,7 @@ class PRCodeSuggestions:
 
                     # add usage guide
                     if (get_settings().pr_code_suggestions.enable_chat_text and get_settings().config.is_auto_command
-                            and isinstance(self.git_provider, GithubProvider)):
+                            and self.git_provider.supports_pr_chat()):
                         pr_body += "\n\n>💡 Need additional feedback ? start a [PR chat](https://chromewebstore.google.com/detail/ephlnjeghhogofkifjloamocljapahnl) \n\n"
                     if get_settings().pr_code_suggestions.enable_help_text:
                         pr_body += "<hr>\n\n<details> <summary><strong>💡 Tool usage guide:</strong></summary><hr> \n\n"
@@ -748,15 +783,6 @@ class PRCodeSuggestions:
             new_comment = git_provider.publish_comment(pr_comment, **({"as_thread": True} if as_thread else {}))
         return new_comment
 
-    def extract_link(self, s):
-        r = re.compile(r"<!--.*?-->")
-        match = r.search(s)
-
-        up_to_commit_txt = ""
-        if match:
-            up_to_commit_txt = f" up to commit {match.group(0)[4:-3].strip()}"
-        return up_to_commit_txt
-
     async def _prepare_prediction(self, model: str) -> dict:
         self.patches_diff = get_pr_diff(self.git_provider,
                                         self.token_handler,
@@ -798,7 +824,7 @@ class PRCodeSuggestions:
             await self.analyze_self_reflection_response(data, response_reflect)
         else:
             # get_logger().error(f"Could not self-reflect on suggestions. using default score 7")
-            for i, suggestion in enumerate(data["code_suggestions"]):
+            for suggestion in data["code_suggestions"]:
                 suggestion["score"] = 7
                 suggestion["score_why"] = ""
 
@@ -817,10 +843,14 @@ class PRCodeSuggestions:
             return ""
 
         models = _get_all_models(ModelType.REASONING)
-        if get_model('model_reasoning') == get_settings().config.model and model in models:
-            # No dedicated reasoning model, so this is the regular chain and the outer fallback
-            # loop has already burned everything before the model it settled on.
-            models = models[models.index(model):]
+        if get_model('model_reasoning') == get_settings().config.model:
+            # No dedicated reasoning model, so this is the regular chain.
+            if model in models:
+                # The outer fallback loop has already burned everything before the model it settled on.
+                models = models[models.index(model):]
+            else:
+                # A routed primary ([model_routing]) stood in for config.model, ahead of the same fallbacks.
+                models = [model] + models[1:]
         if get_settings().get("openai.fallback_deployments", []):
             # Each model is pinned to its own deployment, and openai.deployment_id is global to a
             # run whose chunk calls are already in flight concurrently. Retrying another model here
@@ -1012,7 +1042,9 @@ class PRCodeSuggestions:
 
     async def push_inline_code_suggestions(self, data, include_coverage_footer: bool = True) -> None:
         code_suggestions = []
+        artifact_suggestions = []
         fallback_comments = []
+        artifact_batch_published = False
         coverage_footer = self._get_suggestions_coverage_footer() if include_coverage_footer else ""
         supports_suggestions_artifact = self.git_provider.supports_code_suggestions_artifact() is True
 
@@ -1083,20 +1115,26 @@ class PRCodeSuggestions:
                 elif requires_pr_fallback:
                     body += f"\n\nNot offered as a committable change because {fallback_reason}."
 
-            # Keep safety-rejected suggestions out of provider patch APIs while preserving standalone artifacts.
+            rendered_suggestion = {'body': body, 'relevant_file': relevant_file,
+                                   'relevant_lines_start': relevant_lines_start,
+                                   'relevant_lines_end': relevant_lines_end,
+                                   'original_suggestion': d}
+            if supports_suggestions_artifact:
+                artifact_suggestions.append(rendered_suggestion)
+
+            # Keep safety-rejected suggestions out of provider patch APIs and retain fallback recovery text.
             if not has_valid_anchor or (requires_pr_fallback and not supports_suggestions_artifact):
                 fallback_comments.append(f"{body}\n\nLocation: `{relevant_file}:"
                                          f"{relevant_lines_start}-{relevant_lines_end}`")
             else:
-                code_suggestions.append({'body': body, 'relevant_file': relevant_file,
-                                         'relevant_lines_start': relevant_lines_start,
-                                         'relevant_lines_end': relevant_lines_end,
-                                         'original_suggestion': d})
+                code_suggestions.append(rendered_suggestion)
 
-        if code_suggestions:
+        suggestions_to_publish = artifact_suggestions if supports_suggestions_artifact else code_suggestions
+        if suggestions_to_publish:
             if supports_suggestions_artifact:
                 is_successful = self.git_provider.publish_code_suggestions_artifact(
-                    code_suggestions, artifact_footer=coverage_footer)
+                    suggestions_to_publish, artifact_footer=coverage_footer)
+                artifact_batch_published = is_successful
             else:
                 is_successful = self.git_provider.publish_code_suggestions(code_suggestions)
             if is_successful:
@@ -1109,7 +1147,7 @@ class PRCodeSuggestions:
                         self._output_published = True
         if coverage_footer and not supports_suggestions_artifact:
             fallback_comments.append(coverage_footer.strip())
-        if fallback_comments:
+        if fallback_comments and not artifact_batch_published:
             self.git_provider.publish_comment("\n\n---\n\n".join(fallback_comments))
             self._output_published = True
         if code_suggestions and not is_successful:
@@ -1575,20 +1613,18 @@ class PRCodeSuggestions:
                     patches = patch_prompt.strip().split(f"\n{file_prefix}")
                     patches_new = copy.deepcopy(patches)
                     for i in range(len(patches_new)):
+                        patch_body = patches_new[i].rstrip("\n")
                         if i == 0:
-                            prefix = patches_new[i].split("\n@@")[0].strip()
+                            prefix = patch_body.split("\n@@")[0].strip()
                         else:
-                            prefix = file_prefix + patches_new[i].split("\n@@")[0][1:]
+                            prefix = file_prefix + patch_body.split("\n@@")[0]
                             prefix = prefix.strip()
-                        patches_new[i] = prefix + '\n\n' + decouple_and_convert_to_hunks_with_lines_numbers(patches_new[i],
+                        patches_new[i] = prefix + '\n\n' + decouple_and_convert_to_hunks_with_lines_numbers(patch_body,
                                                                                                           file=None).strip()
                         patches_new[i] = patches_new[i].strip()
                     patch_final = "\n\n\n".join(patches_new)
-                    if model in MAX_TOKENS:
-                        max_tokens_full = MAX_TOKENS[
-                            model]  # note - here we take the actual max tokens, without any reductions. we do aim to get the full documentation website in the prompt
-                    else:
-                        max_tokens_full = get_max_tokens(model)
+                    # take the actual max tokens, without any reductions
+                    max_tokens_full = get_max_tokens(model, ignore_max_model_tokens=True)
                     delta_output = 2000
                     token_count = self.token_handler.count_tokens(patch_final)
                     if token_count > max_tokens_full - delta_output:

@@ -9,9 +9,9 @@ body:
       label: Git provider (optional)
       description: 'Git Provider:'
       options:
-        - "Github Cloud"
-        - "Github Enterprise"
-        - "Gitlab"
+        - "GitHub Cloud"
+        - "GitHub Enterprise"
+        - "GitLab"
         - "Bitbucket Cloud"
         - "Bitbucket Server"
         - "Azure"

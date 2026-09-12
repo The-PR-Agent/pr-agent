@@ -103,11 +103,8 @@ class GiteaProvider(GitProvider):
                 repo=self.repo,
                 pr_number=self.pr_number
             )
-            # Optional ignore with user custom
-            self.git_files = filter_ignored(self.git_files, platform="gitea")
 
             self.sha = self.pr.head.sha if self.pr.head.sha else ""
-            self.__add_file_content()
             self.__add_file_diff()
             self._set_pr_commits()
             self.base_sha = self.pr.base.sha if self.pr.base.sha else ""
@@ -325,24 +322,6 @@ class GiteaProvider(GitProvider):
             return comment.get("html_url") or comment.get("url") or ""
         return getattr(comment, "html_url", "") or getattr(comment, "url", "")
 
-    def publish_persistent_comment(self, pr_comment: str,
-                                   initial_header: str,
-                                   update_header: bool = True,
-                                   name='review',
-                                   final_update_message=True,
-                                   identity_marker: str | None = None,
-                                   legacy_initial_header: str | None = None):
-        # Keep the legacy updater path until Gitea normalizes its dictionary-shaped comment payloads.
-        return self.publish_persistent_comment_full(
-            pr_comment,
-            initial_header,
-            update_header,
-            name,
-            final_update_message,
-            identity_marker=identity_marker,
-            legacy_initial_header=legacy_initial_header,
-        )
-
     def publish_comment(self, comment: str,is_temporary: bool = False) -> None:
         """Publish a comment to the pull request"""
         if is_temporary and not get_settings().config.publish_output_progress:
@@ -473,12 +452,9 @@ class GiteaProvider(GitProvider):
         return published_count > 0 or publishable_count == 0
 
 
-    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
-        """Add eyes reaction to a comment"""
+    def add_reaction(self, issue_comment_id: int, reaction: str) -> Optional[int]:
+        """Add a named reaction to a comment"""
         try:
-            if disable_eyes:
-                return None
-
             comments = self.repo_api.list_all_comments(
                 owner=self.owner,
                 repo=self.repo,
@@ -494,7 +470,7 @@ class GiteaProvider(GitProvider):
                 owner=self.owner,
                 repo=self.repo,
                 comment_id=issue_comment_id,
-                reaction="eyes"
+                reaction=reaction
             )
 
             if not response:
@@ -578,6 +554,13 @@ class GiteaProvider(GitProvider):
         """Get files that were modified in the PR"""
         if self.diff_files:
             return self.diff_files
+
+        # Apply [ignore] rules at diff time, after apply_repo_settings() has merged
+        # the repository-level .pr_agent.toml (the provider is constructed before
+        # those settings exist). This matches the other providers, which filter
+        # lazily inside their diff fetch. See #2620.
+        self.git_files = filter_ignored(self.git_files, platform="gitea")
+        self.__add_file_content()
 
         invalid_files_names = []
         counter_valid = 0
@@ -742,11 +725,16 @@ class GiteaProvider(GitProvider):
 
         return [label.name for label in labels]
 
-    def get_repo_settings(self) -> bytes:
-        """Get repository settings"""
+    def get_repo_settings(self):
+        """Get repository settings (org/global first, then repo-local)."""
+        settings_files = []
+        global_settings = self._get_global_repo_settings()
+        if global_settings:
+            settings_files.append(("global", global_settings))
+
         if not self.repo_settings:
             self.logger.error("Repository settings not found")
-            return b""
+            return settings_files if settings_files else ""
 
         response = self.repo_api.get_file_content(
             owner=self.owner,
@@ -756,13 +744,41 @@ class GiteaProvider(GitProvider):
         )
         if not response:
             self.logger.error("Failed to get repository settings")
-            return b""
+        else:
+            # utils.apply_repo_settings() writes this via os.write() and later
+            # calls .decode() on it, so it must be bytes to match the GitHub/
+            # GitLab/Bitbucket contract. get_file_content() decodes the raw bytes
+            # to str, so re-encode here (see issue #2347).
+            settings_files.append(("local", response.encode('utf-8')))
 
-        # utils.apply_repo_settings() writes this via os.write() and later
-        # calls .decode() on it, so it must be bytes to match the GitHub/
-        # GitLab/Bitbucket contract. get_file_content() decodes the raw bytes
-        # to str, so re-encode here (see issue #2347).
-        return response.encode('utf-8')
+        return settings_files if settings_files else ""
+
+    def get_owning_namespace(self) -> Optional[str]:
+        return getattr(self, "owner", None)
+
+    def _get_global_settings_cache_key(self, owner: str) -> str:
+        return f"gitea:{getattr(self, 'base_url', '')}:{owner}"
+
+    def _fetch_global_repo_settings(self, owner):
+        # Owner-wide global settings live in an <owner>/pr-agent-settings repository.
+        # A missing settings repo/file (404) is an expected fallback -> return "" (cached).
+        try:
+            settings_repo = self.repo_api.repo_get(owner, "pr-agent-settings")
+            default_branch = getattr(settings_repo, "default_branch", None)
+            if not default_branch:
+                return ""
+            content = self.repo_api.get_file_content(
+                owner=owner,
+                repo="pr-agent-settings",
+                commit_sha=default_branch,
+                filepath=".pr_agent.toml",
+            )
+            return content.encode('utf-8')
+        except ApiException as e:
+            if getattr(e, "status", None) == 404:
+                return ""
+            raise
+
 
     def get_user_id(self) -> str:
         """Get the ID of the authenticated user"""
@@ -789,7 +805,7 @@ class GiteaProvider(GitProvider):
 
         if not response:
             self.logger.error("Failed to publish PR description")
-            return None
+            raise RuntimeError("Failed to publish PR description")
 
         self.logger.info("PR description published successfully")
         if self.enabled_pr:
@@ -918,6 +934,12 @@ class GiteaProvider(GitProvider):
             if getattr(e, "status", None) == 404:
                 return ""
             raise
+
+    def get_repo_context_ref(self, from_default_branch: bool = False) -> Optional[str]:
+        if from_default_branch:
+            return self.repo_api.repo_get(self.owner, self.repo).default_branch
+        # Only trust the PR target (base) ref — never the PR head (self.sha).
+        return self.base_sha or self.base_ref
 
 class RepoApi(giteapy.RepositoryApi):
     def __init__(self, client: giteapy.ApiClient):

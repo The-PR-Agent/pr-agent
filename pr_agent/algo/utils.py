@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import copy
 import difflib
-import hashlib
 import html
 import json
 import os
@@ -10,8 +9,6 @@ import re
 import string
 import sys
 import textwrap
-import time
-import traceback
 from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from enum import Enum
@@ -23,14 +20,17 @@ import html2text
 import requests
 import yaml
 from pydantic import BaseModel
-from starlette_context import context
 
 from pr_agent.algo import MAX_TOKENS
-from pr_agent.algo.git_patch_processing import extract_hunk_headers, extract_hunk_lines_from_patch
+from pr_agent.algo.git_patch_processing import (
+    extract_hunk_headers,
+    extract_hunk_lines_from_patch,
+    to_hunk_only_patch,
+)
 from pr_agent.algo.run_details import get_run_details
 from pr_agent.algo.token_handler import TokenEncoder
 from pr_agent.algo.types import FilePatchInfo
-from pr_agent.config_loader import get_settings, get_verbosity_level, global_settings
+from pr_agent.config_loader import get_settings, get_verbosity_level
 from pr_agent.log import get_logger
 
 _ENCODED_USER_TEXT_PREFIX = "__pr_agent_encoded_text__:"
@@ -219,14 +219,6 @@ class PRDescriptionHeader(str, Enum):
     FILE_WALKTHROUGH = "File Walkthrough"
 
 
-def get_setting(key: str) -> Any:
-    try:
-        key = key.upper()
-        return context.get("settings", global_settings).get(key, global_settings.get(key, None))
-    except Exception:
-        return global_settings.get(key, None)
-
-
 def as_review_text(value) -> str:
     """Flatten a review field the model returned as a list or mapping into readable text.
 
@@ -269,18 +261,6 @@ def emphasize_header(text: str, only_markdown=False, reference_link=None) -> str
     except Exception as e:
         get_logger().exception(f"Failed to emphasize header: {e}")
         return text
-
-
-def unique_strings(input_list: List[str]) -> List[str]:
-    if not input_list or not isinstance(input_list, list):
-        return input_list
-    seen = set()
-    unique_list = []
-    for item in input_list:
-        if item not in seen:
-            unique_list.append(item)
-            seen.add(item)
-    return unique_list
 
 
 def _expand_minute_suffix(text: str) -> str:
@@ -498,7 +478,7 @@ def convert_to_markdown_v2(output_data: dict,
                     markdown_text += f"{emoji}&nbsp;<strong>Recommended focus areas for review</strong><br><br>\n\n"
                 else:
                     markdown_text += f"### {emoji} Recommended focus areas for review\n\n#### \n"
-                for i, issue in enumerate(issues):
+                for issue in issues:
                     try:
                         if not issue or not isinstance(issue, dict):
                             continue
@@ -701,7 +681,7 @@ def process_can_be_split(emoji, value):
             markdown_text += f"{emoji} <strong>No multiple PR themes</strong>\n\n"
         else:
             markdown_text += f"{emoji} <strong>{key_nice}</strong><br><br>\n\n"
-            for i, split in enumerate(value):
+            for split in value:
                 title = split.get('title', '')
                 relevant_files = split.get('relevant_files', [])
                 markdown_text += f"<details><summary>\nSub-PR theme: <b>{title}</b></summary>\n\n"
@@ -911,7 +891,7 @@ def convert_str_to_datetime(date_str):
 def load_large_diff(filename, new_file_content_str: str, original_file_content_str: str, show_warning: bool = True) -> str:
     """
     Generate a patch for a modified file by comparing the original content of the file with the new content provided as
-    input.
+    input. The returned patch starts at its first hunk and excludes unified-diff file metadata.
     """
     if not original_file_content_str and not new_file_content_str:
         return ""
@@ -923,8 +903,7 @@ def load_large_diff(filename, new_file_content_str: str, original_file_content_s
                                     new_file_content_str.splitlines(keepends=True))
         if get_verbosity_level() >= 2 and show_warning:
             get_logger().info(f"File was modified, but no patch was found. Manually creating patch: {filename}.")
-        patch = ''.join(diff)
-        return patch
+        return to_hunk_only_patch(''.join(diff))
     except Exception as e:
         get_logger().exception(f"Failed to generate patch for file: {filename}")
         return ""
@@ -1004,7 +983,57 @@ def sanitize_yaml_control_chars(text: str, log: bool = True) -> str:
     return sanitized
 
 
-def load_yaml(response_text: str, keys_fix_yaml: List[str] = [], first_key="", last_key="") -> dict:
+def _looks_like_more_answer(tail: str) -> bool:
+    """Whether the text after the fence is more of the answer rather than a sign-off.
+
+    Two signals, because each alone has a blind spot: a tail that parses as a mapping or a
+    list is structured, but one that continues into prose does not parse at all and is
+    only recognisable from the shape of its first line.
+    """
+    first_line = next((line for line in tail.split('\n') if line.strip()), '')
+    if re.match(r'^[A-Za-z_][A-Za-z0-9_]*:(\s|$)', first_line):
+        return True
+    try:
+        return isinstance(yaml.safe_load(tail), (dict, list))
+    except Exception:
+        return False
+
+
+def drop_sign_off_after_wrapper_fence(text: str) -> str:
+    """Drop a closing remark the model added after the wrapper's closing fence.
+
+    The prompts ask for YAML "and nothing else", but the model sometimes signs off
+    anyway. That either leaves the document unparseable or, for a single block
+    scalar, parses the fence and the remark into the value.
+
+    No existing fallback recovers it. The one that extracts a fenced block needs
+    both fences, but most prompts end with an open fence for the model to continue
+    from, so the reply carries only the closing one.
+    """
+    lines = text.split('\n')
+    for i in range(len(lines) - 1, -1, -1):
+        if lines[i].rstrip() != '```':
+            continue
+        tail = '\n'.join(lines[i + 1:])
+        if not tail.strip():
+            return text
+        if _looks_like_more_answer(tail):
+            # Dropping it would publish a partial answer, where the parse failure it
+            # replaces at least triggers a retry.
+            return text
+        candidate = '\n'.join(lines[:i])
+        try:
+            if isinstance(yaml.safe_load(candidate), dict):
+                return candidate
+        except Exception:
+            pass
+        return text
+    return text
+
+
+def load_yaml(response_text: str, keys_fix_yaml: List[str] | None = None, first_key="", last_key="") -> dict:
+    if keys_fix_yaml is None:
+        keys_fix_yaml = []
     response_text_original = copy.deepcopy(response_text)
     response_text = response_text.strip('\n')
     # strip the fence label only when it is a complete info string, so a key such as
@@ -1012,7 +1041,10 @@ def load_yaml(response_text: str, keys_fix_yaml: List[str] = [], first_key="", l
     unfenced = re.sub(r'^```[ \t]*(?:(?i:yaml|yml))?[ \t]*(?=\r?\n)', '', response_text)
     if unfenced == response_text:
         unfenced = response_text.removeprefix('yaml')
-    response_text = unfenced.rstrip().removesuffix('```')
+    response_text = unfenced.rstrip()
+    response_text = drop_sign_off_after_wrapper_fence(response_text)
+    if response_text.split('\n')[-1] == '```':
+        response_text = response_text.removesuffix('```')
     response_text = sanitize_yaml_control_chars(response_text)
     response_text_original_sanitized = sanitize_yaml_control_chars(response_text_original, log=False)
     try:
@@ -1041,10 +1073,12 @@ def load_yaml(response_text: str, keys_fix_yaml: List[str] = [], first_key="", l
 
 
 def try_fix_yaml(response_text: str,
-                 keys_fix_yaml: List[str] = [],
+                 keys_fix_yaml: List[str] | None = None,
                  first_key="",
                  last_key="",
                  response_text_original="") -> dict:
+    if keys_fix_yaml is None:
+        keys_fix_yaml = []
     response_text_lines = response_text.split('\n')
 
     keys_yaml = ['relevant line:', 'suggestion content:', 'relevant file:', 'existing code:',
@@ -1347,38 +1381,81 @@ def _as_int(value, default: int = 0) -> int:
         return default
 
 
-def get_max_tokens(model):
+def get_max_tokens(model, ignore_max_model_tokens=False):
     """
     Get the maximum number of tokens allowed for a model.
     logic:
     (1) If the model is in './pr_agent/algo/__init__.py', use the value from there.
     (2) else if 'config.custom_model_max_tokens' is set to a positive value, use it.
-    (3) else, fall back to litellm.get_model_info(model)["max_input_tokens"].
-    (4) else, raise an error.
+    (3) else if it is a GPT-5.x _thinking alias registered under its base name, use that value.
+    (4) else, query LiteLLM for provider-qualified and bare alias bases before the original model.
+    (5) else, raise an error.
 
     For all cases, we further limit the number of tokens to 'config.max_model_tokens' if it is set.
     This aims to improve the algorithmic quality, as the AI model degrades in performance when the input is too long.
+    Pass ignore_max_model_tokens=True to keep the unreduced value, for sites that deliberately use the
+    raw model context size rather than the conservative clamp.
     """
     settings = get_settings()
     custom_max_tokens = _as_int(settings.config.custom_model_max_tokens)
+    # Resolve GPT-6 Astra aliases before diff token accounting, just as the handler does.
+    # Preserve explicit custom limits for provider aliases that were not in the registry.
+    model_base = model
+    while model_base.startswith(('openai/', 'azure/')):
+        model_base = model_base.removeprefix('openai/').removeprefix('azure/')
+    if custom_max_tokens <= 0 and model_base.removesuffix('_thinking') == 'gpt-6-astra':
+        model = 'gpt-6-astra'
+    # Normalize GPT-5.x _thinking aliases before token-limit lookup to match
+    # LiteLLMAIHandler request normalization.
+    model_for_max_tokens = model
+    litellm_lookup_models = (model,)
+    if isinstance(model, str):
+        tmp = model
+        while tmp.startswith(("openai/", "azure/")):
+            tmp = tmp.removeprefix("openai/").removeprefix("azure/")
+        if tmp.startswith("gpt-5") and "_thinking" in tmp:
+            model_for_max_tokens = tmp.replace("_thinking", "")
+            settings_get = getattr(settings, "get", None)
+            azure_mode = callable(settings_get) and (
+                settings_get("OPENAI.API_TYPE", None) == "azure"
+                or bool(settings_get("AZURE_AD.CLIENT_ID", None))
+            )
+            if azure_mode or model.startswith("azure/"):
+                provider_prefix = "azure/"
+            else:
+                provider_prefix = "openai/"
+            provider_model = provider_prefix + model_for_max_tokens
+            litellm_lookup_models = tuple(dict.fromkeys((provider_model, model_for_max_tokens, model)))
     if model in MAX_TOKENS:
         max_tokens_model = MAX_TOKENS[model]
     elif custom_max_tokens > 0:
         max_tokens_model = custom_max_tokens
+    elif model_for_max_tokens in MAX_TOKENS:
+        max_tokens_model = MAX_TOKENS[model_for_max_tokens]
     else:
         # Fallback: ask LiteLLM for the model's metadata before giving up.
         max_tokens_model = 0
         import litellm
-        try:
-            model_info = litellm.get_model_info(model)
-        except Exception:
-            get_logger().debug(f"litellm.get_model_info could not resolve model '{model}'")
-            model_info = None
-        if model_info:
-            litellm_max = model_info.get("max_input_tokens")
-            if litellm_max and int(litellm_max) > 0:
-                max_tokens_model = int(litellm_max)
-                get_logger().debug(f"Resolved max_input_tokens for '{model}' from litellm: {max_tokens_model}")
+        # Try provider-qualified and bare bases before the raw alias.
+        for lookup_model in litellm_lookup_models:
+            try:
+                model_info = litellm.get_model_info(lookup_model)
+            except Exception:
+                get_logger().debug(f"litellm.get_model_info could not resolve model '{lookup_model}'")
+                model_info = None
+            if model_info:
+                litellm_max = model_info.get("max_input_tokens")
+                try:
+                    parsed_max_tokens = int(litellm_max)
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if parsed_max_tokens > 0:
+                    max_tokens_model = parsed_max_tokens
+                    get_logger().debug(
+                        f"Resolved max_input_tokens for '{model}' from litellm "
+                        f"(lookup '{lookup_model}'): {max_tokens_model}"
+                    )
+                    break
 
         if max_tokens_model <= 0:
             get_logger().error(
@@ -1391,7 +1468,7 @@ def get_max_tokens(model):
             )
 
     max_model_tokens = _as_int(settings.config.max_model_tokens) if settings.config.max_model_tokens else 0
-    if max_model_tokens > 0:
+    if max_model_tokens > 0 and not ignore_max_model_tokens:
         max_tokens_model = min(max_model_tokens, max_tokens_model)
     return max_tokens_model
 
@@ -1599,64 +1676,6 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
                             break
     return position, absolute_position
 
-def get_rate_limit_status(github_token) -> dict:
-    GITHUB_API_URL = get_settings(use_context=False).get("GITHUB.BASE_URL", "https://api.github.com").rstrip("/")  # "https://api.github.com"
-    # GITHUB_API_URL = "https://api.github.com"
-    RATE_LIMIT_URL = f"{GITHUB_API_URL}/rate_limit"
-    HEADERS = {
-        "Accept": "application/vnd.github.v3+json",
-        "Authorization": f"token {github_token}"
-    }
-
-    response = requests.get(RATE_LIMIT_URL, headers=HEADERS)
-    try:
-        rate_limit_info = response.json()
-        if rate_limit_info.get('message') == 'Rate limiting is not enabled.':  # for github enterprise
-            return {'resources': {}}
-        response.raise_for_status()  # Check for HTTP errors
-    except:  # retry
-        time.sleep(0.1)
-        response = requests.get(RATE_LIMIT_URL, headers=HEADERS)
-        return response.json()
-    return rate_limit_info
-
-
-def validate_rate_limit_github(github_token, installation_id=None, threshold=0.1) -> bool:
-    try:
-        rate_limit_status = get_rate_limit_status(github_token)
-        if installation_id:
-            get_logger().debug(f"installation_id: {installation_id}, Rate limit status: {rate_limit_status['rate']}")
-    # validate that the rate limit is not exceeded
-        # validate that the rate limit is not exceeded
-        for key, value in rate_limit_status['resources'].items():
-            if value['remaining'] < value['limit'] * threshold:
-                get_logger().error(f"key: {key}, value: {value}")
-                return False
-        return True
-    except Exception as e:
-        get_logger().error(f"Error in rate limit {e}",
-                           artifact={"traceback": traceback.format_exc()})
-        return True
-
-
-def validate_and_await_rate_limit(github_token):
-    try:
-        rate_limit_status = get_rate_limit_status(github_token)
-        # validate that the rate limit is not exceeded
-        for key, value in rate_limit_status['resources'].items():
-            if value['remaining'] < value['limit'] // 80:
-                get_logger().error(f"key: {key}, value: {value}")
-                sleep_time_sec = value['reset'] - datetime.now().timestamp()
-                sleep_time_hour = sleep_time_sec / 3600.0
-                get_logger().error(f"Rate limit exceeded. Sleeping for {sleep_time_hour} hours")
-                if sleep_time_sec > 0:
-                    time.sleep(sleep_time_sec + 1)
-                rate_limit_status = get_rate_limit_status(github_token)
-        return rate_limit_status
-    except:
-        get_logger().error("Error in rate limit")
-        return None
-
 
 def github_action_output(output_data: dict, key_name: str):
     try:
@@ -1851,25 +1870,6 @@ def is_value_no(value):
     if value_str == 'no' or value_str == 'none' or value_str == 'false':
         return True
     return False
-
-
-def set_pr_string(repo_name, pr_number):
-    return f"{repo_name}#{pr_number}"
-
-
-def string_to_uniform_number(s: str) -> float:
-    """
-    Convert a string to a uniform number in the range [0, 1].
-    The uniform distribution is achieved by the nature of the SHA-256 hash function, which produces a uniformly distributed hash value over its output space.
-    """
-    # Generate a hash of the string
-    hash_object = hashlib.sha256(s.encode())
-    # Convert the hash to an integer
-    hash_int = int(hash_object.hexdigest(), 16)
-    # Normalize the integer to the range [0, 1]
-    max_hash_int = 2 ** 256 - 1
-    uniform_number = float(hash_int) / max_hash_int
-    return uniform_number
 
 
 def process_description(description_full: str) -> Tuple[str, List]:

@@ -1,6 +1,6 @@
 ## Overview
 
-The `review` tool scans the PR code changes, and generates feedback about the PR, aiming to aid the reviewing process.
+Generate a PR review with feedback on possible issues, security concerns, tests and review effort.
 <br>
 The tool can be triggered automatically every time a new PR is [opened](../usage-guide/automations_and_usage.md#github-app-automatic-tools-when-a-new-pr-is-opened), or can be invoked manually by commenting on any PR:
 
@@ -18,11 +18,11 @@ Note that the main purpose of the `review` tool is to provide the **PR reviewer*
 
 Invoke the tool manually by commenting `/review` on any PR:
 
-![review comment](https://codium.ai/images/pr_agent/review_comment.png){width=512}
+![review comment](../assets/review_comment.png){width=512}
 
 After ~30 seconds, the tool will generate a review for the PR:
 
-![review](https://codium.ai/images/pr_agent/review3.png){width=512}
+![review](../assets/review3.png){width=512}
 
 If you want to edit [configurations](#configuration-options), add the relevant ones to the command:
 
@@ -61,6 +61,14 @@ for the authoritative default values.
       <tr>
         <td><b>persistent_comment</b></td>
         <td>If set to true, the review comment will be persistent, meaning that every new review request will edit the previous one.</td>
+      </tr>
+      <tr>
+        <td><b>publish_error_details</b></td>
+        <td>
+          If set to true, a failed manual review comment includes a deterministic, sanitized failure reason for known
+          provider and runtime errors. The failure formatter does not call an AI model, never publishes raw exception
+          text, and falls back to a generic internal-error message. Default is false.
+        </td>
       </tr>
       <tr>
         <td><b>review_heading</b></td>

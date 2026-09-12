@@ -27,8 +27,8 @@ class PR_LineQuestions:
         self.ai_handler = ai_handler()
         self.ai_handler.main_pr_language = self.main_pr_language
 
-        # only GitHub can resolve threads today; elsewhere the marker would be
-        # requested from the model and every answer would log a failed resolve
+        # Request the marker only for providers that can resolve threads;
+        # otherwise every resolved answer would log a failed resolve.
         self.resolve_threads = (get_settings().pr_questions.get("resolve_threads", False)
                                 and self.git_provider.supports_thread_resolution())
         self.vars = {

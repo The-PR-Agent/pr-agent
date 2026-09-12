@@ -87,7 +87,7 @@ class PRGenerateLabels:
             if get_settings().config.publish_output:
                 self.git_provider.publish_comment("Preparing PR labels...", is_temporary=True)
 
-            await retry_with_fallback_models(self._prepare_prediction)
+            await retry_with_fallback_models(self._prepare_prediction, git_provider=self.git_provider)
 
             get_logger().info(f"Preparing answer {self.pr_id}")
             if self.prediction:
