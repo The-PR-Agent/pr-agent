@@ -3,6 +3,7 @@ import json
 import shlex
 from functools import partial
 
+import dynaconf
 from opentelemetry.trace import StatusCode
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
@@ -238,7 +239,7 @@ class PRAgent:
             get_logger().info(f'User has set the response language to: {response_language}')
             for key in get_settings():
                 setting = get_settings().get(key)
-                if str(type(setting)) == "<class 'dynaconf.utils.boxing.DynaBox'>":
+                if isinstance(setting, dynaconf.DataDict):
                     if hasattr(setting, 'extra_instructions'):
                         current_extra_instructions = setting.extra_instructions
 

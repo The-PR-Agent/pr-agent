@@ -12,7 +12,9 @@ current_dir = dirname(abspath(__file__))
 dynconf_kwargs = {'core_loaders': [], # DISABLE default loaders, otherwise will load toml files more than once.
                            'loaders': ['pr_agent.custom_merge_loader', 'dynaconf.loaders.env_loader'], # Use a custom loader to merge sections, but overwrite their overlapping values. Also support ENV variables to take precedence.
                            'root_path': join(current_dir, "settings"), #Used for Dynaconf.find_file() - So that root path points to settings folder, since we disabled all core loaders.
-                           'merge_enabled': True  # In case more than one file is sent, merge them. Must be set to True, otherwise, a .toml file with section [XYZ] overwrites the entire section of a previous .toml file's [XYZ] and we want it to only overwrite the overlapping fields under such section
+                           # Multi-file section-field merging is done by pr_agent.custom_merge_loader itself (it accumulates fields
+                           # across files and calls set() with a full section). Keeping dynaconf merge disabled makes settings.set()
+                           "merge_enabled": False
                            }
 global_settings = Dynaconf(
     envvar_prefix=False,
