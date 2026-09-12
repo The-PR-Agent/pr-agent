@@ -356,6 +356,19 @@ async def test_ambiguous_model_deployment_chain_keeps_partial_result(configured,
     assert len(calls) == 3
 
 
+async def test_repeated_fallback_pair_skips_recoveries_without_retrying_it(configured, monkeypatch):
+    # A unique fallback pair appearing twice in the chain would route the same
+    # failed chunk to an identical (model, deployment) a second time, so recovery
+    # gives up and keeps the partial result instead of adding duplicate inference.
+    get_settings().set("config.fallback_models", ["gpt-4o-mini", "gpt-4o-mini"])
+    get_settings().set("openai.fallback_deployments", ["secondary", "secondary"])
+    tool, calls = make_tool(monkeypatch, {("gpt-4o", "b"): RuntimeError("failure")})
+    result = await retry_with_fallback_models(tool.prepare_prediction_main)
+    assert [s["relevant_file"] for s in result["code_suggestions"]] == ["a.py", "c.py"]
+    assert len(calls) == 3
+    assert tool.failed_chunk_count == 1
+
+
 async def test_recovery_uses_existing_reflection_before_publishing_results(configured, monkeypatch):
     keys = ("config.model_reasoning", "pr_code_suggestions_reflect_prompt.system",
             "pr_code_suggestions_reflect_prompt.user")
