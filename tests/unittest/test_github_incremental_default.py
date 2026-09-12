@@ -86,3 +86,72 @@ def test_can_run_incremental_review_handles_aware_commit_dates():
         result = reviewer._can_run_incremental_review()
 
     assert result in (True, False)  # either outcome is valid; crash is the bug
+
+
+def _frozen_now(fixed_aware_utc):
+    class _FrozenDatetime:
+        timezone = datetime.timezone
+        timedelta = datetime.timedelta
+
+        class datetime:
+            @staticmethod
+            def now(*args, **kwargs):
+                return fixed_aware_utc.astimezone(datetime.timezone.utc)
+
+    return patch("pr_agent.tools.pr_reviewer.datetime", new=_FrozenDatetime)
+
+
+def test_incremental_review_runs_when_commit_is_older_than_utc_threshold():
+    """The threshold is naive UTC, so a host in a non-UTC zone must not shift
+    the minimum-age decision."""
+    from pr_agent.tools.pr_reviewer import PRReviewer
+
+    reviewer = PRReviewer.__new__(PRReviewer)
+    reviewer.is_auto = False
+    reviewer.git_provider = MagicMock(spec=["get_incremental_commits"])
+    reviewer.pr_url = "https://github.com/test/repo/pull/1"
+
+    commit = SimpleNamespace(
+        commit=SimpleNamespace(author=SimpleNamespace(date=datetime.datetime(2026, 9, 10, 12, 0, tzinfo=datetime.timezone.utc)))
+    )
+    reviewer.incremental = IncrementalPR(True)
+    reviewer.incremental.commits_range = [commit]
+    reviewer.incremental.last_seen_commit = commit
+
+    with (
+        _frozen_now(datetime.datetime(2026, 9, 10, 13, 0, tzinfo=datetime.timezone.utc)),
+        patch("pr_agent.tools.pr_reviewer.get_settings") as mock_settings,
+    ):
+        mock_settings.return_value.git_provider = "github"
+        mock_settings.return_value.pr_reviewer.minimal_commits_for_incremental_review = 0
+        mock_settings.return_value.pr_reviewer.minimal_minutes_for_incremental_review = 30
+        mock_settings.return_value.pr_reviewer.require_all_thresholds_for_incremental_review = False
+
+        assert reviewer._can_run_incremental_review() is True
+
+
+def test_incremental_review_skipped_when_commit_is_newer_than_utc_threshold():
+    from pr_agent.tools.pr_reviewer import PRReviewer
+
+    reviewer = PRReviewer.__new__(PRReviewer)
+    reviewer.is_auto = False
+    reviewer.git_provider = MagicMock(spec=["get_incremental_commits"])
+    reviewer.pr_url = "https://github.com/test/repo/pull/1"
+
+    commit = SimpleNamespace(
+        commit=SimpleNamespace(author=SimpleNamespace(date=datetime.datetime(2026, 9, 10, 13, 15, tzinfo=datetime.timezone.utc)))
+    )
+    reviewer.incremental = IncrementalPR(True)
+    reviewer.incremental.commits_range = [commit]
+    reviewer.incremental.last_seen_commit = commit
+
+    with (
+        _frozen_now(datetime.datetime(2026, 9, 10, 13, 0, tzinfo=datetime.timezone.utc)),
+        patch("pr_agent.tools.pr_reviewer.get_settings") as mock_settings,
+    ):
+        mock_settings.return_value.git_provider = "github"
+        mock_settings.return_value.pr_reviewer.minimal_commits_for_incremental_review = 0
+        mock_settings.return_value.pr_reviewer.minimal_minutes_for_incremental_review = 30
+        mock_settings.return_value.pr_reviewer.require_all_thresholds_for_incremental_review = True
+
+        assert reviewer._can_run_incremental_review() is False

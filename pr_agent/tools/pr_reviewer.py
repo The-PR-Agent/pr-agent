@@ -1223,7 +1223,7 @@ class PRReviewer:
         num_commits_threshold = get_settings().pr_reviewer.minimal_commits_for_incremental_review
         not_enough_commits = num_new_commits < num_commits_threshold
         # checking if the commits are not too recent to start the review
-        recent_commits_threshold = datetime.datetime.now() - datetime.timedelta(
+        recent_commits_threshold = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) - datetime.timedelta(
             minutes=get_settings().pr_reviewer.minimal_minutes_for_incremental_review
         )
         last_seen_commit_date = (
