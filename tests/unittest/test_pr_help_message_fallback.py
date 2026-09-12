@@ -156,12 +156,13 @@ async def test_each_attempt_fits_complete_prompt_for_its_model(help_tool, monkey
         (-1, 1_000),
         (None, 1_000),
         ("invalid", 1_000),
-        (400.0, 1_000),
-        (400.5, 1_000),
+        (400.0, 2_600),
+        (400.5, 2_600),
         (float("nan"), 1_000),
         (float("inf"), 1_000),
-        (True, 1_000),
+        (True, 2_999),
         (False, 1_000),
+        ("1" * 5_000, 1_000),
     ],
 )
 def test_prompt_budget_honors_positive_output_limit_or_help_default(
@@ -172,6 +173,38 @@ def test_prompt_budget_honors_positive_output_limit_or_help_default(
     monkeypatch.setattr(pr_help_message, "get_max_tokens", lambda *_args, **_kwargs: 3_000)
 
     assert tool._get_prompt_budget(PRIMARY) == expected_budget
+
+
+def test_prompt_budget_uses_handler_reported_output_limit(help_tool, monkeypatch):
+    tool, _, _ = help_tool
+    get_settings().set("config.max_output_tokens", 400)
+    tool.ai_handler.get_output_token_limit = Mock(return_value=1_600)
+    monkeypatch.setattr(pr_help_message, "get_max_tokens", lambda *_args, **_kwargs: 3_000)
+
+    assert tool._get_prompt_budget(PRIMARY) == 1_400
+    tool.ai_handler.get_output_token_limit.assert_called_once_with(PRIMARY)
+
+
+@pytest.mark.parametrize("reported_limit", [None, 0, -1, True, 1.5, "1600"])
+def test_unusable_handler_output_limit_falls_back_to_config(
+    help_tool, monkeypatch, reported_limit
+):
+    tool, _, _ = help_tool
+    get_settings().set("config.max_output_tokens", 400)
+    tool.ai_handler.get_output_token_limit = Mock(return_value=reported_limit)
+    monkeypatch.setattr(pr_help_message, "get_max_tokens", lambda *_args, **_kwargs: 3_000)
+
+    assert tool._get_prompt_budget(PRIMARY) == 2_600
+
+
+def test_failing_handler_output_limit_falls_back_to_config(help_tool, monkeypatch):
+    tool, _, logger = help_tool
+    get_settings().set("config.max_output_tokens", 400)
+    tool.ai_handler.get_output_token_limit = Mock(side_effect=RuntimeError("unavailable"))
+    monkeypatch.setattr(pr_help_message, "get_max_tokens", lambda *_args, **_kwargs: 3_000)
+
+    assert tool._get_prompt_budget(PRIMARY) == 2_600
+    assert any("output token limit" in call.args[0] for call in logger.debug.call_args_list)
 
 
 @pytest.mark.parametrize(

@@ -55,14 +55,31 @@ class PRHelpMessage:
         return system_prompt, user_prompt
 
     @staticmethod
-    def _get_prompt_budget(model: str) -> int:
-        raw_output_tokens = get_settings().config.get("max_output_tokens", 0)
-        if isinstance(raw_output_tokens, int) and not isinstance(raw_output_tokens, bool):
-            output_tokens = raw_output_tokens
-        elif isinstance(raw_output_tokens, str) and re.fullmatch(r"[+-]?\d+", raw_output_tokens.strip()):
-            output_tokens = int(raw_output_tokens)
-        else:
-            output_tokens = 0
+    def _coerce_output_token_limit(value) -> int:
+        try:
+            output_tokens = int(value)
+        except (TypeError, ValueError, OverflowError):
+            return 0
+        return output_tokens if output_tokens > 0 else 0
+
+    def _get_prompt_budget(self, model: str) -> int:
+        output_tokens = 0
+        get_output_token_limit = getattr(self.ai_handler, "get_output_token_limit", None)
+        if callable(get_output_token_limit):
+            try:
+                handler_output_tokens = get_output_token_limit(model)
+            except Exception as e:
+                get_logger().debug(f"Failed to resolve the output token limit for {model}: {e}")
+            else:
+                if (
+                    isinstance(handler_output_tokens, int)
+                    and not isinstance(handler_output_tokens, bool)
+                    and handler_output_tokens > 0
+                ):
+                    output_tokens = handler_output_tokens
+        if output_tokens <= 0:
+            raw_output_tokens = get_settings().config.get("max_output_tokens", 0)
+            output_tokens = self._coerce_output_token_limit(raw_output_tokens)
         if output_tokens <= 0:
             output_tokens = HELP_OUTPUT_TOKEN_RESERVE
         return max(get_max_tokens(model, ignore_max_model_tokens=True) - output_tokens, 0)

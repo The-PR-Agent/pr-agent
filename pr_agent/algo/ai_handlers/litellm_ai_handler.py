@@ -3420,12 +3420,6 @@ class LiteLLMAIHandler(BaseAiHandler):
                 return value.strip().lower() in ("1", "true", "yes", "on")
             return default
 
-        def _as_int(value):
-            try:
-                return int(value)
-            except (TypeError, ValueError):
-                return 0
-
         provider_only = _as_list(openrouter_settings.get("provider_only", []))
         provider_order = _as_list(openrouter_settings.get("provider_order", []))
         if provider_only:
@@ -3439,7 +3433,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         effective_reasoning_effort = str(
             openrouter_settings.get("reasoning_effort", "") or ""
         ).strip().lower()
-        reasoning_max_tokens = _as_int(openrouter_settings.get("reasoning_max_tokens", 0))
+        reasoning_max_tokens = self._coerce_token_value(openrouter_settings.get("reasoning_max_tokens", 0))
         if effective_reasoning_effort:
             try:
                 ReasoningEffort(effective_reasoning_effort)
@@ -3500,12 +3494,12 @@ class LiteLLMAIHandler(BaseAiHandler):
         if extra_body:
             kwargs["extra_body"] = extra_body
 
-        max_tokens = _as_int(openrouter_settings.get("max_tokens", 0))
+        max_tokens = self._coerce_token_value(openrouter_settings.get("max_tokens", 0))
         if max_tokens > 0:
-            existing = _as_int(kwargs.get("max_tokens", 0))
+            existing = self._coerce_token_value(kwargs.get("max_tokens", 0))
             kwargs["max_tokens"] = min(existing, max_tokens) if existing > 0 else max_tokens
-        effective_max_tokens = _as_int(kwargs.get("max_tokens", 0))
-        effective_reasoning_max_tokens = _as_int(reasoning.get("max_tokens", 0))
+        effective_max_tokens = self._coerce_token_value(kwargs.get("max_tokens", 0))
+        effective_reasoning_max_tokens = self._coerce_token_value(reasoning.get("max_tokens", 0))
         effective_reasoning_effort = reasoning.get("effort")
         if (
             model.startswith("openrouter/anthropic/")
@@ -3522,6 +3516,78 @@ class LiteLLMAIHandler(BaseAiHandler):
             )
         return kwargs
 
+    @staticmethod
+    def _coerce_token_value(value) -> int:
+        """Mirror the request's permissive integer coercion without conversion failures."""
+        try:
+            return int(value)
+        except (TypeError, ValueError, OverflowError):
+            return 0
+
+    def _claude_thinking_mode(self, model: str) -> str | None:
+        """Return the thinking mode selected by request construction for this model."""
+        adaptive_model = self._is_claude_adaptive_thinking_model(model)
+        if adaptive_model and self._claude_thinking_controls["enable_claude_adaptive_thinking"]:
+            return "adaptive"
+        if (
+            model in self.claude_extended_thinking_models
+            and self._claude_thinking_controls["enable_claude_extended_thinking"]
+        ):
+            return "unsupported_extended" if adaptive_model else "extended"
+        return None
+
+    def _get_claude_extended_thinking_limits(self) -> tuple[int, int]:
+        """Validate and return the snapshotted extended-thinking budget and output cap."""
+        extended_thinking_budget_tokens = self._claude_thinking_controls["extended_thinking_budget_tokens"]
+        extended_thinking_max_output_tokens = self._claude_thinking_controls["extended_thinking_max_output_tokens"]
+
+        if not isinstance(extended_thinking_budget_tokens, int) or extended_thinking_budget_tokens <= 0:
+            raise ValueError(
+                f"extended_thinking_budget_tokens must be a positive integer, "
+                f"got {extended_thinking_budget_tokens}"
+            )
+        if not isinstance(extended_thinking_max_output_tokens, int) or extended_thinking_max_output_tokens <= 0:
+            raise ValueError(
+                f"extended_thinking_max_output_tokens must be a positive integer, "
+                f"got {extended_thinking_max_output_tokens}"
+            )
+        if extended_thinking_max_output_tokens < extended_thinking_budget_tokens:
+            raise ValueError(
+                f"extended_thinking_max_output_tokens ({extended_thinking_max_output_tokens}) must be greater than "
+                f"or equal to extended_thinking_budget_tokens ({extended_thinking_budget_tokens})"
+            )
+        return extended_thinking_budget_tokens, extended_thinking_max_output_tokens
+
+    def _resolve_output_token_limit(self, model: str, openrouter_model: str | None) -> int:
+        """Return the final positive output cap selected by PR-Agent request controls."""
+        output_tokens = self._coerce_token_value(get_settings().config.get("max_output_tokens", 0))
+        if self._claude_thinking_mode(model) == "extended":
+            _, output_tokens = self._get_claude_extended_thinking_limits()
+
+        if openrouter_model:
+            openrouter_output_tokens = self._coerce_token_value(self._openrouter_controls.get("max_tokens", 0))
+            if openrouter_output_tokens > 0:
+                output_tokens = (
+                    min(output_tokens, openrouter_output_tokens)
+                    if output_tokens > 0
+                    else openrouter_output_tokens
+                )
+        return output_tokens if output_tokens > 0 else 0
+
+    def get_output_token_limit(self, model: str) -> int:
+        """Return the output cap that this handler will request for the supplied model."""
+        custom_llm_provider = self._custom_llm_provider
+        configured_deployment_id = self.deployment_id
+        routed_model = self._route_model_for_request(model, custom_llm_provider, configured_deployment_id)
+        completion_model = self._normalize_gpt5_model_for_request(routed_model, model, custom_llm_provider)
+        request_provider = (
+            PROVIDER_SETTING_ALIASES.get(custom_llm_provider, custom_llm_provider)
+            if custom_llm_provider
+            else self._resolve_request_provider(routed_model)
+        )
+        openrouter_model = self._canonical_openrouter_model(completion_model, request_provider)
+        return self._resolve_output_token_limit(completion_model, openrouter_model)
+
     def _configure_claude_extended_thinking(self, model: str, kwargs: dict) -> dict:
         """
         Configure Claude extended thinking parameters if applicable.
@@ -3533,16 +3599,9 @@ class LiteLLMAIHandler(BaseAiHandler):
         Returns:
             dict: Updated kwargs with extended thinking configuration
         """
-        extended_thinking_budget_tokens = self._claude_thinking_controls["extended_thinking_budget_tokens"]
-        extended_thinking_max_output_tokens = self._claude_thinking_controls["extended_thinking_max_output_tokens"]
-
-        # Validate extended thinking parameters
-        if not isinstance(extended_thinking_budget_tokens, int) or extended_thinking_budget_tokens <= 0:
-            raise ValueError(f"extended_thinking_budget_tokens must be a positive integer, got {extended_thinking_budget_tokens}")
-        if not isinstance(extended_thinking_max_output_tokens, int) or extended_thinking_max_output_tokens <= 0:
-            raise ValueError(f"extended_thinking_max_output_tokens must be a positive integer, got {extended_thinking_max_output_tokens}")
-        if extended_thinking_max_output_tokens < extended_thinking_budget_tokens:
-            raise ValueError(f"extended_thinking_max_output_tokens ({extended_thinking_max_output_tokens}) must be greater than or equal to extended_thinking_budget_tokens ({extended_thinking_budget_tokens})")
+        extended_thinking_budget_tokens, extended_thinking_max_output_tokens = (
+            self._get_claude_extended_thinking_limits()
+        )
 
         kwargs["thinking"] = {
             "type": "enabled",
@@ -3938,19 +3997,16 @@ class LiteLLMAIHandler(BaseAiHandler):
                 # https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking
                 adaptive_thinking_enabled = self._claude_thinking_controls["enable_claude_adaptive_thinking"]
                 extended_thinking_enabled = self._claude_thinking_controls["enable_claude_extended_thinking"]
-                if self._is_claude_adaptive_thinking_model(model) and adaptive_thinking_enabled:
+                claude_thinking_mode = self._claude_thinking_mode(model)
+                if claude_thinking_mode == "adaptive":
                     kwargs = self._configure_claude_adaptive_thinking(model, kwargs)
-                elif (
-                    model in self.claude_extended_thinking_models
-                    and extended_thinking_enabled
-                ):
-                    if self._is_claude_adaptive_thinking_model(model):
-                        get_logger().warning(
-                            f"Skipping extended thinking for {model}: adaptive-only models reject "
-                            f"budget_tokens. Enable config.enable_claude_adaptive_thinking instead."
-                        )
-                    else:
-                        kwargs = self._configure_claude_extended_thinking(model, kwargs)
+                elif claude_thinking_mode == "extended":
+                    kwargs = self._configure_claude_extended_thinking(model, kwargs)
+                elif claude_thinking_mode == "unsupported_extended":
+                    get_logger().warning(
+                        f"Skipping extended thinking for {model}: adaptive-only models reject "
+                        f"budget_tokens. Enable config.enable_claude_adaptive_thinking instead."
+                    )
                 elif adaptive_thinking_enabled or extended_thinking_enabled:
                     message = (
                         f"No thinking configuration applied for model {model}: adaptive thinking "
@@ -3968,10 +4024,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                 # providers apply a low service-side default (Bedrock Converse: 4096,
                 # which reasoning can fully consume, returning empty content).
                 # setdefault keeps the extended-thinking limit authoritative.
-                try:
-                    max_output_tokens = int(get_settings().config.get("max_output_tokens", 0))
-                except (TypeError, ValueError):
-                    max_output_tokens = 0
+                max_output_tokens = self._resolve_output_token_limit(model, openrouter_model)
                 if max_output_tokens > 0:
                     output_limit_param = "max_completion_tokens" if is_gpt6_astra else "max_tokens"
                     kwargs.setdefault(output_limit_param, max_output_tokens)
