@@ -64,8 +64,21 @@ class PRHelpMessage:
 
     def _get_prompt_budget(self, model: str) -> int:
         output_tokens = 0
+        get_output_token_reserve = getattr(self.ai_handler, "get_output_token_reserve", None)
+        if callable(get_output_token_reserve):
+            try:
+                handler_output_tokens = get_output_token_reserve(model, HELP_OUTPUT_TOKEN_RESERVE)
+            except Exception as e:
+                get_logger().debug(f"Failed to resolve the output token reserve for {model}: {e}")
+            else:
+                if (
+                    isinstance(handler_output_tokens, int)
+                    and not isinstance(handler_output_tokens, bool)
+                    and handler_output_tokens > 0
+                ):
+                    output_tokens = handler_output_tokens
         get_output_token_limit = getattr(self.ai_handler, "get_output_token_limit", None)
-        if callable(get_output_token_limit):
+        if output_tokens <= 0 and callable(get_output_token_limit):
             try:
                 handler_output_tokens = get_output_token_limit(model)
             except Exception as e:

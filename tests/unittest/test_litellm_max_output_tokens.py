@@ -99,7 +99,14 @@ def _mock_response():
     return mock
 
 
-async def _run(monkeypatch, model, config_values, openrouter=None, custom_llm_provider=""):
+async def _run(
+    monkeypatch,
+    model,
+    config_values,
+    openrouter=None,
+    custom_llm_provider="",
+    reserve_default=None,
+):
     monkeypatch.setattr(
         litellm_handler,
         "get_settings",
@@ -110,8 +117,14 @@ async def _run(monkeypatch, model, config_values, openrouter=None, custom_llm_pr
         mock_call.return_value = _mock_response()
         handler = litellm_handler.LiteLLMAIHandler()
         exposed_limit = handler.get_output_token_limit(model)
+        exposed_reserve = (
+            handler.get_output_token_reserve(model, reserve_default)
+            if reserve_default is not None
+            else None
+        )
         await handler.chat_completion(model=model, system="sys", user="usr")
-    return mock_call.call_args[1], exposed_limit
+    result = (mock_call.call_args[1], exposed_limit)
+    return (*result, exposed_reserve) if reserve_default is not None else result
 
 
 class TestMaxOutputTokens:
@@ -202,6 +215,66 @@ class TestMaxOutputTokens:
 
         assert exposed_limit == 4096
         assert kwargs["max_tokens"] == 4096
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("config_values", "openrouter", "expected_limit", "expected_reserve"),
+        [
+            ({}, {"reasoning_max_tokens": 4096}, 0, 6096),
+            ({"max_output_tokens": 8000}, {"reasoning_max_tokens": 4096}, 8000, 8000),
+            ({}, {"reasoning_max_tokens": 4096, "reasoning_effort": "none"}, 0, 2000),
+        ],
+    )
+    async def test_openrouter_reasoning_expands_only_the_default_reserve(
+        self,
+        monkeypatch,
+        config_values,
+        openrouter,
+        expected_limit,
+        expected_reserve,
+    ):
+        kwargs, exposed_limit, exposed_reserve = await _run(
+            monkeypatch,
+            "openrouter/google/gemini-2.5-pro",
+            config_values,
+            openrouter=openrouter,
+            reserve_default=2000,
+        )
+
+        assert exposed_limit == expected_limit
+        assert exposed_reserve == expected_reserve
+        if openrouter.get("reasoning_effort") == "none":
+            assert kwargs["extra_body"]["reasoning"] == {"enabled": False}
+        else:
+            assert kwargs["extra_body"]["reasoning"] == {"max_tokens": 4096}
+
+    @pytest.mark.asyncio
+    async def test_openrouter_grok_clamped_none_still_reserves_reasoning(self, monkeypatch):
+        kwargs, exposed_limit, exposed_reserve = await _run(
+            monkeypatch,
+            "openrouter/x-ai/grok-4.6",
+            {},
+            openrouter={"reasoning_max_tokens": 8000, "reasoning_effort": "none"},
+            reserve_default=2000,
+        )
+
+        assert exposed_limit == 0
+        assert exposed_reserve == 10000
+        assert kwargs["extra_body"]["reasoning"] == {"max_tokens": 8000}
+
+    @pytest.mark.asyncio
+    async def test_openrouter_astra_uses_one_capped_output_limit(self, monkeypatch):
+        kwargs, exposed_limit = await _run(
+            monkeypatch,
+            "gpt-6-astra",
+            {"max_output_tokens": 16000},
+            openrouter={"max_tokens": 4096},
+            custom_llm_provider="openrouter",
+        )
+
+        assert exposed_limit == 4096
+        assert kwargs["max_completion_tokens"] == 4096
+        assert "max_tokens" not in kwargs
 
     @pytest.mark.asyncio
     async def test_openrouter_limit_caps_extended_thinking_limit(self, monkeypatch):

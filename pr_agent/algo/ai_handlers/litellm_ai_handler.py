@@ -3495,10 +3495,13 @@ class LiteLLMAIHandler(BaseAiHandler):
             kwargs["extra_body"] = extra_body
 
         max_tokens = self._coerce_token_value(openrouter_settings.get("max_tokens", 0))
+        output_limit_param = (
+            "max_completion_tokens" if "max_completion_tokens" in kwargs else "max_tokens"
+        )
         if max_tokens > 0:
-            existing = self._coerce_token_value(kwargs.get("max_tokens", 0))
-            kwargs["max_tokens"] = min(existing, max_tokens) if existing > 0 else max_tokens
-        effective_max_tokens = self._coerce_token_value(kwargs.get("max_tokens", 0))
+            existing = self._coerce_token_value(kwargs.get(output_limit_param, 0))
+            kwargs[output_limit_param] = min(existing, max_tokens) if existing > 0 else max_tokens
+        effective_max_tokens = self._coerce_token_value(kwargs.get(output_limit_param, 0))
         effective_reasoning_max_tokens = self._coerce_token_value(reasoning.get("max_tokens", 0))
         effective_reasoning_effort = reasoning.get("effort")
         if (
@@ -3587,6 +3590,39 @@ class LiteLLMAIHandler(BaseAiHandler):
         )
         openrouter_model = self._canonical_openrouter_model(completion_model, request_provider)
         return self._resolve_output_token_limit(completion_model, openrouter_model)
+
+    def get_output_token_reserve(self, model: str, default_output_tokens: int) -> int:
+        """Return completion headroom to reserve while fitting a request prompt."""
+        output_tokens = self.get_output_token_limit(model)
+        if output_tokens > 0:
+            return output_tokens
+
+        default_output_tokens = self._coerce_token_value(default_output_tokens)
+        custom_llm_provider = self._custom_llm_provider
+        routed_model = self._route_model_for_request(model, custom_llm_provider, self.deployment_id)
+        request_provider = (
+            PROVIDER_SETTING_ALIASES.get(custom_llm_provider, custom_llm_provider)
+            if custom_llm_provider
+            else self._resolve_request_provider(routed_model)
+        )
+        openrouter_model = self._canonical_openrouter_model(
+            routed_model, request_provider
+        )
+        if not openrouter_model:
+            return default_output_tokens
+
+        reasoning_effort = str(
+            self._openrouter_controls.get("reasoning_effort", "") or ""
+        ).strip().lower()
+        reasoning_effort = self._clamp_grok_reasoning_effort(
+            openrouter_model, reasoning_effort
+        )
+        reasoning_tokens = self._coerce_token_value(
+            self._openrouter_controls.get("reasoning_max_tokens", 0)
+        )
+        if reasoning_effort == "none" or reasoning_tokens <= 0:
+            return default_output_tokens
+        return default_output_tokens + reasoning_tokens
 
     @staticmethod
     def normalize_request_prompts(model: str, system_prompt: str, user_prompt: str) -> tuple[str, str]:

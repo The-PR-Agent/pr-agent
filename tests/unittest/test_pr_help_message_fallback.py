@@ -185,6 +185,16 @@ def test_prompt_budget_uses_handler_reported_output_limit(help_tool, monkeypatch
     tool.ai_handler.get_output_token_limit.assert_called_once_with(PRIMARY)
 
 
+def test_prompt_budget_uses_handler_reported_output_reserve(help_tool, monkeypatch):
+    tool, _, _ = help_tool
+    get_settings().set("config.max_output_tokens", 400)
+    tool.ai_handler.get_output_token_reserve = Mock(return_value=1_600)
+    monkeypatch.setattr(pr_help_message, "get_max_tokens", lambda *_args, **_kwargs: 3_000)
+
+    assert tool._get_prompt_budget(PRIMARY) == 1_400
+    tool.ai_handler.get_output_token_reserve.assert_called_once_with(PRIMARY, 2_000)
+
+
 @pytest.mark.parametrize("reported_limit", [None, 0, -1, True, 1.5, "1600"])
 def test_unusable_handler_output_limit_falls_back_to_config(
     help_tool, monkeypatch, reported_limit
