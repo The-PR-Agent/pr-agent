@@ -1542,7 +1542,8 @@ class PRCodeSuggestions:
         pair with the routed one and records it as primary, so recovery must reproduce
         that substitution; otherwise a routed run would search the configured chain
         for a pair that is not there. Returns None when the caller's pair cannot be
-        found uniquely, in which case recovery gives up rather than guess the position.
+        found uniquely or a later pair repeats, in which case recovery gives up rather
+        than guess the position or retry an identical fallback.
         """
         models = _get_all_models(ModelType.REGULAR)
         deployments = _get_all_deployments(models)[:len(models)]
@@ -1555,7 +1556,11 @@ class PRCodeSuggestions:
         if len(positions) != 1:
             get_logger().warning("Skipping chunk recovery: current model/deployment is not unique in the fallback chain")
             return None
-        return list(zip(models, deployments, strict=True)), positions[0] + 1
+        effective_chain = list(zip(models, deployments, strict=True))
+        if len(set(effective_chain)) != len(effective_chain):
+            get_logger().warning("Skipping chunk recovery: the fallback chain repeats a model/deployment pair")
+            return None
+        return effective_chain, positions[0] + 1
 
     async def _recover_failed_chunks(self, model: str, chunk_pairs: list, results: list) -> None:
         """Try remaining models for failed slots, without replacing successful predictions."""
