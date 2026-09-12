@@ -3951,13 +3951,31 @@ class LiteLLMAIHandler(BaseAiHandler):
                         # 'max' is this project's own alias for "the most reasoning available",
                         # already translated on the Grok and OpenRouter paths. GPT-5.2 and later
                         # name that level 'xhigh'; litellm reports supports_xhigh_reasoning_effort
-                        # false for gpt-5 and gpt-5.1, so those stay unsupported either way.
+                        # false for gpt-5 and gpt-5.1, so those are clamped to 'high' instead.
                         # GPT-6 Astra accepts 'max' natively and is left untouched.
-                        get_logger().info(
-                            "GPT-5 models name their top reasoning level 'xhigh'; "
-                            "using 'xhigh' for reasoning_effort='max'"
-                        )
-                        effort = ReasoningEffort.XHIGH.value
+                        lookup_model = model_base.removesuffix('_thinking')
+                        try:
+                            supports_xhigh = litellm.get_model_info(lookup_model).get(
+                                "supports_xhigh_reasoning_effort"
+                            )
+                        except Exception:
+                            # An unknown model is not evidence that 'xhigh' is unsupported; keep it.
+                            get_logger().debug(
+                                f"litellm.get_model_info could not resolve model '{lookup_model}'"
+                            )
+                            supports_xhigh = None
+                        if supports_xhigh is False:
+                            effort = ReasoningEffort.HIGH.value
+                            get_logger().info(
+                                f"{lookup_model} does not support reasoning_effort='xhigh'; "
+                                "using 'high' for reasoning_effort='max'"
+                            )
+                        else:
+                            effort = ReasoningEffort.XHIGH.value
+                            get_logger().info(
+                                "GPT-5 models name their top reasoning level 'xhigh'; "
+                                "using 'xhigh' for reasoning_effort='max'"
+                            )
 
                     if openrouter_model:
                         openrouter_reasoning_effort = effort
