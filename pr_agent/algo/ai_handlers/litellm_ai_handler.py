@@ -1898,6 +1898,23 @@ def _as_bool(value, default: bool) -> bool:
     return default
 
 
+def _as_int(value) -> int:
+    """Parse a config value that may arrive as an int (toml) or a string (env override)."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _as_list(value) -> list:
+    """Parse a config value that may arrive as an list[str] (toml) or a string (env override)."""
+    if isinstance(value, (list, tuple)):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if isinstance(value, str):
+        return [v.strip() for v in value.split(",") if v.strip()]
+    return []
+
+
 def _configured_client_retries():
     """config.num_retries as a non-negative int, or None (unset/invalid = client defaults).
 
@@ -3406,26 +3423,6 @@ class LiteLLMAIHandler(BaseAiHandler):
         # Normalize operator-controlled config: Dynaconf/env overrides can
         # arrive as strings (AUTO_CAST_FOR_DYNACONF is disabled), so coerce
         # defensively instead of trusting the declared types.
-        def _as_list(value):
-            if isinstance(value, (list, tuple)):
-                return [str(v).strip() for v in value if str(v).strip()]
-            if isinstance(value, str):
-                return [v.strip() for v in value.split(",") if v.strip()]
-            return []
-
-        def _as_bool(value, default=True):
-            if isinstance(value, bool):
-                return value
-            if isinstance(value, str):
-                return value.strip().lower() in ("1", "true", "yes", "on")
-            return default
-
-        def _as_int(value):
-            try:
-                return int(value)
-            except (TypeError, ValueError):
-                return 0
-
         provider_only = _as_list(openrouter_settings.get("provider_only", []))
         provider_order = _as_list(openrouter_settings.get("provider_order", []))
         if provider_only:
@@ -3433,7 +3430,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         elif provider_order:
             provider = extra_body.setdefault("provider", {})
             provider["order"] = provider_order
-            provider["allow_fallbacks"] = _as_bool(openrouter_settings.get("allow_fallbacks", True))
+            provider["allow_fallbacks"] = _as_bool(openrouter_settings.get("allow_fallbacks", True), default=True)
 
         reasoning = {}
         effective_reasoning_effort = str(
