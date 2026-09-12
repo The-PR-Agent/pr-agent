@@ -191,6 +191,15 @@ PROVIDER_API_BASE_ENV_VARS = {
     "zai": ("ZAI_API_BASE",),
 }
 
+_WATSONX_ROUTING_ENV_VARS = {
+    "api_base": ("WATSONX_API_BASE", "WATSONX_URL", "WX_URL", "WML_URL"),
+    "project_id": ("WATSONX_PROJECT_ID", "WX_PROJECT_ID", "PROJECT_ID"),
+    "space_id": ("WATSONX_DEPLOYMENT_SPACE_ID", "WATSONX_SPACE_ID", "WX_SPACE_ID", "SPACE_ID"),
+    "region_name": ("WATSONX_REGION", "WX_REGION", "REGION"),
+    "token": ("WATSONX_TOKEN",),
+    "zen_api_key": ("WATSONX_ZENAPIKEY",),
+}
+
 PROVIDER_ROUTING_ENV_VARS = {
     "azure": {
         "api_base": ("AZURE_API_BASE", "AZURE_OPENAI_ENDPOINT"),
@@ -215,22 +224,8 @@ PROVIDER_ROUTING_ENV_VARS = {
         "vertex_project": ("VERTEXAI_PROJECT", "GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT"),
         "vertex_location": ("VERTEXAI_LOCATION", "VERTEX_LOCATION"),
     },
-    "watsonx": {
-        "api_base": ("WATSONX_API_BASE", "WATSONX_URL", "WX_URL", "WML_URL"),
-        "project_id": ("WATSONX_PROJECT_ID", "WX_PROJECT_ID", "PROJECT_ID"),
-        "space_id": ("WATSONX_DEPLOYMENT_SPACE_ID", "WATSONX_SPACE_ID", "WX_SPACE_ID", "SPACE_ID"),
-        "region_name": ("WATSONX_REGION", "WX_REGION", "REGION"),
-        "token": ("WATSONX_TOKEN",),
-        "zen_api_key": ("WATSONX_ZENAPIKEY",),
-    },
-    "watsonx_text": {
-        "api_base": ("WATSONX_API_BASE", "WATSONX_URL", "WX_URL", "WML_URL"),
-        "project_id": ("WATSONX_PROJECT_ID", "WX_PROJECT_ID", "PROJECT_ID"),
-        "space_id": ("WATSONX_DEPLOYMENT_SPACE_ID", "WATSONX_SPACE_ID", "WX_SPACE_ID", "SPACE_ID"),
-        "region_name": ("WATSONX_REGION", "WX_REGION", "REGION"),
-        "token": ("WATSONX_TOKEN",),
-        "zen_api_key": ("WATSONX_ZENAPIKEY",),
-    },
+    "watsonx": dict(_WATSONX_ROUTING_ENV_VARS),
+    "watsonx_text": dict(_WATSONX_ROUTING_ENV_VARS),
 }
 
 # Keep aliases in the same precedence order as LiteLLM 1.100.0.
