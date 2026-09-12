@@ -353,7 +353,7 @@ class GithubProvider(GitProvider):
                         if counter_valid == MAX_FILES_ALLOWED_FULL:
                             get_logger().info("Too many files in PR, will avoid loading full content for rest of files")
 
-                    if avoid_load:
+                    if avoid_load or (not self.incremental.is_incremental and file.status == "removed"):
                         new_file_content_str = ""
                     else:
                         new_file_content_str = self._get_pr_file_content(file, self.pr.head.sha)  # communication with GitHub
@@ -364,7 +364,7 @@ class GithubProvider(GitProvider):
                         patch = load_large_diff(file.filename, new_file_content_str, original_file_content_str)
                         self.unreviewed_files_map[file.filename] = patch
                     else:
-                        if avoid_load:
+                        if avoid_load or file.status == "added":
                             original_file_content_str = ""
                         else:
                             original_file_content_str = self._get_pr_file_content(file, merge_base_commit.sha, path=old_filename)
