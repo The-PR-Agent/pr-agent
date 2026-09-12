@@ -83,7 +83,7 @@ for the authoritative default values.
       </tr>
       <tr>
         <td><b>persistent_finding_state</b></td>
-        <td>If set to true, PR-Agent persists structured review finding state across complete review runs, so findings can be resolved and reopened. Incremental and partial reviews do not resolve absent findings. Default is true.</td>
+        <td>If set to true, PR-Agent persists structured review finding state across complete review runs, so findings can be resolved and reopened. Resolved findings retain the original Markdown formatting of their description. Incremental and partial reviews do not resolve absent findings. Default is true.</td>
 
       </tr>
       <tr>
