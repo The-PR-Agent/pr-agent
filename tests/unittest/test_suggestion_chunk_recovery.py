@@ -11,6 +11,7 @@ from starlette_context import request_cycle_context
 
 import pr_agent.tools.pr_code_suggestions as module
 from pr_agent.algo.pr_processing import retry_with_fallback_models
+from pr_agent.algo.run_details import get_run_details, init_run_details
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import get_settings
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
@@ -157,6 +158,24 @@ async def test_oversized_fallback_is_skipped_without_truncating_context(configur
     assert all(system == "Review " + tool.vars["instructions"] for _, _, _, system in calls)
 
 
+async def test_marker_text_in_diff_is_counted_literally_for_recovery(configured, monkeypatch):
+    tool, calls = make_tool(monkeypatch, {("gpt-4o", "<|endoftext|>"): RuntimeError("failure")})
+    # Patch after make_tool so the fixture's default chunk list does not win.
+    monkeypatch.setattr(module, "get_pr_multi_diffs", lambda *a, **k: ["a", "<|endoftext|>", "c"])
+    result = await retry_with_fallback_models(tool.prepare_prediction_main)
+    assert ("gpt-4o-mini", "<|endoftext|>", "secondary") in [(m, c, d) for m, c, d, _ in calls]
+    assert len(result["code_suggestions"]) == 3
+
+
+async def test_boundary_size_chunk_is_eligible_for_recovery(configured, monkeypatch):
+    tool, calls = make_tool(monkeypatch, {("gpt-4o", "b"): RuntimeError("failure")})
+    monkeypatch.setattr(module.TokenHandler, "count_tokens", lambda self, s: 1)
+    monkeypatch.setattr(module, "get_max_tokens", lambda model: 1502 if model == "gpt-4o-mini" else 10000)
+    result = await retry_with_fallback_models(tool.prepare_prediction_main)
+    assert [s["relevant_file"] for s in result["code_suggestions"]] == ["a.py", "b.py", "c.py"]
+    assert tool.failed_chunk_count == 0
+
+
 async def test_empty_prediction_is_a_success_not_a_retry_trigger(configured, monkeypatch):
     tool, calls = make_tool(monkeypatch, {
         ("gpt-4o", "a"): "code_suggestions: []",
@@ -282,6 +301,7 @@ async def test_published_suggestions_and_coverage_match_completed_chunks(configu
     tool.git_provider.diff_files = [FilePatchInfo("old()\n", "old()\n", "", c + ".py") for c in "abc"]
     tool.git_provider.publish_code_suggestions.return_value = True
     tool.git_provider.supports_code_suggestions_artifact.return_value = False
+    init_run_details()
     result = await retry_with_fallback_models(tool.prepare_prediction_main)
     await tool.push_inline_code_suggestions(result)
     published = tool.git_provider.publish_code_suggestions.call_args.args[0]
@@ -289,6 +309,12 @@ async def test_published_suggestions_and_coverage_match_completed_chunks(configu
     assert all("```suggestion\nnew()\n```" in s["body"] for s in published)
     assert bool(tool._get_suggestions_coverage_footer()) is not recovered
     assert tool.git_provider.publish_comment.called is not recovered
+    details = get_run_details()
+    assert details.fallback_used is recovered
+    # The outer wrapper records the primary model after recovery restores the deployment,
+    # so the model line names the primary while the sticky flag preserves the fallback.
+    assert details.model_used == "gpt-4o"
+    assert details.num_ai_calls == 0
 
 
 async def test_recovered_suggestion_still_passes_anchor_validation(configured, monkeypatch):
@@ -301,6 +327,20 @@ async def test_recovered_suggestion_still_passes_anchor_validation(configured, m
     assert [s["relevant_file"] for s in published] == ["a.py", "c.py"]
     assert "b.py" in tool.git_provider.publish_comment.call_args.args[0]
     assert "```suggestion" not in tool.git_provider.publish_comment.call_args.args[0]
+
+
+async def test_recovered_run_details_report_primary_model_and_sticky_fallback(configured, monkeypatch):
+    tool, _ = make_tool(monkeypatch, {("gpt-4o", "b"): RuntimeError("failure")})
+    tool.git_provider.diff_files = [FilePatchInfo("old()\n", "old()\n", "", c + ".py") for c in "abc"]
+    tool.git_provider.publish_code_suggestions.return_value = True
+    tool.git_provider.supports_code_suggestions_artifact.return_value = False
+    init_run_details()
+    result = await retry_with_fallback_models(tool.prepare_prediction_main)
+    await tool.push_inline_code_suggestions(result)
+    details = get_run_details()
+    assert details.fallback_used is True
+    assert details.model_used == "gpt-4o"
+    assert details.num_ai_calls == 0
 
 
 async def test_ambiguous_model_deployment_chain_keeps_partial_result(configured, monkeypatch):
@@ -339,3 +379,22 @@ async def test_recovery_uses_existing_reflection_before_publishing_results(confi
         assert len(reflections) == 3
     finally:
         restore_settings(snapshot)
+
+
+async def test_routed_primary_recovers_failed_slots_with_configured_fallback(configured, monkeypatch):
+    # A routed primary ([model_routing]) replaces config.model ahead of the same
+    # fallbacks; recovery must reproduce that substitution instead of scanning
+    # the configured chain. The routed model is kept out of the fallback list so
+    # the (model, deployment) pair stays unique in the effective chain.
+    get_settings().set("config.fallback_models", ["gpt-4.1"])
+    get_settings().set("openai.fallback_deployments", ["last"])
+    get_settings().set("model_routing.enable", True)
+    get_settings().set("model_routing.rules",
+                       [{"model": "gpt-4o-mini", "max_files": 10, "deployment_id": "secondary"}])
+    tool, calls = make_tool(monkeypatch, {("gpt-4o-mini", "b"): RuntimeError("failure")})
+    tool.git_provider.diff_files = [FilePatchInfo("old()\n", "old()\n", "", c + ".py") for c in "abc"]
+    result = await retry_with_fallback_models(tool.prepare_prediction_main,
+                                              git_provider=tool.git_provider)
+    assert [s["relevant_file"] for s in result["code_suggestions"]] == ["a.py", "b.py", "c.py"]
+    assert [m for m, _, _, _ in calls] == ["gpt-4o-mini"] * 3 + ["gpt-4.1"]
+    assert get_settings().get("openai.deployment_id") == "primary"
