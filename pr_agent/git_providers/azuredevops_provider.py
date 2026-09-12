@@ -1178,6 +1178,9 @@ class AzureDevopsProvider(GitProvider):
             include_content_metadata=True,
             include_links=False,
             download=False,
+            version_descriptor=GitVersionDescriptor(
+                version=self.pr.last_merge_target_commit.commit_id, version_type="commit"
+            ),
         )
 
         lang_count = Counter()

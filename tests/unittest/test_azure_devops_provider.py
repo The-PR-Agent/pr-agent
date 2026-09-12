@@ -41,21 +41,30 @@ def test_azure_resolve_comment_thread_closes_thread():
     provider.set_thread_status.assert_called_once_with(42, "closed")
 
 
+def _language_provider(items):
+    provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+    provider.workspace_slug = "proj"
+    provider.repo_slug = "repo"
+    provider.pr = SimpleNamespace(
+        last_merge_target_commit=SimpleNamespace(commit_id="base-sha"),
+        last_merge_commit=SimpleNamespace(commit_id="head-sha"),
+    )
+    provider.azure_devops_client = MagicMock()
+    provider.azure_devops_client.get_items.return_value = items
+    return provider
+
+
 def test_get_languages_returns_language_names():
     # get_languages() must key on language NAMES (e.g. "Python"), not raw
     # extensions ("py"): sort_files_by_main_languages() maps names back to
     # extensions, so extension keys would drop every file into "Other".
-    provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
-    provider.workspace_slug = "proj"
-    provider.repo_slug = "repo"
-    provider.azure_devops_client = MagicMock()
-    provider.azure_devops_client.get_items.return_value = [
+    provider = _language_provider([
         SimpleNamespace(git_object_type="blob", path="a.py"),
         SimpleNamespace(git_object_type="blob", path="b.py"),
         SimpleNamespace(git_object_type="blob", path="c.py"),
         SimpleNamespace(git_object_type="blob", path="d.js"),
         SimpleNamespace(git_object_type="blob", path="weird.zzz"),
-    ]
+    ])
 
     languages = provider.get_languages()
 
@@ -63,32 +72,36 @@ def test_get_languages_returns_language_names():
     assert languages == {"Python": 75.0, "JavaScript": 25.0}
 
 
+def test_get_languages_queries_target_commit_inventory():
+    provider = _language_provider(
+        [SimpleNamespace(git_object_type="blob", path="a.py")]
+    )
+
+    provider.get_languages()
+
+    call_kwargs = provider.azure_devops_client.get_items.call_args.kwargs
+    assert call_kwargs["version_descriptor"].version == "base-sha"
+    assert call_kwargs["version_descriptor"].version_type == "commit"
+
+
 def test_get_languages_returns_empty_map_when_nothing_matches():
-    provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
-    provider.workspace_slug = "proj"
-    provider.repo_slug = "repo"
-    provider.azure_devops_client = MagicMock()
-    provider.azure_devops_client.get_items.return_value = [
+    provider = _language_provider([
         SimpleNamespace(git_object_type="blob", path="weird.zzz"),
         SimpleNamespace(git_object_type="blob", path=""),
-    ]
+    ])
 
     assert provider.get_languages() == {}
 
 
 def test_get_languages_maps_full_paths_and_multipart_extensions():
     # The matcher must classify by the basename and honor multipart extensions.
-    provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
-    provider.workspace_slug = "proj"
-    provider.repo_slug = "repo"
-    provider.azure_devops_client = MagicMock()
-    provider.azure_devops_client.get_items.return_value = [
+    provider = _language_provider([
         SimpleNamespace(git_object_type="blob", path="src/foo.py"),
         SimpleNamespace(git_object_type="blob", path="lib/bar.py"),
         SimpleNamespace(git_object_type="blob", path="doc/README.md"),
         SimpleNamespace(git_object_type="blob", path="notes.txt"),
         SimpleNamespace(git_object_type="blob", path="tpl/file.test.ts"),
-    ]
+    ])
 
     languages = provider.get_languages()
 
@@ -99,16 +112,12 @@ def test_get_languages_ignores_non_blob_items_and_other_languages():
     # Percentages come from the repository blob inventory, not the PR change set:
     # non-blob entries (e.g. folders) must be skipped, and off-language files
     # must not skew the ranking.
-    provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
-    provider.workspace_slug = "proj"
-    provider.repo_slug = "repo"
-    provider.azure_devops_client = MagicMock()
-    provider.azure_devops_client.get_items.return_value = [
+    provider = _language_provider([
         SimpleNamespace(git_object_type="Folder", path="src"),
         SimpleNamespace(git_object_type="blob", path="src/app.py"),
         SimpleNamespace(git_object_type="blob", path="src/main.py"),
         SimpleNamespace(git_object_type="blob", path="render.bin"),
-    ]
+    ])
 
     languages = provider.get_languages()
 
