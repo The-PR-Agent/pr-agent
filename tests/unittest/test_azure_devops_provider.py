@@ -41,6 +41,39 @@ def test_azure_resolve_comment_thread_closes_thread():
     provider.set_thread_status.assert_called_once_with(42, "closed")
 
 
+def test_get_languages_returns_language_names():
+    # get_languages() must key on language NAMES (e.g. "Python"), not raw
+    # extensions ("py"): sort_files_by_main_languages() maps names back to
+    # extensions, so extension keys would drop every file into "Other".
+    provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+    provider.get_files = MagicMock(return_value=["a.py", "b.py", "c.py", "d.js", "weird.zzz"])
+
+    languages = provider.get_languages()
+
+    # 3 Python + 1 JavaScript known; .zzz is unknown and excluded from the total.
+    assert languages == {"Python": 75.0, "JavaScript": 25.0}
+
+
+def test_get_languages_returns_empty_map_when_nothing_matches():
+    provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+    provider.get_files = MagicMock(return_value=["weird.zzz", ""])
+
+    assert provider.get_languages() == {}
+
+
+def test_get_languages_maps_full_paths_and_multipart_extensions():
+    # Azure get_files() returns repository paths (dirs + filenames); the matcher
+    # must classify by the basename and honor multipart extensions.
+    provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+    provider.get_files = MagicMock(
+        return_value=["src/foo.py", "lib/bar.py", "doc/README.md", "notes.txt", "tpl/file.test.ts"]
+    )
+
+    languages = provider.get_languages()
+
+    assert languages == {"Python": 40.0, "Markdown": 20.0, "Text": 20.0, "TypeScript": 20.0}
+
+
 class TestAzureDevopsProviderRepoContext:
     def test_get_repo_file_content_reads_from_target_commit(self):
         # Repo-context files must be read from the PR target (base) commit, matching
