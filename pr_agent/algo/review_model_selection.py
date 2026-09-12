@@ -102,7 +102,7 @@ def parse_review_model_selection(
     if not _is_enabled(config.enabled):
         configured_alias_names = _get_configured_alias_names(config.aliases)
         configured_selector_tokens = [
-            arg for arg in selector_tokens if _split_selector(arg)[0] in configured_alias_names
+            arg for arg in args if "+" in arg and _split_selector(arg)[0] in configured_alias_names
         ]
         if configured_selector_tokens:
             raise ReviewModelSelectionError(

@@ -22,6 +22,7 @@ from pr_agent.log import get_logger
 # shorthand. Operators can load aliases from host, environment, external config, or
 # an organization-level ``pr-agent-settings`` repository.
 _LOCAL_REPO_PROTECTED_KEYS_BY_SECTION = {
+    "config": frozenset({"extra_config_url"}),
     "pr_reviewer": frozenset({"enable_command_model_aliases", "command_model_aliases"}),
 }
 

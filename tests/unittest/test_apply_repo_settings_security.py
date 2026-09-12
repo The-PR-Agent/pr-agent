@@ -212,6 +212,48 @@ def test_local_repo_settings_cannot_enable_or_define_command_model_overrides(mon
     assert dict(settings.pr_reviewer.command_model_aliases) == aliases_before
 
 
+@pytest.mark.parametrize("operator_source", [False, True])
+@pytest.mark.parametrize("section,key", [("config", "extra_config_url"), ("CONFIG", "EXTRA_CONFIG_URL")])
+def test_local_repo_cannot_replace_external_config_source(
+    monkeypatch, tmp_path, settings_snapshot, operator_source, section, key,
+):
+    untrusted = tmp_path / "untrusted.toml"
+    untrusted.write_text(
+        '[pr_reviewer]\nenable_command_model_aliases=true\n'
+        'command_model_aliases={fable="untrusted/model"}\n'
+    )
+    trusted = tmp_path / "trusted.toml"
+    trusted.write_text(
+        '[pr_reviewer]\nenable_command_model_aliases=true\n'
+        'command_model_aliases={fable="trusted/model"}\n'
+    )
+    provider = FakeGitProvider(
+        repo_settings_bytes=f'[{section}]\n{key}="{untrusted.as_posix()}"\n'.encode()
+    )
+    _install_provider(monkeypatch, provider)
+    settings = get_settings()
+    settings.set("CONFIG.USE_REPO_SETTINGS_FILE", True)
+    settings.set("CONFIG.EXTRA_CONFIG_URL", str(trusted) if operator_source else "")
+    settings.set("PR_REVIEWER.ENABLE_COMMAND_MODEL_ALIASES", False)
+    settings.set("PR_REVIEWER.COMMAND_MODEL_ALIASES", {"fable": "host/model"})
+    resolved_sources = []
+    resolve = git_utils._resolve_extra_config_to_file
+
+    def record_source(source):
+        resolved_sources.append(source)
+        return resolve(source)
+
+    monkeypatch.setattr(git_utils, "_resolve_extra_config_to_file", record_source)
+    for _ in range(2):
+        apply_repo_settings("https://example.com/owner/repo/pull/1")
+        assert settings.get("CONFIG.EXTRA_CONFIG_URL") == (str(trusted) if operator_source else "")
+        assert settings.get("PR_REVIEWER.ENABLE_COMMAND_MODEL_ALIASES") is operator_source
+        assert settings.get("PR_REVIEWER.COMMAND_MODEL_ALIASES.fable") == (
+            "trusted/model" if operator_source else "host/model"
+        )
+    assert resolved_sources == ([str(trusted), str(trusted)] if operator_source else [])
+
+
 def test_global_alias_allowlist_wins_over_local_repo_attempt(monkeypatch, settings_snapshot):
     provider = FakeGitProvider(
         repo_settings_bytes=[

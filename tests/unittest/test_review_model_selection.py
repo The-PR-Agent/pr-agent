@@ -98,6 +98,9 @@ def test_non_selector_plus_tokens_keep_their_historical_meaning(settings):
     "arg",
     [
         "cost+low",
+        "cost+extreme",
+        "cost++high",
+        "C++",
         "docs+minimal",
         "https://example.test/search?q=cost+low",
     ],
@@ -126,6 +129,10 @@ def test_one_selector_resolves_model_and_effort():
     ("args", "settings", "message"),
     [
         (["fable+high"], _Settings(enabled=False), "aliases are disabled"),
+        (["fable+extreme"], _Settings(enabled=False), "aliases are disabled"),
+        (["fable++high"], _Settings(enabled=False), "aliases are disabled"),
+        (["fable+"], _Settings(enabled=False), "aliases are disabled"),
+        (["FABLE+EXTREME"], _Settings(enabled=False), "aliases are disabled"),
         (["unknown+high"], _Settings(), "Unknown model alias"),
         (["fable++high"], _Settings(), "Malformed model selector"),
         (["fable+extreme"], _Settings(), "Unsupported reasoning effort"),
