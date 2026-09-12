@@ -180,7 +180,6 @@ to-do list.
 | `publish_labels` | false |  |
 | `add_original_user_description` | true |  |
 | `generate_ai_title` | false |  |
-| `use_bullet_points` | true |  |
 | `extra_instructions` | "" |  |
 | `enable_pr_type` | true |  |
 | `enable_pr_description` | true | adds a section with an AI-generated summary of the PR changes |
@@ -253,12 +252,10 @@ to-do list.
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `auto_extended_mode` | true |  |
 | `num_code_suggestions_per_chunk` | 3 |  |
 | `max_suggestions_per_file` | 0 | Maximum suggestions retained per file after all chunks are merged; 0 disables the cap. |
 | `max_number_of_calls` | 3 |  |
 | `parallel_calls` | true |  |
-| `final_clip_factor` | 0.8 |  |
 | `decouple_hunks` | false |  |
 **self-review checkbox**
 
@@ -270,25 +267,12 @@ to-do list.
 | `fold_suggestions_on_self_review` | true | if true, the code suggestions will be folded after the author clicks on the self-review checkbox |
 
 
-## `[pr_custom_prompt]` — /custom_prompt
-
-| Key | Default | Description |
-| --- | --- | --- |
-| `prompt` | """The code suggestions should focus only on the following: ...""" |  |
-| `suggestions_score_threshold` | 0 |  |
-| `num_code_suggestions_per_chunk` | 3 |  |
-| `self_reflect_on_custom_suggestions` | true |  |
-| `enable_help_text` | false |  |
-
-
 ## `[pr_add_docs]` — /add_docs
 
 | Key | Default | Description |
 | --- | --- | --- |
 | `extra_instructions` | "" |  |
 | `docs_style` | "Sphinx" | "Google Style with Args, Returns, Attributes...etc", "Numpy Style", "Sphinx Style", "PEP257", "reStructuredText" |
-| `file` | "" | in case there are several components with the same name, you can specify the relevant file |
-| `class_name` | "" | in case there are several methods with the same name in the same file, you can specify the relevant class name |
 
 
 ## `[pr_update_changelog]` — /update_changelog
@@ -299,44 +283,6 @@ to-do list.
 | `extra_instructions` | "" |  |
 | `add_pr_link` | true |  |
 | `skip_ci_on_push` | true |  |
-
-
-## `[pr_analyze]` — /analyze
-
-| Key | Default | Description |
-| --- | --- | --- |
-| `enable_help_text` | true |  |
-
-
-## `[pr_test]` — /test
-
-| Key | Default | Description |
-| --- | --- | --- |
-| `extra_instructions` | "" |  |
-| `testing_framework` | "" | specify the testing framework you want to use |
-| `num_tests` | 3 | number of tests to generate. max 5. |
-| `avoid_mocks` | true | if true, the generated tests will prefer to use real objects instead of mocks |
-| `file` | "" | in case there are several components with the same name, you can specify the relevant file |
-| `class_name` | "" | in case there are several methods with the same name in the same file, you can specify the relevant class name |
-| `enable_help_text` | false |  |
-
-
-## `[pr_improve_component]` — /improve_component
-
-| Key | Default | Description |
-| --- | --- | --- |
-| `num_code_suggestions` | 4 |  |
-| `extra_instructions` | "" |  |
-| `file` | "" | in case there are several components with the same name, you can specify the relevant file |
-| `class_name` | "" | in case there are several methods with the same name in the same file, you can specify the relevant class name |
-
-
-## `[pr_help]` — /help
-
-| Key | Default | Description |
-| --- | --- | --- |
-| `force_local_db` | false |  |
-| `num_retrieved_snippets` | 5 |  |
 
 
 ## `[pr_config]` — /config
@@ -366,9 +312,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `api_retries` | 0 | max retries per request with backoff; 0 = no retries (1.59 behaviour) |
 | `polling_request_timeout` | 10 | total seconds for comment-history fallback; positive values capped at 60 |
 | `base_url` | "https://api.github.com" |  |
-| `publish_inline_comments_fallback_with_verification` | true |  |
 | `try_fix_invalid_inline_comments` | true |  |
-| `app_name` | "pr-agent" |  |
 | `ignore_bot_pr` | true |  |
 | `publish_as_check_run` | false | when true, publish review/description/improve output as GitHub Checks instead of PR comments |
 
@@ -381,8 +325,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `bot_user` | "github-actions[bot]" | these toggles allows running the github app from custom deployments |
-| `override_deployment_type` | true |  |
+| `override_deployment_type` | true | these toggles allows running the github app from custom deployments |
 **settings for "pull_request" event**
 
 | Key | Default | Description |
@@ -395,7 +338,6 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `handle_push_trigger` | false | settings for "pull_request" event with "synchronize" action - used to detect and handle push triggers for new commits |
 | `push_trigger_ignore_bot_commits` | true |  |
 | `push_trigger_ignore_merge_commits` | true |  |
-| `push_trigger_wait_for_initial_review` | true |  |
 | `push_trigger_pending_tasks_backlog` | true |  |
 | `push_trigger_pending_tasks_ttl` | 300 |  |
 | `push_commands` | ["/describe", "/review"] |  |
@@ -522,18 +464,6 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `vectordb` | "lancedb" | options: "pinecone", "lancedb", "qdrant" |
 
 
-## `[pr_find_similar_component]`
-
-| Key | Default | Description |
-| --- | --- | --- |
-| `class_name` | "" |  |
-| `file` | "" |  |
-| `search_from_org` | false |  |
-| `allow_fallback_less_words` | true |  |
-| `number_of_keywords` | 5 |  |
-| `number_of_results` | 5 |  |
-
-
 ## `[pinecone]`
 
 | Key | Default | Description |
@@ -560,27 +490,6 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `enabled` | false | Agent skills (SKILL.md) support: discovers SKILL.md files from the configured filesystem paths and injects their content into review/improve/describe and top-level /ask prompts. Sibling *.md files in the skill directory tree (e.g. references/guide.md) are inlined alongside SKILL.md. PR-Agent supports text-only skills: scripts/ and assets/ subdirectories are skipped because PR-Agent uses a single-shot model call (no tool-use loop) and cannot execute scripts or load binary assets on demand. Skills that depend on script execution will not work here. See https://github.com/The-PR-Agent/pr-agent/issues/2384 |
 | `paths` | [] | directories to scan recursively for "*/SKILL.md"; supports ~ and $VAR |
 | `max_skills_tokens` | 8000 | token budget for the combined skills_context block |
-
-
-## `[best_practices]`
-
-| Key | Default | Description |
-| --- | --- | --- |
-| `content` | "" |  |
-| `organization_name` | "" |  |
-| `max_lines_allowed` | 800 |  |
-| `enable_global_best_practices` | false |  |
-
-
-## `[auto_best_practices]`
-
-| Key | Default | Description |
-| --- | --- | --- |
-| `enable_auto_best_practices` | true | public - general flag to disable all auto best practices usage |
-| `utilize_auto_best_practices` | true | public - disable usage of auto best practices in the 'improve' tool |
-| `extra_instructions` | "" | public - extra instructions to the auto best practices generation prompt |
-| `content` | "" |  |
-| `max_patterns` | 5 | max number of patterns to be detected |
 
 
 ## `[artifacts]`
