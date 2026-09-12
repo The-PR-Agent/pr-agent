@@ -210,9 +210,12 @@ named once at debug level in the log). Leave the list empty to look up every key
 project_keys = ["PROJ", "OPS"]
 ```
 
-Entries are plain project keys (letters only, matched case-insensitively); anything else is
-ignored with a warning. If the list is set but none of its entries is valid, no Jira lookup
-is made at all until it is fixed, so a typo cannot silently widen the lookup again.
+Entries are plain upper-case project keys (letters only, as Jira writes them); anything
+else -- a lower-case label, a full ticket key, a URL, a blank entry -- is ignored with a
+warning. If the list is set but none of its entries is valid, no Jira lookup is made at all
+until it is fixed, so a typo cannot silently widen the lookup again. Only a missing option,
+the empty list, and an environment override set to the empty string mean "look up every
+key".
 
 ### How to link a PR to a Jira ticket
 

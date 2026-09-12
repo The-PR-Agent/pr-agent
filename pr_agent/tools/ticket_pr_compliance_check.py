@@ -54,9 +54,12 @@ JIRA_SITE_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$", re.IGN
 
 # A Jira project key as configured in jira.project_keys: the "<PROJECT>" in PROJECT-123.
 # Bounded like the prefix in find_jira_tickets (2-10 letters) so an entry can only ever be
-# a plain label, never a URL or a full ticket key. Matched case-insensitively and
-# normalized to upper case, like the ticket keys themselves.
-JIRA_PROJECT_KEY_PATTERN = re.compile(r"^[a-z]{2,10}$", re.IGNORECASE)
+# a plain label, never a URL or a full ticket key. Case-SENSITIVE: Jira project keys are
+# upper case, so a configured "proj" is a typo rather than a spelling variant, and the
+# allowlist is the wrong place to be lenient -- accepting it silently would widen the
+# lookup to a project the repo never named. Keys found in the PR text are still matched
+# case-insensitively and upper-cased (find_jira_tickets) before they are compared.
+JIRA_PROJECT_KEY_PATTERN = re.compile(r"^[A-Z]{2,10}$")
 
 
 def _jira_cloud_base_url():
@@ -81,19 +84,28 @@ def _jira_cloud_base_url():
 
 def _jira_project_keys():
     """
-    Return the configured jira.project_keys allowlist as a set of upper-case project keys,
-    or None when the option is unset or empty (look up every key found). Entries that are
-    not plain project keys are ignored with a warning. An allowlist that was configured but
-    has no valid entry left, or that is not a list at all (a boolean or number from a YAML
-    or CLI override), yields an empty set, which drops every key: a typo fails closed
-    instead of silently widening the lookup to every key-shaped string. Accepts a list or a
-    comma-separated string, the latter for environment-variable overrides
-    (jira__project_keys="PROJ,OPS").
+    Return the configured jira.project_keys allowlist as a set of project keys, or None
+    when nothing was supplied (look up every key found).
+
+    Only three values count as "nothing was supplied": the option missing entirely, the
+    shipped empty list, and a top-level string that is blank -- the last because
+    `jira__project_keys=""` is how a shell spells an unset environment variable.
+
+    Everything else is a supplied value and is judged on its entries. Entries that are not
+    plain upper-case project keys -- including a blank one, so `[""]` is a malformed
+    override rather than a second spelling of the default -- are ignored with a warning,
+    and a supplied value left with no valid entry yields an empty set, which drops every
+    key. So does a value that is not a list at all (a boolean or number from a YAML or CLI
+    override). A typo fails closed instead of silently widening the lookup to every
+    key-shaped string. Accepts a list or a comma-separated string, the latter for
+    environment-variable overrides (jira__project_keys="PROJ,OPS").
     """
     configured = get_settings().get("JIRA.PROJECT_KEYS", None)
     if configured is None:
         return None
     if isinstance(configured, str):
+        if not configured.strip():
+            return None
         configured = configured.split(",")
     elif not isinstance(configured, (list, tuple)):
         # A YAML/CLI override such as `project_keys=true` or `=false` is neither
@@ -102,19 +114,20 @@ def _jira_project_keys():
             f"jira.project_keys must be a list of project keys, got {type(configured).__name__}; "
             "skipping Jira ticket lookup until it is fixed")
         return set()
-    # Only strings are candidates: a TOML/YAML boolean or null in the list must not
-    # be stringified into a key-shaped label ("TRUE", "NONE") that then filters.
-    entries = [item for item in configured if not isinstance(item, str) or item.strip()]
-    if not entries:
+    if not configured:
+        # The shipped default. An empty container carries no entry to be wrong about.
         return None
     allowed = set()
-    for item in entries:
+    for item in configured:
+        # Only strings are candidates: a TOML/YAML boolean or null in the list must not
+        # be stringified into a key-shaped label ("TRUE", "NONE") that then filters.
         key = item.strip() if isinstance(item, str) else item
         if not isinstance(key, str) or not JIRA_PROJECT_KEY_PATTERN.match(key):
             get_logger().warning(
-                f"Ignoring invalid jira.project_keys entry '{key}'; expected a plain project key like 'PROJ'")
+                f"Ignoring invalid jira.project_keys entry '{key}'; "
+                "expected a plain upper-case project key like 'PROJ'")
             continue
-        allowed.add(key.upper())
+        allowed.add(key)
     if not allowed:
         get_logger().warning(
             "jira.project_keys has no valid entry; skipping Jira ticket lookup until it is fixed")
