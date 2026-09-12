@@ -239,7 +239,7 @@ def test_local_prompt_estimate_never_reduces_encoded_content(
     assert tool._count_prompt_tokens(PRIMARY, "abc", "de") == expected
 
 
-def test_local_prompt_estimate_fails_closed_on_overflow(help_tool, monkeypatch):
+def test_local_prompt_estimate_uses_raw_estimate_on_overflow(help_tool, monkeypatch):
     tool, _, _ = help_tool
 
     class CharacterEncoder:
@@ -251,8 +251,7 @@ def test_local_prompt_estimate_fails_closed_on_overflow(help_tool, monkeypatch):
     monkeypatch.setattr(pr_help_message, "token_counter", Mock(side_effect=RuntimeError("counter unavailable")))
     monkeypatch.setattr(pr_help_message.TokenEncoder, "get_token_encoder", lambda _model: CharacterEncoder())
 
-    with pytest.raises(OverflowError):
-        tool._count_prompt_tokens(PRIMARY, "abc", "de")
+    assert tool._count_prompt_tokens(PRIMARY, "abc", "de") == 53
 
 
 @pytest.mark.parametrize("counter_mode", ["error", "zero", "boolean", "non_integer"])
@@ -287,7 +286,7 @@ async def test_unusable_model_count_uses_local_estimate_before_provider_call(
     assert len(user_prompt) + 48 <= 70
 
 
-async def test_local_estimate_overflow_skips_provider_and_tries_fallback(help_tool, monkeypatch):
+async def test_local_estimate_overflow_still_tries_providers(help_tool, monkeypatch):
     tool, details, _ = help_tool
 
     class CharacterEncoder:
@@ -299,12 +298,40 @@ async def test_local_estimate_overflow_skips_provider_and_tries_fallback(help_to
     monkeypatch.setattr(pr_help_message, "token_counter", Mock(side_effect=RuntimeError("counter unavailable")))
     monkeypatch.setattr(pr_help_message.TokenEncoder, "get_token_encoder", lambda _model: CharacterEncoder())
     tool._prepare_prediction = AsyncMock(wraps=tool._prepare_prediction)
+    tool.ai_handler.chat_completion.side_effect = [RuntimeError("primary unavailable"), (ANSWER, "stop")]
 
-    assert await tool.run() == ""
+    await tool.run()
 
     assert [call.args[0] for call in tool._prepare_prediction.await_args_list] == [PRIMARY, BACKUP]
-    tool.ai_handler.chat_completion.assert_not_awaited()
-    assert details.model_used is None
+    assert attempted_models(tool) == [PRIMARY, BACKUP]
+    tool.git_provider.publish_comment.assert_called_once()
+    assert details.model_used == BACKUP
+
+
+async def test_empty_claude_system_prompt_is_normalized_before_fitting(help_tool, monkeypatch):
+    tool, _, _ = help_tool
+    model = "anthropic/claude-sonnet-4-5"
+    tool.vars = {"question": "q", "snippets": "A" * 100}
+    get_settings().set("pr_help_prompts.system", "")
+    get_settings().set("pr_help_prompts.user", "{{ snippets }}")
+    monkeypatch.setattr(tool, "_get_prompt_budget", lambda _model: 80)
+    tool.ai_handler.normalize_request_prompts = pr_help_message.LiteLLMAIHandler.normalize_request_prompts
+    counted_system_prompts = []
+
+    def count_normalized_prompts(*, messages, **_kwargs):
+        counted_system_prompts.append(messages[0]["content"])
+        return count_message_characters(messages=messages)
+
+    monkeypatch.setattr(pr_help_message, "token_counter", count_normalized_prompts)
+    tool.ai_handler.chat_completion.return_value = ANSWER, "stop"
+
+    await tool._prepare_prediction(model)
+
+    assert counted_system_prompts
+    assert set(counted_system_prompts) == {"No system prompt provided"}
+    call = tool.ai_handler.chat_completion.await_args
+    assert call.kwargs["system"] == "No system prompt provided"
+    assert "...(truncated)" in call.kwargs["user"]
 
 
 def test_prompt_fitting_checks_smallest_nonempty_prefix(help_tool, monkeypatch):

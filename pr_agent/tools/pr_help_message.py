@@ -111,7 +111,35 @@ class PRHelpMessage:
         if isinstance(raw_factor, bool) or not isfinite(extra_factor):
             extra_factor = 0
         multiplier = max(1.0, 1.0 + extra_factor)
-        return ceil((content_tokens + framing_tokens) * multiplier)
+        raw_estimate = content_tokens + framing_tokens
+        try:
+            estimated_tokens = raw_estimate * multiplier
+            if not isfinite(estimated_tokens):
+                raise ValueError("non-finite token estimate")
+            return ceil(estimated_tokens)
+        except (OverflowError, ValueError):
+            get_logger().warning(
+                f"model_token_count_estimate_factor is too large ({raw_factor!r}), using the estimate as is"
+            )
+            return raw_estimate
+
+    def _normalize_request_prompts(self, model: str, system_prompt: str, user_prompt: str) -> tuple[str, str]:
+        normalize_request_prompts = getattr(self.ai_handler, "normalize_request_prompts", None)
+        if not callable(normalize_request_prompts):
+            return system_prompt, user_prompt
+        try:
+            normalized_prompts = normalize_request_prompts(model, system_prompt, user_prompt)
+        except Exception as e:
+            get_logger().debug(f"Failed to normalize prompts for {model}: {e}")
+            return system_prompt, user_prompt
+        if (
+            isinstance(normalized_prompts, tuple)
+            and len(normalized_prompts) == 2
+            and all(isinstance(prompt, str) for prompt in normalized_prompts)
+        ):
+            return normalized_prompts
+        get_logger().debug(f"Ignoring unusable prompt normalization result for {model}")
+        return system_prompt, user_prompt
 
     def _fit_prompts(self, variables, model: str):
         prompt_budget = self._get_prompt_budget(model)
@@ -120,7 +148,8 @@ class PRHelpMessage:
         def render(snippets):
             attempt_variables = copy.deepcopy(variables)
             attempt_variables["snippets"] = snippets
-            return self._render_prompts(attempt_variables)
+            rendered_prompts = self._render_prompts(attempt_variables)
+            return self._normalize_request_prompts(model, *rendered_prompts)
 
         full_prompts = render(raw_snippets)
         if self._count_prompt_tokens(model, *full_prompts) <= prompt_budget:

@@ -3588,6 +3588,13 @@ class LiteLLMAIHandler(BaseAiHandler):
         openrouter_model = self._canonical_openrouter_model(completion_model, request_provider)
         return self._resolve_output_token_limit(completion_model, openrouter_model)
 
+    @staticmethod
+    def normalize_request_prompts(model: str, system_prompt: str, user_prompt: str) -> tuple[str, str]:
+        """Return the prompt strings that request construction will send."""
+        if 'claude' in model and not system_prompt:
+            system_prompt = "No system prompt provided"
+        return system_prompt, user_prompt
+
     def _configure_claude_extended_thinking(self, model: str, kwargs: dict) -> dict:
         """
         Configure Claude extended thinking parameters if applicable.
@@ -3867,10 +3874,11 @@ class LiteLLMAIHandler(BaseAiHandler):
                 # prefixes must remain intact in multi-provider configurations.
                 model = completion_model
                 openrouter_model = self._canonical_openrouter_model(model, request_provider)
-                if 'claude' in model and not system:
-                    system = "No system prompt provided"
+                normalized_system, user = self.normalize_request_prompts(model, system, user)
+                if normalized_system != system:
                     get_logger().warning(
                         "Empty system prompt for claude model. Adding a newline character to prevent OpenAI API error.")
+                system = normalized_system
                 messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
                 if img_path:
