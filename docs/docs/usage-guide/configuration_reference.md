@@ -125,6 +125,9 @@ to-do list.
 
 ## `[pr_reviewer]` — /review
 
+| Key | Default | Description |
+| --- | --- | --- |
+| `enable_command_model_aliases` | false | Operator-controlled, global-only mapping for ephemeral `/review alias+effort` selectors. This does not change permissions for the existing config.model path. |
 **enable/disable features**
 
 | Key | Default | Description |
