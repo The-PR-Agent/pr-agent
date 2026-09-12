@@ -14,6 +14,8 @@ from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.git_patch_processing import decouple_and_convert_to_hunks_with_lines_numbers
 from pr_agent.algo.pr_processing import (
+    OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+    _get_all_deployments,
     _get_all_models,
     add_ai_metadata_to_diff_files,
     get_pr_diff,
@@ -802,13 +804,17 @@ class PRCodeSuggestions:
         data = self.prediction
         return data
 
-    async def _get_prediction(self, model: str, patches_diff: str, patches_diff_no_line_number: str) -> dict:
+    def _render_prediction_prompts(self, patches_diff: str, patches_diff_no_line_number: str) -> tuple[str, str]:
         variables = copy.deepcopy(self.vars)
         variables["diff"] = patches_diff  # update diff
         variables["diff_no_line_numbers"] = patches_diff_no_line_number  # update diff
         environment = Environment(undefined=StrictUndefined)
         system_prompt = environment.from_string(self.pr_code_suggestions_prompt_system).render(variables)
         user_prompt = environment.from_string(self.pr_code_suggestions_prompt_user).render(variables)
+        return system_prompt, user_prompt
+
+    async def _get_prediction(self, model: str, patches_diff: str, patches_diff_no_line_number: str) -> dict:
+        system_prompt, user_prompt = self._render_prediction_prompts(patches_diff, patches_diff_no_line_number)
         response, finish_reason = await self.ai_handler.chat_completion(
             model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
         if not get_settings().config.publish_output:
@@ -1502,6 +1508,78 @@ class PRCodeSuggestions:
             get_logger().error(f"Error removing line numbers from patches_diff_list, error: {e}")
             return patches_diff_list
 
+    async def _predict_chunks(self, model: str, chunk_pairs: list) -> list:
+        if get_settings().pr_code_suggestions.parallel_calls:
+            results = await asyncio.gather(
+                *[self._get_prediction(model, numbered, unnumbered) for numbered, unnumbered in chunk_pairs],
+                return_exceptions=True,
+            )
+        else:
+            results = []
+            for numbered, unnumbered in chunk_pairs:
+                try:
+                    results.append(await self._get_prediction(model, numbered, unnumbered))
+                except Exception as error:
+                    results.append(error)
+        for result in results:
+            if isinstance(result, BaseException) and not isinstance(result, Exception):
+                raise result
+        return results
+
+    async def _recover_failed_chunks(self, model: str, chunk_pairs: list, results: list) -> None:
+        """Try remaining models for failed slots, without replacing successful predictions."""
+        if not get_settings().pr_code_suggestions.get("recover_failed_chunks", False):
+            return
+        # An entirely failed batch still belongs to the existing outer fallback loop.
+        if not any(isinstance(result, Exception) for result in results) or all(
+            isinstance(result, Exception) for result in results
+        ):
+            return
+
+        models = _get_all_models(ModelType.REGULAR)
+        deployments = _get_all_deployments(models)[:len(models)]
+        settings = get_settings()
+        original_deployment = settings.get("openai.deployment_id", None)
+        positions = [index for index, pair in enumerate(zip(models, deployments, strict=True))
+                     if pair == (model, original_deployment)]
+        # Do not guess which attempts have already run for an ambiguous/custom caller.
+        if len(positions) != 1:
+            get_logger().warning("Skipping chunk recovery: current model/deployment is not unique in the fallback chain")
+            return
+
+        try:
+            for fallback_model, deployment in list(zip(models, deployments, strict=True))[positions[0] + 1:]:
+                pending = [index for index, result in enumerate(results) if isinstance(result, Exception)]
+                if not pending:
+                    break
+                # Keep the original diff intact; truncation must not imply complete coverage.
+                eligible = []
+                try:
+                    token_handler = TokenHandler(model=fallback_model)
+                    budget = get_max_tokens(fallback_model) - OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD
+                    for index in pending:
+                        system, user = self._render_prediction_prompts(*chunk_pairs[index])
+                        tokens = len(token_handler.encoder.encode(system)) + len(token_handler.encoder.encode(user))
+                        if tokens < budget:
+                            eligible.append(index)
+                        else:
+                            get_logger().warning(f"Skipping recovery of chunk {index + 1} with {fallback_model}: "
+                                                 "the complete prompt exceeds its token budget")
+                except Exception as error:
+                    get_logger().warning(f"Cannot prepare chunk recovery with {fallback_model}: {error}")
+                    continue
+                if not eligible:
+                    continue
+                # Sibling calls have all finished before switching the request's deployment.
+                settings.set("openai.deployment_id", deployment)
+                recovered = await self._predict_chunks(fallback_model, [chunk_pairs[index] for index in eligible])
+                for index, result in zip(eligible, recovered, strict=True):
+                    results[index] = result
+                    if not isinstance(result, Exception):
+                        get_logger().info(f"Recovered suggestion chunk {index + 1} with {fallback_model}")
+        finally:
+            settings.set("openai.deployment_id", original_deployment)
+
     async def prepare_prediction_main(self, model: str) -> dict:
         self.failed_chunk_count = 0
         self.total_chunk_count = 0
@@ -1543,38 +1621,17 @@ class PRCodeSuggestions:
                 zip(self.patches_diff_list, self.patches_diff_list_no_line_numbers, strict=True))
             self.total_chunk_count = len(chunk_pairs)
 
-            # parallelize calls to AI:
-            if get_settings().pr_code_suggestions.parallel_calls:
-                prediction_results = await asyncio.gather(
-                    *[self._get_prediction(model, patches_diff, patches_diff_no_line_numbers) for
-                      patches_diff, patches_diff_no_line_numbers in chunk_pairs],
-                    return_exceptions=True)
-                for chunk_index, prediction in enumerate(prediction_results):
-                    if isinstance(prediction, Exception):
-                        chunk_errors.append(prediction)
-                        get_logger().warning(
-                            f"Failed to generate code suggestions for chunk {chunk_index + 1}; "
-                            "retaining successful chunks",
-                            artifact={"error": prediction},
-                        )
-                    elif isinstance(prediction, BaseException):
-                        raise prediction
-                    else:
-                        prediction_list.append(prediction)
-            else:
-                for chunk_index, (patches_diff, patches_diff_no_line_numbers) in enumerate(
-                        chunk_pairs):
-                    try:
-                        prediction = await self._get_prediction(model, patches_diff, patches_diff_no_line_numbers)
-                    except Exception as e:
-                        chunk_errors.append(e)
-                        get_logger().warning(
-                            f"Failed to generate code suggestions for chunk {chunk_index + 1}; "
-                            "retaining successful chunks",
-                            artifact={"error": e},
-                        )
-                    else:
-                        prediction_list.append(prediction)
+            prediction_results = await self._predict_chunks(model, chunk_pairs)
+            await self._recover_failed_chunks(model, chunk_pairs, prediction_results)
+            for chunk_index, prediction in enumerate(prediction_results):
+                if isinstance(prediction, Exception):
+                    chunk_errors.append(prediction)
+                    get_logger().warning(
+                        f"Failed to generate code suggestions for chunk {chunk_index + 1}; retaining successful chunks",
+                        artifact={"error": prediction},
+                    )
+                else:
+                    prediction_list.append(prediction)
 
             self.failed_chunk_count = len(chunk_errors) + self.parse_failure_count
             if chunk_errors and not prediction_list:
