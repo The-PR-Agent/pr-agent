@@ -819,7 +819,8 @@ async def extract_tickets(git_provider):
             tickets_content = []
             for project_path, issue_iid in references:
                 try:
-                    project = git_provider.gl.projects.get(project_path)
+                    # Only the issue manager is needed; avoid fetching unused project metadata.
+                    project = git_provider.gl.projects.get(project_path, lazy=True)
                     issue = project.issues.get(issue_iid)
                 except Exception as e:
                     get_logger().error(
