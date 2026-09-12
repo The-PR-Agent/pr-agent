@@ -64,9 +64,9 @@ def _publish_review_model_selection_error(pr_url: str, error: ReviewModelSelecti
     try:
         get_git_provider_with_context(pr_url).publish_comment(message)
     except Exception as publish_error:
-        get_logger().warning(
+        get_logger().exception(
             f"Failed to publish /review model selector error: {publish_error}",
-            artifact={"error": error},
+            artifact={"error": publish_error},
         )
 
 
@@ -305,40 +305,73 @@ class PRAgent:
                 )
                 model_selection, args = parse_review_model_selection(args, selection_config)
             except ReviewModelSelectionError as error:
+                span.set_status(StatusCode.ERROR)
+                span.set_attribute("error.type", "invalid_model_selector")
+                if settings.get("OTEL.INCLUDE_ERROR_DETAILS", False):
+                    span.set_attribute("error.message", str(error))
                 get_logger().warning(f"Invalid /review model selector: {error}")
                 _publish_review_model_selection_error(pr_url, error)
                 if notify:
                     try:
                         notify()
                     except Exception as notify_error:
-                        get_logger().warning(
+                        get_logger().exception(
                             f"Failed to acknowledge invalid /review model selector: {notify_error}"
                         )
                 return False
 
+        missing = object()
+        previous_settings = {}
+        missing_sections = set()
         if model_selection:
-            settings.set("CONFIG.MODEL", model_selection.model)
-            settings.set("CONFIG.REASONING_EFFORT", model_selection.reasoning_effort)
-            settings.set("MODEL_ROUTING.ENABLE", False)
-            if "claude" in model_selection.model.lower() and model_selection.reasoning_effort != "none":
-                settings.set("CONFIG.ENABLE_CLAUDE_ADAPTIVE_THINKING", True)
+            for key in (
+                "CONFIG.MODEL",
+                "CONFIG.REASONING_EFFORT",
+                "MODEL_ROUTING.ENABLE",
+                "CONFIG.ENABLE_CLAUDE_ADAPTIVE_THINKING",
+            ):
+                previous_settings[key] = settings.get(key, missing)
+                section = key.split(".", 1)[0]
+                if settings.get(section, missing) is missing:
+                    missing_sections.add(section)
 
-        with get_logger().contextualize(command=action, pr_url=pr_url):
-            get_logger().info("PR-Agent request handler started", analytics=True)
-            if action == "answer":
-                if notify:
-                    notify()
-                await PRReviewer(pr_url, is_answer=True, args=args, ai_handler=self.ai_handler).run()
-            elif action == "auto_review":
-                await PRReviewer(pr_url, is_auto=True, args=args, ai_handler=self.ai_handler).run()
-            else:
-                if notify:
-                    notify()
+        try:
+            if model_selection:
+                settings.set("CONFIG.MODEL", model_selection.model)
+                settings.set("CONFIG.REASONING_EFFORT", model_selection.reasoning_effort)
+                settings.set("MODEL_ROUTING.ENABLE", False)
+                if "claude" in model_selection.model.lower() and model_selection.reasoning_effort != "none":
+                    settings.set("CONFIG.ENABLE_CLAUDE_ADAPTIVE_THINKING", True)
 
-                await command2class[action](pr_url, ai_handler=self.ai_handler, args=args).run()
+            with get_logger().contextualize(command=action, pr_url=pr_url):
+                get_logger().info("PR-Agent request handler started", analytics=True)
+                if action == "answer":
+                    if notify:
+                        notify()
+                    await PRReviewer(pr_url, is_answer=True, args=args, ai_handler=self.ai_handler).run()
+                elif action == "auto_review":
+                    await PRReviewer(pr_url, is_auto=True, args=args, ai_handler=self.ai_handler).run()
+                else:
+                    if notify:
+                        notify()
 
-            span.set_status(StatusCode.OK)
-            return True
+                    await command2class[action](pr_url, ai_handler=self.ai_handler, args=args).run()
+
+                span.set_status(StatusCode.OK)
+                return True
+        finally:
+            for key, value in previous_settings.items():
+                if value is missing:
+                    section, name = key.split(".", 1)
+                    section_values = settings.get(section, {})
+                    for stored_key in list(section_values):
+                        if stored_key.upper() == name:
+                            del section_values[stored_key]
+                else:
+                    settings.set(key, value)
+            for section in missing_sections:
+                if not settings.get(section):
+                    settings.unset(section, force=True)
 
     async def handle_request(self, pr_url, request, notify=None) -> bool:
         try:

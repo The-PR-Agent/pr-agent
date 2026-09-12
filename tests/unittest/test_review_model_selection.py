@@ -1,7 +1,9 @@
 import copy
+import sys
 import tomllib
 from contextlib import suppress
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -200,13 +202,32 @@ async def test_review_without_selector_uses_existing_constructor_and_settings(mo
 
 
 @pytest.mark.asyncio
-async def test_selector_sets_existing_model_and_effort_configuration(monkeypatch):
+@pytest.mark.parametrize("failure", [None, "constructor", "run"])
+@pytest.mark.parametrize("initial_values_present", [True, False])
+async def test_selector_settings_are_scoped_to_one_command(monkeypatch, failure, initial_values_present):
     snapshot = _snapshot_sections("CONFIG", "PR_REVIEWER", "MODEL_ROUTING")
     reviewer_calls = []
+
+    selected_values = []
+    expected_keys = (
+        "CONFIG.MODEL", "CONFIG.REASONING_EFFORT",
+        "MODEL_ROUTING.ENABLE", "CONFIG.ENABLE_CLAUDE_ADAPTIVE_THINKING",
+    )
 
     class _Reviewer:
         def __init__(self, pr_url, ai_handler, args):
             reviewer_calls.append((pr_url, ai_handler, args))
+            selected_values.append([get_settings().get(key) for key in expected_keys])
+            if failure == "constructor":
+                raise RuntimeError("constructor failed")
+
+        async def run(self):
+            if failure == "run":
+                raise RuntimeError("run failed")
+
+    class _LaterCommand:
+        def __init__(self, pr_url, ai_handler, args):
+            selected_values.append([get_settings().get(key) for key in expected_keys])
 
         async def run(self):
             pass
@@ -226,6 +247,15 @@ async def test_selector_sets_existing_model_and_effort_configuration(monkeypatch
             EXTRA_INSTRUCTIONS="before",
         )
         _replace_section_values("MODEL_ROUTING", ENABLE=True)
+        if not initial_values_present:
+            for key in expected_keys:
+                section, name = key.split(".")
+                section_values = get_settings().get(section)
+                for stored_key in list(section_values):
+                    if stored_key.upper() == name:
+                        del section_values[stored_key]
+            get_settings().unset("MODEL_ROUTING", force=True)
+        originals = [get_settings().get(key) for key in expected_keys]
         monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda _pr_url: None)
         monkeypatch.setitem(pr_agent_module.command2class, "review", _Reviewer)
 
@@ -234,20 +264,27 @@ async def test_selector_sets_existing_model_and_effort_configuration(monkeypatch
             "/review fable+high -i --pr_reviewer.extra_instructions=focused",
         )
 
-        assert handled is True
+        assert handled is (failure is None)
         assert reviewer_calls == [("https://example/pr/1", "fake-ai", ["-i"])]
-        assert get_settings().config.model == "anthropic/claude-fable-5"
-        assert get_settings().config.reasoning_effort == "high"
-        assert get_settings().config.enable_claude_adaptive_thinking is True
-        assert get_settings().model_routing.enable is False
+        assert selected_values == [["anthropic/claude-fable-5", "high", False, True]]
+        assert [get_settings().get(key) for key in expected_keys] == originals
+        if not initial_values_present:
+            assert "MODEL_ROUTING" not in get_settings().as_dict()
+            for key in expected_keys:
+                section, name = key.split(".")
+                assert name not in get_settings().get(section, {})
         assert get_settings().pr_reviewer.extra_instructions == "focused"
+        monkeypatch.setitem(pr_agent_module.command2class, "describe", _LaterCommand)
+        assert await pr_agent_module.PRAgent()._handle_request("https://example/pr/1", "/describe")
+        assert selected_values[-1] == originals
     finally:
         _restore_sections(snapshot)
 
 
 @pytest.mark.asyncio
-async def test_invalid_selector_publishes_error_without_constructing_reviewer(monkeypatch):
-    snapshot = _snapshot_sections("CONFIG", "PR_REVIEWER")
+@pytest.mark.parametrize("include_error_details", [True, False])
+async def test_invalid_selector_publishes_error_without_constructing_reviewer(monkeypatch, include_error_details):
+    snapshot = _snapshot_sections("CONFIG", "PR_REVIEWER", "OTEL")
     published_comments = []
 
     class _Provider:
@@ -269,12 +306,59 @@ async def test_invalid_selector_publishes_error_without_constructing_reviewer(mo
         monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context", lambda _pr_url: _Provider())
         monkeypatch.setitem(pr_agent_module.command2class, "review", _Reviewer)
 
-        handled = await pr_agent_module.PRAgent()._handle_request(
-            "https://example/pr/1", "/review fable+high fable+low"
+        _replace_section_values("OTEL", INCLUDE_ERROR_DETAILS=include_error_details)
+        span = MagicMock()
+        handled = await pr_agent_module.PRAgent()._run_command(
+            "https://example/pr/1", "/review fable+high fable+low", None, span
         )
+        span.set_status.assert_called_once_with(pr_agent_module.StatusCode.ERROR)
+        span.set_attribute.assert_any_call("error.type", "invalid_model_selector")
+        error_messages = [call.args[1] for call in span.set_attribute.call_args_list
+                          if call.args[0] == "error.message"]
+        assert bool(error_messages) is include_error_details
+        if include_error_details:
+            assert "Only one model selector" in error_messages[0]
 
         assert handled is False
         assert len(published_comments) == 1
         assert "Only one model selector" in published_comments[0]
+    finally:
+        _restore_sections(snapshot)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["provider", "publish", "notify"])
+async def test_selector_rejection_integration_failures_preserve_exception(monkeypatch, failure):
+    snapshot = _snapshot_sections("CONFIG", "PR_REVIEWER")
+    integration_error = RuntimeError("integration failed")
+    logged_exceptions = []
+    logger = MagicMock()
+    logger.exception.side_effect = lambda *args, **kwargs: logged_exceptions.append((sys.exc_info(), kwargs))
+
+    def fail(*args, **kwargs):
+        raise integration_error
+
+    provider = MagicMock()
+    if failure == "publish":
+        provider.publish_comment.side_effect = fail
+    try:
+        _replace_section_values("CONFIG", RESPONSE_LANGUAGE="en-us")
+        _replace_section_values("PR_REVIEWER", ENABLE_COMMAND_MODEL_ALIASES=True,
+                                COMMAND_MODEL_ALIASES={"fable": "anthropic/claude-fable-5"})
+        monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda _pr_url: None)
+        monkeypatch.setattr(pr_agent_module, "get_logger", lambda: logger)
+        monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context",
+                            fail if failure == "provider" else lambda _pr_url: provider)
+        handled = await pr_agent_module.PRAgent()._run_command(
+            "https://example/pr/1", "/review fable+high fable+low",
+            fail if failure == "notify" else None, MagicMock(),
+        )
+        assert handled is False
+        assert len(logged_exceptions) == 1
+        exception_info, kwargs = logged_exceptions[0]
+        assert exception_info[1] is integration_error
+        assert exception_info[2] is not None
+        if failure != "notify":
+            assert kwargs["artifact"]["error"] is integration_error
     finally:
         _restore_sections(snapshot)
