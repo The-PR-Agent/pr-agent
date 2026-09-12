@@ -1171,6 +1171,13 @@ class AzureDevopsProvider(GitProvider):
         lang_map = get_settings().get("language_extension_map_org", {}) or {}
         get_language = build_language_file_matcher(lang_map)
 
+        # Azure may omit merge metadata for a PR; without a target commit there is no
+        # reliable revision to enumerate, so mirror the empty-map fallback used by the
+        # other providers for unrecognized repositories.
+        target_commit = getattr(self.pr, "last_merge_target_commit", None)
+        if target_commit is None or not getattr(target_commit, "commit_id", None):
+            return {}
+
         files = self.azure_devops_client.get_items(
             project=self.workspace_slug,
             repository_id=self.repo_slug,
@@ -1179,7 +1186,7 @@ class AzureDevopsProvider(GitProvider):
             include_links=False,
             download=False,
             version_descriptor=GitVersionDescriptor(
-                version=self.pr.last_merge_target_commit.commit_id, version_type="commit"
+                version=target_commit.commit_id, version_type="commit"
             ),
         )
 

@@ -84,6 +84,26 @@ def test_get_languages_queries_target_commit_inventory():
     assert call_kwargs["version_descriptor"].version_type == "commit"
 
 
+def test_get_languages_returns_empty_map_when_target_commit_missing():
+    provider = _language_provider(
+        [SimpleNamespace(git_object_type="blob", path="a.py")]
+    )
+    provider.pr = SimpleNamespace(last_merge_target_commit=None)
+
+    assert provider.get_languages() == {}
+    provider.azure_devops_client.get_items.assert_not_called()
+
+
+def test_get_languages_returns_empty_map_when_target_commit_id_missing():
+    provider = _language_provider(
+        [SimpleNamespace(git_object_type="blob", path="a.py")]
+    )
+    provider.pr = SimpleNamespace(last_merge_target_commit=SimpleNamespace(commit_id=None))
+
+    assert provider.get_languages() == {}
+    provider.azure_devops_client.get_items.assert_not_called()
+
+
 def test_get_languages_returns_empty_map_when_nothing_matches():
     provider = _language_provider([
         SimpleNamespace(git_object_type="blob", path="weird.zzz"),
