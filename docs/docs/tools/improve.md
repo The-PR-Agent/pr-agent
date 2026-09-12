@@ -407,6 +407,30 @@ for the authoritative default values.
       </tr>
     </table>
 
+## Recovering a partially failed analysis
+
+Set `pr_code_suggestions.recover_failed_chunks=true` to try the remaining configured
+`config.fallback_models` for chunks that raised an exception after other chunks succeeded.
+Successful predictions are retained in their original order. Recovery runs model by model,
+after the preceding batch finishes, using the matching `openai.fallback_deployments` where configured,
+and follows the effective fallback chain of the invocation, including a primary model selected by
+[model routing](../usage-guide/changing_a_model.md#routing-small-pull-requests-to-a-cheaper-model).
+A fallback model that recovers at least one chunk is marked as a fallback in the run
+details, so the published run line still reports the primary model while the sticky fallback flag
+stays set.
+The default is `false`, preserving the existing partial-success policy and its latency/cost trade-off.
+
+Each remaining model is tried at most once per still-failed chunk at the tool level; the model
+handler's existing retries and self-reflection calls can add provider requests. A chunk whose complete
+generation prompt does not fit a fallback model's token budget is skipped for that model, without
+truncating its context. Later, larger models can still recover it. Exhausted failures remain in the
+coverage notice. Cancellation propagates instead of starting another retry.
+
+This is recovery within one invocation, not persisted resume across commands. Entirely failed initial
+batches still use the existing whole-batch fallback. Valid empty suggestions are successful results;
+responses rejected by the existing YAML parser retain its existing parse-failure behavior.
+An ambiguous repeated model/deployment pair skips partial recovery rather than restarting the chain.
+
 ## Understanding AI Code Suggestions
 
 - **AI Limitations:** AI models for code are getting better and better, but they are not flawless. Not all the suggestions will be perfect, and a user should not accept all of them automatically. Critical reading and judgment are required. Mistakes of the AI are rare but can happen, and it is usually quite easy for a human to spot them.

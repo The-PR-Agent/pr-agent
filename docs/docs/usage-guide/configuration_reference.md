@@ -258,6 +258,7 @@ to-do list.
 | `max_suggestions_per_file` | 0 | Maximum suggestions retained per file after all chunks are merged; 0 disables the cap. |
 | `max_number_of_calls` | 3 |  |
 | `parallel_calls` | true |  |
+| `recover_failed_chunks` | false | opt-in: try remaining fallback models only for failed chunks after partial success |
 | `final_clip_factor` | 0.8 |  |
 | `decouple_hunks` | false |  |
 **self-review checkbox**
