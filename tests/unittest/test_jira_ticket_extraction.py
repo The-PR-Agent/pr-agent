@@ -1,3 +1,4 @@
+import copy
 from unittest.mock import MagicMock, patch
 from urllib.parse import urlparse
 
@@ -25,15 +26,27 @@ _JIRA_KEYS = (
     "JIRA.JIRA_API_EMAIL",
     "JIRA.JIRA_API_TOKEN",
     "JIRA.JIRA_REQUIREMENTS_FIELD",
+    "JIRA.PROJECT_KEYS",
 )
 
 
 @pytest.fixture(autouse=True)
 def restore_jira_settings():
-    saved = {key: get_settings().get(key, None) for key in _JIRA_KEYS}
+    saved = {key: copy.deepcopy(get_settings().get(key, None)) for key in _JIRA_KEYS}
     yield
     for key, value in saved.items():
+        # Settings are loaded with merge_enabled, so set() merges a list value into the
+        # existing list instead of replacing it (and unset() does not reach a nested key).
+        # Writing a scalar in between turns the restore into a plain replace.
+        get_settings().set(key, "")
         get_settings().set(key, value)
+
+
+def _set_project_keys(value):
+    """Replace the jira.project_keys allowlist (a plain set() would merge lists, see
+    restore_jira_settings)."""
+    get_settings().set("JIRA.PROJECT_KEYS", "")
+    get_settings().set("JIRA.PROJECT_KEYS", value)
 
 
 class TestFindJiraTickets:
@@ -241,6 +254,161 @@ class TestExtractJiraTickets:
             result = extract_jira_tickets(keys)
         assert client.issue.call_count == MAX_JIRA_FETCH_ATTEMPTS
         assert result == []
+
+    def test_project_keys_allowlist_drops_unlisted_prefixes_before_lookup(self):
+        """With jira.project_keys set, key-shaped noise with another prefix ("SHA-256",
+        "UTF-8") is never looked up, so it costs no authenticated 404."""
+        self._configure_jira()
+        _set_project_keys(["PROJ", "OPS"])
+        client = self._fake_client()
+        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client):
+            result = extract_jira_tickets("PROJ-1 uses SHA-256 and UTF-8, see OPS-7 and ISO-8601")
+        assert [call.args[0] for call in client.issue.call_args_list] == ["PROJ-1", "OPS-7"]
+        assert [t["ticket_id"] for t in result] == ["PROJ-1", "OPS-7"]
+
+    def test_project_keys_allowlist_skips_client_when_nothing_is_left(self):
+        """When every detected key is outside the allowlist, no client is built at all."""
+        self._configure_jira()
+        _set_project_keys(["PROJ"])
+        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira") as jira_cls:
+            result = extract_jira_tickets("hash with SHA-256 and UTF-8 text")
+        assert result == []
+        jira_cls.assert_not_called()
+
+    def test_project_keys_empty_keeps_looking_up_every_key(self):
+        """An empty allowlist (the default) changes nothing for existing users."""
+        self._configure_jira()
+        _set_project_keys([])
+        client = self._fake_client()
+        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client):
+            result = extract_jira_tickets("PROJ-1 and SHA-256")
+        assert [call.args[0] for call in client.issue.call_args_list] == ["PROJ-1", "SHA-256"]
+        assert len(result) == 2
+
+    def test_uppercase_allowlist_still_matches_a_lowercased_ticket_key(self):
+        """Detected keys are normalized to upper case before the allowlist is applied, so a
+        lowercased branch name (bugfix/proj-12-x) matches an upper-case entry."""
+        self._configure_jira()
+        _set_project_keys(["PROJ"])
+        client = self._fake_client()
+        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client):
+            result = extract_jira_tickets("bugfix/proj-12-x mentions SHA-256")
+        assert [call.args[0] for call in client.issue.call_args_list] == ["PROJ-12"]
+        assert [t["ticket_id"] for t in result] == ["PROJ-12"]
+
+    @pytest.mark.parametrize("entries", [["proj"], ["Proj"], "proj, ops"])
+    def test_lowercase_project_keys_fail_closed(self, entries):
+        """Jira project keys are upper case, so a lower-case entry is a typo rather than a
+        spelling variant. Accepting it would allow a project the repo never named, so it is
+        rejected with a warning and no lookup happens at all."""
+        self._configure_jira()
+        _set_project_keys(entries)
+        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira") as jira_cls, \
+                patch("pr_agent.tools.ticket_pr_compliance_check.get_logger") as get_logger:
+            result = extract_jira_tickets("bugfix/proj-12-x mentions SHA-256")
+        assert result == []
+        jira_cls.assert_not_called()
+        warning_calls = [str(c) for c in get_logger.return_value.warning.call_args_list]
+        assert any("project_keys" in c and "proj" in c for c in warning_calls)
+        assert any("no valid entry" in c for c in warning_calls)
+
+    def test_project_keys_accept_comma_separated_string(self):
+        """Environment-variable overrides arrive as a string (jira__project_keys="PROJ, OPS")."""
+        self._configure_jira()
+        _set_project_keys("PROJ, OPS")
+        client = self._fake_client()
+        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client):
+            extract_jira_tickets("OPS-3 SHA-256 PROJ-4")
+        assert [call.args[0] for call in client.issue.call_args_list] == ["OPS-3", "PROJ-4"]
+
+    @pytest.mark.parametrize("bad_entry", [
+        "https://acme.atlassian.net/browse/PROJ",  # a URL, not a key
+        "PROJ-123",                                # a ticket key, not a project key
+        "P",                                       # too short to ever match a ticket
+        "PROJECT_KEY_TOO_LONG",                    # longer than the ticket pattern allows
+        "pro j",                                   # whitespace
+    ])
+    def test_invalid_project_keys_are_ignored_with_a_warning(self, bad_entry):
+        """A malformed entry cannot widen the allowlist; it is dropped with a warning while
+        the valid entries keep filtering."""
+        self._configure_jira()
+        _set_project_keys([bad_entry, "PROJ"])
+        client = self._fake_client()
+        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client), \
+                patch("pr_agent.tools.ticket_pr_compliance_check.get_logger") as get_logger:
+            extract_jira_tickets("PROJ-1 SHA-256")
+        assert [call.args[0] for call in client.issue.call_args_list] == ["PROJ-1"]
+        warning_calls = [str(c) for c in get_logger.return_value.warning.call_args_list]
+        assert any("project_keys" in c and bad_entry in c for c in warning_calls)
+
+    @pytest.mark.parametrize("entries", [["PROJ-123"], ["https://acme.atlassian.net/browse/PROJ", "P"], "PROJ-123, x"])
+    def test_project_keys_with_no_valid_entry_fail_closed(self, entries):
+        """A configured allowlist whose entries are all malformed must not widen to the
+        unfiltered default: nothing is looked up and no client is built until it is fixed."""
+        self._configure_jira()
+        _set_project_keys(entries)
+        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira") as jira_cls, \
+                patch("pr_agent.tools.ticket_pr_compliance_check.get_logger") as get_logger:
+            result = extract_jira_tickets("PROJ-1 SHA-256")
+        assert result == []
+        jira_cls.assert_not_called()
+        warning_calls = [str(c) for c in get_logger.return_value.warning.call_args_list]
+        assert any("no valid entry" in c for c in warning_calls)
+
+    @pytest.mark.parametrize("value", [True, False, 0, 1, 1.5, {"PROJ": True}])
+    def test_project_keys_of_an_unsupported_type_fail_closed(self, value):
+        """`project_keys=true` / `=false` from a YAML or CLI override is neither unset nor a
+        list; it must not raise and must not re-enable lookups for every key."""
+        self._configure_jira()
+        _set_project_keys(value)
+        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira") as jira_cls, \
+                patch("pr_agent.tools.ticket_pr_compliance_check.get_logger") as get_logger:
+            result = extract_jira_tickets("PROJ-1 SHA-256")
+        assert result == []
+        jira_cls.assert_not_called()
+        warning_calls = [str(c) for c in get_logger.return_value.warning.call_args_list]
+        assert any("must be a list" in c for c in warning_calls)
+
+    @pytest.mark.parametrize("bad_entry", [True, False, None, 0])
+    def test_non_string_project_keys_are_not_stringified_into_labels(self, bad_entry):
+        """A boolean or null in the list must not become a key-shaped label ("TRUE",
+        "NONE") that silently filters; it is ignored and the valid entry keeps working."""
+        self._configure_jira()
+        _set_project_keys([bad_entry, "PROJ"])
+        client = self._fake_client()
+        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client), \
+                patch("pr_agent.tools.ticket_pr_compliance_check.get_logger") as get_logger:
+            extract_jira_tickets("PROJ-1 TRUE-2 NONE-3 SHA-256")
+        assert [call.args[0] for call in client.issue.call_args_list] == ["PROJ-1"]
+        warning_calls = [str(c) for c in get_logger.return_value.warning.call_args_list]
+        assert any("project_keys" in c for c in warning_calls)
+
+    @pytest.mark.parametrize("value", [[], (), "", "   "])
+    def test_unsupplied_project_keys_keep_looking_up_every_key(self, value):
+        """The three ways of supplying nothing: the option missing (covered by the tests
+        above), the shipped empty list, and a blank top-level string -- `jira__project_keys=""`
+        is how a shell spells an unset environment variable. All keep today's behaviour."""
+        self._configure_jira()
+        _set_project_keys(value)
+        client = self._fake_client()
+        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira", return_value=client):
+            extract_jira_tickets("PROJ-1 SHA-256")
+        assert [call.args[0] for call in client.issue.call_args_list] == ["PROJ-1", "SHA-256"]
+
+    @pytest.mark.parametrize("entries", [[""], [" "], ["", ""], ",", " , "])
+    def test_supplied_blank_project_keys_fail_closed(self, entries):
+        """A blank *entry* is a malformed override, not a second spelling of the default: it
+        carries a list or a separator, so something was supplied and got lost. Widening back
+        to unfiltered lookup there would let a broken override grant access it never named."""
+        self._configure_jira()
+        _set_project_keys(entries)
+        with patch("pr_agent.tools.ticket_pr_compliance_check.Jira") as jira_cls, \
+                patch("pr_agent.tools.ticket_pr_compliance_check.get_logger") as get_logger:
+            result = extract_jira_tickets("PROJ-1 SHA-256")
+        assert result == []
+        jira_cls.assert_not_called()
+        warning_calls = [str(c) for c in get_logger.return_value.warning.call_args_list]
+        assert any("no valid entry" in c for c in warning_calls)
 
     def test_skips_ticket_on_fetch_error(self):
         """A failed fetch for one key does not abort the others."""
