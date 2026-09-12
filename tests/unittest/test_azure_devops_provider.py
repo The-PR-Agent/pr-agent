@@ -46,7 +46,16 @@ def test_get_languages_returns_language_names():
     # extensions ("py"): sort_files_by_main_languages() maps names back to
     # extensions, so extension keys would drop every file into "Other".
     provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
-    provider.get_files = MagicMock(return_value=["a.py", "b.py", "c.py", "d.js", "weird.zzz"])
+    provider.workspace_slug = "proj"
+    provider.repo_slug = "repo"
+    provider.azure_devops_client = MagicMock()
+    provider.azure_devops_client.get_items.return_value = [
+        SimpleNamespace(git_object_type="blob", path="a.py"),
+        SimpleNamespace(git_object_type="blob", path="b.py"),
+        SimpleNamespace(git_object_type="blob", path="c.py"),
+        SimpleNamespace(git_object_type="blob", path="d.js"),
+        SimpleNamespace(git_object_type="blob", path="weird.zzz"),
+    ]
 
     languages = provider.get_languages()
 
@@ -56,22 +65,54 @@ def test_get_languages_returns_language_names():
 
 def test_get_languages_returns_empty_map_when_nothing_matches():
     provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
-    provider.get_files = MagicMock(return_value=["weird.zzz", ""])
+    provider.workspace_slug = "proj"
+    provider.repo_slug = "repo"
+    provider.azure_devops_client = MagicMock()
+    provider.azure_devops_client.get_items.return_value = [
+        SimpleNamespace(git_object_type="blob", path="weird.zzz"),
+        SimpleNamespace(git_object_type="blob", path=""),
+    ]
 
     assert provider.get_languages() == {}
 
 
 def test_get_languages_maps_full_paths_and_multipart_extensions():
-    # Azure get_files() returns repository paths (dirs + filenames); the matcher
-    # must classify by the basename and honor multipart extensions.
+    # The matcher must classify by the basename and honor multipart extensions.
     provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
-    provider.get_files = MagicMock(
-        return_value=["src/foo.py", "lib/bar.py", "doc/README.md", "notes.txt", "tpl/file.test.ts"]
-    )
+    provider.workspace_slug = "proj"
+    provider.repo_slug = "repo"
+    provider.azure_devops_client = MagicMock()
+    provider.azure_devops_client.get_items.return_value = [
+        SimpleNamespace(git_object_type="blob", path="src/foo.py"),
+        SimpleNamespace(git_object_type="blob", path="lib/bar.py"),
+        SimpleNamespace(git_object_type="blob", path="doc/README.md"),
+        SimpleNamespace(git_object_type="blob", path="notes.txt"),
+        SimpleNamespace(git_object_type="blob", path="tpl/file.test.ts"),
+    ]
 
     languages = provider.get_languages()
 
     assert languages == {"Python": 40.0, "Markdown": 20.0, "Text": 20.0, "TypeScript": 20.0}
+
+
+def test_get_languages_ignores_non_blob_items_and_other_languages():
+    # Percentages come from the repository blob inventory, not the PR change set:
+    # non-blob entries (e.g. folders) must be skipped, and off-language files
+    # must not skew the ranking.
+    provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+    provider.workspace_slug = "proj"
+    provider.repo_slug = "repo"
+    provider.azure_devops_client = MagicMock()
+    provider.azure_devops_client.get_items.return_value = [
+        SimpleNamespace(git_object_type="Folder", path="src"),
+        SimpleNamespace(git_object_type="blob", path="src/app.py"),
+        SimpleNamespace(git_object_type="blob", path="src/main.py"),
+        SimpleNamespace(git_object_type="blob", path="render.bin"),
+    ]
+
+    languages = provider.get_languages()
+
+    assert languages == {"Python": 100.0}
 
 
 class TestAzureDevopsProviderRepoContext:

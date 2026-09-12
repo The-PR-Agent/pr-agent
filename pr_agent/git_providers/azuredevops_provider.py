@@ -1165,15 +1165,26 @@ class AzureDevopsProvider(GitProvider):
         # sort_files_by_main_languages() maps each name back to its extensions, so
         # returning extensions ("py") silently drops every file into the "Other"
         # bucket and defeats the prioritisation. Use the shared configured
-        # filename matcher so all providers apply the same rules.
+        # filename matcher so all providers apply the same rules. Percentages are
+        # computed over the repository's blob inventory (not the PR change set),
+        # so transient files or untouched files in the PR cannot skew the ranking.
         lang_map = get_settings().get("language_extension_map_org", {}) or {}
         get_language = build_language_file_matcher(lang_map)
 
+        files = self.azure_devops_client.get_items(
+            project=self.workspace_slug,
+            repository_id=self.repo_slug,
+            recursion_level="Full",
+            include_content_metadata=True,
+            include_links=False,
+            download=False,
+        )
+
         lang_count = Counter()
-        for filename in self.get_files():
-            if not filename:
+        for f in files:
+            if f.git_object_type != "blob" or not f.path:
                 continue
-            language = get_language(filename)
+            language = get_language(f.path)
             if language:
                 lang_count[language] += 1
 
