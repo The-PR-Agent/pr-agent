@@ -2254,12 +2254,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                         provider_params.setdefault(provider, {})[parameter] = value
                         break
 
-        aws_region = (
-            os.environ.get("AWS_REGION_NAME")
-            or settings.get("aws.AWS_REGION_NAME", None)
-            or os.environ.get("AWS_REGION")
-            or os.environ.get("AWS_DEFAULT_REGION")
-        )
+        aws_region = self._resolve_aws_region(settings)
         if aws_region:
             provider_params.setdefault("bedrock", {})["aws_region_name"] = aws_region
         mantle_aws_region = aws_region
@@ -2466,6 +2461,16 @@ class LiteLLMAIHandler(BaseAiHandler):
         )
 
     @staticmethod
+    def _resolve_aws_region(settings) -> str | None:
+        """Resolve the AWS region from the environment and the configured aws settings."""
+        return (
+            os.environ.get("AWS_REGION_NAME")
+            or settings.get("aws.AWS_REGION_NAME", None)
+            or os.environ.get("AWS_REGION")
+            or os.environ.get("AWS_DEFAULT_REGION")
+        )
+
+    @staticmethod
     def _snapshot_request_headers(settings) -> dict:
         """Capture explicitly configured headers for every request from this handler."""
         raw_headers = settings.get("LITELLM.EXTRA_HEADERS", None)
@@ -2487,12 +2492,7 @@ class LiteLLMAIHandler(BaseAiHandler):
             variable: os.environ.get(variable)
             for variable in AWS_CREDENTIAL_CHAIN_ENV_VARS
         }
-        request_region = (
-            os.environ.get("AWS_REGION_NAME")
-            or settings.get("aws.AWS_REGION_NAME", None)
-            or os.environ.get("AWS_REGION")
-            or os.environ.get("AWS_DEFAULT_REGION")
-        )
+        request_region = self._resolve_aws_region(settings)
         ambient_access_key = os.environ.get("AWS_ACCESS_KEY_ID")
         ambient_secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY")
         if bool(ambient_access_key) != bool(ambient_secret_key):
