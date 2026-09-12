@@ -1229,6 +1229,11 @@ class PRReviewer:
         last_seen_commit_date = (
             self.incremental.last_seen_commit.commit.author.date if self.incremental.last_seen_commit else None
         )
+        # PyGithub returns timezone-aware UTC commit dates; the threshold below is a
+        # naive datetime. Normalize to naive UTC so the comparison cannot raise
+        # TypeError, matching how the GitLab and Azure providers emit commit dates.
+        if last_seen_commit_date is not None and last_seen_commit_date.tzinfo is not None:
+            last_seen_commit_date = last_seen_commit_date.astimezone(datetime.timezone.utc).replace(tzinfo=None)
         all_commits_too_recent = (
             last_seen_commit_date > recent_commits_threshold if self.incremental.last_seen_commit else False
         )

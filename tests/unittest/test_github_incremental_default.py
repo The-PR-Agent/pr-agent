@@ -1,4 +1,6 @@
 """The default `IncrementalPR` is per call, not one object shared since import."""
+import datetime
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from pr_agent.git_providers.git_provider import IncrementalPR
@@ -55,3 +57,32 @@ def test_an_incremental_passed_in_is_the_one_used():
     provider.get_incremental_commits(given)
 
     assert provider.incremental is given
+
+
+def test_can_run_incremental_review_handles_aware_commit_dates():
+    """Regression: PyGithub 2.x returns timezone-aware commit timestamps,
+    but _can_run_incremental_review compared them against a naive
+    datetime.now(), raising TypeError on every second run."""
+    from pr_agent.tools.pr_reviewer import PRReviewer
+
+    reviewer = PRReviewer.__new__(PRReviewer)
+    reviewer.is_auto = False
+    reviewer.git_provider = MagicMock(spec=["get_incremental_commits"])
+    reviewer.pr_url = "https://github.com/test/repo/pull/1"
+
+    aware_date = datetime.datetime(2026, 9, 10, 12, 0, tzinfo=datetime.timezone.utc)
+    commit = SimpleNamespace(commit=SimpleNamespace(author=SimpleNamespace(date=aware_date)))
+
+    reviewer.incremental = IncrementalPR(True)
+    reviewer.incremental.commits_range = [commit]
+    reviewer.incremental.last_seen_commit = commit
+
+    with patch("pr_agent.tools.pr_reviewer.get_settings") as mock_settings:
+        mock_settings.return_value.git_provider = "github"
+        mock_settings.return_value.pr_reviewer.minimal_commits_for_incremental_review = 0
+        mock_settings.return_value.pr_reviewer.minimal_minutes_for_incremental_review = 0
+        mock_settings.return_value.pr_reviewer.require_all_thresholds_for_incremental_review = False
+        # Must not raise TypeError
+        result = reviewer._can_run_incremental_review()
+
+    assert result in (True, False)  # either outcome is valid; crash is the bug
