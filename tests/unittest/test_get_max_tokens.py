@@ -12,6 +12,17 @@ from pr_agent.algo import (
 from pr_agent.algo.utils import MAX_TOKENS, get_max_tokens
 
 
+def _expected_max_tokens(model: str) -> int:
+    """Resolve a model's expected max tokens the same way get_max_tokens() does:
+    prefer the static MAX_TOKENS registry, else fall back to LiteLLM (issue #3196).
+    Used so tests keep working for models that were intentionally removed from
+    MAX_TOKENS because LiteLLM's fallback already resolves them correctly.
+    """
+    if model in MAX_TOKENS:
+        return MAX_TOKENS[model]
+    return int(litellm.get_model_info(model)["max_input_tokens"])
+
+
 class TestGetMaxTokens:
 
     # Test if the file is in MAX_TOKENS
@@ -143,7 +154,7 @@ class TestGetMaxTokens:
             })()
         })()
         monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
-        expected = MAX_TOKENS[model.removesuffix("_thinking")]
+        expected = _expected_max_tokens(model.removesuffix("_thinking"))
         assert get_max_tokens(model) == expected
 
     @pytest.mark.parametrize("model", [
@@ -200,7 +211,7 @@ class TestGetMaxTokens:
         while tmp.startswith(("openai/", "azure/")):
             tmp = tmp.removeprefix("openai/").removeprefix("azure/")
         base = tmp.removesuffix("_thinking")
-        expected = MAX_TOKENS[base]
+        expected = _expected_max_tokens(base)
         assert get_max_tokens(model) == expected
 
     def test_non_gpt5_thinking_model_max_tokens_not_stripped(self, monkeypatch):
@@ -372,7 +383,7 @@ class TestGetMaxTokens:
 
         monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
 
-        expected = MAX_TOKENS[model]
+        expected = _expected_max_tokens(model)
 
         assert get_max_tokens(model) == expected
 
@@ -663,7 +674,8 @@ class TestGetMaxTokens:
 
         monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
 
-        assert get_max_tokens(model) == 200000
+        # 1M per LiteLLM (issue #3196): zai/glm-5.2 was understated at 200000.
+        assert get_max_tokens(model) == 1000000
 
     @pytest.mark.parametrize(
         "model",
@@ -681,7 +693,8 @@ class TestGetMaxTokens:
 
         monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
 
-        assert get_max_tokens(model) == 262144
+        # 1M per LiteLLM (issue #3196): moonshot/kimi-k3 was understated at 262144.
+        assert get_max_tokens(model) == 1048576
 
     @pytest.mark.parametrize(
         "model",
@@ -1097,7 +1110,61 @@ class TestNoLiteLLMDuplicates:
         "openrouter/x-ai/grok-4.5",
         "openrouter/x-ai/grok-4.6",
         "xai/grok-build-latest",
+        "zai/glm-5.2",
     }
+
+    # The 25 models audited in issue #3196 as understating LiteLLM's reported
+    # context window by more than 10%, mapped to the corrected value
+    # get_max_tokens() must now return. gpt-5.4 / gpt-5.4-2026-03-05 are
+    # excluded: their 272000 pin is an intentional, documented safe default
+    # (see the comment on their MAX_TOKENS entries) and is not a bug.
+    AUDITED_UNDERSTATED_MODELS = {
+        "mistral/mistral-medium-latest": 262144,
+        "mistral/mistral-small-latest": 262144,
+        "mistral/codestral-latest": 128000,
+        "mistral/open-mixtral-8x22b": 65336,
+        "mistral/mistral-large-latest": 262144,
+        "mistral/open-mistral-7b": 32000,
+        "mistral/open-mixtral-8x7b": 32000,
+        "codestral/codestral-latest": 32000,
+        "codestral/codestral-2405": 32000,
+        "watsonx/mistralai/mistral-large": 131072,
+        "zai/glm-5.2": 1000000,
+        "moonshot/kimi-k3": 1048576,
+        "deepseek/deepseek-reasoner": 131072,
+        "deepinfra/deepseek-ai/DeepSeek-R1": 163840,
+        "gpt-5": 272000,
+        "gpt-5-2025-08-07": 272000,
+        "gpt-5-nano": 272000,
+        "gpt-5-mini": 272000,
+        "gpt-5.1": 272000,
+        "gpt-5.1-2025-11-13": 272000,
+        "gpt-5.1-codex": 272000,
+        "gpt-5.1-codex-mini": 272000,
+        "ollama/llama3": 8192,
+    }
+
+    @pytest.mark.parametrize("model,expected", sorted(AUDITED_UNDERSTATED_MODELS.items()))
+    def test_previously_understated_models_now_resolve_correctly(self, monkeypatch, model, expected):
+        """Regression test for issue #3196's audit of understated MAX_TOKENS entries.
+
+        Each of these models used to return a value more than 10% below what
+        LiteLLM reports for it -- and because MAX_TOKENS takes precedence over
+        the get_max_tokens() LiteLLM fallback, that was silent degradation, not
+        a safety margin (e.g. a Mistral user's diff was compressed to fit 8k
+        when 262k was actually available). Guards against the fix regressing,
+        whether the model is now resolved via a corrected static entry or by
+        deleting the entry so the LiteLLM fallback resolves it instead.
+        """
+        fake_settings = type("", (), {
+            "config": type("", (), {
+                "custom_model_max_tokens": 0,
+                "max_model_tokens": 0
+            })()
+        })()
+        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+
+        assert get_max_tokens(model) == expected
 
     def test_static_max_tokens_has_no_exact_litellm_duplicates(self):
         """Hardcoded MAX_TOKENS entries must not just mirror LiteLLM.
