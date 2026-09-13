@@ -288,15 +288,12 @@ MAX_TOKENS = {
     'gpt-4-32k': 32000,
     'gpt-4.5-preview': 128000,  # 128K, but may be limited by config.max_model_tokens
     'gpt-4.5-preview-2025-02-27': 128000,  # 128K, but may be limited by config.max_model_tokens
-    'gpt-5-nano': 200000,  # 200K, but may be limited by config.max_model_tokens
-    'gpt-5-mini': 200000,  # 200K, but may be limited by config.max_model_tokens
-    'gpt-5': 200000,
-    'gpt-5-2025-08-07': 200000,
-    'gpt-5.1': 200000,
-    'gpt-5.1-2025-11-13': 200000,
+    # NOTE (issue #3196): gpt-5 / gpt-5-nano / gpt-5-mini / gpt-5.1* / gpt-5.1-codex*
+    # were removed from here — they were pinned at a stale, understated 200000
+    # while LiteLLM reports 272000. Deleting them lets get_max_tokens() fall back
+    # to litellm.get_model_info(), which resolves correctly even from LiteLLM's
+    # offline bundled cost map.
     'gpt-5.1-chat-latest': 200000,
-    'gpt-5.1-codex': 200000,
-    'gpt-5.1-codex-mini': 200000,
     'gpt-5.2': 400000,  # 400K, but may be limited by config.max_model_tokens
     'gpt-5.2-2025-12-11': 400000,  # 400K, but may be limited by config.max_model_tokens
     'gpt-5.2-codex': 400000,  # 400K, but may be limited by config.max_model_tokens
@@ -324,9 +321,12 @@ MAX_TOKENS = {
     'claude-instant-1': 100000,
     'claude-2': 100000,
     'deepseek/deepseek-chat': 128000,  # 128K, but may be limited by config.max_model_tokens
-    'deepseek/deepseek-reasoner': 64000,  # 64K, but may be limited by config.max_model_tokens
-    'zai/glm-5.2': 200000,  # 200K, matching the Z.AI GLM-5/5.1 lineage, but may be limited by config.max_model_tokens
-    'moonshot/kimi-k3': 262144,  # 256K, matching the Moonshot Kimi-k2.5/k2.6 lineage, but may be limited by config.max_model_tokens
+    # deepseek/deepseek-reasoner and moonshot/kimi-k3 were removed from here
+    # (issue #3196): both were understated vs. LiteLLM (64000 vs 131072,
+    # 262144 vs 1048576) and both resolve correctly through the
+    # get_max_tokens() LiteLLM fallback, including from the offline bundled
+    # cost map.
+    'zai/glm-5.2': 1000000,  # 1M per LiteLLM (issue #3196); kept pinned: absent from LiteLLM's bundled cost map
     'openai/qwq-plus': 131072,  # 131K context length, but may be limited by config.max_model_tokens
     "openrouter/auto": 2000000,  # 2M context length, but may be limited by config.max_model_tokens
     "openrouter/free": 200000,  # 200K context length, but may be limited by config.max_model_tokens
@@ -414,25 +414,18 @@ MAX_TOKENS = {
     "xai/grok-build-latest": 500000,  # kept pinned: absent from LiteLLM's bundled cost map
     "openrouter/x-ai/grok-4.5": 500000,  # kept pinned: absent from LiteLLM's bundled cost map
     "openrouter/x-ai/grok-4.6": 500000,  # kept pinned: absent from LiteLLM's bundled cost map
-    'ollama/llama3': 4096,
     'watsonx/meta-llama/llama-3-8b-instruct': 4096,
     "watsonx/meta-llama/llama-3-70b-instruct": 4096,
     "watsonx/meta-llama/llama-3-405b-instruct": 16384,
     "watsonx/ibm/granite-13b-chat-v2": 8191,
     "watsonx/ibm/granite-34b-code-instruct": 8191,
-    "watsonx/mistralai/mistral-large": 32768,
     "deepinfra/deepseek-ai/DeepSeek-R1-Distill-Qwen-32B": 128000,
     "deepinfra/deepseek-ai/DeepSeek-R1-Distill-Llama-70B": 128000,
-    "deepinfra/deepseek-ai/DeepSeek-R1": 128000,
-    "mistral/mistral-small-latest": 8191,
-    "mistral/mistral-medium-latest": 8191,
-    "mistral/mistral-large-latest": 128000,
-    "mistral/open-mistral-7b": 8191,
-    "mistral/open-mixtral-8x7b": 8191,
-    "mistral/open-mixtral-8x22b": 8191,
-    "mistral/codestral-latest": 8191,
-    "codestral/codestral-latest": 8191,
-    "codestral/codestral-2405": 8191,
+    # ollama/llama3, watsonx/mistralai/mistral-large, deepinfra/deepseek-ai/DeepSeek-R1,
+    # and the mistral/* and codestral/* entries were removed from here (issue #3196):
+    # all were understated vs. LiteLLM (e.g. mistral/mistral-large-latest was 128000
+    # vs LiteLLM's 262144) and all resolve correctly through the get_max_tokens()
+    # LiteLLM fallback, including from the offline bundled cost map.
     'xiaomi_mimo/mimo-v2.5': 1048576,  # 1M, matching the LiteLLM registry for mimo-v2.5, xiaomi_mimo/ is the native LiteLLM Xiaomi provider, but may be limited by config.max_model_tokens
     'xiaomi_mimo/mimo-v2.5-pro': 1048576,  # 1M, matching the LiteLLM registry for mimo-v2.5-pro, but may be limited by config.max_model_tokens
     # Provider-prefixed Claude model IDs generated from _CLAUDE_MODEL_FAMILIES
