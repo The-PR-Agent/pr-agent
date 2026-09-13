@@ -242,6 +242,30 @@ class PRHelpMessage:
             docs_url += f"#{self.format_markdown_header(header)}"
         return docs_url
 
+    def _format_relevant_sources(self, relevant_sections, available_docs_files: set[str]) -> list[str]:
+        if not isinstance(relevant_sections, list):
+            return []
+
+        source_urls = []
+        for section in relevant_sections:
+            if not isinstance(section, dict):
+                continue
+
+            file_name = section.get('file_name')
+            if not isinstance(file_name, str):
+                continue
+            normalized_file_name = file_name
+            if normalized_file_name.startswith('/'):
+                normalized_file_name = normalized_file_name[1:]
+            if normalized_file_name not in available_docs_files:
+                continue
+
+            header = section.get('relevant_section_header_string', '')
+            if not isinstance(header, str):
+                header = ''
+            source_urls.append(self.format_docs_url(normalized_file_name, header))
+        return source_urls
+
 
     async def run(self):
         try:
@@ -265,11 +289,14 @@ class PRHelpMessage:
                 md_files = md_files_priority + md_files_not_priority
 
                 docs_prompt = ""
+                available_docs_files = set()
                 for file in md_files:
                     try:
                         with open(file, 'r') as f:
-                            file_path = str(file).replace(str(docs_path), '')
-                            docs_prompt += f"\n==file name==\n\n{file_path}\n\n==file content==\n\n{f.read().strip()}\n=========\n\n"
+                            file_contents = f.read().strip()
+                            relative_file_path = file.relative_to(docs_path).as_posix()
+                            docs_prompt += f"\n==file name==\n\n/{relative_file_path}\n\n==file content==\n\n{file_contents}\n=========\n\n"
+                            available_docs_files.add(relative_file_path)
                     except Exception as e:
                         get_logger().error(f"Error while reading the file {file}: {e}")
                 self.vars['snippets'] = docs_prompt.strip()
@@ -300,14 +327,12 @@ class PRHelpMessage:
                 # prepare the answer
                 answer_str = ""
                 if response_str:
+                    source_urls = self._format_relevant_sources(relevant_sections, available_docs_files)
                     answer_str += f"### Question: \n{self.question_str}\n\n"
                     answer_str += f"### Answer:\n{response_str.strip()}\n\n"
-                    answer_str += "#### Relevant Sources:\n\n"
-                    for section in relevant_sections:
-                        docs_url = self.format_docs_url(
-                            section.get('file_name'),
-                            section['relevant_section_header_string'],
-                        )
+                    if source_urls:
+                        answer_str += "#### Relevant Sources:\n\n"
+                    for docs_url in source_urls:
                         answer_str += f"> - {docs_url}\n"
 
 

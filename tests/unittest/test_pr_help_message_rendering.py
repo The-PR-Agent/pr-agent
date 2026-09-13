@@ -152,6 +152,104 @@ async def test_question_uses_configured_handler_error_path_without_openai_key(
     assert tool.git_provider.published == []
 
 
+async def test_question_skips_malformed_sources_without_discarding_answer(
+    published_output, non_openai_question_settings, tmp_path, monkeypatch
+):
+    handler = StubAiHandler(
+        response=(
+            "response: Enable automatic review in the repository settings.\n"
+            "relevant_sections:\n"
+            "  - file_name: /tools/review.md\n"
+            "    relevant_section_header_string: Automatic review\n"
+            "  - file_name: tools/review.md\n"
+            "    relevant_section_header_string:\n"
+            "  - relevant_section_header_string: Missing file name\n"
+            "  - not a mapping\n"
+            "  - file_name: ../../review.md\n"
+            "    relevant_section_header_string: Automatic review\n"
+            "  - file_name: https://example.com/review.md\n"
+            "    relevant_section_header_string: Automatic review\n"
+            "  - file_name: /tools/review.md?draft=true\n"
+            "    relevant_section_header_string: Automatic review\n"
+            "  - file_name: ' /tools/review.md '\n"
+            "    relevant_section_header_string: Automatic review\n"
+        )
+    )
+    tool = build_question_tool(tmp_path, monkeypatch, handler)
+
+    await tool.run()
+
+    assert len(tool.git_provider.published) == 1
+    comment = tool.git_provider.published[0]
+    assert "Enable automatic review in the repository settings." in comment
+    assert f"> - {CURRENT_DOCS_URL}/tools/review/#automatic-review\n" in comment
+    assert f"> - {CURRENT_DOCS_URL}/tools/review/\n" in comment
+    assert comment.count("> - ") == 2
+    assert "example.com" not in comment
+    assert "draft=true" not in comment
+
+
+@pytest.mark.parametrize(
+    "relevant_sections",
+    [
+        "  - relevant_section_header_string: Missing file name\n",
+        "  file_name: /tools/review.md\n  relevant_section_header_string: Automatic review\n",
+    ],
+    ids=["all-invalid-rows", "non-list-value"],
+)
+async def test_question_preserves_answer_when_no_valid_sources_remain(
+    published_output, non_openai_question_settings, tmp_path, monkeypatch, relevant_sections
+):
+    handler = StubAiHandler(
+        response=(
+            "response: Enable automatic review in the repository settings.\n"
+            "relevant_sections:\n"
+            f"{relevant_sections}"
+        )
+    )
+    tool = build_question_tool(tmp_path, monkeypatch, handler)
+
+    await tool.run()
+
+    assert len(tool.git_provider.published) == 1
+    comment = tool.git_provider.published[0]
+    assert "Enable automatic review in the repository settings." in comment
+    assert "Relevant Sources" not in comment
+    assert CURRENT_DOCS_URL not in comment
+
+
+async def test_question_does_not_link_to_document_that_failed_to_load(
+    published_output, non_openai_question_settings, tmp_path, monkeypatch
+):
+    unreadable_doc = tmp_path / "package" / "docs" / "docs" / "faq.md"
+    handler = StubAiHandler(
+        response=(
+            "response: Enable automatic review in the repository settings.\n"
+            "relevant_sections:\n"
+            "  - file_name: /faq.md\n"
+            "    relevant_section_header_string: FAQ\n"
+        )
+    )
+    tool = build_question_tool(tmp_path, monkeypatch, handler)
+    unreadable_doc.write_text("# FAQ", encoding="utf-8")
+    real_open = open
+
+    def fail_unreadable_doc(file, *args, **kwargs):
+        if str(file) == str(unreadable_doc):
+            raise OSError("unreadable test document")
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(pr_help_message_module, "open", fail_unreadable_doc, raising=False)
+
+    await tool.run()
+
+    assert len(tool.git_provider.published) == 1
+    comment = tool.git_provider.published[0]
+    assert "Enable automatic review in the repository settings." in comment
+    assert "Relevant Sources" not in comment
+    assert f"{CURRENT_DOCS_URL}/faq/" not in comment
+
+
 @pytest.mark.parametrize(
     "capabilities, expected, unexpected",
     [
