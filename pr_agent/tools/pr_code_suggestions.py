@@ -975,9 +975,11 @@ class PRCodeSuggestions:
     def _parse_line_number(value) -> Optional[int]:
         """Convert an anchor value to an int, or None when it cannot be a line number.
 
-        int() truncates fractional floats and raises OverflowError for non-finite ones,
-        so those are rejected explicitly instead of being silently coerced.
+        Rejects booleans, fractional floats (int() truncates them), and non-finite
+        floats (int() raises OverflowError) instead of silently coercing them.
         """
+        if isinstance(value, bool):
+            return None
         if isinstance(value, float) and (not math.isfinite(value) or not value.is_integer()):
             return None
         try:

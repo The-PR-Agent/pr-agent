@@ -92,6 +92,7 @@ def test_truncate_if_needed_noop_when_under_limit_or_disabled():
         {"relevant_lines_start": 2, "relevant_lines_end": float("nan")},
         {"relevant_lines_start": 1.5, "relevant_lines_end": 5},
         {"relevant_lines_start": 2, "relevant_lines_end": 3.5},
+        {"relevant_lines_start": True, "relevant_lines_end": True},
     ],
 )
 def test_is_suggestion_line_range_valid_rejects_unanchorable_ranges(suggestion_kwargs):
