@@ -640,7 +640,7 @@ def _gitlab_provider(gl, id_project="1"):
     return provider
 
 
-class TestGitlabProviderPerDirectory:
+class TestGitLabProviderPerDirectory:
     def test_get_repo_settings_tree_filters_blobs_on_default_branch(self):
         project = MagicMock()
         project.default_branch = "main"
