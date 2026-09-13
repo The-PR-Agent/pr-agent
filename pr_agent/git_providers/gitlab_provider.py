@@ -146,6 +146,11 @@ class _GitLabIncrementalNote:
         self.anchor_time = max(candidates) if candidates else None
         self.html_url = f"{mr_web_url}#note_{self.id}" if mr_web_url else ""
 
+# GitLab project access levels: No access = 0, Minimal Access = 5, Guest = 10,
+# Reporter = 20, Developer = 30, Maintainer = 40, Owner = 50. Reading a private or
+# internal project's repository source requires at least Reporter-level access.
+_GITLAB_ACCESS_LEVEL_REPORTER = 20
+
 class GitLabProvider(GitProvider):
 
     def __init__(self, merge_request_url: Optional[str] = None, incremental: Optional[bool] = False):
@@ -1551,22 +1556,25 @@ class GitLabProvider(GitProvider):
         return None
 
     def _requester_can_read_sibling_project(self, project) -> bool:
-        # Public and internal projects are readable by any authenticated instance user; the
-        # requester is an instance authenticated user (they opened this MR). Only private
-        # projects need positive proof of membership before the sibling is read.
+        # Public projects are readable by any instance user, including external users.
         visibility = getattr(project, "visibility", None)
-        if visibility in ("public", "internal"):
+        if visibility == "public":
             return True
         requester_id = self._get_review_requester_id()
         if not requester_id:
             return False
         try:
-            project.members_all.get(requester_id)
-            return True
+            member = project.members_all.get(requester_id)
         except Exception:
             # A 404 (not a member) or any provider failure means access cannot be positively
             # established, so the sibling content must not be fetched.
             return False
+        access_level = getattr(member, "access_level", None)
+        # Reading repository source code requires at least Reporter-level access; Guests,
+        # minimal-access members, and unknown levels are rejected. Requiring positive membership
+        # with that level also fails closed for external users, whom GitLab forbids from
+        # internal projects, and for low-access members of private projects.
+        return isinstance(access_level, int) and access_level >= _GITLAB_ACCESS_LEVEL_REPORTER
 
     def get_repo_context_ref(self, from_default_branch: bool = False) -> Optional[str]:
         # The MR target branch (the branch being merged into) is the cached revision; the

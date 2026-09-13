@@ -740,18 +740,66 @@ def test_gitlab_provider_fetches_sibling_file_in_same_namespace():
     sibling_project.files.get.assert_called_once_with(file_path="src/api.py", ref="main")
 
 
-def test_gitlab_provider_fetches_internal_sibling_without_membership_check():
+def test_gitlab_provider_rejects_internal_sibling_when_requester_is_not_member():
     provider = GitLabProvider.__new__(GitLabProvider)
     provider.id_project = "group/sub/current"
     provider.gl = Mock()
+    provider.mr = SimpleNamespace(author={"id": 42})
     sibling_project = Mock()
     sibling_project.default_branch = "main"
     sibling_project.visibility = "internal"
+    sibling_project.members_all.get.side_effect = GitlabGetError("Not found", response_code=404)
+    provider.gl.projects.get.return_value = sibling_project
+
+    with patch("pr_agent.git_providers.gitlab_provider.get_logger") as mock_get_logger:
+        assert provider.get_sibling_repo_file_content("group/sub/lib", "src/api.py") == ""
+
+    # Internal projects forbid external users and low-role/unknown members, so membership
+    # must be positively established before the sibling is read.
+    sibling_project.members_all.get.assert_called_once_with(42)
+    sibling_project.files.get.assert_not_called()
+    mock_get_logger.return_value.warning.assert_called_once_with(
+        "Ignoring sibling repo context file the review requester cannot read: group/sub/lib"
+    )
+
+
+def test_gitlab_provider_fetches_internal_sibling_when_requester_is_read_member():
+    provider = GitLabProvider.__new__(GitLabProvider)
+    provider.id_project = "group/sub/current"
+    provider.gl = Mock()
+    provider.mr = SimpleNamespace(author={"id": 42})
+    sibling_project = Mock()
+    sibling_project.default_branch = "main"
+    sibling_project.visibility = "internal"
+    sibling_project.members_all.get.return_value = SimpleNamespace(access_level=30)
     sibling_project.files.get.return_value.decode.return_value = b"sibling contract"
     provider.gl.projects.get.return_value = sibling_project
 
     assert provider.get_sibling_repo_file_content("group/sub/lib", "src/api.py") == "sibling contract"
-    sibling_project.members_all.get.assert_not_called()
+    sibling_project.members_all.get.assert_called_once_with(42)
+
+
+def test_gitlab_provider_rejects_private_sibling_when_member_lacks_repo_read():
+    provider = GitLabProvider.__new__(GitLabProvider)
+    provider.id_project = "group/sub/current"
+    provider.gl = Mock()
+    provider.mr = SimpleNamespace(author={"id": 42})
+    sibling_project = Mock()
+    sibling_project.default_branch = "main"
+    sibling_project.visibility = "private"
+    sibling_project.members_all.get.return_value = SimpleNamespace(access_level=10)
+    sibling_project.files.get.return_value.decode.return_value = b"sibling contract"
+    provider.gl.projects.get.return_value = sibling_project
+
+    with patch("pr_agent.git_providers.gitlab_provider.get_logger") as mock_get_logger:
+        assert provider.get_sibling_repo_file_content("group/sub/lib", "src/api.py") == ""
+
+    # Guests and minimal-access members cannot read private repository source files.
+    sibling_project.members_all.get.assert_called_once_with(42)
+    sibling_project.files.get.assert_not_called()
+    mock_get_logger.return_value.warning.assert_called_once_with(
+        "Ignoring sibling repo context file the review requester cannot read: group/sub/lib"
+    )
 
 
 def test_gitlab_provider_fetches_private_sibling_when_requester_is_member():
@@ -762,6 +810,7 @@ def test_gitlab_provider_fetches_private_sibling_when_requester_is_member():
     sibling_project = Mock()
     sibling_project.default_branch = "main"
     sibling_project.visibility = "private"
+    sibling_project.members_all.get.return_value = SimpleNamespace(access_level=30)
     sibling_project.files.get.return_value.decode.return_value = b"sibling contract"
     provider.gl.projects.get.return_value = sibling_project
 
@@ -801,6 +850,7 @@ def test_gitlab_provider_fetches_private_sibling_when_command_actor_is_member():
     sibling_project = Mock()
     sibling_project.default_branch = "main"
     sibling_project.visibility = "private"
+    sibling_project.members_all.get.return_value = SimpleNamespace(access_level=30)
     sibling_project.files.get.return_value.decode.return_value = b"sibling contract"
     provider.gl.projects.get.return_value = sibling_project
 
