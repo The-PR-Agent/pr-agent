@@ -1535,9 +1535,13 @@ class GitLabProvider(GitProvider):
         return sibling_namespace == current_namespace
 
     def _get_review_requester_id(self) -> Optional[int]:
-        # A Sibling check is keyed to the MR author: GitLab "members/all" indexes members by
-        # user id, and the author is the actor whose read access the review legitimately relies
-        # on before private sibling content is placed into the model's instruction context.
+        # Prefer the authenticated command actor when one is known: comment commands can pass
+        # arbitrary arguments, so sibling context must be authorized against whoever actually
+        # issued the command, not the MR author. Fall back to the MR author only when no actor
+        # is recorded (CLI runs), and fail closed without either identity.
+        requester_id = getattr(self, "_command_actor", None)
+        if requester_id:
+            return requester_id
         mr = getattr(self, "mr", None)
         author = getattr(mr, "author", None) if mr is not None else None
         if isinstance(author, dict):

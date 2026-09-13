@@ -532,6 +532,18 @@ class GitProvider(ABC):
         """
         return ""
 
+    def set_command_actor(self, actor) -> None:
+        """Record the authenticated user who triggered the current command.
+
+        Comment commands can pass arbitrary arguments, so sibling-repo context must be
+        authorized against the actor who issued the command rather than the PR/MR author:
+        a commenter may not have the read access the author has. Providers that resolve
+        siblings through their own authenticated API use this identity (when set) instead
+        of the PR/MR author. When no trustworthy actor is available the providers fail
+        closed for non-public siblings.
+        """
+        self._command_actor = actor
+
     def get_repo_context_ref(self, from_default_branch: bool = False) -> Optional[str]:
         """Return the ref (commit SHA or branch name) that repo-context files are read from.
 

@@ -1300,13 +1300,24 @@ class GithubProvider(GitProvider):
             raise
 
     def _requester_can_read_sibling_repo(self, sibling_repo) -> bool:
-        # Public repositories are readable by any review requester, so no permission check is
-        # needed. For private repositories the requester must be a collaborator with access.
-        if not getattr(sibling_repo, "private", False):
+        # Only repositories any review requester can read are granted unconditionally: a repo
+        # that reports no visibility and is not flagged private (i.e. public). Internal repos
+        # (GitHub Enterprise) are not ``private`` but are restricted to org members, so they
+        # must be verified like private repos instead of being treated as public.
+        visibility = getattr(sibling_repo, "visibility", None)
+        is_private = bool(getattr(sibling_repo, "private", False))
+        if visibility == "internal":
+            is_private = True
+        if not is_private:
             return True
-        pr = getattr(self, "pr", None)
-        user = getattr(pr, "user", None) if pr is not None else None
-        requester_login = user.get("login") if isinstance(user, dict) else getattr(user, "login", None)
+        # Private or internal: the requester must be a collaborator with access. Prefer the
+        # authenticated command actor when one is known; otherwise (CLI runs) fall back to
+        # the PR author as the operator proxy, and fail closed when neither is available.
+        requester_login = getattr(self, "_command_actor", None)
+        if not requester_login:
+            pr = getattr(self, "pr", None)
+            user = getattr(pr, "user", None) if pr is not None else None
+            requester_login = user.get("login") if isinstance(user, dict) else getattr(user, "login", None)
         if not requester_login:
             return False
         if getattr(getattr(sibling_repo, "owner", None), "login", None) == requester_login:

@@ -128,6 +128,8 @@ async def handle_comments_on_pr(body: Dict[str, Any],
     log_context["api_url"] = api_url
     comment_id = body.get("comment", {}).get("id")
     provider = get_git_provider_with_context(pr_url=api_url)
+    if isinstance(sender, str) and sender and hasattr(provider, "set_command_actor"):
+        provider.set_command_actor(sender)
     with get_logger().contextualize(**log_context):
         if get_identity_provider().verify_eligibility("github", sender_id, api_url) is not Eligibility.NOT_ELIGIBLE:
             get_logger().info(f"Processing comment on PR {api_url=}, comment_body={comment_body}")

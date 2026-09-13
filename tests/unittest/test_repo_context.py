@@ -598,6 +598,78 @@ def test_github_provider_rejects_private_sibling_when_requester_is_unknown():
     sibling_repo.get_contents.assert_not_called()
 
 
+def test_github_provider_rejects_private_sibling_when_command_actor_lacks_access():
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.repo = "myorg/current"
+    provider.github_client = Mock()
+    provider.pr = SimpleNamespace(user=SimpleNamespace(login="alice"))
+    provider.set_command_actor("mallory")
+    sibling_repo = Mock()
+    sibling_repo.private = True
+    sibling_repo.visibility = "private"
+    sibling_repo.has_in_collaborators.return_value = False
+    provider.github_client.get_repo.return_value = sibling_repo
+
+    with patch("pr_agent.git_providers.github_provider.get_logger") as mock_get_logger:
+        assert provider.get_sibling_repo_file_content("myorg/lib", "src/api.py") == ""
+
+    # The commenter (command actor), not the PR author, is the identity that must be verified.
+    sibling_repo.has_in_collaborators.assert_called_once_with("mallory")
+    sibling_repo.get_contents.assert_not_called()
+    mock_get_logger.return_value.warning.assert_called_once_with(
+        "Ignoring sibling repo context file the review requester cannot read: myorg/lib"
+    )
+
+
+def test_github_provider_fetches_private_sibling_when_command_actor_is_collaborator():
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.repo = "myorg/current"
+    provider.github_client = Mock()
+    provider.pr = SimpleNamespace(user=SimpleNamespace(login="alice"))
+    provider.set_command_actor("mallory")
+    sibling_repo = Mock()
+    sibling_repo.private = True
+    sibling_repo.visibility = "private"
+    sibling_repo.has_in_collaborators.return_value = True
+    sibling_repo.get_contents.return_value.decoded_content = b"sibling contract"
+    provider.github_client.get_repo.return_value = sibling_repo
+
+    assert provider.get_sibling_repo_file_content("myorg/lib", "src/api.py") == "sibling contract"
+    sibling_repo.has_in_collaborators.assert_called_once_with("mallory")
+
+
+def test_github_provider_rejects_internal_sibling_when_requester_is_not_collaborator():
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.repo = "myorg/current"
+    provider.github_client = Mock()
+    provider.pr = SimpleNamespace(user=SimpleNamespace(login="alice"))
+    sibling_repo = Mock()
+    sibling_repo.private = False
+    sibling_repo.visibility = "internal"
+    sibling_repo.has_in_collaborators.return_value = False
+    provider.github_client.get_repo.return_value = sibling_repo
+
+    assert provider.get_sibling_repo_file_content("myorg/lib", "src/api.py") == ""
+    sibling_repo.has_in_collaborators.assert_called_once_with("alice")
+    sibling_repo.get_contents.assert_not_called()
+
+
+def test_github_provider_fetches_internal_sibling_when_command_actor_is_collaborator():
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.repo = "myorg/current"
+    provider.github_client = Mock()
+    provider.set_command_actor("alice")
+    sibling_repo = Mock()
+    sibling_repo.private = False
+    sibling_repo.visibility = "internal"
+    sibling_repo.has_in_collaborators.return_value = True
+    sibling_repo.get_contents.return_value.decoded_content = b"sibling contract"
+    provider.github_client.get_repo.return_value = sibling_repo
+
+    assert provider.get_sibling_repo_file_content("myorg/lib", "src/api.py") == "sibling contract"
+    sibling_repo.has_in_collaborators.assert_called_once_with("alice")
+
+
 def test_github_provider_rejects_out_of_owner_sibling_without_api_call():
     provider = GithubProvider.__new__(GithubProvider)
     provider.repo = "myorg/current"
@@ -663,6 +735,45 @@ def test_gitlab_provider_fetches_private_sibling_when_requester_is_member():
 
     assert provider.get_sibling_repo_file_content("group/sub/lib", "src/api.py") == "sibling contract"
     sibling_project.members_all.get.assert_called_once_with(42)
+
+
+def test_gitlab_provider_rejects_private_sibling_when_command_actor_is_not_member():
+    provider = GitLabProvider.__new__(GitLabProvider)
+    provider.id_project = "group/sub/current"
+    provider.gl = Mock()
+    provider.mr = SimpleNamespace(author={"id": 42})
+    provider.set_command_actor(99)
+    sibling_project = Mock()
+    sibling_project.default_branch = "main"
+    sibling_project.visibility = "private"
+    sibling_project.members_all.get.side_effect = GitlabGetError("Not found", response_code=404)
+    provider.gl.projects.get.return_value = sibling_project
+
+    with patch("pr_agent.git_providers.gitlab_provider.get_logger") as mock_get_logger:
+        assert provider.get_sibling_repo_file_content("group/sub/lib", "src/api.py") == ""
+
+    # The commenter (command actor), not the MR author, is the identity that must be verified.
+    sibling_project.members_all.get.assert_called_once_with(99)
+    sibling_project.files.get.assert_not_called()
+    mock_get_logger.return_value.warning.assert_called_once_with(
+        "Ignoring sibling repo context file the review requester cannot read: group/sub/lib"
+    )
+
+
+def test_gitlab_provider_fetches_private_sibling_when_command_actor_is_member():
+    provider = GitLabProvider.__new__(GitLabProvider)
+    provider.id_project = "group/sub/current"
+    provider.gl = Mock()
+    provider.mr = SimpleNamespace(author={"id": 42})
+    provider.set_command_actor(99)
+    sibling_project = Mock()
+    sibling_project.default_branch = "main"
+    sibling_project.visibility = "private"
+    sibling_project.files.get.return_value.decode.return_value = b"sibling contract"
+    provider.gl.projects.get.return_value = sibling_project
+
+    assert provider.get_sibling_repo_file_content("group/sub/lib", "src/api.py") == "sibling contract"
+    sibling_project.members_all.get.assert_called_once_with(99)
 
 
 def test_gitlab_provider_rejects_private_sibling_when_requester_is_not_member():
