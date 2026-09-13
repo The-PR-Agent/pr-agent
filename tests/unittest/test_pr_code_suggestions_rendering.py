@@ -88,14 +88,12 @@ def test_truncate_if_needed_noop_when_under_limit_or_disabled():
     ],
 )
 def test_is_suggestion_line_range_valid_rejects_unanchorable_ranges(suggestion_kwargs):
-    tool = _make_tool()
     bad = _suggestion(**suggestion_kwargs)
 
     assert PRCodeSuggestions._is_suggestion_line_range_valid(bad) is False
 
 
 def test_is_suggestion_line_range_valid_normalizes_valid_range():
-    tool = _make_tool()
     good = _suggestion(relevant_lines_start="2", relevant_lines_end="4")
 
     assert PRCodeSuggestions._is_suggestion_line_range_valid(good) is True
@@ -104,7 +102,6 @@ def test_is_suggestion_line_range_valid_normalizes_valid_range():
 
 
 def test_is_suggestion_line_range_valid_rejects_missing_keys():
-    tool = _make_tool()
     suggestion = _suggestion()
     suggestion.pop("relevant_lines_start")
     suggestion.pop("relevant_lines_end")
