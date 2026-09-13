@@ -517,8 +517,8 @@ class BitbucketProvider(GitProvider):
         return self.pr.title
 
     def get_languages(self):
-        languages = {self._get_repo().get_data("language"): 0}
-        return languages
+        language = self._get_repo().get_data("language")
+        return {language: 0} if language else {}
 
     def get_pr_branch(self):
         return self.pr.source_branch

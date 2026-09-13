@@ -678,6 +678,26 @@ not a valid hunk
             "https://bitbucket.org/acme/repo/commits/head"
         )
 
+
+    def test_get_languages_returns_empty_map_when_repo_has_no_language(self):
+        # Bitbucket Cloud reports "language": null for repos it cannot classify;
+        # get_languages() must not emit a {None: 0} key or sort_files_by_main_languages()
+        # crashes on None.lower() (issue #3340).
+        repo = MagicMock()
+        repo.get_data.side_effect = lambda key: None
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.repo = repo
+
+        assert provider.get_languages() == {}
+
+    def test_get_languages_includes_detected_language(self):
+        repo = MagicMock()
+        repo.get_data.side_effect = lambda key: "Python"
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.repo = repo
+
+        assert provider.get_languages() == {"Python": 0}
+
 class TestBitbucketServerProvider:
     @staticmethod
     def _code_suggestion(line: int):

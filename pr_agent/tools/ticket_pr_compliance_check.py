@@ -52,6 +52,15 @@ JIRA_API_VERSION = "2"
 # cannot contain '.', '/', ':', '@' etc. that would let it escape *.atlassian.net.
 JIRA_SITE_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$", re.IGNORECASE)
 
+# A Jira project key as configured in jira.project_keys: the "<PROJECT>" in PROJECT-123.
+# Bounded like the prefix in find_jira_tickets (2-10 letters) so an entry can only ever be
+# a plain label, never a URL or a full ticket key. Case-sensitive: Jira project keys are
+# upper case, so a configured "proj" is a typo rather than a spelling variant, and
+# accepting it silently would widen the lookup to a project the repo never named. Keys
+# found in the PR text are still matched case-insensitively and upper-cased
+# (find_jira_tickets) before they are compared.
+JIRA_PROJECT_KEY_PATTERN = re.compile(r"^[A-Z]{2,10}$")
+
 
 def _jira_cloud_base_url():
     """
@@ -71,6 +80,63 @@ def _jira_cloud_base_url():
             f"(the '<site>' in https://<site>.atlassian.net). Skipping Jira ticket lookup.")
         return None
     return f"https://{site}.atlassian.net"
+
+
+def _jira_project_keys():
+    """
+    Return the configured jira.project_keys allowlist as a set of project keys, or None
+    when nothing was supplied (look up every key found).
+
+    Only three values count as "nothing was supplied": the option missing entirely, the
+    shipped empty list, and a top-level string that is blank, the last because
+    `jira__project_keys=""` is how a shell spells an unset environment variable.
+
+    Everything else is a supplied value and is judged on its entries. Entries that are not
+    plain upper-case project keys, including a blank one (so `[""]` is a malformed
+    override rather than a second spelling of the default), are ignored with a warning,
+    and a supplied value left with no valid entry yields an empty set, which drops every
+    key. So does a value that is not a list at all (a boolean or number from a YAML or CLI
+    override). A typo fails closed instead of silently widening the lookup to every
+    key-shaped string. Accepts a list or a comma-separated string, the latter for
+    environment-variable overrides (jira__project_keys="PROJ,OPS").
+    """
+    configured = get_settings().get("JIRA.PROJECT_KEYS", None)
+    if configured is None:
+        return None
+    if isinstance(configured, str):
+        if not configured.strip():
+            return None
+        configured = configured.split(",")
+    elif not isinstance(configured, (list, tuple)):
+        # A YAML/CLI override such as `project_keys=true` or `=false` is neither
+        # "unset" nor a list; fail closed rather than guess what it meant.
+        get_logger().warning(
+            f"jira.project_keys must be a list of project keys, got {type(configured).__name__}; "
+            "skipping Jira ticket lookup until it is fixed")
+        return set()
+    if not configured:
+        # The shipped default. An empty container carries no entry to be wrong about.
+        return None
+    allowed = set()
+    for index, item in enumerate(configured):
+        # Only strings are candidates: a TOML/YAML boolean or null in the list must not
+        # be stringified into a key-shaped label ("TRUE", "NONE") that then filters.
+        key = item.strip() if isinstance(item, str) else item
+        if not isinstance(key, str) or not JIRA_PROJECT_KEY_PATTERN.match(key):
+            # The entry is named by position and type, never quoted back. Its content is
+            # configuration this tool does not control: it can be long, hold a secret
+            # pasted into the wrong setting, or carry newlines that would forge log
+            # lines. The position is what an operator needs to find and fix it.
+            get_logger().warning(
+                f"Ignoring invalid jira.project_keys entry at index {index} "
+                f"(type {type(item).__name__}); expected a plain upper-case project key "
+                "like 'PROJ'")
+            continue
+        allowed.add(key)
+    if not allowed:
+        get_logger().warning(
+            "jira.project_keys has no valid entry; skipping Jira ticket lookup until it is fixed")
+    return allowed
 
 
 def find_jira_tickets(text):
@@ -151,6 +217,9 @@ def extract_jira_tickets(text, max_characters=MAX_TICKET_CHARACTERS, max_tickets
     MAX_JIRA_FETCH_ATTEMPTS lookups have been made. Counting resolved tickets rather than
     truncating the candidate list keeps key-shaped noise ("SHA-256", "UTF-8") from
     displacing a real ticket that appears later in the text.
+
+    When jira.project_keys is configured, candidates whose prefix isn't in that allowlist
+    are dropped before any lookup, so they don't consume a fetch attempt.
     """
     # Look for keys before building a client: most PRs have none, and building the
     # client first would do needless work (and log a noisy init failure if Jira is
@@ -158,6 +227,26 @@ def extract_jira_tickets(text, max_characters=MAX_TICKET_CHARACTERS, max_tickets
     keys = find_jira_tickets(text or "")
     if not keys:
         return []
+
+    # Optional allowlist: key-shaped false positives like "SHA-256" or "UTF-8" match the
+    # regex but aren't real Jira keys. Filtering by known project prefixes here means they
+    # never consume one of the MAX_JIRA_FETCH_ATTEMPTS lookups below. Empty keeps today's
+    # behaviour; a supplied but invalid allowlist drops every key (see _jira_project_keys).
+    allowed_projects = _jira_project_keys()
+    if allowed_projects is not None:
+        # Partitioned in one pass: the candidate list is not capped until lookups begin,
+        # so a PR carrying many distinct key-shaped tokens would otherwise pay a
+        # membership scan of the skipped list for every one of them.
+        kept, skipped = [], []
+        for key in keys:
+            target = kept if key.split("-", 1)[0] in allowed_projects else skipped
+            target.append(key)
+        if skipped:
+            get_logger().debug(
+                f"Skipping Jira lookup for keys outside jira.project_keys: {', '.join(skipped)}")
+        keys = kept
+        if not keys:
+            return []
 
     jira_client = _get_jira_client()
     if jira_client is None:
@@ -819,7 +908,8 @@ async def extract_tickets(git_provider):
             tickets_content = []
             for project_path, issue_iid in references:
                 try:
-                    project = git_provider.gl.projects.get(project_path)
+                    # Only the issue manager is needed; avoid fetching unused project metadata.
+                    project = git_provider.gl.projects.get(project_path, lazy=True)
                     issue = project.issues.get(issue_iid)
                 except Exception as e:
                     get_logger().error(

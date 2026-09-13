@@ -1610,12 +1610,24 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
             delta = 0
             start1, size1, start2, size2 = 0, 0, 0, 0
             if absolute_position != -1: # matching absolute to relative
+                skip_hunk = False
                 for i, line in enumerate(patch_lines):
                     # new hunk
                     if line.startswith('@@'):
                         delta = 0
                         match = re_hunk_header.match(line)
-                        section_header, size1, size2, start1, start2 = extract_hunk_headers(match)
+                        if match:
+                            skip_hunk = False
+                            section_header, size1, size2, start1, start2 = extract_hunk_headers(match)
+                        else:
+                            # combined/merge hunk headers (e.g. '@@@ ... @@@') cannot be anchored,
+                            # so skip the whole hunk instead of crashing
+                            get_logger().warning("Skipping a line that starts with '@@' but is not a "
+                                                 "unified hunk header", artifact={"line": line})
+                            skip_hunk = True
+                            continue
+                    elif skip_hunk:
+                        continue
                     elif not line.startswith('-'):
                         delta += 1
 
@@ -1640,11 +1652,21 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
                 def scan_patch_lines(is_match):
                     scan_delta = 0
                     scan_start2 = 0
+                    skip_hunk = False
                     for i, line in enumerate(patch_lines):
                         if line.startswith('@@'):
                             scan_delta = 0
                             header_match = re_hunk_header.match(line)
-                            *_, scan_start2 = extract_hunk_headers(header_match)
+                            if header_match:
+                                skip_hunk = False
+                                *_, scan_start2 = extract_hunk_headers(header_match)
+                            else:
+                                skip_hunk = True
+                                get_logger().warning("Skipping a line that starts with '@@' but is not a "
+                                                     "unified hunk header", artifact={"line": line})
+                                continue
+                        elif skip_hunk:
+                            continue
                         elif not line.startswith('-'):
                             scan_delta += 1
 
@@ -1660,11 +1682,21 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
 
                 if position == -1 and relevant_line_in_file[0] == '+':
                     no_plus_line = relevant_line_in_file[1:].lstrip()
+                    skip_hunk = False
                     for i, line in enumerate(patch_lines):
                         if line.startswith('@@'):
                             delta = 0
                             match = re_hunk_header.match(line)
-                            section_header, size1, size2, start1, start2 = extract_hunk_headers(match)
+                            if match:
+                                skip_hunk = False
+                                section_header, size1, size2, start1, start2 = extract_hunk_headers(match)
+                            else:
+                                get_logger().warning("Skipping a line that starts with '@@' but is not a "
+                                                     "unified hunk header", artifact={"line": line})
+                                skip_hunk = True
+                                continue
+                        elif skip_hunk:
+                            continue
                         elif not line.startswith('-'):
                             delta += 1
 
