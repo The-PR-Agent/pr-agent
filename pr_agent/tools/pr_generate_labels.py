@@ -100,11 +100,10 @@ class PRGenerateLabels:
             if get_settings().config.publish_output:
                 get_logger().info(f"Pushing labels {self.pr_id}")
 
-                current_labels = self.git_provider.get_pr_labels()
-                user_labels = get_user_labels(current_labels)
-                pr_labels = pr_labels + user_labels
-
                 if self.git_provider.is_supported("get_labels"):
+                    current_labels = self.git_provider.get_pr_labels()
+                    user_labels = get_user_labels(current_labels)
+                    pr_labels = pr_labels + user_labels
                     self.git_provider.publish_labels(pr_labels)
                 elif pr_labels:
                     value = ', '.join(v for v in pr_labels)

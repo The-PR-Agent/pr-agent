@@ -1179,7 +1179,9 @@ class PRReviewer:
         question_str = ""
         answer_str = ""
 
-        if self.is_answer:
+        if self.is_answer and self.git_provider.is_supported("get_issue_comments"):
+            # __init__ already raises when is_answer is True and this is unsupported, so
+            # this repeats that check locally rather than relying on the caller for it.
             discussion_messages = self.git_provider.get_issue_comments()
 
             # providers return the comments oldest-first. PyGithub's PaginatedList reverses lazily,
