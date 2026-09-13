@@ -44,16 +44,19 @@ num_max_findings = 7
 
 
 class FakePerDirProvider:
-    def __init__(self, root_settings=None, tree_paths=(), contents=None, files=None, resolved_ref="main"):
+    def __init__(self, root_settings=None, tree_paths=(), contents=None, files=None,
+                 resolved_ref="main", full_files=None):
         self.root_settings = root_settings
         self.tree_paths = tuple(tree_paths)
         self.contents = dict(contents) if contents else {}
         self.files = list(files) if files else []
+        self.full_files = list(full_files) if full_files is not None else None
         self.resolved_ref = resolved_ref
         self.tree_calls = 0
         self.tree_refs = []
         self.contents_calls = []
         self.get_files_calls = 0
+        self.pr_file_paths_calls = 0
 
     def get_repo_settings(self):
         return self.root_settings
@@ -61,6 +64,10 @@ class FakePerDirProvider:
     def get_files(self):
         self.get_files_calls += 1
         return self.files
+
+    def get_pr_file_paths(self):
+        self.pr_file_paths_calls += 1
+        return self.full_files if self.full_files is not None else self.files
 
     def get_repo_settings_tree(self, ref):
         self.tree_calls += 1
@@ -103,12 +110,13 @@ def per_dir_settings(fresh_global_settings):
         yield
 
 
-def _provider(tree_paths, contents, files, root_settings=b""):
+def _provider(tree_paths, contents, files, root_settings=b"", full_files=None):
     return FakePerDirProvider(
         root_settings=root_settings,
         tree_paths=tree_paths,
         contents=contents,
         files=files,
+        full_files=full_files,
     )
 
 
@@ -324,6 +332,29 @@ class TestResolvePerDirectorySettings:
             "services/.pr_agent.toml",
         }
 
+    def test_incremental_state_does_not_shrink_discovery(self, per_dir_settings):
+        provider = _provider(
+            tree_paths=["services/.pr_agent.toml", "services/auth/.pr_agent.toml"],
+            contents={
+                "services/.pr_agent.toml": SERVICES_TOML,
+                "services/auth/.pr_agent.toml": SERVICES_AUTH_TOML,
+            },
+            files=["services/api.py"],
+            full_files=["services/api.py", "services/auth/other.py"],
+        )
+
+        resolved = git_utils._get_per_directory_settings(provider)
+
+        # get_files() narrows to the unreviewed subset once an incremental review
+        # is active; discovery must use the complete PR file set instead, so a later
+        # command in the same request does not silently drop per-directory configs.
+        assert {path for path, _ in resolved} == {
+            "services/.pr_agent.toml",
+            "services/auth/.pr_agent.toml",
+        }
+        assert provider.get_files_calls == 0
+        assert provider.pr_file_paths_calls == 1
+
     def test_config_branch_passed_to_tree(self, per_dir_settings):
         get_settings().set("CONFIG.CONFIG_BRANCH", "cfg-branch")
         provider = _provider(
@@ -338,7 +369,7 @@ class TestResolvePerDirectorySettings:
 
     def test_get_files_failure_degrades_to_empty(self, per_dir_settings):
         class ExplodingProvider(FakePerDirProvider):
-            def get_files(self):
+            def get_pr_file_paths(self):
                 raise RuntimeError("boom")
 
         provider = ExplodingProvider(
@@ -617,6 +648,33 @@ repo_context_max_lines = 9999999
         assert get_settings().config.model == "nested-model"
         assert get_settings().config.temperature == 0.5
 
+    def test_per_directory_config_drops_fallback_models(self, per_dir_settings, monkeypatch):
+        config = b"""
+[config]
+model = "nested-model"
+temperature = 0.5
+fallback_models = ["m-one", "m-two", "m-three", "m-four", "m-five"]
+"""
+        monkeypatch.setattr(
+            "pr_agent.git_providers.utils.get_git_provider_with_context",
+            lambda url: _provider(
+                root_settings=ROOT_TOML,
+                tree_paths=["services/.pr_agent.toml"],
+                contents={"services/.pr_agent.toml": config},
+                files=["services/api.py"],
+            ),
+        )
+
+        git_utils.apply_repo_settings("https://github.com/org/repo/pull/1")
+
+        # Fallback routing stays root-/host-controlled: the retry helper turns each
+        # entry into one more routed attempt per failing model, so a nested file must
+        # not be able to multiply AI calls with an arbitrarily long list.
+        assert list(get_settings().config.fallback_models) == ["gpt-5.6-terra"]
+        # Other model-routing and output knobs still apply.
+        assert get_settings().config.model == "nested-model"
+        assert get_settings().config.temperature == 0.5
+
     def test_malformed_per_directory_config_reports_error(self, per_dir_settings, monkeypatch):
         malformed = b"[pr_reviewer\nnum_max_findings = 2\n"
         provider = _provider(
@@ -779,6 +837,23 @@ class TestGithubProviderPerDirectory:
 
         assert result == {}
 
+    def test_get_pr_file_paths_returns_full_set_with_rename_metadata(self):
+        full_files = [
+            SimpleNamespace(filename="services/api.py", previous_filename="legacy/api.py"),
+            SimpleNamespace(filename="services/fresh.py", previous_filename=None),
+        ]
+        provider = _github_provider(MagicMock())
+        provider.git_files = full_files
+        provider.incremental = SimpleNamespace(is_incremental=True)
+        provider.unreviewed_files_map = {"services/api.py": "bogus-subset"}
+
+        result = provider.get_pr_file_paths()
+
+        # Even with an incremental review active (unreviewed_files_map populated), the
+        # complete PR file set with rename metadata is returned, never the reviewed subset.
+        assert result == full_files
+        assert [entry.previous_filename for entry in result] == ["legacy/api.py", None]
+
 
 def _gitlab_provider(gl, id_project="1"):
     provider = GitLabProvider.__new__(GitLabProvider)
@@ -833,3 +908,17 @@ class TestGitLabProviderPerDirectory:
         result = provider.get_repo_settings_contents(["svc/.pr_agent.toml"], "main")
 
         assert result == {}
+
+    def test_get_pr_file_paths_returns_full_changes_with_rename_metadata(self):
+        provider = _gitlab_provider(MagicMock())
+        changes = [
+            {"new_path": "services/api.py", "old_path": "legacy/api.py"},
+            {"new_path": "services/fresh.py", "old_path": "services/fresh.py"},
+        ]
+        provider._get_merge_request_changes = MagicMock(return_value={"changes": changes})
+        provider._expand_submodule_changes = lambda ch: ch
+
+        result = provider.get_pr_file_paths()
+
+        # Both sides of a rename survive, independent of incremental review state.
+        assert result == changes

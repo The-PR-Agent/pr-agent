@@ -891,6 +891,18 @@ class GitLabProvider(GitProvider):
             self.git_files = [c.get('new_path') for c in raw_changes if c.get('new_path')]
         return self.git_files
 
+    def get_pr_file_paths(self) -> list:
+        """Return the complete MR file set regardless of incremental review state.
+
+        get_files() returns only the unreviewed subset once an incremental review
+        is active, so per-directory settings would change between commands based on
+        which files the review already covered. Discovery instead walks the full MR
+        changes, keeping both old_path and new_path so both sides of a rename apply.
+        """
+        raw_changes = self._get_merge_request_changes().get('changes', [])
+        raw_changes = self._expand_submodule_changes(raw_changes)
+        return [c for c in raw_changes if c.get('new_path') or c.get('old_path')]
+
     def publish_description(self, pr_title: str, pr_body: str) -> None:
         try:
             if pr_title is not None:

@@ -78,10 +78,13 @@ PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION = {
 # file in full and `repo_context_max_lines` sizes the trimmed output, so without
 # a host-trusted upper bound a nested file could balloon repository calls and
 # token budget whenever a tool builds context for a directory it crosses. Those
-# knobs stay root-/host-controlled.
+# knobs stay root-/host-controlled. `fallback_models` is excluded too: the retry
+# helper treats each entry as one routing attempt per failing model, so an
+# arbitrarily long nested list could multiply AI calls; fallback routing stays
+# root-/host-controlled.
 REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS = {
     "config": frozenset({
-        "model", "fallback_models", "model_weak", "model_reasoning",
+        "model", "model_weak", "model_reasoning",
         "custom_model_max_tokens", "max_model_tokens", "max_output_tokens",
         "model_token_count_estimate_factor", "temperature", "response_language",
         "repo_context_from_default_branch",

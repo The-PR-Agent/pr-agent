@@ -457,13 +457,18 @@ def _get_changed_file_paths(git_provider) -> list[str]:
     """Return the repository-relative paths the PR/MR touches.
 
     Includes rename metadata (old_path / previous_filename) when the provider
-    surfaces it, so ancestor configs for both sides of a move apply. Tolerates
-    each provider's get_files() shape (str, dict keyed by new_path/filename/
-    path, or an object with .filename/.new_path). A failure to list files
-    degrades to no per-directory configs rather than failing the request.
+    surfaces it, so ancestor configs for both sides of a move apply. Prefers the
+    complete PR file set (get_pr_file_paths) over get_files(), which many
+    providers narrow to the unreviewed subset while an incremental review is
+    active; discovery must always see the whole PR so applied settings do not
+    change between commands. Tolerates each provider's entry shape (str, dict
+    keyed by new_path/filename/path, or an object with .filename/.new_path). A
+    failure to list files degrades to no per-directory configs rather than
+    failing the request.
     """
     try:
-        files = git_provider.get_files()
+        full_paths = getattr(git_provider, "get_pr_file_paths", None)
+        files = full_paths() if full_paths is not None else git_provider.get_files()
     except Exception as e:
         get_logger().warning(f"Failed to list changed files for per-directory settings: {e}")
         return []

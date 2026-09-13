@@ -323,6 +323,17 @@ class GitProvider(ABC):
     def get_files(self) -> list:
         pass
 
+    def get_pr_file_paths(self) -> list:
+        """Return every repository-relative path the PR/MR touches, independent of
+        incremental review state, preserving rename metadata.
+
+        The default delegates to get_files(). Providers whose get_files() shrinks
+        to the unreviewed subset while an incremental review is active must
+        override this with a complete file-set listing, so per-directory settings
+        discovery does not depend on how much of the PR the review has covered.
+        """
+        return self.get_files()
+
     @abstractmethod
     def get_diff_files(self) -> list[FilePatchInfo]:
         pass

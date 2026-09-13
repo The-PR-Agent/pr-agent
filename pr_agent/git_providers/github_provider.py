@@ -265,6 +265,30 @@ class GithubProvider(GitProvider):
                 self.git_files = list(self.pr.get_files())
             return self.git_files
 
+    def get_pr_file_paths(self):
+        """Return the complete PR file set regardless of incremental review state.
+
+        get_files() returns only the unreviewed subset once an incremental review
+        is active, so per-directory settings would change between commands based on
+        which files the review already covered. Discovery instead walks the full PR
+        file set, preserving rename metadata (previous_filename so both sides of a
+        move apply). Reuses the same context["git_files"] cache as get_files() and
+        never falls back to the incremental-aware listing.
+        """
+        try:
+            git_files = context.get("git_files", None)
+            if git_files:
+                return git_files
+            if getattr(self, "git_files", None):
+                return self.git_files
+            git_files = list(self.pr.get_files())
+            context["git_files"] = git_files
+            return git_files
+        except Exception:
+            if getattr(self, "git_files", None):
+                return self.git_files
+            return list(self.pr.get_files())
+
     def get_num_of_files(self):
         if hasattr(self.git_files, "totalCount"):
             return self.git_files.totalCount
