@@ -464,6 +464,69 @@ async def test_chat_completion_combines_prompts_for_user_message_only_models(mon
     assert messages == [{"role": "user", "content": "sys\n\n\nusr"}]
 
 
+@pytest.mark.asyncio
+async def test_chat_completion_keeps_image_for_user_message_only_models(monkeypatch):
+    monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+    monkeypatch.setattr(
+        litellm_handler.requests,
+        "head",
+        lambda *args, **kwargs: SimpleNamespace(status_code=200),
+    )
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+        handler.user_message_only_models = ["user-only-model"]
+
+        await handler.chat_completion(
+            model="user-only-model",
+            system="sys",
+            user="usr",
+            img_path="https://example.test/image.png",
+        )
+
+    messages = mock_call.call_args.kwargs["messages"]
+    assert messages == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "sys\n\n\nusr"},
+                {"type": "image_url", "image_url": {"url": "https://example.test/image.png"}},
+            ],
+        }
+    ]
+    assert any(block.get("type") == "image_url" for block in messages[0]["content"])
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_keeps_image_for_custom_reasoning_models(monkeypatch):
+    settings = FakeSettings()
+    settings.config.custom_reasoning_model = True
+    monkeypatch.setattr(litellm_handler, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        litellm_handler.requests,
+        "head",
+        lambda *args, **kwargs: SimpleNamespace(status_code=200),
+    )
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+
+        await handler.chat_completion(
+            model="gpt-4o",
+            system="sys",
+            user="usr",
+            img_path="https://example.test/image.png",
+        )
+
+    messages = mock_call.call_args.kwargs["messages"]
+    assert messages[0]["content"][1] == {
+        "type": "image_url",
+        "image_url": {"url": "https://example.test/image.png"},
+    }
+
+
 # Wiring tests for the retry knobs: the helpers (_should_retry_same_model,
 # _configured_client_retries) are unit-tested in test_litellm_retry_config.py, but those
 # tests keep passing when the @retry predicate or the kwargs pass-through in
