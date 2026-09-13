@@ -8,6 +8,11 @@ from pr_agent.agent.pr_agent import PRAgent
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.config_loader import get_settings, global_settings
 
+# The default target references real issues (closes #2934), so the smoke run
+# exercises the ticket extraction path against live data. Override with
+# TEST_PR_URL; assertions specific to the default target are then skipped.
+DEFAULT_PR_URL = 'https://github.com/The-PR-Agent/pr-agent/pull/2940'
+
 DESCRIBE_STUB_YAML = """\
 title: |
   fix: guard against empty commit list in Azure DevOps get_latest_commit_url
@@ -56,8 +61,18 @@ class StubDescribeHandler(BaseAiHandler):
         return DESCRIBE_STUB_YAML, "stop"
 
 
+def _extract_diff_section(user_prompt: str) -> str:
+    """Return the rendered diff body between the prompt's fixed markers."""
+    start_marker = "The PR Git Diff:"
+    end_marker = "Note that lines in the diff body are prefixed"
+    start = user_prompt.find(start_marker)
+    end = user_prompt.find(end_marker)
+    assert start != -1 and end != -1 and end > start, "describe prompt is missing the diff section"
+    return user_prompt[start + len(start_marker):end].strip("=\n ").strip()
+
+
 async def _run_smoke() -> None:
-    pr_url = os.getenv('TEST_PR_URL', 'https://github.com/The-PR-Agent/pr-agent/pull/2940')
+    pr_url = os.getenv('TEST_PR_URL', DEFAULT_PR_URL)
 
     get_settings().set("config.git_provider", "github")
     get_settings().set("config.publish_output", False)
@@ -71,8 +86,16 @@ async def _run_smoke() -> None:
     assert stub.calls, "the AI handler was never invoked - describe did not reach the model boundary"
 
     system_prompt, user_prompt = stub.calls[0]
-    assert "The PR Git Diff:" in user_prompt, "describe prompt is missing the diff section"
-    assert "azuredevops_provider.py" in user_prompt, "describe prompt is missing the target PR diff content"
+    assert isinstance(system_prompt, str) and system_prompt.strip(), "describe system prompt rendered empty"
+    diff_section = _extract_diff_section(user_prompt)
+    assert diff_section, "describe prompt diff section is empty"
+
+    if pr_url == DEFAULT_PR_URL:
+        assert "azuredevops_provider.py" in diff_section, \
+            "describe prompt is missing the default target PR diff content"
+        assert "Related Ticket Info:" in user_prompt, "describe prompt is missing the related-ticket section"
+        assert "Ticket Title: 'Azure DevOps get_latest_commit_url" in user_prompt, \
+            "expanded ticket data did not reach the describe prompt"
 
     artifact = dict(get_settings().data).get('artifact', '')
     assert isinstance(artifact, str) and artifact.startswith("###"), \
