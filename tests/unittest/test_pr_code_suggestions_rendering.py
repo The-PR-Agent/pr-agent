@@ -76,6 +76,42 @@ def test_truncate_if_needed_noop_when_under_limit_or_disabled():
         restore_settings(snapshot)
 
 
+@pytest.mark.parametrize(
+    "suggestion_kwargs",
+    [
+        {"relevant_lines_start": None, "relevant_lines_end": 5},
+        {"relevant_lines_start": -1, "relevant_lines_end": -1},
+        {"relevant_lines_start": 0, "relevant_lines_end": 0},
+        {"relevant_lines_start": -3, "relevant_lines_end": 1},
+        {"relevant_lines_start": 5, "relevant_lines_end": 2},
+        {"relevant_lines_start": "10", "relevant_lines_end": "bad"},
+    ],
+)
+def test_is_suggestion_line_range_valid_rejects_unanchorable_ranges(suggestion_kwargs):
+    tool = _make_tool()
+    bad = _suggestion(**suggestion_kwargs)
+
+    assert PRCodeSuggestions._is_suggestion_line_range_valid(bad) is False
+
+
+def test_is_suggestion_line_range_valid_normalizes_valid_range():
+    tool = _make_tool()
+    good = _suggestion(relevant_lines_start="2", relevant_lines_end="4")
+
+    assert PRCodeSuggestions._is_suggestion_line_range_valid(good) is True
+    assert good["relevant_lines_start"] == 2
+    assert good["relevant_lines_end"] == 4
+
+
+def test_is_suggestion_line_range_valid_rejects_missing_keys():
+    tool = _make_tool()
+    suggestion = _suggestion()
+    suggestion.pop("relevant_lines_start")
+    suggestion.pop("relevant_lines_end")
+
+    assert PRCodeSuggestions._is_suggestion_line_range_valid(suggestion) is False
+
+
 def test_prepare_pr_code_suggestions_applies_truncation_inline():
     settings = get_settings()
     snapshot = snapshot_settings(TRUNCATION_SETTINGS)

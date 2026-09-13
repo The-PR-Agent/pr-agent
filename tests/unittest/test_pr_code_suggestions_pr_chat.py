@@ -116,7 +116,8 @@ async def test_pr_chat_link_depends_on_provider_capability(monkeypatch, supports
         tool.generate_summarized_suggestions = MagicMock(return_value="## Suggestions")
 
         async def _fake_retry(*_args, **_kwargs):
-            return {"code_suggestions": [{"label": "style", "suggestion_content": "clean up"}]}
+            return {"code_suggestions": [{"label": "style", "suggestion_content": "clean up",
+                                         "relevant_lines_start": 1, "relevant_lines_end": 1}]}
 
         monkeypatch.setattr(pr_code_suggestions_module, "retry_with_fallback_models", _fake_retry)
 

@@ -314,6 +314,19 @@ class PRCodeSuggestions:
                 if ((not get_settings().pr_code_suggestions.commitable_code_suggestions) and
                         self.git_provider.is_supported("gfm_markdown")):
 
+                    # Drop suggestions that can't be anchored in the diff (unresolved
+                    # sentinels, zero/negative or reversed line ranges) up front; when
+                    # nothing survives, route the outcome through publish_no_suggestions()
+                    # so it honors publish_output_no_suggestions and emits the accurate
+                    # coverage footer instead of a header-only table.
+                    data['code_suggestions'] = [
+                        suggestion for suggestion in data['code_suggestions']
+                        if self._is_suggestion_line_range_valid(suggestion)
+                    ]
+                    if not data['code_suggestions']:
+                        await self.publish_no_suggestions()
+                        return
+
                     # generate summarized suggestions
                     pr_body = self.generate_summarized_suggestions(data)
                     pr_body += self._get_suggestions_coverage_footer()
@@ -937,6 +950,27 @@ class PRCodeSuggestions:
                 suggestion['improved_code'] += f"\n{suggestion_truncation_message}"
                 suggestion['_is_truncated'] = True
         return suggestion
+
+    @staticmethod
+    def _is_suggestion_line_range_valid(suggestion: dict) -> bool:
+        try:
+            relevant_lines_start = int(suggestion['relevant_lines_start'])
+            relevant_lines_end = int(suggestion['relevant_lines_end'])
+        except (KeyError, TypeError, ValueError):
+            get_logger().warning("Skipping a suggestion without a valid line range",
+                                 artifact={'relevant_file': suggestion.get('relevant_file'),
+                                           'one_sentence_summary': suggestion.get('one_sentence_summary')})
+            return False
+        if relevant_lines_start < 1 or relevant_lines_end < relevant_lines_start:
+            get_logger().warning("Skipping a suggestion with an invalid line range",
+                                 artifact={'relevant_file': suggestion.get('relevant_file'),
+                                           'one_sentence_summary': suggestion.get('one_sentence_summary'),
+                                           'relevant_lines_start': relevant_lines_start,
+                                           'relevant_lines_end': relevant_lines_end})
+            return False
+        suggestion['relevant_lines_start'] = relevant_lines_start
+        suggestion['relevant_lines_end'] = relevant_lines_end
+        return True
 
     def _prepare_pr_code_suggestions(self, predictions: str) -> Dict:
         data = load_yaml(predictions.strip(),
@@ -1669,28 +1703,11 @@ class PRCodeSuggestions:
             suggestions_labels = dict()
             # add all suggestions related to each label
             for suggestion in data['code_suggestions']:
-                try:
-                    relevant_lines_start = int(suggestion['relevant_lines_start'])
-                    relevant_lines_end = int(suggestion['relevant_lines_end'])
-                except (KeyError, TypeError, ValueError):
+                if not self._is_suggestion_line_range_valid(suggestion):
                     # suggestions without resolved line anchors (e.g. when self-reflection
                     # failed or returned a mismatched count) cannot be placed in the diff;
                     # skip them instead of failing the whole table
-                    get_logger().warning("Skipping a suggestion without a valid line range",
-                                         artifact={'relevant_file': suggestion.get('relevant_file'),
-                                                   'one_sentence_summary': suggestion.get('one_sentence_summary')})
                     continue
-                if relevant_lines_start < 1 or relevant_lines_end < relevant_lines_start:
-                    # unresolved -1 sentinels, zero/negative lines and reversed ranges are
-                    # not anchorable either; normalize only the valid ones below
-                    get_logger().warning("Skipping a suggestion with an invalid line range",
-                                         artifact={'relevant_file': suggestion.get('relevant_file'),
-                                                   'one_sentence_summary': suggestion.get('one_sentence_summary'),
-                                                   'relevant_lines_start': relevant_lines_start,
-                                                   'relevant_lines_end': relevant_lines_end})
-                    continue
-                suggestion['relevant_lines_start'] = relevant_lines_start
-                suggestion['relevant_lines_end'] = relevant_lines_end
                 label = suggestion['label'].strip().strip("'").strip('"')
                 if label not in suggestions_labels:
                     suggestions_labels[label] = []
