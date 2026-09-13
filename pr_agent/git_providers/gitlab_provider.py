@@ -1264,13 +1264,21 @@ class GitLabProvider(GitProvider):
                     continue
                 relevant_line_in_file = lines[relevant_lines_start - 1]
 
-                # edit_type, found, source_line_no, target_file, target_line_no = self.find_in_file(target_file,
-                #                                                                            relevant_line_in_file)
-                # for code suggestions, we want to edit the new code
-                source_line_no = -1
-                target_line_no = relevant_lines_start + 1
-                found = True
-                edit_type = 'addition'
+                if relevant_line_in_file:
+                    edit_type, found, source_line_no, target_file, target_line_no = self.find_in_file(
+                        target_file, relevant_line_in_file
+                    )
+                else:
+                    found = False
+
+                if not found:
+                    # Keep the existing fallback path for anchors outside the diff. GitLab will
+                    # reject the optimistic addition position and _create_suggestion_note will
+                    # publish the general file note instead.
+                    source_line_no = -1
+                    target_line_no = relevant_lines_start + 1
+                    found = True
+                    edit_type = 'addition'
 
                 self.send_inline_comment(body, edit_type, found, relevant_file, relevant_line_in_file,
                                          source_line_no, target_file, target_line_no, original_suggestion,
