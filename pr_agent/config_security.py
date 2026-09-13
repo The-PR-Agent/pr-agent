@@ -44,6 +44,12 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
 # bypass the operator's choice of which PR fields the bot edits. Ticket extraction
 # (require_ticket_analysis_review) stays root-controlled too: enabling it from a nested
 # file would make the bot run authenticated Jira lookups the root config already disabled.
+# Self-review workflow controls (demand_code_suggestions_self_review and
+# approve_pr_on_self_review) stay root-controlled as well: a nested file must not be able
+# to make /improve demand a checklist and then auto-approve the pull request when the
+# author ticks it. Thread-history collection (pr_questions.use_conversation_history) is
+# also root-controlled so a nested file cannot re-enable sending private review-thread
+# discussion bodies to the model after the operator opted out.
 # Similarly, budget/call-count controls (max_number_of_calls, max_ai_calls, parallel_calls,
 # enable_large_pr_chunking, enable_large_pr_handling, async_ai_calls) are restricted so
 # a nested file cannot multiply AI calls independently of the host-trusted defaults.
@@ -59,8 +65,11 @@ PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION = {
         "generate_ai_title", "publish_description_as_comment",
         "publish_description_as_comment_persistent",
     }),
-    "pr_questions": frozenset({"resolve_threads"}),
-    "pr_code_suggestions": frozenset({"max_number_of_calls", "parallel_calls"}),
+    "pr_questions": frozenset({"resolve_threads", "use_conversation_history"}),
+    "pr_code_suggestions": frozenset({
+        "max_number_of_calls", "parallel_calls",
+        "approve_pr_on_self_review", "demand_code_suggestions_self_review",
+    }),
     "pr_similar_issue": frozenset({"force_update_dataset", "max_issues_to_scan", "vectordb"}),
 }
 

@@ -287,6 +287,58 @@ class TestResolvePerDirectorySettings:
             "svc3/.pr_agent.toml",
         ]
 
+    def test_per_directory_oversized_config_is_dropped(self, per_dir_settings, monkeypatch):
+        monkeypatch.setattr(git_utils, "MAX_TOML_SIZE_IN_BYTES", 100)
+        provider = _provider(
+            tree_paths=["svc1/.pr_agent.toml", "svc2/.pr_agent.toml"],
+            contents={
+                "svc1/.pr_agent.toml": b"[config]\n" + b"#" * 200,
+                "svc2/.pr_agent.toml": SERVICES_TOML,
+            },
+            files=["svc1/x.py", "svc2/y.py"],
+        )
+
+        resolved = git_utils._get_per_directory_settings(provider)
+
+        # An over-limit nested file is dropped before retention or parsing; the valid one stays.
+        assert [path for path, _ in resolved] == ["svc2/.pr_agent.toml"]
+
+    def test_per_directory_aggregate_budget_stops_retention(self, per_dir_settings, monkeypatch):
+        monkeypatch.setattr(
+            git_utils, "_PER_DIRECTORY_SETTINGS_AGGREGATE_BYTES", len(SERVICES_TOML) + 10
+        )
+        provider = _provider(
+            tree_paths=[
+                "svc1/.pr_agent.toml",
+                "svc2/.pr_agent.toml",
+                "svc3/.pr_agent.toml",
+            ],
+            contents={
+                "svc1/.pr_agent.toml": SERVICES_TOML,
+                "svc2/.pr_agent.toml": SERVICES_BILLING_TOML,
+                "svc3/.pr_agent.toml": SERVICES_AUTH_TOML,
+            },
+            files=["svc1/x.py", "svc2/y.py", "svc3/z.py"],
+        )
+
+        reserved = git_utils._get_per_directory_settings(provider)
+
+        # Once the aggregate budget is exhausted, further files are not retained.
+        assert [path for path, _ in reserved] == ["svc1/.pr_agent.toml"]
+
+    def test_sibling_conflict_parse_skips_oversized_files(self, per_dir_settings, monkeypatch):
+        monkeypatch.setattr(git_utils, "MAX_TOML_SIZE_IN_BYTES", 100)
+        oversized = b"[pr_reviewer]\nnum_max_findings = 10\n" + b"#" * 300
+        contents = {
+            "svc1/.pr_agent.toml": oversized,
+            "svc2/.pr_agent.toml": b"[pr_reviewer]\nnum_max_findings = 5\n",
+        }
+
+        conflicts = git_utils._warn_on_sibling_key_conflicts(["svc1", "svc2"], contents)
+
+        # The oversized sibling is not parsed, so no conflict with svc2 can be reported.
+        assert conflicts == []
+
     def test_disabled_returns_empty_without_any_provider_call(self, fresh_global_settings):
         with request_cycle_context({}):
             context["settings"] = copy.deepcopy(global_settings)
@@ -578,12 +630,15 @@ async_ai_calls = false
 [pr_questions]
 resolve_threads = true
 static_questions = ["default"]
+use_conversation_history = true
 
 [pr_code_suggestions]
 commitable_code_suggestions = true
 num_code_suggestions_per_chunk = 2
 max_number_of_calls = 99
 parallel_calls = true
+demand_code_suggestions_self_review = true
+approve_pr_on_self_review = true
 
 [pr_similar_issue]
 force_update_dataset = true
@@ -594,7 +649,10 @@ use_original_title = false
         monkeypatch.setattr(
             "pr_agent.git_providers.utils.get_git_provider_with_context",
             lambda url: _provider(
-                root_settings=ROOT_TOML,
+                root_settings=ROOT_TOML + b"""
+[pr_questions]
+use_conversation_history = false
+""",
                 tree_paths=["services/.pr_agent.toml"],
                 contents={"services/.pr_agent.toml": config},
                 files=["services/api.py"],
@@ -631,6 +689,13 @@ use_original_title = false
         assert get_settings().pr_description.async_ai_calls is True
         assert get_settings().pr_code_suggestions.max_number_of_calls != 99
         assert get_settings().pr_code_suggestions.parallel_calls is True
+        # The self-review approval workflow stays root-controlled: a nested file cannot
+        # demand a self-review checklist and then auto-approve on the author's tick.
+        assert get_settings().pr_code_suggestions.demand_code_suggestions_self_review is False
+        assert get_settings().pr_code_suggestions.approve_pr_on_self_review is False
+        # Thread-history collection for /ask is root-controlled: a nested file cannot
+        # re-enable sending private review-thread discussion bodies to the model.
+        assert get_settings().pr_questions.use_conversation_history is False
         # Ordinary keys in the same sections still apply.
         assert get_settings().pr_reviewer.num_max_findings == 4
         assert get_settings().pr_description.use_ai_title is True

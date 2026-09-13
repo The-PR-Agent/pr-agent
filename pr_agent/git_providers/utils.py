@@ -29,6 +29,10 @@ _FETCH_TIMEOUT_SECONDS = 10
 # Hard ceiling on the number of per-directory `.pr_agent.toml` files applied per MR,
 # so a wide, multi-service diff cannot trigger a burst of config fetches.
 _DEFAULT_MAX_PER_DIRECTORY_SETTINGS = 20
+# Aggregate byte budget for per-directory settings retained per MR. The per-file cap is
+# MAX_TOML_SIZE_IN_BYTES (the same limit the loader applies); this trusted total keeps a
+# batch of contributor-controlled files from being retained and parsed in bulk.
+_PER_DIRECTORY_SETTINGS_AGGREGATE_BYTES = 5 * 1024 * 1024
 # Bare Windows drive-letter paths (e.g. "C:\\shared.toml", "D:/cfg.toml").
 # urlparse() would otherwise interpret the drive letter as a URL scheme.
 _WINDOWS_DRIVE_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
@@ -592,6 +596,10 @@ def _get_per_directory_settings(git_provider) -> list:
         return []
     config_paths = [f"{directory}/.pr_agent.toml" for directory in ordered]
     contents = contents_method(config_paths, resolved_ref) or {}
+    # Reject oversized or over-budget payloads before any conflict inspection or
+    # retention: files are contributor-controlled and unvalidated at fetch time, so a
+    # batch of them must not be held and parsed wholesale in one worker.
+    contents = _size_bounded_per_directory_contents(config_paths, contents)
     _warn_on_sibling_key_conflicts(ordered, contents)
     resolved = []
     for path in config_paths:
@@ -605,6 +613,39 @@ def _get_per_directory_settings(git_provider) -> list:
             f"{sorted(entry[0] for entry in resolved)}"
         )
     return resolved
+
+
+def _size_bounded_per_directory_contents(config_paths: list[str], contents: dict[str, bytes]) -> dict[str, bytes]:
+    """Drop per-directory payloads that exceed the size caps before any parsing or retention.
+
+    Per-directory files are contributor-controlled and unvalidated at fetch time. Payloads
+    larger than ``MAX_TOML_SIZE_IN_BYTES`` are skipped, and retention stops once the
+    aggregate byte budget is exhausted, so a batch of oversized nested files cannot be kept
+    and parsed wholesale. Files already downloaded by the provider are unavoidable, but they
+    are not retained, parsed, or logged beyond a bounded warning.
+    """
+    bounded: dict[str, bytes] = {}
+    total_bytes = 0
+    for path in config_paths:
+        content = contents.get(path)
+        if content is None:
+            continue
+        size = len(content)
+        if size > MAX_TOML_SIZE_IN_BYTES:
+            get_logger().warning(
+                f"Per-directory settings file '{path}' is {size} bytes "
+                f"(> {MAX_TOML_SIZE_IN_BYTES}); skipping it"
+            )
+            continue
+        if total_bytes + size > _PER_DIRECTORY_SETTINGS_AGGREGATE_BYTES:
+            get_logger().warning(
+                f"Per-directory settings aggregate exceeds "
+                f"{_PER_DIRECTORY_SETTINGS_AGGREGATE_BYTES} bytes; skipping further files"
+            )
+            break
+        bounded[path] = content
+        total_bytes += size
+    return bounded
 
 
 def _warn_on_sibling_key_conflicts(ordered: list[str], contents: dict[str, bytes]) -> list[tuple[str, str, str]]:
@@ -628,6 +669,12 @@ def _warn_on_sibling_key_conflicts(ordered: list[str], contents: dict[str, bytes
         for directory in group:
             content = contents.get(f"{directory}/.pr_agent.toml")
             if not content:
+                continue
+            if len(content) > MAX_TOML_SIZE_IN_BYTES:
+                get_logger().warning(
+                    f"Per-directory settings file '{directory}/.pr_agent.toml' exceeds "
+                    f"{MAX_TOML_SIZE_IN_BYTES} bytes; skipping sibling-conflict inspection"
+                )
                 continue
             try:
                 parsed[directory] = tomllib.loads(content.decode("utf-8"))
