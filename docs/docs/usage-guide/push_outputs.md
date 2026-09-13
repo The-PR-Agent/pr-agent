@@ -80,11 +80,11 @@ credential.
 | `slack` | POSTs `{"text": ...}` to a Slack Incoming Webhook; the text is the markdown, or the payload JSON when the tool produces no markdown. |
 
 Local channels (`stdout`, `file`) run before network channels (`webhook`, `slack`), and network
-posts never follow redirects, so a failed or redirecting POST cannot lose an already-written file
-line or be forwarded to a different host.
+posts never follow redirects. Each configured destination is attempted independently, so one failure
+does not prevent later destinations from receiving the output.
 
 ## Error handling
 
 Failures are non-fatal: `push_outputs` never raises, so a sink outage does not break the review
-flow. Errors are logged with the exception type only, since request error messages can embed the
-(secret-bearing) URL.
+flow. Exceptions and non-2xx HTTP responses are logged with the destination and only the exception
+type or status code, since request error messages can embed the (secret-bearing) URL.

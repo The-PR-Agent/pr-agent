@@ -1,21 +1,27 @@
 import copy
 import re
 from functools import partial
+from math import ceil, isfinite
 from pathlib import Path
 
 from jinja2 import Environment, StrictUndefined, select_autoescape
+from litellm import token_counter
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.pr_processing import retry_with_fallback_models
-from pr_agent.algo.token_handler import TokenHandler
-from pr_agent.algo.utils import ModelType, clip_tokens, get_max_tokens, load_yaml
+from pr_agent.algo.token_handler import TokenEncoder
+from pr_agent.algo.utils import ModelType, get_max_tokens, load_yaml
 from pr_agent.command_descriptions import COMMAND_DESCRIPTIONS
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.log import get_logger
 
 DOCS_SITE_URL = "https://docs.pr-agent.ai"
+HELP_OUTPUT_TOKEN_RESERVE = 2_000
+MESSAGE_FRAMING_TOKEN_ALLOWANCE = 16
+REPLY_FRAMING_TOKEN_ALLOWANCE = 16
+TRUNCATION_MARKER = "\n...(truncated)\n"
 
 
 class PRHelpMessage:
@@ -29,13 +35,16 @@ class PRHelpMessage:
                 "question": self.question_str,
                 "snippets": "",
             }
-            self.token_handler = TokenHandler(None,
-                                              self.vars,
-                                              get_settings().pr_help_prompts.system,
-                                              get_settings().pr_help_prompts.user)
 
     async def _prepare_prediction(self, model: str):
         variables = copy.deepcopy(self.vars)
+        system_prompt, user_prompt = self._fit_prompts(variables, model)
+        response, finish_reason = await self.ai_handler.chat_completion(
+            model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
+        return response
+
+    @staticmethod
+    def _render_prompts(variables):
         # These string templates produce plain-text model prompts, not HTML.
         environment = Environment(
             autoescape=select_autoescape(default_for_string=False),
@@ -43,9 +52,147 @@ class PRHelpMessage:
         )
         system_prompt = environment.from_string(get_settings().pr_help_prompts.system).render(variables)
         user_prompt = environment.from_string(get_settings().pr_help_prompts.user).render(variables)
-        response, finish_reason = await self.ai_handler.chat_completion(
-            model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
-        return response
+        return system_prompt, user_prompt
+
+    @staticmethod
+    def _coerce_output_token_limit(value) -> int:
+        try:
+            output_tokens = int(value)
+        except (TypeError, ValueError, OverflowError):
+            return 0
+        return output_tokens if output_tokens > 0 else 0
+
+    def _get_prompt_budget(self, model: str) -> int:
+        output_tokens = 0
+        get_output_token_reserve = getattr(self.ai_handler, "get_output_token_reserve", None)
+        if callable(get_output_token_reserve):
+            try:
+                handler_output_tokens = get_output_token_reserve(model, HELP_OUTPUT_TOKEN_RESERVE)
+            except Exception as e:
+                get_logger().debug(f"Failed to resolve the output token reserve for {model}: {e}")
+            else:
+                if (
+                    isinstance(handler_output_tokens, int)
+                    and not isinstance(handler_output_tokens, bool)
+                    and handler_output_tokens > 0
+                ):
+                    output_tokens = handler_output_tokens
+        get_output_token_limit = getattr(self.ai_handler, "get_output_token_limit", None)
+        if output_tokens <= 0 and callable(get_output_token_limit):
+            try:
+                handler_output_tokens = get_output_token_limit(model)
+            except Exception as e:
+                get_logger().debug(f"Failed to resolve the output token limit for {model}: {e}")
+            else:
+                if (
+                    isinstance(handler_output_tokens, int)
+                    and not isinstance(handler_output_tokens, bool)
+                    and handler_output_tokens > 0
+                ):
+                    output_tokens = handler_output_tokens
+        if output_tokens <= 0:
+            raw_output_tokens = get_settings().config.get("max_output_tokens", 0)
+            output_tokens = self._coerce_output_token_limit(raw_output_tokens)
+        if output_tokens <= 0:
+            output_tokens = HELP_OUTPUT_TOKEN_RESERVE
+        return max(get_max_tokens(model, ignore_max_model_tokens=True) - output_tokens, 0)
+
+    @staticmethod
+    def _count_prompt_tokens(model: str, system_prompt: str, user_prompt: str) -> int:
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        try:
+            model_token_count = token_counter(model=model, messages=messages)
+            if isinstance(model_token_count, int) and not isinstance(model_token_count, bool) and model_token_count > 0:
+                return model_token_count
+        except Exception as e:
+            get_logger().debug(f"Model-aware token counting failed for {model}: {e}")
+
+        get_logger().debug(f"Using a local token estimate for {model}")
+        encoder = TokenEncoder.get_token_encoder(model)
+        content_tokens = sum(
+            len(encoder.encode(message["content"], disallowed_special=())) for message in messages
+        )
+        framing_tokens = MESSAGE_FRAMING_TOKEN_ALLOWANCE * len(messages) + REPLY_FRAMING_TOKEN_ALLOWANCE
+        raw_factor = get_settings().get("config.model_token_count_estimate_factor", 0)
+        try:
+            extra_factor = float(raw_factor)
+        except (TypeError, ValueError, OverflowError):
+            extra_factor = 0
+        if isinstance(raw_factor, bool) or not isfinite(extra_factor):
+            extra_factor = 0
+        multiplier = max(1.0, 1.0 + extra_factor)
+        raw_estimate = content_tokens + framing_tokens
+        try:
+            estimated_tokens = raw_estimate * multiplier
+            if not isfinite(estimated_tokens):
+                raise ValueError("non-finite token estimate")
+            return ceil(estimated_tokens)
+        except (OverflowError, ValueError):
+            get_logger().warning(
+                f"model_token_count_estimate_factor is too large ({raw_factor!r}), using the estimate as is"
+            )
+            return raw_estimate
+
+    def _normalize_request_prompts(self, model: str, system_prompt: str, user_prompt: str) -> tuple[str, str]:
+        normalize_request_prompts = getattr(self.ai_handler, "normalize_request_prompts", None)
+        if not callable(normalize_request_prompts):
+            return system_prompt, user_prompt
+        try:
+            normalized_prompts = normalize_request_prompts(model, system_prompt, user_prompt)
+        except Exception as e:
+            get_logger().debug(f"Failed to normalize prompts for {model}: {e}")
+            return system_prompt, user_prompt
+        if (
+            isinstance(normalized_prompts, tuple)
+            and len(normalized_prompts) == 2
+            and all(isinstance(prompt, str) for prompt in normalized_prompts)
+        ):
+            return normalized_prompts
+        get_logger().debug(f"Ignoring unusable prompt normalization result for {model}")
+        return system_prompt, user_prompt
+
+    def _fit_prompts(self, variables, model: str):
+        prompt_budget = self._get_prompt_budget(model)
+        raw_snippets = variables.get("snippets", "")
+
+        def render(snippets):
+            attempt_variables = copy.deepcopy(variables)
+            attempt_variables["snippets"] = snippets
+            rendered_prompts = self._render_prompts(attempt_variables)
+            return self._normalize_request_prompts(model, *rendered_prompts)
+
+        full_prompts = render(raw_snippets)
+        if self._count_prompt_tokens(model, *full_prompts) <= prompt_budget:
+            return full_prompts
+
+        empty_prompts = render("")
+        if self._count_prompt_tokens(model, *empty_prompts) > prompt_budget:
+            raise ValueError(f"The /help prompt exceeds the token limit for {model} without documentation")
+
+        marker_prompts = render(TRUNCATION_MARKER)
+        if self._count_prompt_tokens(model, *marker_prompts) > prompt_budget:
+            raise ValueError(f"The /help prompt exceeds the token limit for {model} with a truncation marker")
+
+        keep_chars = max(len(raw_snippets) - 1, 0)
+        while keep_chars > 0:
+            candidate = raw_snippets[:keep_chars].rstrip() + TRUNCATION_MARKER
+            candidate_prompts = render(candidate)
+            candidate_tokens = self._count_prompt_tokens(model, *candidate_prompts)
+            if candidate_tokens <= prompt_budget:
+                get_logger().warning(
+                    f"Documentation was clipped for /help to fit the {prompt_budget}-token input limit for {model}"
+                )
+                return candidate_prompts
+            next_keep_chars = max(1, int(keep_chars * prompt_budget / candidate_tokens))
+            keep_chars = min(keep_chars - 1, next_keep_chars)
+
+        get_logger().warning(
+            f"Documentation was clipped for /help to fit the {prompt_budget}-token input limit for {model}"
+        )
+        return marker_prompts
 
     def parse_args(self, args):
         if args and len(args) > 0:
@@ -125,16 +272,6 @@ class PRHelpMessage:
                             docs_prompt += f"\n==file name==\n\n{file_path}\n\n==file content==\n\n{f.read().strip()}\n=========\n\n"
                     except Exception as e:
                         get_logger().error(f"Error while reading the file {file}: {e}")
-                token_count = self.token_handler.count_tokens(docs_prompt)
-                get_logger().debug(f"Token count of full documentation website: {token_count}")
-
-                # take the actual max tokens, without any reductions. we do aim to get
-                # the full documentation website in the prompt
-                max_tokens_full = get_max_tokens(get_settings().config.model, ignore_max_model_tokens=True)
-                delta_output = 2000
-                if token_count > max_tokens_full - delta_output:
-                    get_logger().info(f"Token count {token_count} exceeds the limit {max_tokens_full - delta_output}. Skipping the PR Help message.")
-                    docs_prompt = clip_tokens(docs_prompt, max_tokens_full - delta_output)
                 self.vars['snippets'] = docs_prompt.strip()
 
                 # run the AI model

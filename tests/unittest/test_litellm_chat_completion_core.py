@@ -86,6 +86,22 @@ async def test_chat_completion_passes_seed_when_temperature_is_zero(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_claude_empty_system_prompt_uses_public_request_normalization(monkeypatch):
+    monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+        expected_prompts = handler.normalize_request_prompts("claude-sonnet-4-5", "", "usr")
+
+        await handler.chat_completion(model="claude-sonnet-4-5", system="", user="usr")
+
+    messages = mock_call.call_args.kwargs["messages"]
+    assert expected_prompts == ("No system prompt provided", "usr")
+    assert (messages[0]["content"], messages[1]["content"]) == expected_prompts
+
+
+@pytest.mark.asyncio
 async def test_chat_completion_probes_images_off_loop_with_timeout(monkeypatch):
     monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
     loop_thread = threading.get_ident()
