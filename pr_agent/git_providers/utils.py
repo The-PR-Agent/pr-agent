@@ -15,6 +15,7 @@ from starlette_context import context
 
 from pr_agent.config_loader import get_settings
 from pr_agent.config_security import (
+    PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION,
     REPO_HOST_ONLY_KEYS_BY_SECTION,
     REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION,
     REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS,
@@ -388,6 +389,15 @@ def _apply_repo_settings_file(repo_settings_file, repo_settings_scope="repo"):
                 contents = {k: v for k, v in contents.items() if k.lower() in per_dir_allowed_keys}
                 if not contents:
                     continue
+            per_dir_host_only_keys = PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION.get(section.lower(), frozenset())
+            rejected = [k for k in contents if k.lower() in per_dir_host_only_keys]
+            if rejected:
+                get_logger().warning(
+                    f"Ignoring host-only key(s) {rejected} in section [{section}] from per-directory settings"
+                )
+            contents = {k: v for k, v in contents.items() if k.lower() not in per_dir_host_only_keys}
+            if not contents:
+                continue
         allowed_keys = REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION.get(section.lower())
         if allowed_keys is not None:
             rejected = [k for k in contents if k.lower() not in allowed_keys]
@@ -446,8 +456,10 @@ def _get_config_branch() -> str:
 def _get_changed_file_paths(git_provider) -> list[str]:
     """Return the repository-relative paths the PR/MR touches.
 
-    Tolerates each provider's get_files() shape (str, dict keyed by new_path/
-    filename/path, or an object with .filename/.new_path). A failure to list files
+    Includes rename metadata (old_path / previous_filename) when the provider
+    surfaces it, so ancestor configs for both sides of a move apply. Tolerates
+    each provider's get_files() shape (str, dict keyed by new_path/filename/
+    path, or an object with .filename/.new_path). A failure to list files
     degrades to no per-directory configs rather than failing the request.
     """
     try:
@@ -457,15 +469,26 @@ def _get_changed_file_paths(git_provider) -> list[str]:
         return []
     paths = []
     for entry in files or []:
-        if isinstance(entry, str):
-            name = entry
-        elif isinstance(entry, dict):
-            name = entry.get("new_path") or entry.get("filename") or entry.get("path") or ""
-        else:
-            name = getattr(entry, "filename", None) or getattr(entry, "new_path", None) or ""
-        if isinstance(name, str) and name.strip():
-            paths.append(name.strip())
+        for name in _entry_path_names(entry):
+            if name not in paths:
+                paths.append(name)
     return paths
+
+
+def _entry_path_names(entry) -> list[str]:
+    """Extract any repository-relative path names an entry carries (new and old)."""
+    if isinstance(entry, str):
+        return [entry.strip()] if entry.strip() else []
+    if isinstance(entry, dict):
+        keys = ("new_path", "filename", "path", "old_path", "previous_filename")
+    else:
+        keys = ("filename", "new_path", "old_path", "previous_filename")
+    names = []
+    for key in keys:
+        value = entry.get(key) if isinstance(entry, dict) else getattr(entry, key, None)
+        if isinstance(value, str) and value.strip() and value != "/dev/null":
+            names.append(value.strip())
+    return names
 
 
 def _get_per_directory_settings(git_provider) -> list:

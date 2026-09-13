@@ -301,6 +301,29 @@ class TestResolvePerDirectorySettings:
 
         assert [path for path, _ in resolved] == ["services/.pr_agent.toml"]
 
+    def test_changed_file_paths_include_rename_metadata(self, per_dir_settings):
+        provider = _provider(
+            tree_paths=["legacy/.pr_agent.toml", "services/.pr_agent.toml"],
+            contents={
+                "legacy/.pr_agent.toml": SERVICES_TOML,
+                "services/.pr_agent.toml": SERVICES_TOML,
+            },
+            files=[
+                {"new_path": "services/api.py", "old_path": "legacy/api.py"},
+                SimpleNamespace(new_path="services/web.py", previous_filename="legacy/web.py"),
+                {"new_path": "services/fresh.py", "old_path": None},
+            ],
+        )
+
+        resolved = git_utils._get_per_directory_settings(provider)
+
+        # Both the source and the destination side of each move contribute paths,
+        # so their ancestor configs apply; a bare new file contributes only its own.
+        assert {path for path, _ in resolved} == {
+            "legacy/.pr_agent.toml",
+            "services/.pr_agent.toml",
+        }
+
     def test_config_branch_passed_to_tree(self, per_dir_settings):
         get_settings().set("CONFIG.CONFIG_BRANCH", "cfg-branch")
         provider = _provider(
@@ -469,6 +492,48 @@ enable_help_text = true
         assert get_settings().pr_help_docs.docs_path == "custom-docs"
         assert get_settings().pr_help_docs.exclude_root_readme is True
         assert get_settings().pr_help_docs.enable_help_text is True
+
+    def test_description_questions_and_similar_issue_host_only_keys_are_dropped(
+        self, per_dir_settings, monkeypatch
+    ):
+        config = b"""
+[pr_description]
+publish_labels = true
+use_ai_title = true
+
+[pr_questions]
+resolve_threads = true
+static_questions = ["default"]
+
+[pr_similar_issue]
+force_update_dataset = true
+max_issues_to_scan = 999999
+vectordb = "pinecone"
+use_original_title = false
+"""
+        monkeypatch.setattr(
+            "pr_agent.git_providers.utils.get_git_provider_with_context",
+            lambda url: _provider(
+                root_settings=ROOT_TOML,
+                tree_paths=["services/.pr_agent.toml"],
+                contents={"services/.pr_agent.toml": config},
+                files=["services/api.py"],
+            ),
+        )
+
+        git_utils.apply_repo_settings("https://github.com/org/repo/pull/1")
+
+        # Label mutation, thread resolution and full issue-index refresh switches are
+        # host-/root-controlled and must stay at their trusted defaults.
+        assert get_settings().pr_description.publish_labels is False
+        assert get_settings().pr_questions.resolve_threads is False
+        assert get_settings().pr_similar_issue.force_update_dataset is False
+        assert get_settings().get("pr_similar_issue.max_issues_to_scan", 0) != 999999
+        assert get_settings().pr_similar_issue.vectordb != "pinecone"
+        # Ordinary keys in the same sections still apply.
+        assert get_settings().pr_description.use_ai_title is True
+        assert get_settings().pr_questions.static_questions == ["default"]
+        assert get_settings().pr_similar_issue.use_original_title is False
 
     def test_malformed_per_directory_config_reports_error(self, per_dir_settings, monkeypatch):
         malformed = b"[pr_reviewer\nnum_max_findings = 2\n"

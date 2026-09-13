@@ -32,6 +32,18 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     "pr_reviewer": frozenset({"publish_error_details"}),
 }
 
+# Keys a per-directory `.pr_agent.toml` can never override, even when their section is
+# otherwise open (None) in REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS. Nested files live in
+# the working repository where any contributor can edit them, so keys that perform
+# host-side writes (label mutation, resolving human review threads) or consume unbounded
+# external resources (forcing a full issue-index refresh, scanning arbitrary issue counts,
+# or repointing the vector backend) stay root-config- or host-controlled.
+PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION = {
+    "pr_description": frozenset({"publish_labels"}),
+    "pr_questions": frozenset({"resolve_threads"}),
+    "pr_similar_issue": frozenset({"force_update_dataset", "max_issues_to_scan", "vectordb"}),
+}
+
 # Sections a *per-directory* `.pr_agent.toml` may override at all. Nested config
 # files live in the working repository where any contributor can edit them, so this
 # layer is deliberately narrower than the root/global repo settings: tool
