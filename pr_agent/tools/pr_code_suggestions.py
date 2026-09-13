@@ -1586,7 +1586,8 @@ class PRCodeSuggestions:
                 recovered_any = False
                 try:
                     token_handler = TokenHandler(model=fallback_model)
-                    budget = get_max_tokens(fallback_model) - OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD
+                    output_reserve = self._recovery_output_reserve(fallback_model)
+                    budget = get_max_tokens(fallback_model) - output_reserve
                     for index in pending:
                         system, user = self._render_prediction_prompts(*chunk_pairs[index])
                         tokens = token_handler.count_tokens(system) + token_handler.count_tokens(user)
@@ -1620,6 +1621,29 @@ class PRCodeSuggestions:
                     record_model_used(fallback_model, is_fallback=True)
         finally:
             settings.set("openai.deployment_id", original_deployment)
+
+    def _recovery_output_reserve(self, model: str) -> int:
+        """Return the completion headroom to reserve for a recovery fallback model.
+
+        The LiteLLM handler reports the output allowance it will actually request
+        (config.max_output_tokens, extended thinking, per-provider controls); fall
+        back to the fixed soft threshold only when it exposes no specific limit so a
+        near-limit prompt is not classified as eligible without enough headroom.
+        """
+        get_output_token_reserve = getattr(self.ai_handler, "get_output_token_reserve", None)
+        if callable(get_output_token_reserve):
+            try:
+                output_tokens = get_output_token_reserve(model, OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD)
+            except Exception as error:
+                get_logger().debug(f"Failed to resolve the output token reserve for {model}: {error}")
+            else:
+                if (
+                    isinstance(output_tokens, int)
+                    and not isinstance(output_tokens, bool)
+                    and output_tokens > 0
+                ):
+                    return output_tokens
+        return OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD
 
     async def prepare_prediction_main(self, model: str) -> dict:
         self.failed_chunk_count = 0
