@@ -191,6 +191,15 @@ PROVIDER_API_BASE_ENV_VARS = {
     "zai": ("ZAI_API_BASE",),
 }
 
+_WATSONX_ROUTING_ENV_VARS = {
+    "api_base": ("WATSONX_API_BASE", "WATSONX_URL", "WX_URL", "WML_URL"),
+    "project_id": ("WATSONX_PROJECT_ID", "WX_PROJECT_ID", "PROJECT_ID"),
+    "space_id": ("WATSONX_DEPLOYMENT_SPACE_ID", "WATSONX_SPACE_ID", "WX_SPACE_ID", "SPACE_ID"),
+    "region_name": ("WATSONX_REGION", "WX_REGION", "REGION"),
+    "token": ("WATSONX_TOKEN",),
+    "zen_api_key": ("WATSONX_ZENAPIKEY",),
+}
+
 PROVIDER_ROUTING_ENV_VARS = {
     "azure": {
         "api_base": ("AZURE_API_BASE", "AZURE_OPENAI_ENDPOINT"),
@@ -215,22 +224,8 @@ PROVIDER_ROUTING_ENV_VARS = {
         "vertex_project": ("VERTEXAI_PROJECT", "GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT"),
         "vertex_location": ("VERTEXAI_LOCATION", "VERTEX_LOCATION"),
     },
-    "watsonx": {
-        "api_base": ("WATSONX_API_BASE", "WATSONX_URL", "WX_URL", "WML_URL"),
-        "project_id": ("WATSONX_PROJECT_ID", "WX_PROJECT_ID", "PROJECT_ID"),
-        "space_id": ("WATSONX_DEPLOYMENT_SPACE_ID", "WATSONX_SPACE_ID", "WX_SPACE_ID", "SPACE_ID"),
-        "region_name": ("WATSONX_REGION", "WX_REGION", "REGION"),
-        "token": ("WATSONX_TOKEN",),
-        "zen_api_key": ("WATSONX_ZENAPIKEY",),
-    },
-    "watsonx_text": {
-        "api_base": ("WATSONX_API_BASE", "WATSONX_URL", "WX_URL", "WML_URL"),
-        "project_id": ("WATSONX_PROJECT_ID", "WX_PROJECT_ID", "PROJECT_ID"),
-        "space_id": ("WATSONX_DEPLOYMENT_SPACE_ID", "WATSONX_SPACE_ID", "WX_SPACE_ID", "SPACE_ID"),
-        "region_name": ("WATSONX_REGION", "WX_REGION", "REGION"),
-        "token": ("WATSONX_TOKEN",),
-        "zen_api_key": ("WATSONX_ZENAPIKEY",),
-    },
+    "watsonx": dict(_WATSONX_ROUTING_ENV_VARS),
+    "watsonx_text": dict(_WATSONX_ROUTING_ENV_VARS),
 }
 
 # Keep aliases in the same precedence order as LiteLLM 1.100.0.
@@ -1898,6 +1893,15 @@ def _as_bool(value, default: bool) -> bool:
     return default
 
 
+def _as_list(value) -> list:
+    """Parse a config value that may arrive as an list[str] (toml) or a string (env override)."""
+    if isinstance(value, (list, tuple)):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if isinstance(value, str):
+        return [v.strip() for v in value.split(",") if v.strip()]
+    return []
+
+
 def _configured_client_retries():
     """config.num_retries as a non-negative int, or None (unset/invalid = client defaults).
 
@@ -2237,12 +2241,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                         provider_params.setdefault(provider, {})[parameter] = value
                         break
 
-        aws_region = (
-            os.environ.get("AWS_REGION_NAME")
-            or settings.get("aws.AWS_REGION_NAME", None)
-            or os.environ.get("AWS_REGION")
-            or os.environ.get("AWS_DEFAULT_REGION")
-        )
+        aws_region = self._resolve_aws_region(settings)
         if aws_region:
             provider_params.setdefault("bedrock", {})["aws_region_name"] = aws_region
         mantle_aws_region = aws_region
@@ -2441,6 +2440,23 @@ class LiteLLMAIHandler(BaseAiHandler):
                 provider_api_keys[provider] = api_key
         return provider_api_keys
 
+    def _captured_api_key(self, provider: str):
+        """Return the API key captured for a provider, preferring configured params over the environment."""
+        return (
+            getattr(self, "_provider_request_params", {}).get(provider, {}).get("api_key")
+            or getattr(self, "_provider_environment_api_keys", {}).get(provider)
+        )
+
+    @staticmethod
+    def _resolve_aws_region(settings) -> str | None:
+        """Resolve the AWS region from the environment and the configured aws settings."""
+        return (
+            os.environ.get("AWS_REGION_NAME")
+            or settings.get("aws.AWS_REGION_NAME", None)
+            or os.environ.get("AWS_REGION")
+            or os.environ.get("AWS_DEFAULT_REGION")
+        )
+
     @staticmethod
     def _snapshot_request_headers(settings) -> dict:
         """Capture explicitly configured headers for every request from this handler."""
@@ -2463,12 +2479,7 @@ class LiteLLMAIHandler(BaseAiHandler):
             variable: os.environ.get(variable)
             for variable in AWS_CREDENTIAL_CHAIN_ENV_VARS
         }
-        request_region = (
-            os.environ.get("AWS_REGION_NAME")
-            or settings.get("aws.AWS_REGION_NAME", None)
-            or os.environ.get("AWS_REGION")
-            or os.environ.get("AWS_DEFAULT_REGION")
-        )
+        request_region = self._resolve_aws_region(settings)
         ambient_access_key = os.environ.get("AWS_ACCESS_KEY_ID")
         ambient_secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY")
         if bool(ambient_access_key) != bool(ambient_secret_key):
@@ -3406,20 +3417,6 @@ class LiteLLMAIHandler(BaseAiHandler):
         # Normalize operator-controlled config: Dynaconf/env overrides can
         # arrive as strings (AUTO_CAST_FOR_DYNACONF is disabled), so coerce
         # defensively instead of trusting the declared types.
-        def _as_list(value):
-            if isinstance(value, (list, tuple)):
-                return [str(v).strip() for v in value if str(v).strip()]
-            if isinstance(value, str):
-                return [v.strip() for v in value.split(",") if v.strip()]
-            return []
-
-        def _as_bool(value, default=True):
-            if isinstance(value, bool):
-                return value
-            if isinstance(value, str):
-                return value.strip().lower() in ("1", "true", "yes", "on")
-            return default
-
         provider_only = _as_list(openrouter_settings.get("provider_only", []))
         provider_order = _as_list(openrouter_settings.get("provider_order", []))
         if provider_only:
@@ -3427,7 +3424,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         elif provider_order:
             provider = extra_body.setdefault("provider", {})
             provider["order"] = provider_order
-            provider["allow_fallbacks"] = _as_bool(openrouter_settings.get("allow_fallbacks", True))
+            provider["allow_fallbacks"] = _as_bool(openrouter_settings.get("allow_fallbacks", True), default=True)
 
         reasoning = {}
         effective_reasoning_effort = str(
@@ -4335,10 +4332,7 @@ class LiteLLMAIHandler(BaseAiHandler):
             and _request_local_openai_headers(transport, model=transport_model) is not None
         )
         if provider == "azure" and azure_ad_token and kwargs.get("api_key") is not None:
-            captured_key = (
-                self._provider_request_params.get("azure", {}).get("api_key")
-                or self._provider_environment_api_keys.get("azure")
-            )
+            captured_key = self._captured_api_key("azure")
             model = kwargs.get("model", "")
             headers = dict(kwargs.get("headers") or {})
             guard_key = kwargs.get("api_key") == DUMMY_LITELLM_API_KEY and (self._azure_ad or not captured_key)
@@ -4415,20 +4409,14 @@ class LiteLLMAIHandler(BaseAiHandler):
             vertex_aws_token = _vertex_request_aws_environment.set(self._vertex_aws_environment)
             vertex_default_token = _vertex_request_default_adc.set(adc_snapshot)
         if provider == "databricks":
-            captured_key = (
-                getattr(self, "_provider_request_params", {}).get("databricks", {}).get("api_key")
-                or getattr(self, "_provider_environment_api_keys", {}).get("databricks")
-            )
+            captured_key = self._captured_api_key("databricks")
             keyless = kwargs.get("api_key") == DUMMY_LITELLM_API_KEY and not captured_key
             if keyless:
                 _install_databricks_keyless_bridge()
             databricks_token = _databricks_request_keyless.set(keyless)
         if provider == "anthropic":
             _install_anthropic_auth_token_bridge()
-            captured_key = (
-                getattr(self, "_provider_request_params", {}).get("anthropic", {}).get("api_key")
-                or getattr(self, "_provider_environment_api_keys", {}).get("anthropic")
-            )
+            captured_key = self._captured_api_key("anthropic")
             anthropic_token = _anthropic_request_auth_token.set({
                 "auth_token": getattr(self, "_anthropic_auth_token", None),
                 "generated_guard": kwargs.get("api_key") == DUMMY_LITELLM_API_KEY and not captured_key,
