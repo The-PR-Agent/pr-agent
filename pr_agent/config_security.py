@@ -40,6 +40,13 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
 # Secrets, identity and deployment-critical settings (provider tokens, git_provider,
 # push_outputs, skills, prompt_fragments, ...) can only be influenced from the root
 # config or host environment, never from a nested file.
+#
+# Tool sections that can trigger bot-side writes (commits, changelog pushes) or
+# read/connect from arbitrary URLs are likewise restricted to drop-only keys:
+# `pr_update_changelog` cannot be given `push_changelog_changes` (a nested config
+# must not cause the bot to commit), and `pr_help_docs` cannot be given `repo_url`
+# (that field can be resolved into a token-embedded clone URL, so a nested file
+# must not point it anywhere).
 REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS = {
     "config": frozenset({
         "model", "fallback_models", "model_weak", "model_reasoning",
@@ -54,12 +61,12 @@ REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS = {
     "pr_code_suggestions": None,
     "pr_custom_prompt": None,
     "pr_add_docs": None,
-    "pr_update_changelog": None,
+    "pr_update_changelog": frozenset({"extra_instructions", "add_pr_link"}),
     "pr_analyze": None,
     "pr_test": None,
     "pr_improve_component": None,
     "pr_help": None,
-    "pr_help_docs": None,
+    "pr_help_docs": frozenset({"docs_path", "exclude_root_readme", "supported_doc_exts", "enable_help_text"}),
     "pr_similar_issue": None,
     "pr_find_similar_component": None,
 }

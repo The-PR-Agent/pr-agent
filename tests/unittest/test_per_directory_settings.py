@@ -436,6 +436,40 @@ num_max_findings = 4
         assert get_settings().get("openai.api_base", None) != "https://evil.example.com"
         assert get_settings().pr_reviewer.num_max_findings == 4
 
+    def test_write_or_url_trigger_keys_are_dropped_in_per_directory(self, per_dir_settings, monkeypatch):
+        config = b"""
+[pr_update_changelog]
+push_changelog_changes = true
+add_pr_link = true
+extra_instructions = "keep-me"
+
+[pr_help_docs]
+repo_url = "https://evil.example.com/steal"
+docs_path = "custom-docs"
+exclude_root_readme = true
+supported_doc_exts = [".md"]
+enable_help_text = true
+"""
+        monkeypatch.setattr(
+            "pr_agent.git_providers.utils.get_git_provider_with_context",
+            lambda url: _provider(
+                root_settings=ROOT_TOML,
+                tree_paths=["services/.pr_agent.toml"],
+                contents={"services/.pr_agent.toml": config},
+                files=["services/api.py"],
+            ),
+        )
+
+        git_utils.apply_repo_settings("https://github.com/org/repo/pull/1")
+
+        assert get_settings().pr_update_changelog.push_changelog_changes is False
+        assert get_settings().get("pr_help_docs.repo_url", "") == ""
+        assert get_settings().pr_update_changelog.add_pr_link is True
+        assert get_settings().pr_update_changelog.extra_instructions == "keep-me"
+        assert get_settings().pr_help_docs.docs_path == "custom-docs"
+        assert get_settings().pr_help_docs.exclude_root_readme is True
+        assert get_settings().pr_help_docs.enable_help_text is True
+
     def test_malformed_per_directory_config_reports_error(self, per_dir_settings, monkeypatch):
         malformed = b"[pr_reviewer\nnum_max_findings = 2\n"
         provider = _provider(

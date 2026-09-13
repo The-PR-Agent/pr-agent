@@ -505,7 +505,7 @@ def _get_per_directory_settings(git_provider) -> list:
     config_dirs = {
         posixpath.dirname(p)
         for p in tree_paths
-        if p.endswith(".pr_agent.toml") and posixpath.dirname(p)
+        if posixpath.basename(p) == ".pr_agent.toml" and posixpath.dirname(p)
     }
     if not config_dirs:
         return []

@@ -1225,17 +1225,18 @@ class GithubProvider(GitProvider):
         return settings_files if settings_files else ""
 
     def get_repo_settings_tree(self, ref: str = "") -> tuple[list[str], str]:
-        """Recursively list every `.pr_agent.toml` at `ref` ("" = default branch).
+        """Recursively list every `.pr_agent.toml` at *ref* ("" = default branch).
 
-        Follows the same branch-fallback logic as get_repo_settings(): *ref* is only a
-        CONFIG.CONFIG_BRANCH / PR_AGENT_CONFIG_BRANCH hint, so a branch that the root
-        config already resolved away from (e.g. a CONFIG_BRANCH without a root
-        `.pr_agent.toml`) is never read here. The tree is read from the branch the root
-        config actually used (``_resolved_config_branch``), falling back to the repository
-        default branch when that is missing. Returns ``(paths, resolved_ref)`` where
-        *resolved_ref* is the branch the tree was actually read from; an empty *paths*
-        list means the recursive tree hit GitHub's truncation cap and per-directory
-        settings had to be skipped.
+        Follows the same branch resolution as get_repo_settings(): when the root
+        lookup resolved a config, the tree is read from that same branch
+        (``_resolved_config_branch``). When the root lookup resolved nothing (no
+        root ``.pr_agent.toml`` anywhere), the tree is read from *ref* -- the
+        CONFIG.CONFIG_BRANCH / PR_AGENT_CONFIG_BRANCH hint, or the repository
+        default branch when *ref* is empty -- falling back to the default branch
+        on a 404. Returns ``(paths, resolved_ref)`` where *resolved_ref* is the
+        branch the tree was actually read from; an empty *paths* list means the
+        recursive tree hit GitHub's truncation cap and per-directory settings had
+        to be skipped.
         """
         repo = getattr(self, "repo_obj", None)
         if repo is None:
