@@ -574,15 +574,14 @@ def _get_per_directory_settings(git_provider) -> list:
     ordered = sorted(crossed, key=lambda directory: (directory.count("/"), directory))
     if len(ordered) > max_configs:
         kept = []
-        remaining = max_configs
-        for _, group in itertools.groupby(ordered, key=lambda directory: directory.count("/")):
-            group = list(group)
-            if remaining >= len(group):
-                kept.extend(group)
-                remaining -= len(group)
+        budget = max_configs
+        for _, siblings in itertools.groupby(ordered, key=lambda directory: directory.count("/")):
+            siblings = list(siblings)
+            if budget >= len(siblings):
+                kept.extend(siblings)
+                budget -= len(siblings)
                 continue
-            kept.extend(group[len(group) - remaining:])
-            remaining = 0
+            kept.extend(siblings[len(siblings) - budget:])
             break
         ordered = kept
     if not ordered:
