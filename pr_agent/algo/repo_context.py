@@ -15,6 +15,11 @@ REPO_CONTEXT_CACHE_ATTRIBUTE = "_repo_context_cache"
 REPO_CONTEXT_CACHE_MAX_SIZE = 256
 REPO_CONTEXT_CACHE_TTL_SECONDS = 15 * 60
 _DEFAULT_MAX_SIBLING_CONTEXT_FILES = 5
+# Absolute host-controlled ceiling on sibling-repo context fetches per build. The operator-facing
+# repo_context_max_sibling_files setting is clamped to this value before any fetch begins, so a
+# comment command or an unexpectedly large configured value cannot produce unbounded cross-repo
+# API calls. It is intentionally not user-configurable.
+_HARD_MAX_SIBLING_CONTEXT_FILES = 20
 _SIBLING_REPO_SEPARATOR = ":"
 _REPO_CONTEXT_CACHE_MISS = object()
 _unsupported_repo_context_provider_classes = set()
@@ -227,7 +232,9 @@ def _read_max_sibling_context_files() -> int:
                                                      _DEFAULT_MAX_SIBLING_CONTEXT_FILES))
     except (TypeError, ValueError):
         max_siblings = _DEFAULT_MAX_SIBLING_CONTEXT_FILES
-    return max(0, max_siblings)
+    # Clamp defensively so a runtime override or an unexpectedly large configured value can never
+    # exceed the host-controlled hard ceiling, however the value got into the settings.
+    return min(max(0, max_siblings), _HARD_MAX_SIBLING_CONTEXT_FILES)
 
 
 def _load_repo_context_files(

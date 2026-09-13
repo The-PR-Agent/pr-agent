@@ -68,6 +68,11 @@ FORBIDDEN_ARGS = [
     "--pr_reviewer.publish_error_details=true",
     "--pr_reviewer__publish_error_details=true",
     '--pr_reviewer={"publish_error_details": true}',
+    # repo_context_max_sibling_files is host-only: letting a comment raise it would defeat the
+    # sibling-fetch safety bound and allow unbounded cross-repository API calls.
+    "--config.repo_context_max_sibling_files=1000",
+    "--config__repo_context_max_sibling_files=1000",
+    '--config={"repo_context_max_sibling_files": 1000}',
 ]
 
 
@@ -77,6 +82,7 @@ ALLOWED_ARGS_SINGLE = [
     "--skills.enabled=true",
     "--skills.max_skills_tokens=1000",
     "--config.response_language=zh-tw",
+    "--config.repo_context_files=[\"group/A/idea:AGENTS.md\"]",
     "--pr_description.publish_labels=false",
     # non-flag arguments are not validated against the forbidden list
     "some-positional-arg",

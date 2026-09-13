@@ -30,4 +30,8 @@ REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION = {
 # disclosed in a PR comment, so the PR author must not be able to enable it.
 REPO_HOST_ONLY_KEYS_BY_SECTION = {
     "pr_reviewer": frozenset({"publish_error_details"}),
+    # repo_context_max_sibling_files bounds sibling-repository fetches per repo-context build.
+    # Letting a repo's .pr_agent.toml or a comment command raise it would defeat the safety
+    # bound and let a commenter force unbounded cross-repository API calls, so it stays host-only.
+    "config": frozenset({"repo_context_max_sibling_files"}),
 }

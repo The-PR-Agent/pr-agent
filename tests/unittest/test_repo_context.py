@@ -442,6 +442,38 @@ def test_load_repo_context_files_respects_sibling_file_cap(repo_context_settings
     ]
 
 
+def test_read_max_sibling_context_files_clamps_oversized_value(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_SIBLING_FILES", 10**6)
+    assert repo_context._read_max_sibling_context_files() == repo_context._HARD_MAX_SIBLING_CONTEXT_FILES
+
+
+def test_read_max_sibling_context_files_defaults_on_bad_value(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_SIBLING_FILES", "not-a-number")
+    assert repo_context._read_max_sibling_context_files() == 5
+
+
+def test_read_max_sibling_context_files_floor_at_zero(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_SIBLING_FILES", -100)
+    assert repo_context._read_max_sibling_context_files() == 0
+
+
+def test_load_repo_context_files_clamps_sibling_fetches_to_hard_ceiling(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_SIBLING_FILES", 10**6)
+    hard_max = repo_context._HARD_MAX_SIBLING_CONTEXT_FILES
+    context_files = [f"group/g{i}:README.md" for i in range(hard_max + 5)]
+    provider = SiblingFakeProvider(
+        files={},
+        sibling_files={entry: str(i) for i, entry in enumerate(context_files)},
+    )
+
+    files, had_fetch_error = repo_context._load_repo_context_files(
+        provider, context_files, from_default_branch=True
+    )
+
+    assert had_fetch_error is False
+    assert provider.requested_siblings == context_files[:hard_max]
+
+
 def test_sibling_fetch_cap_counts_attempts_not_just_content(repo_context_settings):
     repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_SIBLING_FILES", 2)
     provider = SiblingFakeProvider(
