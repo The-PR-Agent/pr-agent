@@ -38,9 +38,16 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
 # host-side writes (label mutation, resolving human review threads) or consume unbounded
 # external resources (forcing a full issue-index refresh, scanning arbitrary issue counts,
 # or repointing the vector backend) stay root-config- or host-controlled.
+# Similarly, budget/call-count controls (max_number_of_calls, max_ai_calls, parallel_calls,
+# enable_large_pr_chunking, enable_large_pr_handling, async_ai_calls) are restricted so
+# a nested file cannot multiply AI calls independently of the host-trusted defaults.
 PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION = {
-    "pr_description": frozenset({"publish_labels"}),
+    "pr_reviewer": frozenset({"enable_large_pr_chunking", "max_number_of_calls"}),
+    "pr_description": frozenset({
+        "publish_labels", "enable_large_pr_handling", "max_ai_calls", "async_ai_calls",
+    }),
     "pr_questions": frozenset({"resolve_threads"}),
+    "pr_code_suggestions": frozenset({"max_number_of_calls", "parallel_calls"}),
     "pr_similar_issue": frozenset({"force_update_dataset", "max_issues_to_scan", "vectordb"}),
 }
 
@@ -59,6 +66,12 @@ PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION = {
 # must not cause the bot to commit), and `pr_help_docs` cannot be given `repo_url`
 # (that field can be resolved into a token-embedded clone URL, so a nested file
 # must not point it anywhere).
+#
+# The `ignore` section is open to `glob` only: fnmatch translates glob patterns
+# into bounded regexes, whereas `ignore.regex` accepts arbitrary expressions that
+# filter_ignored() compiles and matches against every changed filename on every
+# review. A catastrophic-backtracking pattern committed in a nested file could
+# stall a worker, so nested files keep the bounded glob form only.
 REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS = {
     "config": frozenset({
         "model", "fallback_models", "model_weak", "model_reasoning",
@@ -66,7 +79,7 @@ REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS = {
         "model_token_count_estimate_factor", "temperature", "response_language",
         "repo_context_files", "repo_context_from_default_branch", "repo_context_max_lines",
     }),
-    "ignore": None,
+    "ignore": frozenset({"glob"}),
     "pr_reviewer": None,
     "pr_description": None,
     "pr_questions": None,

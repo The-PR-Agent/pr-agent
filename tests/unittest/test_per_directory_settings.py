@@ -497,13 +497,27 @@ enable_help_text = true
         self, per_dir_settings, monkeypatch
     ):
         config = b"""
+[pr_reviewer]
+num_max_findings = 4
+enable_large_pr_chunking = true
+max_number_of_calls = 9999
+
 [pr_description]
 publish_labels = true
 use_ai_title = true
+enable_large_pr_handling = true
+max_ai_calls = 400
+async_ai_calls = false
 
 [pr_questions]
 resolve_threads = true
 static_questions = ["default"]
+
+[pr_code_suggestions]
+commitable_code_suggestions = true
+num_code_suggestions_per_chunk = 2
+max_number_of_calls = 99
+parallel_calls = true
 
 [pr_similar_issue]
 force_update_dataset = true
@@ -530,10 +544,46 @@ use_original_title = false
         assert get_settings().pr_similar_issue.force_update_dataset is False
         assert get_settings().get("pr_similar_issue.max_issues_to_scan", 0) != 999999
         assert get_settings().pr_similar_issue.vectordb != "pinecone"
+        # Budget/call-count controls stay at the host-trusted values: nested files must
+        # not multiply AI calls on their own.
+        assert get_settings().pr_reviewer.enable_large_pr_chunking is False
+        assert get_settings().pr_reviewer.max_number_of_calls != 9999
+        assert get_settings().pr_description.enable_large_pr_handling != 999999
+        assert get_settings().pr_description.max_ai_calls != 400
+        assert get_settings().pr_description.async_ai_calls is True
+        assert get_settings().pr_code_suggestions.max_number_of_calls != 99
+        assert get_settings().pr_code_suggestions.parallel_calls is True
         # Ordinary keys in the same sections still apply.
+        assert get_settings().pr_reviewer.num_max_findings == 4
         assert get_settings().pr_description.use_ai_title is True
         assert get_settings().pr_questions.static_questions == ["default"]
+        assert get_settings().pr_code_suggestions.commitable_code_suggestions is True
+        assert get_settings().pr_code_suggestions.num_code_suggestions_per_chunk == 2
         assert get_settings().pr_similar_issue.use_original_title is False
+
+    def test_per_directory_ignore_allows_only_glob(self, per_dir_settings, monkeypatch):
+        config = b"""
+[ignore]
+glob = ["gen/**"]
+regex = ["(a+)+$"]
+"""
+        monkeypatch.setattr(
+            "pr_agent.git_providers.utils.get_git_provider_with_context",
+            lambda url: _provider(
+                root_settings=ROOT_TOML,
+                tree_paths=["services/.pr_agent.toml"],
+                contents={"services/.pr_agent.toml": config},
+                files=["services/api.py"],
+            ),
+        )
+
+        git_utils.apply_repo_settings("https://github.com/org/repo/pull/1")
+
+        # Bounded glob patterns land; arbitrary regexes (which filter_ignored() compiles
+        # and matches on every review) stay at the root default so a nested file cannot
+        # commit a catastrophic-backtracking pattern.
+        assert get_settings().ignore.glob == ["gen/**"]
+        assert get_settings().ignore.regex == []
 
     def test_malformed_per_directory_config_reports_error(self, per_dir_settings, monkeypatch):
         malformed = b"[pr_reviewer\nnum_max_findings = 2\n"
