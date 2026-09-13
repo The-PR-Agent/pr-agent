@@ -518,9 +518,12 @@ enable_help_text = true
 
         assert get_settings().pr_update_changelog.push_changelog_changes is False
         assert get_settings().get("pr_help_docs.repo_url", "") == ""
+        # Collection scope is root-/host-controlled: a nested file cannot point /help_docs
+        # at arbitrary repository paths or file extensions to read into the model prompt.
+        assert get_settings().pr_help_docs.docs_path == "docs"
+        assert get_settings().pr_help_docs.supported_doc_exts == [".md", ".mdx", ".rst"]
         assert get_settings().pr_update_changelog.add_pr_link is True
         assert get_settings().pr_update_changelog.extra_instructions == "keep-me"
-        assert get_settings().pr_help_docs.docs_path == "custom-docs"
         assert get_settings().pr_help_docs.exclude_root_readme is True
         assert get_settings().pr_help_docs.enable_help_text is True
 
@@ -532,10 +535,18 @@ enable_help_text = true
 num_max_findings = 4
 enable_large_pr_chunking = true
 max_number_of_calls = 9999
+inline_key_issues = true
+enable_review_labels_security = false
+enable_review_labels_effort = false
+require_security_review = false
+require_estimate_effort_to_review = false
 
 [pr_description]
 publish_labels = true
 use_ai_title = true
+generate_ai_title = true
+publish_description_as_comment = true
+publish_description_as_comment_persistent = false
 enable_large_pr_handling = true
 max_ai_calls = 400
 async_ai_calls = false
@@ -575,6 +586,17 @@ use_original_title = false
         assert get_settings().pr_similar_issue.force_update_dataset is False
         assert get_settings().get("pr_similar_issue.max_issues_to_scan", 0) != 999999
         assert get_settings().pr_similar_issue.vectordb != "pinecone"
+        # Pull-request metadata and reviewer label/inline controls stay trusted:
+        # a nested file cannot rewrite PR titles/bodies, publish reviewer effort or
+        # security labels, or open inline key-issue comments through the bot identity.
+        assert get_settings().pr_description.generate_ai_title is False
+        assert get_settings().pr_description.publish_description_as_comment is False
+        assert get_settings().pr_description.publish_description_as_comment_persistent is True
+        assert get_settings().pr_reviewer.inline_key_issues is False
+        assert get_settings().pr_reviewer.enable_review_labels_security is True
+        assert get_settings().pr_reviewer.enable_review_labels_effort is True
+        assert get_settings().pr_reviewer.require_security_review is True
+        assert get_settings().pr_reviewer.require_estimate_effort_to_review is True
         # Budget/call-count controls stay at the host-trusted values: nested files must
         # not multiply AI calls on their own.
         assert get_settings().pr_reviewer.enable_large_pr_chunking is False
@@ -672,6 +694,36 @@ fallback_models = ["m-one", "m-two", "m-three", "m-four", "m-five"]
         # not be able to multiply AI calls with an arbitrarily long list.
         assert list(get_settings().config.fallback_models) == ["gpt-5.6-terra"]
         # Other model-routing and output knobs still apply.
+        assert get_settings().config.model == "nested-model"
+        assert get_settings().config.temperature == 0.5
+
+    def test_per_directory_config_drops_token_budget_keys(self, per_dir_settings, monkeypatch):
+        config = b"""
+[config]
+model = "nested-model"
+temperature = 0.5
+max_model_tokens = 999999
+custom_model_max_tokens = 999999
+max_output_tokens = 999999
+"""
+        monkeypatch.setattr(
+            "pr_agent.git_providers.utils.get_git_provider_with_context",
+            lambda url: _provider(
+                root_settings=ROOT_TOML,
+                tree_paths=["services/.pr_agent.toml"],
+                contents={"services/.pr_agent.toml": config},
+                files=["services/api.py"],
+            ),
+        )
+
+        git_utils.apply_repo_settings("https://github.com/org/repo/pull/1")
+
+        # Token budgets are root-/host-controlled because they directly size request
+        # and completion limits; a nested file cannot inflate the cost of every call.
+        assert get_settings().config.max_model_tokens != 999999
+        assert get_settings().config.custom_model_max_tokens != 999999
+        assert get_settings().config.max_output_tokens != 999999
+        # Model-routing and output knobs still apply.
         assert get_settings().config.model == "nested-model"
         assert get_settings().config.temperature == 0.5
 

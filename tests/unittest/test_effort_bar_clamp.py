@@ -40,7 +40,7 @@ def test_the_bar_is_always_five_segments():
 
 
 @pytest.mark.parametrize("score, expected", [("8", 5), ("0", 1), ("3", 3)])
-def test_the_review_label_matches_the_rendered_bar(score, expected):
+def test_the_review_label_matches_the_rendered_bar(score, expected, monkeypatch):
     """Clamp the label the same way as the bar, so the two never disagree."""
     from pr_agent.config_loader import get_settings
     from pr_agent.tools.pr_reviewer import PRReviewer
@@ -54,11 +54,11 @@ def test_the_review_label_matches_the_rendered_bar(score, expected):
     })()
 
     settings = get_settings(use_context=False)
-    settings.set("pr_reviewer.enable_review_labels_effort", True)
-    settings.set("pr_reviewer.enable_review_labels_security", False)
-    settings.set("pr_reviewer.require_estimate_effort_to_review", True)
-    settings.set("pr_reviewer.require_security_review", False)
-    settings.set("config.publish_output", True)
+    monkeypatch.setattr(settings.pr_reviewer, "enable_review_labels_effort", True)
+    monkeypatch.setattr(settings.pr_reviewer, "enable_review_labels_security", False)
+    monkeypatch.setattr(settings.pr_reviewer, "require_estimate_effort_to_review", True)
+    monkeypatch.setattr(settings.pr_reviewer, "require_security_review", False)
+    monkeypatch.setattr(settings.config, "publish_output", True)
     reviewer.set_review_labels({"review": {"estimated_effort_to_review_[1-5]": score}})
 
     assert published and published[0] == [f"Review effort {expected}/5"]

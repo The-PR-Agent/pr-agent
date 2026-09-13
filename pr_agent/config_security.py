@@ -35,16 +35,27 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
 # Keys a per-directory `.pr_agent.toml` can never override, even when their section is
 # otherwise open (None) in REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS. Nested files live in
 # the working repository where any contributor can edit them, so keys that perform
-# host-side writes (label mutation, resolving human review threads) or consume unbounded
-# external resources (forcing a full issue-index refresh, scanning arbitrary issue counts,
-# or repointing the vector backend) stay root-config- or host-controlled.
+# host-side writes (label mutation, resolving human review threads, publishing inline
+# review findings, replacing pull-request labels with reviewer effort/security labels) or
+# consume unbounded external resources (forcing a full issue-index refresh, scanning
+# arbitrary issue counts, or repointing the vector backend) stay root-config- or host-
+# controlled. Likewise, keys that rewrite pull-request metadata (AI title generation,
+# comment-only description publication) stay root-controlled so a nested file cannot
+# bypass the operator's choice of which PR fields the bot edits.
 # Similarly, budget/call-count controls (max_number_of_calls, max_ai_calls, parallel_calls,
 # enable_large_pr_chunking, enable_large_pr_handling, async_ai_calls) are restricted so
 # a nested file cannot multiply AI calls independently of the host-trusted defaults.
 PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION = {
-    "pr_reviewer": frozenset({"enable_large_pr_chunking", "max_number_of_calls"}),
+    "pr_reviewer": frozenset({
+        "enable_large_pr_chunking", "max_number_of_calls",
+        "inline_key_issues", "enable_review_labels_security",
+        "enable_review_labels_effort", "require_estimate_effort_to_review",
+        "require_security_review",
+    }),
     "pr_description": frozenset({
         "publish_labels", "enable_large_pr_handling", "max_ai_calls", "async_ai_calls",
+        "generate_ai_title", "publish_description_as_comment",
+        "publish_description_as_comment_persistent",
     }),
     "pr_questions": frozenset({"resolve_threads"}),
     "pr_code_suggestions": frozenset({"max_number_of_calls", "parallel_calls"}),
@@ -61,11 +72,13 @@ PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION = {
 # config or host environment, never from a nested file.
 #
 # Tool sections that can trigger bot-side writes (commits, changelog pushes) or
-# read/connect from arbitrary URLs are likewise restricted to drop-only keys:
+# read/connect from arbitrary URLs or paths are likewise restricted to drop-only keys:
 # `pr_update_changelog` cannot be given `push_changelog_changes` (a nested config
-# must not cause the bot to commit), and `pr_help_docs` cannot be given `repo_url`
-# (that field can be resolved into a token-embedded clone URL, so a nested file
-# must not point it anywhere).
+# must not cause the bot to commit), and `pr_help_docs` cannot be given `repo_url`,
+# `docs_path`, or `supported_doc_exts` (`repo_url` can be resolved into a token-embedded
+# clone URL, while `docs_path` plus `supported_doc_exts` can point collection at any
+# repository path or extension, so a nested file could read arbitrary source files into
+# the model prompt).
 #
 # The `ignore` section is open to `glob` only: fnmatch translates glob patterns
 # into bounded regexes, whereas `ignore.regex` accepts arbitrary expressions that
@@ -81,11 +94,13 @@ PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION = {
 # knobs stay root-/host-controlled. `fallback_models` is excluded too: the retry
 # helper treats each entry as one routing attempt per failing model, so an
 # arbitrarily long nested list could multiply AI calls; fallback routing stays
-# root-/host-controlled.
+# root-/host-controlled. The token-budget keys (`max_model_tokens`,
+# `custom_model_max_tokens`, `max_output_tokens`) are excluded as well because
+# they directly size request context and completion limits, so without a trusted
+# ceiling a nested file could inflate the size and cost of every model request.
 REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS = {
     "config": frozenset({
         "model", "model_weak", "model_reasoning",
-        "custom_model_max_tokens", "max_model_tokens", "max_output_tokens",
         "model_token_count_estimate_factor", "temperature", "response_language",
         "repo_context_from_default_branch",
     }),
@@ -101,7 +116,7 @@ REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS = {
     "pr_test": None,
     "pr_improve_component": None,
     "pr_help": None,
-    "pr_help_docs": frozenset({"docs_path", "exclude_root_readme", "supported_doc_exts", "enable_help_text"}),
+    "pr_help_docs": frozenset({"exclude_root_readme", "enable_help_text"}),
     "pr_similar_issue": None,
     "pr_find_similar_component": None,
 }
