@@ -62,3 +62,27 @@ def test_the_review_label_matches_the_rendered_bar(score, expected):
     reviewer.set_review_labels({"review": {"estimated_effort_to_review_[1-5]": score}})
 
     assert published and published[0] == [f"Review effort {expected}/5"]
+
+
+def test_security_label_accepts_boolean_model_output():
+    """Handle structured-model booleans without calling string methods on them."""
+    from pr_agent.config_loader import get_settings
+    from pr_agent.tools.pr_reviewer import PRReviewer
+
+    reviewer = PRReviewer.__new__(PRReviewer)
+    published = []
+    reviewer.git_provider = type("P", (), {
+        "publish_labels": lambda _self, labels: published.append(labels) or True,
+        "get_pr_labels": lambda _self, update=False: [],
+        "is_supported": lambda _self, feature: feature == "get_labels",
+    })()
+
+    settings = get_settings(use_context=False)
+    settings.set("pr_reviewer.enable_review_labels_effort", False)
+    settings.set("pr_reviewer.enable_review_labels_security", True)
+    settings.set("pr_reviewer.require_estimate_effort_to_review", False)
+    settings.set("pr_reviewer.require_security_review", True)
+    settings.set("config.publish_output", True)
+    reviewer.set_review_labels({"review": {"security_concerns": True}})
+
+    assert published == [["Possible security concern"]]

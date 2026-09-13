@@ -1274,7 +1274,11 @@ class PRReviewer:
                         review_labels.append(f'Review effort {estimated_effort_number}/5')
                 if get_settings().pr_reviewer.enable_review_labels_security and get_settings().pr_reviewer.require_security_review:
                     security_concerns = data['review']['security_concerns']  # yes, because ...
-                    security_concerns_bool = 'yes' in security_concerns.lower() or 'true' in security_concerns.lower()
+                    if isinstance(security_concerns, bool):
+                        security_concerns_bool = security_concerns
+                    else:
+                        security_concerns_text = str(security_concerns).lower()
+                        security_concerns_bool = 'yes' in security_concerns_text or 'true' in security_concerns_text
                     if security_concerns_bool:
                         review_labels.append('Possible security concern')
 
