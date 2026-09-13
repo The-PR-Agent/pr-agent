@@ -3973,7 +3973,12 @@ class LiteLLMAIHandler(BaseAiHandler):
                     user = f"{system}\n\n\n{user}"
                     system = ""
                     get_logger().info(f"Using model {model}, combining system and user prompts")
-                    messages = [{"role": "user", "content": user}]
+                    if img_path:
+                        content = [{"type": "text", "text": user},
+                                   {"type": "image_url", "image_url": {"url": img_path}}]
+                    else:
+                        content = user
+                    messages = [{"role": "user", "content": content}]
 
                 # Build request kwargs after normalizing the model and messages so credentials and
                 # endpoints can be selected for the provider that will actually receive this call.
