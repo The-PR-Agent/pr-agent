@@ -416,6 +416,43 @@ def test_generate_summarized_suggestions_all_anchorless_returns_placeholder():
     assert "<table>" not in out
 
 
+@pytest.mark.parametrize(
+    "start,end",
+    [
+        (-1, -1),  # unresolved -1 sentinel written by self-reflection
+        (0, 0),
+        (-3, 1),
+        (5, 2),  # reversed range
+    ],
+)
+def test_generate_summarized_suggestions_skips_invalid_line_ranges(start, end):
+    """Unresolved sentinels, non-positive lines and reversed ranges are omitted per-suggestion."""
+    git_provider = MagicMock()
+    git_provider.get_line_link.return_value = ""
+    tool = _make_tool(git_provider)
+    bad = _suggestion(one_sentence_summary="Bad range", relevant_lines_start=start, relevant_lines_end=end)
+    good = _suggestion(one_sentence_summary="Good range")
+
+    out = tool.generate_summarized_suggestions({"code_suggestions": [bad, good]})
+
+    assert "<table>" in out
+    assert "Good range" in out
+    assert "Bad range" not in out
+
+
+@pytest.mark.parametrize("start,end", [(-1, -1), (0, 0), (5, 2)])
+def test_generate_summarized_suggestions_all_invalid_ranges_returns_placeholder(start, end):
+    git_provider = MagicMock()
+    git_provider.get_line_link.return_value = ""
+    tool = _make_tool(git_provider)
+    bad = _suggestion(relevant_lines_start=start, relevant_lines_end=end)
+
+    out = tool.generate_summarized_suggestions({"code_suggestions": [bad]})
+
+    assert "No suggestions found to improve this PR." in out
+    assert "<table>" not in out
+
+
 @pytest.mark.asyncio
 async def test_analyze_self_reflection_mismatched_count_does_not_crash():
     """Feedback covering a different suggestion count than generated leaves anchors unresolved."""

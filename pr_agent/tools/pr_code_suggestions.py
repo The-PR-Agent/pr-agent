@@ -1670,8 +1670,8 @@ class PRCodeSuggestions:
             # add all suggestions related to each label
             for suggestion in data['code_suggestions']:
                 try:
-                    int(suggestion['relevant_lines_start'])
-                    int(suggestion['relevant_lines_end'])
+                    relevant_lines_start = int(suggestion['relevant_lines_start'])
+                    relevant_lines_end = int(suggestion['relevant_lines_end'])
                 except (KeyError, TypeError, ValueError):
                     # suggestions without resolved line anchors (e.g. when self-reflection
                     # failed or returned a mismatched count) cannot be placed in the diff;
@@ -1680,6 +1680,17 @@ class PRCodeSuggestions:
                                          artifact={'relevant_file': suggestion.get('relevant_file'),
                                                    'one_sentence_summary': suggestion.get('one_sentence_summary')})
                     continue
+                if relevant_lines_start < 1 or relevant_lines_end < relevant_lines_start:
+                    # unresolved -1 sentinels, zero/negative lines and reversed ranges are
+                    # not anchorable either; normalize only the valid ones below
+                    get_logger().warning("Skipping a suggestion with an invalid line range",
+                                         artifact={'relevant_file': suggestion.get('relevant_file'),
+                                                   'one_sentence_summary': suggestion.get('one_sentence_summary'),
+                                                   'relevant_lines_start': relevant_lines_start,
+                                                   'relevant_lines_end': relevant_lines_end})
+                    continue
+                suggestion['relevant_lines_start'] = relevant_lines_start
+                suggestion['relevant_lines_end'] = relevant_lines_end
                 label = suggestion['label'].strip().strip("'").strip('"')
                 if label not in suggestions_labels:
                     suggestions_labels[label] = []
