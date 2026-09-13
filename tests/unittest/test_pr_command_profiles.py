@@ -235,8 +235,16 @@ async def test_each_webhook_dispatches_its_default_profile(provider, monkeypatch
     assert agent.commands == DEFAULT_PR_COMMANDS[provider]
 
 
-async def test_bitbucket_app_default_profile_passes_the_early_gate(monkeypatch):
-    calls = []
+async def _run_bitbucket_created_webhook(
+    monkeypatch,
+    *,
+    host_commands,
+    repo_commands,
+    eligibility=Eligibility.ELIGIBLE,
+    repo_should_process=True,
+    disable_auto_feedback=False,
+):
+    trace = []
     payload = {
         "event": "pullrequest:created",
         "data": {
@@ -253,33 +261,121 @@ async def test_bitbucket_app_default_profile_passes_the_early_gate(monkeypatch):
     async def get_bearer_token(_shared_secret, _client_key):
         return "bearer"
 
-    async def perform_commands(*args):
-        calls.append(args)
+    class RecordingIdentityProvider:
+        def verify_eligibility(self, *_args):
+            trace.append("eligibility")
+            return eligibility
 
-    monkeypatch.setattr(server_utils, "get_settings", _Settings)
+    def should_process_pr_logic(_data):
+        phase = "repo_filter" if "repo_settings" in trace else "host_filter"
+        trace.append(phase)
+        return repo_should_process if phase == "repo_filter" else True
+
+    def apply_repo_settings(_url):
+        trace.append("repo_settings")
+        get_settings().set("BITBUCKET_APP.PR_COMMANDS", copy.deepcopy(repo_commands))
+        get_settings().set("CONFIG.DISABLE_AUTO_FEEDBACK", disable_auto_feedback)
+
+    async def run_commands(commands, *_args):
+        trace.append(("dispatch", commands))
+
     monkeypatch.setattr(bitbucket_app, "is_bot_user", lambda _data: False)
-    monkeypatch.setattr(bitbucket_app, "should_process_pr_logic", lambda _data: True)
+    monkeypatch.setattr(bitbucket_app, "should_process_pr_logic", should_process_pr_logic)
     monkeypatch.setattr(bitbucket_app, "get_fork_safe_secret_provider", lambda: secret_provider)
     monkeypatch.setattr(bitbucket_app, "get_bearer_token", get_bearer_token)
     monkeypatch.setattr(bitbucket_app.jwt, "decode", lambda *args, **kwargs: {})
-    monkeypatch.setattr(
-        bitbucket_app,
-        "get_identity_provider",
-        _IdentityProvider,
-    )
-    monkeypatch.setattr(bitbucket_app, "_perform_commands_bitbucket", perform_commands)
+    monkeypatch.setattr(bitbucket_app, "get_identity_provider", RecordingIdentityProvider)
+    monkeypatch.setattr(bitbucket_app, "apply_repo_settings", apply_repo_settings)
+    monkeypatch.setattr(bitbucket_app, "_run_commands_bitbucket", run_commands)
     endpoint = next(route.endpoint for route in bitbucket_app.router.routes if route.path == "/webhook")
     background_tasks = BackgroundTasks()
+    original_bitbucket_app = copy.deepcopy(global_settings.bitbucket_app)
+    original_bitbucket = copy.deepcopy(global_settings.get("BITBUCKET", {}))
+    original_config = copy.deepcopy(global_settings.config)
+    global_settings.set("BITBUCKET_APP.PR_COMMANDS", copy.deepcopy(host_commands))
+    global_settings.set("BITBUCKET.BASE_URL", "https://example.test/app")
+    global_settings.set("CONFIG.IS_AUTO_COMMAND", False)
 
-    with request_cycle_context({}):
-        context["settings"] = copy.deepcopy(global_settings)
-        get_settings().set("BITBUCKET.BASE_URL", "https://example.test/app")
-        result = await endpoint(background_tasks, _Request(payload))
-        await background_tasks()
+    try:
+        with request_cycle_context({}):
+            result = await endpoint(background_tasks, _Request(payload))
+            await background_tasks()
+            is_auto_command = get_settings().config.is_auto_command
+    finally:
+        global_settings.set("BITBUCKET_APP", original_bitbucket_app)
+        global_settings.set("BITBUCKET", original_bitbucket)
+        global_settings.set("CONFIG", original_config)
+
+    return result, trace, is_auto_command
+
+
+async def test_bitbucket_app_created_event_loads_repo_commands_before_dispatch(monkeypatch):
+    result, trace, is_auto_command = await _run_bitbucket_created_webhook(
+        monkeypatch,
+        host_commands=[],
+        repo_commands=["/review"],
+    )
 
     assert result == "OK"
-    assert len(calls) == 1
-    assert calls[0][0] == "pr_commands"
+    assert trace == [
+        "host_filter",
+        "eligibility",
+        "repo_settings",
+        "repo_filter",
+        ("dispatch", ["/review"]),
+    ]
+    assert is_auto_command is True
+
+
+async def test_bitbucket_app_created_event_skips_empty_repo_commands(monkeypatch):
+    result, trace, is_auto_command = await _run_bitbucket_created_webhook(
+        monkeypatch,
+        host_commands=["/review"],
+        repo_commands=[],
+    )
+
+    assert result == "OK"
+    assert trace == ["host_filter", "eligibility", "repo_settings", "repo_filter"]
+    assert is_auto_command is False
+
+
+async def test_bitbucket_app_created_event_applies_repo_filter_before_dispatch(monkeypatch):
+    result, trace, is_auto_command = await _run_bitbucket_created_webhook(
+        monkeypatch,
+        host_commands=["/review"],
+        repo_commands=["/review"],
+        repo_should_process=False,
+    )
+
+    assert result == "OK"
+    assert trace == ["host_filter", "eligibility", "repo_settings", "repo_filter"]
+    assert is_auto_command is False
+
+
+async def test_bitbucket_app_created_event_honors_repo_disable_auto_feedback(monkeypatch):
+    result, trace, is_auto_command = await _run_bitbucket_created_webhook(
+        monkeypatch,
+        host_commands=["/review"],
+        repo_commands=["/review"],
+        disable_auto_feedback=True,
+    )
+
+    assert result == "OK"
+    assert trace == ["host_filter", "eligibility", "repo_settings"]
+    assert is_auto_command is False
+
+
+async def test_bitbucket_app_created_event_does_not_load_repo_settings_when_ineligible(monkeypatch):
+    result, trace, is_auto_command = await _run_bitbucket_created_webhook(
+        monkeypatch,
+        host_commands=[],
+        repo_commands=["/review"],
+        eligibility=Eligibility.NOT_ELIGIBLE,
+    )
+
+    assert result == "OK"
+    assert trace == ["host_filter", "eligibility"]
+    assert is_auto_command is False
 
 
 @pytest.mark.parametrize("proceed", [True, False])
