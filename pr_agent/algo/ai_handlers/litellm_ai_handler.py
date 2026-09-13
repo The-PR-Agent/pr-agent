@@ -1893,14 +1893,6 @@ def _as_bool(value, default: bool) -> bool:
     return default
 
 
-def _as_int(value) -> int:
-    """Parse a config value that may arrive as an int (toml) or a string (env override)."""
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return 0
-
-
 def _as_list(value) -> list:
     """Parse a config value that may arrive as an list[str] (toml) or a string (env override)."""
     if isinstance(value, (list, tuple)):
