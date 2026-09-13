@@ -1280,9 +1280,15 @@ class GithubProvider(GitProvider):
             if len(sibling_parts) != 2 or not current_owner or sibling_parts[0] != current_owner:
                 get_logger().warning(f"Ignoring out-of-owner sibling repo in repo context: {repo_id}")
                 return ""
+            sibling_repo = self.github_client.get_repo(repo_id)
+            if not self._requester_can_read_sibling_repo(sibling_repo):
+                get_logger().warning(
+                    f"Ignoring sibling repo context file the review requester cannot read: {repo_id}"
+                )
+                return ""
             # The sibling has no PR-target ref in this repo, so its default branch is the only
             # well-defined revision to read the file from.
-            contents = self.github_client.get_repo(repo_id).get_contents(file_path).decoded_content
+            contents = sibling_repo.get_contents(file_path).decoded_content
             if isinstance(contents, bytes):
                 return contents.decode("utf-8", errors="replace")
             return contents
@@ -1292,6 +1298,23 @@ class GithubProvider(GitProvider):
             if e.status == 404:
                 return ""
             raise
+
+    def _requester_can_read_sibling_repo(self, sibling_repo) -> bool:
+        # Public repositories are readable by any review requester, so no permission check is
+        # needed. For private repositories the requester must be a collaborator with access.
+        if not getattr(sibling_repo, "private", False):
+            return True
+        pr = getattr(self, "pr", None)
+        user = getattr(pr, "user", None) if pr is not None else None
+        requester_login = user.get("login") if isinstance(user, dict) else getattr(user, "login", None)
+        if not requester_login:
+            return False
+        if getattr(getattr(sibling_repo, "owner", None), "login", None) == requester_login:
+            return True
+        try:
+            return bool(sibling_repo.has_in_collaborators(requester_login))
+        except Exception:
+            return False
 
     def get_repo_context_ref(self, from_default_branch: bool = False) -> Optional[str]:
         # Match get_repo_file_content: the PR target (base) commit is the cached revision.

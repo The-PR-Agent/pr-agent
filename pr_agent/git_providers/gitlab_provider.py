@@ -1476,6 +1476,11 @@ class GitLabProvider(GitProvider):
             # A sibling MR target does not exist, so the sibling's default branch is the only
             # well-defined revision to read the file from, regardless of from_default_branch.
             project = self.gl.projects.get(repo_id)
+            if not self._requester_can_read_sibling_project(project):
+                get_logger().warning(
+                    f"Ignoring sibling repo context file the review requester cannot read: {repo_id}"
+                )
+                return ""
             contents = project.files.get(file_path=file_path, ref=project.default_branch).decode()
             return decode_if_bytes(contents)
         except GitlabGetError as e:
@@ -1528,6 +1533,36 @@ class GitLabProvider(GitProvider):
             return False
         sibling_namespace = "/".join(parts[:-1])
         return sibling_namespace == current_namespace
+
+    def _get_review_requester_id(self) -> Optional[int]:
+        # A Sibling check is keyed to the MR author: GitLab "members/all" indexes members by
+        # user id, and the author is the actor whose read access the review legitimately relies
+        # on before private sibling content is placed into the model's instruction context.
+        mr = getattr(self, "mr", None)
+        author = getattr(mr, "author", None) if mr is not None else None
+        if isinstance(author, dict):
+            return author.get("id")
+        if author is not None:
+            return getattr(author, "id", None)
+        return None
+
+    def _requester_can_read_sibling_project(self, project) -> bool:
+        # Public and internal projects are readable by any authenticated instance user; the
+        # requester is an instance authenticated user (they opened this MR). Only private
+        # projects need positive proof of membership before the sibling is read.
+        visibility = getattr(project, "visibility", None)
+        if visibility in ("public", "internal"):
+            return True
+        requester_id = self._get_review_requester_id()
+        if not requester_id:
+            return False
+        try:
+            project.members_all.get(requester_id)
+            return True
+        except Exception:
+            # A 404 (not a member) or any provider failure means access cannot be positively
+            # established, so the sibling content must not be fetched.
+            return False
 
     def get_repo_context_ref(self, from_default_branch: bool = False) -> Optional[str]:
         # The MR target branch (the branch being merged into) is the cached revision; the
