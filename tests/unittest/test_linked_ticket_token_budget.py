@@ -204,6 +204,8 @@ async def test_tools_use_the_same_bounded_ticket_vars_for_packing_and_rendering(
 
     async def get_prediction(_model, *_args, **_kwargs):
         rendered_vars.append(tool.vars)
+        if tool_name == "review":
+            return "review:\n  summary: prediction"
         return "prediction"
 
     monkeypatch.setattr(module, "fit_related_tickets_to_prompt_budget", fit_payload)

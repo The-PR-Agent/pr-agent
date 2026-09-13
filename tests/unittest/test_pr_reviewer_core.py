@@ -14,6 +14,8 @@ from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
 from pr_agent.tools.pr_reviewer import PRReviewer, _review_failure_comment
 
+_VALID_PREDICTION = "review:\n  summary: prediction"
+
 
 def _make_reviewer(git_provider=None):
     reviewer = PRReviewer.__new__(PRReviewer)
@@ -87,7 +89,7 @@ def test_review_failure_comment_treats_quoted_false_as_disabled():
 @pytest.mark.asyncio
 async def test_prepare_prediction_requests_remaining_files_and_preserves_tuple_result():
     reviewer = _make_prediction_reviewer()
-    reviewer._get_prediction = AsyncMock(return_value="prediction")
+    reviewer._get_prediction = AsyncMock(return_value=_VALID_PREDICTION)
 
     with patch(
         "pr_agent.tools.pr_reviewer.get_pr_diff",
@@ -105,34 +107,34 @@ async def test_prepare_prediction_requests_remaining_files_and_preserves_tuple_r
     )
     assert reviewer.patches_diff == "diff"
     assert reviewer.remaining_files_list == ["src/one.py", "docs/two.md"]
-    assert reviewer.prediction == "prediction"
+    assert reviewer.prediction == _VALID_PREDICTION
 
 
 @pytest.mark.asyncio
 async def test_prepare_prediction_accepts_full_diff_string_when_token_budget_is_sufficient():
     reviewer = _make_prediction_reviewer()
-    reviewer._get_prediction = AsyncMock(return_value="prediction")
+    reviewer._get_prediction = AsyncMock(return_value=_VALID_PREDICTION)
 
     with patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value="diff"):
         await reviewer._prepare_prediction("model")
 
     assert reviewer.patches_diff == "diff"
     assert reviewer.remaining_files_list == []
-    assert reviewer.prediction == "prediction"
+    assert reviewer.prediction == _VALID_PREDICTION
 
 
 @pytest.mark.asyncio
 async def test_prepare_prediction_keeps_incremental_review_compatible_with_tuple_result():
     reviewer = _make_prediction_reviewer()
     reviewer.incremental = SimpleNamespace(is_incremental=True)
-    reviewer._get_prediction = AsyncMock(return_value="prediction")
+    reviewer._get_prediction = AsyncMock(return_value=_VALID_PREDICTION)
 
     with patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["skipped.py"])):
         await reviewer._prepare_prediction("model")
 
     assert reviewer.patches_diff == "diff"
     assert reviewer.remaining_files_list == ["skipped.py"]
-    assert reviewer.prediction == "prediction"
+    assert reviewer.prediction == _VALID_PREDICTION
 
 
 def _render_review(reviewer, remaining_files, supports_gfm_markdown=False):
