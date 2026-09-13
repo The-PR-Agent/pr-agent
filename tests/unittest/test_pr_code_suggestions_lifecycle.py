@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from pr_agent.config_loader import get_settings
+from pr_agent.git_providers.plain_diff_provider import PlainDiffGitProvider
 from pr_agent.tools import pr_code_suggestions as pr_code_suggestions_module
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
@@ -612,6 +613,57 @@ async def test_run_all_invalid_ranges_honors_quiet_gate_via_real_publish(
         else:
             provider.publish_comment.assert_not_called()
             assert get_settings().data["artifact"] == ""
+    finally:
+        restore_settings(settings_snapshot)
+
+
+@pytest.mark.asyncio
+async def test_run_plain_diff_leaks_no_progress_when_all_ranges_invalid(monkeypatch, capsys):
+    settings_snapshot = snapshot_settings(
+        _TRACKED_SETTINGS + ("pr_code_suggestions.publish_output_no_suggestions", "plain_diff.content")
+    )
+    try:
+        get_settings().set(
+            "plain_diff.content",
+            "diff --git a/foo.py b/foo.py\n"
+            "index 1111111..2222222 100644\n"
+            "--- a/foo.py\n"
+            "+++ b/foo.py\n"
+            "@@ -1,3 +1,3 @@\n"
+            " line1\n"
+            "-line2\n"
+            "+line2-changed\n"
+            " line3\n",
+        )
+        provider = PlainDiffGitProvider(None)
+        tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
+        tool.git_provider = provider
+        tool.pr_url = "https://example.invalid/pull/1"
+        tool.progress_response = None
+        tool.incremental = SimpleNamespace(is_incremental=False)
+        tool.progress = "## Generating PR code suggestions"
+
+        monkeypatch.setattr(
+            pr_code_suggestions_module, "retry_with_fallback_models",
+            AsyncMock(return_value={"code_suggestions": [
+                {"relevant_lines_start": -1, "relevant_lines_end": -1, "label": "bug",
+                 "relevant_file": "app.py", "one_sentence_summary": "sentinel"},
+            ]}),
+        )
+        _configure_published_run()
+        settings = get_settings()
+        settings.config.is_auto_command = False
+        settings.pr_code_suggestions.commitable_code_suggestions = False
+        settings.pr_code_suggestions.persistent_comment = False
+
+        await tool.run()
+
+        out = capsys.readouterr().out
+        # The output-only provider cannot edit/remove a previously published comment, so
+        # the progress placeholder must never be persisted and only the final document remains.
+        assert "Generating PR code suggestions" not in out
+        assert out.count("## PR Code Suggestions") == 1
+        assert out.count("No code suggestions found for the PR.") == 1
     finally:
         restore_settings(settings_snapshot)
 

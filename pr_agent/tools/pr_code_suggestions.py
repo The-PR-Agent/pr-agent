@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import difflib
+import math
 import re
 import textwrap
 import traceback
@@ -105,6 +106,19 @@ def render_suggestions_markdown(data: dict) -> str:
 def _supports_code_suggestion_state(git_provider) -> bool:
     supports = getattr(git_provider, "supports_code_suggestion_state", None)
     return callable(supports) and bool(supports())
+
+
+def _supports_persistent_progress_comment(git_provider) -> bool:
+    """Whether a published progress comment can later be edited in place or removed.
+
+    Hosted providers turn the progress note into the final suggestions comment (edit it) or
+    delete it on failure or cancellation, so publishing it up front is worthwhile. Output-only
+    providers (plain-diff) write every non-temporary comment straight through to their output
+    and can do neither; persisting the progress there would leak a stale "Preparing
+    suggestions..." document ahead of the final result.
+    """
+    return (git_provider.is_supported("edit_comment")
+            and git_provider.is_supported("remove_comment"))
 
 
 def _edit_comment_safely(git_provider, comment, body: str) -> bool:
@@ -280,9 +294,15 @@ class PRCodeSuggestions:
                     not get_settings().config.get('is_auto_command', False)):
                 if self.git_provider.is_supported("gfm_markdown"):
                     # The progress comment later becomes the final suggestions comment (edited in place),
-                    # so it must already be a thread when threaded output is requested.
-                    self.progress_response = self.git_provider.publish_comment(self.progress,
-                                                                               **self._improve_thread_kwargs())
+                    # so it must already be a thread when threaded output is requested. Output-only
+                    # providers (plain-diff) cannot edit or remove it afterwards, so for those the
+                    # progress is a temporary placeholder that is never persisted.
+                    if _supports_persistent_progress_comment(self.git_provider):
+                        self.progress_response = self.git_provider.publish_comment(self.progress,
+                                                                                   **self._improve_thread_kwargs())
+                    else:
+                        self.progress_response = self.git_provider.publish_comment(
+                            self.progress, is_temporary=True, **self._improve_thread_kwargs())
                 else:
                     self.progress_response = self.git_provider.publish_comment(
                         "Preparing suggestions...", is_temporary=True)
@@ -952,11 +972,24 @@ class PRCodeSuggestions:
         return suggestion
 
     @staticmethod
-    def _is_suggestion_line_range_valid(suggestion: dict) -> bool:
+    def _parse_line_number(value) -> Optional[int]:
+        """Convert an anchor value to an int, or None when it cannot be a line number.
+
+        int() truncates fractional floats and raises OverflowError for non-finite ones,
+        so those are rejected explicitly instead of being silently coerced.
+        """
+        if isinstance(value, float) and (not math.isfinite(value) or not value.is_integer()):
+            return None
         try:
-            relevant_lines_start = int(suggestion['relevant_lines_start'])
-            relevant_lines_end = int(suggestion['relevant_lines_end'])
-        except (KeyError, TypeError, ValueError):
+            return int(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    @staticmethod
+    def _is_suggestion_line_range_valid(suggestion: dict) -> bool:
+        relevant_lines_start = PRCodeSuggestions._parse_line_number(suggestion.get('relevant_lines_start'))
+        relevant_lines_end = PRCodeSuggestions._parse_line_number(suggestion.get('relevant_lines_end'))
+        if relevant_lines_start is None or relevant_lines_end is None:
             get_logger().warning("Skipping a suggestion without a valid line range",
                                  artifact={'relevant_file': suggestion.get('relevant_file'),
                                            'one_sentence_summary': suggestion.get('one_sentence_summary')})
