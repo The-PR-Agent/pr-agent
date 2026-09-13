@@ -222,12 +222,8 @@ class BitbucketProvider(GitProvider):
             get_logger().error(f"Bitbucket failed to publish code suggestion, error: {e}")
             return False
 
-    def publish_file_comments(self, file_comments: list) -> bool:
-        pass
-
     def is_supported(self, capability: str) -> bool:
-        if capability in ['publish_inline_comments', 'get_labels',
-                  'gfm_markdown', 'publish_file_comments']:
+        if capability in ['publish_inline_comments', 'get_labels', 'gfm_markdown']:
             return False
         if capability == "push_code" and get_settings().config.restricted_mode:
             return False
@@ -521,8 +517,8 @@ class BitbucketProvider(GitProvider):
         return self.pr.title
 
     def get_languages(self):
-        languages = {self._get_repo().get_data("language"): 0}
-        return languages
+        language = self._get_repo().get_data("language")
+        return {language: 0} if language else {}
 
     def get_pr_branch(self):
         return self.pr.source_branch

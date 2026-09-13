@@ -2,6 +2,7 @@ import difflib
 import re
 import shlex
 import subprocess
+from collections import Counter
 from types import SimpleNamespace
 from typing import Optional, Tuple
 from urllib.parse import quote_plus, urlparse
@@ -12,7 +13,7 @@ from requests.exceptions import HTTPError
 
 from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import decode_if_bytes
-from ..algo.language_handler import is_valid_file
+from ..algo.language_handler import build_language_file_matcher, is_valid_file
 from ..algo.types import EDIT_TYPE, FilePatchInfo
 from ..algo.utils import find_line_number_of_relevant_line_in_file, load_large_diff
 from ..config_loader import get_settings, get_verbosity_level
@@ -216,11 +217,8 @@ class BitbucketServerProvider(GitProvider):
                 get_logger().error(f"Failed to publish code suggestion, error: {e}")
             return False
 
-    def publish_file_comments(self, file_comments: list) -> bool:
-        pass
-
     def is_supported(self, capability: str) -> bool:
-        if capability in ['get_labels', 'gfm_markdown', 'publish_file_comments']:
+        if capability in ['get_labels', 'gfm_markdown']:
             return False
         return True
 
@@ -528,7 +526,20 @@ class BitbucketServerProvider(GitProvider):
         return self.pr.title
 
     def get_languages(self):
-        return {"yaml": 0}  # devops LOL
+        # Return {language name: percentage}, like the other providers.
+        lang_map = get_settings().get("language_extension_map_org", {}) or {}
+        get_language = build_language_file_matcher(lang_map)
+
+        lang_count = Counter()
+        for filename in self.get_files():
+            if not filename:
+                continue
+            language = get_language(filename)
+            if language:
+                lang_count[language] += 1
+
+        total = sum(lang_count.values()) or 1
+        return {lang: count / total * 100 for lang, count in lang_count.items()}
 
     def get_pr_branch(self):
         return self.pr.fromRef['displayId']

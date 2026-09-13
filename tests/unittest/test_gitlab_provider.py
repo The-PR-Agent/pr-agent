@@ -1929,7 +1929,6 @@ class TestGitLabCapabilities:
     @pytest.mark.parametrize("capability", [
         "create_inline_comment",
         "publish_inline_comments",
-        "publish_file_comments",
     ])
     def test_unimplemented_capabilities_stay_unsupported(self, capability):
         assert self._provider().is_supported(capability) is False

@@ -7,6 +7,7 @@ from typing import List, Optional, Tuple
 from urllib.parse import urlparse
 
 from pr_agent.algo.language_handler import is_valid_file
+from pr_agent.algo.review_finding_state import split_review_state_marker
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.git_providers.codecommit_client import CodeCommitClient
 
@@ -68,6 +69,15 @@ class CodeCommitProvider(GitProvider):
     """
     This class implements the GitProvider interface for AWS CodeCommit repositories.
     """
+
+    # PostCommentForPullRequest / UpdateComment reject a body above 10,240
+    # characters and raise instead of degrading (#3272). Every outgoing body
+    # goes through _prepare_comment_body, which caps it AFTER the newline
+    # doubling and after any persistent-comment header has been added, so the
+    # cap is measured on what CodeCommit actually receives. Class-level, like
+    # the other providers' max_comment_length, minus the truncation marker
+    # limit_output_characters appends.
+    max_comment_length = 10240 - len("...")
 
     def __init__(self, pr_url: Optional[str] = None, incremental: Optional[bool] = False):
         self.codecommit_client = CodeCommitClient()
@@ -677,10 +687,20 @@ class CodeCommitProvider(GitProvider):
         updated_anchor = f"{identity_marker}\n\n{update_message}"
         return pr_comment.replace(identity_marker, updated_anchor, 1)
 
-    @staticmethod
-    def _prepare_comment_body(pr_comment: str) -> str:
+    def _prepare_comment_body(self, pr_comment: str) -> str:
         pr_comment = CodeCommitProvider._remove_markdown_html(pr_comment)
-        return CodeCommitProvider._add_additional_newlines(pr_comment)
+        body, marker = split_review_state_marker(pr_comment)
+        body = CodeCommitProvider._add_additional_newlines(body)
+        if not marker:
+            return self.limit_output_characters(body, self.max_comment_length)
+        # The persistent review state is a hidden marker at the end of the body.
+        # The reviewer sizes it before the newline doubling above, so the doubled
+        # body can overrun the cap; truncate only the human text and keep the
+        # marker whole, otherwise the next run cannot parse the state.
+        budget = self.max_comment_length - len(marker) - 2
+        if budget <= 0:
+            return marker[: self.max_comment_length]
+        return f"{self.limit_output_characters(body, budget)}\n\n{marker}"
 
     @staticmethod
     def _extract_issue_comments(comment_data: dict):

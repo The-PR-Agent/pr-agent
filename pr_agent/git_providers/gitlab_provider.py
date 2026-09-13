@@ -414,8 +414,7 @@ class GitLabProvider(GitProvider):
         return changes
 
     def is_supported(self, capability: str) -> bool:
-        if capability in ['create_inline_comment', 'publish_inline_comments',
-            'publish_file_comments']: # gfm_markdown is supported in gitlab !
+        if capability in ['create_inline_comment', 'publish_inline_comments']: # gfm_markdown is supported in gitlab !
             return False
         if capability == "push_code" and get_settings().config.restricted_mode:
             return False
@@ -1310,9 +1309,6 @@ class GitLabProvider(GitProvider):
 
         # note that we publish suggestions one-by-one. so, if one fails, the rest will still be published
         return True
-
-    def publish_file_comments(self, file_comments: list) -> bool:
-        pass
 
     def search_line(self, relevant_file, relevant_line_in_file):
         target_file = None

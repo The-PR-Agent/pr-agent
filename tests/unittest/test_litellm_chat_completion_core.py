@@ -86,6 +86,22 @@ async def test_chat_completion_passes_seed_when_temperature_is_zero(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_claude_empty_system_prompt_uses_public_request_normalization(monkeypatch):
+    monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+        expected_prompts = handler.normalize_request_prompts("claude-sonnet-4-5", "", "usr")
+
+        await handler.chat_completion(model="claude-sonnet-4-5", system="", user="usr")
+
+    messages = mock_call.call_args.kwargs["messages"]
+    assert expected_prompts == ("No system prompt provided", "usr")
+    assert (messages[0]["content"], messages[1]["content"]) == expected_prompts
+
+
+@pytest.mark.asyncio
 async def test_chat_completion_probes_images_off_loop_with_timeout(monkeypatch):
     monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
     loop_thread = threading.get_ident()
@@ -115,6 +131,31 @@ async def test_chat_completion_probes_images_off_loop_with_timeout(monkeypatch):
         "type": "image_url",
         "image_url": {"url": "https://example.test/image.png"},
     }
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_dead_image_uses_current_help_link(monkeypatch):
+    monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+    monkeypatch.setattr(
+        litellm_handler.requests,
+        "head",
+        lambda *args, **kwargs: SimpleNamespace(status_code=404),
+    )
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        handler = litellm_handler.LiteLLMAIHandler()
+
+        response, finish_reason = await handler.chat_completion(
+            model="gpt-4o",
+            system="sys",
+            user="usr",
+            img_path="https://example.test/missing.png",
+        )
+
+    assert "https://docs.pr-agent.ai/tools/ask/#ask-on-images" in response
+    assert "pr-agent-docs.codium.ai" not in response
+    assert finish_reason == "error"
+    mock_call.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -421,6 +462,69 @@ async def test_chat_completion_combines_prompts_for_user_message_only_models(mon
 
     messages = mock_call.call_args.kwargs["messages"]
     assert messages == [{"role": "user", "content": "sys\n\n\nusr"}]
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_keeps_image_for_user_message_only_models(monkeypatch):
+    monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+    monkeypatch.setattr(
+        litellm_handler.requests,
+        "head",
+        lambda *args, **kwargs: SimpleNamespace(status_code=200),
+    )
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+        handler.user_message_only_models = ["user-only-model"]
+
+        await handler.chat_completion(
+            model="user-only-model",
+            system="sys",
+            user="usr",
+            img_path="https://example.test/image.png",
+        )
+
+    messages = mock_call.call_args.kwargs["messages"]
+    assert messages == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "sys\n\n\nusr"},
+                {"type": "image_url", "image_url": {"url": "https://example.test/image.png"}},
+            ],
+        }
+    ]
+    assert any(block.get("type") == "image_url" for block in messages[0]["content"])
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_keeps_image_for_custom_reasoning_models(monkeypatch):
+    settings = FakeSettings()
+    settings.config.custom_reasoning_model = True
+    monkeypatch.setattr(litellm_handler, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        litellm_handler.requests,
+        "head",
+        lambda *args, **kwargs: SimpleNamespace(status_code=200),
+    )
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+
+        await handler.chat_completion(
+            model="gpt-4o",
+            system="sys",
+            user="usr",
+            img_path="https://example.test/image.png",
+        )
+
+    messages = mock_call.call_args.kwargs["messages"]
+    assert messages[0]["content"][1] == {
+        "type": "image_url",
+        "image_url": {"url": "https://example.test/image.png"},
+    }
 
 
 # Wiring tests for the retry knobs: the helpers (_should_retry_same_model,

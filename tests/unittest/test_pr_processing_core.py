@@ -13,20 +13,154 @@ from pr_agent.servers.utils import RateLimitExceeded
 class FakeTokenHandler:
     def __init__(self, prompt_tokens=100):
         self.prompt_tokens = prompt_tokens
+        self.count_calls = 0
 
     def count_tokens(self, patch):
+        self.count_calls += 1
         return len(patch.split())
 
 
 class FakeProvider:
     def __init__(self, files):
         self.files = files
+        self.diff_calls = 0
+        self.language_calls = 0
 
     def get_diff_files(self):
+        self.diff_calls += 1
         return self.files
 
     def get_languages(self):
+        self.language_calls += 1
         return {"Python": 100}
+
+
+def test_prepared_pr_diff_reuses_compressed_files_without_changing_chunks(monkeypatch):
+    settings = get_settings()
+    original = {
+        "patch_extra_lines_before": settings.config.patch_extra_lines_before,
+        "patch_extra_lines_after": settings.config.patch_extra_lines_after,
+        "large_patch_policy": settings.config.get("large_patch_policy", "skip"),
+        "verbosity_level": settings.config.verbosity_level,
+    }
+    settings.config.patch_extra_lines_before = 0
+    settings.config.patch_extra_lines_after = 0
+    settings.config.large_patch_policy = "skip"
+    settings.config.verbosity_level = 0
+
+    hunk_sizes = (20, 40, 60, 80)
+    hunks = [
+        "@@ -1 +1 @@\n-old\n+" + ("alpha " * size)
+        for size in hunk_sizes
+    ]
+    files = [
+        FilePatchInfo("old\n", "new\n", hunks[index], f"file_{index}.py", edit_type=EDIT_TYPE.MODIFIED)
+        for index in range(4)
+    ]
+    provider = FakeProvider(files)
+    token_handler = FakeTokenHandler(prompt_tokens=100)
+
+    monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda languages, files: [{"files": files}])
+    monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: 1_700)
+
+    try:
+        prepared = pr_processing.get_pr_diff(
+            provider,
+            token_handler,
+            "tiny-model",
+            add_line_numbers_to_hunks=True,
+            return_remaining_files=True,
+            return_prepared=True,
+        )
+
+        assert isinstance(prepared, pr_processing.PreparedPRDiff)
+        assert prepared.file_dict
+        expected_order = [f"file_{index}.py" for index in range(3, -1, -1)]
+        assert list(prepared.file_dict) == expected_order
+        calls_after_prepare = token_handler.count_calls
+        prepared_chunks = pr_processing.get_pr_multi_diffs(
+            provider,
+            token_handler,
+            "tiny-model",
+            max_calls=3,
+            add_line_numbers=True,
+            return_remaining_files=True,
+            prepared_diff=prepared,
+        )
+
+        fresh_provider = FakeProvider([
+            FilePatchInfo("old\n", "new\n", hunks[index], f"file_{index}.py", edit_type=EDIT_TYPE.MODIFIED)
+            for index in range(4)
+        ])
+        fresh_chunks = pr_processing.get_pr_multi_diffs(
+            fresh_provider,
+            FakeTokenHandler(prompt_tokens=100),
+            "tiny-model",
+            max_calls=3,
+            add_line_numbers=True,
+            return_remaining_files=True,
+        )
+
+        assert prepared_chunks == fresh_chunks
+        prepared_diff_list, _ = prepared_chunks
+        combined_chunks = "\n".join(prepared_diff_list)
+        assert [combined_chunks.index(filename) for filename in expected_order] == sorted(
+            combined_chunks.index(filename) for filename in expected_order
+        )
+        assert token_handler.count_calls == calls_after_prepare
+        assert (provider.diff_calls, provider.language_calls) == (1, 1)
+    finally:
+        for key, value in original.items():
+            setattr(settings.config, key, value)
+
+
+@pytest.mark.parametrize(
+    ("prepared_model", "requested_model", "prepared_line_numbers", "requested_line_numbers"),
+    [
+        ("tiny-model", "other-model", True, True),
+        ("tiny-model", "tiny-model", False, False),
+    ],
+)
+def test_prepared_pr_diff_is_not_reused_across_model_or_patch_format(
+    monkeypatch, prepared_model, requested_model, prepared_line_numbers, requested_line_numbers
+):
+    settings = get_settings()
+    original_verbosity_level = settings.config.verbosity_level
+    settings.config.verbosity_level = 0
+    hunk = "@@ -1 +1 @@\n-old\n+" + ("alpha " * 60)
+    files = [
+        FilePatchInfo("old\n", "new\n", hunk, f"file_{index}.py", edit_type=EDIT_TYPE.MODIFIED)
+        for index in range(4)
+    ]
+    provider = FakeProvider(files)
+    token_handler = FakeTokenHandler(prompt_tokens=100)
+    monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda languages, files: [{"files": files}])
+    monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: 1_700)
+
+    try:
+        prepared = pr_processing.get_pr_diff(
+            provider,
+            token_handler,
+            prepared_model,
+            add_line_numbers_to_hunks=prepared_line_numbers,
+            return_remaining_files=True,
+            return_prepared=True,
+        )
+        assert isinstance(prepared, pr_processing.PreparedPRDiff)
+
+        pr_processing.get_pr_multi_diffs(
+            provider,
+            token_handler,
+            requested_model,
+            max_calls=3,
+            add_line_numbers=requested_line_numbers,
+            return_remaining_files=True,
+            prepared_diff=prepared,
+        )
+
+        assert (provider.diff_calls, provider.language_calls) == (2, 2)
+    finally:
+        settings.config.verbosity_level = original_verbosity_level
 
 
 @pytest.mark.parametrize(

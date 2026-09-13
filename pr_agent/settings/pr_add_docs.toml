@@ -56,7 +56,7 @@ Example output:
 Code Documentation:
 -   relevant file: |-
         src/file1.py
-    relevant lines: 12
+    relevant line: 12
     doc placement: after
     documentation: |-
         \"\"\"

@@ -1610,12 +1610,24 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
             delta = 0
             start1, size1, start2, size2 = 0, 0, 0, 0
             if absolute_position != -1: # matching absolute to relative
+                skip_hunk = False
                 for i, line in enumerate(patch_lines):
                     # new hunk
                     if line.startswith('@@'):
                         delta = 0
                         match = re_hunk_header.match(line)
-                        section_header, size1, size2, start1, start2 = extract_hunk_headers(match)
+                        if match:
+                            skip_hunk = False
+                            section_header, size1, size2, start1, start2 = extract_hunk_headers(match)
+                        else:
+                            # combined/merge hunk headers (e.g. '@@@ ... @@@') cannot be anchored,
+                            # so skip the whole hunk instead of crashing
+                            get_logger().warning("Skipping a line that starts with '@@' but is not a "
+                                                 "unified hunk header", artifact={"line": line})
+                            skip_hunk = True
+                            continue
+                    elif skip_hunk:
+                        continue
                     elif not line.startswith('-'):
                         delta += 1
 
@@ -1640,11 +1652,21 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
                 def scan_patch_lines(is_match):
                     scan_delta = 0
                     scan_start2 = 0
+                    skip_hunk = False
                     for i, line in enumerate(patch_lines):
                         if line.startswith('@@'):
                             scan_delta = 0
                             header_match = re_hunk_header.match(line)
-                            *_, scan_start2 = extract_hunk_headers(header_match)
+                            if header_match:
+                                skip_hunk = False
+                                *_, scan_start2 = extract_hunk_headers(header_match)
+                            else:
+                                skip_hunk = True
+                                get_logger().warning("Skipping a line that starts with '@@' but is not a "
+                                                     "unified hunk header", artifact={"line": line})
+                                continue
+                        elif skip_hunk:
+                            continue
                         elif not line.startswith('-'):
                             scan_delta += 1
 
@@ -1660,11 +1682,21 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
 
                 if position == -1 and relevant_line_in_file[0] == '+':
                     no_plus_line = relevant_line_in_file[1:].lstrip()
+                    skip_hunk = False
                     for i, line in enumerate(patch_lines):
                         if line.startswith('@@'):
                             delta = 0
                             match = re_hunk_header.match(line)
-                            section_header, size1, size2, start1, start2 = extract_hunk_headers(match)
+                            if match:
+                                skip_hunk = False
+                                section_header, size1, size2, start1, start2 = extract_hunk_headers(match)
+                            else:
+                                get_logger().warning("Skipping a line that starts with '@@' but is not a "
+                                                     "unified hunk header", artifact={"line": line})
+                                skip_hunk = True
+                                continue
+                        elif skip_hunk:
+                            continue
                         elif not line.startswith('-'):
                             delta += 1
 
@@ -1736,29 +1768,46 @@ def push_outputs(message_type: str, payload: dict | None = None, markdown: str |
             record["markdown"] = markdown
 
         if "stdout" in channels:
-            print(json.dumps(record, ensure_ascii=False))
+            try:
+                print(json.dumps(record, ensure_ascii=False))
+            except Exception as e:
+                get_logger().warning(f"push_outputs: stdout failed: {type(e).__name__}")
 
         if "file" in channels:
-            file_path = cfg.get('file_path', 'pr-agent-outputs/reviews.jsonl')
-            folder = os.path.dirname(file_path)
-            if folder:
-                os.makedirs(folder, exist_ok=True)
-            with open(file_path, 'a', encoding='utf-8') as fh:
-                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+            try:
+                file_path = cfg.get('file_path', 'pr-agent-outputs/reviews.jsonl')
+                folder = os.path.dirname(file_path)
+                if folder:
+                    os.makedirs(folder, exist_ok=True)
+                with open(file_path, 'a', encoding='utf-8') as fh:
+                    fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+            except Exception as e:
+                get_logger().warning(f"push_outputs: file failed: {type(e).__name__}")
 
         # Local channels first, network last, so a failed POST can't lose a file write.
         # allow_redirects=False: never follow a redirect from a configured sink to another host.
         if "webhook" in channels:
-            webhook_url = _push_outputs_sink_url(cfg, 'webhook_url')
-            if webhook_url:
-                requests.post(webhook_url, json=record, timeout=5, allow_redirects=False)
+            try:
+                webhook_url = _push_outputs_sink_url(cfg, 'webhook_url')
+                if webhook_url:
+                    response = requests.post(webhook_url, json=record, timeout=5, allow_redirects=False)
+                    if not 200 <= response.status_code < 300:
+                        get_logger().warning(f"push_outputs: webhook failed with status {response.status_code}")
+            except Exception as e:
+                get_logger().warning(f"push_outputs: webhook failed: {type(e).__name__}")
 
         # Slack Incoming Webhooks accept {"text": ...} directly, no relay service needed.
         if "slack" in channels:
-            slack_webhook_url = _push_outputs_sink_url(cfg, 'slack_webhook_url')
-            if slack_webhook_url:
-                text = markdown if markdown is not None else json.dumps(payload or {}, ensure_ascii=False)
-                requests.post(slack_webhook_url, json={"text": text}, timeout=5, allow_redirects=False)
+            try:
+                slack_webhook_url = _push_outputs_sink_url(cfg, 'slack_webhook_url')
+                if slack_webhook_url:
+                    text = markdown if markdown is not None else json.dumps(payload or {}, ensure_ascii=False)
+                    response = requests.post(slack_webhook_url, json={"text": text}, timeout=5,
+                                             allow_redirects=False)
+                    if not 200 <= response.status_code < 300:
+                        get_logger().warning(f"push_outputs: slack failed with status {response.status_code}")
+            except Exception as e:
+                get_logger().warning(f"push_outputs: slack failed: {type(e).__name__}")
     except Exception as e:
         # Log only the exception type: requests errors embed the (secret-bearing) URL in their text.
         get_logger().warning(f"push_outputs failed: {type(e).__name__}")

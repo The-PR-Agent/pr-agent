@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from pr_agent.algo.review_finding_state import (
+    _render_resolved_section,
+    normalize_finding,
     parse_review_state,
     reconcile_review_findings,
     serialize_review_state,
@@ -59,6 +61,54 @@ def _settings(monkeypatch):
     monkeypatch.setattr(settings.pr_reviewer, "inline_key_issues", False)
     monkeypatch.setattr(settings.pr_reviewer, "publish_output_no_suggestions", False)
     return settings
+
+
+def test_normalize_finding_preserves_markdown_while_fingerprint_ignores_rewrapping():
+    body = "The loop never ends:\n```text\nwhile attempts < 3:\n    attempts += 1\n```"
+    rewrapped = "The loop never ends: ```text while attempts < 3: attempts += 1 ```"
+
+    normalized = normalize_finding(_finding(body))
+    rewrapped_normalized = normalize_finding(_finding(rewrapped))
+
+    assert normalized["body"] == body
+    assert normalized["finding_id"] == rewrapped_normalized["finding_id"]
+
+
+def test_resolved_section_preserves_finding_markdown_structure():
+    issue = {
+        "relevant_file": "src/app.py",
+        "issue_header": "Possible Bug",
+        "issue_content": "The loop never ends:\n```suggestion\nwhile attempts < 3:\n    attempts += 1\n```",
+        "start_line": 3,
+        "end_line": 4,
+    }
+    finding = PRReviewer._review_finding_from_issue(issue)
+    active = reconcile_review_findings(
+        None,
+        [finding],
+        allow_resolution=False,
+        head_sha="head-1",
+        timestamp="2026-01-01T00:00:00Z",
+    ).state
+    resolved = reconcile_review_findings(
+        active,
+        [],
+        allow_resolution=True,
+        head_sha="head-2",
+        timestamp="2026-01-01T00:01:00Z",
+    ).state
+
+    rendered = _render_resolved_section(resolved)
+
+    assert (
+        "### src/app.py:3-4\n\n"
+        "**Possible Issue**\n\n"
+        "The loop never ends:\n"
+        "```text\n"
+        "while attempts < 3:\n"
+        "    attempts += 1\n"
+        "```"
+    ) in rendered
 
 
 
