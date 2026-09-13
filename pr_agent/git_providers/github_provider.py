@@ -1266,6 +1266,33 @@ class GithubProvider(GitProvider):
                 return ""
             raise
 
+    def get_sibling_repo_file_content(self, repo_id: str, file_path: str, from_default_branch: bool = False):
+        try:
+            repo_id = (repo_id or "").strip().strip("/")
+            file_path = (file_path or "").strip().lstrip("/")
+            if not repo_id or not file_path:
+                return ""
+            current_repo = getattr(self, "repo", "") or ""
+            current_owner = current_repo.split("/")[0] if "/" in current_repo else ""
+            sibling_parts = repo_id.split("/")
+            # Only the same owner (user or organisation) is a "sibling"; anything wider would
+            # point the configured token at a repository the requester could not otherwise read.
+            if len(sibling_parts) != 2 or not current_owner or sibling_parts[0] != current_owner:
+                get_logger().warning(f"Ignoring out-of-owner sibling repo in repo context: {repo_id}")
+                return ""
+            # The sibling has no PR-target ref in this repo, so its default branch is the only
+            # well-defined revision to read the file from.
+            contents = self.github_client.get_repo(repo_id).get_contents(file_path).decoded_content
+            if isinstance(contents, bytes):
+                return contents.decode("utf-8", errors="replace")
+            return contents
+        except GithubException as e:
+            # A missing optional file is an expected "no context" outcome; transient errors
+            # propagate so repo context treats them as a fetch error and does not cache empties.
+            if e.status == 404:
+                return ""
+            raise
+
     def get_repo_context_ref(self, from_default_branch: bool = False) -> Optional[str]:
         # Match get_repo_file_content: the PR target (base) commit is the cached revision.
         # When the default branch is read (explicitly, or because no PR base exists) resolve

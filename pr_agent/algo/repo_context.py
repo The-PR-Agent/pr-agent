@@ -14,6 +14,8 @@ MARKDOWN_FENCE = "`````"
 REPO_CONTEXT_CACHE_ATTRIBUTE = "_repo_context_cache"
 REPO_CONTEXT_CACHE_MAX_SIZE = 256
 REPO_CONTEXT_CACHE_TTL_SECONDS = 15 * 60
+_DEFAULT_MAX_SIBLING_CONTEXT_FILES = 5
+_SIBLING_REPO_SEPARATOR = ":"
 _REPO_CONTEXT_CACHE_MISS = object()
 _unsupported_repo_context_provider_classes = set()
 
@@ -127,6 +129,33 @@ def _provider_supports_repo_context(git_provider) -> bool:
     return False
 
 
+def _provider_supports_sibling_repo_context(git_provider) -> bool:
+    provider_method = getattr(type(git_provider), "get_sibling_repo_file_content", None)
+    return provider_method is not None and provider_method is not GitProvider.get_sibling_repo_file_content
+
+
+def _parse_repo_context_file_entry(entry: str) -> tuple[str | None, str]:
+    """Split a repo-context entry into (sibling repo id, file path).
+
+    An entry without ``:`` is a file path in the current repository and yields (None, path).
+    An entry of the form ``repo_id:file/path`` names a sibling repository in the same
+    namespace/owner (GitLab: ``group/subgroup/project``, GitHub: ``owner/repo``); the file is
+    read from the sibling's default branch. A malformed entry logs a warning and yields (None, "").
+    """
+    stripped = entry.strip()
+    repo_id, separator, file_path = stripped.partition(_SIBLING_REPO_SEPARATOR)
+    if not separator:
+        return None, stripped
+    repo_id = repo_id.strip().strip("/")
+    file_path = file_path.strip().lstrip("/")
+    if not repo_id or not file_path:
+        get_logger().warning(
+            f"Ignoring malformed repo context entry (expected 'repo_id:file/path'): {stripped!r}"
+        )
+        return None, ""
+    return repo_id, file_path
+
+
 def _get_provider_repo_context_cache(git_provider) -> _RepoContextCache:
     repo_context_cache = getattr(git_provider, REPO_CONTEXT_CACHE_ATTRIBUTE, None)
     if repo_context_cache is None or not isinstance(repo_context_cache, _RepoContextCache):
@@ -185,6 +214,15 @@ def _read_bool_setting(key: str, default: bool) -> bool:
     return default
 
 
+def _read_max_sibling_context_files() -> int:
+    try:
+        max_siblings = int(get_settings().config.get("repo_context_max_sibling_files",
+                                                     _DEFAULT_MAX_SIBLING_CONTEXT_FILES))
+    except (TypeError, ValueError):
+        max_siblings = _DEFAULT_MAX_SIBLING_CONTEXT_FILES
+    return max(0, max_siblings)
+
+
 def _load_repo_context_files(
     git_provider, context_files: list, from_default_branch: bool | None = None
 ) -> tuple[dict[str, str], bool]:
@@ -192,27 +230,59 @@ def _load_repo_context_files(
         from_default_branch = _read_bool_setting("repo_context_from_default_branch", default=True)
     files = {}
     had_fetch_error = False
-    for file_path in context_files:
-        if not isinstance(file_path, str) or not file_path.strip():
-            get_logger().warning("Skipping invalid repo context file path", artifact={"file_path": file_path})
+    max_siblings = _read_max_sibling_context_files()
+    sibling_files_loaded = 0
+    for entry in context_files:
+        if not isinstance(entry, str) or not entry.strip():
+            get_logger().warning("Skipping invalid repo context file path", artifact={"file_path": entry})
             continue
 
-        file_path = file_path.strip()
-        try:
-            content = git_provider.get_repo_file_content(file_path, from_default_branch=from_default_branch)
-        except Exception as e:
-            had_fetch_error = True
-            get_logger().warning(f"Failed to load repo context file: {file_path}", artifact={"error": str(e)})
+        repo_id, file_path = _parse_repo_context_file_entry(entry)
+        if not file_path:
             continue
+        if repo_id is not None:
+            if not _provider_supports_sibling_repo_context(git_provider):
+                get_logger().warning(
+                    f"{type(git_provider).__name__} does not support sibling repository context; "
+                    f"skipping {repo_id}:{file_path}"
+                )
+                continue
+            if sibling_files_loaded >= max_siblings:
+                get_logger().warning(
+                    f"Stopping repo context at {max_siblings} sibling file(s) ("
+                    f"config.repo_context_max_sibling_files); skipping {repo_id}:{file_path}"
+                )
+                continue
+            try:
+                content = git_provider.get_sibling_repo_file_content(repo_id, file_path)
+            except Exception as e:
+                had_fetch_error = True
+                get_logger().warning(
+                    f"Failed to load sibling repo context file: {repo_id}:{file_path}",
+                    artifact={"error": str(e)},
+                )
+                continue
+            if content:
+                sibling_files_loaded += 1
+            # Render the file under its sibling path so the model sees where it came from.
+            label = f"{repo_id}/{file_path}"
+        else:
+            try:
+                content = git_provider.get_repo_file_content(file_path, from_default_branch=from_default_branch)
+            except Exception as e:
+                had_fetch_error = True
+                get_logger().warning(f"Failed to load repo context file: {file_path}", artifact={"error": str(e)})
+                continue
+            label = file_path
 
         if not content:
-            get_logger().debug(f"Repo context file is empty or missing: {file_path}")
+            get_logger().debug(f"Repo context file is empty or missing: {label}")
             continue
 
         if isinstance(content, bytes):
             content = content.decode("utf-8", errors="replace")
 
-        files[file_path] = str(content).rstrip()
+        files[label] = str(content).rstrip()
 
     return files, had_fetch_error
 

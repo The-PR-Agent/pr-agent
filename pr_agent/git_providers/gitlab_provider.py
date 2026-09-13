@@ -1461,6 +1461,50 @@ class GitLabProvider(GitProvider):
                 return ""
             raise
 
+    def get_sibling_repo_file_content(self, repo_id: str, file_path: str, from_default_branch: bool = False):
+        try:
+            repo_id = (repo_id or "").strip().strip("/")
+            file_path = (file_path or "").strip().lstrip("/")
+            if not repo_id or not file_path:
+                return ""
+            if not self._is_same_namespace_sibling(repo_id):
+                get_logger().warning(f"Ignoring out-of-namespace sibling repo in repo context: {repo_id}")
+                return ""
+            # A sibling MR target does not exist, so the sibling's default branch is the only
+            # well-defined revision to read the file from, regardless of from_default_branch.
+            project = self.gl.projects.get(repo_id)
+            contents = project.files.get(file_path=file_path, ref=project.default_branch).decode()
+            return decode_if_bytes(contents)
+        except GitlabGetError as e:
+            # A missing optional file is expected, but transient/provider failures must reach
+            # repo_context so the failed result is not cached as a successful empty context.
+            if getattr(e, "response_code", None) == 404:
+                return ""
+            raise
+
+    def _get_repo_context_namespace(self) -> str:
+        cached = getattr(self, "_repo_context_namespace", None)
+        if cached is None:
+            project_path = self.id_project
+            if isinstance(project_path, str) and "/" in project_path:
+                cached = project_path.rsplit("/", 1)[0]
+            else:
+                # A numeric project ID (the /projects/<id>/- URL alias) carries no path, so
+                # resolve its namespace through the API once and cache it.
+                try:
+                    namespace = getattr(self.gl.projects.get(self.id_project), "namespace", None)
+                    cached = getattr(namespace, "full_path", None) or ""
+                except Exception:
+                    cached = ""
+            self._repo_context_namespace = cached
+        return cached
+
+    def _is_same_namespace_sibling(self, repo_id: str) -> bool:
+        repo_id = repo_id.strip().strip("/")
+        parts = repo_id.split("/")
+        sibling_namespace = "/".join(parts[:-1])
+        return sibling_namespace == self._get_repo_context_namespace()
+
     def get_repo_context_ref(self, from_default_branch: bool = False) -> Optional[str]:
         # The MR target branch (the branch being merged into) is the cached revision; the
         # project default branch is consulted when from_default_branch is requested or no MR

@@ -53,9 +53,10 @@ to-do list.
 | `skip_keys` | [] |  |
 | `custom_reasoning_model` | false | when true, disables system messages and temperature controls for models that don't support chat-style inputs |
 | `response_language` | "en-US" | Language locales code for PR responses in ISO 3166 and ISO 639 format (e.g., "en-US", "it-IT", "zh-CN", ...) |
-| `repo_context_files` | ["AGENTS.md"] | Repository-relative files (e.g. AGENTS.md, CLAUDE.md) to include as AI prompt context; set to [] to disable |
+| `repo_context_files` | ["AGENTS.md"] | Repository-relative files (e.g. AGENTS.md, CLAUDE.md) to include as AI prompt context; set to [] to disable. Use "repo_id:file/path" (GitLab group/subgroup/project, GitHub owner/repo) to also load a single file from a sibling repository in the same namespace/owner; sibling files are read from the sibling's default branch, and the sibling count is capped by repo_context_max_sibling_files. The sibling target is confined to the same namespace/owner so the requesting token never reaches a repository the requester could not otherwise read. |
 | `repo_context_from_default_branch` | true | Read repo context files from the repository default branch (trusts only default-branch content). Set to false to read from the PR target branch instead. |
 | `repo_context_max_lines` | 500 | Maximum total rendered lines for repo context, including wrapper tags |
+| `repo_context_max_sibling_files` | 5 | Maximum number of sibling-repository files fetched per repo-context build. The fetch count is bounded separately from repo_context_max_lines so a large repo_context_files list cannot trigger an unbounded number of cross-repository calls; sibling files still compete for the repo_context_max_lines budget. |
 **token limits**
 
 | Key | Default | Description |
