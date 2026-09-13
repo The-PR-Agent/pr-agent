@@ -134,6 +134,13 @@ def _provider_supports_sibling_repo_context(git_provider) -> bool:
     return provider_method is not None and provider_method is not GitProvider.get_sibling_repo_file_content
 
 
+def _has_sibling_repo_context_entries(context_files: list) -> bool:
+    for entry in context_files:
+        if isinstance(entry, str) and _SIBLING_REPO_SEPARATOR in entry:
+            return True
+    return False
+
+
 def _parse_repo_context_file_entry(entry: str) -> tuple[str | None, str]:
     """Split a repo-context entry into (sibling repo id, file path).
 
@@ -231,7 +238,7 @@ def _load_repo_context_files(
     files = {}
     had_fetch_error = False
     max_siblings = _read_max_sibling_context_files()
-    sibling_files_loaded = 0
+    sibling_fetch_attempts = 0
     for entry in context_files:
         if not isinstance(entry, str) or not entry.strip():
             get_logger().warning("Skipping invalid repo context file path", artifact={"file_path": entry})
@@ -247,12 +254,13 @@ def _load_repo_context_files(
                     f"skipping {repo_id}:{file_path}"
                 )
                 continue
-            if sibling_files_loaded >= max_siblings:
+            if sibling_fetch_attempts >= max_siblings:
                 get_logger().warning(
-                    f"Stopping repo context at {max_siblings} sibling file(s) ("
+                    f"Stopping repo context at {max_siblings} sibling fetch attempt(s) ("
                     f"config.repo_context_max_sibling_files); skipping {repo_id}:{file_path}"
                 )
                 continue
+            sibling_fetch_attempts += 1
             try:
                 content = git_provider.get_sibling_repo_file_content(repo_id, file_path)
             except Exception as e:
@@ -262,8 +270,6 @@ def _load_repo_context_files(
                     artifact={"error": str(e)},
                 )
                 continue
-            if content:
-                sibling_files_loaded += 1
             # Render the file under its sibling path so the model sees where it came from.
             label = f"{repo_id}/{file_path}"
         else:
@@ -359,15 +365,21 @@ def build_repo_context(git_provider) -> str:
     if not _provider_supports_repo_context(git_provider):
         return ""
 
+    # Sibling repositories change independently of the requesting repo, so the current-repo
+    # revision cannot reconstruct their default-branch content. Bypass the revision-keyed cache
+    # whenever sibling entries are present; the fetch cap bounds the extra work instead.
+    has_sibling_entries = _has_sibling_repo_context_entries(context_files)
+
     from_default_branch = _read_bool_setting("repo_context_from_default_branch", default=True)
     # Resolve the revision being read once and key the cache on it: within the TTL a rebase or a
     # push to the base branch must not serve file content from a commit that has since moved.
     context_ref = git_provider.get_repo_context_ref(from_default_branch)
-    cached_repo_context = _get_cached_repo_context(
-        git_provider, context_files, max_lines, context_ref
-    )
-    if cached_repo_context is not _REPO_CONTEXT_CACHE_MISS:
-        return cached_repo_context
+    if not has_sibling_entries:
+        cached_repo_context = _get_cached_repo_context(
+            git_provider, context_files, max_lines, context_ref
+        )
+        if cached_repo_context is not _REPO_CONTEXT_CACHE_MISS:
+            return cached_repo_context
 
     files, had_fetch_error = _load_repo_context_files(git_provider, context_files, from_default_branch)
 
@@ -375,6 +387,6 @@ def build_repo_context(git_provider) -> str:
 
     # Only cache when every file was fetched successfully. A transient/unexpected fetch error must
     # not be cached as a real result, so it is retried instead of being served until the TTL expires.
-    if not had_fetch_error:
+    if not had_fetch_error and not has_sibling_entries:
         _store_repo_context(git_provider, context_files, max_lines, context_ref, repo_context)
     return repo_context

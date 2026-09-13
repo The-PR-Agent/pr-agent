@@ -46,6 +46,9 @@ class DiffNotFoundError(Exception):
     pass
 
 
+_UNRESOLVED_NAMESPACE = object()  # Distinct from "" so failed lookups can't match a sibling id.
+
+
 def _parse_gitlab_iso_datetime(value) -> Optional[datetime]:
     """Parse a GitLab ISO 8601 datetime string into a naive UTC datetime.
 
@@ -1482,7 +1485,17 @@ class GitLabProvider(GitProvider):
                 return ""
             raise
 
-    def _get_repo_context_namespace(self) -> str:
+    def _extract_repo_context_namespace_full_path(self, namespace) -> Optional[str]:
+        # python-gitlab exposes project namespaces as mappings, but tests and some providers
+        # use object-shaped namespaces; accept both shapes for `full_path`.
+        full_path = None
+        if isinstance(namespace, dict):
+            full_path = namespace.get("full_path")
+        elif namespace is not None:
+            full_path = getattr(namespace, "full_path", None)
+        return full_path or ""
+
+    def _get_repo_context_namespace(self):
         cached = getattr(self, "_repo_context_namespace", None)
         if cached is None:
             project_path = self.id_project
@@ -1493,17 +1506,28 @@ class GitLabProvider(GitProvider):
                 # resolve its namespace through the API once and cache it.
                 try:
                     namespace = getattr(self.gl.projects.get(self.id_project), "namespace", None)
-                    cached = getattr(namespace, "full_path", None) or ""
-                except Exception:
-                    cached = ""
+                    cached = self._extract_repo_context_namespace_full_path(namespace)
+                except Exception as e:
+                    # Use a sentinel that is distinct from "" so an unresolved namespace can
+                    # never match a one-component repository identifier (e.g. a numeric id).
+                    cached = _UNRESOLVED_NAMESPACE
+                    get_logger().warning(
+                        f"Failed to resolve namespace for gitlab project {self.id_project}; "
+                        "rejecting same-namespace sibling repo context lookups",
+                        artifact={"error": str(e)},
+                    )
             self._repo_context_namespace = cached
         return cached
 
     def _is_same_namespace_sibling(self, repo_id: str) -> bool:
         repo_id = repo_id.strip().strip("/")
         parts = repo_id.split("/")
+        current_namespace = self._get_repo_context_namespace()
+        if current_namespace is _UNRESOLVED_NAMESPACE:
+            # A failed lookup must not silently match a one-component repo id (e.g. "456").
+            return False
         sibling_namespace = "/".join(parts[:-1])
-        return sibling_namespace == self._get_repo_context_namespace()
+        return sibling_namespace == current_namespace
 
     def get_repo_context_ref(self, from_default_branch: bool = False) -> Optional[str]:
         # The MR target branch (the branch being merged into) is the cached revision; the

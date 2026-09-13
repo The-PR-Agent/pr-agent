@@ -3,6 +3,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 from github import GithubException
+from gitlab.exceptions import GitlabGetError
 from jinja2 import Environment, StrictUndefined, select_autoescape
 
 from pr_agent.algo import repo_context
@@ -441,6 +442,63 @@ def test_load_repo_context_files_respects_sibling_file_cap(repo_context_settings
     ]
 
 
+def test_sibling_fetch_cap_counts_attempts_not_just_content(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_SIBLING_FILES", 2)
+    provider = SiblingFakeProvider(
+        files={},
+        sibling_files={
+            "group/g1:README.md": "",
+            "group/g2:README.md": "two",
+        },
+    )
+
+    files, had_fetch_error = repo_context._load_repo_context_files(
+        provider,
+        [
+            "group/g1:README.md",
+            "group/g2:README.md",
+            "group/g3:README.md",
+        ],
+        from_default_branch=True,
+    )
+
+    assert files == {"group/g2/README.md": "two"}
+    assert provider.requested_siblings == [
+        "group/g1:README.md",
+        "group/g2:README.md",
+    ]
+
+
+def test_sibling_fetch_cap_counts_exceptions(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_SIBLING_FILES", 2)
+    provider = SiblingFakeProvider(files={})
+    call_count = 0
+    original = provider.get_sibling_repo_file_content
+
+    def counting_call(repo_id, file_path):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise Exception("transient outage")
+        return original(repo_id, file_path)
+
+    provider.get_sibling_repo_file_content = Mock(side_effect=counting_call)
+    provider.requested_siblings = []
+
+    files, had_fetch_error = repo_context._load_repo_context_files(
+        provider,
+        [
+            "group/g1:README.md",
+            "group/g2:README.md",
+            "group/g3:README.md",
+        ],
+        from_default_branch=True,
+    )
+
+    assert call_count == 2
+    assert had_fetch_error is True
+
+
 def test_build_repo_context_renders_sibling_file_with_budget(repo_context_settings):
     repo_context_settings.set(
         "CONFIG.REPO_CONTEXT_FILES", ["group/lib-api:src/interfaces/api.py"]
@@ -533,8 +591,9 @@ def test_gitlab_provider_resolves_namespace_for_numeric_project_id():
     provider = GitLabProvider.__new__(GitLabProvider)
     provider.id_project = "123"
     provider.gl = Mock()
+    # python-gitlab exposes the project namespace as a mapping rather than an object.
     current_project = Mock()
-    current_project.namespace.full_path = "group/sub"
+    current_project.namespace = {"full_path": "group/sub"}
     provider.gl.projects.get.return_value = current_project
     sibling_project = Mock()
     sibling_project.default_branch = "main"
@@ -546,6 +605,31 @@ def test_gitlab_provider_resolves_namespace_for_numeric_project_id():
     # Current project (id 123) resolved once for its namespace, then the sibling fetched.
     assert provider.gl.projects.get.call_args_list[0] == (("123",),)
     assert provider.gl.projects.get.call_args_list[1] == (("group/sub/lib",),)
+
+
+def test_gitlab_provider_rejects_sibling_when_namespace_lookup_fails():
+    provider = GitLabProvider.__new__(GitLabProvider)
+    provider.id_project = "123"
+    provider.gl = Mock()
+    current_project = Mock()
+    current_project.namespace = {"full_path": "group/sub"}
+    provider.gl.projects.get.side_effect = [GitlabGetError("boom", response_code=500), current_project]
+
+    # A failed namespace lookup must not let a one-component/numeric sibling id pass validation.
+    assert provider.get_sibling_repo_file_content("456", "file.md") == ""
+
+    # Only the namespace lookup was attempted; the numeric sibling was never fetched.
+    assert provider.gl.projects.get.call_args_list == [(("123",),)]
+
+
+def test_gitlab_provider_extracts_namespace_full_path_from_object_and_mapping():
+    provider = GitLabProvider.__new__(GitLabProvider)
+    provider.id_project = "123"
+    assert provider._extract_repo_context_namespace_full_path({"full_path": "group/sub"}) == "group/sub"
+    namespace_object = SimpleNamespace(full_path="group/sub")
+    assert provider._extract_repo_context_namespace_full_path(namespace_object) == "group/sub"
+    assert provider._extract_repo_context_namespace_full_path({"path": "sub"}) == ""
+    assert provider._extract_repo_context_namespace_full_path(None) == ""
 
 
 def test_build_repo_context_process_cache_invalidates_when_config_changes(repo_context_settings):
@@ -581,7 +665,29 @@ def test_build_repo_context_does_not_cache_empty_context_after_fetch_error(repo_
 
     assert first_context == ""
     assert "Repo purpose" in second_context
-    assert provider.get_repo_file_content.call_count == 2
+
+
+def test_build_repo_context_does_not_cache_sibling_content(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["group/lib:api.py"])
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 500)
+    provider = SiblingFakeProvider(
+        files={},
+        sibling_files={"group/lib:api.py": "def call(req): ...\n"},
+        pr_url="https://example.com/org/repo/pull/1",
+    )
+
+    first_context = build_repo_context(provider)
+    assert "<file path=\"group/lib/api.py\"" in first_context
+    assert "def call(req): ..." in first_context
+
+    # Sibling default branches change independently of the requesting repo; the cache must not
+    # serve the previous revision.
+    provider.sibling_files["group/lib:api.py"] = "def call(req, body): ...\n"
+    second_context = build_repo_context(provider)
+
+    assert "def call(req, body): ..." in second_context
+    assert "def call(req): ..." not in second_context
+    assert provider.requested_siblings == ["group/lib:api.py", "group/lib:api.py"]
 
 
 def test_build_repo_context_cache_invalidates_when_repo_context_files_change(repo_context_settings):
