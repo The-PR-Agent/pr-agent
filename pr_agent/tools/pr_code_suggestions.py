@@ -823,7 +823,7 @@ class PRCodeSuggestions:
         if response_reflect:
             await self.analyze_self_reflection_response(data, response_reflect)
         else:
-            # get_logger().error(f"Could not self-reflect on suggestions. using default score 7")
+            get_logger().warning("Could not self-reflect on suggestions; using default score 7")
             for suggestion in data["code_suggestions"]:
                 suggestion["score"] = 7
                 suggestion["score_why"] = ""
@@ -918,6 +918,11 @@ class PRCodeSuggestions:
                             suggestion['existing_code'] = ""
                 except Exception as e:
                     get_logger().error(f"Error processing suggestion {i + 1}, error: {e}")
+        else:
+            get_logger().warning(
+                f"Self-reflection feedback covered {len(code_suggestions_feedback)} suggestion(s) instead of "
+                f"{len(data['code_suggestions'])}; line anchors will not be resolved"
+            )
 
     @staticmethod
     def _truncate_if_needed(suggestion):
@@ -1664,10 +1669,26 @@ class PRCodeSuggestions:
             suggestions_labels = dict()
             # add all suggestions related to each label
             for suggestion in data['code_suggestions']:
+                try:
+                    int(suggestion['relevant_lines_start'])
+                    int(suggestion['relevant_lines_end'])
+                except (KeyError, TypeError, ValueError):
+                    # suggestions without resolved line anchors (e.g. when self-reflection
+                    # failed or returned a mismatched count) cannot be placed in the diff;
+                    # skip them instead of failing the whole table
+                    get_logger().warning("Skipping a suggestion without a valid line range",
+                                         artifact={'relevant_file': suggestion.get('relevant_file'),
+                                                   'one_sentence_summary': suggestion.get('one_sentence_summary')})
+                    continue
                 label = suggestion['label'].strip().strip("'").strip('"')
                 if label not in suggestions_labels:
                     suggestions_labels[label] = []
                 suggestions_labels[label].append(suggestion)
+
+            if not suggestions_labels:
+                pr_body = f"{format_pr_code_suggestions_header()}\n\n"
+                pr_body += "No suggestions found to improve this PR."
+                return pr_body
 
             # sort suggestions_labels by the suggestion with the highest score
             suggestions_labels = dict(

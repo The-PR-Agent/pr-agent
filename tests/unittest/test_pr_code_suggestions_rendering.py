@@ -384,6 +384,55 @@ def test_generate_summarized_suggestions_includes_score_why_block_when_present()
     assert "Why: Catches a real bug." in out
 
 
+def test_generate_summarized_suggestions_skips_anchorless_but_keeps_rest():
+    """A suggestion without resolved line anchors is skipped instead of failing the whole table."""
+    git_provider = MagicMock()
+    git_provider.get_line_link.return_value = ""
+    tool = _make_tool(git_provider)
+    anchored = _suggestion(one_sentence_summary="Keep me")
+    anchorless = _suggestion(one_sentence_summary="Drop me", relevant_file="other.py")
+    anchorless.pop("relevant_lines_start")
+    anchorless.pop("relevant_lines_end")
+
+    out = tool.generate_summarized_suggestions({"code_suggestions": [anchorless, anchored]})
+
+    assert "<table>" in out
+    assert "Keep me" in out
+    assert "Drop me" not in out
+
+
+def test_generate_summarized_suggestions_all_anchorless_returns_placeholder():
+    """When no suggestion has resolvable anchors, publish a truthful message instead of an empty table."""
+    git_provider = MagicMock()
+    git_provider.get_line_link.return_value = ""
+    tool = _make_tool(git_provider)
+    suggestion = _suggestion()
+    suggestion.pop("relevant_lines_start")
+    suggestion.pop("relevant_lines_end")
+
+    out = tool.generate_summarized_suggestions({"code_suggestions": [suggestion]})
+
+    assert "No suggestions found to improve this PR." in out
+    assert "<table>" not in out
+
+
+@pytest.mark.asyncio
+async def test_analyze_self_reflection_mismatched_count_does_not_crash():
+    """Feedback covering a different suggestion count than generated leaves anchors unresolved."""
+    tool = _make_tool()
+    suggestion = _suggestion()
+    suggestion.pop("relevant_lines_start")
+    suggestion.pop("relevant_lines_end")
+    data = {"code_suggestions": [suggestion, _suggestion(one_sentence_summary="Second")]}
+
+    await tool.analyze_self_reflection_response(
+        data, "code_suggestions:\n- suggestion_score: 8\n  why: fast\n"
+    )
+
+    assert "relevant_lines_start" not in data["code_suggestions"][0]
+    assert data["code_suggestions"][1]["relevant_lines_start"] == 2
+
+
 # ---------------------------------------------------------------------------
 # Stale one-liner validation
 # ---------------------------------------------------------------------------
