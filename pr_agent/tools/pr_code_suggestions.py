@@ -900,7 +900,18 @@ class PRCodeSuggestions:
 
     async def analyze_self_reflection_response(self, data, response_reflect):
         response_reflect_yaml = load_yaml(response_reflect)
+        if not isinstance(response_reflect_yaml, dict):
+            get_logger().warning(
+                "Self-reflection feedback was not a mapping; line anchors will not be resolved"
+            )
+            return
         code_suggestions_feedback = response_reflect_yaml.get("code_suggestions", [])
+        if not isinstance(code_suggestions_feedback, list):
+            get_logger().warning(
+                "Self-reflection feedback 'code_suggestions' was not a list; "
+                "line anchors will not be resolved"
+            )
+            return
         if code_suggestions_feedback and len(code_suggestions_feedback) == len(data["code_suggestions"]):
             for i, suggestion in enumerate(data["code_suggestions"]):
                 try:

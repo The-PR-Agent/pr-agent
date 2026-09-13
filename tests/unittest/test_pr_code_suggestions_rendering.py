@@ -511,6 +511,34 @@ async def test_analyze_self_reflection_mismatched_count_does_not_crash():
     assert data["code_suggestions"][1]["relevant_lines_start"] == 2
 
 
+@pytest.mark.asyncio
+async def test_analyze_self_reflection_null_feedback_does_not_crash():
+    """A non-null response with `code_suggestions: null` must not abort suggestions."""
+    tool = _make_tool()
+    suggestion = _suggestion()
+    suggestion.pop("relevant_lines_start")
+    suggestion.pop("relevant_lines_end")
+    data = {"code_suggestions": [suggestion]}
+
+    await tool.analyze_self_reflection_response(data, "code_suggestions: null")
+
+    assert "relevant_lines_start" not in data["code_suggestions"][0]
+
+
+@pytest.mark.asyncio
+async def test_analyze_self_reflection_non_mapping_feedback_does_not_crash():
+    """A top-level list (not a mapping) from reflection must not abort suggestions."""
+    tool = _make_tool()
+    suggestion = _suggestion()
+    suggestion.pop("relevant_lines_start")
+    suggestion.pop("relevant_lines_end")
+    data = {"code_suggestions": [suggestion]}
+
+    await tool.analyze_self_reflection_response(data, "- one\n- two")
+
+    assert "relevant_lines_start" not in data["code_suggestions"][0]
+
+
 # ---------------------------------------------------------------------------
 # Stale one-liner validation
 # ---------------------------------------------------------------------------
