@@ -820,9 +820,9 @@ class PRCodeSuggestions:
             response, finish_reason = await self.ai_handler.chat_completion(
                 model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
         except Exception as e:
-            # Keep the primary failure scoped to the chunk even when recovery later overwrites the slot.
+            # Preserve the primary failure for the chunk even when recovery later overwrites the slot.
             get_logger().warning(
-                f"Failed to generate code suggestions for chunk with {model}",
+                f"Failed to generate code suggestions for chunk {model}",
                 artifact={"error": e},
             )
             raise
@@ -1564,8 +1564,6 @@ class PRCodeSuggestions:
 
     async def _recover_failed_chunks(self, model: str, chunk_pairs: list, results: list) -> None:
         """Try remaining models for failed slots, without replacing successful predictions."""
-        if not get_settings().pr_code_suggestions.get("recover_failed_chunks", False):
-            return
         # An entirely failed batch still belongs to the existing outer fallback loop.
         if not any(isinstance(result, Exception) for result in results) or all(
             isinstance(result, Exception) for result in results
@@ -1613,7 +1611,8 @@ class PRCodeSuggestions:
                         )
                         continue
                     recovered_any = True
-                    get_logger().info(f"Recovered suggestion chunk {index + 1} with {fallback_model}")
+                    get_logger().info(f"Recovered suggestion chunk {index + 1} with {fallback_model}",
+                                      artifact={"error": results[index]})
                     results[index] = result
                 if recovered_any:
                     # run_details' model line reports the outer primary unless a fallback

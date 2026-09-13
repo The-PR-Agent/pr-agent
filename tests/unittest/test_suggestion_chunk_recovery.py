@@ -14,8 +14,9 @@ from pr_agent.algo.pr_processing import retry_with_fallback_models
 from pr_agent.algo.run_details import get_run_details, init_run_details
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import get_settings
-from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
+
+PRCodeSuggestions = module.PRCodeSuggestions
 
 
 @pytest.fixture
@@ -28,7 +29,6 @@ def configured():
         "openai.fallback_deployments": ["secondary", "last"],
         "pr_code_suggestions.decouple_hunks": True,
         "pr_code_suggestions.parallel_calls": True,
-        "pr_code_suggestions.recover_failed_chunks": True,
         "pr_code_suggestions.suggestions_score_threshold": 0,
         "pr_code_suggestions.max_suggestions_per_file": 0,
         # Not used by most tests here, but snapshotted so the routed-primary test's
@@ -116,15 +116,30 @@ async def test_healthy_run_never_enters_recovery(configured, monkeypatch):
     assert {m for m, _, _, _ in calls} == {"gpt-4o"}
 
 
-@pytest.mark.parametrize("fallbacks, enabled", [([], True), (["gpt-4o-mini"], False)])
-async def test_disabled_or_no_fallback_preserves_partial_policy(configured, monkeypatch, fallbacks, enabled):
+@pytest.mark.parametrize("fallbacks, expected", [([], ["a.py", "c.py"]), (["gpt-4o-mini"], ["a.py", "b.py", "c.py"])])
+async def test_fallback_recovery_runs_whenever_fallbacks_are_set(configured, monkeypatch, fallbacks, expected):
+    # Recovery is the default behaviour whenever config.fallback_models is set,
+    # so an empty fallback list preserves the partial-success policy while a
+    # configured fallback repairs the failed chunk.
     get_settings().set("config.fallback_models", fallbacks)
-    get_settings().set("pr_code_suggestions.recover_failed_chunks", enabled)
     tool, calls = make_tool(monkeypatch, {("gpt-4o", "b"): RuntimeError("failure")})
     result = await retry_with_fallback_models(tool.prepare_prediction_main)
-    assert [s["relevant_file"] for s in result["code_suggestions"]] == ["a.py", "c.py"]
-    assert tool.failed_chunk_count == 1
-    assert len(calls) == 3
+    assert [s["relevant_file"] for s in result["code_suggestions"]] == expected
+    assert tool.failed_chunk_count == (1 if not fallbacks else 0)
+    assert len(calls) == (3 if not fallbacks else 4)
+
+
+async def test_larger_fallback_recovers_when_earlier_one_is_over_budget(configured, monkeypatch):
+    # The first fallback model cannot fit the full prompt, so it is skipped and
+    # recovery still moves on to the later model instead of giving up.
+    get_settings().set("config.fallback_models", ["gpt-4o-mini", "gpt-4.1"])
+    monkeypatch.setattr(module, "get_max_tokens", lambda model: 1600 if model == "gpt-4o-mini" else 10000)
+    tool, calls = make_tool(monkeypatch, {("gpt-4o", "b"): RuntimeError("failure")})
+    tool.vars["instructions"] = "must retain these instructions " * 500
+    result = await retry_with_fallback_models(tool.prepare_prediction_main)
+    assert [s["relevant_file"] for s in result["code_suggestions"]] == ["a.py", "b.py", "c.py"]
+    assert tool.failed_chunk_count == 0
+    assert [(m, c) for m, c, _, _ in calls if m == "gpt-4.1"] == [("gpt-4.1", "b")]
 
 
 async def test_all_failed_primary_keeps_existing_outer_fallback(configured, monkeypatch):

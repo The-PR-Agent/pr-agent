@@ -409,8 +409,9 @@ for the authoritative default values.
 
 ## Recovering a partially failed analysis
 
-Set `pr_code_suggestions.recover_failed_chunks=true` to try the remaining configured
-`config.fallback_models` for chunks that raised an exception after other chunks succeeded.
+A partially failed analysis automatically tries the remaining configured
+`config.fallback_models` for the chunks that raised an exception after other chunks succeeded,
+with no extra configuration beyond `config.fallback_models` itself.
 Successful predictions are retained in their original order. Recovery runs model by model,
 after the preceding batch finishes, using the matching `openai.fallback_deployments` where configured,
 and follows the effective fallback chain of the invocation, including a primary model selected by
@@ -418,7 +419,6 @@ and follows the effective fallback chain of the invocation, including a primary 
 A fallback model that recovers at least one chunk is marked as a fallback in the run
 details, so the published run line still reports the primary model while the sticky fallback flag
 stays set.
-The default is `false`, preserving the existing partial-success policy and its latency/cost trade-off.
 
 Each remaining model is tried at most once per still-failed chunk at the tool level; the model
 handler's existing retries and self-reflection calls can add provider requests. A chunk whose complete
