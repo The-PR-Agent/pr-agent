@@ -245,23 +245,46 @@ class TestResolvePerDirectorySettings:
                 "svc1/.pr_agent.toml",
                 "svc1/deep/.pr_agent.toml",
                 "svc2/.pr_agent.toml",
-                "svc3/.pr_agent.toml",
             ],
             contents={
                 "svc1/.pr_agent.toml": SERVICES_TOML,
                 "svc1/deep/.pr_agent.toml": SERVICES_AUTH_TOML,
                 "svc2/.pr_agent.toml": SERVICES_BILLING_TOML,
-                "svc3/.pr_agent.toml": SERVICES_BILLING_TOML,
             },
-            files=["svc1/deep/api.py", "svc2/x.py", "svc3/y.py"],
+            files=["svc1/deep/api.py", "svc2/x.py"],
         )
 
         resolved = git_utils._get_per_directory_settings(provider)
 
-        # Shallowest first (svc1 before svc1/deep); the deepest config is dropped first.
+        # Shallowest first: the deeper svc1/deep config is dropped once the cap is full.
         assert [path for path, _ in resolved] == [
             "svc1/.pr_agent.toml",
             "svc2/.pr_agent.toml",
+        ]
+
+    def test_cap_cutting_an_equal_depth_group_keeps_laterpath_winners(self, per_dir_settings):
+        get_settings().config.per_directory_settings_max_files = 2
+        provider = _provider(
+            tree_paths=[
+                "svc1/.pr_agent.toml",
+                "svc2/.pr_agent.toml",
+                "svc3/.pr_agent.toml",
+            ],
+            contents={
+                "svc1/.pr_agent.toml": SERVICES_TOML,
+                "svc2/.pr_agent.toml": SERVICES_BILLING_TOML,
+                "svc3/.pr_agent.toml": SERVICES_AUTH_TOML,
+            },
+            files=["svc1/x.py", "svc2/y.py", "svc3/z.py"],
+        )
+
+        resolved = git_utils._get_per_directory_settings(provider)
+
+        # The cap cuts through an equal-depth group: the lexicographically-later (winning)
+        # siblings are retained and svc3 still participates as the documented winner.
+        assert [path for path, _ in resolved] == [
+            "svc2/.pr_agent.toml",
+            "svc3/.pr_agent.toml",
         ]
 
     def test_disabled_returns_empty_without_any_provider_call(self, fresh_global_settings):
@@ -540,6 +563,7 @@ enable_review_labels_security = false
 enable_review_labels_effort = false
 require_security_review = false
 require_estimate_effort_to_review = false
+require_ticket_analysis_review = false
 
 [pr_description]
 publish_labels = true
@@ -597,6 +621,7 @@ use_original_title = false
         assert get_settings().pr_reviewer.enable_review_labels_effort is True
         assert get_settings().pr_reviewer.require_security_review is True
         assert get_settings().pr_reviewer.require_estimate_effort_to_review is True
+        assert get_settings().pr_reviewer.require_ticket_analysis_review is True
         # Budget/call-count controls stay at the host-trusted values: nested files must
         # not multiply AI calls on their own.
         assert get_settings().pr_reviewer.enable_large_pr_chunking is False

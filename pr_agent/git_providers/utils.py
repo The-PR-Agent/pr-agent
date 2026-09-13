@@ -561,13 +561,30 @@ def _get_per_directory_settings(git_provider) -> list:
     if len(crossed) > max_configs:
         get_logger().warning(
             f"{len(crossed)} per-directory .pr_agent.toml files apply to this PR; "
-            f"only the shallowest {max_configs} will be applied"
+            f"applying at most {max_configs}, preferring shallower files and keeping "
+            f"later-path winners within a partially included depth"
         )
     # Shallowest (closest to root) first: later files override earlier ones, so the
     # nearest directory wins on scalar keys. Equal-depth siblings are ordered by
     # path, so the lexicographically-last directory wins deterministically (any
-    # overlap is surfaced by _warn_on_sibling_key_conflicts).
-    ordered = sorted(crossed, key=lambda directory: (directory.count("/"), directory))[:max_configs]
+    # overlap is surfaced by _warn_on_sibling_key_conflicts). When the cap cuts
+    # through an equal-depth group, the lexicographically-later (winning) entries
+    # are retained and the earlier ones dropped, so the documented winner still
+    # participates in the merge.
+    ordered = sorted(crossed, key=lambda directory: (directory.count("/"), directory))
+    if len(ordered) > max_configs:
+        kept = []
+        remaining = max_configs
+        for _, group in itertools.groupby(ordered, key=lambda directory: directory.count("/")):
+            group = list(group)
+            if remaining >= len(group):
+                kept.extend(group)
+                remaining -= len(group)
+                continue
+            kept.extend(group[len(group) - remaining:])
+            remaining = 0
+            break
+        ordered = kept
     if not ordered:
         return []
 

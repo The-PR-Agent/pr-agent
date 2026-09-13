@@ -41,7 +41,9 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
 # arbitrary issue counts, or repointing the vector backend) stay root-config- or host-
 # controlled. Likewise, keys that rewrite pull-request metadata (AI title generation,
 # comment-only description publication) stay root-controlled so a nested file cannot
-# bypass the operator's choice of which PR fields the bot edits.
+# bypass the operator's choice of which PR fields the bot edits. Ticket extraction
+# (require_ticket_analysis_review) stays root-controlled too: enabling it from a nested
+# file would make the bot run authenticated Jira lookups the root config already disabled.
 # Similarly, budget/call-count controls (max_number_of_calls, max_ai_calls, parallel_calls,
 # enable_large_pr_chunking, enable_large_pr_handling, async_ai_calls) are restricted so
 # a nested file cannot multiply AI calls independently of the host-trusted defaults.
@@ -50,7 +52,7 @@ PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION = {
         "enable_large_pr_chunking", "max_number_of_calls",
         "inline_key_issues", "enable_review_labels_security",
         "enable_review_labels_effort", "require_estimate_effort_to_review",
-        "require_security_review",
+        "require_security_review", "require_ticket_analysis_review",
     }),
     "pr_description": frozenset({
         "publish_labels", "enable_large_pr_handling", "max_ai_calls", "async_ai_calls",
