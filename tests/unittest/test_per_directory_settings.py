@@ -585,6 +585,38 @@ regex = ["(a+)+$"]
         assert get_settings().ignore.glob == ["gen/**"]
         assert get_settings().ignore.regex == []
 
+    def test_per_directory_config_drops_unbounded_repo_context_knobs(self, per_dir_settings, monkeypatch):
+        config = b"""
+[config]
+model = "nested-model"
+temperature = 0.5
+repo_context_files = ["huge.bin", "secrets.env", "vendor/data.bin"]
+repo_context_max_lines = 9999999
+"""
+        monkeypatch.setattr(
+            "pr_agent.git_providers.utils.get_git_provider_with_context",
+            lambda url: _provider(
+                root_settings=ROOT_TOML,
+                tree_paths=["services/.pr_agent.toml"],
+                contents={"services/.pr_agent.toml": config},
+                files=["services/api.py"],
+            ),
+        )
+
+        git_utils.apply_repo_settings("https://github.com/org/repo/pull/1")
+
+        # Context-fetch knobs are root-/host-controlled; a nested file cannot make tools
+        # fetch arbitrary repo files in full when they build context for its directory.
+        assert get_settings().get("config.repo_context_files", []) != [
+            "huge.bin",
+            "secrets.env",
+            "vendor/data.bin",
+        ]
+        assert get_settings().get("config.repo_context_max_lines", 0) != 9999999
+        # Model-routing and output knobs still apply.
+        assert get_settings().config.model == "nested-model"
+        assert get_settings().config.temperature == 0.5
+
     def test_malformed_per_directory_config_reports_error(self, per_dir_settings, monkeypatch):
         malformed = b"[pr_reviewer\nnum_max_findings = 2\n"
         provider = _provider(
