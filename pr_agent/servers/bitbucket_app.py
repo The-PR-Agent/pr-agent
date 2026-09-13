@@ -196,8 +196,8 @@ async def _perform_commands_bitbucket(commands_conf: str, agent: PRAgent, api_ur
         if commands_conf == "pr_commands"
         else get_settings().get(f"bitbucket_app.{commands_conf}", {})
     )
-    if commands_conf == "push_commands" and not commands:
-        get_logger().info("Bitbucket push trigger handling enabled, but no push commands configured")
+    if not commands:
+        get_logger().info(f"No {commands_conf} configured, skipping auto commands")
         return
     get_settings().set("config.is_auto_command", True)
     if commands_conf == "push_commands":
