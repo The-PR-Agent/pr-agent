@@ -78,7 +78,15 @@ def _function_nodes(tree):
 def _unguarded_call_sites():
     """(file, function, method, lineno) for every capability-gated
     `self.git_provider.<method>(...)` call with no matching `is_supported()` check
-    anywhere in its own enclosing function."""
+    anywhere in its own enclosing function.
+
+    This is membership, not control flow: it does not check that the guard runs
+    before the call, sits in the branch that actually reaches it, or that its result
+    is used. A guard placed after the call, in an unrelated branch, or with its
+    result ignored still satisfies this check. It catches a capability check being
+    absent from the function entirely, which is the regression this test guards
+    against; it will not catch one being present but misplaced.
+    """
     hits = []
     for path in _tool_files():
         tree = ast.parse(path.read_text(), filename=str(path))
@@ -98,6 +106,11 @@ def _provider_declinable_capabilities():
     Parsed from `pr_agent/git_providers/*.py` rather than hardcoded, so a new provider
     declining a new capability grows this set (and the typo check below) automatically
     instead of it silently going stale.
+
+    Collects any string literal compared inside `is_supported()`, without checking
+    which branch it feeds or whether that branch returns False. A capability named in
+    a comparison that always returns True, or in an unrelated comparison, is treated
+    as declinable the same as one a provider genuinely rejects.
     """
     caps = set()
     for path in sorted(PROVIDERS_DIR.glob("*.py")):
