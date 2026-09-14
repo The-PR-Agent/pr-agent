@@ -197,12 +197,16 @@ def test_real_request_failure_uses_effective_propagation_setting(
 
 
 @pytest.mark.parametrize(
-    ("baseline", "override_source", "override", "expected_statuses"),
+    ("baseline", "override_source", "override", "first_succeeds", "expected_statuses"),
     [
-        (False, "repository", True, [1, None]),
-        (False, "command", True, [1, None]),
-        (True, "repository", False, [None, 1]),
-        (True, "command", False, [None, 1]),
+        (False, "repository", True, False, [1, None]),
+        (False, "command", True, False, [1, None]),
+        (True, "repository", False, False, [None, 1]),
+        (True, "command", False, False, [None, 1]),
+        (False, "repository", True, True, [None, None]),
+        (False, "command", True, True, [None, None]),
+        (True, "repository", False, True, [None, 1]),
+        (True, "command", False, True, [None, 1]),
     ],
 )
 def test_run_restores_propagation_setting_between_invocations(
@@ -210,6 +214,7 @@ def test_run_restores_propagation_setting_between_invocations(
     baseline,
     override_source,
     override,
+    first_succeeds,
     expected_statuses,
 ):
     from pr_agent.agent import pr_agent as pr_agent_module
@@ -218,13 +223,16 @@ def test_run_restores_propagation_setting_between_invocations(
     settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", baseline)
     apply_calls = 0
     observed_values = []
+    request_results = iter([first_succeeds, False])
 
-    class FailingReview:
+    class ControlledReview:
         def __init__(self, *_args, **_kwargs):
             pass
 
         async def run(self):
             observed_values.append(settings.config.get("propagate_tool_errors"))
+            if next(request_results):
+                return
             raise RuntimeError("controlled tool failure")
 
     def fake_apply_repo_settings(*_args, **_kwargs):
@@ -233,7 +241,7 @@ def test_run_restores_propagation_setting_between_invocations(
             settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", override)
         apply_calls += 1
 
-    monkeypatch.setitem(pr_agent_module.command2class, "review", FailingReview)
+    monkeypatch.setitem(pr_agent_module.command2class, "review", ControlledReview)
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", fake_apply_repo_settings)
     monkeypatch.setattr(pr_agent_module, "flush_telemetry", lambda: None)
     monkeypatch.setattr(cli, "inject_artifact_context", lambda: None)
