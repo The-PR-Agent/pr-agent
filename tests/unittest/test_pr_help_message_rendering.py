@@ -200,6 +200,13 @@ def test_question_source_urls_use_canonical_documentation_paths(file_name, heade
     assert tool.format_docs_url(file_name, header) == expected
 
 
+def test_question_system_prompt_identifies_the_open_source_pr_agent_project():
+    system_prompt, _ = PRHelpMessage._render_prompts({"question": "What is PR-Agent?", "snippets": ""})
+
+    assert "the open-source PR-Agent project" in system_prompt
+    assert "recently renamed" not in system_prompt.lower()
+
+
 @pytest.mark.parametrize(
     "provider_class, checkbox_commands, markdown_tables",
     [
