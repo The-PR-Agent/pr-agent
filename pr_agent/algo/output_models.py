@@ -1,7 +1,7 @@
 """Pydantic models for structured outputs described by prompt templates."""
 
 from enum import Enum
-from typing import List, Optional, Union
+from typing import List, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -56,7 +56,7 @@ class Review(BaseModel):
     key_issues_to_review: List[KeyIssuesComponentLink]
     security_concerns: Optional[str] = None
     todo_sections: Optional[Union[List[TodoSection], str]] = None
-    can_be_split: Optional[List[SubPR]] = None
+    can_be_split: Optional[List[SubPR]] = Field(default=None, max_length=3)
 
 
 class PRReview(BaseModel):
@@ -70,7 +70,7 @@ class CodeSuggestion(BaseModel):
     suggestion_content: str
     improved_code: str
     one_sentence_summary: str
-    label: Optional[str] = None
+    label: str
 
 
 class PRCodeSuggestions(BaseModel):
@@ -110,7 +110,7 @@ class PRDescription(BaseModel):
     description: Optional[str] = None
     title: str
     changes_diagram: Optional[str] = None
-    pr_files: Optional[List[FileDescription]] = None
+    pr_files: Optional[List[FileDescription]] = Field(default=None, max_length=20)
 
 
 class PRDescriptionHeaders(BaseModel):
@@ -133,11 +133,11 @@ class Label(str, Enum):
 
 
 class Labels(BaseModel):
-    labels: List[Label]
+    labels: List[str]
 
 
 class PRRankRespones(BaseModel):
-    which_response_was_better: int
+    which_response_was_better: Literal[0, 1, 2]
     why: str
     score_response1: int
     score_response2: int

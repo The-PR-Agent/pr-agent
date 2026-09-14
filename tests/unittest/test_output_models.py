@@ -1,5 +1,7 @@
 import re
 from pathlib import Path
+from types import UnionType
+from typing import get_args, get_origin
 
 import pytest
 
@@ -12,6 +14,7 @@ from pr_agent.algo.output_models import (
     FileDescription,
     FileIdxAndPath,
     KeyIssuesComponentLink,
+    Label,
     Labels,
     PRCodeSuggestions,
     PRCodeSuggestionsFeedback,
@@ -20,6 +23,7 @@ from pr_agent.algo.output_models import (
     PRFilesWalkthrough,
     PRRankRespones,
     PRReview,
+    PRType,
     RelevantSection,
     Review,
     SubPR,
@@ -86,11 +90,18 @@ def _review_fixture():
             "relevant_lines_start": 10, "relevant_lines_end": 10, "suggestion_score": 8,
             "why": "The change prevents a runtime failure.",
         }]}),
-        (PRDescription, {"type": ["Bug fix"], "description": "Fix a runtime failure.", "title": "Fix runtime failure"}),
-        (PRDescriptionHeaders, {"type": ["Tests"], "title": "Describe the test changes"}),
-        (FileDescription, {"filename": "src/app.py", "changes_title": "Handle runtime failures", "label": "bug fix"}),
+        (PRDescription, {"type": ["Bug fix"], "description": "Fix a runtime failure.", "title": "Fix runtime failure",
+                         "changes_diagram": "flowchart LR\nA --> B", "pr_files": [{
+                             "filename": "src/app.py", "changes_summary": "- Handle failures",
+                             "changes_title": "Handle runtime failures", "label": "bug fix",
+                         }]}),
+        (PRDescriptionHeaders, {"type": ["Tests"], "description": "Cover the new behavior.",
+                                "title": "Describe the test changes", "changes_diagram": ""}),
+        (FileDescription, {"filename": "src/app.py", "changes_summary": "- Handle failures",
+                           "changes_title": "Handle runtime failures", "label": "bug fix"}),
         (PRFilesWalkthrough, {"pr_files": [{
-            "filename": "src/app.py", "changes_title": "Handle runtime failures", "label": "bug fix",
+            "filename": "src/app.py", "changes_summary": "- Handle failures",
+            "changes_title": "Handle runtime failures", "label": "bug fix",
         }]}),
         (Labels, {"labels": ["Bug fix", "Tests"]}),
         (PRRankRespones, {"which_response_was_better": 1, "why": "It is clearer.", "score_response1": 9, "score_response2": 7}),
@@ -106,6 +117,77 @@ def test_output_models_validate_complete_fixtures(model, payload):
 
 def test_review_alias_accepts_prompt_field_name():
     assert Review.model_validate({"key_issues_to_review": [], "estimated_effort_to_review_[1-5]": 3}).estimated_effort_to_review == 3
+
+
+def test_required_label_and_list_constraints_are_enforced():
+    suggestion = {
+        "relevant_file": "src/app.py", "language": "python", "existing_code": "return value",
+        "suggestion_content": "Handle the missing value.", "improved_code": "return value or default",
+        "one_sentence_summary": "Handle missing values",
+    }
+    with pytest.raises(ValueError):
+        CodeSuggestion.model_validate(suggestion)
+    with pytest.raises(ValueError):
+        PRRankRespones.model_validate({"which_response_was_better": 3, "why": "No", "score_response1": 1, "score_response2": 1})
+    with pytest.raises(ValueError):
+        Review.model_validate({"key_issues_to_review": [], "can_be_split": [{"relevant_files": [], "title": "x"}] * 4})
+    with pytest.raises(ValueError):
+        PRDescription.model_validate({"type": ["Tests"], "title": "x", "pr_files": [{
+            "filename": "x", "changes_title": "x", "label": "x",
+        }] * 21})
+
+
+def _split_type_args(value):
+    parts, depth, start = [], 0, 0
+    for index, character in enumerate(value):
+        if character == "[":
+            depth += 1
+        elif character == "]":
+            depth -= 1
+        elif character == "," and depth == 0:
+            parts.append(value[start:index])
+            start = index + 1
+    parts.append(value[start:])
+    return parts
+
+
+def _prompt_type_signature(annotation):
+    annotation = annotation.strip().replace(" ", "")
+    if annotation.startswith("Optional["):
+        annotation = annotation[9:-1]
+    if annotation.startswith("Union["):
+        return ("union", tuple(sorted(
+            (_prompt_type_signature(item) for item in _split_type_args(annotation[6:-1])), key=repr
+        )))
+    if annotation.startswith("List["):
+        return ("list", _prompt_type_signature(annotation[5:-1]))
+    if annotation.startswith("Literal["):
+        return ("literal", tuple(annotation[8:-1].split(",")))
+    if annotation == "Label":
+        return "str"
+    if annotation == "relevant_section":
+        return "RelevantSection"
+    if annotation == "file_idx_and_path":
+        return "FileIdxAndPath"
+    return annotation
+
+
+def _model_type_signature(annotation):
+    origin = get_origin(annotation)
+    if str(origin) == "typing.Literal":
+        return ("literal", tuple(str(value) for value in get_args(annotation)))
+    if origin in (list,):
+        return ("list", _model_type_signature(get_args(annotation)[0]))
+    if origin in (UnionType,):
+        args = get_args(annotation)
+    elif str(origin) == "typing.Union":
+        args = get_args(annotation)
+    else:
+        return getattr(annotation, "__name__", str(annotation).split(".")[-1])
+    members = tuple(sorted(
+        (_model_type_signature(item) for item in args if item is not type(None)), key=repr
+    ))
+    return members[0] if len(members) == 1 else ("union", members)
 
 
 PROMPT_MODELS = {
@@ -142,3 +224,19 @@ def test_prompt_fields_are_present_in_output_models():
             model_fields = set(model.model_fields)
             aliases = {field.alias for field in model.model_fields.values() if field.alias}
             assert declared <= model_fields | aliases, f"{relative_path}: {class_name} has unmodelled fields"
+            for field_name, annotation in re.findall(
+                r"^    ([A-Za-z_][A-Za-z0-9_\[\]-]*):\s*([^=]+)", block, re.MULTILINE
+            ):
+                field = next((value for value in model.model_fields.values()
+                              if value.alias == field_name or value.alias is None and value.validation_alias == field_name), None)
+                if field is None:
+                    field = model.model_fields.get(field_name)
+                assert field is not None, f"{relative_path}: {class_name} field {field_name} is missing"
+                assert _prompt_type_signature(annotation) == _model_type_signature(field.annotation), (
+                    f"{relative_path}: {class_name}.{field_name} type drift"
+                )
+
+
+def test_prompt_enum_contracts_are_preserved():
+    assert {member.value for member in PRType} == {"Bug fix", "Tests", "Enhancement", "Documentation", "Other"}
+    assert {member.value for member in Label} == {"Bug fix", "Tests", "Enhancement", "Documentation", "Other"}

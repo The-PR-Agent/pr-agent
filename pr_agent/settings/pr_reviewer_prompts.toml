@@ -112,7 +112,7 @@ class Review(BaseModel):
     contribution_time_cost_estimate: ContributionTimeCostEstimate = Field(description="An estimate of the time required to implement the changes, based on the quantity, quality, and complexity of the contribution, as well as the context from the PR description and commit messages.")
 {%- endif %}
 {%- if require_score %}
-    score: str = Field(description="Rate this PR on a scale of 0-100 (inclusive), where 0 means the worst possible PR code, and 100 means PR code of the highest quality, without any bugs or performance issues, that is ready to be merged immediately and run in production at scale.")
+    score: int = Field(description="Rate this PR on a scale of 0-100 (inclusive), where 0 means the worst possible PR code, and 100 means PR code of the highest quality, without any bugs or performance issues, that is ready to be merged immediately and run in production at scale.")
 {%- endif %}
 {%- if require_tests %}
     relevant_tests: str = Field(description="yes/no question: does this PR have relevant tests added or updated?")
