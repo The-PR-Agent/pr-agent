@@ -32,6 +32,7 @@ from pr_agent.algo.output_models import (
     TicketCompliance,
     TodoSection,
 )
+from pr_agent.algo.utils import load_yaml
 
 
 def _review_fixture():
@@ -313,3 +314,28 @@ def test_add_docs_prompt_matches_output_model():
         "relevant file": "src/app.py", "relevant line": 12, "doc placement": "after",
         "documentation": "Document the handler.",
     }]})
+
+
+def test_duplicate_doc_items_are_rejected():
+    item = {
+        "relevant file": "src/app.py", "relevant line": 12, "doc placement": "after",
+        "documentation": "Document the handler.",
+    }
+    with pytest.raises(ValueError):
+        CodeDocumentation.model_validate({"Code Documentation": [item, item]})
+
+
+def test_estimate_effort_example_is_a_strict_integer():
+    text = "estimated_effort_to_review_[1-5]: 3"
+    assert type(load_yaml(text)["estimated_effort_to_review_[1-5]"]) is int
+    Review.model_validate({
+        "key_issues_to_review": [],
+        "estimated_effort_to_review_[1-5]": load_yaml(text)["estimated_effort_to_review_[1-5]"],
+    })
+
+
+def test_ranking_example_is_a_valid_numeric_payload():
+    text = 'which_response_was_better: 1\nwhy: "It is clearer."\nscore_response1: 9\nscore_response2: 7'
+    parsed = load_yaml(text)
+    assert isinstance(parsed["which_response_was_better"], int)
+    PRRankResponses.model_validate(parsed)

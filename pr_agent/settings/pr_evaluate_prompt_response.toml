@@ -56,8 +56,8 @@ class PRRankResponses(BaseModel):
 
 Example output:
 ```yaml
-which_response_was_better: "X"
-why: "Response X is better because it is more practical, and addresses the task requirements better since ..."
+which_response_was_better: 1
+why: "Response 1 is better because it is more practical, and addresses the task requirements better since ..."
 score_response1: ...
 score_response2: ...
 ```

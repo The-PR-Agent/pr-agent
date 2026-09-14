@@ -167,6 +167,14 @@ class CodeDocumentation(BaseModel):
 
     code_documentation: List[CodeDocumentationItem] = Field(alias="Code Documentation")
 
+    @field_validator("code_documentation", mode="after")
+    @classmethod
+    def _reject_duplicate_items(cls, items):
+        serialized = [tuple(sorted(item.model_dump().items())) for item in items]
+        if len(serialized) != len(set(serialized)):
+            raise ValueError("Code Documentation items must be unique")
+        return items
+
 
 class PRRankResponses(BaseModel):
     which_response_was_better: Literal[0, 1, 2]

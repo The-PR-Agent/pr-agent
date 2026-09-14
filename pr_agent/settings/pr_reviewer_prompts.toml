@@ -301,8 +301,7 @@ review:
         ...
 {%- endif %}
 {%- if require_estimate_effort_to_review %}
-  estimated_effort_to_review_[1-5]: |
-    3
+  estimated_effort_to_review_[1-5]: 3
 {%- endif %}
 {%- if require_risk_assessment %}
   risk_level: |
