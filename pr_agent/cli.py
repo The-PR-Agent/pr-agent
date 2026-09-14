@@ -216,7 +216,9 @@ def run(inargs=None, args=None):
     result = asyncio.run(inner())
     if not result:
         parser.print_help()
+    if result is False and get_settings().config.get("propagate_tool_errors", False):
+        return 1
 
 
 if __name__ == '__main__':
-    run()
+    raise SystemExit(run())
