@@ -523,14 +523,24 @@ class GitProvider(ABC):
     def get_sibling_repo_file_content(self, repo_id: str, file_path: str, from_default_branch: bool = False):
         """Fetch a single file from a sibling repository in the same namespace/owner.
 
-        Used by repo context (pr_agent/algo/repo_context.py) when a config entry is a
+        Used by repo context when a repo_context_files entry is a
         sibling dict ``{"repo_id": ..., "file_path": ...}``. Only providers that can resolve
         the sibling through their own authenticated API (GitHub, GitLab) override this; both
-        restrict targets to the same owner/group as the current repository and read from the
+        require host allowlisting, check the resolved owner/group, and read from the
         sibling's default branch. The default returns "" so unsupported providers degrade
         gracefully without reaching an unrelated repository or host.
         """
         return ""
+
+    def is_sibling_repo_allowed(self, repo_id: str, *, case_sensitive: bool = True) -> bool:
+        """Require explicit host approval before resolving a sibling repository."""
+        allowed = get_settings().config.get("repo_context_sibling_repos", [])
+        if not isinstance(allowed, list):
+            return False
+        normalize = (lambda value: value) if case_sensitive else str.casefold
+        return normalize(repo_id) in {
+            normalize(value.strip().strip("/")) for value in allowed if isinstance(value, str) and value.strip()
+        }
 
     def set_command_actor(self, actor) -> None:
         """Record the authenticated user who triggered the current command.

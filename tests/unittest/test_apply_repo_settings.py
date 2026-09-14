@@ -95,12 +95,12 @@ class TestApplyRepoSettings:
     def test_repo_settings_cannot_raise_sibling_context_cap(self, fresh_global_settings, monkeypatch):
         """A repo's .pr_agent.toml must not be able to raise
         repo_context_max_sibling_files: it bounds cross-repo fetches per build,
-        so it is host-only. Repo list selection (repo_context_files) may still
+        so it is host-only. Repo file selection (repo_context_files) may still
         be set from the repo, only the cap is refused.
         """
         repo_toml = b"""
 [config]
-repo_context_files = ["group/A/idea:AGENTS.md"]
+repo_context_files = [{repo_id = "group/A/idea", file_path = "AGENTS.md"}]
 repo_context_max_sibling_files = 1000
 """
         monkeypatch.setattr(
@@ -112,8 +112,28 @@ repo_context_max_sibling_files = 1000
             git_utils.apply_repo_settings("https://git.example/projects/A/repos/a/pull-requests/1")
             assert get_settings().config.get("repo_context_max_sibling_files") == 5, \
                 "Repo settings must not be able to raise repo_context_max_sibling_files"
-            assert get_settings().config.get("repo_context_files") == ["group/A/idea:AGENTS.md"], \
-                "Repo settings should still be able to select repo_context_files"
+            assert get_settings().config.get("repo_context_files") == [
+                {"repo_id": "group/A/idea", "file_path": "AGENTS.md"},
+            ], "Repo settings should still be able to select repo_context_files"
+
+    def test_repo_selects_siblings_without_changing_host_allowlist(self, fresh_global_settings, monkeypatch):
+        repo_toml = b"""
+[config]
+repo_context_sibling_repos = ["group/private"]
+repo_context_files = [{repo_id = "group/approved", file_path = "api.py"}]
+"""
+        monkeypatch.setattr(
+            "pr_agent.git_providers.utils.get_git_provider_with_context",
+            lambda url: FakeGitProvider(repo_toml),
+        )
+        with request_cycle_context({}):
+            context["settings"] = copy.deepcopy(global_settings)
+            get_settings().set("CONFIG.REPO_CONTEXT_SIBLING_REPOS", ["group/approved"])
+            git_utils.apply_repo_settings("https://git.example/projects/A/repos/a/pull-requests/1")
+            assert get_settings().config.repo_context_sibling_repos == ["group/approved"]
+            assert get_settings().config.repo_context_files == [
+                {"repo_id": "group/approved", "file_path": "api.py"},
+            ]
 
     def test_unknown_section_does_not_leak_to_next_repo(self, fresh_global_settings, monkeypatch):
         """Catches the case where a repo's `.pr_agent.toml` introduces a section

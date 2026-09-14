@@ -1142,12 +1142,13 @@ class GithubProvider(GitProvider):
             return None
         return self.repo.split('/')[0]
 
-    def get_owning_namespace(self) -> Optional[str]:
+    def get_owning_namespace(self, *, resolved: bool = False) -> Optional[str]:
         # Be robust to providers built without full __init__ (e.g. __new__ in tests/helpers):
         # without a repo there is no org to resolve, so skip global settings quietly.
         if not getattr(self, "repo", None):
             return None
-        return self.repo.split('/')[0]
+        repo_path = self.github_client.get_repo(self.repo).full_name if resolved else self.repo
+        return repo_path.split("/")[0] if isinstance(repo_path, str) and "/" in repo_path else None
 
     def get_pr_description_full(self):
         return self.pr.body
@@ -1272,16 +1273,17 @@ class GithubProvider(GitProvider):
             file_path = (file_path or "").strip().lstrip("/")
             if not repo_id or not file_path:
                 return ""
-            current_repo = getattr(self, "repo", "") or ""
-            current_owner = current_repo.split("/")[0] if "/" in current_repo else ""
-            sibling_parts = repo_id.split("/")
-            # Only the same owner (user or organisation) is a "sibling"; anything wider would
-            # point the configured token at a repository the requester could not otherwise read.
-            # Compare case-insensitively: GitHub treats owner logins as case-insensitive.
-            if len(sibling_parts) != 2 or not current_owner or sibling_parts[0].casefold() != current_owner.casefold():
-                get_logger().warning(f"Ignoring out-of-owner sibling repo in repo context: {repo_id}")
+            if not self.is_sibling_repo_allowed(repo_id, case_sensitive=False):
+                get_logger().warning(f"Ignoring sibling repo absent from the host allowlist: {repo_id}")
                 return ""
             sibling_repo = self.github_client.get_repo(repo_id)
+            resolved_name = sibling_repo.full_name
+            current_owner = self.get_owning_namespace(resolved=True)
+            # Reject redirects/transfers unless the canonical repository was explicitly selected.
+            if (not isinstance(resolved_name, str) or resolved_name.casefold() != repo_id.casefold()
+                    or not current_owner or resolved_name.split("/")[0].casefold() != current_owner.casefold()):
+                get_logger().warning(f"Ignoring out-of-owner sibling repo in repo context: {repo_id}")
+                return ""
             if not self._requester_can_read_sibling_repo(sibling_repo):
                 get_logger().warning(
                     f"Ignoring sibling repo context file the review requester cannot read: {repo_id}"
@@ -1331,7 +1333,7 @@ class GithubProvider(GitProvider):
             organization = getattr(sibling_repo, "organization", None)
             if organization is not None:
                 try:
-                    if bool(organization.has_in_members(requester_login)):
+                    if bool(organization.has_in_members(self.github_client.get_user(requester_login))):
                         return True
                 except GithubException as e:
                     # A 404 means the organization itself cannot be resolved, so it is not a

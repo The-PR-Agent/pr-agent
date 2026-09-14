@@ -75,10 +75,14 @@ FORBIDDEN_ARGS = [
     '--config={"repo_context_max_sibling_files": 1000}',
     # repo_context_files selects which files become model instructions, so comment arguments
     # must not be able to point the bot at arbitrary sibling repo content.
-    "--config.repo_context_files=[\"group/A/idea:AGENTS.md\"]",
     '--config.repo_context_files=[{"repo_id": "group/A/idea", "file_path": "AGENTS.md"}]',
     "--config__repo_context_files=[\"AGENTS.md\"]",
-    '--config={"repo_context_files": ["group/A/idea:AGENTS.md"]}',
+    '--config={"repo_context_files": ["AGENTS.md"]}',
+    # repo_context_sibling_repos is the host-only allowlist of sibling repositories whose
+    # files may be selected; neither repo settings nor comment arguments can change it.
+    "--config.repo_context_sibling_repos=[]",
+    "--config__repo_context_sibling_repos=[]",
+    '--config={"repo_context_sibling_repos": []}',
 ]
 
 

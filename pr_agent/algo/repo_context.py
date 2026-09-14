@@ -95,7 +95,7 @@ def _get_repo_context_process_cache_key(
 def _get_repo_context_config() -> tuple[list, int] | None:
     context_files = get_settings().config.get("repo_context_files", [])
     if not context_files:
-        return None
+        context_files = []
 
     if isinstance(context_files, str):
         get_logger().warning(
@@ -108,6 +108,9 @@ def _get_repo_context_config() -> tuple[list, int] | None:
             "repo_context_files should be a list of file paths; skipping repo context",
             artifact={"repo_context_files": context_files},
         )
+        return None
+
+    if not context_files:
         return None
 
     max_lines = get_settings().config.get("repo_context_max_lines", 500)
@@ -312,7 +315,8 @@ def _load_repo_context_files(
                 # migration instead of silently splitting on ':'.
                 get_logger().warning(
                     "repo context file path contains ':' and is read as a local file; use a "
-                    "{'repo_id': ..., 'file_path': ...} entry to load a sibling repository file",
+                    "structured {'repo_id': ..., 'file_path': ...} entry in repo_context_files to "
+                    "load a sibling repository file",
                     artifact={"file_path": entry},
                 )
             try:
@@ -419,10 +423,16 @@ def build_repo_context(git_provider) -> str:
 
     # Sibling repositories change independently of the requesting repo, so the current-repo
     # revision cannot reconstruct their default-branch content. Bypass the revision-keyed cache
-    # only when the build can actually attempt a sibling fetch; the fetch cap bounds the extra
-    # work. Malformed entries and providers without sibling support keep the cache usable.
-    has_sibling_entries = (bool(_sibling_repo_context_entries(context_files))
-                           and _provider_supports_sibling_repo_context(git_provider))
+    # only when the build can actually attempt a sibling fetch. A zero effective sibling-fetch
+    # cap disables the fetches entirely, so a local + sibling config with cap 0 must keep the
+    # revision-keyed cache usable (otherwise disabled siblings would silently disable local
+    # caching too). Malformed entries and providers without sibling support likewise keep the
+    # cache usable.
+    has_sibling_entries = (
+        bool(_sibling_repo_context_entries(context_files))
+        and _provider_supports_sibling_repo_context(git_provider)
+        and _read_max_sibling_context_files() > 0
+    )
 
     from_default_branch = _read_bool_setting("repo_context_from_default_branch", default=True)
     context_ref = None

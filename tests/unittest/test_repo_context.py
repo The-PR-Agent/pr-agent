@@ -68,12 +68,15 @@ def repo_context_settings():
     original_files = settings.config.get("repo_context_files", [])
     original_max_lines = settings.config.get("repo_context_max_lines", 500)
     original_from_default_branch = settings.config.get("repo_context_from_default_branch", True)
+    original_sibling_repos = settings.config.get("repo_context_sibling_repos", [])
+    settings.set("CONFIG.REPO_CONTEXT_SIBLING_REPOS", [])
     original_max_sibling_files = settings.config.get("repo_context_max_sibling_files", 5)
     original_warned_provider_classes = repo_context._unsupported_repo_context_provider_classes.copy()
     original_process_cache = repo_context._repo_context_process_cache.copy()
 
     yield settings
 
+    settings.set("CONFIG.REPO_CONTEXT_SIBLING_REPOS", original_sibling_repos)
     settings.set("CONFIG.REPO_CONTEXT_FILES", original_files)
     settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", original_max_lines)
     settings.set("CONFIG.REPO_CONTEXT_FROM_DEFAULT_BRANCH", original_from_default_branch)
@@ -591,8 +594,10 @@ def test_sibling_fetch_cap_counts_exceptions(repo_context_settings):
 
 
 def test_build_repo_context_renders_sibling_file_with_budget(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_SIBLING_REPOS", ["group/lib-api"])
     repo_context_settings.set(
-        "CONFIG.REPO_CONTEXT_FILES", [{"repo_id": "group/lib-api", "file_path": "src/interfaces/api.py"}]
+        "CONFIG.REPO_CONTEXT_FILES",
+        [{"repo_id": "group/lib-api", "file_path": "src/interfaces/api.py"}]
     )
     repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 500)
     provider = SiblingFakeProvider(
@@ -615,6 +620,7 @@ def test_build_repo_context_renders_sibling_file_with_budget(repo_context_settin
 
 
 def test_build_repo_context_renders_local_and_sibling_with_same_label(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_SIBLING_REPOS", ["group/lib"])
     repo_context_settings.set(
         "CONFIG.REPO_CONTEXT_FILES",
         [
@@ -649,11 +655,19 @@ def test_build_repo_context_renders_local_and_sibling_with_same_label(repo_conte
     )
 
 
-def test_github_provider_fetches_sibling_file_in_same_owner():
+@pytest.fixture
+def sibling_provider_settings(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_SIBLING_REPOS", ["myorg/lib", "group/sub/lib", "456"])
+    return repo_context_settings
+
+
+def test_github_provider_fetches_sibling_file_in_same_owner(sibling_provider_settings):
     provider = GithubProvider.__new__(GithubProvider)
     provider.repo = "myorg/current"
+    provider.get_owning_namespace = Mock(return_value="myorg")
     provider.github_client = Mock()
     sibling_repo = Mock()
+    sibling_repo.full_name = "myorg/lib"
     sibling_repo.private = False
     sibling_repo.get_contents.return_value.decoded_content = b"sibling contract"
     provider.github_client.get_repo.return_value = sibling_repo
@@ -663,12 +677,14 @@ def test_github_provider_fetches_sibling_file_in_same_owner():
     sibling_repo.get_contents.assert_called_once_with("src/api.py")
 
 
-def test_github_provider_fetches_private_sibling_when_requester_is_collaborator():
+def test_github_provider_fetches_private_sibling_when_requester_is_collaborator(sibling_provider_settings):
     provider = GithubProvider.__new__(GithubProvider)
     provider.repo = "myorg/current"
+    provider.get_owning_namespace = Mock(return_value="myorg")
     provider.github_client = Mock()
     provider.pr = SimpleNamespace(user=SimpleNamespace(login="alice"))
     sibling_repo = Mock()
+    sibling_repo.full_name = "myorg/lib"
     sibling_repo.private = True
     sibling_repo.has_in_collaborators.return_value = True
     sibling_repo.get_contents.return_value.decoded_content = b"sibling contract"
@@ -678,12 +694,14 @@ def test_github_provider_fetches_private_sibling_when_requester_is_collaborator(
     sibling_repo.has_in_collaborators.assert_called_once_with("alice")
 
 
-def test_github_provider_fetches_private_sibling_when_requester_is_owner():
+def test_github_provider_fetches_private_sibling_when_requester_is_owner(sibling_provider_settings):
     provider = GithubProvider.__new__(GithubProvider)
     provider.repo = "myorg/current"
+    provider.get_owning_namespace = Mock(return_value="myorg")
     provider.github_client = Mock()
     provider.pr = SimpleNamespace(user=SimpleNamespace(login="alice"))
     sibling_repo = Mock()
+    sibling_repo.full_name = "myorg/lib"
     sibling_repo.private = True
     sibling_repo.owner = SimpleNamespace(login="alice")
     sibling_repo.get_contents.return_value.decoded_content = b"sibling contract"
@@ -693,12 +711,14 @@ def test_github_provider_fetches_private_sibling_when_requester_is_owner():
     sibling_repo.has_in_collaborators.assert_not_called()
 
 
-def test_github_provider_rejects_private_sibling_when_requester_is_not_collaborator():
+def test_github_provider_rejects_private_sibling_when_requester_is_not_collaborator(sibling_provider_settings):
     provider = GithubProvider.__new__(GithubProvider)
     provider.repo = "myorg/current"
+    provider.get_owning_namespace = Mock(return_value="myorg")
     provider.github_client = Mock()
     provider.pr = SimpleNamespace(user=SimpleNamespace(login="alice"))
     sibling_repo = Mock()
+    sibling_repo.full_name = "myorg/lib"
     sibling_repo.private = True
     sibling_repo.has_in_collaborators.return_value = False
     provider.github_client.get_repo.return_value = sibling_repo
@@ -712,11 +732,13 @@ def test_github_provider_rejects_private_sibling_when_requester_is_not_collabora
     )
 
 
-def test_github_provider_rejects_private_sibling_when_requester_is_unknown():
+def test_github_provider_rejects_private_sibling_when_requester_is_unknown(sibling_provider_settings):
     provider = GithubProvider.__new__(GithubProvider)
     provider.repo = "myorg/current"
+    provider.get_owning_namespace = Mock(return_value="myorg")
     provider.github_client = Mock()
     sibling_repo = Mock()
+    sibling_repo.full_name = "myorg/lib"
     sibling_repo.private = True
     provider.github_client.get_repo.return_value = sibling_repo
 
@@ -724,13 +746,15 @@ def test_github_provider_rejects_private_sibling_when_requester_is_unknown():
     sibling_repo.get_contents.assert_not_called()
 
 
-def test_github_provider_rejects_private_sibling_when_command_actor_lacks_access():
+def test_github_provider_rejects_private_sibling_when_command_actor_lacks_access(sibling_provider_settings):
     provider = GithubProvider.__new__(GithubProvider)
     provider.repo = "myorg/current"
+    provider.get_owning_namespace = Mock(return_value="myorg")
     provider.github_client = Mock()
     provider.pr = SimpleNamespace(user=SimpleNamespace(login="alice"))
     provider.set_command_actor("mallory")
     sibling_repo = Mock()
+    sibling_repo.full_name = "myorg/lib"
     sibling_repo.private = True
     sibling_repo.visibility = "private"
     sibling_repo.has_in_collaborators.return_value = False
@@ -747,13 +771,15 @@ def test_github_provider_rejects_private_sibling_when_command_actor_lacks_access
     )
 
 
-def test_github_provider_fetches_private_sibling_when_command_actor_is_collaborator():
+def test_github_provider_fetches_private_sibling_when_command_actor_is_collaborator(sibling_provider_settings):
     provider = GithubProvider.__new__(GithubProvider)
     provider.repo = "myorg/current"
+    provider.get_owning_namespace = Mock(return_value="myorg")
     provider.github_client = Mock()
     provider.pr = SimpleNamespace(user=SimpleNamespace(login="alice"))
     provider.set_command_actor("mallory")
     sibling_repo = Mock()
+    sibling_repo.full_name = "myorg/lib"
     sibling_repo.private = True
     sibling_repo.visibility = "private"
     sibling_repo.has_in_collaborators.return_value = True
@@ -764,12 +790,14 @@ def test_github_provider_fetches_private_sibling_when_command_actor_is_collabora
     sibling_repo.has_in_collaborators.assert_called_once_with("mallory")
 
 
-def test_github_provider_rejects_internal_sibling_when_requester_is_not_collaborator():
+def test_github_provider_rejects_internal_sibling_when_requester_is_not_collaborator(sibling_provider_settings):
     provider = GithubProvider.__new__(GithubProvider)
     provider.repo = "myorg/current"
+    provider.get_owning_namespace = Mock(return_value="myorg")
     provider.github_client = Mock()
     provider.pr = SimpleNamespace(user=SimpleNamespace(login="alice"))
     sibling_repo = Mock()
+    sibling_repo.full_name = "myorg/lib"
     sibling_repo.private = False
     sibling_repo.visibility = "internal"
     sibling_repo.organization = None  # not an organization-controlled repository
@@ -781,12 +809,14 @@ def test_github_provider_rejects_internal_sibling_when_requester_is_not_collabor
     sibling_repo.get_contents.assert_not_called()
 
 
-def test_github_provider_fetches_internal_sibling_when_command_actor_is_collaborator():
+def test_github_provider_fetches_internal_sibling_when_command_actor_is_collaborator(sibling_provider_settings):
     provider = GithubProvider.__new__(GithubProvider)
     provider.repo = "myorg/current"
+    provider.get_owning_namespace = Mock(return_value="myorg")
     provider.github_client = Mock()
     provider.set_command_actor("alice")
     sibling_repo = Mock()
+    sibling_repo.full_name = "myorg/lib"
     sibling_repo.private = False
     sibling_repo.visibility = "internal"
     sibling_repo.organization = None
@@ -798,12 +828,14 @@ def test_github_provider_fetches_internal_sibling_when_command_actor_is_collabor
     sibling_repo.has_in_collaborators.assert_called_once_with("alice")
 
 
-def test_github_provider_fetches_internal_sibling_when_requester_is_org_member():
+def test_github_provider_fetches_internal_sibling_when_requester_is_org_member(sibling_provider_settings):
     provider = GithubProvider.__new__(GithubProvider)
     provider.repo = "myorg/current"
+    provider.get_owning_namespace = Mock(return_value="myorg")
     provider.github_client = Mock()
     provider.set_command_actor("alice")
     sibling_repo = Mock()
+    sibling_repo.full_name = "myorg/lib"
     sibling_repo.private = False
     sibling_repo.visibility = "internal"
     sibling_repo.organization = Mock()
@@ -814,16 +846,19 @@ def test_github_provider_fetches_internal_sibling_when_requester_is_org_member()
     # Internal repositories are readable by every member of the owning organization without a
     # per-repo collaborator grant, so the membership check is both sufficient and necessary.
     assert provider.get_sibling_repo_file_content("myorg/lib", "src/api.py") == "sibling contract"
-    sibling_repo.organization.has_in_members.assert_called_once_with("alice")
+    provider.github_client.get_user.assert_called_once_with("alice")
+    sibling_repo.organization.has_in_members.assert_called_once_with(provider.github_client.get_user.return_value)
     sibling_repo.has_in_collaborators.assert_not_called()
 
 
-def test_github_provider_rejects_internal_sibling_to_non_member_non_collaborator():
+def test_github_provider_rejects_internal_sibling_to_non_member_non_collaborator(sibling_provider_settings):
     provider = GithubProvider.__new__(GithubProvider)
     provider.repo = "myorg/current"
+    provider.get_owning_namespace = Mock(return_value="myorg")
     provider.github_client = Mock()
     provider.set_command_actor("alice")
     sibling_repo = Mock()
+    sibling_repo.full_name = "myorg/lib"
     sibling_repo.private = False
     sibling_repo.visibility = "internal"
     sibling_repo.organization = Mock()
@@ -835,7 +870,8 @@ def test_github_provider_rejects_internal_sibling_to_non_member_non_collaborator
         assert provider.get_sibling_repo_file_content("myorg/lib", "src/api.py") == ""
 
     # Not an org member; outside collaborators are the remaining way into an internal repo.
-    sibling_repo.organization.has_in_members.assert_called_once_with("alice")
+    provider.github_client.get_user.assert_called_once_with("alice")
+    sibling_repo.organization.has_in_members.assert_called_once_with(provider.github_client.get_user.return_value)
     sibling_repo.has_in_collaborators.assert_called_once_with("alice")
     sibling_repo.get_contents.assert_not_called()
     mock_get_logger.return_value.warning.assert_called_once_with(
@@ -843,11 +879,13 @@ def test_github_provider_rejects_internal_sibling_to_non_member_non_collaborator
     )
 
 
-def test_github_provider_fetches_sibling_when_owner_case_differs():
+def test_github_provider_fetches_sibling_when_owner_case_differs(sibling_provider_settings):
     provider = GithubProvider.__new__(GithubProvider)
     provider.repo = "MyOrg/current"
+    provider.get_owning_namespace = Mock(return_value="MyOrg")
     provider.github_client = Mock()
     sibling_repo = Mock()
+    sibling_repo.full_name = "myorg/lib"
     sibling_repo.private = False
     sibling_repo.get_contents.return_value.decoded_content = b"sibling contract"
     provider.github_client.get_repo.return_value = sibling_repo
@@ -858,12 +896,14 @@ def test_github_provider_fetches_sibling_when_owner_case_differs():
     sibling_repo.get_contents.assert_called_once_with("src/api.py")
 
 
-def test_github_provider_propagates_sibling_collaborator_errors():
+def test_github_provider_propagates_sibling_collaborator_errors(sibling_provider_settings):
     provider = GithubProvider.__new__(GithubProvider)
     provider.repo = "myorg/current"
+    provider.get_owning_namespace = Mock(return_value="myorg")
     provider.github_client = Mock()
     provider.pr = SimpleNamespace(user=SimpleNamespace(login="alice"))
     sibling_repo = Mock()
+    sibling_repo.full_name = "myorg/lib"
     sibling_repo.private = True
     sibling_repo.has_in_collaborators.side_effect = GithubException(500, {"message": "boom"}, {})
     provider.github_client.get_repo.return_value = sibling_repo
@@ -878,12 +918,14 @@ def test_github_provider_propagates_sibling_collaborator_errors():
     assert provider.get_sibling_repo_file_content("myorg/lib", "src/api.py") == ""
 
 
-def test_github_provider_propagates_org_membership_errors():
+def test_github_provider_propagates_org_membership_errors(sibling_provider_settings):
     provider = GithubProvider.__new__(GithubProvider)
     provider.repo = "myorg/current"
+    provider.get_owning_namespace = Mock(return_value="myorg")
     provider.github_client = Mock()
     provider.set_command_actor("alice")
     sibling_repo = Mock()
+    sibling_repo.full_name = "myorg/lib"
     sibling_repo.private = False
     sibling_repo.visibility = "internal"
     sibling_repo.organization = Mock()
@@ -899,12 +941,15 @@ def test_github_provider_propagates_org_membership_errors():
     sibling_repo.organization.has_in_members.side_effect = GithubException(404, {"message": "Not Found"}, {})
     sibling_repo.has_in_collaborators.return_value = False
     assert provider.get_sibling_repo_file_content("myorg/lib", "src/api.py") == ""
+    provider.github_client.get_user.assert_called_with("alice")
+    sibling_repo.organization.has_in_members.assert_called_with(provider.github_client.get_user.return_value)
     sibling_repo.has_in_collaborators.assert_called_once_with("alice")
 
 
-def test_github_provider_rejects_out_of_owner_sibling_without_api_call():
+def test_github_provider_rejects_out_of_owner_sibling_without_api_call(sibling_provider_settings):
     provider = GithubProvider.__new__(GithubProvider)
     provider.repo = "myorg/current"
+    provider.get_owning_namespace = Mock(return_value="myorg")
     provider.github_client = Mock()
 
     with patch("pr_agent.git_providers.github_provider.get_logger") as mock_get_logger:
@@ -912,24 +957,27 @@ def test_github_provider_rejects_out_of_owner_sibling_without_api_call():
 
     provider.github_client.get_repo.assert_not_called()
     mock_get_logger.return_value.warning.assert_called_once_with(
-        "Ignoring out-of-owner sibling repo in repo context: other-org/lib"
+        "Ignoring sibling repo absent from the host allowlist: other-org/lib"
     )
 
 
-def test_github_provider_treats_missing_sibling_file_as_no_context():
+def test_github_provider_treats_missing_sibling_file_as_no_context(sibling_provider_settings):
     provider = GithubProvider.__new__(GithubProvider)
     provider.repo = "myorg/current"
+    provider.get_owning_namespace = Mock(return_value="myorg")
     provider.github_client = Mock()
     provider.github_client.get_repo.side_effect = GithubException(404, {"message": "Not Found"}, {})
 
     assert provider.get_sibling_repo_file_content("myorg/lib", "src/api.py") == ""
 
 
-def test_gitlab_provider_fetches_sibling_file_in_same_namespace():
+def test_gitlab_provider_fetches_sibling_file_in_same_namespace(sibling_provider_settings):
     provider = GitLabProvider.__new__(GitLabProvider)
     provider.id_project = "group/sub/current"
+    provider.get_owning_namespace = Mock(return_value="group")
     provider.gl = Mock()
     sibling_project = Mock()
+    sibling_project.path_with_namespace = "group/sub/lib"
     sibling_project.default_branch = "main"
     sibling_project.visibility = "public"
     sibling_project.files.get.return_value.decode.return_value = b"sibling contract"
@@ -940,12 +988,14 @@ def test_gitlab_provider_fetches_sibling_file_in_same_namespace():
     sibling_project.files.get.assert_called_once_with(file_path="src/api.py", ref="main")
 
 
-def test_gitlab_provider_rejects_internal_sibling_when_requester_is_not_member():
+def test_gitlab_provider_rejects_internal_sibling_when_requester_is_not_member(sibling_provider_settings):
     provider = GitLabProvider.__new__(GitLabProvider)
     provider.id_project = "group/sub/current"
+    provider.get_owning_namespace = Mock(return_value="group")
     provider.gl = Mock()
     provider.mr = SimpleNamespace(author={"id": 42})
     sibling_project = Mock()
+    sibling_project.path_with_namespace = "group/sub/lib"
     sibling_project.default_branch = "main"
     sibling_project.visibility = "internal"
     sibling_project.members_all.get.side_effect = GitlabGetError("Not found", response_code=404)
@@ -963,12 +1013,14 @@ def test_gitlab_provider_rejects_internal_sibling_when_requester_is_not_member()
     )
 
 
-def test_gitlab_provider_fetches_internal_sibling_when_requester_is_read_member():
+def test_gitlab_provider_fetches_internal_sibling_when_requester_is_read_member(sibling_provider_settings):
     provider = GitLabProvider.__new__(GitLabProvider)
     provider.id_project = "group/sub/current"
+    provider.get_owning_namespace = Mock(return_value="group")
     provider.gl = Mock()
     provider.mr = SimpleNamespace(author={"id": 42})
     sibling_project = Mock()
+    sibling_project.path_with_namespace = "group/sub/lib"
     sibling_project.default_branch = "main"
     sibling_project.visibility = "internal"
     sibling_project.members_all.get.return_value = SimpleNamespace(access_level=30)
@@ -979,14 +1031,16 @@ def test_gitlab_provider_fetches_internal_sibling_when_requester_is_read_member(
     sibling_project.members_all.get.assert_called_once_with(42)
 
 
-def test_gitlab_provider_fetches_internal_sibling_for_non_external_instance_user():
+def test_gitlab_provider_fetches_internal_sibling_for_non_external_instance_user(sibling_provider_settings):
     provider = GitLabProvider.__new__(GitLabProvider)
     provider.id_project = "group/sub/current"
+    provider.get_owning_namespace = Mock(return_value="group")
     provider.gl = Mock()
     provider.mr = SimpleNamespace(author={"id": 42})
     # The requester is a signed-in instance user who is not an external user.
     provider.gl.users.get.return_value = SimpleNamespace(external=False)
     sibling_project = Mock()
+    sibling_project.path_with_namespace = "group/sub/lib"
     sibling_project.default_branch = "main"
     sibling_project.visibility = "internal"
     sibling_project.files.get.return_value.decode.return_value = b"sibling contract"
@@ -999,13 +1053,15 @@ def test_gitlab_provider_fetches_internal_sibling_for_non_external_instance_user
     sibling_project.files.get.assert_called_once_with(file_path="src/api.py", ref="main")
 
 
-def test_gitlab_provider_rejects_internal_sibling_for_external_user_non_member():
+def test_gitlab_provider_rejects_internal_sibling_for_external_user_non_member(sibling_provider_settings):
     provider = GitLabProvider.__new__(GitLabProvider)
     provider.id_project = "group/sub/current"
+    provider.get_owning_namespace = Mock(return_value="group")
     provider.gl = Mock()
     provider.mr = SimpleNamespace(author={"id": 42})
     provider.gl.users.get.return_value = SimpleNamespace(external=True)
     sibling_project = Mock()
+    sibling_project.path_with_namespace = "group/sub/lib"
     sibling_project.default_branch = "main"
     sibling_project.visibility = "internal"
     sibling_project.members_all.get.side_effect = GitlabGetError("Not found", response_code=404)
@@ -1023,12 +1079,14 @@ def test_gitlab_provider_rejects_internal_sibling_for_external_user_non_member()
     )
 
 
-def test_gitlab_provider_propagates_membership_provider_errors():
+def test_gitlab_provider_propagates_membership_provider_errors(sibling_provider_settings):
     provider = GitLabProvider.__new__(GitLabProvider)
     provider.id_project = "group/sub/current"
+    provider.get_owning_namespace = Mock(return_value="group")
     provider.gl = Mock()
     provider.mr = SimpleNamespace(author={"id": 42})
     sibling_project = Mock()
+    sibling_project.path_with_namespace = "group/sub/lib"
     sibling_project.default_branch = "main"
     sibling_project.visibility = "private"
     sibling_project.members_all.get.side_effect = GitlabGetError("boom", response_code=500)
@@ -1040,13 +1098,15 @@ def test_gitlab_provider_propagates_membership_provider_errors():
     sibling_project.files.get.assert_not_called()
 
 
-def test_gitlab_provider_propagates_user_lookup_provider_errors():
+def test_gitlab_provider_propagates_user_lookup_provider_errors(sibling_provider_settings):
     provider = GitLabProvider.__new__(GitLabProvider)
     provider.id_project = "group/sub/current"
+    provider.get_owning_namespace = Mock(return_value="group")
     provider.gl = Mock()
     provider.mr = SimpleNamespace(author={"id": 42})
     provider.gl.users.get.side_effect = GitlabGetError("boom", response_code=500)
     sibling_project = Mock()
+    sibling_project.path_with_namespace = "group/sub/lib"
     sibling_project.default_branch = "main"
     sibling_project.visibility = "internal"
     provider.gl.projects.get.return_value = sibling_project
@@ -1062,12 +1122,14 @@ def test_gitlab_provider_propagates_user_lookup_provider_errors():
     sibling_project.members_all.get.assert_not_called()
 
 
-def test_gitlab_provider_rejects_private_sibling_when_member_lacks_repo_read():
+def test_gitlab_provider_rejects_private_sibling_when_member_lacks_repo_read(sibling_provider_settings):
     provider = GitLabProvider.__new__(GitLabProvider)
     provider.id_project = "group/sub/current"
+    provider.get_owning_namespace = Mock(return_value="group")
     provider.gl = Mock()
     provider.mr = SimpleNamespace(author={"id": 42})
     sibling_project = Mock()
+    sibling_project.path_with_namespace = "group/sub/lib"
     sibling_project.default_branch = "main"
     sibling_project.visibility = "private"
     sibling_project.members_all.get.return_value = SimpleNamespace(access_level=10)
@@ -1085,12 +1147,14 @@ def test_gitlab_provider_rejects_private_sibling_when_member_lacks_repo_read():
     )
 
 
-def test_gitlab_provider_fetches_private_sibling_when_requester_is_member():
+def test_gitlab_provider_fetches_private_sibling_when_requester_is_member(sibling_provider_settings):
     provider = GitLabProvider.__new__(GitLabProvider)
     provider.id_project = "group/sub/current"
+    provider.get_owning_namespace = Mock(return_value="group")
     provider.gl = Mock()
     provider.mr = SimpleNamespace(author={"id": 42})
     sibling_project = Mock()
+    sibling_project.path_with_namespace = "group/sub/lib"
     sibling_project.default_branch = "main"
     sibling_project.visibility = "private"
     sibling_project.members_all.get.return_value = SimpleNamespace(access_level=30)
@@ -1101,13 +1165,15 @@ def test_gitlab_provider_fetches_private_sibling_when_requester_is_member():
     sibling_project.members_all.get.assert_called_once_with(42)
 
 
-def test_gitlab_provider_rejects_private_sibling_when_command_actor_is_not_member():
+def test_gitlab_provider_rejects_private_sibling_when_command_actor_is_not_member(sibling_provider_settings):
     provider = GitLabProvider.__new__(GitLabProvider)
     provider.id_project = "group/sub/current"
+    provider.get_owning_namespace = Mock(return_value="group")
     provider.gl = Mock()
     provider.mr = SimpleNamespace(author={"id": 42})
     provider.set_command_actor(99)
     sibling_project = Mock()
+    sibling_project.path_with_namespace = "group/sub/lib"
     sibling_project.default_branch = "main"
     sibling_project.visibility = "private"
     sibling_project.members_all.get.side_effect = GitlabGetError("Not found", response_code=404)
@@ -1124,13 +1190,15 @@ def test_gitlab_provider_rejects_private_sibling_when_command_actor_is_not_membe
     )
 
 
-def test_gitlab_provider_fetches_private_sibling_when_command_actor_is_member():
+def test_gitlab_provider_fetches_private_sibling_when_command_actor_is_member(sibling_provider_settings):
     provider = GitLabProvider.__new__(GitLabProvider)
     provider.id_project = "group/sub/current"
+    provider.get_owning_namespace = Mock(return_value="group")
     provider.gl = Mock()
     provider.mr = SimpleNamespace(author={"id": 42})
     provider.set_command_actor(99)
     sibling_project = Mock()
+    sibling_project.path_with_namespace = "group/sub/lib"
     sibling_project.default_branch = "main"
     sibling_project.visibility = "private"
     sibling_project.members_all.get.return_value = SimpleNamespace(access_level=30)
@@ -1141,12 +1209,14 @@ def test_gitlab_provider_fetches_private_sibling_when_command_actor_is_member():
     sibling_project.members_all.get.assert_called_once_with(99)
 
 
-def test_gitlab_provider_rejects_private_sibling_when_requester_is_not_member():
+def test_gitlab_provider_rejects_private_sibling_when_requester_is_not_member(sibling_provider_settings):
     provider = GitLabProvider.__new__(GitLabProvider)
     provider.id_project = "group/sub/current"
+    provider.get_owning_namespace = Mock(return_value="group")
     provider.gl = Mock()
     provider.mr = SimpleNamespace(author={"id": 42})
     sibling_project = Mock()
+    sibling_project.path_with_namespace = "group/sub/lib"
     sibling_project.default_branch = "main"
     sibling_project.visibility = "private"
     sibling_project.members_all.get.side_effect = GitlabGetError("Not found", response_code=404)
@@ -1161,11 +1231,13 @@ def test_gitlab_provider_rejects_private_sibling_when_requester_is_not_member():
     )
 
 
-def test_gitlab_provider_rejects_private_sibling_when_requester_is_unknown():
+def test_gitlab_provider_rejects_private_sibling_when_requester_is_unknown(sibling_provider_settings):
     provider = GitLabProvider.__new__(GitLabProvider)
     provider.id_project = "group/sub/current"
+    provider.get_owning_namespace = Mock(return_value="group")
     provider.gl = Mock()
     sibling_project = Mock()
+    sibling_project.path_with_namespace = "group/sub/lib"
     sibling_project.default_branch = "main"
     sibling_project.visibility = "private"
     provider.gl.projects.get.return_value = sibling_project
@@ -1175,9 +1247,10 @@ def test_gitlab_provider_rejects_private_sibling_when_requester_is_unknown():
     sibling_project.members_all.get.assert_not_called()
 
 
-def test_gitlab_provider_rejects_out_of_namespace_sibling_without_api_call():
+def test_gitlab_provider_rejects_out_of_namespace_sibling_without_api_call(sibling_provider_settings):
     provider = GitLabProvider.__new__(GitLabProvider)
     provider.id_project = "group/sub/current"
+    provider.get_owning_namespace = Mock(return_value="group")
     provider.gl = Mock()
 
     with patch("pr_agent.git_providers.gitlab_provider.get_logger") as mock_get_logger:
@@ -1185,54 +1258,8 @@ def test_gitlab_provider_rejects_out_of_namespace_sibling_without_api_call():
 
     provider.gl.projects.get.assert_not_called()
     mock_get_logger.return_value.warning.assert_called_once_with(
-        "Ignoring out-of-namespace sibling repo in repo context: other/lib"
+        "Ignoring sibling repo absent from the host allowlist: other/lib"
     )
-
-
-def test_gitlab_provider_resolves_namespace_for_numeric_project_id():
-    provider = GitLabProvider.__new__(GitLabProvider)
-    provider.id_project = "123"
-    provider.gl = Mock()
-    # python-gitlab exposes the project namespace as a mapping rather than an object.
-    current_project = Mock()
-    current_project.namespace = {"full_path": "group/sub"}
-    provider.gl.projects.get.return_value = current_project
-    sibling_project = Mock()
-    sibling_project.default_branch = "main"
-    sibling_project.visibility = "public"
-    sibling_project.files.get.return_value.decode.return_value = b"sibling contract"
-    provider.gl.projects.get.side_effect = [current_project, sibling_project]
-
-    assert provider.get_sibling_repo_file_content("group/sub/lib", "src/api.py") == "sibling contract"
-
-    # Current project (id 123) resolved once for its namespace, then the sibling fetched.
-    assert provider.gl.projects.get.call_args_list[0] == (("123",),)
-    assert provider.gl.projects.get.call_args_list[1] == (("group/sub/lib",),)
-
-
-def test_gitlab_provider_rejects_sibling_when_namespace_lookup_fails():
-    provider = GitLabProvider.__new__(GitLabProvider)
-    provider.id_project = "123"
-    provider.gl = Mock()
-    current_project = Mock()
-    current_project.namespace = {"full_path": "group/sub"}
-    provider.gl.projects.get.side_effect = [GitlabGetError("boom", response_code=500), current_project]
-
-    # A failed namespace lookup must not let a one-component/numeric sibling id pass validation.
-    assert provider.get_sibling_repo_file_content("456", "file.md") == ""
-
-    # Only the namespace lookup was attempted; the numeric sibling was never fetched.
-    assert provider.gl.projects.get.call_args_list == [(("123",),)]
-
-
-def test_gitlab_provider_extracts_namespace_full_path_from_object_and_mapping():
-    provider = GitLabProvider.__new__(GitLabProvider)
-    provider.id_project = "123"
-    assert provider._extract_repo_context_namespace_full_path({"full_path": "group/sub"}) == "group/sub"
-    namespace_object = SimpleNamespace(full_path="group/sub")
-    assert provider._extract_repo_context_namespace_full_path(namespace_object) == "group/sub"
-    assert provider._extract_repo_context_namespace_full_path({"path": "sub"}) == ""
-    assert provider._extract_repo_context_namespace_full_path(None) == ""
 
 
 def test_build_repo_context_process_cache_invalidates_when_config_changes(repo_context_settings):
@@ -1271,8 +1298,10 @@ def test_build_repo_context_does_not_cache_empty_context_after_fetch_error(repo_
 
 
 def test_build_repo_context_does_not_cache_sibling_content(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_SIBLING_REPOS", ["group/lib"])
     repo_context_settings.set(
-        "CONFIG.REPO_CONTEXT_FILES", [{"repo_id": "group/lib", "file_path": "api.py"}]
+        "CONFIG.REPO_CONTEXT_FILES",
+        [{"repo_id": "group/lib", "file_path": "api.py"}]
     )
     repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 500)
     provider = SiblingFakeProvider(
@@ -1295,12 +1324,47 @@ def test_build_repo_context_does_not_cache_sibling_content(repo_context_settings
     assert provider.requested_siblings == ["group/lib:api.py", "group/lib:api.py"]
 
 
+def test_zero_sibling_cap_keeps_local_cache_usable(repo_context_settings):
+    # A zero sibling-fetch cap disables the sibling fetches entirely, so a local + sibling
+    # config with cap 0 must keep the revision-keyed cache usable: disabled siblings must not
+    # silently disable local caching too (the sibling is never requested and the second build
+    # is served from cache).
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_SIBLING_REPOS", ["group/lib"])
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_SIBLING_FILES", 0)
+    repo_context_settings.set(
+        "CONFIG.REPO_CONTEXT_FILES",
+        [
+            "AGENTS.md",
+            {"repo_id": "group/lib", "file_path": "api.py"},
+        ],
+    )
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 500)
+    provider = SiblingFakeProvider(
+        files={"AGENTS.md": "Repo purpose"},
+        sibling_files={"group/lib:api.py": "def call(req): ...\n"},
+        pr_url="https://example.com/org/repo/pull/1",
+    )
+
+    first_context = build_repo_context(provider)
+    assert "Repo purpose" in first_context
+
+    second_context = build_repo_context(provider)
+
+    assert "Repo purpose" in second_context
+    assert provider.requested_siblings == []
+    assert provider.requested_paths == ["AGENTS.md"]
+
+
 def test_build_repo_context_keeps_cache_for_entries_provider_cannot_fetch(repo_context_settings):
     # A provider without sibling support must not be forced out of the revision-keyed cache by
     # sibling-shaped entries it will skip anyway: the cache stays usable.
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_SIBLING_REPOS", ["group/lib"])
     repo_context_settings.set(
         "CONFIG.REPO_CONTEXT_FILES",
-        ["AGENTS.md", {"repo_id": "group/lib", "file_path": "api.py"}],
+        [
+            "AGENTS.md",
+            {"repo_id": "group/lib", "file_path": "api.py"},
+        ],
     )
     repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 500)
     provider = FakeProvider({
@@ -1321,9 +1385,13 @@ def test_build_repo_context_keeps_cache_for_entries_provider_cannot_fetch(repo_c
 
 def test_build_repo_context_keeps_cache_for_malformed_sibling_entries(repo_context_settings):
     # Malformed sibling entries parse to no sibling pair, so they cannot bypass the cache.
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_SIBLING_REPOS", ["group/lib"])
     repo_context_settings.set(
         "CONFIG.REPO_CONTEXT_FILES",
-        ["AGENTS.md", {"repo_id": "group/lib"}],
+        [
+            "AGENTS.md",
+            {"repo_id": "group/lib"},
+        ],
     )
     repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 500)
     provider = SiblingFakeProvider(
@@ -1860,3 +1928,92 @@ def test_get_repo_context_ref_inherits_none_for_providers_without_repo_context()
 
     assert provider.get_repo_context_ref() is None
     assert provider.get_repo_context_ref(from_default_branch=True) is None
+
+
+@pytest.mark.parametrize("provider_class", [GithubProvider, GitLabProvider])
+@pytest.mark.parametrize("allowlist", [[], "group/lib", None])
+def test_sibling_reads_require_host_approval(repo_context_settings, provider_class, allowlist):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_SIBLING_REPOS", allowlist)
+    provider = provider_class.__new__(provider_class)
+    provider.github_client = Mock()
+    provider.gl = Mock()
+
+    assert provider.get_sibling_repo_file_content("group/lib", "api.py") == ""
+    provider.github_client.get_repo.assert_not_called()
+    provider.gl.projects.get.assert_not_called()
+
+
+@pytest.mark.parametrize("current_id", ["123", "group/app/current"])
+@pytest.mark.parametrize("sibling_id", ["456", "group/libraries/lib"])
+def test_gitlab_siblings_resolve_numeric_ids_and_subgroups(repo_context_settings, current_id, sibling_id):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_SIBLING_REPOS", [sibling_id])
+    provider = GitLabProvider.__new__(GitLabProvider)
+    provider.id_project = current_id
+    current = SimpleNamespace(path_with_namespace="group/app/current")
+    sibling = Mock(id=456, path_with_namespace="group/libraries/lib", visibility="public", default_branch="main")
+    sibling.files.get.return_value.decode.return_value = b"interface"
+    provider.gl = Mock()
+    provider.gl.projects.get.side_effect = lambda identifier: current if identifier == current_id else sibling
+
+    assert provider.get_sibling_repo_file_content(sibling_id, "api.py") == "interface"
+    sibling.files.get.assert_called_once_with(file_path="api.py", ref="main")
+
+
+@pytest.mark.parametrize("sibling_id,resolved_path", [
+    ("group/lib", "other/lib"),
+    ("group/lib", "group/renamed"),
+    ("456", "other/lib"),
+])
+def test_gitlab_rejects_resolved_identity_or_namespace_change(repo_context_settings, sibling_id, resolved_path):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_SIBLING_REPOS", [sibling_id])
+    provider = GitLabProvider.__new__(GitLabProvider)
+    provider.id_project = "group/current"
+    current = SimpleNamespace(path_with_namespace="group/current")
+    sibling = Mock(id=456, path_with_namespace=resolved_path, visibility="public")
+    provider.gl = Mock()
+    provider.gl.projects.get.side_effect = lambda identifier: current if identifier == provider.id_project else sibling
+
+    assert provider.get_sibling_repo_file_content(sibling_id, "api.py") == ""
+    sibling.files.get.assert_not_called()
+
+
+@pytest.mark.parametrize("current_path,sibling_path,expected", [
+    ("MyOrg/current", "myorg/lib", "interface"),
+    ("other/current", "myorg/lib", ""),
+    ("myorg/current", "other/lib", ""),
+    ("myorg/current", "myorg/renamed", ""),
+])
+def test_github_checks_resolved_owners_and_identity(repo_context_settings, current_path, sibling_path, expected):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_SIBLING_REPOS", ["MyOrg/lib"])
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.repo = "myorg/current"
+    current = SimpleNamespace(full_name=current_path)
+    sibling = Mock(full_name=sibling_path, private=False, visibility="public")
+    sibling.get_contents.return_value.decoded_content = b"interface"
+    provider.github_client = Mock()
+    provider.github_client.get_repo.side_effect = lambda identifier: current if identifier == provider.repo else sibling
+
+    assert provider.get_sibling_repo_file_content("myorg/lib", "api.py") == expected
+    if not expected:
+        sibling.get_contents.assert_not_called()
+
+
+def test_selected_sibling_build_requires_allowlist(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", [
+        {"repo_id": "group/lib", "file_path": "api.py"},
+    ])
+    provider = GitLabProvider.__new__(GitLabProvider)
+    provider.id_project = "group/current"
+    provider.gl = Mock()
+    sibling = Mock(id=456, path_with_namespace="group/lib", visibility="public", default_branch="main")
+    sibling.files.get.return_value.decode.return_value = b"interface"
+    provider.gl.projects.get.side_effect = lambda identifier: (
+        SimpleNamespace(path_with_namespace="group/current") if identifier == provider.id_project else sibling
+    )
+
+    assert build_repo_context(provider) == ""
+    provider.gl.projects.get.assert_not_called()
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_SIBLING_REPOS", ["group/lib"])
+    assert "interface" in build_repo_context(provider)
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_SIBLING_REPOS", [])
+    assert build_repo_context(provider) == ""

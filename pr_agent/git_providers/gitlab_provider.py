@@ -46,9 +46,6 @@ class DiffNotFoundError(Exception):
     pass
 
 
-_UNRESOLVED_NAMESPACE = object()  # Distinct from "" so failed lookups can't match a sibling id.
-
-
 def _parse_gitlab_iso_datetime(value) -> Optional[datetime]:
     """Parse a GitLab ISO 8601 datetime string into a naive UTC datetime.
 
@@ -1395,14 +1392,14 @@ class GitLabProvider(GitProvider):
     def get_pr_branch(self):
         return self.mr.source_branch
 
-    def get_owning_namespace(self) -> str | None:
+    def get_owning_namespace(self, *, resolved: bool = False) -> str | None:
         # The top-level group of the project's path_with_namespace works on any host
-        # (gitlab.com or self-hosted) with no extra round trip: numeric project IDs are
-        # resolved to their canonical path first so the group name is still available.
+        # (gitlab.com or self-hosted). Resolve numeric IDs, and all identifiers when
+        # checking sibling access, to the canonical path before comparing groups.
         if not getattr(self, "gl", None) or not getattr(self, "id_project", None):
             return None
         project_id = str(self.id_project)
-        if project_id.isascii() and project_id.isdigit():
+        if resolved or (project_id.isascii() and project_id.isdigit()):
             try:
                 project_path = self.gl.projects.get(project_id).path_with_namespace
             except Exception as e:
@@ -1475,12 +1472,18 @@ class GitLabProvider(GitProvider):
             file_path = (file_path or "").strip().lstrip("/")
             if not repo_id or not file_path:
                 return ""
-            if not self._is_same_namespace_sibling(repo_id):
+            if not self.is_sibling_repo_allowed(repo_id):
+                get_logger().warning(f"Ignoring sibling repo absent from the host allowlist: {repo_id}")
+                return ""
+            project = self.gl.projects.get(repo_id)
+            resolved_path = project.path_with_namespace
+            current_namespace = self.get_owning_namespace(resolved=True)
+            numeric_id = repo_id.isascii() and repo_id.isdigit()
+            identity_matches = str(project.id) == repo_id if numeric_id else resolved_path == repo_id
+            if (not isinstance(resolved_path, str) or "/" not in resolved_path or not identity_matches
+                    or not current_namespace or resolved_path.split("/")[0] != current_namespace):
                 get_logger().warning(f"Ignoring out-of-namespace sibling repo in repo context: {repo_id}")
                 return ""
-            # A sibling MR target does not exist, so the sibling's default branch is the only
-            # well-defined revision to read the file from, regardless of from_default_branch.
-            project = self.gl.projects.get(repo_id)
             if not self._requester_can_read_sibling_project(project):
                 get_logger().warning(
                     f"Ignoring sibling repo context file the review requester cannot read: {repo_id}"
@@ -1494,50 +1497,6 @@ class GitLabProvider(GitProvider):
             if getattr(e, "response_code", None) == 404:
                 return ""
             raise
-
-    def _extract_repo_context_namespace_full_path(self, namespace) -> Optional[str]:
-        # python-gitlab exposes project namespaces as mappings, but tests and some providers
-        # use object-shaped namespaces; accept both shapes for `full_path`.
-        full_path = None
-        if isinstance(namespace, dict):
-            full_path = namespace.get("full_path")
-        elif namespace is not None:
-            full_path = getattr(namespace, "full_path", None)
-        return full_path or ""
-
-    def _get_repo_context_namespace(self):
-        cached = getattr(self, "_repo_context_namespace", None)
-        if cached is None:
-            project_path = self.id_project
-            if isinstance(project_path, str) and "/" in project_path:
-                cached = project_path.rsplit("/", 1)[0]
-            else:
-                # A numeric project ID (the /projects/<id>/- URL alias) carries no path, so
-                # resolve its namespace through the API once and cache it.
-                try:
-                    namespace = getattr(self.gl.projects.get(self.id_project), "namespace", None)
-                    cached = self._extract_repo_context_namespace_full_path(namespace)
-                except Exception as e:
-                    # Use a sentinel that is distinct from "" so an unresolved namespace can
-                    # never match a one-component repository identifier (e.g. a numeric id).
-                    cached = _UNRESOLVED_NAMESPACE
-                    get_logger().warning(
-                        f"Failed to resolve namespace for gitlab project {self.id_project}; "
-                        "rejecting same-namespace sibling repo context lookups",
-                        artifact={"error": str(e)},
-                    )
-            self._repo_context_namespace = cached
-        return cached
-
-    def _is_same_namespace_sibling(self, repo_id: str) -> bool:
-        repo_id = repo_id.strip().strip("/")
-        parts = repo_id.split("/")
-        current_namespace = self._get_repo_context_namespace()
-        if current_namespace is _UNRESOLVED_NAMESPACE:
-            # A failed lookup must not silently match a one-component repo id (e.g. "456").
-            return False
-        sibling_namespace = "/".join(parts[:-1])
-        return sibling_namespace == current_namespace
 
     def _get_review_requester_id(self) -> Optional[int]:
         # Prefer the authenticated command actor when one is known: comment commands can pass

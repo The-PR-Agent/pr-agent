@@ -30,10 +30,16 @@ REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION = {
 # disclosed in a PR comment, so the PR author must not be able to enable it.
 REPO_HOST_ONLY_KEYS_BY_SECTION = {
     "pr_reviewer": frozenset({"publish_error_details"}),
+    # repo_context_sibling_repos lists the sibling repositories whose files a consuming repo
+    # (or a comment command) may select into model context. A repo's .pr_agent.toml alone must
+    # not be able to name an arbitrary same-owner private sibling: the actor check bounds who
+    # triggers the read, not who chose the target or where the output lands, so a sibling
+    # collaborator running /review on a public repo would otherwise print the sibling's private
+    # content into that public thread. The list stays host-only (default empty).
     # repo_context_max_sibling_files bounds sibling-repository fetches per repo-context build.
     # Letting a repo's .pr_agent.toml or a comment command raise it would defeat the safety
-    # bound and let a commenter force unbounded cross-repository API calls, so it stays host-only.
-    "config": frozenset({"repo_context_max_sibling_files"}),
+    # bound and let a commenter force unbounded cross-repository API calls; it stays host-only.
+    "config": frozenset({"repo_context_max_sibling_files", "repo_context_sibling_repos"}),
 }
 
 # Keys that repositories may still configure from their own default-branch settings but that
