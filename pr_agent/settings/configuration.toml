@@ -288,6 +288,11 @@ feedback_on_draft_pr = false
 review_states = ["changes_requested"]
 review_author_types = ["User"]
 review_commands = []
+# SQLite file used to claim GitHub webhook deliveries before Agent dispatch. Point this at a
+# shared filesystem when multiple Gunicorn workers or replicas must share idempotency state.
+webhook_delivery_database_path = "/tmp/pr-agent-github-webhook-deliveries.sqlite3"
+webhook_delivery_lease_ttl = 3600
+webhook_delivery_retention_ttl = 604800
 # settings for "pull_request" event with "synchronize" action - used to detect and handle push triggers for new commits
 handle_push_trigger = false
 push_trigger_ignore_bot_commits = true

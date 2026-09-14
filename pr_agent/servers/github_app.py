@@ -19,6 +19,7 @@ from pr_agent.identity_providers import get_identity_provider
 from pr_agent.identity_providers.identity_provider import Eligibility
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.servers.utils import get_pr_commands, push_trigger_slot, verify_signature
+from pr_agent.servers.webhook_delivery import webhook_delivery_slot
 from pr_agent.telemetry.prometheus import attach_metrics_endpoint, prometheus_metrics_enabled
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
@@ -47,7 +48,12 @@ async def handle_github_webhooks(background_tasks: BackgroundTasks, request: Req
     context["installation_id"] = installation_id
     context["settings"] = copy.deepcopy(global_settings)
     context["git_provider"] = {}
-    background_tasks.add_task(handle_request, body, event=request.headers.get("X-GitHub-Event", None))
+    background_tasks.add_task(
+        handle_request,
+        body,
+        event=request.headers.get("X-GitHub-Event", None),
+        delivery_id=request.headers.get("X-GitHub-Delivery", None),
+    )
     return {}
 
 
@@ -376,19 +382,7 @@ def should_process_pr_logic(body) -> bool:
     return True
 
 
-async def handle_request(body: Dict[str, Any], event: str):
-    """
-    Handle incoming GitHub webhook requests.
-
-    Args:
-        body: The request body.
-        event: The GitHub event type (e.g. "pull_request", "issue_comment", etc.).
-    """
-    action = body.get("action")  # "created", "opened", "reopened", "ready_for_review", "review_requested", "synchronize"
-    get_logger().debug(f"Handling request with event: {event}, action: {action}")
-    if not action:
-        get_logger().debug("No action found in request body, exiting handle_request")
-        return {}
+async def _dispatch_request(body: Dict[str, Any], event: str, action: str):
     agent = PRAgent()
     log_context, sender, sender_id, sender_type = get_log_context(body, event, action, build_number)
 
@@ -429,6 +423,46 @@ async def handle_request(body: Dict[str, Any], event: str):
     else:
         get_logger().info(f"event {event=} action {action=} does not require any handling")
     return {}
+
+
+async def handle_request(body: Dict[str, Any], event: str, delivery_id: str | None = None):
+    """
+    Handle incoming GitHub webhook requests.
+
+    Args:
+        body: The request body.
+        event: The GitHub event type (e.g. "pull_request", "issue_comment", etc.).
+        delivery_id: GitHub's stable identifier for this webhook delivery and its redeliveries.
+    """
+    action = body.get("action")  # "created", "opened", "reopened", "ready_for_review", "review_requested", "synchronize"
+    get_logger().debug(f"Handling request with event: {event}, action: {action}")
+    if not action:
+        get_logger().debug("No action found in request body, exiting handle_request")
+        return {}
+    if not delivery_id:
+        return await _dispatch_request(body, event, action)
+
+    settings = get_settings()
+    database_path = str(
+        settings.get(
+            "GITHUB_APP.WEBHOOK_DELIVERY_DATABASE_PATH",
+            "/tmp/pr-agent-github-webhook-deliveries.sqlite3",
+        )
+        or "/tmp/pr-agent-github-webhook-deliveries.sqlite3"
+    )
+    lease_ttl = int(settings.get("GITHUB_APP.WEBHOOK_DELIVERY_LEASE_TTL", 3600) or 3600)
+    retention_ttl = int(settings.get("GITHUB_APP.WEBHOOK_DELIVERY_RETENTION_TTL", 604800) or 604800)
+    installation_id = body.get("installation", {}).get("id")
+    async with webhook_delivery_slot(
+        delivery_id,
+        installation_id,
+        database_path=database_path,
+        lease_ttl=lease_ttl,
+        retention_ttl=retention_ttl,
+    ) as proceed:
+        if not proceed:
+            return {}
+        return await _dispatch_request(body, event, action)
 
 
 def handle_line_comments(body: Dict, comment_body: [str, Any]):
