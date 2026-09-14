@@ -19,7 +19,7 @@ from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 _TRACKED_KEYS = ("pr_reviewer.enable_large_pr_chunking", "pr_reviewer.max_number_of_calls")
 
 CHUNK_A = """review:
-  score: "90"
+  score: 90
   key_issues_to_review:
     - relevant_file: |
         a.py
@@ -34,7 +34,7 @@ CHUNK_A = """review:
 """
 
 CHUNK_B = """review:
-  score: "40"
+  score: 40
   key_issues_to_review: []
   security_concerns: |
     SQL injection: the query is built by string concatenation
@@ -116,7 +116,7 @@ async def test_a_truncated_diff_is_reviewed_chunk_by_chunk_and_merged(chunking_e
     assert [call.args[1] for call in reviewer._get_prediction.await_args_list] == ["chunk-a", "chunk-b"]
 
     review = reviewer.prediction_data["review"]
-    assert review["score"] == "40"  # the worst chunk sets the score
+    assert review["score"] == 40  # the worst chunk sets the score
     assert [issue["relevant_file"].strip() for issue in review["key_issues_to_review"]] == ["a.py"]
     assert review["security_concerns"].startswith("SQL injection:")
     assert reviewer.review_chunk_count == 2
@@ -194,7 +194,7 @@ async def test_a_chunk_that_fails_does_not_lose_the_chunks_that_succeeded(chunki
     ):
         await reviewer._prepare_prediction("model")
 
-    assert reviewer.prediction_data["review"]["score"] == "40"
+    assert reviewer.prediction_data["review"]["score"] == 40
     assert reviewer.review_chunk_count == 2
     assert reviewer.review_failed_chunk_count == 1
 
