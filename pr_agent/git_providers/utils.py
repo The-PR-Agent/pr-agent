@@ -422,17 +422,17 @@ def _apply_repo_settings_file(repo_settings_file, repo_settings_scope="repo"):
                 continue
             if section.lower() == "config":
                 normalized_contents = {key.lower(): value for key, value in contents.items()}
-                invalid_model_keys = [
-                    key for key in ("model", "model_weak", "model_reasoning")
+                invalid_config_keys = [
+                    key for key in ("model", "model_weak", "model_reasoning", "response_language")
                     if key in normalized_contents
                     and (not isinstance(normalized_contents[key], str) or not normalized_contents[key].strip())
                 ]
-                if invalid_model_keys:
+                if invalid_config_keys:
                     get_logger().warning(
-                        f"Ignoring non-string model setting(s) {invalid_model_keys} from per-directory settings"
+                        f"Ignoring non-string or empty setting(s) {invalid_config_keys} from per-directory settings"
                     )
                     contents = {
-                        key: value for key, value in contents.items() if key.lower() not in invalid_model_keys
+                        key: value for key, value in contents.items() if key.lower() not in invalid_config_keys
                     }
                 if not contents:
                     continue

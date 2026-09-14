@@ -824,6 +824,26 @@ model_reasoning = "reasoning-model"
         assert get_settings().get("config.model_weak", None) == trusted_model_weak
         assert get_settings().config.model_reasoning == "reasoning-model"
 
+    @pytest.mark.parametrize("invalid_value", [(1, "1"), (False, "false"), (["fr-fr"], '["fr-fr"]'),
+                                                ({"locale": "fr-fr"}, '{locale = "fr-fr"}')])
+    def test_per_directory_config_drops_non_string_response_language(self, per_dir_settings, monkeypatch,
+                                                                       invalid_value):
+        _, toml_value = invalid_value
+        config = f"[config]\nresponse_language = {toml_value}\n".encode()
+        monkeypatch.setattr(
+            "pr_agent.git_providers.utils.get_git_provider_with_context",
+            lambda url: _provider(
+                root_settings=ROOT_TOML,
+                tree_paths=["services/.pr_agent.toml"],
+                contents={"services/.pr_agent.toml": config},
+                files=["services/api.py"],
+            ),
+        )
+
+        git_utils.apply_repo_settings("https://github.com/org/repo/pull/1")
+
+        assert get_settings().get("config.response_language", "en-us") == "en-US"
+
     def test_per_directory_config_drops_fallback_models(self, per_dir_settings, monkeypatch):
         config = b"""
 [config]
