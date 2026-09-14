@@ -55,9 +55,15 @@ def _get_help_docs_root() -> Traversable:
     except Exception:
         get_logger().opt(exception=True).debug("Unable to inspect packaged /help documentation")
 
-    source_docs = Path(__file__).resolve().parents[2] / "docs" / "docs"
-    if source_docs.is_dir():
-        return source_docs
+    try:
+        source_docs = Path(__file__).resolve().parents[2] / "docs" / "docs"
+        if source_docs.is_dir():
+            return source_docs
+    except Exception as error:
+        get_logger().opt(exception=True).error("Unable to inspect source-tree /help documentation")
+        raise FileNotFoundError(
+            "The /help documentation corpus is unavailable; unable to inspect the source checkout"
+        ) from error
 
     raise FileNotFoundError(
         "The /help documentation corpus is unavailable; reinstall PR-Agent from a complete package"

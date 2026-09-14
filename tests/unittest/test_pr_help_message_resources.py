@@ -189,6 +189,69 @@ async def test_missing_corpus_fails_before_model_attempt(tmp_path, monkeypatch):
     assert "Unable to load the PR-Agent help documentation" in logger.exception.call_args.args[0]
 
 
+@pytest.mark.parametrize("failure_method", ["resolve", "is_dir"])
+@pytest.mark.asyncio
+async def test_source_fallback_failure_notifies_before_model_attempt(tmp_path, monkeypatch, failure_method):
+    package_root = tmp_path / "installed" / "pr_agent"
+    package_root.mkdir(parents=True)
+    source_module = tmp_path / "checkout" / "pr_agent" / "tools" / "pr_help_message.py"
+    source_error = OSError("broken source checkout")
+    retry = AsyncMock()
+    logger = Mock()
+    source_docs = source_module.resolve().parents[2] / "docs" / "docs"
+
+    monkeypatch.setattr(pr_help_message, "package_files", lambda _package: package_root)
+    monkeypatch.setattr(pr_help_message, "__file__", str(source_module))
+    if failure_method == "resolve":
+        original_resolve = Path.resolve
+
+        def resolve(path, *args, **kwargs):
+            if path == source_module:
+                raise source_error
+            return original_resolve(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "resolve", resolve)
+    else:
+        original_is_dir = Path.is_dir
+
+        def is_dir(path):
+            if path == source_docs:
+                raise source_error
+            return original_is_dir(path)
+
+        monkeypatch.setattr(Path, "is_dir", is_dir)
+    monkeypatch.setattr(pr_help_message, "retry_with_fallback_models", retry)
+    monkeypatch.setattr(pr_help_message, "get_logger", lambda: logger)
+    monkeypatch.setattr(
+        pr_help_message,
+        "get_settings",
+        lambda: SimpleNamespace(config=SimpleNamespace(publish_output=True)),
+    )
+
+    tool = PRHelpMessage.__new__(PRHelpMessage)
+    tool.git_provider = SimpleNamespace(
+        pr_url="https://example.com/org/repo/pull/1",
+        publish_comment=Mock(),
+    )
+    tool.ai_handler = SimpleNamespace(chat_completion=AsyncMock())
+    tool.question_str = "How does review work?"
+    tool.return_as_string = False
+    tool.vars = {"question": tool.question_str, "snippets": ""}
+
+    with pytest.raises(FileNotFoundError) as raised:
+        await tool.run()
+
+    assert raised.value.__cause__ is source_error
+    retry.assert_not_awaited()
+    tool.ai_handler.chat_completion.assert_not_awaited()
+    tool.git_provider.publish_comment.assert_called_once_with(HELP_DOCS_UNAVAILABLE_MESSAGE)
+    logger.opt.assert_called_once_with(exception=True)
+    logger.opt.return_value.error.assert_called_once_with(
+        "Unable to inspect source-tree /help documentation"
+    )
+    logger.exception.assert_called_once_with("Unable to load the PR-Agent help documentation")
+
+
 async def test_unreadable_corpus_fails_before_model_attempt(tmp_path, monkeypatch):
     package_root = tmp_path / "pr_agent"
     docs_root = package_root / "_help_docs"
