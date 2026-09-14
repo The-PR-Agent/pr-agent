@@ -169,7 +169,8 @@ review:
 {%- if require_score %}
   score: 89
 {%- endif %}
-  relevant_tests: No
+  relevant_tests: |
+    No
   key_issues_to_review:
     - relevant_file: |
         directory/xxx.py
