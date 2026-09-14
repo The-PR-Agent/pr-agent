@@ -268,6 +268,16 @@ def test_review_schema_requires_enabled_prompt_fields_only():
     get_logger.return_value.warning.assert_not_called()
 
 
+def test_review_schema_reports_none_for_missing_fields():
+    reviewer = _make_prediction_reviewer()
+    with patch("pr_agent.tools.pr_reviewer.get_logger") as get_logger:
+        assert reviewer._validate_review_schema({"review": {}}) is False
+
+    warning = get_logger.return_value.warning.call_args.kwargs
+    assert warning["artifact"]["field"] == "review.key_issues_to_review"
+    assert warning["artifact"]["value"] is None
+
+
 def test_prepare_pr_review_limits_coverage_footer_to_50_files():
     reviewer = _make_prediction_reviewer()
     remaining_files = [f"file_{index}.py" for index in range(51)]

@@ -898,11 +898,12 @@ class PRReviewer:
         except ValidationError as error:
             first_error = error.errors()[0]
             field_path = ".".join(str(part) for part in first_error.get("loc", ())) or "$"
+            value = None if first_error.get("type") == "missing" else first_error.get("input")
             get_logger().warning(
                 "Review output failed schema validation",
                 artifact={
                     "field": field_path,
-                    "value": first_error.get("input"),
+                    "value": value,
                 },
             )
             return False
