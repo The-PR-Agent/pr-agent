@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.plain_diff_provider import PlainDiffGitProvider
 from pr_agent.tools import pr_code_suggestions as pr_code_suggestions_module
@@ -20,6 +21,40 @@ _TRACKED_SETTINGS = (
     "pr_code_suggestions.persistent_comment",
     "github.publish_as_check_run",
 )
+
+# A hunk whose new-file side covers lines 1-3, so a suggestion anchored at 1-1
+# passes the diff-hunk range validation in the summarized publish path.
+_ANCHORED_HUNK_PATCH = (
+    "@@ -1,3 +1,3 @@\n"
+    " line1\n"
+    "+line2-changed\n"
+    " line3\n"
+)
+
+
+def _anchored_suggestion(**overrides):
+    suggestion = {
+        "score": 1,
+        "relevant_file": "app.py",
+        "relevant_lines_start": 1,
+        "relevant_lines_end": 1,
+        "label": "maintainability",
+        "one_sentence_summary": "Anchored suggestion",
+    }
+    suggestion.update(overrides)
+    return suggestion
+
+
+def _provider_with_anchored_diff(provider):
+    provider.diff_files = [
+        FilePatchInfo(
+            base_file="line1\nline2\nline3\n",
+            head_file="line1\nline2-changed\nline3\n",
+            patch=_ANCHORED_HUNK_PATCH,
+            filename="app.py",
+        )
+    ]
+    return provider
 
 
 def _make_tool(provider):
@@ -83,7 +118,7 @@ async def test_run_removes_progress_comment_when_cancelled(
 async def test_run_does_not_remove_final_summary_when_cancelled_during_dual_publishing(monkeypatch):
     settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
     try:
-        provider = MagicMock()
+        provider = _provider_with_anchored_diff(MagicMock())
         progress_comment = MagicMock(name="progress_comment")
         provider.get_files.return_value = [object()]
         provider.is_supported.return_value = True
@@ -96,9 +131,7 @@ async def test_run_does_not_remove_final_summary_when_cancelled_during_dual_publ
         monkeypatch.setattr(
             pr_code_suggestions_module,
             "retry_with_fallback_models",
-            AsyncMock(return_value={"code_suggestions": [
-                {"score": 1, "relevant_lines_start": 1, "relevant_lines_end": 1}
-            ]}),
+            AsyncMock(return_value={"code_suggestions": [_anchored_suggestion()]}),
         )
         _configure_published_run()
         settings = get_settings()
@@ -125,7 +158,7 @@ async def test_run_does_not_remove_final_summary_when_cancelled_during_dual_publ
 async def test_run_does_not_publish_failure_after_successful_summary(monkeypatch, persistent_comment):
     settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
     try:
-        provider = MagicMock()
+        provider = _provider_with_anchored_diff(MagicMock())
         progress_comment = MagicMock(name="progress_comment")
         provider.get_files.return_value = [object()]
         provider.is_supported.return_value = True
@@ -138,9 +171,7 @@ async def test_run_does_not_publish_failure_after_successful_summary(monkeypatch
         monkeypatch.setattr(
             pr_code_suggestions_module,
             "retry_with_fallback_models",
-            AsyncMock(return_value={"code_suggestions": [
-                {"score": 1, "relevant_lines_start": 1, "relevant_lines_end": 1}
-            ]}),
+            AsyncMock(return_value={"code_suggestions": [_anchored_suggestion()]}),
         )
         _configure_published_run()
         settings = get_settings()
@@ -259,7 +290,7 @@ async def test_run_publishes_failure_when_inline_suggestions_never_publish(monke
 async def test_run_does_not_remove_persistent_summary_when_cancelled_during_dual_publishing(monkeypatch):
     settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
     try:
-        provider = MagicMock()
+        provider = _provider_with_anchored_diff(MagicMock())
         progress_comment = MagicMock(name="progress_comment")
         provider.get_files.return_value = [object()]
         provider.is_supported.return_value = True
@@ -274,9 +305,7 @@ async def test_run_does_not_remove_persistent_summary_when_cancelled_during_dual
         monkeypatch.setattr(
             pr_code_suggestions_module,
             "retry_with_fallback_models",
-            AsyncMock(return_value={"code_suggestions": [
-                {"score": 1, "relevant_lines_start": 1, "relevant_lines_end": 1}
-            ]}),
+            AsyncMock(return_value={"code_suggestions": [_anchored_suggestion()]}),
         )
         _configure_published_run()
         settings = get_settings()
@@ -331,7 +360,7 @@ async def test_run_preserves_cancellation_when_progress_cleanup_fails(monkeypatc
 async def test_run_cleans_up_progress_comment_on_check_run_publish(monkeypatch):
     settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
     try:
-        provider = MagicMock()
+        provider = _provider_with_anchored_diff(MagicMock())
         progress_comment = MagicMock(name="progress_comment")
         provider.get_files.return_value = [object()]
         provider.is_supported.return_value = True
@@ -345,9 +374,7 @@ async def test_run_cleans_up_progress_comment_on_check_run_publish(monkeypatch):
         monkeypatch.setattr(
             pr_code_suggestions_module,
             "retry_with_fallback_models",
-            AsyncMock(return_value={"code_suggestions": [
-                {"score": 1, "relevant_lines_start": 1, "relevant_lines_end": 1}
-            ]}),
+            AsyncMock(return_value={"code_suggestions": [_anchored_suggestion()]}),
         )
         _configure_published_run()
         settings = get_settings()
@@ -371,7 +398,7 @@ async def test_run_cleans_up_progress_comment_on_check_run_publish(monkeypatch):
 async def test_run_retains_progress_handle_when_check_run_cleanup_fails(monkeypatch):
     settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
     try:
-        provider = MagicMock()
+        provider = _provider_with_anchored_diff(MagicMock())
         progress_comment = MagicMock(name="progress_comment")
         provider.get_files.return_value = [object()]
         provider.is_supported.return_value = True
@@ -386,9 +413,7 @@ async def test_run_retains_progress_handle_when_check_run_cleanup_fails(monkeypa
         monkeypatch.setattr(
             pr_code_suggestions_module,
             "retry_with_fallback_models",
-            AsyncMock(return_value={"code_suggestions": [
-                {"score": 1, "relevant_lines_start": 1, "relevant_lines_end": 1}
-            ]}),
+            AsyncMock(return_value={"code_suggestions": [_anchored_suggestion()]}),
         )
         _configure_published_run()
         settings = get_settings()
@@ -678,7 +703,7 @@ async def test_run_valid_ranges_skip_no_suggestions_comment(monkeypatch, publish
         provider.is_supported.return_value = True
         provider.supports_code_suggestions_artifact.return_value = False
         provider.publish_comment.return_value = MagicMock()
-        provider.diff_files = []
+        _provider_with_anchored_diff(provider)
         tool = _make_tool(provider)
         tool.publish_no_suggestions = AsyncMock()
 

@@ -36,6 +36,35 @@ def _suggestion(**overrides):
     return base
 
 
+# A hunk whose new-file side covers lines 1-6 of the file.
+DEFAULT_PATCH = (
+    "@@ -1,5 +1,6 @@\n"
+    " def f():\n"
+    "-    return old()\n"
+    "+    return new()\n"
+    "     extra\n"
+    "     more\n"
+    "     lines\n"
+    "+    added line\n"
+)
+
+
+def _diff_file(filename="app.py", patch=DEFAULT_PATCH):
+    return FilePatchInfo(
+        base_file="def f():\n    return old()\n    extra\n    more\n    lines\n",
+        head_file="def f():\n    return new()\n    extra\n    more\n    lines\n    added line\n",
+        patch=patch,
+        filename=filename,
+    )
+
+
+def _provider_with_diff_files(*filenames):
+    git_provider = MagicMock()
+    git_provider.diff_files = [_diff_file(filename) for filename in filenames]
+    git_provider.get_line_link.return_value = ""
+    return git_provider
+
+
 # ---------------------------------------------------------------------------
 # _truncate_if_needed
 # ---------------------------------------------------------------------------
@@ -96,25 +125,51 @@ def test_truncate_if_needed_noop_when_under_limit_or_disabled():
     ],
 )
 def test_is_suggestion_line_range_valid_rejects_unanchorable_ranges(suggestion_kwargs):
+    tool = _make_tool()
     bad = _suggestion(**suggestion_kwargs)
 
-    assert PRCodeSuggestions._is_suggestion_line_range_valid(bad) is False
+    assert tool._is_suggestion_line_range_valid(bad) is False
 
 
 def test_is_suggestion_line_range_valid_normalizes_valid_range():
+    tool = _make_tool(_provider_with_diff_files("app.py"))
     good = _suggestion(relevant_lines_start="2", relevant_lines_end="4")
 
-    assert PRCodeSuggestions._is_suggestion_line_range_valid(good) is True
+    assert tool._is_suggestion_line_range_valid(good) is True
     assert good["relevant_lines_start"] == 2
     assert good["relevant_lines_end"] == 4
 
 
 def test_is_suggestion_line_range_valid_rejects_missing_keys():
+    tool = _make_tool()
     suggestion = _suggestion()
     suggestion.pop("relevant_lines_start")
     suggestion.pop("relevant_lines_end")
 
-    assert PRCodeSuggestions._is_suggestion_line_range_valid(suggestion) is False
+    assert tool._is_suggestion_line_range_valid(suggestion) is False
+
+
+def test_is_suggestion_line_range_valid_rejects_file_not_in_diff():
+    tool = _make_tool(_provider_with_diff_files("app.py"))
+    suggestion = _suggestion(relevant_file="other.py")
+
+    assert tool._is_suggestion_line_range_valid(suggestion) is False
+
+
+def test_is_suggestion_line_range_valid_rejects_range_outside_diff():
+    tool = _make_tool(_provider_with_diff_files("app.py"))
+    suggestion = _suggestion(relevant_lines_start=100, relevant_lines_end=100)
+
+    assert tool._is_suggestion_line_range_valid(suggestion) is False
+
+
+def test_is_suggestion_line_range_valid_rejects_range_not_fully_in_diff():
+    # The hunk covers new lines 1-6; a range starting inside the hunk but ending
+    # past it cannot be resolved to an applicable new hunk.
+    tool = _make_tool(_provider_with_diff_files("app.py"))
+    suggestion = _suggestion(relevant_lines_start=5, relevant_lines_end=9)
+
+    assert tool._is_suggestion_line_range_valid(suggestion) is False
 
 
 def test_prepare_pr_code_suggestions_applies_truncation_inline():
@@ -348,7 +403,7 @@ def test_generate_summarized_suggestions_empty_returns_placeholder():
 
 
 def test_generate_summarized_suggestions_renders_table_and_sorts_by_score():
-    git_provider = MagicMock()
+    git_provider = _provider_with_diff_files("app.py", "auth.py")
     git_provider.get_line_link.return_value = "https://example.test/app.py#L2"
     tool = _make_tool(git_provider)
     settings = get_settings()
@@ -384,8 +439,7 @@ def test_generate_summarized_suggestions_renders_table_and_sorts_by_score():
 
 
 def test_generate_summarized_suggestions_uses_score_string_when_new_mechanism_enabled():
-    git_provider = MagicMock()
-    git_provider.get_line_link.return_value = ""
+    git_provider = _provider_with_diff_files("app.py")
     tool = _make_tool(git_provider)
     settings = get_settings()
     snapshot = snapshot_settings(["pr_code_suggestions.new_score_mechanism"])
@@ -403,8 +457,7 @@ def test_generate_summarized_suggestions_uses_score_string_when_new_mechanism_en
 
 
 def test_generate_summarized_suggestions_escapes_angle_bracket_strings_in_summary():
-    git_provider = MagicMock()
-    git_provider.get_line_link.return_value = ""
+    git_provider = _provider_with_diff_files("app.py")
     tool = _make_tool(git_provider)
     suggestion = _suggestion(one_sentence_summary="Replace '<old_name>' with new_name")
     out = tool.generate_summarized_suggestions({"code_suggestions": [suggestion]})
@@ -416,8 +469,7 @@ def test_generate_summarized_suggestions_escapes_angle_bracket_strings_in_summar
 
 
 def test_generate_summarized_suggestions_includes_score_why_block_when_present():
-    git_provider = MagicMock()
-    git_provider.get_line_link.return_value = ""
+    git_provider = _provider_with_diff_files("app.py")
     tool = _make_tool(git_provider)
     suggestion = _suggestion(score_why="Catches a real bug.")
     out = tool.generate_summarized_suggestions({"code_suggestions": [suggestion]})
@@ -427,8 +479,7 @@ def test_generate_summarized_suggestions_includes_score_why_block_when_present()
 
 def test_generate_summarized_suggestions_skips_anchorless_but_keeps_rest():
     """A suggestion without resolved line anchors is skipped instead of failing the whole table."""
-    git_provider = MagicMock()
-    git_provider.get_line_link.return_value = ""
+    git_provider = _provider_with_diff_files("app.py")
     tool = _make_tool(git_provider)
     anchored = _suggestion(one_sentence_summary="Keep me")
     anchorless = _suggestion(one_sentence_summary="Drop me", relevant_file="other.py")
@@ -440,6 +491,24 @@ def test_generate_summarized_suggestions_skips_anchorless_but_keeps_rest():
     assert "<table>" in out
     assert "Keep me" in out
     assert "Drop me" not in out
+
+
+def test_generate_summarized_suggestions_skips_positive_range_outside_diff():
+    """A positive, ordered range outside the file's diff hunks is dropped per-suggestion."""
+    git_provider = _provider_with_diff_files("app.py")
+    tool = _make_tool(git_provider)
+    in_diff = _suggestion(one_sentence_summary="In diff")
+    out_diff = _suggestion(
+        one_sentence_summary="Hallucinated range",
+        relevant_lines_start=100,
+        relevant_lines_end=100,
+    )
+
+    out = tool.generate_summarized_suggestions({"code_suggestions": [in_diff, out_diff]})
+
+    assert "<table>" in out
+    assert "In diff" in out
+    assert "Hallucinated range" not in out
 
 
 def test_generate_summarized_suggestions_all_anchorless_returns_placeholder():
@@ -468,8 +537,7 @@ def test_generate_summarized_suggestions_all_anchorless_returns_placeholder():
 )
 def test_generate_summarized_suggestions_skips_invalid_line_ranges(start, end):
     """Unresolved sentinels, non-positive lines and reversed ranges are omitted per-suggestion."""
-    git_provider = MagicMock()
-    git_provider.get_line_link.return_value = ""
+    git_provider = _provider_with_diff_files("app.py")
     tool = _make_tool(git_provider)
     bad = _suggestion(one_sentence_summary="Bad range", relevant_lines_start=start, relevant_lines_end=end)
     good = _suggestion(one_sentence_summary="Good range")

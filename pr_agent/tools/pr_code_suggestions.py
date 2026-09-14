@@ -335,10 +335,11 @@ class PRCodeSuggestions:
                         self.git_provider.is_supported("gfm_markdown")):
 
                     # Drop suggestions that can't be anchored in the diff (unresolved
-                    # sentinels, zero/negative or reversed line ranges) up front; when
-                    # nothing survives, route the outcome through publish_no_suggestions()
-                    # so it honors publish_output_no_suggestions and emits the accurate
-                    # coverage footer instead of a header-only table.
+                    # sentinels, zero/negative or reversed line ranges, or positive
+                    # ranges that fall outside the changed lines of the relevant file)
+                    # up front; when nothing survives, route the outcome through
+                    # publish_no_suggestions() so it honors publish_output_no_suggestions
+                    # and emits the accurate coverage footer instead of a header-only table.
                     data['code_suggestions'] = [
                         suggestion for suggestion in data['code_suggestions']
                         if self._is_suggestion_line_range_valid(suggestion)
@@ -998,24 +999,58 @@ class PRCodeSuggestions:
         except (TypeError, ValueError, OverflowError):
             return None
 
-    @staticmethod
-    def _is_suggestion_line_range_valid(suggestion: dict) -> bool:
-        relevant_lines_start = PRCodeSuggestions._parse_line_number(suggestion.get('relevant_lines_start'))
-        relevant_lines_end = PRCodeSuggestions._parse_line_number(suggestion.get('relevant_lines_end'))
+    def _is_suggestion_line_range_valid(self, suggestion: dict) -> bool:
+        relevant_lines_start = self._parse_line_number(suggestion.get('relevant_lines_start'))
+        relevant_lines_end = self._parse_line_number(suggestion.get('relevant_lines_end'))
+        relevant_file = suggestion.get('relevant_file')
         if relevant_lines_start is None or relevant_lines_end is None:
             get_logger().warning("Skipping a suggestion without a valid line range",
-                                 artifact={'relevant_file': suggestion.get('relevant_file'),
+                                 artifact={'relevant_file': relevant_file,
                                            'one_sentence_summary': suggestion.get('one_sentence_summary')})
             return False
         if relevant_lines_start < 1 or relevant_lines_end < relevant_lines_start:
             get_logger().warning("Skipping a suggestion with an invalid line range",
-                                 artifact={'relevant_file': suggestion.get('relevant_file'),
+                                 artifact={'relevant_file': relevant_file,
                                            'one_sentence_summary': suggestion.get('one_sentence_summary'),
                                            'relevant_lines_start': relevant_lines_start,
                                            'relevant_lines_end': relevant_lines_end})
             return False
         suggestion['relevant_lines_start'] = relevant_lines_start
         suggestion['relevant_lines_end'] = relevant_lines_end
+        if not self._is_suggestion_line_range_in_diff(
+                relevant_file, relevant_lines_start, relevant_lines_end):
+            return False
+        return True
+
+    def _is_suggestion_line_range_in_diff(
+            self,
+            relevant_file,
+            relevant_lines_start: int,
+            relevant_lines_end: int) -> bool:
+        """Reject suggestions whose range cannot be placed in a new diff hunk.
+
+        A positive, ordered range is still unanchorable when it points at a file
+        that is not part of the PR diff, or at file lines that no new hunk covers
+        (e.g. a range hallucinated by self-reflection in unchanged code).
+        """
+        if not isinstance(relevant_file, str) or not relevant_file.strip():
+            get_logger().warning("Skipping a suggestion whose file is missing",
+                                 artifact={'relevant_file': relevant_file,
+                                           'one_sentence_summary': None})
+            return False
+        diff_file = self._get_diff_file(relevant_file.strip())
+        if diff_file is None:
+            get_logger().warning("Skipping a suggestion whose file is not part of the PR diff",
+                                 artifact={'relevant_file': relevant_file.strip(),
+                                           'relevant_lines_start': relevant_lines_start,
+                                           'relevant_lines_end': relevant_lines_end})
+            return False
+        if self._get_patch_range_lines(diff_file.patch, relevant_lines_start, relevant_lines_end) is None:
+            get_logger().warning("Skipping a suggestion whose line range is not within the PR diff",
+                                 artifact={'relevant_file': relevant_file.strip(),
+                                           'relevant_lines_start': relevant_lines_start,
+                                           'relevant_lines_end': relevant_lines_end})
+            return False
         return True
 
     def _prepare_pr_code_suggestions(self, predictions: str) -> Dict:
