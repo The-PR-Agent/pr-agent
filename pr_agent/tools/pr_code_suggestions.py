@@ -1027,11 +1027,11 @@ class PRCodeSuggestions:
             relevant_file,
             relevant_lines_start: int,
             relevant_lines_end: int) -> bool:
-        """Reject suggestions whose range cannot be placed in a new diff hunk.
+        """Reject suggestions whose range cannot be resolved in the relevant file.
 
-        A positive, ordered range is still unanchorable when it points at a file
-        that is not part of the PR diff, or at file lines that no new hunk covers
-        (e.g. a range hallucinated by self-reflection in unchanged code).
+        The model reflects on the extended patch, so accept context outside the
+        raw hunk when the complete head file contains it, as in _validate_suggestion.
+        Without complete file content, use the raw hunk as the reference.
         """
         if not isinstance(relevant_file, str) or not relevant_file.strip():
             get_logger().warning("Skipping a suggestion whose file is missing",
@@ -1045,8 +1045,13 @@ class PRCodeSuggestions:
                                            'relevant_lines_start': relevant_lines_start,
                                            'relevant_lines_end': relevant_lines_end})
             return False
-        if self._get_patch_range_lines(diff_file.patch, relevant_lines_start, relevant_lines_end) is None:
-            get_logger().warning("Skipping a suggestion whose line range is not within the PR diff",
+        if diff_file.head_file and getattr(diff_file, "head_file_is_complete", True):
+            range_resolvable = relevant_lines_end <= len(diff_file.head_file.splitlines())
+        else:
+            range_resolvable = self._get_patch_range_lines(
+                diff_file.patch, relevant_lines_start, relevant_lines_end) is not None
+        if not range_resolvable:
+            get_logger().warning("Skipping a suggestion whose line range is not within the file",
                                  artifact={'relevant_file': relevant_file.strip(),
                                            'relevant_lines_start': relevant_lines_start,
                                            'relevant_lines_end': relevant_lines_end})

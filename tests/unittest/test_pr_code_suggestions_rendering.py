@@ -163,13 +163,34 @@ def test_is_suggestion_line_range_valid_rejects_range_outside_diff():
     assert tool._is_suggestion_line_range_valid(suggestion) is False
 
 
-def test_is_suggestion_line_range_valid_rejects_range_not_fully_in_diff():
-    # The hunk covers new lines 1-6; a range starting inside the hunk but ending
-    # past it cannot be resolved to an applicable new hunk.
-    tool = _make_tool(_provider_with_diff_files("app.py"))
+def test_is_suggestion_line_range_valid_follows_the_head_file_when_available():
+    # Extended context outside the raw hunk is anchorable within the head file.
+    diff_file = _diff_file()
+    git_provider = MagicMock()
+    git_provider.diff_files = [diff_file]
+    tool = _make_tool(git_provider)
     suggestion = _suggestion(relevant_lines_start=5, relevant_lines_end=9)
 
     assert tool._is_suggestion_line_range_valid(suggestion) is False
+
+    diff_file.head_file += "    trailing\n    context\n    lines\n"
+
+    assert tool._is_suggestion_line_range_valid(suggestion) is True
+
+
+@pytest.mark.parametrize("head_file", ["", "context\n" * 9])
+def test_is_suggestion_line_range_valid_uses_hunk_without_complete_head_file(head_file):
+    diff_file = _diff_file()
+    diff_file.head_file = head_file
+    diff_file.head_file_is_complete = False
+    git_provider = MagicMock()
+    git_provider.diff_files = [diff_file]
+    tool = _make_tool(git_provider)
+
+    assert tool._is_suggestion_line_range_valid(
+        _suggestion(relevant_lines_start=2, relevant_lines_end=6)) is True
+    assert tool._is_suggestion_line_range_valid(
+        _suggestion(relevant_lines_start=5, relevant_lines_end=9)) is False
 
 
 def test_get_patch_range_lines_rejects_oversized_span_without_enumerating_it():
