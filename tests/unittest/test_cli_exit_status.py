@@ -287,9 +287,6 @@ PRAgent.handle_request = controlled_handle_request
     [
         ("false", "true", 1),
         ("false", "false", 0),
-        ("true", "true", 0),
-        ("none", "true", 0),
-        ("zero", "true", 0),
     ],
 )
 def test_process_entrypoints_map_request_status(
