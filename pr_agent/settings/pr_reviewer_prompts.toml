@@ -153,16 +153,13 @@ review:
         ...
 {%- endif %}
 {%- if require_estimate_effort_to_review %}
-  estimated_effort_to_review_[1-5]: |
-    3
+  estimated_effort_to_review_[1-5]: 3
 {%- endif %}
 {%- if require_risk_assessment %}
-  risk_level: |
-    low
+  risk_level: low
 {%- endif %}
 {%- if require_merge_recommendation %}
-  merge_recommendation: |
-    safe_to_merge
+  merge_recommendation: safe_to_merge
 {%- endif %}
 {%- if require_priority_files %}
   review_priority_files:
@@ -172,8 +169,7 @@ review:
 {%- if require_score %}
   score: 89
 {%- endif %}
-  relevant_tests: |
-    No
+  relevant_tests: No
   key_issues_to_review:
     - relevant_file: |
         directory/xxx.py

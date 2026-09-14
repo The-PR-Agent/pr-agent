@@ -3,7 +3,7 @@
 from enum import Enum
 from typing import List, Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 
 
 class SubPR(BaseModel):
@@ -53,20 +53,25 @@ class Review(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     ticket_compliance_check: Optional[List[TicketCompliance]] = None
-    estimated_effort_to_review: Optional[int] = Field(
+    estimated_effort_to_review: Optional[StrictInt] = Field(
         default=None, alias="estimated_effort_to_review_[1-5]", ge=1, le=5
     )
     risk_level: Optional[Literal["low", "medium", "high"]] = None
     merge_recommendation: Optional[Literal["safe_to_merge", "merge_with_caution", "changes_required"]] = None
     review_priority_files: Optional[List[str]] = None
     contribution_time_cost_estimate: Optional[ContributionTimeCostEstimate] = None
-    score: Optional[int] = Field(default=None, ge=0, le=100)
+    score: Optional[StrictInt] = Field(default=None, ge=0, le=100)
     relevant_tests: Optional[Literal["Yes", "No"]] = None
     insights_from_user_answers: Optional[str] = None
     key_issues_to_review: List[KeyIssuesComponentLink]
     security_concerns: Optional[str] = None
     todo_sections: Optional[Union[List[TodoSection], str]] = None
     can_be_split: Optional[List[SubPR]] = Field(default=None, max_length=3)
+
+    @field_validator("risk_level", "merge_recommendation", "relevant_tests", mode="before")
+    @classmethod
+    def _strip_literal_values(cls, value):
+        return value.strip() if isinstance(value, str) else value
 
 
 class PRReview(BaseModel):

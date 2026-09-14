@@ -4,6 +4,7 @@ from types import UnionType
 from typing import get_args, get_origin
 
 import pytest
+from pydantic import StrictInt
 
 from pr_agent.algo.output_models import (
     CodeSuggestion,
@@ -121,6 +122,23 @@ def test_review_alias_accepts_prompt_field_name():
         Review.model_validate({"key_issues_to_review": [], "estimated_effort_to_review": 3})
 
 
+def test_review_rejects_coercible_numeric_types_and_strips_prompt_literals():
+    with pytest.raises(ValueError):
+        Review.model_validate({"key_issues_to_review": [], "score": "89"})
+    with pytest.raises(ValueError):
+        Review.model_validate({"key_issues_to_review": [], "score": True})
+
+    review = Review.model_validate({
+        "key_issues_to_review": [],
+        "risk_level": "low\n",
+        "merge_recommendation": "safe_to_merge\n",
+        "relevant_tests": "No\n",
+    })
+    assert review.risk_level == "low"
+    assert review.merge_recommendation == "safe_to_merge"
+    assert review.relevant_tests == "No"
+
+
 def test_required_label_and_list_constraints_are_enforced():
     suggestion = {
         "relevant_file": "src/app.py", "language": "python", "existing_code": "return value",
@@ -207,6 +225,10 @@ def _prompt_type_signature(annotation):
 
 def _model_type_signature(annotation):
     origin = get_origin(annotation)
+    if str(origin) == "typing.Annotated":
+        return _model_type_signature(get_args(annotation)[0])
+    if annotation is StrictInt:
+        return "int"
     if str(origin) == "typing.Literal":
         return ("literal", tuple(str(value) for value in get_args(annotation)))
     if origin in (list,):
