@@ -54,17 +54,25 @@ def _is_supported_capability_strings(node):
     return caps
 
 
+def _is_git_provider(node):
+    """`self.git_provider`, or a bare `git_provider` name in a helper that takes the
+    provider as a parameter (the pattern `pr_code_suggestions.py` already uses)."""
+    if isinstance(node, ast.Name):
+        return node.id == "git_provider"
+    return (isinstance(node, ast.Attribute)
+            and node.attr == "git_provider"
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "self")
+
+
 def _git_provider_call_sites(func_node):
-    """Every `self.git_provider.<method>(...)` call directly under a function node,
-    keyed by method name."""
+    """Every `self.git_provider.<method>(...)` or `git_provider.<method>(...)` call
+    directly under a function node, keyed by method name."""
     calls = {}
     for inner in ast.walk(func_node):
         if (isinstance(inner, ast.Call)
                 and isinstance(inner.func, ast.Attribute)
-                and isinstance(inner.func.value, ast.Attribute)
-                and inner.func.value.attr == "git_provider"
-                and isinstance(inner.func.value.value, ast.Name)
-                and inner.func.value.value.id == "self"):
+                and _is_git_provider(inner.func.value)):
             calls.setdefault(inner.func.attr, []).append(inner)
     return calls
 
