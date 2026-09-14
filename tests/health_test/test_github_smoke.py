@@ -8,7 +8,7 @@ from pr_agent.agent.pr_agent import PRAgent
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.config_loader import get_settings, global_settings
 
-# The default target references real issues (closes #2934), so the smoke run
+# The default target is linked to #2934, so the smoke run
 # exercises the ticket extraction path against live data. Override with
 # TEST_PR_URL; assertions specific to the default target are then skipped.
 DEFAULT_PR_URL = 'https://github.com/The-PR-Agent/pr-agent/pull/2940'
@@ -77,6 +77,7 @@ async def _run_smoke() -> None:
     get_settings().set("config.git_provider", "github")
     get_settings().set("config.publish_output", False)
     get_settings().set("config.fallback_models", [])
+    get_settings().set("config.propagate_tool_errors", True)
 
     stub = StubDescribeHandler()
     agent = PRAgent(ai_handler=lambda: stub)
@@ -105,6 +106,7 @@ async def _run_smoke() -> None:
 
 
 def test_github_describe_smoke():
+    global_settings.get("config")  # force the lazy load before copying settings
     with request_cycle_context({}):
         context['settings'] = copy.deepcopy(global_settings)
         asyncio.run(_run_smoke())
