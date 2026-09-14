@@ -722,6 +722,8 @@ async def test_gitea_push_uses_shared_dedupe_slot(monkeypatch):
     async def perform_commands(*args):
         performed.append(args)
 
+    monkeypatch.setattr(gitea_app, "apply_repo_settings", lambda _url: None)
+    monkeypatch.setattr(gitea_app, "should_process_pr_logic", lambda _body: True)
     monkeypatch.setattr(gitea_app, "push_trigger_slot", reject_duplicate)
     monkeypatch.setattr(gitea_app, "_perform_commands_gitea", perform_commands)
     api_url = "https://gitea.example.com/org/repo/pulls/1"
@@ -734,6 +736,169 @@ async def test_gitea_push_uses_shared_dedupe_slot(monkeypatch):
 
     assert performed == []
     assert slots == [(api_url, {"allow_backlog": True, "ttl": 300})]
+
+
+@pytest.mark.asyncio
+async def test_gitea_push_applies_repo_settings_before_effective_gate(monkeypatch):
+    settings = get_settings()
+    original_gitea = copy.deepcopy(settings.get("GITEA"))
+    original_is_auto_command = settings.get("CONFIG.IS_AUTO_COMMAND")
+    settings.set("GITEA.HANDLE_PUSH_TRIGGER", False)
+    settings.set("GITEA.PUSH_COMMANDS", [])
+    calls = []
+
+    def apply_repo_settings(_url):
+        calls.append("settings")
+        get_settings().set("GITEA.HANDLE_PUSH_TRIGGER", True)
+        get_settings().set("GITEA.PUSH_COMMANDS", ["/review"])
+
+    def should_process_pr_logic(_body):
+        calls.append("filter")
+        return True
+
+    @asynccontextmanager
+    async def record_slot(_key, **_kwargs):
+        calls.append("slot")
+        yield True
+
+    class Agent:
+        async def handle_request(self, _url, command):
+            calls.append(command)
+
+    monkeypatch.setattr(gitea_app, "apply_repo_settings", apply_repo_settings)
+    monkeypatch.setattr(gitea_app, "should_process_pr_logic", should_process_pr_logic)
+    monkeypatch.setattr(gitea_app, "push_trigger_slot", record_slot)
+    monkeypatch.setattr(gitea_app, "prepare_command", lambda command: command)
+    api_url = "https://gitea.example.com/org/repo/pulls/1"
+    body = {
+        "pull_request": {"url": api_url},
+        "repository": {"full_name": "org/repo"},
+    }
+
+    try:
+        await gitea_app.handle_pr_event(body, "pull_request", "synchronized", Agent())
+    finally:
+        settings.set("GITEA", original_gitea)
+        settings.set("CONFIG.IS_AUTO_COMMAND", original_is_auto_command)
+
+    assert calls == ["settings", "filter", "slot", "/review"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("repo_trigger", "repo_commands"),
+    [
+        (False, ["/review"]),
+        (True, []),
+    ],
+)
+async def test_gitea_effective_push_config_skips_before_reserving_slot(
+    monkeypatch, repo_trigger, repo_commands
+):
+    settings = get_settings()
+    original_gitea = copy.deepcopy(settings.get("GITEA"))
+    settings.set("GITEA.HANDLE_PUSH_TRIGGER", True)
+    settings.set("GITEA.PUSH_COMMANDS", ["/host-review"])
+    calls = []
+
+    def apply_repo_settings(_url):
+        calls.append("settings")
+        get_settings().set("GITEA.HANDLE_PUSH_TRIGGER", repo_trigger)
+        get_settings().set("GITEA.PUSH_COMMANDS", list(repo_commands))
+
+    def should_process_pr_logic(_body):
+        calls.append("filter")
+        return True
+
+    @asynccontextmanager
+    async def record_slot(_key, **_kwargs):
+        calls.append("slot")
+        yield True
+
+    monkeypatch.setattr(gitea_app, "apply_repo_settings", apply_repo_settings)
+    monkeypatch.setattr(gitea_app, "should_process_pr_logic", should_process_pr_logic)
+    monkeypatch.setattr(gitea_app, "push_trigger_slot", record_slot)
+    api_url = "https://gitea.example.com/org/repo/pulls/1"
+
+    try:
+        await gitea_app.handle_pr_event(
+            {"pull_request": {"url": api_url}}, "pull_request", "synchronized", RecordingAgent()
+        )
+    finally:
+        settings.set("GITEA", original_gitea)
+
+    assert calls == ["settings", "filter"]
+
+
+@pytest.mark.asyncio
+async def test_gitea_repo_filter_rejects_push_before_reserving_slot(monkeypatch):
+    settings = get_settings()
+    original_gitea = copy.deepcopy(settings.get("GITEA"))
+    settings.set("GITEA.HANDLE_PUSH_TRIGGER", True)
+    settings.set("GITEA.PUSH_COMMANDS", ["/review"])
+    calls = []
+
+    def apply_repo_settings(_url):
+        calls.append("settings")
+
+    def should_process_pr_logic(_body):
+        calls.append("filter")
+        return False
+
+    @asynccontextmanager
+    async def record_slot(_key, **_kwargs):
+        calls.append("slot")
+        yield True
+
+    monkeypatch.setattr(gitea_app, "apply_repo_settings", apply_repo_settings)
+    monkeypatch.setattr(gitea_app, "should_process_pr_logic", should_process_pr_logic)
+    monkeypatch.setattr(gitea_app, "push_trigger_slot", record_slot)
+    api_url = "https://gitea.example.com/org/repo/pulls/1"
+
+    try:
+        await gitea_app.handle_pr_event(
+            {"pull_request": {"url": api_url}}, "pull_request", "synchronized", RecordingAgent()
+        )
+    finally:
+        settings.set("GITEA", original_gitea)
+
+    assert calls == ["settings", "filter"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["opened", "reopened"])
+async def test_gitea_pr_event_applies_repo_settings_once_before_dispatch(monkeypatch, action):
+    settings = get_settings()
+    original_gitea = copy.deepcopy(settings.get("GITEA"))
+    original_is_auto_command = settings.get("CONFIG.IS_AUTO_COMMAND")
+    calls = []
+
+    def apply_repo_settings(_url):
+        calls.append("settings")
+        get_settings().set("GITEA.PR_COMMANDS", ["/review"])
+
+    def should_process_pr_logic(_body):
+        calls.append("filter")
+        return True
+
+    class Agent:
+        async def handle_request(self, _url, command):
+            calls.append(command)
+
+    monkeypatch.setattr(gitea_app, "apply_repo_settings", apply_repo_settings)
+    monkeypatch.setattr(gitea_app, "should_process_pr_logic", should_process_pr_logic)
+    monkeypatch.setattr(gitea_app, "prepare_command", lambda command: command)
+    api_url = "https://gitea.example.com/org/repo/pulls/1"
+
+    try:
+        await gitea_app.handle_pr_event(
+            {"pull_request": {"url": api_url}}, "pull_request", action, Agent()
+        )
+    finally:
+        settings.set("GITEA", original_gitea)
+        settings.set("CONFIG.IS_AUTO_COMMAND", original_is_auto_command)
+
+    assert calls == ["settings", "filter", "/review"]
 
 
 @pytest.mark.asyncio

@@ -3,6 +3,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.git_providers.github_provider import GithubProvider
@@ -106,6 +107,14 @@ async def test_pr_chat_link_depends_on_provider_capability(monkeypatch, supports
         provider.is_supported.side_effect = lambda capability: capability == "gfm_markdown"
         provider.supports_pr_chat.return_value = supports_pr_chat
         provider.should_publish_improve_as_thread.return_value = False
+        provider.diff_files = [
+            FilePatchInfo(
+                base_file="old()\n",
+                head_file="new()\n",
+                patch="@@ -1,1 +1,1 @@\n-old()\n+new()\n",
+                filename="file.py",
+            )
+        ]
 
         tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
         tool.pr_url = "https://example.invalid/pr/1"
@@ -116,7 +125,9 @@ async def test_pr_chat_link_depends_on_provider_capability(monkeypatch, supports
         tool.generate_summarized_suggestions = MagicMock(return_value="## Suggestions")
 
         async def _fake_retry(*_args, **_kwargs):
-            return {"code_suggestions": [{"label": "style", "suggestion_content": "clean up"}]}
+            return {"code_suggestions": [{"label": "style", "suggestion_content": "clean up",
+                                         "relevant_lines_start": 1, "relevant_lines_end": 1,
+                                         "relevant_file": "file.py"}]}
 
         monkeypatch.setattr(pr_code_suggestions_module, "retry_with_fallback_models", _fake_retry)
 

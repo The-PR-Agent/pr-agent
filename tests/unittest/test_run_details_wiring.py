@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from pr_agent.algo.run_details import init_run_details, record_ai_call, record_model_used
+from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import get_settings
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.tools.pr_description import PRDescription
@@ -176,10 +177,21 @@ async def test_pr_code_suggestions_appends_run_details_only_when_enabled(monkeyp
         suggestions.git_provider = MagicMock()
         suggestions.git_provider.get_files.return_value = ["changed.py"]
         suggestions.git_provider.is_supported.side_effect = lambda cap: cap == "gfm_markdown"
+        suggestions.git_provider.diff_files = [
+            FilePatchInfo(
+                base_file="old()\n",
+                head_file="new()\n",
+                patch="@@ -1,1 +1,1 @@\n-old()\n+new()\n",
+                filename="changed.py",
+            )
+        ]
         suggestions.generate_summarized_suggestions = MagicMock(return_value="Base suggestions body")
 
         async def _fake_retry(*_args, **_kwargs):
-            return {"code_suggestions": [{"label": "style"}]}
+            return {"code_suggestions": [
+                {"label": "style", "relevant_file": "changed.py",
+                 "relevant_lines_start": 1, "relevant_lines_end": 1},
+            ]}
 
         monkeypatch.setattr("pr_agent.tools.pr_code_suggestions.init_run_details", _seeded_init_run_details)
         monkeypatch.setattr("pr_agent.tools.pr_code_suggestions.retry_with_fallback_models", _fake_retry)

@@ -167,6 +167,11 @@ class PRUpdateChangelog:
         return new_file_content, answer
 
     def _push_changelog_update(self, new_file_content, answer):
+        if not self.git_provider.is_supported("push_code"):
+            # Its only caller already gates on self.commit_changelog, which is False
+            # whenever this capability is missing; kept local so the guard holds even
+            # if a future caller reaches this method some other way.
+            return
         if get_settings().pr_update_changelog.get("skip_ci_on_push", True):
             commit_message = "[skip ci] Update CHANGELOG.md"
         else:

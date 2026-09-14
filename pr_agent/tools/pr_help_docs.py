@@ -68,6 +68,9 @@ def extract_model_answer_and_relevant_sources(ai_response: str) -> str | None:
             get_logger().info(f"Found model answer: {model_answer_section_in_response}")
             return model_answer_and_relevant_sources_sections_in_response \
                 if len(model_answer_section_in_response) > 0 else None
+        if model_answer_and_relevant_sources_sections_in_response.strip():
+            get_logger().info(f"Found model answer without relevant sources: {model_answer_and_relevant_sources_sections_in_response}")
+            return model_answer_and_relevant_sources_sections_in_response
     get_logger().warning(f"Either no answer section found, or that section is malformed: {ai_response}")
     return None
 
@@ -168,23 +171,39 @@ def aggregate_documentation_files_for_prompt_contents(file_path_to_contents: dic
 def format_markdown_q_and_a_response(question_str: str, response_str: str, relevant_sections: list[dict[str, str]],
                                      supported_suffixes: list[str], base_url_prefix: str, base_url_suffix: str="") -> str:
     try:
-        base_url_prefix = base_url_prefix.strip('/') #Sanitize base_url_prefix
+        base_url_prefix = base_url_prefix.strip('/')  # Sanitize base_url_prefix
         answer_str = ""
         answer_str += f"### Question: \n{question_str}\n\n"
         answer_str += f"### Answer:\n{response_str.strip()}\n\n"
-        answer_str += "#### Relevant Sources:\n\n"
+        source_links = []
+        if not isinstance(relevant_sections, list):
+            get_logger().warning("Skipping malformed relevant source collection: expected a list")
+            relevant_sections = []
         for section in relevant_sections:
-            file = section.get('file_name').lstrip('/').strip() #Remove any '/' in the beginning, since some models do it anyway
+            try:
+                if not isinstance(section, dict):
+                    raise ValueError("source row is not a mapping")
+                file_name = section.get('file_name')
+                header = section.get('relevant_section_header_string')
+                if not isinstance(file_name, str) or not isinstance(header, str):
+                    raise ValueError("source row has an invalid file name or section header")
+            except ValueError as e:
+                get_logger().warning(f"Skipping malformed relevant source row: {e}")
+                continue
+            file = file_name.lstrip('/').strip()  # Remove any leading '/', since some models add one
             ext = [suffix for suffix in supported_suffixes if file.endswith(suffix)]
             if not ext:
                 get_logger().warning(f"Unsupported file extension: {file}")
                 continue
-            if str(section['relevant_section_header_string']).strip():
-                markdown_header = format_markdown_header(section['relevant_section_header_string'])
+            if header.strip():
+                markdown_header = format_markdown_header(header)
                 if base_url_prefix:
-                    answer_str += f"> - {base_url_prefix}/{file}{base_url_suffix}#{markdown_header}\n"
+                    source_links.append(f"> - {base_url_prefix}/{file}{base_url_suffix}#{markdown_header}\n")
             else:
-                answer_str += f"> - {base_url_prefix}/{file}{base_url_suffix}\n"
+                source_links.append(f"> - {base_url_prefix}/{file}{base_url_suffix}\n")
+        if source_links:
+            answer_str += "#### Relevant Sources:\n\n"
+            answer_str += ''.join(source_links)
         return answer_str
     except Exception as e:
         get_logger().exception("Unexpected exception thrown. Returning empty result.")
@@ -216,6 +235,29 @@ def format_markdown_header(header: str) -> str:
     except Exception:
         get_logger().exception("Error while formatting markdown header", artifacts={'header': header})
         return ""
+
+
+def get_valid_ranking_indices(ranking: list[dict], number_of_documents: int) -> list[int]:
+    """Return in-range document indices while isolating malformed ranking rows."""
+    valid_indices = []
+    if not isinstance(ranking, list):
+        get_logger().warning("Skipping malformed relevant file ranking collection: expected a list")
+        return valid_indices
+    for entry in ranking:
+        try:
+            if not isinstance(entry, dict):
+                raise ValueError("ranking row is not a mapping")
+            raw_index = entry.get('idx')
+            if isinstance(raw_index, bool) or not isinstance(raw_index, (int, str)):
+                raise ValueError("ranking index has an invalid type")
+            index = int(raw_index)
+            if 0 <= index < number_of_documents:
+                valid_indices.append(index)
+            else:
+                raise ValueError("ranking index is out of range")
+        except (TypeError, ValueError) as e:
+            get_logger().warning(f"Skipping malformed relevant file ranking row: {e}")
+    return valid_indices
 
 def clean_markdown_content(content: str) -> str:
     """
@@ -370,9 +412,11 @@ class PRHelpDocs(object):
                 return
             response_str = response_yaml.get('response')
             relevant_sections = response_yaml.get('relevant_sections')
-            if not response_str or not relevant_sections:
-                get_logger().error("Failed to extract response/relevant sections.",
-                                       artifacts={'raw_response': response, 'response_str': response_str, 'relevant_sections': relevant_sections})
+            if not response_str:
+                get_logger().error(
+                    "Failed to extract response.",
+                    artifacts={'raw_response': response, 'response_str': response_str,
+                               'relevant_sections': relevant_sections})
                 return
             if int(response_yaml.get('question_is_relevant', '1')) == 0:
                 get_logger().warning("Question is not relevant. Returning without an answer...",
@@ -417,6 +461,24 @@ class PRHelpDocs(object):
             get_logger().exception("Unexpected exception thrown. Returning empty list.")
             return []
 
+    def _filter_doc_files_under_clone(self, doc_files: list[str], clone_root: str) -> list[str]:
+        """Drop candidates whose resolved path leaves the cloned repository root.
+
+        Symlinked documentation files can point outside the clone at host files; resolving
+        each candidate keeps anything that escapes from ever being read into the model prompt.
+        """
+        contained = []
+        for file_path in doc_files:
+            resolved = os.path.realpath(file_path)
+            if resolved != clone_root and not resolved.startswith(clone_root + os.sep):
+                get_logger().warning(
+                    f"Documentation file '{file_path}' resolves outside the cloned repository "
+                    "root; skipping it"
+                )
+                continue
+            contained.append(file_path)
+        return contained
+
     def _gen_filenames_to_contents_map_from_repo(self) -> dict[str, str]:
         try:
             with TemporaryDirectory() as tmp_dir:
@@ -434,15 +496,29 @@ class PRHelpDocs(object):
                             for file in files:
                                 if file.lower().startswith("readme."):
                                     doc_files.append(os.path.join(root, file))
-                abs_docs_path = os.path.join(returned_cloned_repo_root.path, self.docs_path)
-                if os.path.exists(abs_docs_path):
-                    doc_files.extend(self._find_all_document_files_matching_exts(abs_docs_path,
-                                                                                 ignore_readme=(self.docs_path=='.')))
-                    if not doc_files:
-                        get_logger().warning(f"No documentation files found matching file extensions: "
-                                             f"{self.supported_doc_exts} under repo: {self.repo_url} "
-                                             f"path: {self.docs_path}. Returning empty dict.")
-                        return {}
+                # Resolve docs_path against the clone root and refuse paths that escape it:
+                # an absolute or traversing docs_path (e.g. an attacker-controlled per-directory
+                # setting) must never read host files into the prompt.
+                clone_root = os.path.realpath(returned_cloned_repo_root.path)
+                resolved_docs_path = os.path.realpath(os.path.join(clone_root, self.docs_path))
+                if resolved_docs_path == clone_root or resolved_docs_path.startswith(clone_root + os.sep):
+                    if os.path.exists(resolved_docs_path):
+                        doc_files.extend(self._find_all_document_files_matching_exts(resolved_docs_path,
+                                                                                     ignore_readme=(self.docs_path=='.')))
+                else:
+                    get_logger().warning(
+                        f"docs_path '{self.docs_path}' escapes the cloned repository root; "
+                        "skipping docs-path file gathering"
+                    )
+                # Individual files can still escape the clone through symlinks (a doc or root
+                # README that points at a host file). Resolve every candidate and refuse
+                # anything that leaves the canonical clone root so host files never reach the prompt.
+                doc_files = self._filter_doc_files_under_clone(doc_files, clone_root)
+                if not doc_files:
+                    get_logger().warning(f"No documentation files found matching file extensions: "
+                                         f"{self.supported_doc_exts} under repo: {self.repo_url} "
+                                         f"path: {self.docs_path}. Returning empty dict.")
+                    return {}
 
                 get_logger().info(f'For context {self.ctx_url} and repo: {self.repo_url}'
                                   f' will be using the following documentation files: ',
@@ -511,8 +587,8 @@ class PRHelpDocs(object):
                 get_logger().error("Failed to parse the AI response.", artifacts={'response': response})
                 return ""
             # else: Sanitize the output so that the file names match 1:1 dictionary keys. Do this via the file index and not its name, which may be altered by the model.
-            valid_indices = [int(entry['idx']) for entry in response_yaml.get('relevant_files_ranking')
-                             if int(entry['idx']) >= 0 and int(entry['idx']) < len(docs_filepath_to_contents)]
+            valid_indices = get_valid_ranking_indices(response_yaml.get('relevant_files_ranking'),
+                                                      len(docs_filepath_to_contents))
             valid_file_paths = [list(docs_filepath_to_contents.keys())[idx] for idx in valid_indices]
             selected_docs_dict = {file_path: docs_filepath_to_contents[file_path] for file_path in valid_file_paths}
             docs_prompt = aggregate_documentation_files_for_prompt_contents(selected_docs_dict)

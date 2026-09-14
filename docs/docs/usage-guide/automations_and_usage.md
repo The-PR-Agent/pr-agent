@@ -34,6 +34,14 @@ This is useful for debugging or experimenting with different tools.
 3. **git provider**: The [git_provider](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) field in a configuration file determines the GIT provider that will be used by PR-Agent. Currently, the following providers are supported:
 `github` **(default)**, `gitlab`, `bitbucket`, `azure`, `codecommit`, `local`, and `gitea`.
 
+4. For scripts that need a failed request to return a non-zero process status, enable tool error propagation:
+
+```bash
+python -m pr_agent.cli --pr_url=<pr_url> review --config.propagate_tool_errors=true
+```
+
+When a propagated tool error makes the request fail, the installed `pr-agent` command, `python -m pr_agent.cli`, and the customizable pip script exit with status 1. The default remains compatible with existing CLI behavior and exits with status 0; argparse parse and usage errors continue to exit with status 2.
+
 ### CLI Health Check
 
 To verify that PR-Agent has been configured correctly, you can run this health check command from the repository root:

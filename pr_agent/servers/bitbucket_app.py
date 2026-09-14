@@ -196,6 +196,9 @@ async def _perform_commands_bitbucket(commands_conf: str, agent: PRAgent, api_ur
         if commands_conf == "pr_commands"
         else get_settings().get(f"bitbucket_app.{commands_conf}", {})
     )
+    if not commands:
+        get_logger().info(f"No {commands_conf} configured, skipping auto commands")
+        return
     get_settings().set("config.is_auto_command", True)
     if commands_conf == "push_commands":
         is_valid_push = await _validate_time_from_last_commit_to_pr_update(data)
@@ -381,8 +384,7 @@ async def handle_github_webhooks(background_tasks: BackgroundTasks, request: Req
                     with get_logger().contextualize(**log_context):
                         if get_identity_provider().verify_eligibility("bitbucket",
                                                         sender_id, pr_url) is not Eligibility.NOT_ELIGIBLE:
-                            if get_pr_commands("bitbucket_app"):
-                                await _perform_commands_bitbucket("pr_commands", agent, pr_url, log_context, data)
+                            await _perform_commands_bitbucket("pr_commands", agent, pr_url, log_context, data)
             elif event == "pullrequest:updated": # PR updated, might be from a push (we will validate this later)
                 pr_url = data["data"]["pullrequest"]["links"]["html"]["href"]
                 log_context["api_url"] = pr_url
@@ -391,9 +393,7 @@ async def handle_github_webhooks(background_tasks: BackgroundTasks, request: Req
                     with get_logger().contextualize(**log_context):
                         if get_identity_provider().verify_eligibility("bitbucket",
                                                         sender_id, pr_url) is not Eligibility.NOT_ELIGIBLE:
-
-                            if get_settings().get("bitbucket_app.push_commands"):
-                                await _perform_commands_bitbucket("push_commands", agent, pr_url, log_context, data)
+                            await _perform_commands_bitbucket("push_commands", agent, pr_url, log_context, data)
             elif event == "pullrequest:comment_created":
                 pr_url = data["data"]["pullrequest"]["links"]["html"]["href"]
                 log_context["api_url"] = pr_url

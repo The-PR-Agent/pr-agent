@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import difflib
+import math
 import re
 import textwrap
 import traceback
@@ -14,15 +15,17 @@ from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.git_patch_processing import decouple_and_convert_to_hunks_with_lines_numbers
 from pr_agent.algo.pr_processing import (
+    OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
     _get_all_models,
     add_ai_metadata_to_diff_files,
+    get_effective_fallback_chain,
     get_pr_diff,
     get_pr_multi_diffs,
     retry_with_fallback_models,
 )
 from pr_agent.algo.prompt_fragments import render_diff_hunk_format
 from pr_agent.algo.repo_context import build_repo_context
-from pr_agent.algo.run_details import init_run_details
+from pr_agent.algo.run_details import init_run_details, record_model_used
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (
@@ -105,6 +108,19 @@ def render_suggestions_markdown(data: dict) -> str:
 def _supports_code_suggestion_state(git_provider) -> bool:
     supports = getattr(git_provider, "supports_code_suggestion_state", None)
     return callable(supports) and bool(supports())
+
+
+def _supports_persistent_progress_comment(git_provider) -> bool:
+    """Whether a published progress comment can later be edited in place or removed.
+
+    Hosted providers turn the progress note into the final suggestions comment (edit it) or
+    delete it on failure or cancellation, so publishing it up front is worthwhile. Output-only
+    providers (plain-diff) write every non-temporary comment straight through to their output
+    and can do neither; persisting the progress there would leak a stale "Preparing
+    suggestions..." document ahead of the final result.
+    """
+    return (git_provider.is_supported("edit_comment")
+            and git_provider.is_supported("remove_comment"))
 
 
 def _edit_comment_safely(git_provider, comment, body: str) -> bool:
@@ -280,9 +296,15 @@ class PRCodeSuggestions:
                     not get_settings().config.get('is_auto_command', False)):
                 if self.git_provider.is_supported("gfm_markdown"):
                     # The progress comment later becomes the final suggestions comment (edited in place),
-                    # so it must already be a thread when threaded output is requested.
-                    self.progress_response = self.git_provider.publish_comment(self.progress,
-                                                                               **self._improve_thread_kwargs())
+                    # so it must already be a thread when threaded output is requested. Output-only
+                    # providers (plain-diff) cannot edit or remove it afterwards, so for those the
+                    # progress is a temporary placeholder that is never persisted.
+                    if _supports_persistent_progress_comment(self.git_provider):
+                        self.progress_response = self.git_provider.publish_comment(self.progress,
+                                                                                   **self._improve_thread_kwargs())
+                    else:
+                        self.progress_response = self.git_provider.publish_comment(
+                            self.progress, is_temporary=True, **self._improve_thread_kwargs())
                 else:
                     self.progress_response = self.git_provider.publish_comment(
                         "Preparing suggestions...", is_temporary=True)
@@ -313,6 +335,20 @@ class PRCodeSuggestions:
                 # Publish table summarized suggestions
                 if ((not get_settings().pr_code_suggestions.commitable_code_suggestions) and
                         self.git_provider.is_supported("gfm_markdown")):
+
+                    # Drop suggestions that can't be anchored in the diff (unresolved
+                    # sentinels, zero/negative or reversed line ranges, or positive
+                    # ranges that fall outside the changed lines of the relevant file)
+                    # up front; when nothing survives, route the outcome through
+                    # publish_no_suggestions() so it honors publish_output_no_suggestions
+                    # and emits the accurate coverage footer instead of a header-only table.
+                    data['code_suggestions'] = [
+                        suggestion for suggestion in data['code_suggestions']
+                        if self._is_suggestion_line_range_valid(suggestion)
+                    ]
+                    if not data['code_suggestions']:
+                        await self.publish_no_suggestions()
+                        return
 
                     # generate summarized suggestions
                     pr_body = self.generate_summarized_suggestions(data)
@@ -802,13 +838,17 @@ class PRCodeSuggestions:
         data = self.prediction
         return data
 
-    async def _get_prediction(self, model: str, patches_diff: str, patches_diff_no_line_number: str) -> dict:
+    def _render_prediction_prompts(self, patches_diff: str, patches_diff_no_line_number: str) -> tuple[str, str]:
         variables = copy.deepcopy(self.vars)
         variables["diff"] = patches_diff  # update diff
         variables["diff_no_line_numbers"] = patches_diff_no_line_number  # update diff
         environment = Environment(undefined=StrictUndefined)
         system_prompt = environment.from_string(self.pr_code_suggestions_prompt_system).render(variables)
         user_prompt = environment.from_string(self.pr_code_suggestions_prompt_user).render(variables)
+        return system_prompt, user_prompt
+
+    async def _get_prediction(self, model: str, patches_diff: str, patches_diff_no_line_number: str) -> dict:
+        system_prompt, user_prompt = self._render_prediction_prompts(patches_diff, patches_diff_no_line_number)
         response, finish_reason = await self.ai_handler.chat_completion(
             model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
         if not get_settings().config.publish_output:
@@ -823,7 +863,7 @@ class PRCodeSuggestions:
         if response_reflect:
             await self.analyze_self_reflection_response(data, response_reflect)
         else:
-            # get_logger().error(f"Could not self-reflect on suggestions. using default score 7")
+            get_logger().warning("Could not self-reflect on suggestions; using default score 7")
             for suggestion in data["code_suggestions"]:
                 suggestion["score"] = 7
                 suggestion["score_why"] = ""
@@ -867,7 +907,18 @@ class PRCodeSuggestions:
 
     async def analyze_self_reflection_response(self, data, response_reflect):
         response_reflect_yaml = load_yaml(response_reflect)
+        if not isinstance(response_reflect_yaml, dict):
+            get_logger().warning(
+                "Self-reflection feedback was not a mapping; line anchors will not be resolved"
+            )
+            return
         code_suggestions_feedback = response_reflect_yaml.get("code_suggestions", [])
+        if not isinstance(code_suggestions_feedback, list):
+            get_logger().warning(
+                "Self-reflection feedback 'code_suggestions' was not a list; "
+                "line anchors will not be resolved"
+            )
+            return
         if code_suggestions_feedback and len(code_suggestions_feedback) == len(data["code_suggestions"]):
             for i, suggestion in enumerate(data["code_suggestions"]):
                 try:
@@ -918,6 +969,11 @@ class PRCodeSuggestions:
                             suggestion['existing_code'] = ""
                 except Exception as e:
                     get_logger().error(f"Error processing suggestion {i + 1}, error: {e}")
+        else:
+            get_logger().warning(
+                f"Self-reflection feedback covered {len(code_suggestions_feedback)} suggestion(s) instead of "
+                f"{len(data['code_suggestions'])}; line anchors will not be resolved"
+            )
 
     @staticmethod
     def _truncate_if_needed(suggestion):
@@ -932,6 +988,81 @@ class PRCodeSuggestions:
                 suggestion['improved_code'] += f"\n{suggestion_truncation_message}"
                 suggestion['_is_truncated'] = True
         return suggestion
+
+    @staticmethod
+    def _parse_line_number(value) -> Optional[int]:
+        """Convert an anchor value to an int, or None when it cannot be a line number.
+
+        Rejects booleans, fractional floats (int() truncates them), and non-finite
+        floats (int() raises OverflowError) instead of silently coercing them.
+        """
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, float) and (not math.isfinite(value) or not value.is_integer()):
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    def _is_suggestion_line_range_valid(self, suggestion: dict) -> bool:
+        relevant_lines_start = self._parse_line_number(suggestion.get('relevant_lines_start'))
+        relevant_lines_end = self._parse_line_number(suggestion.get('relevant_lines_end'))
+        relevant_file = suggestion.get('relevant_file')
+        if relevant_lines_start is None or relevant_lines_end is None:
+            get_logger().warning("Skipping a suggestion without a valid line range",
+                                 artifact={'relevant_file': relevant_file,
+                                           'one_sentence_summary': suggestion.get('one_sentence_summary')})
+            return False
+        if relevant_lines_start < 1 or relevant_lines_end < relevant_lines_start:
+            get_logger().warning("Skipping a suggestion with an invalid line range",
+                                 artifact={'relevant_file': relevant_file,
+                                           'one_sentence_summary': suggestion.get('one_sentence_summary'),
+                                           'relevant_lines_start': relevant_lines_start,
+                                           'relevant_lines_end': relevant_lines_end})
+            return False
+        suggestion['relevant_lines_start'] = relevant_lines_start
+        suggestion['relevant_lines_end'] = relevant_lines_end
+        if not self._is_suggestion_line_range_in_diff(
+                relevant_file, relevant_lines_start, relevant_lines_end):
+            return False
+        return True
+
+    def _is_suggestion_line_range_in_diff(
+            self,
+            relevant_file,
+            relevant_lines_start: int,
+            relevant_lines_end: int) -> bool:
+        """Reject suggestions whose range cannot be resolved in the relevant file.
+
+        The model reflects on the extended patch, so accept context outside the
+        raw hunk when the complete head file contains it, as in _validate_suggestion.
+        Without complete file content, use the raw hunk as the reference.
+        """
+        if not isinstance(relevant_file, str) or not relevant_file.strip():
+            get_logger().warning("Skipping a suggestion whose file is missing",
+                                 artifact={'relevant_file': relevant_file,
+                                           'one_sentence_summary': None})
+            return False
+        diff_file = self._get_diff_file(relevant_file.strip())
+        if diff_file is None:
+            get_logger().warning("Skipping a suggestion whose file is not part of the PR diff",
+                                 artifact={'relevant_file': relevant_file.strip(),
+                                           'relevant_lines_start': relevant_lines_start,
+                                           'relevant_lines_end': relevant_lines_end})
+            return False
+        if diff_file.head_file and getattr(diff_file, "head_file_is_complete", True):
+            range_resolvable = relevant_lines_end <= len(diff_file.head_file.splitlines())
+        else:
+            range_resolvable = self._get_patch_range_lines(
+                diff_file.patch, relevant_lines_start, relevant_lines_end) is not None
+        if not range_resolvable:
+            get_logger().warning("Skipping a suggestion whose line range is not within the file",
+                                 artifact={'relevant_file': relevant_file.strip(),
+                                           'relevant_lines_start': relevant_lines_start,
+                                           'relevant_lines_end': relevant_lines_end})
+            return False
+        return True
 
     def _prepare_pr_code_suggestions(self, predictions: str) -> Dict:
         data = load_yaml(predictions.strip(),
@@ -1223,11 +1354,10 @@ class PRCodeSuggestions:
                 target_line += 1
                 target_remaining -= 1
 
-        if all(line_number in target_lines
-               for line_number in range(relevant_lines_start, relevant_lines_end + 1)):
-            return [target_lines[line_number]
-                    for line_number in range(relevant_lines_start, relevant_lines_end + 1)]
-        return None
+        if len(target_lines) != relevant_lines_end - relevant_lines_start + 1:
+            return None
+        return [target_lines[line_number]
+                for line_number in range(relevant_lines_start, relevant_lines_end + 1)]
 
     def _validate_suggestion(self, relevant_file, relevant_lines_start, relevant_lines_end,
                              existing_code) -> tuple[bool, str, bool]:
@@ -1502,6 +1632,133 @@ class PRCodeSuggestions:
             get_logger().error(f"Error removing line numbers from patches_diff_list, error: {e}")
             return patches_diff_list
 
+    async def _predict_chunks(self, model: str, chunk_pairs: list) -> list:
+        if get_settings().pr_code_suggestions.parallel_calls:
+            results = await asyncio.gather(
+                *[self._get_prediction(model, numbered, unnumbered) for numbered, unnumbered in chunk_pairs],
+                return_exceptions=True,
+            )
+        else:
+            results = []
+            for numbered, unnumbered in chunk_pairs:
+                try:
+                    results.append(await self._get_prediction(model, numbered, unnumbered))
+                except Exception as error:
+                    results.append(error)
+        for result in results:
+            if isinstance(result, BaseException) and not isinstance(result, Exception):
+                raise result
+        return results
+
+    def _recovery_chain(self, model: str, settings) -> Optional[tuple]:
+        """Return the invocation-local fallback chain and current position after routing.
+
+        The outer retry_with_fallback_models wrapper replaces the configured primary
+        pair with the routed one and records it as primary, so recovery must reproduce
+        that substitution; otherwise a routed run would search the configured chain
+        for a pair that is not there. Returns None when the caller's pair cannot be
+        found uniquely or a later pair repeats, in which case recovery gives up rather
+        than guess the position or retry an identical fallback.
+        """
+        effective_chain = get_effective_fallback_chain()
+        if effective_chain is None:
+            get_logger().warning("Skipping chunk recovery: no active fallback invocation chain")
+            return None
+        original_deployment = settings.get("openai.deployment_id", None)
+        positions = [index for index, pair in enumerate(effective_chain)
+                     if pair == (model, original_deployment)]
+        if len(positions) != 1:
+            get_logger().warning("Skipping chunk recovery: current model/deployment is not unique in the fallback chain")
+            return None
+        if len(set(effective_chain)) != len(effective_chain):
+            get_logger().warning("Skipping chunk recovery: the fallback chain repeats a model/deployment pair")
+            return None
+        return effective_chain, positions[0] + 1
+
+    async def _recover_failed_chunks(self, model: str, chunk_pairs: list, results: list) -> None:
+        """Try remaining models for failed slots, without replacing successful predictions."""
+        # An entirely failed batch still belongs to the existing outer fallback loop.
+        if not any(isinstance(result, Exception) for result in results) or all(
+            isinstance(result, Exception) for result in results
+        ):
+            return
+
+        settings = get_settings()
+        chain = self._recovery_chain(model, settings)
+        if chain is None:
+            return
+        fallback_chain, start = chain
+        original_deployment = settings.get("openai.deployment_id", None)
+        try:
+            for fallback_model, deployment in fallback_chain[start:]:
+                pending = [index for index, result in enumerate(results) if isinstance(result, Exception)]
+                if not pending:
+                    break
+                # Keep the original diff intact; truncation must not imply complete coverage.
+                eligible = []
+                recovered_any = False
+                # Resolve token controls under the same deployment that the fallback request will use.
+                settings.set("openai.deployment_id", deployment)
+                try:
+                    token_handler = TokenHandler(model=fallback_model)
+                    output_reserve = self._recovery_output_reserve(fallback_model)
+                    budget = get_max_tokens(fallback_model) - output_reserve
+                    for index in pending:
+                        system, user = self._render_prediction_prompts(*chunk_pairs[index])
+                        tokens = token_handler.count_tokens(system) + token_handler.count_tokens(user)
+                        if tokens <= budget:
+                            eligible.append(index)
+                        else:
+                            get_logger().warning(f"Skipping recovery of chunk {index + 1} with {fallback_model}: "
+                                                 "the complete prompt exceeds its token budget")
+                except Exception as error:
+                    get_logger().warning(f"Cannot prepare chunk recovery with {fallback_model}: {error}")
+                    continue
+                if not eligible:
+                    continue
+                # Sibling calls have finished before the deployment switch above.
+                recovered = await self._predict_chunks(fallback_model, [chunk_pairs[index] for index in eligible])
+                for index, result in zip(eligible, recovered, strict=True):
+                    if isinstance(result, Exception):
+                        get_logger().warning(
+                            f"Failed to recover suggestion chunk {index + 1} with {fallback_model}",
+                            artifact={"error": result},
+                        )
+                        continue
+                    recovered_any = True
+                    get_logger().info(f"Recovered suggestion chunk {index + 1} with {fallback_model}",
+                                      artifact={"error": results[index]})
+                    results[index] = result
+                if recovered_any:
+                    # run_details' model line reports the outer primary unless a fallback
+                    # ran, so mark this fallback usage stickily before it is overwritten.
+                    record_model_used(fallback_model, is_fallback=True)
+        finally:
+            settings.set("openai.deployment_id", original_deployment)
+
+    def _recovery_output_reserve(self, model: str) -> int:
+        """Return the completion headroom to reserve for a recovery fallback model.
+
+        The LiteLLM handler reports the output allowance it will actually request
+        (config.max_output_tokens, extended thinking, per-provider controls); fall
+        back to the fixed soft threshold only when it exposes no specific limit so a
+        near-limit prompt is not classified as eligible without enough headroom.
+        """
+        get_output_token_reserve = getattr(self.ai_handler, "get_output_token_reserve", None)
+        if callable(get_output_token_reserve):
+            try:
+                output_tokens = get_output_token_reserve(model, OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD)
+            except Exception as error:
+                get_logger().debug(f"Failed to resolve the output token reserve for {model}: {error}")
+            else:
+                if (
+                    isinstance(output_tokens, int)
+                    and not isinstance(output_tokens, bool)
+                    and output_tokens > 0
+                ):
+                    return output_tokens
+        return OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD
+
     async def prepare_prediction_main(self, model: str) -> dict:
         self.failed_chunk_count = 0
         self.total_chunk_count = 0
@@ -1543,38 +1800,17 @@ class PRCodeSuggestions:
                 zip(self.patches_diff_list, self.patches_diff_list_no_line_numbers, strict=True))
             self.total_chunk_count = len(chunk_pairs)
 
-            # parallelize calls to AI:
-            if get_settings().pr_code_suggestions.parallel_calls:
-                prediction_results = await asyncio.gather(
-                    *[self._get_prediction(model, patches_diff, patches_diff_no_line_numbers) for
-                      patches_diff, patches_diff_no_line_numbers in chunk_pairs],
-                    return_exceptions=True)
-                for chunk_index, prediction in enumerate(prediction_results):
-                    if isinstance(prediction, Exception):
-                        chunk_errors.append(prediction)
-                        get_logger().warning(
-                            f"Failed to generate code suggestions for chunk {chunk_index + 1}; "
-                            "retaining successful chunks",
-                            artifact={"error": prediction},
-                        )
-                    elif isinstance(prediction, BaseException):
-                        raise prediction
-                    else:
-                        prediction_list.append(prediction)
-            else:
-                for chunk_index, (patches_diff, patches_diff_no_line_numbers) in enumerate(
-                        chunk_pairs):
-                    try:
-                        prediction = await self._get_prediction(model, patches_diff, patches_diff_no_line_numbers)
-                    except Exception as e:
-                        chunk_errors.append(e)
-                        get_logger().warning(
-                            f"Failed to generate code suggestions for chunk {chunk_index + 1}; "
-                            "retaining successful chunks",
-                            artifact={"error": e},
-                        )
-                    else:
-                        prediction_list.append(prediction)
+            prediction_results = await self._predict_chunks(model, chunk_pairs)
+            await self._recover_failed_chunks(model, chunk_pairs, prediction_results)
+            for chunk_index, prediction in enumerate(prediction_results):
+                if isinstance(prediction, Exception):
+                    chunk_errors.append(prediction)
+                    get_logger().warning(
+                        f"Failed to generate code suggestions for chunk {chunk_index + 1}; retaining successful chunks",
+                        artifact={"error": prediction},
+                    )
+                else:
+                    prediction_list.append(prediction)
 
             self.failed_chunk_count = len(chunk_errors) + self.parse_failure_count
             if chunk_errors and not prediction_list:
@@ -1664,10 +1900,20 @@ class PRCodeSuggestions:
             suggestions_labels = dict()
             # add all suggestions related to each label
             for suggestion in data['code_suggestions']:
+                if not self._is_suggestion_line_range_valid(suggestion):
+                    # suggestions without resolved line anchors (e.g. when self-reflection
+                    # failed or returned a mismatched count) cannot be placed in the diff;
+                    # skip them instead of failing the whole table
+                    continue
                 label = suggestion['label'].strip().strip("'").strip('"')
                 if label not in suggestions_labels:
                     suggestions_labels[label] = []
                 suggestions_labels[label].append(suggestion)
+
+            if not suggestions_labels:
+                pr_body = f"{format_pr_code_suggestions_header()}\n\n"
+                pr_body += "No suggestions found to improve this PR."
+                return pr_body
 
             # sort suggestions_labels by the suggestion with the highest score
             suggestions_labels = dict(

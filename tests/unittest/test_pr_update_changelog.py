@@ -354,6 +354,20 @@ class TestPRUpdateChangelog:
                 message="[skip ci] Update CHANGELOG.md"
             )
 
+    def test_push_changelog_update_never_calls_create_or_update_pr_file_when_push_code_is_unsupported(
+            self, changelog_tool, mock_git_provider):
+        """A provider that declines `push_code` (e.g. restricted_mode) must never reach
+        `create_or_update_pr_file`, even if a future caller invokes this method directly
+        without going through `run()`'s own `self.commit_changelog` gate."""
+        mock_git_provider.create_or_update_pr_file = MagicMock()
+        mock_git_provider.is_supported.return_value = False
+        new_content = "# Updated changelog content"
+        answer = "Changes made"
+
+        changelog_tool._push_changelog_update(new_content, answer)
+
+        mock_git_provider.create_or_update_pr_file.assert_not_called()
+
     def test_gitlab_provider_method_detection(self, changelog_tool, mock_git_provider):
         """Test that the tool correctly detects GitLab provider method availability."""
         # Arrange

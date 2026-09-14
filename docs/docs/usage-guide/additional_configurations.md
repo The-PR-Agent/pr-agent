@@ -576,19 +576,6 @@ ignore_language_framework = ['protobuf', ...]
 You can view the list of auto-generated file patterns in [`generated_code_ignore.toml`](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/generated_code_ignore.toml).
 Files matching these glob patterns will be automatically excluded from PR Agent analysis.
 
-### Ignoring Tickets with Specific Labels
-
-When PR-Agent analyzes tickets (JIRA, GitHub Issues, GitLab Issues, etc.) referenced in your PR, you may want to exclude tickets that have certain labels from the analysis. This is useful for filtering out tickets marked as "ignore-compliance", "skip-review", or other labels that indicate the ticket should not be considered during PR review.
-
-To ignore tickets with specific labels, add the following to your `configuration.toml` file:
-
-```toml
-[config]
-ignore_ticket_labels = ["ignore-compliance", "skip-review", "wont-fix"]
-```
-
-Where `ignore_ticket_labels` is a list of label names that should be ignored during ticket analysis.
-
 ### Restricted Mode
 
 When running PR-Agent with limited GitHub/GitLab permissions, set `restricted_mode` to `true` to gracefully skip operations that require elevated access (e.g., pushing changelog changes):

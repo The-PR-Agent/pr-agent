@@ -235,7 +235,7 @@ async def test_a_failed_chunk_blocks_persistent_finding_resolution(chunking_enab
 
 
 @pytest.mark.asyncio
-async def test_an_empty_chunk_does_not_lose_a_valid_sibling_or_trigger_fallback(chunking_enabled):
+async def test_a_malformed_chunk_fails_the_model_attempt(chunking_enabled):
     reviewer = _make_reviewer()
     reviewer._get_prediction = AsyncMock(side_effect=["review: {}", CHUNK_B])
 
@@ -243,13 +243,12 @@ async def test_an_empty_chunk_does_not_lose_a_valid_sibling_or_trigger_fallback(
         patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
         patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
               return_value=(["chunk-a", "chunk-b"], [])),
+        pytest.raises(ValueError, match="non-empty review"),
     ):
         await reviewer._prepare_prediction("model")
 
     assert reviewer._get_prediction.await_count == 2
-    assert reviewer.prediction_data["review"]["score"] == "40"
-    assert reviewer.review_chunk_count == 2
-    assert reviewer.review_failed_chunk_count == 1
+    assert reviewer.prediction_data is None
 
 
 @pytest.mark.asyncio
@@ -272,20 +271,20 @@ async def test_a_review_where_every_chunk_failed_raises_so_a_fallback_model_is_t
     ["not yaml at all", "nor is this"],
     ["review: {}", "review: {}"],
 ])
-async def test_chunks_without_nonempty_reviews_fall_back_to_a_single_call_review(chunking_enabled,
-                                                                                 chunk_predictions):
+async def test_chunks_without_nonempty_reviews_fail_the_model_attempt(chunking_enabled,
+                                                                      chunk_predictions):
     reviewer = _make_reviewer()
-    reviewer._get_prediction = AsyncMock(side_effect=[*chunk_predictions, CHUNK_A])
+    reviewer._get_prediction = AsyncMock(side_effect=chunk_predictions)
 
     with (
         patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
         patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
               return_value=(["chunk-a", "chunk-b"], [])),
+        pytest.raises(ValueError, match="non-empty review"),
     ):
         await reviewer._prepare_prediction("model")
 
-    assert reviewer._get_prediction.await_count == 3
-    assert reviewer.prediction == CHUNK_A
+    assert reviewer._get_prediction.await_count == 2
     assert reviewer.prediction_data is None
 
 
