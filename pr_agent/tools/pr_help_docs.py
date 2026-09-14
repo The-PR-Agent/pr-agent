@@ -171,11 +171,14 @@ def aggregate_documentation_files_for_prompt_contents(file_path_to_contents: dic
 def format_markdown_q_and_a_response(question_str: str, response_str: str, relevant_sections: list[dict[str, str]],
                                      supported_suffixes: list[str], base_url_prefix: str, base_url_suffix: str="") -> str:
     try:
-        base_url_prefix = base_url_prefix.strip('/') #Sanitize base_url_prefix
+        base_url_prefix = base_url_prefix.strip('/')  # Sanitize base_url_prefix
         answer_str = ""
         answer_str += f"### Question: \n{question_str}\n\n"
         answer_str += f"### Answer:\n{response_str.strip()}\n\n"
         source_links = []
+        if not isinstance(relevant_sections, list):
+            get_logger().warning("Skipping malformed relevant source collection: expected a list")
+            relevant_sections = []
         for section in relevant_sections:
             try:
                 if not isinstance(section, dict):
@@ -184,20 +187,20 @@ def format_markdown_q_and_a_response(question_str: str, response_str: str, relev
                 header = section.get('relevant_section_header_string')
                 if not isinstance(file_name, str) or not isinstance(header, str):
                     raise ValueError("source row has an invalid file name or section header")
-                file = file_name.lstrip('/').strip() #Remove any '/' in the beginning, since some models do it anyway
-                ext = [suffix for suffix in supported_suffixes if file.endswith(suffix)]
-                if not ext:
-                    get_logger().warning(f"Unsupported file extension: {file}")
-                    continue
-                if header.strip():
-                    markdown_header = format_markdown_header(header)
-                    if base_url_prefix:
-                        source_links.append(f"> - {base_url_prefix}/{file}{base_url_suffix}#{markdown_header}\n")
-                else:
-                    source_links.append(f"> - {base_url_prefix}/{file}{base_url_suffix}\n")
-            except Exception as e:
+            except ValueError as e:
                 get_logger().warning(f"Skipping malformed relevant source row: {e}")
                 continue
+            file = file_name.lstrip('/').strip()  # Remove any leading '/', since some models add one
+            ext = [suffix for suffix in supported_suffixes if file.endswith(suffix)]
+            if not ext:
+                get_logger().warning(f"Unsupported file extension: {file}")
+                continue
+            if header.strip():
+                markdown_header = format_markdown_header(header)
+                if base_url_prefix:
+                    source_links.append(f"> - {base_url_prefix}/{file}{base_url_suffix}#{markdown_header}\n")
+            else:
+                source_links.append(f"> - {base_url_prefix}/{file}{base_url_suffix}\n")
         if source_links:
             answer_str += "#### Relevant Sources:\n\n"
             answer_str += ''.join(source_links)
