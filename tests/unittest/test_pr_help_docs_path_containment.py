@@ -26,12 +26,18 @@ def test_docs_path_within_clone_is_read(tmp_path):
 
 
 def test_absolute_docs_path_escaping_clone_is_rejected(tmp_path):
-    provider = _help_docs_with_clone(tmp_path, "/tmp")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.md").write_text("HOST SECRET CONTENT", encoding="utf-8")
+    provider = _help_docs_with_clone(tmp_path, str(outside))
     assert provider._gen_filenames_to_contents_map_from_repo() == {}
 
 
 def test_traversing_docs_path_escaping_clone_is_rejected(tmp_path):
-    provider = _help_docs_with_clone(tmp_path, "../../escape")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.md").write_text("HOST SECRET CONTENT", encoding="utf-8")
+    provider = _help_docs_with_clone(tmp_path, "../outside")
     assert provider._gen_filenames_to_contents_map_from_repo() == {}
 
 
@@ -54,7 +60,7 @@ def test_symlinked_root_readme_escaping_clone_is_skipped(tmp_path):
     secret.write_text("HOST SECRET CONTENT", encoding="utf-8")
     provider = _help_docs_with_clone(tmp_path, "docs", include_root_readme_file=True)
     clone_root = tmp_path / "clone"
-    (clone_root / "readme.md").write_text("clone readme", encoding="utf-8")
+    (clone_root / "readme.txt").write_text("clone readme", encoding="utf-8")
     (clone_root / "README.md").symlink_to(secret)
 
     result = provider._gen_filenames_to_contents_map_from_repo()
