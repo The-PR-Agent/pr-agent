@@ -412,9 +412,11 @@ class PRHelpDocs(object):
                 return
             response_str = response_yaml.get('response')
             relevant_sections = response_yaml.get('relevant_sections')
-            if not response_str or not relevant_sections:
-                get_logger().error("Failed to extract response/relevant sections.",
-                                       artifacts={'raw_response': response, 'response_str': response_str, 'relevant_sections': relevant_sections})
+            if not response_str:
+                get_logger().error(
+                    "Failed to extract response.",
+                    artifacts={'raw_response': response, 'response_str': response_str,
+                               'relevant_sections': relevant_sections})
                 return
             if int(response_yaml.get('question_is_relevant', '1')) == 0:
                 get_logger().warning("Question is not relevant. Returning without an answer...",
