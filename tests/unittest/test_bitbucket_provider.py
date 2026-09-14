@@ -1136,6 +1136,24 @@ class TestBitbucketServerProvider:
         assert content == "repo context"
         provider.get_file.assert_called_once_with("AGENTS.md", "base-sha")
 
+    def test_remove_comment_deletes_comment_with_id_and_version(self):
+        provider = self._persistent_provider()
+        comment = SimpleNamespace(id=7, version=3)
+
+        assert provider.remove_comment(comment) is True
+
+        provider.bitbucket_client.delete_pull_request_comment.assert_called_once_with(
+            "AAA", "my-repo", 1, 7, 3
+        )
+
+    def test_remove_comment_rejects_missing_version(self):
+        provider = self._persistent_provider()
+        comment = {"id": 7}
+
+        assert provider.remove_comment(comment) is False
+
+        provider.bitbucket_client.delete_pull_request_comment.assert_not_called()
+
     def test_get_repo_file_content_from_default_branch(self):
         provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
         provider.workspace_slug = "AAA"
