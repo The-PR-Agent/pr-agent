@@ -196,6 +196,89 @@ def test_real_request_failure_uses_effective_propagation_setting(
     ]
 
 
+@pytest.mark.parametrize(
+    ("baseline", "override_source", "override", "expected_statuses"),
+    [
+        (False, "repository", True, [1, None]),
+        (False, "command", True, [1, None]),
+        (True, "repository", False, [None, 1]),
+        (True, "command", False, [None, 1]),
+    ],
+)
+def test_run_restores_propagation_setting_between_invocations(
+    monkeypatch,
+    baseline,
+    override_source,
+    override,
+    expected_statuses,
+):
+    from pr_agent.agent import pr_agent as pr_agent_module
+
+    settings = get_settings()
+    settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", baseline)
+    apply_calls = 0
+    observed_values = []
+
+    class FailingReview:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def run(self):
+            observed_values.append(settings.config.get("propagate_tool_errors"))
+            raise RuntimeError("controlled tool failure")
+
+    def fake_apply_repo_settings(*_args, **_kwargs):
+        nonlocal apply_calls
+        if override_source == "repository" and apply_calls == 0:
+            settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", override)
+        apply_calls += 1
+
+    monkeypatch.setitem(pr_agent_module.command2class, "review", FailingReview)
+    monkeypatch.setattr(pr_agent_module, "apply_repo_settings", fake_apply_repo_settings)
+    monkeypatch.setattr(pr_agent_module, "flush_telemetry", lambda: None)
+    monkeypatch.setattr(cli, "inject_artifact_context", lambda: None)
+    monkeypatch.setattr(cli, "litellm_callbacks_registered", lambda: False)
+
+    first_inargs = ["--pr_url=https://example.com/org/repo/pull/1", "review"]
+    if override_source == "command":
+        first_inargs.append(f"--config.propagate_tool_errors={str(override).lower()}")
+
+    statuses = [
+        cli.run(inargs=first_inargs),
+        cli.run(inargs=["--pr_url=https://example.com/org/repo/pull/2", "review"]),
+    ]
+
+    assert observed_values == [override, baseline]
+    assert statuses == expected_statuses
+    assert settings.config.get("propagate_tool_errors") is baseline
+
+
+def test_run_restores_propagation_setting_when_callback_drain_raises(monkeypatch):
+    settings = get_settings()
+    settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", False)
+
+    async def fake_handle_request(*_args, **_kwargs):
+        settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", True)
+        return False
+
+    async def failing_drain(*_args, **_kwargs):
+        raise RuntimeError("controlled callback failure")
+
+    monkeypatch.setattr(
+        cli,
+        "PRAgent",
+        lambda: SimpleNamespace(handle_request=fake_handle_request),
+    )
+    monkeypatch.setattr(cli, "inject_artifact_context", lambda: None)
+    monkeypatch.setattr(cli, "litellm_callbacks_registered", lambda: True)
+    monkeypatch.setattr(cli, "drain_litellm_callbacks", failing_drain)
+
+    with pytest.raises(RuntimeError, match="controlled callback failure"):
+        cli.run(inargs=["--pr_url=https://example.com/org/repo/pull/1", "review"])
+
+    assert settings.config.get("propagate_tool_errors") is False
+
+
 def _console_script_entrypoint(python_executable):
     console_script = Path(python_executable).with_name("pr-agent")
     if sys.platform == "win32":

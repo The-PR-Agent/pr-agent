@@ -11,6 +11,7 @@ def test_set_parser_supports_config_branch_flag():
 
 def test_run_sets_config_branch_from_cli_flag():
     fake_settings = SimpleNamespace(
+        config={},
         litellm={},
         set=MagicMock(),
     )
@@ -29,6 +30,7 @@ def test_run_sets_config_branch_from_cli_flag():
 
 def test_run_sets_config_branch_from_env_var():
     fake_settings = SimpleNamespace(
+        config={},
         litellm={},
         set=MagicMock(),
     )
@@ -51,6 +53,7 @@ def test_run_sets_config_branch_from_env_var():
 def test_run_whitespace_cli_branch_falls_back_to_env_var():
     """A whitespace-only --config-branch must not short-circuit the env fallback."""
     fake_settings = SimpleNamespace(
+        config={},
         litellm={},
         set=MagicMock(),
     )
@@ -74,6 +77,7 @@ def test_run_reconciles_config_branch_when_absent():
     """Without a flag or env var, CONFIG.CONFIG_BRANCH must be reset (not leaked
     from a previous run() call in the same process-wide settings singleton)."""
     fake_settings = SimpleNamespace(
+        config={},
         litellm={},
         set=MagicMock(),
     )
