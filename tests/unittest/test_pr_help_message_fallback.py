@@ -147,6 +147,7 @@ async def test_each_attempt_fits_complete_prompt_for_its_model(help_tool, monkey
     assert details.model_used == BACKUP
 
 
+@pytest.mark.asyncio
 async def test_fallback_only_publishes_sources_from_complete_fitted_documents(help_tool, monkeypatch):
     tool, details, _ = help_tool
     hidden_doc = tool._fixture_doc.parents[1] / "hidden.md"
@@ -192,6 +193,69 @@ async def test_fallback_only_publishes_sources_from_complete_fitted_documents(he
     assert "https://docs.pr-agent.ai/hidden/" not in published_comment
     assert published_comment.count("> - ") == 1
     assert details.model_used == BACKUP
+
+
+@pytest.mark.parametrize("separator_prefix", ["", "\n===="], ids=["before-separator", "inside-separator"])
+def test_fitted_docs_files_accepts_complete_content_without_full_separator(separator_prefix):
+    visible_document = (
+        "==file name==\n\n/visible.md\n\n==file content==\n\n"
+        "# Visible\n\nAll visible content"
+    )
+    hidden_document = (
+        "==file name==\n\n/hidden.md\n\n==file content==\n\n"
+        "# Hidden\n\nHidden content"
+    )
+    raw_snippets = f"{visible_document}\n=========\n\n\n{hidden_document}\n========="
+    fitted_snippets = f"{visible_document}{separator_prefix}{pr_help_message.TRUNCATION_MARKER}"
+
+    assert PRHelpMessage._get_fitted_docs_files(
+        raw_snippets,
+        fitted_snippets,
+        {"visible.md", "hidden.md"},
+    ) == {"visible.md"}
+
+
+def test_fitted_docs_files_rejects_document_without_framing_separator():
+    document = (
+        "==file name==\n\n/visible.md\n\n==file content==\n\n"
+        "# Visible\n\nAll visible content"
+    )
+
+    assert PRHelpMessage._get_fitted_docs_files(
+        document,
+        document,
+        {"visible.md"},
+    ) == set()
+
+
+def test_fitted_docs_files_uses_final_separator_after_delimiter_like_content():
+    document = (
+        "==file name==\n\n/visible.md\n\n==file content==\n\n"
+        "# Visible\n\nExample output:\n=========\nStill part of the document"
+    )
+    raw_snippets = f"{document}\n========="
+    fitted_snippets = f"{document}{pr_help_message.TRUNCATION_MARKER}"
+
+    assert PRHelpMessage._get_fitted_docs_files(
+        raw_snippets,
+        fitted_snippets,
+        {"visible.md"},
+    ) == {"visible.md"}
+
+
+def test_fitted_docs_files_rejects_content_clipped_after_internal_delimiter():
+    content_before_delimiter = (
+        "==file name==\n\n/visible.md\n\n==file content==\n\n"
+        "# Visible\n\nExample output:\n========="
+    )
+    raw_snippets = f"{content_before_delimiter}\nStill part of the document\n========="
+    fitted_snippets = f"{content_before_delimiter}{pr_help_message.TRUNCATION_MARKER}"
+
+    assert PRHelpMessage._get_fitted_docs_files(
+        raw_snippets,
+        fitted_snippets,
+        {"visible.md"},
+    ) == set()
 
 
 @pytest.mark.parametrize(

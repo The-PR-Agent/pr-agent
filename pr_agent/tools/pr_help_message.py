@@ -219,8 +219,12 @@ class PRHelpMessage:
         fitted_docs_files = set()
         for index, (section_start, file_name) in enumerate(section_starts):
             section_end = section_starts[index + 1][0] if index + 1 < len(section_starts) else len(raw_snippets)
-            complete_section = raw_snippets[section_start:section_end].strip()
-            if complete_section and complete_section in fitted_snippets:
+            section = raw_snippets[section_start:section_end]
+            delimiter_start = section.rfind("\n=========")
+            if delimiter_start < 0:
+                continue
+            complete_document = section[:delimiter_start]
+            if complete_document and complete_document in fitted_snippets:
                 fitted_docs_files.add(file_name)
         return fitted_docs_files
 
@@ -326,7 +330,10 @@ class PRHelpMessage:
                         with open(file, 'r') as f:
                             file_contents = f.read().strip()
                             relative_file_path = file.relative_to(docs_path).as_posix()
-                            docs_prompt += f"\n==file name==\n\n/{relative_file_path}\n\n==file content==\n\n{file_contents}\n=========\n\n"
+                            docs_prompt += (
+                                f"\n==file name==\n\n/{relative_file_path}\n\n"
+                                f"==file content==\n\n{file_contents}\n=========\n\n"
+                            )
                             available_docs_files.add(relative_file_path)
                     except Exception as e:
                         get_logger().error(f"Error while reading the file {file}: {e}")

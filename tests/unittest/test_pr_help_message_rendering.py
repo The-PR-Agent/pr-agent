@@ -152,6 +152,7 @@ async def test_question_uses_configured_handler_error_path_without_openai_key(
     assert tool.git_provider.published == []
 
 
+@pytest.mark.asyncio
 async def test_question_skips_malformed_sources_without_discarding_answer(
     published_output, non_openai_question_settings, tmp_path, monkeypatch
 ):
@@ -197,6 +198,7 @@ async def test_question_skips_malformed_sources_without_discarding_answer(
     ],
     ids=["all-invalid-rows", "non-list-value"],
 )
+@pytest.mark.asyncio
 async def test_question_preserves_answer_when_no_valid_sources_remain(
     published_output, non_openai_question_settings, tmp_path, monkeypatch, relevant_sections
 ):
@@ -218,6 +220,7 @@ async def test_question_preserves_answer_when_no_valid_sources_remain(
     assert CURRENT_DOCS_URL not in comment
 
 
+@pytest.mark.asyncio
 async def test_question_does_not_link_to_document_that_failed_to_load(
     published_output, non_openai_question_settings, tmp_path, monkeypatch
 ):
