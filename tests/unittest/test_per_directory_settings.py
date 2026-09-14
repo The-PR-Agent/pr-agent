@@ -844,6 +844,43 @@ model_reasoning = "reasoning-model"
 
         assert get_settings().get("config.response_language", "en-us") == "en-US"
 
+    @pytest.mark.parametrize("toml_value", [
+        '"hot"', "true", "[0.1]", '{value = "0.1"}', "nan", "-0.1", "2.1",
+    ])
+    def test_per_directory_config_drops_invalid_temperature(self, per_dir_settings, monkeypatch, toml_value):
+        config = f"[config]\ntemperature = {toml_value}\n".encode()
+        monkeypatch.setattr(
+            "pr_agent.git_providers.utils.get_git_provider_with_context",
+            lambda url: _provider(
+                root_settings=ROOT_TOML,
+                tree_paths=["services/.pr_agent.toml"],
+                contents={"services/.pr_agent.toml": config},
+                files=["services/api.py"],
+            ),
+        )
+
+        git_utils.apply_repo_settings("https://github.com/org/repo/pull/1")
+
+        assert get_settings().config.temperature == 0.1
+
+    @pytest.mark.parametrize("toml_value", ['"six"', "true", "-1", "1001", "1.5"])
+    def test_per_directory_config_drops_invalid_description_threshold(self, per_dir_settings, monkeypatch,
+                                                                        toml_value):
+        config = f"[pr_description]\ncollapsible_file_list_threshold = {toml_value}\n".encode()
+        monkeypatch.setattr(
+            "pr_agent.git_providers.utils.get_git_provider_with_context",
+            lambda url: _provider(
+                root_settings=ROOT_TOML,
+                tree_paths=["services/.pr_agent.toml"],
+                contents={"services/.pr_agent.toml": config},
+                files=["services/api.py"],
+            ),
+        )
+
+        git_utils.apply_repo_settings("https://github.com/org/repo/pull/1")
+
+        assert get_settings().get("pr_description.collapsible_file_list_threshold") == 6
+
     def test_per_directory_config_drops_fallback_models(self, per_dir_settings, monkeypatch):
         config = b"""
 [config]

@@ -1,5 +1,6 @@
 import copy
 import itertools
+import math
 import os
 import posixpath
 import re
@@ -411,6 +412,27 @@ def _apply_repo_settings_file(repo_settings_file, repo_settings_scope="repo"):
                 contents = {k: v for k, v in contents.items() if k.lower() in per_dir_allowed_keys}
                 if not contents:
                     continue
+            if section.lower() == "pr_description":
+                normalized_contents = {key.lower(): value for key, value in contents.items()}
+                threshold = normalized_contents.get("collapsible_file_list_threshold")
+                if (
+                    "collapsible_file_list_threshold" in normalized_contents
+                    and (
+                        isinstance(threshold, bool)
+                        or not isinstance(threshold, int)
+                        or not 0 <= threshold <= 1000
+                    )
+                ):
+                    get_logger().warning(
+                        "Ignoring invalid collapsible_file_list_threshold from per-directory settings; expected an "
+                        "integer between 0 and 1000"
+                    )
+                    contents = {
+                        key: value for key, value in contents.items()
+                        if key.lower() != "collapsible_file_list_threshold"
+                    }
+                    if not contents:
+                        continue
             per_dir_host_only_keys = PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION.get(section.lower(), frozenset())
             rejected = [k for k in contents if k.lower() in per_dir_host_only_keys]
             if rejected:
@@ -434,6 +456,23 @@ def _apply_repo_settings_file(repo_settings_file, repo_settings_scope="repo"):
                     contents = {
                         key: value for key, value in contents.items() if key.lower() not in invalid_config_keys
                     }
+                if not contents:
+                    continue
+                invalid_temperature = (
+                    "temperature" in normalized_contents
+                    and (
+                        isinstance(normalized_contents["temperature"], bool)
+                        or not isinstance(normalized_contents["temperature"], (int, float))
+                        or not math.isfinite(normalized_contents["temperature"])
+                        or not 0 <= normalized_contents["temperature"] <= 2
+                    )
+                )
+                if invalid_temperature:
+                    get_logger().warning(
+                        "Ignoring invalid temperature setting from per-directory settings; expected a finite number "
+                        "between 0 and 2"
+                    )
+                    contents = {key: value for key, value in contents.items() if key.lower() != "temperature"}
                 if not contents:
                     continue
         allowed_keys = REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION.get(section.lower())
