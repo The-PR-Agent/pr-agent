@@ -67,6 +67,7 @@ PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION = {
     }),
     "pr_questions": frozenset({"resolve_threads", "use_conversation_history"}),
     "pr_code_suggestions": frozenset({
+        "commitable_code_suggestions",
         "max_number_of_calls", "parallel_calls",
         "approve_pr_on_self_review", "demand_code_suggestions_self_review",
     }),
@@ -112,7 +113,7 @@ PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION = {
 REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS = {
     "config": frozenset({
         "model", "model_weak", "model_reasoning",
-        "model_token_count_estimate_factor", "temperature", "response_language",
+        "temperature", "response_language",
         "repo_context_from_default_branch",
     }),
     "ignore": frozenset({"glob"}),

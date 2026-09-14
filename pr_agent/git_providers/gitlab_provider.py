@@ -1456,14 +1456,22 @@ class GitLabProvider(GitProvider):
         try:
             project = self.gl.projects.get(self.id_project)
             resolved_ref = project.default_branch
-            tree = project.repository_tree(ref=resolved_ref, recursive=True, all=True)
-            paths = [
-                item.get("path")
-                for item in tree
-                if item.get("type") == "blob"
-                and (item.get("path") or "").endswith(".pr_agent.toml")
-            ]
-            return paths, resolved_ref
+            max_pages = get_settings().config.per_directory_settings_max_tree_pages
+            if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1:
+                get_logger().warning("Invalid per-directory tree page limit; skipping nested settings")
+                return [], resolved_ref
+            paths = []
+            for page in range(1, max_pages + 1):
+                tree = project.repository_tree(ref=resolved_ref, recursive=True, page=page, per_page=100)
+                paths.extend(
+                    item["path"] for item in tree
+                    if item.get("type") == "blob"
+                    and (item.get("path") or "").split("/")[-1] == ".pr_agent.toml"
+                )
+                if len(tree) < 100:
+                    return paths, resolved_ref
+            get_logger().warning("Per-directory tree page limit reached; skipping incomplete nested settings discovery")
+            return [], resolved_ref
         except GitlabGetError as e:
             if getattr(e, "response_code", None) == 404:
                 get_logger().debug("No repository tree found for per-directory settings; skipping")

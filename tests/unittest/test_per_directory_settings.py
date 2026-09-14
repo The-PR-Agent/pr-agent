@@ -714,7 +714,7 @@ skip_comments = true
         assert get_settings().pr_reviewer.num_max_findings == 4
         assert get_settings().pr_description.use_ai_title is True
         assert get_settings().pr_questions.static_questions == ["default"]
-        assert get_settings().pr_code_suggestions.commitable_code_suggestions is True
+        assert get_settings().pr_code_suggestions.commitable_code_suggestions is False
         assert get_settings().pr_code_suggestions.num_code_suggestions_per_chunk == 2
         assert get_settings().pr_similar_issue.use_original_title is False
 
@@ -749,6 +749,8 @@ model = "nested-model"
 temperature = 0.5
 repo_context_files = ["huge.bin", "secrets.env", "vendor/data.bin"]
 repo_context_max_lines = 9999999
+model_token_count_estimate_factor = -0.999999
+per_directory_settings_max_tree_pages = 999999
 """
         monkeypatch.setattr(
             "pr_agent.git_providers.utils.get_git_provider_with_context",
@@ -770,6 +772,8 @@ repo_context_max_lines = 9999999
             "vendor/data.bin",
         ]
         assert get_settings().get("config.repo_context_max_lines", 0) != 9999999
+        assert get_settings().config.model_token_count_estimate_factor == 0.3
+        assert get_settings().config.per_directory_settings_max_tree_pages == 10
         # Model-routing and output knobs still apply.
         assert get_settings().config.model == "nested-model"
         assert get_settings().config.temperature == 0.5
@@ -1036,7 +1040,26 @@ class TestGitLabProviderPerDirectory:
 
         assert resolved_ref == "main"
         assert paths == [".pr_agent.toml", "svc/.pr_agent.toml"]
-        project.repository_tree.assert_called_once_with(ref="main", recursive=True, all=True)
+        project.repository_tree.assert_called_once_with(ref="main", recursive=True, page=1, per_page=100)
+
+    @pytest.mark.parametrize("complete", [True, False])
+    def test_tree_discovery_is_bounded_and_requires_complete_results(self, per_dir_settings, complete):
+        get_settings().config.per_directory_settings_max_tree_pages = 2
+        project = MagicMock()
+        project.default_branch = "main"
+        full_page = [{"path": "svc/.pr_agent.toml", "type": "blob"}] * 100
+        project.repository_tree.side_effect = [full_page, [] if complete else full_page]
+        gl = MagicMock()
+        gl.projects.get.return_value = project
+
+        paths, ref = _gitlab_provider(gl).get_repo_settings_tree()
+
+        assert ref == "main"
+        assert paths == (["svc/.pr_agent.toml"] * 100 if complete else [])
+        assert project.repository_tree.call_args_list == [
+            call(ref="main", recursive=True, page=1, per_page=100),
+            call(ref="main", recursive=True, page=2, per_page=100),
+        ]
 
     def test_get_repo_settings_contents(self):
         project = MagicMock()
