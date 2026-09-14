@@ -172,6 +172,22 @@ def test_is_suggestion_line_range_valid_rejects_range_not_fully_in_diff():
     assert tool._is_suggestion_line_range_valid(suggestion) is False
 
 
+def test_get_patch_range_lines_rejects_oversized_span_without_enumerating_it():
+    # A parseable but absurdly large span must be rejected by length comparison
+    # before any range(start, end) enumeration would iterate over it.
+    patch = DEFAULT_PATCH
+
+    assert PRCodeSuggestions._get_patch_range_lines(patch, 1, 1_000_000_000) is None
+    assert PRCodeSuggestions._get_patch_range_lines(patch, 2, 6) == [
+        "    return new()",
+        "    extra",
+        "    more",
+        "    lines",
+        "    added line",
+    ]
+    assert PRCodeSuggestions._get_patch_range_lines(patch, 2, 2) == ["    return new()"]
+
+
 def test_prepare_pr_code_suggestions_applies_truncation_inline():
     settings = get_settings()
     snapshot = snapshot_settings(TRUNCATION_SETTINGS)

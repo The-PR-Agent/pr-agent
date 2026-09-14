@@ -1343,11 +1343,10 @@ class PRCodeSuggestions:
                 target_line += 1
                 target_remaining -= 1
 
-        if all(line_number in target_lines
-               for line_number in range(relevant_lines_start, relevant_lines_end + 1)):
-            return [target_lines[line_number]
-                    for line_number in range(relevant_lines_start, relevant_lines_end + 1)]
-        return None
+        if len(target_lines) != relevant_lines_end - relevant_lines_start + 1:
+            return None
+        return [target_lines[line_number]
+                for line_number in range(relevant_lines_start, relevant_lines_end + 1)]
 
     def _validate_suggestion(self, relevant_file, relevant_lines_start, relevant_lines_end,
                              existing_code) -> tuple[bool, str, bool]:
