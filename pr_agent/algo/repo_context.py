@@ -250,10 +250,12 @@ def _read_max_sibling_context_files() -> int:
 
 def _load_repo_context_files(
     git_provider, context_files: list, from_default_branch: bool | None = None
-) -> tuple[dict[str, str], bool]:
+) -> tuple[list[tuple[str, str]], bool]:
     if from_default_branch is None:
         from_default_branch = _read_bool_setting("repo_context_from_default_branch", default=True)
-    files = {}
+    # Ordered (label, content) entries rather than a label-keyed dict: a local path can equal a
+    # sibling's rendered label, and a label-keyed mapping would silently drop one of them.
+    files = []
     had_fetch_error = False
     max_siblings = _read_max_sibling_context_files()
     sibling_fetch_attempts = 0
@@ -328,18 +330,26 @@ def _load_repo_context_files(
         if isinstance(content, bytes):
             content = content.decode("utf-8", errors="replace")
 
-        files[label] = str(content).rstrip()
+        files.append((label, str(content).rstrip()))
 
     return files, had_fetch_error
 
 
-def render_instruction_files(files: dict[str, str]) -> str:
+def _repo_context_render_entries(files):
+    """Yield (path, content) pairs, accepting a label-keyed dict or ordered pairs.
+
+    _load_repo_context_files returns ordered (label, content) pairs so a local path and a
+    sibling's rendered label may coexist; a dict spelling is kept for direct callers."""
+    return files.items() if isinstance(files, dict) else files
+
+
+def render_instruction_files(files: dict[str, str] | list[tuple[str, str]]) -> str:
     parts = [
         INSTRUCTION_FILES_INTRO,
         "<instruction_files>",
     ]
 
-    for path, content in files.items():
+    for path, content in _repo_context_render_entries(files):
         scope = path.rsplit("/", 1)[0] if "/" in path else "repo-root"
         fence = _get_markdown_fence(content)
         parts.append(f'<file path="{escape(path, quote=True)}" scope="{escape(scope, quote=True)}">')
@@ -353,7 +363,9 @@ def render_instruction_files(files: dict[str, str]) -> str:
     return "\n".join(parts)
 
 
-def render_instruction_files_with_line_budget(files: dict[str, str], max_lines: int) -> str:
+def render_instruction_files_with_line_budget(
+    files: dict[str, str] | list[tuple[str, str]], max_lines: int
+) -> str:
     parts = [
         INSTRUCTION_FILES_INTRO,
         "<instruction_files>",
@@ -362,7 +374,7 @@ def render_instruction_files_with_line_budget(files: dict[str, str], max_lines: 
     if max_lines < len(parts) + 1:
         return ""
 
-    for path, content in files.items():
+    for path, content in _repo_context_render_entries(files):
         scope = path.rsplit("/", 1)[0] if "/" in path else "repo-root"
         fence = _get_markdown_fence(content)
         file_header = [

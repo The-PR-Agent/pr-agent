@@ -35,3 +35,14 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     # bound and let a commenter force unbounded cross-repository API calls, so it stays host-only.
     "config": frozenset({"repo_context_max_sibling_files"}),
 }
+
+# Keys that repositories may still configure from their own default-branch settings but that
+# comment/CLI *arguments* must never override. repo_context_files selects which repository and
+# sibling files are fetched and rendered as the model's instruction context, so an untrusted
+# commenter must not be able to point the bot at arbitrary sibling repo content. Values curated
+# by the repo's maintainers in .pr_agent.toml stay accepted (apply_repo_settings does not consult
+# this map); only CliArgs.validate_user_args enforces it, so repo settings and comment args do
+# not drift.
+CLI_HOST_ONLY_KEYS_BY_SECTION = {
+    "config": frozenset({"repo_context_files"}),
+}

@@ -73,6 +73,12 @@ FORBIDDEN_ARGS = [
     "--config.repo_context_max_sibling_files=1000",
     "--config__repo_context_max_sibling_files=1000",
     '--config={"repo_context_max_sibling_files": 1000}',
+    # repo_context_files selects which files become model instructions, so comment arguments
+    # must not be able to point the bot at arbitrary sibling repo content.
+    "--config.repo_context_files=[\"group/A/idea:AGENTS.md\"]",
+    '--config.repo_context_files=[{"repo_id": "group/A/idea", "file_path": "AGENTS.md"}]',
+    "--config__repo_context_files=[\"AGENTS.md\"]",
+    '--config={"repo_context_files": ["group/A/idea:AGENTS.md"]}',
 ]
 
 
@@ -82,7 +88,6 @@ ALLOWED_ARGS_SINGLE = [
     "--skills.enabled=true",
     "--skills.max_skills_tokens=1000",
     "--config.response_language=zh-tw",
-    "--config.repo_context_files=[\"group/A/idea:AGENTS.md\"]",
     "--pr_description.publish_labels=false",
     # non-flag arguments are not validated against the forbidden list
     "some-positional-arg",

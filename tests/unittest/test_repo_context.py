@@ -317,7 +317,7 @@ def test_load_repo_context_files_normalizes_fetch_results():
         provider, ["AGENTS.md", "EMPTY.md", "MISSING.md", " "]
     )
 
-    assert files == {"AGENTS.md": "Repo purpose"}
+    assert files == [("AGENTS.md", "Repo purpose")]
     assert had_fetch_error is False
     assert provider.requested_paths == ["AGENTS.md", "EMPTY.md", "MISSING.md"]
 
@@ -328,7 +328,7 @@ def test_load_repo_context_files_reports_fetch_errors():
 
     files, had_fetch_error = repo_context._load_repo_context_files(provider, ["AGENTS.md"])
 
-    assert files == {}
+    assert files == []
     assert had_fetch_error is True
 
 
@@ -384,10 +384,10 @@ def test_load_repo_context_files_fetches_sibling_and_same_repo_files():
     )
 
     # The sibling file is rendered under its sibling path so the model sees where it came from.
-    assert files == {
-        "AGENTS.md": "Repo purpose",
-        "group/lib-api/src/interfaces/api.py": "Sibling contract",
-    }
+    assert files == [
+        ("AGENTS.md", "Repo purpose"),
+        ("group/lib-api/src/interfaces/api.py", "Sibling contract"),
+    ]
     assert had_fetch_error is False
     assert provider.requested_paths == ["AGENTS.md"]
     assert provider.requested_siblings == ["group/lib-api:src/interfaces/api.py"]
@@ -404,7 +404,7 @@ def test_load_repo_context_files_treats_colon_string_as_local_path():
     )
 
     # A ':' inside a plain string is a local path, never a sibling reference.
-    assert files == {"docs/guide:part.md": "Local content"}
+    assert files == [("docs/guide:part.md", "Local content")]
     assert had_fetch_error is False
     assert provider.requested_paths == ["docs/guide:part.md"]
     assert provider.requested_siblings == []
@@ -418,7 +418,7 @@ def test_load_repo_context_files_reports_sibling_fetch_errors():
         provider, [{"repo_id": "group/lib-api", "file_path": "src/api.py"}], from_default_branch=True
     )
 
-    assert files == {}
+    assert files == []
     assert had_fetch_error is True
 
 
@@ -430,7 +430,7 @@ def test_load_repo_context_files_skips_siblings_for_unsupported_provider():
         provider, ["AGENTS.md", {"repo_id": "group/lib-api", "file_path": "src/api.py"}], from_default_branch=True
     )
 
-    assert files == {"AGENTS.md": "Repo purpose"}
+    assert files == [("AGENTS.md", "Repo purpose")]
     assert had_fetch_error is False
     assert provider.requested_paths == ["AGENTS.md"]
     provider.get_sibling_repo_file_content.assert_not_called()
@@ -458,10 +458,10 @@ def test_load_repo_context_files_respects_sibling_file_cap(repo_context_settings
         from_default_branch=True,
     )
 
-    assert files == {
-        "group/g1/README.md": "one",
-        "group/g2/README.md": "two",
-    }
+    assert files == [
+        ("group/g1/README.md", "one"),
+        ("group/g2/README.md", "two"),
+    ]
     assert had_fetch_error is False
     assert provider.requested_siblings == [
         "group/g1:README.md",
@@ -490,10 +490,10 @@ def test_sibling_fetch_cap_counts_unique_pairs_not_duplicate_entries(repo_contex
     )
 
     # A duplicate entry must not consume the fetch cap: each unique pair is fetched once.
-    assert files == {
-        "group/g1/README.md": "one",
-        "group/g2/README.md": "two",
-    }
+    assert files == [
+        ("group/g1/README.md", "one"),
+        ("group/g2/README.md", "two"),
+    ]
     assert had_fetch_error is False
     assert provider.requested_siblings == [
         "group/g1:README.md",
@@ -553,7 +553,7 @@ def test_sibling_fetch_cap_counts_attempts_not_just_content(repo_context_setting
         from_default_branch=True,
     )
 
-    assert files == {"group/g2/README.md": "two"}
+    assert files == [("group/g2/README.md", "two")]
     assert provider.requested_siblings == [
         "group/g1:README.md",
         "group/g2:README.md",
@@ -608,6 +608,41 @@ def test_build_repo_context_renders_sibling_file_with_budget(repo_context_settin
         '<file path="group/lib-api/src/interfaces/api.py" scope="group/lib-api/src/interfaces">\n'
         "`````markdown\n"
         "def call(req): ...\n"
+        "`````\n"
+        "</file>\n\n"
+        "</instruction_files>"
+    )
+
+
+def test_build_repo_context_renders_local_and_sibling_with_same_label(repo_context_settings):
+    repo_context_settings.set(
+        "CONFIG.REPO_CONTEXT_FILES",
+        [
+            "group/lib/README.md",
+            {"repo_id": "group/lib", "file_path": "README.md"},
+        ],
+    )
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 500)
+    provider = SiblingFakeProvider(
+        files={"group/lib/README.md": "Local README\n"},
+        sibling_files={"group/lib:README.md": "Sibling README\n"},
+    )
+
+    context = build_repo_context(provider)
+
+    # A local path that equals a sibling's rendered label must not overwrite the other: both
+    # configured instruction files reach the prompt, distinguished by their source content.
+    assert context == (
+        "You are being given instruction files. Follow them as project-specific guidance when reviewing code.\n"
+        "<instruction_files>\n"
+        '<file path="group/lib/README.md" scope="group/lib">\n'
+        "`````markdown\n"
+        "Local README\n"
+        "`````\n"
+        "</file>\n\n"
+        '<file path="group/lib/README.md" scope="group/lib">\n'
+        "`````markdown\n"
+        "Sibling README\n"
         "`````\n"
         "</file>\n\n"
         "</instruction_files>"
