@@ -147,6 +147,53 @@ async def test_each_attempt_fits_complete_prompt_for_its_model(help_tool, monkey
     assert details.model_used == BACKUP
 
 
+async def test_fallback_only_publishes_sources_from_complete_fitted_documents(help_tool, monkeypatch):
+    tool, details, _ = help_tool
+    hidden_doc = tool._fixture_doc.parents[1] / "hidden.md"
+    hidden_doc.write_text("# Hidden\n\n" + "H" * 600, encoding="utf-8")
+    review_content = tool._fixture_doc.read_text(encoding="utf-8").strip()
+    review_section = (
+        "==file name==\n\n/tools/review.md\n\n==file content==\n\n"
+        f"{review_content}\n========="
+    )
+    get_settings().set("pr_help_prompts.system", "")
+    get_settings().set("pr_help_prompts.user", "{{ snippets }}")
+    limits = {
+        PRIMARY: 10_000,
+        BACKUP: len(review_section) + len(pr_help_message.TRUNCATION_MARKER) + 1,
+    }
+    monkeypatch.setattr(tool, "_get_prompt_budget", lambda model: limits[model])
+    monkeypatch.setattr(pr_help_message, "token_counter", count_message_characters)
+    tool.ai_handler.chat_completion.side_effect = [
+        RuntimeError("primary unavailable"),
+        (
+            "response: Use the documented review settings.\n"
+            "relevant_sections:\n"
+            "  - file_name: /tools/review.md\n"
+            "    relevant_section_header_string: Automatic review\n"
+            "  - file_name: /hidden.md\n"
+            "    relevant_section_header_string: Hidden\n",
+            "stop",
+        ),
+    ]
+
+    await tool.run()
+
+    assert attempted_models(tool) == [PRIMARY, BACKUP]
+    primary_prompt = tool.ai_handler.chat_completion.await_args_list[0].kwargs["user"]
+    backup_prompt = tool.ai_handler.chat_completion.await_args_list[1].kwargs["user"]
+    assert "/hidden.md" in primary_prompt
+    assert review_section in backup_prompt
+    assert "H" * 600 not in backup_prompt
+    assert pr_help_message.TRUNCATION_MARKER in backup_prompt
+    assert tool._model_visible_docs_files == {"tools/review.md"}
+    published_comment = tool.git_provider.publish_comment.call_args.args[0]
+    assert "> - https://docs.pr-agent.ai/tools/review/#automatic-review" in published_comment
+    assert "https://docs.pr-agent.ai/hidden/" not in published_comment
+    assert published_comment.count("> - ") == 1
+    assert details.model_used == BACKUP
+
+
 @pytest.mark.parametrize(
     ("configured_output", "expected_budget"),
     [
@@ -360,14 +407,14 @@ def test_prompt_fitting_checks_smallest_nonempty_prefix(help_tool, monkeypatch):
 
     monkeypatch.setattr(pr_help_message, "token_counter", discontinuous_count)
 
-    _, user_prompt = tool._fit_prompts({"question": "q", "snippets": "ABC"}, PRIMARY)
+    _, user_prompt, fitted_snippets = tool._fit_prompts({"question": "q", "snippets": "ABC"}, PRIMARY)
 
     assert user_prompt == f"A{pr_help_message.TRUNCATION_MARKER}"
+    assert fitted_snippets == f"A{pr_help_message.TRUNCATION_MARKER}"
 
 
 async def test_marker_only_prompt_is_sent_when_no_document_character_fits(help_tool, monkeypatch):
     tool, _, _ = help_tool
-    tool.vars = {"question": "q", "snippets": "ABC"}
     get_settings().set("pr_help_prompts.system", "")
     get_settings().set("pr_help_prompts.user", "{{ snippets }}")
     monkeypatch.setattr(tool, "_get_prompt_budget", lambda _model: 10)
@@ -383,10 +430,15 @@ async def test_marker_only_prompt_is_sent_when_no_document_character_fits(help_t
     monkeypatch.setattr(pr_help_message, "token_counter", marker_only_count)
     tool.ai_handler.chat_completion.return_value = ANSWER, "stop"
 
-    await tool._prepare_prediction(PRIMARY)
+    await tool.run()
 
     tool.ai_handler.chat_completion.assert_awaited_once()
     assert tool.ai_handler.chat_completion.await_args.kwargs["user"] == pr_help_message.TRUNCATION_MARKER
+    assert tool._model_visible_docs_files == set()
+    published_comment = tool.git_provider.publish_comment.call_args.args[0]
+    assert "### Answer:\nEnable automatic review" in published_comment
+    assert "Relevant Sources" not in published_comment
+    assert "https://docs.pr-agent.ai" not in published_comment
 
 
 async def test_fixed_prompt_overhead_skips_model_call_and_tries_larger_fallback(help_tool, monkeypatch):

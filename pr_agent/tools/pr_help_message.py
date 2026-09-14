@@ -38,9 +38,14 @@ class PRHelpMessage:
 
     async def _prepare_prediction(self, model: str):
         variables = copy.deepcopy(self.vars)
-        system_prompt, user_prompt = self._fit_prompts(variables, model)
+        system_prompt, user_prompt, fitted_snippets = self._fit_prompts(variables, model)
         response, finish_reason = await self.ai_handler.chat_completion(
             model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
+        self._model_visible_docs_files = self._get_fitted_docs_files(
+            variables.get("snippets", ""),
+            fitted_snippets,
+            getattr(self, "_available_docs_files", set()),
+        )
         return response
 
     @staticmethod
@@ -166,7 +171,7 @@ class PRHelpMessage:
 
         full_prompts = render(raw_snippets)
         if self._count_prompt_tokens(model, *full_prompts) <= prompt_budget:
-            return full_prompts
+            return full_prompts[0], full_prompts[1], raw_snippets
 
         empty_prompts = render("")
         if self._count_prompt_tokens(model, *empty_prompts) > prompt_budget:
@@ -185,14 +190,39 @@ class PRHelpMessage:
                 get_logger().warning(
                     f"Documentation was clipped for /help to fit the {prompt_budget}-token input limit for {model}"
                 )
-                return candidate_prompts
+                return candidate_prompts[0], candidate_prompts[1], candidate
             next_keep_chars = max(1, int(keep_chars * prompt_budget / candidate_tokens))
             keep_chars = min(keep_chars - 1, next_keep_chars)
 
         get_logger().warning(
             f"Documentation was clipped for /help to fit the {prompt_budget}-token input limit for {model}"
         )
-        return marker_prompts
+        return marker_prompts[0], marker_prompts[1], TRUNCATION_MARKER
+
+    @staticmethod
+    def _get_fitted_docs_files(
+        raw_snippets: str,
+        fitted_snippets: str,
+        available_docs_files: set[str],
+    ) -> set[str]:
+        if not raw_snippets or not fitted_snippets or not available_docs_files:
+            return set()
+
+        section_starts = []
+        for file_name in available_docs_files:
+            section_prefix = f"==file name==\n\n/{file_name}\n\n==file content==\n\n"
+            section_start = raw_snippets.find(section_prefix)
+            if section_start >= 0:
+                section_starts.append((section_start, file_name))
+        section_starts.sort()
+
+        fitted_docs_files = set()
+        for index, (section_start, file_name) in enumerate(section_starts):
+            section_end = section_starts[index + 1][0] if index + 1 < len(section_starts) else len(raw_snippets)
+            complete_section = raw_snippets[section_start:section_end].strip()
+            if complete_section and complete_section in fitted_snippets:
+                fitted_docs_files.add(file_name)
+        return fitted_docs_files
 
     def parse_args(self, args):
         if args and len(args) > 0:
@@ -301,6 +331,8 @@ class PRHelpMessage:
                     except Exception as e:
                         get_logger().error(f"Error while reading the file {file}: {e}")
                 self.vars['snippets'] = docs_prompt.strip()
+                self._available_docs_files = available_docs_files
+                self._model_visible_docs_files = set()
 
                 # run the AI model
                 response = await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.REGULAR)
@@ -328,7 +360,7 @@ class PRHelpMessage:
                 # prepare the answer
                 answer_str = ""
                 if response_str:
-                    source_urls = self._format_relevant_sources(relevant_sections, available_docs_files)
+                    source_urls = self._format_relevant_sources(relevant_sections, self._model_visible_docs_files)
                     answer_str += f"### Question: \n{self.question_str}\n\n"
                     answer_str += f"### Answer:\n{response_str.strip()}\n\n"
                     if source_urls:
