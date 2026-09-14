@@ -68,6 +68,9 @@ def extract_model_answer_and_relevant_sources(ai_response: str) -> str | None:
             get_logger().info(f"Found model answer: {model_answer_section_in_response}")
             return model_answer_and_relevant_sources_sections_in_response \
                 if len(model_answer_section_in_response) > 0 else None
+        if model_answer_and_relevant_sources_sections_in_response.strip():
+            get_logger().info(f"Found model answer without relevant sources: {model_answer_and_relevant_sources_sections_in_response}")
+            return model_answer_and_relevant_sources_sections_in_response
     get_logger().warning(f"Either no answer section found, or that section is malformed: {ai_response}")
     return None
 
@@ -172,19 +175,32 @@ def format_markdown_q_and_a_response(question_str: str, response_str: str, relev
         answer_str = ""
         answer_str += f"### Question: \n{question_str}\n\n"
         answer_str += f"### Answer:\n{response_str.strip()}\n\n"
-        answer_str += "#### Relevant Sources:\n\n"
+        source_links = []
         for section in relevant_sections:
-            file = section.get('file_name').lstrip('/').strip() #Remove any '/' in the beginning, since some models do it anyway
-            ext = [suffix for suffix in supported_suffixes if file.endswith(suffix)]
-            if not ext:
-                get_logger().warning(f"Unsupported file extension: {file}")
+            try:
+                if not isinstance(section, dict):
+                    raise ValueError("source row is not a mapping")
+                file_name = section.get('file_name')
+                header = section.get('relevant_section_header_string')
+                if not isinstance(file_name, str) or not isinstance(header, str):
+                    raise ValueError("source row has an invalid file name or section header")
+                file = file_name.lstrip('/').strip() #Remove any '/' in the beginning, since some models do it anyway
+                ext = [suffix for suffix in supported_suffixes if file.endswith(suffix)]
+                if not ext:
+                    get_logger().warning(f"Unsupported file extension: {file}")
+                    continue
+                if header.strip():
+                    markdown_header = format_markdown_header(header)
+                    if base_url_prefix:
+                        source_links.append(f"> - {base_url_prefix}/{file}{base_url_suffix}#{markdown_header}\n")
+                else:
+                    source_links.append(f"> - {base_url_prefix}/{file}{base_url_suffix}\n")
+            except Exception as e:
+                get_logger().warning(f"Skipping malformed relevant source row: {e}")
                 continue
-            if str(section['relevant_section_header_string']).strip():
-                markdown_header = format_markdown_header(section['relevant_section_header_string'])
-                if base_url_prefix:
-                    answer_str += f"> - {base_url_prefix}/{file}{base_url_suffix}#{markdown_header}\n"
-            else:
-                answer_str += f"> - {base_url_prefix}/{file}{base_url_suffix}\n"
+        if source_links:
+            answer_str += "#### Relevant Sources:\n\n"
+            answer_str += ''.join(source_links)
         return answer_str
     except Exception as e:
         get_logger().exception("Unexpected exception thrown. Returning empty result.")
@@ -216,6 +232,29 @@ def format_markdown_header(header: str) -> str:
     except Exception:
         get_logger().exception("Error while formatting markdown header", artifacts={'header': header})
         return ""
+
+
+def get_valid_ranking_indices(ranking: list[dict], number_of_documents: int) -> list[int]:
+    """Return in-range document indices while isolating malformed ranking rows."""
+    valid_indices = []
+    if not isinstance(ranking, list):
+        get_logger().warning("Skipping malformed relevant file ranking collection: expected a list")
+        return valid_indices
+    for entry in ranking:
+        try:
+            if not isinstance(entry, dict):
+                raise ValueError("ranking row is not a mapping")
+            raw_index = entry.get('idx')
+            if isinstance(raw_index, bool) or not isinstance(raw_index, (int, str)):
+                raise ValueError("ranking index has an invalid type")
+            index = int(raw_index)
+            if 0 <= index < number_of_documents:
+                valid_indices.append(index)
+            else:
+                raise ValueError("ranking index is out of range")
+        except (TypeError, ValueError) as e:
+            get_logger().warning(f"Skipping malformed relevant file ranking row: {e}")
+    return valid_indices
 
 def clean_markdown_content(content: str) -> str:
     """
@@ -511,8 +550,8 @@ class PRHelpDocs(object):
                 get_logger().error("Failed to parse the AI response.", artifacts={'response': response})
                 return ""
             # else: Sanitize the output so that the file names match 1:1 dictionary keys. Do this via the file index and not its name, which may be altered by the model.
-            valid_indices = [int(entry['idx']) for entry in response_yaml.get('relevant_files_ranking')
-                             if int(entry['idx']) >= 0 and int(entry['idx']) < len(docs_filepath_to_contents)]
+            valid_indices = get_valid_ranking_indices(response_yaml.get('relevant_files_ranking'),
+                                                      len(docs_filepath_to_contents))
             valid_file_paths = [list(docs_filepath_to_contents.keys())[idx] for idx in valid_indices]
             selected_docs_dict = {file_path: docs_filepath_to_contents[file_path] for file_path in valid_file_paths}
             docs_prompt = aggregate_documentation_files_for_prompt_contents(selected_docs_dict)
