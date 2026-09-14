@@ -117,6 +117,8 @@ def test_output_models_validate_complete_fixtures(model, payload):
 
 def test_review_alias_accepts_prompt_field_name():
     assert Review.model_validate({"key_issues_to_review": [], "estimated_effort_to_review_[1-5]": 3}).estimated_effort_to_review == 3
+    with pytest.raises(ValueError):
+        Review.model_validate({"key_issues_to_review": [], "estimated_effort_to_review": 3})
 
 
 def test_required_label_and_list_constraints_are_enforced():
@@ -160,6 +162,11 @@ def test_required_label_and_list_constraints_are_enforced():
         PRDescription.model_validate({"type": [], "title": "x"})
     with pytest.raises(ValueError):
         PRDescriptionHeaders.model_validate({"type": [], "title": "x"})
+    with pytest.raises(ValueError):
+        Review.model_validate({"key_issues_to_review": [{
+            "relevant_file": "x", "issue_header": "x", "issue_content": "x",
+            "start_line": 1, "end_line": 1, "unexpected": "x",
+        }]})
 
 
 def _split_type_args(value):

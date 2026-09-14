@@ -7,11 +7,15 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class SubPR(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     relevant_files: List[str]
     title: str
 
 
 class KeyIssuesComponentLink(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     relevant_file: str
     issue_header: str
     issue_content: str
@@ -20,12 +24,16 @@ class KeyIssuesComponentLink(BaseModel):
 
 
 class TodoSection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     relevant_file: str
     line_number: int
     content: str
 
 
 class TicketCompliance(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     ticket_url: str
     ticket_requirements: str
     fully_compliant_requirements: str
@@ -34,13 +42,15 @@ class TicketCompliance(BaseModel):
 
 
 class ContributionTimeCostEstimate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     best_case: str
     average_case: str
     worst_case: str
 
 
 class Review(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(extra="forbid")
 
     ticket_compliance_check: Optional[List[TicketCompliance]] = None
     estimated_effort_to_review: Optional[int] = Field(
@@ -60,6 +70,8 @@ class Review(BaseModel):
 
 
 class PRReview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     review: Review
 
 
@@ -91,11 +103,11 @@ class PRCodeSuggestionsFeedback(BaseModel):
 
 
 class PRType(str, Enum):
-    bug_fix = "Bug fix"
-    tests = "Tests"
-    enhancement = "Enhancement"
-    documentation = "Documentation"
-    other = "Other"
+    BUG_FIX = "Bug fix"
+    TESTS = "Tests"
+    ENHANCEMENT = "Enhancement"
+    DOCUMENTATION = "Documentation"
+    OTHER = "Other"
 
 
 class FileDescription(BaseModel):
@@ -125,11 +137,11 @@ class PRFilesWalkthrough(BaseModel):
 
 
 class Label(str, Enum):
-    bug_fix = "Bug fix"
-    tests = "Tests"
-    enhancement = "Enhancement"
-    documentation = "Documentation"
-    other = "Other"
+    BUG_FIX = "Bug fix"
+    TESTS = "Tests"
+    ENHANCEMENT = "Enhancement"
+    DOCUMENTATION = "Documentation"
+    OTHER = "Other"
 
 
 class Labels(BaseModel):
