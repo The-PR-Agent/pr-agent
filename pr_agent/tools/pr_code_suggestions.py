@@ -13,12 +13,11 @@ from jinja2 import Environment, StrictUndefined
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.git_patch_processing import decouple_and_convert_to_hunks_with_lines_numbers
-from pr_agent.algo.model_routing import route_primary_model
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
-    _get_all_deployments,
     _get_all_models,
     add_ai_metadata_to_diff_files,
+    get_effective_fallback_chain,
     get_pr_diff,
     get_pr_multi_diffs,
     retry_with_fallback_models,
@@ -815,17 +814,9 @@ class PRCodeSuggestions:
         return system_prompt, user_prompt
 
     async def _get_prediction(self, model: str, patches_diff: str, patches_diff_no_line_number: str) -> dict:
-        try:
-            system_prompt, user_prompt = self._render_prediction_prompts(patches_diff, patches_diff_no_line_number)
-            response, finish_reason = await self.ai_handler.chat_completion(
-                model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
-        except Exception as e:
-            # Preserve the primary failure for the chunk even when recovery later overwrites the slot.
-            get_logger().warning(
-                f"Failed to generate code suggestions for chunk {model}",
-                artifact={"error": e},
-            )
-            raise
+        system_prompt, user_prompt = self._render_prediction_prompts(patches_diff, patches_diff_no_line_number)
+        response, finish_reason = await self.ai_handler.chat_completion(
+            model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
         if not get_settings().config.publish_output:
             get_settings().system_prompt = system_prompt
             get_settings().user_prompt = user_prompt
@@ -1545,18 +1536,16 @@ class PRCodeSuggestions:
         found uniquely or a later pair repeats, in which case recovery gives up rather
         than guess the position or retry an identical fallback.
         """
-        models = _get_all_models(ModelType.REGULAR)
-        deployments = _get_all_deployments(models)[:len(models)]
-        routed = route_primary_model(ModelType.REGULAR, self.git_provider)
-        if routed:
-            models[0], deployments[0] = routed
+        effective_chain = get_effective_fallback_chain()
+        if effective_chain is None:
+            get_logger().warning("Skipping chunk recovery: no active fallback invocation chain")
+            return None
         original_deployment = settings.get("openai.deployment_id", None)
-        positions = [index for index, pair in enumerate(zip(models, deployments, strict=True))
+        positions = [index for index, pair in enumerate(effective_chain)
                      if pair == (model, original_deployment)]
         if len(positions) != 1:
             get_logger().warning("Skipping chunk recovery: current model/deployment is not unique in the fallback chain")
             return None
-        effective_chain = list(zip(models, deployments, strict=True))
         if len(set(effective_chain)) != len(effective_chain):
             get_logger().warning("Skipping chunk recovery: the fallback chain repeats a model/deployment pair")
             return None
@@ -1584,6 +1573,8 @@ class PRCodeSuggestions:
                 # Keep the original diff intact; truncation must not imply complete coverage.
                 eligible = []
                 recovered_any = False
+                # Resolve token controls under the same deployment that the fallback request will use.
+                settings.set("openai.deployment_id", deployment)
                 try:
                     token_handler = TokenHandler(model=fallback_model)
                     output_reserve = self._recovery_output_reserve(fallback_model)
@@ -1601,8 +1592,7 @@ class PRCodeSuggestions:
                     continue
                 if not eligible:
                     continue
-                # Sibling calls have all finished before switching the request's deployment.
-                settings.set("openai.deployment_id", deployment)
+                # Sibling calls have finished before the deployment switch above.
                 recovered = await self._predict_chunks(fallback_model, [chunk_pairs[index] for index in eligible])
                 for index, result in zip(eligible, recovered, strict=True):
                     if isinstance(result, Exception):

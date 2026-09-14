@@ -1,4 +1,4 @@
-"""Behavior of opt-in recovery after a partially successful suggestion pass."""
+"""Behavior of recovery after a partially successful suggestion pass."""
 
 import asyncio
 import copy
@@ -202,9 +202,15 @@ async def test_recovery_reserves_handler_output_budget_for_fallback(configured, 
     # (5001 - 5000 = 1 < 2 tokens), while the fixed 1500 threshold would have let
     # it recover the chunk; only the later model recovers it.
     tool, calls = make_tool(monkeypatch, {("gpt-4o", "b"): RuntimeError("failure")})
+    reserves = []
+
+    def get_output_token_reserve(model, default):
+        reserves.append((model, get_settings().get("openai.deployment_id")))
+        return 5000
+
     tool.ai_handler = SimpleNamespace(
         chat_completion=tool.ai_handler.chat_completion,
-        get_output_token_reserve=lambda model, default: 5000,
+        get_output_token_reserve=get_output_token_reserve,
     )
     monkeypatch.setattr(module.TokenHandler, "count_tokens", lambda self, s: 1)
     monkeypatch.setattr(module, "get_max_tokens", lambda model: 5001 if model == "gpt-4o-mini" else 10000)
@@ -213,6 +219,7 @@ async def test_recovery_reserves_handler_output_budget_for_fallback(configured, 
     assert tool.failed_chunk_count == 0
     assert [m for m, _, _, _ in calls] == ["gpt-4o"] * 3 + ["gpt-4.1"]
     assert [(m, c) for m, c, _, _ in calls if m == "gpt-4.1"] == [("gpt-4.1", "b")]
+    assert reserves == [("gpt-4o-mini", "secondary"), ("gpt-4.1", "last")]
 
 
 async def test_empty_prediction_is_a_success_not_a_retry_trigger(configured, monkeypatch):
@@ -450,3 +457,24 @@ async def test_routed_primary_recovers_failed_slots_with_configured_fallback(con
     assert [s["relevant_file"] for s in result["code_suggestions"]] == ["a.py", "b.py", "c.py"]
     assert [m for m, _, _, _ in calls] == ["gpt-4o-mini"] * 3 + ["gpt-4.1"]
     assert get_settings().get("openai.deployment_id") == "primary"
+    tool.git_provider.get_diff_files.assert_called_once_with()
+
+
+async def test_routing_is_not_repeated_during_recovery(configured, monkeypatch):
+    get_settings().set("config.fallback_models", ["gpt-4.1"])
+    get_settings().set("openai.fallback_deployments", ["last"])
+    get_settings().set("model_routing.enable", True)
+    get_settings().set("model_routing.rules",
+                       [{"model": "gpt-4o-mini", "max_files": 10, "deployment_id": "secondary"}])
+    tool, calls = make_tool(monkeypatch, {("gpt-4o-mini", "b"): RuntimeError("failure")})
+    tool.git_provider.get_diff_files.side_effect = [
+        [FilePatchInfo("old()\n", "old()\n", "", c + ".py") for c in "abc"],
+        RuntimeError("transient routing failure"),
+    ]
+
+    result = await retry_with_fallback_models(tool.prepare_prediction_main,
+                                              git_provider=tool.git_provider)
+
+    assert [s["relevant_file"] for s in result["code_suggestions"]] == ["a.py", "b.py", "c.py"]
+    assert [m for m, _, _, _ in calls] == ["gpt-4o-mini"] * 3 + ["gpt-4.1"]
+    tool.git_provider.get_diff_files.assert_called_once_with()
