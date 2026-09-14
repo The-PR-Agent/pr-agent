@@ -139,6 +139,18 @@ class TestConvertToMarkdown:
         assert 'Code Smell' not in output
         get_logger.return_value.exception.assert_not_called()
 
+    def test_key_issue_with_omitted_text_keeps_empty_fallback(self):
+        input_data = {'review': {'key_issues_to_review': [{
+            'relevant_file': 'src/utils.py',
+            'issue_content': 'The function needs review.',
+            'start_line': 30,
+            'end_line': 50,
+        }]}}
+
+        output = convert_to_markdown_v2(input_data)
+
+        assert '<strong></strong><br>The function needs review.' in output
+
     def test_ticket_compliance(self):
         input_data = {'review': {
             'ticket_compliance_check': [
