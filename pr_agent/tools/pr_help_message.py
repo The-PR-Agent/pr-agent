@@ -258,6 +258,7 @@ class PRHelpMessage:
             if normalized_file_name.startswith('/'):
                 normalized_file_name = normalized_file_name[1:]
             if normalized_file_name not in available_docs_files:
+                get_logger().warning(f"Skipping a /help citation to a document that was not loaded: {file_name}")
                 continue
 
             header = section.get('relevant_section_header_string', '')
