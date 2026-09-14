@@ -468,8 +468,8 @@ including projects in different subgroups. Renamed or redirected paths must be u
 canonical names in both settings.
 
 Sibling files always come from their default branch and share `repo_context_max_lines` with local
-files. Private and internal repositories also require requester access. Sibling selections cannot
-be overridden in comment arguments; local `repo_context_files` overrides remain supported.
+files. Private and internal repositories also require requester access. Comment arguments cannot
+override `repo_context_files` at all; a repository's `.pr_agent.toml` may still set it.
 
 ## Ignoring automatic commands in PRs
 
