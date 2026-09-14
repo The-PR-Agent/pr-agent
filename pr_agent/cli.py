@@ -142,7 +142,7 @@ def run_command(pr_url, command):
     args = set_parser().parse_args(run_command_str.split())
 
     # Run the command. Feedback will appear in GitHub PR comments
-    run(args=args)
+    return run(args=args)
 
 
 def run(inargs=None, args=None):
@@ -178,6 +178,8 @@ def run(inargs=None, args=None):
         return
 
     command = args.command.lower()
+    settings = get_settings()
+    propagate_tool_errors_before = settings.config.get("propagate_tool_errors", False)
     get_settings().set("CONFIG.CLI_MODE", True)
     # Strip each candidate independently so a whitespace-only CLI value doesn't
     # short-circuit the PR_AGENT_CONFIG_BRANCH env fallback before precedence.
@@ -213,10 +215,15 @@ def run(inargs=None, args=None):
 
         return result
 
-    result = asyncio.run(inner())
-    if not result:
-        parser.print_help()
+    try:
+        result = asyncio.run(inner())
+        if not result:
+            parser.print_help()
+        if result is False and settings.config.get("propagate_tool_errors", False):
+            return 1
+    finally:
+        settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", propagate_tool_errors_before)
 
 
 if __name__ == '__main__':
-    run()
+    raise SystemExit(run())

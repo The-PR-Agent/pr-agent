@@ -7,7 +7,7 @@ from pr_agent import cli
 def test_run_injects_the_artifact_context_before_handling_the_request():
     """A pipeline that runs the CLI gets the same [artifacts] injection as the GitHub Action."""
     order = []
-    fake_settings = SimpleNamespace(litellm={}, set=MagicMock())
+    fake_settings = SimpleNamespace(config={}, litellm={}, set=MagicMock())
 
     async def fake_handle_request(*_args, **_kwargs):
         order.append("handle_request")

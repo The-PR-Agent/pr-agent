@@ -891,6 +891,18 @@ class GitLabProvider(GitProvider):
             self.git_files = [c.get('new_path') for c in raw_changes if c.get('new_path')]
         return self.git_files
 
+    def get_pr_file_paths(self) -> list:
+        """Return the complete MR file set regardless of incremental review state.
+
+        get_files() returns only the unreviewed subset once an incremental review
+        is active, so per-directory settings would change between commands based on
+        which files the review already covered. Discovery instead walks the full MR
+        changes, keeping both old_path and new_path so both sides of a rename apply.
+        """
+        raw_changes = self._get_merge_request_changes().get('changes', [])
+        raw_changes = self._expand_submodule_changes(raw_changes)
+        return [c for c in raw_changes if c.get('new_path') or c.get('old_path')]
+
     def publish_description(self, pr_title: str, pr_body: str) -> None:
         try:
             if pr_title is not None:
@@ -1429,6 +1441,63 @@ class GitLabProvider(GitProvider):
         except Exception as e:
             get_logger().warning(f"Failed to load local .pr_agent.toml file, error: {e}")
         return settings_files if settings_files else ""
+
+    def get_repo_settings_tree(self, ref: str = "") -> tuple[list[str], str]:
+        """Recursively list every `.pr_agent.toml` at the repository default branch.
+
+        GitLab root config is always read from the project default branch; the
+        per-directory layer follows the same branch so nested configs cannot read
+        a branch that the root does not use.  ``ref`` is accepted for interface
+        compatibility but ignored — a future follow-up could add CONFIG_BRANCH
+        support here.
+        """
+        if not getattr(self, "gl", None) or not getattr(self, "id_project", None):
+            return [], ""
+        try:
+            project = self.gl.projects.get(self.id_project)
+            resolved_ref = project.default_branch
+            max_pages = get_settings().config.per_directory_settings_max_tree_pages
+            if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1:
+                get_logger().warning("Invalid per-directory tree page limit; skipping nested settings")
+                return [], resolved_ref
+            paths = []
+            for page in range(1, max_pages + 1):
+                tree = project.repository_tree(ref=resolved_ref, recursive=True, page=page, per_page=100)
+                paths.extend(
+                    item["path"] for item in tree
+                    if item.get("type") == "blob"
+                    and (item.get("path") or "").split("/")[-1] == ".pr_agent.toml"
+                )
+                if len(tree) < 100:
+                    return paths, resolved_ref
+            get_logger().warning("Per-directory tree page limit reached; skipping incomplete nested settings discovery")
+            return [], resolved_ref
+        except GitlabGetError as e:
+            if getattr(e, "response_code", None) == 404:
+                get_logger().debug("No repository tree found for per-directory settings; skipping")
+                return [], ""
+            raise
+
+    def get_repo_settings_contents(self, paths: list[str], ref: str) -> dict[str, bytes]:
+        """Fetch raw content of per-directory settings files at *ref*."""
+        if not getattr(self, "gl", None) or not getattr(self, "id_project", None):
+            return {}
+        project = self.gl.projects.get(self.id_project)
+        result: dict[str, bytes] = {}
+        for path in paths:
+            try:
+                content = project.files.get(file_path=path, ref=ref).decode()
+                if isinstance(content, str):
+                    content = content.encode("utf-8")
+                result[path] = content
+            except GitlabGetError as e:
+                if getattr(e, "response_code", None) == 404:
+                    get_logger().warning(
+                        f"Per-directory settings file '{path}' not found at ref '{ref}'; skipping"
+                    )
+                else:
+                    raise
+        return result
 
     def _get_global_settings_cache_key(self, group: str) -> str:
         return f"gitlab:{getattr(self, 'gitlab_url', '')}:{group}"

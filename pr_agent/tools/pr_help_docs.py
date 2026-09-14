@@ -461,6 +461,24 @@ class PRHelpDocs(object):
             get_logger().exception("Unexpected exception thrown. Returning empty list.")
             return []
 
+    def _filter_doc_files_under_clone(self, doc_files: list[str], clone_root: str) -> list[str]:
+        """Drop candidates whose resolved path leaves the cloned repository root.
+
+        Symlinked documentation files can point outside the clone at host files; resolving
+        each candidate keeps anything that escapes from ever being read into the model prompt.
+        """
+        contained = []
+        for file_path in doc_files:
+            resolved = os.path.realpath(file_path)
+            if resolved != clone_root and not resolved.startswith(clone_root + os.sep):
+                get_logger().warning(
+                    f"Documentation file '{file_path}' resolves outside the cloned repository "
+                    "root; skipping it"
+                )
+                continue
+            contained.append(file_path)
+        return contained
+
     def _gen_filenames_to_contents_map_from_repo(self) -> dict[str, str]:
         try:
             with TemporaryDirectory() as tmp_dir:
@@ -478,15 +496,29 @@ class PRHelpDocs(object):
                             for file in files:
                                 if file.lower().startswith("readme."):
                                     doc_files.append(os.path.join(root, file))
-                abs_docs_path = os.path.join(returned_cloned_repo_root.path, self.docs_path)
-                if os.path.exists(abs_docs_path):
-                    doc_files.extend(self._find_all_document_files_matching_exts(abs_docs_path,
-                                                                                 ignore_readme=(self.docs_path=='.')))
-                    if not doc_files:
-                        get_logger().warning(f"No documentation files found matching file extensions: "
-                                             f"{self.supported_doc_exts} under repo: {self.repo_url} "
-                                             f"path: {self.docs_path}. Returning empty dict.")
-                        return {}
+                # Resolve docs_path against the clone root and refuse paths that escape it:
+                # an absolute or traversing docs_path (e.g. an attacker-controlled per-directory
+                # setting) must never read host files into the prompt.
+                clone_root = os.path.realpath(returned_cloned_repo_root.path)
+                resolved_docs_path = os.path.realpath(os.path.join(clone_root, self.docs_path))
+                if resolved_docs_path == clone_root or resolved_docs_path.startswith(clone_root + os.sep):
+                    if os.path.exists(resolved_docs_path):
+                        doc_files.extend(self._find_all_document_files_matching_exts(resolved_docs_path,
+                                                                                     ignore_readme=(self.docs_path=='.')))
+                else:
+                    get_logger().warning(
+                        f"docs_path '{self.docs_path}' escapes the cloned repository root; "
+                        "skipping docs-path file gathering"
+                    )
+                # Individual files can still escape the clone through symlinks (a doc or root
+                # README that points at a host file). Resolve every candidate and refuse
+                # anything that leaves the canonical clone root so host files never reach the prompt.
+                doc_files = self._filter_doc_files_under_clone(doc_files, clone_root)
+                if not doc_files:
+                    get_logger().warning(f"No documentation files found matching file extensions: "
+                                         f"{self.supported_doc_exts} under repo: {self.repo_url} "
+                                         f"path: {self.docs_path}. Returning empty dict.")
+                    return {}
 
                 get_logger().info(f'For context {self.ctx_url} and repo: {self.repo_url}'
                                   f' will be using the following documentation files: ',

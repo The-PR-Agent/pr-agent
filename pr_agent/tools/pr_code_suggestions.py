@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import difflib
+import math
 import re
 import textwrap
 import traceback
@@ -107,6 +108,19 @@ def render_suggestions_markdown(data: dict) -> str:
 def _supports_code_suggestion_state(git_provider) -> bool:
     supports = getattr(git_provider, "supports_code_suggestion_state", None)
     return callable(supports) and bool(supports())
+
+
+def _supports_persistent_progress_comment(git_provider) -> bool:
+    """Whether a published progress comment can later be edited in place or removed.
+
+    Hosted providers turn the progress note into the final suggestions comment (edit it) or
+    delete it on failure or cancellation, so publishing it up front is worthwhile. Output-only
+    providers (plain-diff) write every non-temporary comment straight through to their output
+    and can do neither; persisting the progress there would leak a stale "Preparing
+    suggestions..." document ahead of the final result.
+    """
+    return (git_provider.is_supported("edit_comment")
+            and git_provider.is_supported("remove_comment"))
 
 
 def _edit_comment_safely(git_provider, comment, body: str) -> bool:
@@ -282,9 +296,15 @@ class PRCodeSuggestions:
                     not get_settings().config.get('is_auto_command', False)):
                 if self.git_provider.is_supported("gfm_markdown"):
                     # The progress comment later becomes the final suggestions comment (edited in place),
-                    # so it must already be a thread when threaded output is requested.
-                    self.progress_response = self.git_provider.publish_comment(self.progress,
-                                                                               **self._improve_thread_kwargs())
+                    # so it must already be a thread when threaded output is requested. Output-only
+                    # providers (plain-diff) cannot edit or remove it afterwards, so for those the
+                    # progress is a temporary placeholder that is never persisted.
+                    if _supports_persistent_progress_comment(self.git_provider):
+                        self.progress_response = self.git_provider.publish_comment(self.progress,
+                                                                                   **self._improve_thread_kwargs())
+                    else:
+                        self.progress_response = self.git_provider.publish_comment(
+                            self.progress, is_temporary=True, **self._improve_thread_kwargs())
                 else:
                     self.progress_response = self.git_provider.publish_comment(
                         "Preparing suggestions...", is_temporary=True)
@@ -315,6 +335,20 @@ class PRCodeSuggestions:
                 # Publish table summarized suggestions
                 if ((not get_settings().pr_code_suggestions.commitable_code_suggestions) and
                         self.git_provider.is_supported("gfm_markdown")):
+
+                    # Drop suggestions that can't be anchored in the diff (unresolved
+                    # sentinels, zero/negative or reversed line ranges, or positive
+                    # ranges that fall outside the changed lines of the relevant file)
+                    # up front; when nothing survives, route the outcome through
+                    # publish_no_suggestions() so it honors publish_output_no_suggestions
+                    # and emits the accurate coverage footer instead of a header-only table.
+                    data['code_suggestions'] = [
+                        suggestion for suggestion in data['code_suggestions']
+                        if self._is_suggestion_line_range_valid(suggestion)
+                    ]
+                    if not data['code_suggestions']:
+                        await self.publish_no_suggestions()
+                        return
 
                     # generate summarized suggestions
                     pr_body = self.generate_summarized_suggestions(data)
@@ -829,7 +863,7 @@ class PRCodeSuggestions:
         if response_reflect:
             await self.analyze_self_reflection_response(data, response_reflect)
         else:
-            # get_logger().error(f"Could not self-reflect on suggestions. using default score 7")
+            get_logger().warning("Could not self-reflect on suggestions; using default score 7")
             for suggestion in data["code_suggestions"]:
                 suggestion["score"] = 7
                 suggestion["score_why"] = ""
@@ -873,7 +907,18 @@ class PRCodeSuggestions:
 
     async def analyze_self_reflection_response(self, data, response_reflect):
         response_reflect_yaml = load_yaml(response_reflect)
+        if not isinstance(response_reflect_yaml, dict):
+            get_logger().warning(
+                "Self-reflection feedback was not a mapping; line anchors will not be resolved"
+            )
+            return
         code_suggestions_feedback = response_reflect_yaml.get("code_suggestions", [])
+        if not isinstance(code_suggestions_feedback, list):
+            get_logger().warning(
+                "Self-reflection feedback 'code_suggestions' was not a list; "
+                "line anchors will not be resolved"
+            )
+            return
         if code_suggestions_feedback and len(code_suggestions_feedback) == len(data["code_suggestions"]):
             for i, suggestion in enumerate(data["code_suggestions"]):
                 try:
@@ -924,6 +969,11 @@ class PRCodeSuggestions:
                             suggestion['existing_code'] = ""
                 except Exception as e:
                     get_logger().error(f"Error processing suggestion {i + 1}, error: {e}")
+        else:
+            get_logger().warning(
+                f"Self-reflection feedback covered {len(code_suggestions_feedback)} suggestion(s) instead of "
+                f"{len(data['code_suggestions'])}; line anchors will not be resolved"
+            )
 
     @staticmethod
     def _truncate_if_needed(suggestion):
@@ -938,6 +988,81 @@ class PRCodeSuggestions:
                 suggestion['improved_code'] += f"\n{suggestion_truncation_message}"
                 suggestion['_is_truncated'] = True
         return suggestion
+
+    @staticmethod
+    def _parse_line_number(value) -> Optional[int]:
+        """Convert an anchor value to an int, or None when it cannot be a line number.
+
+        Rejects booleans, fractional floats (int() truncates them), and non-finite
+        floats (int() raises OverflowError) instead of silently coercing them.
+        """
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, float) and (not math.isfinite(value) or not value.is_integer()):
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    def _is_suggestion_line_range_valid(self, suggestion: dict) -> bool:
+        relevant_lines_start = self._parse_line_number(suggestion.get('relevant_lines_start'))
+        relevant_lines_end = self._parse_line_number(suggestion.get('relevant_lines_end'))
+        relevant_file = suggestion.get('relevant_file')
+        if relevant_lines_start is None or relevant_lines_end is None:
+            get_logger().warning("Skipping a suggestion without a valid line range",
+                                 artifact={'relevant_file': relevant_file,
+                                           'one_sentence_summary': suggestion.get('one_sentence_summary')})
+            return False
+        if relevant_lines_start < 1 or relevant_lines_end < relevant_lines_start:
+            get_logger().warning("Skipping a suggestion with an invalid line range",
+                                 artifact={'relevant_file': relevant_file,
+                                           'one_sentence_summary': suggestion.get('one_sentence_summary'),
+                                           'relevant_lines_start': relevant_lines_start,
+                                           'relevant_lines_end': relevant_lines_end})
+            return False
+        suggestion['relevant_lines_start'] = relevant_lines_start
+        suggestion['relevant_lines_end'] = relevant_lines_end
+        if not self._is_suggestion_line_range_in_diff(
+                relevant_file, relevant_lines_start, relevant_lines_end):
+            return False
+        return True
+
+    def _is_suggestion_line_range_in_diff(
+            self,
+            relevant_file,
+            relevant_lines_start: int,
+            relevant_lines_end: int) -> bool:
+        """Reject suggestions whose range cannot be resolved in the relevant file.
+
+        The model reflects on the extended patch, so accept context outside the
+        raw hunk when the complete head file contains it, as in _validate_suggestion.
+        Without complete file content, use the raw hunk as the reference.
+        """
+        if not isinstance(relevant_file, str) or not relevant_file.strip():
+            get_logger().warning("Skipping a suggestion whose file is missing",
+                                 artifact={'relevant_file': relevant_file,
+                                           'one_sentence_summary': None})
+            return False
+        diff_file = self._get_diff_file(relevant_file.strip())
+        if diff_file is None:
+            get_logger().warning("Skipping a suggestion whose file is not part of the PR diff",
+                                 artifact={'relevant_file': relevant_file.strip(),
+                                           'relevant_lines_start': relevant_lines_start,
+                                           'relevant_lines_end': relevant_lines_end})
+            return False
+        if diff_file.head_file and getattr(diff_file, "head_file_is_complete", True):
+            range_resolvable = relevant_lines_end <= len(diff_file.head_file.splitlines())
+        else:
+            range_resolvable = self._get_patch_range_lines(
+                diff_file.patch, relevant_lines_start, relevant_lines_end) is not None
+        if not range_resolvable:
+            get_logger().warning("Skipping a suggestion whose line range is not within the file",
+                                 artifact={'relevant_file': relevant_file.strip(),
+                                           'relevant_lines_start': relevant_lines_start,
+                                           'relevant_lines_end': relevant_lines_end})
+            return False
+        return True
 
     def _prepare_pr_code_suggestions(self, predictions: str) -> Dict:
         data = load_yaml(predictions.strip(),
@@ -1229,11 +1354,10 @@ class PRCodeSuggestions:
                 target_line += 1
                 target_remaining -= 1
 
-        if all(line_number in target_lines
-               for line_number in range(relevant_lines_start, relevant_lines_end + 1)):
-            return [target_lines[line_number]
-                    for line_number in range(relevant_lines_start, relevant_lines_end + 1)]
-        return None
+        if len(target_lines) != relevant_lines_end - relevant_lines_start + 1:
+            return None
+        return [target_lines[line_number]
+                for line_number in range(relevant_lines_start, relevant_lines_end + 1)]
 
     def _validate_suggestion(self, relevant_file, relevant_lines_start, relevant_lines_end,
                              existing_code) -> tuple[bool, str, bool]:
@@ -1776,10 +1900,20 @@ class PRCodeSuggestions:
             suggestions_labels = dict()
             # add all suggestions related to each label
             for suggestion in data['code_suggestions']:
+                if not self._is_suggestion_line_range_valid(suggestion):
+                    # suggestions without resolved line anchors (e.g. when self-reflection
+                    # failed or returned a mismatched count) cannot be placed in the diff;
+                    # skip them instead of failing the whole table
+                    continue
                 label = suggestion['label'].strip().strip("'").strip('"')
                 if label not in suggestions_labels:
                     suggestions_labels[label] = []
                 suggestions_labels[label].append(suggestion)
+
+            if not suggestions_labels:
+                pr_body = f"{format_pr_code_suggestions_header()}\n\n"
+                pr_body += "No suggestions found to improve this PR."
+                return pr_body
 
             # sort suggestions_labels by the suggestion with the highest score
             suggestions_labels = dict(

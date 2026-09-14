@@ -914,10 +914,10 @@ async def test_publish_no_suggestions_removes_the_progress_comment_when_quiet(pu
     git_provider.publish_comment.assert_not_called()
 
 
-def _provider_with_file(head_file, filename="app.py"):
+def _provider_with_file(head_file, filename="app.py", patch=""):
     git_provider = MagicMock()
     git_provider.diff_files = [
-        FilePatchInfo(base_file="", head_file=head_file, patch="", filename=filename)
+        FilePatchInfo(base_file="", head_file=head_file, patch=patch, filename=filename)
     ]
     git_provider.publish_code_suggestions.return_value = True
     return git_provider
@@ -930,7 +930,11 @@ def _published_suggestion(git_provider):
 
 
 def test_summarized_suggestions_use_the_target_file_indentation():
-    git_provider = _provider_with_file("func f() {\n\told()\n}\n", filename="main.go")
+    git_provider = _provider_with_file(
+        "func f() {\n\told()\n}\n",
+        filename="main.go",
+        patch="@@ -1,3 +1,3 @@\n func f() {\n-\told()\n+\tnew()\n }\n",
+    )
     git_provider.get_line_link.return_value = "https://example.com/main.go#L2"
     tool = _make_tool(git_provider)
     suggestion = _valid_suggestion(
@@ -980,6 +984,7 @@ def test_summarized_suggestions_normalize_both_sides_of_the_diff():
     git_provider = _provider_with_file(
         "func f() {\n\tif old() {\n\t\tkeep()\n\t}\n}\n",
         filename="main.go",
+        patch="@@ -1,5 +1,5 @@\n func f() {\n-\tif old() {\n+\tif new() {\n \t\tkeep()\n \t}\n }\n",
     )
     git_provider.get_line_link.return_value = "https://example.com/main.go#L2-L4"
     tool = _make_tool(git_provider)
