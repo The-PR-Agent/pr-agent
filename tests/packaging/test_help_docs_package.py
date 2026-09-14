@@ -13,6 +13,7 @@ import subprocess
 import sys
 import sysconfig
 import tarfile
+import tomllib
 import zipfile
 from pathlib import Path, PurePosixPath
 
