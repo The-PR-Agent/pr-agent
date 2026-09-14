@@ -135,6 +135,21 @@ def test_required_label_and_list_constraints_are_enforced():
         PRDescription.model_validate({"type": ["Tests"], "title": "x", "pr_files": [{
             "filename": "x", "changes_title": "x", "label": "x",
         }] * 21})
+    with pytest.raises(ValueError):
+        Review.model_validate({"key_issues_to_review": [], "estimated_effort_to_review_[1-5]": 0})
+    with pytest.raises(ValueError):
+        Review.model_validate({"key_issues_to_review": [], "score": 101})
+    with pytest.raises(ValueError):
+        PRCodeSuggestionsFeedback.model_validate({"code_suggestions": [{
+            "suggestion_summary": "x", "relevant_file": "x", "relevant_lines_start": 1,
+            "relevant_lines_end": 1, "suggestion_score": 11, "why": "x",
+        }]})
+    with pytest.raises(ValueError):
+        PRRankRespones.model_validate({"which_response_was_better": 1, "why": "x", "score_response1": 0, "score_response2": 11})
+    with pytest.raises(ValueError):
+        DocHelper.model_validate({"user_question": "x", "response": "x", "relevant_sections": [], "question_is_relevant": 2})
+    with pytest.raises(ValueError):
+        DocHeadingsHelper.model_validate({"user_question": "x", "relevant_files_ranking": [{"idx": -1, "file_name": "x"}]})
 
 
 def _split_type_args(value):

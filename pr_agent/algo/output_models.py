@@ -44,13 +44,13 @@ class Review(BaseModel):
 
     ticket_compliance_check: Optional[List[TicketCompliance]] = None
     estimated_effort_to_review: Optional[int] = Field(
-        default=None, alias="estimated_effort_to_review_[1-5]"
+        default=None, alias="estimated_effort_to_review_[1-5]", ge=1, le=5
     )
     risk_level: Optional[str] = None
     merge_recommendation: Optional[str] = None
     review_priority_files: Optional[List[str]] = None
     contribution_time_cost_estimate: Optional[ContributionTimeCostEstimate] = None
-    score: Optional[int] = None
+    score: Optional[int] = Field(default=None, ge=0, le=100)
     relevant_tests: Optional[str] = None
     insights_from_user_answers: Optional[str] = None
     key_issues_to_review: List[KeyIssuesComponentLink]
@@ -82,7 +82,7 @@ class CodeSuggestionFeedback(BaseModel):
     relevant_file: str
     relevant_lines_start: int
     relevant_lines_end: int
-    suggestion_score: int
+    suggestion_score: int = Field(ge=0, le=10)
     why: str
 
 
@@ -139,8 +139,8 @@ class Labels(BaseModel):
 class PRRankRespones(BaseModel):
     which_response_was_better: Literal[0, 1, 2]
     why: str
-    score_response1: int
-    score_response2: int
+    score_response1: int = Field(ge=1, le=10)
+    score_response2: int = Field(ge=1, le=10)
 
 
 class RelevantSection(BaseModel):
@@ -152,11 +152,11 @@ class DocHelper(BaseModel):
     user_question: str
     response: str
     relevant_sections: List[RelevantSection]
-    question_is_relevant: Optional[int] = None
+    question_is_relevant: Optional[int] = Field(default=None, ge=0, le=1)
 
 
 class FileIdxAndPath(BaseModel):
-    idx: int
+    idx: int = Field(ge=0)
     file_name: str
 
 
