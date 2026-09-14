@@ -843,10 +843,7 @@ class PRReviewer:
             chunk_outputs.append(data)
 
         if not chunk_outputs:
-            if chunk_errors:
-                raise chunk_errors[0]
-            get_logger().warning("No chunk produced a parsable review, falling back to a single review call")
-            return False
+            raise chunk_errors[0]
 
         # the raw text is kept for logging only; the merged verdict is in self.prediction_data
         self.prediction = "\n".join(raw_predictions)
