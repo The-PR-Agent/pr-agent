@@ -1563,12 +1563,29 @@ class GitLabProvider(GitProvider):
         requester_id = self._get_review_requester_id()
         if not requester_id:
             return False
+        if visibility == "internal":
+            # Internal projects are visible to every signed-in instance user who is not an
+            # external user; membership is not required. Only a positive "external" verdict
+            # rejects here; an unknown flag falls through to the membership check and fails
+            # closed, since external users cannot be granted internal access as members either.
+            try:
+                user = self.gl.users.get(requester_id)
+            except GitlabGetError as e:
+                # A definitive 404 (no such user) means denial; provider/network failures are
+                # not a verdict and must surface as a fetch error instead of a silent skip.
+                if getattr(e, "response_code", None) == 404:
+                    return False
+                raise
+            if getattr(user, "external", None) is False:
+                return True
         try:
             member = project.members_all.get(requester_id)
-        except Exception:
-            # A 404 (not a member) or any provider failure means access cannot be positively
-            # established, so the sibling content must not be fetched.
-            return False
+        except GitlabGetError as e:
+            # A definitive 404 (not a member) means denial; auth/provider failures are not a
+            # verdict and must surface as a fetch error instead of silently dropping the file.
+            if getattr(e, "response_code", None) == 404:
+                return False
+            raise
         access_level = getattr(member, "access_level", None)
         # Reading repository source code requires at least Reporter-level access; Guests,
         # minimal-access members, and unknown levels are rejected. Requiring positive membership

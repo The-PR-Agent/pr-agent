@@ -523,12 +523,12 @@ class GitProvider(ABC):
     def get_sibling_repo_file_content(self, repo_id: str, file_path: str, from_default_branch: bool = False):
         """Fetch a single file from a sibling repository in the same namespace/owner.
 
-        Used by repo context (pr_agent/algo/repo_context.py) when a config entry is of the
-        form ``repo_id:file/path``. Only providers that can resolve the sibling through their
-        own authenticated API (GitHub, GitLab) override this; both restrict targets to the
-        same owner/group as the current repository and read from the sibling's default
-        branch. The default returns "" so unsupported providers degrade gracefully without
-        reaching an unrelated repository or host.
+        Used by repo context (pr_agent/algo/repo_context.py) when a config entry is a
+        sibling dict ``{"repo_id": ..., "file_path": ...}``. Only providers that can resolve
+        the sibling through their own authenticated API (GitHub, GitLab) override this; both
+        restrict targets to the same owner/group as the current repository and read from the
+        sibling's default branch. The default returns "" so unsupported providers degrade
+        gracefully without reaching an unrelated repository or host.
         """
         return ""
 

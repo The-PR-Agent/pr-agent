@@ -338,22 +338,32 @@ def test_load_repo_context_files_reports_fetch_errors():
         ("AGENTS.md", None, "AGENTS.md"),
         ("docs/guide.md", None, "docs/guide.md"),
         ("  src/ x.py  ", None, "src/ x.py"),
-        ("group/sub/lib:src/api.py", "group/sub/lib", "src/api.py"),
-        ("owner/lib:/deep/file.py", "owner/lib", "deep/file.py"),
-        ("owner/lib:file.py", "owner/lib", "file.py"),
-        ("  owner/lib  :  file.py  ", "owner/lib", "file.py"),
+        ("docs/guide:part.md", None, "docs/guide:part.md"),
+        ({"repo_id": "group/sub/lib", "file_path": "src/api.py"}, "group/sub/lib", "src/api.py"),
+        ({"repo_id": "owner/lib", "file_path": "/deep/file.py"}, "owner/lib", "deep/file.py"),
+        ({"repo_id": "owner/lib", "file_path": "  file.py  "}, "owner/lib", "file.py"),
+        ({"repo_id": "  owner/lib  ", "file_path": "  file.py  "}, "owner/lib", "file.py"),
     ],
 )
 def test_parse_repo_context_file_entry(entry, expected_repo_id, expected_path):
     assert repo_context._parse_repo_context_file_entry(entry) == (expected_repo_id, expected_path)
 
 
-@pytest.mark.parametrize("entry", [":path.py", "repo/only:"])
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"repo_id": "group/lib", "file_path": ""},
+        {"repo_id": "", "file_path": "src/api.py"},
+        {"repo_id": "group/lib"},
+        {"file_path": "src/api.py"},
+        {"repo_id": 123, "file_path": "src/api.py"},
+        {"repo_id": "group/lib", "file_path": "/"},
+        123,
+    ],
+)
 def test_parse_repo_context_file_entry_rejects_malformed(entry):
-    with patch("pr_agent.algo.repo_context.get_logger") as mock_get_logger:
-        repo_id, file_path = repo_context._parse_repo_context_file_entry(entry)
-    assert (repo_id, file_path) == (None, "")
-    assert mock_get_logger.return_value.warning.called
+    # The parser is pure: malformed entries read as invalid, and the loader reports the skip.
+    assert repo_context._parse_repo_context_file_entry(entry) == (None, "")
 
 
 def test_parse_repo_context_file_entry_treats_blank_as_plain_path():
@@ -369,7 +379,7 @@ def test_load_repo_context_files_fetches_sibling_and_same_repo_files():
 
     files, had_fetch_error = repo_context._load_repo_context_files(
         provider,
-        ["AGENTS.md", "group/lib-api:src/interfaces/api.py"],
+        ["AGENTS.md", {"repo_id": "group/lib-api", "file_path": "src/interfaces/api.py"}],
         from_default_branch=True,
     )
 
@@ -383,12 +393,29 @@ def test_load_repo_context_files_fetches_sibling_and_same_repo_files():
     assert provider.requested_siblings == ["group/lib-api:src/interfaces/api.py"]
 
 
+def test_load_repo_context_files_treats_colon_string_as_local_path():
+    provider = SiblingFakeProvider(
+        files={"docs/guide:part.md": "Local content"},
+        sibling_files={"docs/guide:part.md": "Sibling content"},
+    )
+
+    files, had_fetch_error = repo_context._load_repo_context_files(
+        provider, ["docs/guide:part.md"], from_default_branch=True
+    )
+
+    # A ':' inside a plain string is a local path, never a sibling reference.
+    assert files == {"docs/guide:part.md": "Local content"}
+    assert had_fetch_error is False
+    assert provider.requested_paths == ["docs/guide:part.md"]
+    assert provider.requested_siblings == []
+
+
 def test_load_repo_context_files_reports_sibling_fetch_errors():
     provider = SiblingFakeProvider(files={})
     provider.get_sibling_repo_file_content = Mock(side_effect=Exception("temporary outage"))
 
     files, had_fetch_error = repo_context._load_repo_context_files(
-        provider, ["group/lib-api:src/api.py"], from_default_branch=True
+        provider, [{"repo_id": "group/lib-api", "file_path": "src/api.py"}], from_default_branch=True
     )
 
     assert files == {}
@@ -400,7 +427,7 @@ def test_load_repo_context_files_skips_siblings_for_unsupported_provider():
     provider.get_sibling_repo_file_content = Mock()
 
     files, had_fetch_error = repo_context._load_repo_context_files(
-        provider, ["AGENTS.md", "group/lib-api:src/api.py"], from_default_branch=True
+        provider, ["AGENTS.md", {"repo_id": "group/lib-api", "file_path": "src/api.py"}], from_default_branch=True
     )
 
     assert files == {"AGENTS.md": "Repo purpose"}
@@ -423,14 +450,46 @@ def test_load_repo_context_files_respects_sibling_file_cap(repo_context_settings
     files, had_fetch_error = repo_context._load_repo_context_files(
         provider,
         [
-            "group/g1:README.md",
-            "group/g2:README.md",
-            "group/g3:README.md",
-            "group/g4:README.md",
+            {"repo_id": "group/g1", "file_path": "README.md"},
+            {"repo_id": "group/g2", "file_path": "README.md"},
+            {"repo_id": "group/g3", "file_path": "README.md"},
+            {"repo_id": "group/g4", "file_path": "README.md"},
         ],
         from_default_branch=True,
     )
 
+    assert files == {
+        "group/g1/README.md": "one",
+        "group/g2/README.md": "two",
+    }
+    assert had_fetch_error is False
+    assert provider.requested_siblings == [
+        "group/g1:README.md",
+        "group/g2:README.md",
+    ]
+
+
+def test_sibling_fetch_cap_counts_unique_pairs_not_duplicate_entries(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_SIBLING_FILES", 2)
+    provider = SiblingFakeProvider(
+        files={},
+        sibling_files={
+            "group/g1:README.md": "one",
+            "group/g2:README.md": "two",
+        },
+    )
+
+    files, had_fetch_error = repo_context._load_repo_context_files(
+        provider,
+        [
+            {"repo_id": "group/g1", "file_path": "README.md"},
+            {"repo_id": "group/g1", "file_path": "README.md"},
+            {"repo_id": "group/g2", "file_path": "README.md"},
+        ],
+        from_default_branch=True,
+    )
+
+    # A duplicate entry must not consume the fetch cap: each unique pair is fetched once.
     assert files == {
         "group/g1/README.md": "one",
         "group/g2/README.md": "two",
@@ -460,10 +519,10 @@ def test_read_max_sibling_context_files_floor_at_zero(repo_context_settings):
 def test_load_repo_context_files_clamps_sibling_fetches_to_hard_ceiling(repo_context_settings):
     repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_SIBLING_FILES", 10**6)
     hard_max = repo_context._HARD_MAX_SIBLING_CONTEXT_FILES
-    context_files = [f"group/g{i}:README.md" for i in range(hard_max + 5)]
+    context_files = [{"repo_id": f"group/g{i}", "file_path": "README.md"} for i in range(hard_max + 5)]
     provider = SiblingFakeProvider(
         files={},
-        sibling_files={entry: str(i) for i, entry in enumerate(context_files)},
+        sibling_files={f"group/g{i}:README.md": str(i) for i in range(hard_max + 5)},
     )
 
     files, had_fetch_error = repo_context._load_repo_context_files(
@@ -471,7 +530,7 @@ def test_load_repo_context_files_clamps_sibling_fetches_to_hard_ceiling(repo_con
     )
 
     assert had_fetch_error is False
-    assert provider.requested_siblings == context_files[:hard_max]
+    assert provider.requested_siblings == [f"group/g{i}:README.md" for i in range(hard_max)]
 
 
 def test_sibling_fetch_cap_counts_attempts_not_just_content(repo_context_settings):
@@ -487,9 +546,9 @@ def test_sibling_fetch_cap_counts_attempts_not_just_content(repo_context_setting
     files, had_fetch_error = repo_context._load_repo_context_files(
         provider,
         [
-            "group/g1:README.md",
-            "group/g2:README.md",
-            "group/g3:README.md",
+            {"repo_id": "group/g1", "file_path": "README.md"},
+            {"repo_id": "group/g2", "file_path": "README.md"},
+            {"repo_id": "group/g3", "file_path": "README.md"},
         ],
         from_default_branch=True,
     )
@@ -520,9 +579,9 @@ def test_sibling_fetch_cap_counts_exceptions(repo_context_settings):
     files, had_fetch_error = repo_context._load_repo_context_files(
         provider,
         [
-            "group/g1:README.md",
-            "group/g2:README.md",
-            "group/g3:README.md",
+            {"repo_id": "group/g1", "file_path": "README.md"},
+            {"repo_id": "group/g2", "file_path": "README.md"},
+            {"repo_id": "group/g3", "file_path": "README.md"},
         ],
         from_default_branch=True,
     )
@@ -533,7 +592,7 @@ def test_sibling_fetch_cap_counts_exceptions(repo_context_settings):
 
 def test_build_repo_context_renders_sibling_file_with_budget(repo_context_settings):
     repo_context_settings.set(
-        "CONFIG.REPO_CONTEXT_FILES", ["group/lib-api:src/interfaces/api.py"]
+        "CONFIG.REPO_CONTEXT_FILES", [{"repo_id": "group/lib-api", "file_path": "src/interfaces/api.py"}]
     )
     repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 500)
     provider = SiblingFakeProvider(
@@ -678,6 +737,7 @@ def test_github_provider_rejects_internal_sibling_when_requester_is_not_collabor
     sibling_repo = Mock()
     sibling_repo.private = False
     sibling_repo.visibility = "internal"
+    sibling_repo.organization = None  # not an organization-controlled repository
     sibling_repo.has_in_collaborators.return_value = False
     provider.github_client.get_repo.return_value = sibling_repo
 
@@ -694,11 +754,116 @@ def test_github_provider_fetches_internal_sibling_when_command_actor_is_collabor
     sibling_repo = Mock()
     sibling_repo.private = False
     sibling_repo.visibility = "internal"
+    sibling_repo.organization = None
     sibling_repo.has_in_collaborators.return_value = True
     sibling_repo.get_contents.return_value.decoded_content = b"sibling contract"
     provider.github_client.get_repo.return_value = sibling_repo
 
     assert provider.get_sibling_repo_file_content("myorg/lib", "src/api.py") == "sibling contract"
+    sibling_repo.has_in_collaborators.assert_called_once_with("alice")
+
+
+def test_github_provider_fetches_internal_sibling_when_requester_is_org_member():
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.repo = "myorg/current"
+    provider.github_client = Mock()
+    provider.set_command_actor("alice")
+    sibling_repo = Mock()
+    sibling_repo.private = False
+    sibling_repo.visibility = "internal"
+    sibling_repo.organization = Mock()
+    sibling_repo.organization.has_in_members.return_value = True
+    sibling_repo.get_contents.return_value.decoded_content = b"sibling contract"
+    provider.github_client.get_repo.return_value = sibling_repo
+
+    # Internal repositories are readable by every member of the owning organization without a
+    # per-repo collaborator grant, so the membership check is both sufficient and necessary.
+    assert provider.get_sibling_repo_file_content("myorg/lib", "src/api.py") == "sibling contract"
+    sibling_repo.organization.has_in_members.assert_called_once_with("alice")
+    sibling_repo.has_in_collaborators.assert_not_called()
+
+
+def test_github_provider_rejects_internal_sibling_to_non_member_non_collaborator():
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.repo = "myorg/current"
+    provider.github_client = Mock()
+    provider.set_command_actor("alice")
+    sibling_repo = Mock()
+    sibling_repo.private = False
+    sibling_repo.visibility = "internal"
+    sibling_repo.organization = Mock()
+    sibling_repo.organization.has_in_members.return_value = False
+    sibling_repo.has_in_collaborators.return_value = False
+    provider.github_client.get_repo.return_value = sibling_repo
+
+    with patch("pr_agent.git_providers.github_provider.get_logger") as mock_get_logger:
+        assert provider.get_sibling_repo_file_content("myorg/lib", "src/api.py") == ""
+
+    # Not an org member; outside collaborators are the remaining way into an internal repo.
+    sibling_repo.organization.has_in_members.assert_called_once_with("alice")
+    sibling_repo.has_in_collaborators.assert_called_once_with("alice")
+    sibling_repo.get_contents.assert_not_called()
+    mock_get_logger.return_value.warning.assert_called_once_with(
+        "Ignoring sibling repo context file the review requester cannot read: myorg/lib"
+    )
+
+
+def test_github_provider_fetches_sibling_when_owner_case_differs():
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.repo = "MyOrg/current"
+    provider.github_client = Mock()
+    sibling_repo = Mock()
+    sibling_repo.private = False
+    sibling_repo.get_contents.return_value.decoded_content = b"sibling contract"
+    provider.github_client.get_repo.return_value = sibling_repo
+
+    # Owner logins are case-insensitive on GitHub, so differently-cased siblings are valid.
+    assert provider.get_sibling_repo_file_content("myorg/lib", "src/api.py") == "sibling contract"
+    provider.github_client.get_repo.assert_called_once_with("myorg/lib")
+    sibling_repo.get_contents.assert_called_once_with("src/api.py")
+
+
+def test_github_provider_propagates_sibling_collaborator_errors():
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.repo = "myorg/current"
+    provider.github_client = Mock()
+    provider.pr = SimpleNamespace(user=SimpleNamespace(login="alice"))
+    sibling_repo = Mock()
+    sibling_repo.private = True
+    sibling_repo.has_in_collaborators.side_effect = GithubException(500, {"message": "boom"}, {})
+    provider.github_client.get_repo.return_value = sibling_repo
+
+    # A transient provider failure must surface as a fetch error, not read as a denial.
+    with pytest.raises(GithubException):
+        provider.get_sibling_repo_file_content("myorg/lib", "src/api.py")
+    sibling_repo.get_contents.assert_not_called()
+
+    # A plain denial stays returnable: a definitive 404 means the requester is not a collaborator.
+    sibling_repo.has_in_collaborators.side_effect = GithubException(404, {"message": "Not Found"}, {})
+    assert provider.get_sibling_repo_file_content("myorg/lib", "src/api.py") == ""
+
+
+def test_github_provider_propagates_org_membership_errors():
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.repo = "myorg/current"
+    provider.github_client = Mock()
+    provider.set_command_actor("alice")
+    sibling_repo = Mock()
+    sibling_repo.private = False
+    sibling_repo.visibility = "internal"
+    sibling_repo.organization = Mock()
+    sibling_repo.organization.has_in_members.side_effect = GithubException(500, {"message": "boom"}, {})
+    provider.github_client.get_repo.return_value = sibling_repo
+
+    with pytest.raises(GithubException):
+        provider.get_sibling_repo_file_content("myorg/lib", "src/api.py")
+    sibling_repo.has_in_collaborators.assert_not_called()
+    sibling_repo.get_contents.assert_not_called()
+
+    # A 404 (organization cannot be resolved) is not a membership verdict: fall through.
+    sibling_repo.organization.has_in_members.side_effect = GithubException(404, {"message": "Not Found"}, {})
+    sibling_repo.has_in_collaborators.return_value = False
+    assert provider.get_sibling_repo_file_content("myorg/lib", "src/api.py") == ""
     sibling_repo.has_in_collaborators.assert_called_once_with("alice")
 
 
@@ -777,6 +942,89 @@ def test_gitlab_provider_fetches_internal_sibling_when_requester_is_read_member(
 
     assert provider.get_sibling_repo_file_content("group/sub/lib", "src/api.py") == "sibling contract"
     sibling_project.members_all.get.assert_called_once_with(42)
+
+
+def test_gitlab_provider_fetches_internal_sibling_for_non_external_instance_user():
+    provider = GitLabProvider.__new__(GitLabProvider)
+    provider.id_project = "group/sub/current"
+    provider.gl = Mock()
+    provider.mr = SimpleNamespace(author={"id": 42})
+    # The requester is a signed-in instance user who is not an external user.
+    provider.gl.users.get.return_value = SimpleNamespace(external=False)
+    sibling_project = Mock()
+    sibling_project.default_branch = "main"
+    sibling_project.visibility = "internal"
+    sibling_project.files.get.return_value.decode.return_value = b"sibling contract"
+    provider.gl.projects.get.return_value = sibling_project
+
+    # Internal projects are visible to every non-external instance user without membership.
+    assert provider.get_sibling_repo_file_content("group/sub/lib", "src/api.py") == "sibling contract"
+    provider.gl.users.get.assert_called_once_with(42)
+    sibling_project.members_all.get.assert_not_called()
+    sibling_project.files.get.assert_called_once_with(file_path="src/api.py", ref="main")
+
+
+def test_gitlab_provider_rejects_internal_sibling_for_external_user_non_member():
+    provider = GitLabProvider.__new__(GitLabProvider)
+    provider.id_project = "group/sub/current"
+    provider.gl = Mock()
+    provider.mr = SimpleNamespace(author={"id": 42})
+    provider.gl.users.get.return_value = SimpleNamespace(external=True)
+    sibling_project = Mock()
+    sibling_project.default_branch = "main"
+    sibling_project.visibility = "internal"
+    sibling_project.members_all.get.side_effect = GitlabGetError("Not found", response_code=404)
+    provider.gl.projects.get.return_value = sibling_project
+
+    with patch("pr_agent.git_providers.gitlab_provider.get_logger") as mock_get_logger:
+        assert provider.get_sibling_repo_file_content("group/sub/lib", "src/api.py") == ""
+
+    # External users cannot be granted internal access as members either, so this fails closed.
+    provider.gl.users.get.assert_called_once_with(42)
+    sibling_project.members_all.get.assert_called_once_with(42)
+    sibling_project.files.get.assert_not_called()
+    mock_get_logger.return_value.warning.assert_called_once_with(
+        "Ignoring sibling repo context file the review requester cannot read: group/sub/lib"
+    )
+
+
+def test_gitlab_provider_propagates_membership_provider_errors():
+    provider = GitLabProvider.__new__(GitLabProvider)
+    provider.id_project = "group/sub/current"
+    provider.gl = Mock()
+    provider.mr = SimpleNamespace(author={"id": 42})
+    sibling_project = Mock()
+    sibling_project.default_branch = "main"
+    sibling_project.visibility = "private"
+    sibling_project.members_all.get.side_effect = GitlabGetError("boom", response_code=500)
+    provider.gl.projects.get.return_value = sibling_project
+
+    # A transient membership provider failure must surface as a fetch error, not a denial.
+    with pytest.raises(GitlabGetError):
+        provider.get_sibling_repo_file_content("group/sub/lib", "src/api.py")
+    sibling_project.files.get.assert_not_called()
+
+
+def test_gitlab_provider_propagates_user_lookup_provider_errors():
+    provider = GitLabProvider.__new__(GitLabProvider)
+    provider.id_project = "group/sub/current"
+    provider.gl = Mock()
+    provider.mr = SimpleNamespace(author={"id": 42})
+    provider.gl.users.get.side_effect = GitlabGetError("boom", response_code=500)
+    sibling_project = Mock()
+    sibling_project.default_branch = "main"
+    sibling_project.visibility = "internal"
+    provider.gl.projects.get.return_value = sibling_project
+
+    with pytest.raises(GitlabGetError):
+        provider.get_sibling_repo_file_content("group/sub/lib", "src/api.py")
+    sibling_project.members_all.get.assert_not_called()
+    sibling_project.files.get.assert_not_called()
+
+    # A definitive 404 (no such user) is a plain denial: the requester cannot be a member.
+    provider.gl.users.get.side_effect = GitlabGetError("Not found", response_code=404)
+    assert provider.get_sibling_repo_file_content("group/sub/lib", "src/api.py") == ""
+    sibling_project.members_all.get.assert_not_called()
 
 
 def test_gitlab_provider_rejects_private_sibling_when_member_lacks_repo_read():
@@ -988,7 +1236,9 @@ def test_build_repo_context_does_not_cache_empty_context_after_fetch_error(repo_
 
 
 def test_build_repo_context_does_not_cache_sibling_content(repo_context_settings):
-    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["group/lib:api.py"])
+    repo_context_settings.set(
+        "CONFIG.REPO_CONTEXT_FILES", [{"repo_id": "group/lib", "file_path": "api.py"}]
+    )
     repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 500)
     provider = SiblingFakeProvider(
         files={},
@@ -1008,6 +1258,64 @@ def test_build_repo_context_does_not_cache_sibling_content(repo_context_settings
     assert "def call(req, body): ..." in second_context
     assert "def call(req): ..." not in second_context
     assert provider.requested_siblings == ["group/lib:api.py", "group/lib:api.py"]
+
+
+def test_build_repo_context_keeps_cache_for_entries_provider_cannot_fetch(repo_context_settings):
+    # A provider without sibling support must not be forced out of the revision-keyed cache by
+    # sibling-shaped entries it will skip anyway: the cache stays usable.
+    repo_context_settings.set(
+        "CONFIG.REPO_CONTEXT_FILES",
+        ["AGENTS.md", {"repo_id": "group/lib", "file_path": "api.py"}],
+    )
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 500)
+    provider = FakeProvider({
+        "AGENTS.md": "Repo purpose",
+    })
+    provider.get_sibling_repo_file_content = Mock()
+
+    first_context = build_repo_context(provider)
+    assert "Repo purpose" in first_context
+    assert first_context.count("AGENTS.md") == 1
+
+    second_context = build_repo_context(provider)
+
+    assert "Repo purpose" in second_context
+    assert provider.requested_paths == ["AGENTS.md"]
+    provider.get_sibling_repo_file_content.assert_not_called()
+
+
+def test_build_repo_context_keeps_cache_for_malformed_sibling_entries(repo_context_settings):
+    # Malformed sibling entries parse to no sibling pair, so they cannot bypass the cache.
+    repo_context_settings.set(
+        "CONFIG.REPO_CONTEXT_FILES",
+        ["AGENTS.md", {"repo_id": "group/lib"}],
+    )
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 500)
+    provider = SiblingFakeProvider(
+        files={"AGENTS.md": "Repo purpose"},
+        pr_url="https://example.com/org/repo/pull/1",
+    )
+
+    first_context = build_repo_context(provider)
+    second_context = build_repo_context(provider)
+
+    assert first_context == second_context
+    assert "Repo purpose" in second_context
+    assert provider.requested_paths == ["AGENTS.md"]
+    assert provider.requested_siblings == []
+
+
+@pytest.mark.parametrize(
+    "entry,expected_repo_id,expected_path",
+    [
+        ("group/sub/lib:src/api.py", None, "group/sub/lib:src/api.py"),
+        ({"repo_id": "group/sub/lib", "file_path": "src/api.py"}, "group/sub/lib", "src/api.py"),
+        ({"repo_id": "/group/sub/lib", "file_path": "/src/api.py"}, "group/sub/lib", "src/api.py"),
+    ],
+)
+def test_sibling_entry_shapes_are_unambiguous(entry, expected_repo_id, expected_path):
+    # A colon inside a string is always a local path; sibling references are explicit dicts.
+    assert repo_context._parse_repo_context_file_entry(entry) == (expected_repo_id, expected_path)
 
 
 def test_build_repo_context_cache_invalidates_when_repo_context_files_change(repo_context_settings):

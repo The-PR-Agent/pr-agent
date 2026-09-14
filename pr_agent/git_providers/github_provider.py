@@ -1277,7 +1277,8 @@ class GithubProvider(GitProvider):
             sibling_parts = repo_id.split("/")
             # Only the same owner (user or organisation) is a "sibling"; anything wider would
             # point the configured token at a repository the requester could not otherwise read.
-            if len(sibling_parts) != 2 or not current_owner or sibling_parts[0] != current_owner:
+            # Compare case-insensitively: GitHub treats owner logins as case-insensitive.
+            if len(sibling_parts) != 2 or not current_owner or sibling_parts[0].casefold() != current_owner.casefold():
                 get_logger().warning(f"Ignoring out-of-owner sibling repo in repo context: {repo_id}")
                 return ""
             sibling_repo = self.github_client.get_repo(repo_id)
@@ -1302,17 +1303,17 @@ class GithubProvider(GitProvider):
     def _requester_can_read_sibling_repo(self, sibling_repo) -> bool:
         # Only repositories any review requester can read are granted unconditionally: a repo
         # that reports no visibility and is not flagged private (i.e. public). Internal repos
-        # (GitHub Enterprise) are not ``private`` but are restricted to org members, so they
-        # must be verified like private repos instead of being treated as public.
+        # (GitHub Enterprise) are not ``private`` but are restricted to org members (and the
+        # outside collaborators they add), so they must be verified instead of treated as public.
         visibility = getattr(sibling_repo, "visibility", None)
         is_private = bool(getattr(sibling_repo, "private", False))
         if visibility == "internal":
             is_private = True
         if not is_private:
             return True
-        # Private or internal: the requester must be a collaborator with access. Prefer the
-        # authenticated command actor when one is known; otherwise (CLI runs) fall back to
-        # the PR author as the operator proxy, and fail closed when neither is available.
+        # Private or internal: the requester must have read access. Prefer the authenticated
+        # command actor when one is known; otherwise (CLI runs) fall back to the PR author as
+        # the operator proxy, and fail closed when neither is available.
         requester_login = getattr(self, "_command_actor", None)
         if not requester_login:
             pr = getattr(self, "pr", None)
@@ -1322,10 +1323,26 @@ class GithubProvider(GitProvider):
             return False
         if getattr(getattr(sibling_repo, "owner", None), "login", None) == requester_login:
             return True
-        try:
-            return bool(sibling_repo.has_in_collaborators(requester_login))
-        except Exception:
-            return False
+        if visibility == "internal":
+            # Every member of the owning organization can read an internal repository without a
+            # per-repo grant. A definitive "not a member" is *not* denial here: outside
+            # collaborators can be granted access to internal repositories, so fall through to
+            # the collaborator check on a False answer.
+            organization = getattr(sibling_repo, "organization", None)
+            if organization is not None:
+                try:
+                    if bool(organization.has_in_members(requester_login)):
+                        return True
+                except GithubException as e:
+                    # A 404 means the organization itself cannot be resolved, so it is not a
+                    # verdict about the requester; keep the fall-through. Auth/platform failures
+                    # are not denials either and must surface as a fetch error, not a silent skip.
+                    if e.status != 404:
+                        raise
+        # has_in_collaborators() answers False for a definitive non-collaborator and raises for
+        # auth/platform failures; both are authoritative here, so transient errors propagate and
+        # repo context records a fetch error instead of silently dropping the sibling file.
+        return bool(sibling_repo.has_in_collaborators(requester_login))
 
     def get_repo_context_ref(self, from_default_branch: bool = False) -> Optional[str]:
         # Match get_repo_file_content: the PR target (base) commit is the cached revision.
