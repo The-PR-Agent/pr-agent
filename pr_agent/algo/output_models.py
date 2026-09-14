@@ -153,6 +153,21 @@ class Labels(BaseModel):
     labels: List[str]
 
 
+class CodeDocumentationItem(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    relevant_file: str = Field(alias="relevant file")
+    relevant_line: StrictInt = Field(alias="relevant line", ge=1)
+    doc_placement: Literal["before", "after"] = Field(alias="doc placement")
+    documentation: str
+
+
+class CodeDocumentation(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    code_documentation: List[CodeDocumentationItem] = Field(alias="Code Documentation")
+
+
 class PRRankResponses(BaseModel):
     which_response_was_better: Literal[0, 1, 2]
     why: str

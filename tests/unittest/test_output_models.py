@@ -7,6 +7,7 @@ import pytest
 from pydantic import StrictInt
 
 from pr_agent.algo.output_models import (
+    CodeDocumentation,
     CodeSuggestion,
     CodeSuggestionFeedback,
     ContributionTimeCostEstimate,
@@ -105,6 +106,10 @@ def _review_fixture():
             "changes_title": "Handle runtime failures", "label": "bug fix",
         }]}),
         (Labels, {"labels": ["Bug fix", "Tests"]}),
+        (CodeDocumentation, {"Code Documentation": [{
+            "relevant file": "src/app.py", "relevant line": 12, "doc placement": "after",
+            "documentation": "Document the handler.",
+        }]}),
         (PRRankResponses, {"which_response_was_better": 1, "why": "It is clearer.", "score_response1": 9, "score_response2": 7}),
         (DocHelper, {"user_question": "How?", "response": "Use the helper.", "relevant_sections": [{
             "file_name": "docs/guide.md", "relevant_section_header_string": "## Usage",
@@ -295,3 +300,16 @@ def test_prompt_fields_are_present_in_output_models():
 def test_prompt_enum_contracts_are_preserved():
     assert {member.value for member in PRType} == {"Bug fix", "Tests", "Enhancement", "Documentation", "Other"}
     assert {member.value for member in Label} == {"Bug fix", "Tests", "Enhancement", "Documentation", "Other"}
+
+
+def test_add_docs_prompt_matches_output_model():
+    prompt = (Path(__file__).parents[2] / "pr_agent" / "settings" / "pr_add_docs.toml").read_text(encoding="utf-8")
+    assert "Code Documentation:" in prompt
+    assert "relevant file:" in prompt
+    assert "relevant line:" in prompt
+    assert "doc placement:" in prompt
+    assert "documentation:" in prompt
+    CodeDocumentation.model_validate({"Code Documentation": [{
+        "relevant file": "src/app.py", "relevant line": 12, "doc placement": "after",
+        "documentation": "Document the handler.",
+    }]})
