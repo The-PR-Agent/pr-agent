@@ -180,8 +180,3 @@ class FileIdxAndPath(BaseModel):
 class DocHeadingsHelper(BaseModel):
     user_question: str
     relevant_files_ranking: List[FileIdxAndPath]
-
-
-# Prompt templates use these lowercase names in their class declarations.
-relevant_section = RelevantSection
-file_idx_and_path = FileIdxAndPath
