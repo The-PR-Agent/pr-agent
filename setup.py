@@ -9,7 +9,7 @@ HELP_DOCS_SOURCE = PROJECT_ROOT / "docs" / "docs"
 HELP_DOCS_PACKAGE = Path("pr_agent") / "_help_docs"
 
 
-class build_py(_build_py):
+class BuildPy(_build_py):
     """Build the external help corpus as package resources."""
 
     def _help_docs_output_mapping(self) -> dict[str, str]:
@@ -46,4 +46,4 @@ class build_py(_build_py):
             self.copy_file(source, output)
 
 
-setup(cmdclass={"build_py": build_py})
+setup(cmdclass={"build_py": BuildPy})
