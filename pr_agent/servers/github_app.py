@@ -1,6 +1,7 @@
 import copy
 import os
 import re
+import time
 import uuid
 from typing import Any, Dict, Tuple
 
@@ -18,8 +19,7 @@ from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.identity_providers import get_identity_provider
 from pr_agent.identity_providers.identity_provider import Eligibility
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
-from pr_agent.servers.utils import get_pr_commands, push_trigger_slot, verify_signature
-from pr_agent.servers.webhook_delivery import webhook_delivery_slot
+from pr_agent.servers.utils import DefaultDictWithTimeout, get_pr_commands, push_trigger_slot, verify_signature
 from pr_agent.telemetry.prometheus import attach_metrics_endpoint, prometheus_metrics_enabled
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
@@ -31,6 +31,12 @@ if os.path.exists(build_number_path):
 else:
     build_number = "unknown"
 router = APIRouter()
+_WEBHOOK_DELIVERY_TTL = get_settings().github_app.push_trigger_pending_tasks_ttl
+_completed_webhook_deliveries = DefaultDictWithTimeout(
+    float,
+    ttl=_WEBHOOK_DELIVERY_TTL,
+    update_key_time_on_get=False,
+)
 
 
 @router.post("/api/v1/github_webhooks")
@@ -143,6 +149,7 @@ async def handle_comments_on_pr(body: Dict[str, Any],
             # Optional, and disabled by default: tell the author how the command ended without
             # adding another comment to the thread.
             provider.react_to_outcome(comment_id, bool(succeeded))
+            return succeeded
         else:
             get_logger().info(f"User {sender=} is not eligible to process comment on PR {api_url=}")
 
@@ -163,7 +170,7 @@ async def handle_new_pr_opened(body: Dict[str, Any],
         # logic to ignore PRs with specific titles (e.g. "[Auto] ...")
         apply_repo_settings(api_url)
         if get_identity_provider().verify_eligibility("github", sender_id, api_url) is not Eligibility.NOT_ELIGIBLE:
-            await _perform_auto_commands_github("pr_commands", agent, body, api_url, log_context)
+            return await _perform_auto_commands_github("pr_commands", agent, body, api_url, log_context)
         else:
             get_logger().info(f"User {sender=} is not eligible to process PR {api_url=}")
 
@@ -235,7 +242,7 @@ async def handle_pull_request_review_submitted(body: Dict[str, Any],
         return {}
 
     if get_identity_provider().verify_eligibility("github", sender_id, api_url) is not Eligibility.NOT_ELIGIBLE:
-        await _perform_auto_commands_github("review_commands", agent, body, api_url, log_context)
+        return await _perform_auto_commands_github("review_commands", agent, body, api_url, log_context)
     else:
         get_logger().info(f"User {sender=} is not eligible to process review on PR {api_url=}")
 
@@ -273,7 +280,7 @@ async def handle_push_trigger_for_new_commits(body: Dict[str, Any],
             return {}
         if get_identity_provider().verify_eligibility("github", sender_id, api_url) is not Eligibility.NOT_ELIGIBLE:
             get_logger().info(f"Performing incremental review for {api_url=} because of {event=} and {action=}")
-            await _perform_auto_commands_github("push_commands", agent, body, api_url, log_context)
+            return await _perform_auto_commands_github("push_commands", agent, body, api_url, log_context)
 
 
 def handle_closed_pr(body, event, action, log_context):
@@ -383,6 +390,7 @@ def should_process_pr_logic(body) -> bool:
 
 
 async def _dispatch_request(body: Dict[str, Any], event: str, action: str):
+    """Return False when a command fails, preserving ignored events as completed work."""
     agent = PRAgent()
     log_context, sender, sender_id, sender_type = get_log_context(body, event, action, build_number)
 
@@ -401,22 +409,22 @@ async def _dispatch_request(body: Dict[str, Any], event: str, action: str):
     # handle submitted pull request reviews
     elif event == 'pull_request_review' and action == 'submitted':
         get_logger().debug('Request body', artifact=body, event=event)
-        await handle_pull_request_review_submitted(
+        return await handle_pull_request_review_submitted(
             body, event, sender, sender_id, sender_type, action, log_context, agent
         )
     # handle comments on PRs
     elif action == 'created':
         get_logger().debug('Request body', artifact=body, event=event)
-        await handle_comments_on_pr(body, event, sender, sender_id, action, log_context, agent)
+        return await handle_comments_on_pr(body, event, sender, sender_id, action, log_context, agent)
     # handle new PRs
     elif event == 'pull_request' and action != 'synchronize' and action != 'closed':
         get_logger().debug('Request body', artifact=body, event=event)
-        await handle_new_pr_opened(body, event, sender, sender_id, action, log_context, agent)
+        return await handle_new_pr_opened(body, event, sender, sender_id, action, log_context, agent)
     elif event == "issue_comment" and 'edited' in action:
         pass # handle_checkbox_clicked
     # handle pull_request event with synchronize action - "push trigger" for new commits
     elif event == 'pull_request' and action == 'synchronize':
-        await handle_push_trigger_for_new_commits(body, event, sender,sender_id,  action, log_context, agent)
+        return await handle_push_trigger_for_new_commits(body, event, sender,sender_id,  action, log_context, agent)
     elif event == 'pull_request' and action == 'closed':
         if get_settings().get("CONFIG.ANALYTICS_FOLDER", ""):
             handle_closed_pr(body, event, action, log_context)
@@ -439,30 +447,22 @@ async def handle_request(body: Dict[str, Any], event: str, delivery_id: str | No
     if not action:
         get_logger().debug("No action found in request body, exiting handle_request")
         return {}
-    if not delivery_id:
-        return await _dispatch_request(body, event, action)
-
     settings = get_settings()
-    database_path = str(
-        settings.get(
-            "GITHUB_APP.WEBHOOK_DELIVERY_DATABASE_PATH",
-            "/tmp/pr-agent-github-webhook-deliveries.sqlite3",
-        )
-        or "/tmp/pr-agent-github-webhook-deliveries.sqlite3"
-    )
-    lease_ttl = int(settings.get("GITHUB_APP.WEBHOOK_DELIVERY_LEASE_TTL", 3600) or 3600)
-    retention_ttl = int(settings.get("GITHUB_APP.WEBHOOK_DELIVERY_RETENTION_TTL", 604800) or 604800)
-    installation_id = body.get("installation", {}).get("id")
-    async with webhook_delivery_slot(
-        delivery_id,
-        installation_id,
-        database_path=database_path,
-        lease_ttl=lease_ttl,
-        retention_ttl=retention_ttl,
+    if not delivery_id or not settings.get("GITHUB_APP.WEBHOOK_DELIVERY_DEDUPLICATION", False):
+        await _dispatch_request(body, event, action)
+        return {}
+
+    async with push_trigger_slot(
+        f"github-webhook-delivery:{delivery_id}",
+        allow_backlog=False,
+        ttl=_WEBHOOK_DELIVERY_TTL,
     ) as proceed:
-        if not proceed:
+        if not proceed or _completed_webhook_deliveries[delivery_id] > time.monotonic():
             return {}
-        return await _dispatch_request(body, event, action)
+        succeeded = await _dispatch_request(body, event, action)
+        if succeeded is not False:
+            _completed_webhook_deliveries[delivery_id] = time.monotonic() + _WEBHOOK_DELIVERY_TTL
+    return {}
 
 
 def handle_line_comments(body: Dict, comment_body: [str, Any]):
@@ -540,13 +540,17 @@ async def _perform_auto_commands_github(commands_conf: str, agent: PRAgent, body
         get_logger().info(f"No {commands_conf} configured, skipping auto commands")
         return
     get_settings().set("config.is_auto_command", True)
+    succeeded = True
     for command in commands:
         try:
             new_command = prepare_command(command)
             get_logger().info(f"{commands_conf}. Performing auto command '{new_command}', for {api_url=}")
-            await agent.handle_request(api_url, new_command)
+            if await agent.handle_request(api_url, new_command) is False:
+                succeeded = False
         except Exception as e:
             get_logger().error(f"Failed to perform command {command}: {e}")
+            succeeded = False
+    return succeeded
 
 
 @router.get("/")

@@ -1,146 +1,60 @@
-"""Tests for GitHub webhook delivery identity and idempotency."""
+"""Tests for opt-in GitHub webhook delivery deduplication."""
 
 import asyncio
-from concurrent.futures import ProcessPoolExecutor
+import copy
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from starlette.background import BackgroundTasks
 from starlette_context import request_cycle_context
 
-from pr_agent.config_loader import get_settings
+from pr_agent.config_loader import global_settings
 from pr_agent.servers import github_app
-from pr_agent.servers.webhook_delivery import WebhookDeliveryStore, webhook_delivery_slot
+from pr_agent.servers import utils as servers_utils
 
 
-def _slot(database_path, delivery_id, installation_id="1"):
-    return webhook_delivery_slot(
-        delivery_id,
-        installation_id,
-        database_path=str(database_path),
-        lease_ttl=10,
-        retention_ttl=30,
+@pytest.fixture
+def delivery_clock(monkeypatch):
+    now = [0.0]
+    monkeypatch.setattr(
+        servers_utils.DefaultDictWithTimeout,
+        "_DefaultDictWithTimeout__time",
+        staticmethod(lambda: now[0]),
     )
+    monkeypatch.setattr(github_app, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    return now
 
 
-def _claim_in_worker(database_path):
-    async def claim():
-        store = WebhookDeliveryStore(database_path, lease_ttl=10, retention_ttl=30)
-        return await store.claim("1", "delivery-1") is not None
-
-    return asyncio.run(claim())
-
-
-@pytest.mark.asyncio
-async def test_delivery_slot_suppresses_completed_duplicate(tmp_path):
-    database_path = tmp_path / "deliveries.sqlite3"
-
-    async with _slot(database_path, "delivery-1") as proceed:
-        assert proceed is True
-
-    async with _slot(database_path, "delivery-1") as proceed:
-        assert proceed is False
-
-
-def test_delivery_store_claim_is_atomic_across_workers(tmp_path):
-    database_path = str(tmp_path / "deliveries.sqlite3")
-
-    with ProcessPoolExecutor(max_workers=2) as executor:
-        claims = list(executor.map(_claim_in_worker, [database_path, database_path]))
-
-    assert claims.count(True) == 1
-    assert claims.count(False) == 1
+@pytest.fixture
+def delivery_context(monkeypatch, delivery_clock):
+    settings = copy.deepcopy(global_settings)
+    settings.set("GITHUB_APP.WEBHOOK_DELIVERY_DEDUPLICATION", True)
+    settings.set("GITHUB_APP.PUSH_TRIGGER_PENDING_TASKS_TTL", 300)
+    monkeypatch.setattr(github_app, "_WEBHOOK_DELIVERY_TTL", 300)
+    monkeypatch.setattr(servers_utils, "_push_trigger_states_by_ttl", {})
+    monkeypatch.setattr(servers_utils, "_active_push_trigger_states", {})
+    monkeypatch.setattr(
+        github_app,
+        "_completed_webhook_deliveries",
+        servers_utils.DefaultDictWithTimeout(
+            float, ttl=300, update_key_time_on_get=False
+        ),
+    )
+    with request_cycle_context({"settings": settings}):
+        yield settings
 
 
 @pytest.mark.asyncio
-async def test_delivery_slot_suppresses_concurrent_duplicate(tmp_path):
-    database_path = tmp_path / "deliveries.sqlite3"
-    entered = asyncio.Event()
-    release = asyncio.Event()
-
-    async def first_delivery():
-        async with _slot(database_path, "delivery-1") as proceed:
-            assert proceed is True
-            entered.set()
-            await release.wait()
-
-    first = asyncio.create_task(first_delivery())
-    await entered.wait()
-
-    async with _slot(database_path, "delivery-1") as proceed:
-        assert proceed is False
-
-    release.set()
-    await first
-
-
-@pytest.mark.asyncio
-async def test_delivery_slot_keeps_distinct_deliveries_independent(tmp_path):
-    database_path = tmp_path / "deliveries.sqlite3"
-
-    async with _slot(database_path, "delivery-1") as first:
-        async with _slot(database_path, "delivery-2") as second:
-            assert first is True
-            assert second is True
-
-
-@pytest.mark.asyncio
-async def test_failed_delivery_slot_can_be_retried(tmp_path):
-    database_path = tmp_path / "deliveries.sqlite3"
-
-    with pytest.raises(RuntimeError, match="agent failed"):
-        async with _slot(database_path, "delivery-1") as proceed:
-            assert proceed is True
-            raise RuntimeError("agent failed")
-
-    async with _slot(database_path, "delivery-1") as proceed:
-        assert proceed is True
-
-
-@pytest.mark.asyncio
-async def test_cancelled_delivery_slot_can_be_retried(tmp_path):
-    database_path = tmp_path / "deliveries.sqlite3"
-
-    async def cancelled_delivery():
-        async with _slot(database_path, "delivery-1") as proceed:
-            assert proceed is True
-            raise asyncio.CancelledError
-
-    with pytest.raises(asyncio.CancelledError):
-        await cancelled_delivery()
-
-    async with _slot(database_path, "delivery-1") as proceed:
-        assert proceed is True
-
-
-@pytest.mark.asyncio
-async def test_expired_claim_replaces_owner_without_old_owner_completing(tmp_path, monkeypatch):
-    from pr_agent.servers import webhook_delivery
-
-    now = [1000.0]
-    monkeypatch.setattr(webhook_delivery.time, "time", lambda: now[0])
-    store = WebhookDeliveryStore(str(tmp_path / "deliveries.sqlite3"), lease_ttl=10, retention_ttl=30)
-
-    first_token = await store.claim("1", "delivery-1")
-    now[0] += 11
-    second_token = await store.claim("1", "delivery-1")
-
-    assert first_token
-    assert second_token
-    assert second_token != first_token
-    assert await store.complete("1", "delivery-1", first_token) is False
-    assert await store.complete("1", "delivery-1", second_token) is True
-
-
-@pytest.mark.asyncio
-async def test_github_webhook_route_forwards_delivery_id(monkeypatch):
+@pytest.mark.parametrize("delivery_id", ["delivery-1", None])
+async def test_github_webhook_route_forwards_delivery_id(monkeypatch, delivery_id):
     body = {"installation": {"id": 1}, "action": "created"}
     observed = []
 
     class Request:
-        headers = {
-            "X-GitHub-Event": "issue_comment",
-            "X-GitHub-Delivery": "delivery-1",
-        }
+        headers = {"X-GitHub-Event": "issue_comment"}
+        if delivery_id is not None:
+            headers["X-GitHub-Delivery"] = delivery_id
 
     async def fake_get_body(_request):
         return body
@@ -157,65 +71,160 @@ async def test_github_webhook_route_forwards_delivery_id(monkeypatch):
         await background_tasks()
 
     assert observed == [
-        ((body,), {"event": "issue_comment", "delivery_id": "delivery-1"}),
+        ((body,), {"event": "issue_comment", "delivery_id": delivery_id}),
     ]
 
 
 @pytest.mark.asyncio
-async def test_handle_request_dispatches_a_delivery_only_once(monkeypatch, tmp_path):
-    settings = get_settings()
-    setting_name = "GITHUB_APP.WEBHOOK_DELIVERY_DATABASE_PATH"
-    original_path = settings.get(setting_name, None)
-    dispatched = []
+@pytest.mark.parametrize(("enabled", "delivery_id"), [(False, "delivery-1"), (True, None), (True, "")])
+async def test_handle_request_bypasses_deduplication_when_disabled_or_missing_id(
+    monkeypatch, delivery_context, enabled, delivery_id
+):
+    delivery_context.set("GITHUB_APP.WEBHOOK_DELIVERY_DEDUPLICATION", enabled)
+    dispatch = AsyncMock(return_value={})
+    monkeypatch.setattr(github_app, "_dispatch_request", dispatch)
+    body = {"action": "created"}
 
-    async def fake_dispatch(body, event, action):
-        dispatched.append((body, event, action))
+    assert await github_app.handle_request(body, "issue_comment", delivery_id=delivery_id) == {}
+    assert await github_app.handle_request(body, "issue_comment", delivery_id=delivery_id) == {}
 
-    body = {
-        "installation": {"id": 1},
-        "action": "created",
-        "comment": {
-            "body": "/review",
-            "pull_request_url": "https://api.github.com/repos/org/repo/pulls/1",
-            "id": 42,
-        },
-    }
-    settings.set(setting_name, str(tmp_path / "deliveries.sqlite3"))
-    monkeypatch.setattr(github_app, "_dispatch_request", fake_dispatch)
-
-    try:
-        await github_app.handle_request(body, "issue_comment", delivery_id="delivery-1")
-        await github_app.handle_request(body, "issue_comment", delivery_id="delivery-1")
-    finally:
-        if original_path is None:
-            settings.unset(setting_name, force=True)
-        else:
-            settings.set(setting_name, original_path)
-
-    assert dispatched == [(body, "issue_comment", "created")]
+    assert dispatch.await_count == 2
 
 
 @pytest.mark.asyncio
-async def test_handle_request_keeps_distinct_delivery_ids_independent(monkeypatch, tmp_path):
-    settings = get_settings()
-    setting_name = "GITHUB_APP.WEBHOOK_DELIVERY_DATABASE_PATH"
-    original_path = settings.get(setting_name, None)
-    dispatched = []
+@pytest.mark.parametrize("result", [True, {}, None])
+async def test_handle_request_suppresses_completed_or_intentionally_ignored_delivery(
+    monkeypatch, delivery_context, result
+):
+    dispatch = AsyncMock(return_value=result)
+    monkeypatch.setattr(github_app, "_dispatch_request", dispatch)
+    body = {"action": "created"}
 
-    async def fake_dispatch(body, event, action):
-        dispatched.append((event, action))
+    await github_app.handle_request(body, "issue_comment", delivery_id="delivery-1")
+    await github_app.handle_request(body, "issue_comment", delivery_id="delivery-1")
 
-    body = {"installation": {"id": 1}, "action": "created"}
-    settings.set(setting_name, str(tmp_path / "deliveries.sqlite3"))
-    monkeypatch.setattr(github_app, "_dispatch_request", fake_dispatch)
+    dispatch.assert_awaited_once_with(body, "issue_comment", "created")
 
+
+@pytest.mark.asyncio
+async def test_handle_request_keeps_distinct_delivery_ids_independent(monkeypatch, delivery_context):
+    dispatch = AsyncMock(return_value={})
+    monkeypatch.setattr(github_app, "_dispatch_request", dispatch)
+    body = {"action": "created"}
+
+    await github_app.handle_request(body, "issue_comment", delivery_id="delivery-1")
+    await github_app.handle_request(body, "issue_comment", delivery_id="delivery-2")
+
+    assert dispatch.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("elapsed", [0, 301])
+async def test_handle_request_suppresses_active_delivery_even_after_ttl(
+    monkeypatch, delivery_context, delivery_clock, elapsed
+):
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def dispatch(_body, _event, _action):
+        entered.set()
+        await release.wait()
+        return {}
+
+    dispatch_mock = AsyncMock(side_effect=dispatch)
+    monkeypatch.setattr(github_app, "_dispatch_request", dispatch_mock)
+    body = {"action": "created"}
+    first = asyncio.create_task(github_app.handle_request(body, "issue_comment", delivery_id="delivery-1"))
     try:
-        await github_app.handle_request(body, "issue_comment", delivery_id="delivery-1")
-        await github_app.handle_request(body, "issue_comment", delivery_id="delivery-2")
+        await asyncio.wait_for(entered.wait(), 1)
+        delivery_clock[0] += elapsed
+        await asyncio.wait_for(
+            github_app.handle_request(body, "issue_comment", delivery_id="delivery-1"), 1
+        )
+        dispatch_mock.assert_awaited_once()
     finally:
-        if original_path is None:
-            settings.unset(setting_name, force=True)
-        else:
-            settings.set(setting_name, original_path)
+        release.set()
+        await asyncio.wait_for(first, 1)
 
-    assert dispatched == [("issue_comment", "created"), ("issue_comment", "created")]
+    assert not servers_utils._active_push_trigger_states
+
+
+@pytest.mark.asyncio
+async def test_active_delivery_does_not_block_a_different_delivery(monkeypatch, delivery_context):
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def dispatch(body, _event, _action):
+        if body["comment_id"] == 1:
+            entered.set()
+            await release.wait()
+        return {}
+
+    dispatch_mock = AsyncMock(side_effect=dispatch)
+    monkeypatch.setattr(github_app, "_dispatch_request", dispatch_mock)
+    first = asyncio.create_task(
+        github_app.handle_request({"action": "created", "comment_id": 1}, "issue_comment", delivery_id="delivery-1")
+    )
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        await asyncio.wait_for(
+            github_app.handle_request({"action": "created", "comment_id": 2}, "issue_comment", delivery_id="delivery-2"),
+            1,
+        )
+        assert dispatch_mock.await_count == 2
+    finally:
+        release.set()
+        await asyncio.wait_for(first, 1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [RuntimeError("agent failed"), asyncio.CancelledError()])
+async def test_failed_or_cancelled_dispatch_can_retry(monkeypatch, delivery_context, error):
+    dispatch = AsyncMock(side_effect=[error, {}])
+    monkeypatch.setattr(github_app, "_dispatch_request", dispatch)
+    body = {"action": "created"}
+
+    with pytest.raises(type(error)):
+        await github_app.handle_request(body, "issue_comment", delivery_id="delivery-1")
+    assert not servers_utils._active_push_trigger_states
+
+    await github_app.handle_request(body, "issue_comment", delivery_id="delivery-1")
+    await github_app.handle_request(body, "issue_comment", delivery_id="delivery-1")
+
+    assert dispatch.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_duplicate_does_not_extend_completed_delivery_ttl(monkeypatch, delivery_context, delivery_clock):
+    dispatch = AsyncMock(return_value={})
+    monkeypatch.setattr(github_app, "_dispatch_request", dispatch)
+    body = {"action": "created"}
+
+    await github_app.handle_request(body, "issue_comment", delivery_id="delivery-1")
+    delivery_clock[0] = 299
+    await github_app.handle_request(body, "issue_comment", delivery_id="delivery-1")
+    assert dispatch.await_count == 1
+
+    delivery_clock[0] = 301
+    await github_app.handle_request(body, "issue_comment", delivery_id="delivery-1")
+    assert dispatch.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_completed_delivery_ttl_starts_after_dispatch(monkeypatch, delivery_context, delivery_clock):
+    async def dispatch(_body, _event, _action):
+        delivery_clock[0] += 301
+        return {}
+
+    dispatch_mock = AsyncMock(side_effect=dispatch)
+    monkeypatch.setattr(github_app, "_dispatch_request", dispatch_mock)
+    body = {"action": "created"}
+
+    await github_app.handle_request(body, "issue_comment", delivery_id="delivery-1")
+    delivery_clock[0] = 600
+    await github_app.handle_request(body, "issue_comment", delivery_id="delivery-1")
+    assert dispatch_mock.await_count == 1
+
+    delivery_clock[0] = 602
+    await github_app.handle_request(body, "issue_comment", delivery_id="delivery-1")
+    assert dispatch_mock.await_count == 2

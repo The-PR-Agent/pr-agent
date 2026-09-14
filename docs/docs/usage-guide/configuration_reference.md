@@ -335,9 +335,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `review_states` | ["changes_requested"] | A submitted GitHub review can optionally trigger these commands. The empty default preserves current behavior. |
 | `review_author_types` | ["User"] |  |
 | `review_commands` | [] |  |
-| `webhook_delivery_database_path` | "/tmp/pr-agent-github-webhook-deliveries.sqlite3" | SQLite file used to claim GitHub webhook deliveries before Agent dispatch. Use a shared filesystem for multiple workers or replicas. |
-| `webhook_delivery_lease_ttl` | 3600 | Seconds before an in-flight delivery claim can be retried after a worker disappears. |
-| `webhook_delivery_retention_ttl` | 604800 | Seconds to retain completed delivery IDs and suppress redeliveries. Must cover the lease TTL. |
+| `webhook_delivery_deduplication` | false | Opt in to in-memory deduplication by X-GitHub-Delivery within each worker process. Active work stays protected; completed IDs expire after the deployment's push_trigger_pending_tasks_ttl (read at startup, 300 seconds by default). Failed or cancelled work can retry immediately. Repeated deliveries do not extend the TTL. Manual redeliveries are also suppressed during this window. State is cleared on restart and is not shared across workers or replicas. |
 | `handle_push_trigger` | false | settings for "pull_request" event with "synchronize" action - used to detect and handle push triggers for new commits |
 | `push_trigger_ignore_bot_commits` | true |  |
 | `push_trigger_ignore_merge_commits` | true |  |

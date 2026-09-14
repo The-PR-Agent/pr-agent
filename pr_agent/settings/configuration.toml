@@ -288,11 +288,12 @@ feedback_on_draft_pr = false
 review_states = ["changes_requested"]
 review_author_types = ["User"]
 review_commands = []
-# SQLite file used to claim GitHub webhook deliveries before Agent dispatch. Point this at a
-# shared filesystem when multiple Gunicorn workers or replicas must share idempotency state.
-webhook_delivery_database_path = "/tmp/pr-agent-github-webhook-deliveries.sqlite3"
-webhook_delivery_lease_ttl = 3600
-webhook_delivery_retention_ttl = 604800
+# Opt in to in-memory deduplication by X-GitHub-Delivery within each worker process.
+# Active work stays protected; completed IDs expire after the deployment's push_trigger_pending_tasks_ttl
+# (read at startup, 300 seconds by default). Failed or cancelled work can retry immediately.
+# Repeated deliveries do not extend the TTL. Manual redeliveries are also suppressed during this window.
+# State is cleared on restart and is not shared across workers or replicas.
+webhook_delivery_deduplication = false
 # settings for "pull_request" event with "synchronize" action - used to detect and handle push triggers for new commits
 handle_push_trigger = false
 push_trigger_ignore_bot_commits = true
