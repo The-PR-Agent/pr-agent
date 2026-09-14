@@ -253,6 +253,21 @@ def test_prepare_pr_review_does_not_warn_for_valid_model_output():
     get_logger.return_value.warning.assert_not_called()
 
 
+def test_review_schema_requires_enabled_prompt_fields_only():
+    reviewer = _make_prediction_reviewer()
+    reviewer.vars = {"require_tests": True}
+    with patch("pr_agent.tools.pr_reviewer.get_logger") as get_logger:
+        assert reviewer._validate_review_schema({"review": {"key_issues_to_review": []}}) is False
+
+    warning = get_logger.return_value.warning.call_args.kwargs
+    assert warning["artifact"] == {"field": "review.relevant_tests", "value": None}
+
+    reviewer.vars = {"require_tests": False}
+    get_logger.return_value.warning.reset_mock()
+    assert reviewer._validate_review_schema({"review": {"key_issues_to_review": []}}) is True
+    get_logger.return_value.warning.assert_not_called()
+
+
 def test_prepare_pr_review_limits_coverage_footer_to_50_files():
     reviewer = _make_prediction_reviewer()
     remaining_files = [f"file_{index}.py" for index in range(51)]

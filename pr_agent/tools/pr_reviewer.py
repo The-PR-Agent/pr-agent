@@ -892,8 +892,7 @@ class PRReviewer:
                                         "relevant_file:", "relevant_line:", "suggestion:"],
                         first_key='review', last_key='security_concerns')
 
-    @staticmethod
-    def _validate_review_schema(data: object) -> bool:
+    def _validate_review_schema(self, data: object) -> bool:
         try:
             PRReview.model_validate(data)
         except ValidationError as error:
@@ -907,6 +906,32 @@ class PRReviewer:
                 },
             )
             return False
+
+        if isinstance(data, dict) and isinstance(data.get("review"), dict):
+            review = data["review"]
+            required_fields = (
+                ("ticket_compliance_check", "related_tickets"),
+                ("estimated_effort_to_review_[1-5]", "require_estimate_effort_to_review"),
+                ("risk_level", "require_risk_assessment"),
+                ("merge_recommendation", "require_merge_recommendation"),
+                ("review_priority_files", "require_priority_files"),
+                ("contribution_time_cost_estimate", "require_estimate_contribution_time_cost"),
+                ("score", "require_score"),
+                ("relevant_tests", "require_tests"),
+                ("insights_from_user_answers", "question_str"),
+                ("security_concerns", "require_security_review"),
+                ("todo_sections", "require_todo_scan"),
+                ("can_be_split", "require_can_be_split_review"),
+            )
+            vars_ = getattr(self, "vars", {})
+            for field_name, setting_name in required_fields:
+                if not vars_.get(setting_name) or field_name in review and review[field_name] is not None:
+                    continue
+                get_logger().warning(
+                    "Review output failed schema validation",
+                    artifact={"field": f"review.{field_name}", "value": None},
+                )
+                return False
         return True
 
     @classmethod
