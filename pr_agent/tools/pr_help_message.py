@@ -285,19 +285,19 @@ class PRHelpMessage:
             if not isinstance(section, dict):
                 continue
 
-            file_name = section.get('file_name')
+            file_name = section.get("file_name")
             if not isinstance(file_name, str):
                 continue
             normalized_file_name = file_name
-            if normalized_file_name.startswith('/'):
+            if normalized_file_name.startswith("/"):
                 normalized_file_name = normalized_file_name[1:]
             if normalized_file_name not in available_docs_files:
                 get_logger().warning(f"Skipping a /help citation to a document that was not loaded: {file_name}")
                 continue
 
-            header = section.get('relevant_section_header_string', '')
+            header = section.get("relevant_section_header_string", "")
             if not isinstance(header, str):
-                header = ''
+                header = ""
             source_urls.append(self.format_docs_url(normalized_file_name, header))
         return source_urls
 
