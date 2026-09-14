@@ -70,7 +70,7 @@ PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION = {
         "max_number_of_calls", "parallel_calls",
         "approve_pr_on_self_review", "demand_code_suggestions_self_review",
     }),
-    "pr_similar_issue": frozenset({"force_update_dataset", "max_issues_to_scan", "vectordb"}),
+    "pr_similar_issue": frozenset({"force_update_dataset", "max_issues_to_scan", "vectordb", "skip_comments"}),
 }
 
 # Sections a *per-directory* `.pr_agent.toml` may override at all. Nested config

@@ -239,6 +239,7 @@ def _apply_settings_from_file(path: str, label: str):
 
 def apply_repo_settings(pr_url):
     os.environ["AUTO_CAST_FOR_DYNACONF"] = "false"
+    _restore_per_directory_settings()
 
     # Apply external/shared config FIRST, before constructing the git provider:
     # provider initialisers (e.g. GitLabProvider reads GITLAB.PERSONAL_ACCESS_TOKEN
@@ -325,6 +326,23 @@ def apply_repo_settings(pr_url):
     # enable switching models with a short definition
     if get_settings().config.model.lower() == 'claude-3-5-sonnet':
         set_claude_model()
+
+
+def _restore_per_directory_settings():
+    """Remove the previous directory overlay before applying this command's trusted settings."""
+    settings = get_settings()
+    previous = vars(settings).pop("_per_directory_original_values", {})
+    for section, original_values in previous.items():
+        contents = copy.deepcopy(settings.as_dict().get(section, {}))
+        for key, (present, value) in original_values.items():
+            for current_key in list(contents):
+                if current_key.lower() == key:
+                    del contents[current_key]
+            if present:
+                contents[key] = value
+        settings.unset(section)
+        if contents:
+            settings.set(section, contents, merge=False)
 
 
 def _write_settings_temp(settings_content, repo_settings_files: list) -> str:
@@ -424,6 +442,13 @@ def _apply_repo_settings_file(repo_settings_file, repo_settings_scope="repo"):
                 if not contents:
                     continue
         section_dict = copy.deepcopy(get_settings().as_dict().get(section.upper(), {}))
+        if repo_settings_scope == "per_directory":
+            previous = vars(get_settings()).setdefault("_per_directory_original_values", {})
+            original_values = previous.setdefault(section.upper(), {})
+            normalized = {key.lower(): value for key, value in section_dict.items()}
+            for key in contents:
+                original_values.setdefault(
+                    key.lower(), (key.lower() in normalized, copy.deepcopy(normalized.get(key.lower()))))
         for key, value in contents.items():
             section_dict[key] = value
         get_settings().unset(section)
@@ -553,7 +578,7 @@ def _get_per_directory_settings(git_provider) -> list:
     max_configs = max(1, max_configs)
     crossed = set()
     for changed_path in changed_paths:
-        directory = posixpath.dirname(changed_path.replace("\\", "/"))
+        directory = posixpath.dirname(changed_path)
         while directory:
             if directory in config_dirs:
                 crossed.add(directory)

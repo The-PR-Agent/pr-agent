@@ -121,6 +121,16 @@ def _provider(tree_paths, contents, files, root_settings=b"", full_files=None):
 
 
 class TestResolvePerDirectorySettings:
+    def test_literal_backslashes_do_not_activate_nested_settings(self, per_dir_settings):
+        provider = _provider(
+            tree_paths=["services/auth/.pr_agent.toml"],
+            contents={"services/auth/.pr_agent.toml": SERVICES_AUTH_TOML},
+            files=[r"services\auth\file.py"],
+        )
+
+        assert git_utils._get_per_directory_settings(provider) == []
+        assert provider.contents_calls == []
+
     def test_walks_up_from_changed_file_to_root(self, per_dir_settings):
         provider = _provider(
             tree_paths=[".pr_agent.toml", "services/.pr_agent.toml", "services/auth/.pr_agent.toml"],
@@ -642,6 +652,7 @@ approve_pr_on_self_review = true
 
 [pr_similar_issue]
 force_update_dataset = true
+skip_comments = false
 max_issues_to_scan = 999999
 vectordb = "pinecone"
 use_original_title = false
@@ -652,6 +663,8 @@ use_original_title = false
                 root_settings=ROOT_TOML + b"""
 [pr_questions]
 use_conversation_history = false
+[pr_similar_issue]
+skip_comments = true
 """,
                 tree_paths=["services/.pr_agent.toml"],
                 contents={"services/.pr_agent.toml": config},
@@ -666,6 +679,7 @@ use_conversation_history = false
         assert get_settings().pr_description.publish_labels is False
         assert get_settings().pr_questions.resolve_threads is False
         assert get_settings().pr_similar_issue.force_update_dataset is False
+        assert get_settings().pr_similar_issue.skip_comments is True
         assert get_settings().get("pr_similar_issue.max_issues_to_scan", 0) != 999999
         assert get_settings().pr_similar_issue.vectordb != "pinecone"
         # Pull-request metadata and reviewer label/inline controls stay trusted:
@@ -1064,3 +1078,33 @@ class TestGitLabProviderPerDirectory:
 
         # Both sides of a rename survive, independent of incremental review state.
         assert result == changes
+
+
+@pytest.mark.parametrize("next_root", [b"", b"[pr_reviewer]\nnum_max_findings = 12\n"])
+def test_directory_overrides_do_not_leak_between_commands(fresh_global_settings, monkeypatch, next_root):
+    settings = get_settings()
+    settings.config.enable_per_directory_settings = True
+    settings.config.use_repo_settings_file = True
+    settings.pr_reviewer.num_max_findings = 10
+    providers = iter([
+        _provider(
+            tree_paths=["services/.pr_agent.toml", "services/auth/.pr_agent.toml"],
+            contents={
+                "services/.pr_agent.toml": SERVICES_TOML,
+                "services/auth/.pr_agent.toml": b"[pr_reviewer]\nnum_max_findings = 3\nnew_test_key = 42\n",
+            },
+            files=["services/auth/api.py"],
+        ),
+        _provider(tree_paths=[], contents={}, files=["README.md"], root_settings=next_root),
+    ])
+    monkeypatch.setattr(git_utils, "get_git_provider_with_context", lambda url: next(providers))
+
+    git_utils.apply_repo_settings("https://github.com/org/repo/pull/1")
+    assert settings.pr_reviewer.num_max_findings == 3
+    assert settings.pr_reviewer.new_test_key == 42
+    settings.pr_reviewer.extra_instructions = "later trusted change"
+
+    git_utils.apply_repo_settings("https://github.com/org/repo/pull/2")
+    assert settings.pr_reviewer.num_max_findings == (12 if next_root else 10)
+    assert "new_test_key" not in settings.pr_reviewer
+    assert settings.pr_reviewer.extra_instructions == "later trusted change"
