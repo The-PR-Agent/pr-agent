@@ -6,6 +6,7 @@ from functools import partial
 from typing import List, Optional, Tuple
 
 from jinja2 import Environment, StrictUndefined
+from pydantic import ValidationError
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
@@ -17,6 +18,7 @@ from pr_agent.algo.inline_comment_dedup import (
     key_issue_fingerprint,
     key_issue_location_fingerprint,
 )
+from pr_agent.algo.output_models import PRReview
 from pr_agent.algo.pr_processing import (
     PreparedPRDiff,
     add_ai_metadata_to_diff_files,
@@ -839,6 +841,7 @@ class PRReviewer:
             if isinstance(prediction, BaseException):
                 raise prediction
             data = self._load_valid_review_yaml(prediction, source=f"review chunk {chunk_index + 1}")
+            self._validate_review_schema(data)
             raw_predictions.append(prediction)
             chunk_outputs.append(data)
 
@@ -887,7 +890,22 @@ class PRReviewer:
                          keys_fix_yaml=["ticket_compliance_check", "estimated_effort_to_review_[1-5]:", "risk_level:",
                                         "merge_recommendation:", "security_concerns:", "key_issues_to_review:",
                                         "relevant_file:", "relevant_line:", "suggestion:"],
-                         first_key='review', last_key='security_concerns')
+                        first_key='review', last_key='security_concerns')
+
+    @staticmethod
+    def _validate_review_schema(data: dict) -> None:
+        try:
+            PRReview.model_validate(data)
+        except ValidationError as error:
+            first_error = error.errors()[0]
+            field_path = ".".join(str(part) for part in first_error.get("loc", ()))
+            get_logger().warning(
+                "Review output failed schema validation",
+                artifact={
+                    "field": field_path,
+                    "value": first_error.get("input"),
+                },
+            )
 
     @classmethod
     def _load_valid_review_yaml(cls, prediction: str, *, source: str = "model response") -> dict:
@@ -903,6 +921,8 @@ class PRReviewer:
         the feedback.
         """
         data = self.prediction_data if self.prediction_data is not None else self._load_review_yaml(self.prediction)
+        if isinstance(data, dict):
+            self._validate_review_schema(data)
         github_action_output(data, 'review')
 
         if not isinstance(data, dict) or not isinstance(data.get('review'), dict) or not data['review']:
