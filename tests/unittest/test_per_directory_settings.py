@@ -496,6 +496,28 @@ class TestApplyPerDirectorySettings:
         assert get_settings().config.temperature == 0.5
         assert get_settings().config.model == "auth-model"
 
+    def test_different_key_casing_overrides_root_value(self, per_dir_settings, monkeypatch):
+        # Dynaconf resolves keys case-insensitively, so a per-directory file that spells
+        # the same key with different casing must replace the root value, not join it as a
+        # duplicate that leaves the old value winning (regression for "nearest wins").
+        nested = b"""
+[pr_reviewer]
+Num_Max_Findings = 4
+"""
+        monkeypatch.setattr(
+            "pr_agent.git_providers.utils.get_git_provider_with_context",
+            lambda url: _provider(
+                root_settings=b"[pr_reviewer]\nnum_max_findings = 10\n",
+                tree_paths=["services/.pr_agent.toml"],
+                contents={"services/.pr_agent.toml": nested},
+                files=["services/api.py"],
+            ),
+        )
+
+        git_utils.apply_repo_settings("https://github.com/org/repo/pull/1")
+
+        assert get_settings().pr_reviewer.num_max_findings == 4
+
     def test_list_values_replace_not_concatenate(self, per_dir_settings, monkeypatch):
         monkeypatch.setattr(
             "pr_agent.git_providers.utils.get_git_provider_with_context",

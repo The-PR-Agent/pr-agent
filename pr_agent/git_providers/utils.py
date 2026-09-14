@@ -466,6 +466,12 @@ def _apply_repo_settings_file(repo_settings_file, repo_settings_scope="repo"):
                 original_values.setdefault(
                     key.lower(), (key.lower() in normalized, copy.deepcopy(normalized.get(key.lower()))))
         for key, value in contents.items():
+            # Dynaconf looks up keys case-insensitively, so replacing the existing key
+            # (whatever its casing) keeps the newer value from a nearer/sibling config
+            # deterministic instead of leaving an "canonical-cased" duplicate beside it.
+            for existing_key in list(section_dict):
+                if existing_key.lower() == key.lower():
+                    del section_dict[existing_key]
             section_dict[key] = value
         get_settings().unset(section)
         get_settings().set(section, section_dict, merge=False)
