@@ -142,7 +142,7 @@ def run_command(pr_url, command):
     args = set_parser().parse_args(run_command_str.split())
 
     # Run the command. Feedback will appear in GitHub PR comments
-    run(args=args)
+    return run(args=args)
 
 
 def run(inargs=None, args=None):

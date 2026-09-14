@@ -201,8 +201,8 @@ def _console_script_entrypoint(python_executable):
     if sys.platform == "win32":
         console_script = console_script.with_suffix(".exe")
     if console_script.is_file():
-        return (str(console_script),)
-    return (python_executable, "-c", _CONSOLE_SCRIPT_FALLBACK)
+        return [str(console_script)]
+    return [python_executable, "-c", _CONSOLE_SCRIPT_FALLBACK]
 
 
 def test_console_script_maps_to_cli_run():
@@ -214,19 +214,37 @@ def test_console_script_maps_to_cli_run():
 
 def test_console_script_falls_back_in_source_only_environment(tmp_path):
     python_executable = str(tmp_path / "bin" / "python")
-    assert _console_script_entrypoint(python_executable) == (
+    assert _console_script_entrypoint(python_executable) == [
         python_executable,
         "-c",
         _CONSOLE_SCRIPT_FALLBACK,
-    )
+    ]
+
+
+def test_run_command_forwards_run_status(monkeypatch):
+    def fake_run(*, args):
+        assert args.pr_url == "https://example.com/org/repo/pull/1"
+        assert args.command == "review"
+        return 1
+
+    monkeypatch.setattr(cli, "run", fake_run)
+
+    assert cli.run_command("https://example.com/org/repo/pull/1", "/review") == 1
 
 
 @pytest.fixture
 def process_entrypoints():
     return (
         _console_script_entrypoint(sys.executable),
-        (sys.executable, "-m", "pr_agent.cli"),
+        [sys.executable, "-m", "pr_agent.cli"],
+        [sys.executable, "-m", "pr_agent.cli_pip"],
+        [sys.executable, "pr_agent/cli_pip.py"],
     )
+
+
+@pytest.fixture
+def argparse_entrypoints(process_entrypoints):
+    return process_entrypoints[:2]
 
 
 @pytest.fixture
@@ -245,7 +263,12 @@ async def controlled_handle_request(self, pr_url, request, notify=None):
         \"CONFIG.PROPAGATE_TOOL_ERRORS\",
         os.environ.get(\"PR_AGENT_TEST_PROPAGATE\") == \"true\",
     )
-    return os.environ.get(\"PR_AGENT_TEST_RESULT\") == \"true\"
+    result = os.environ.get(\"PR_AGENT_TEST_RESULT\")
+    if result == \"none\":
+        return None
+    if result == \"zero\":
+        return 0
+    return result == \"true\"
 
 
 PRAgent.handle_request = controlled_handle_request
@@ -265,6 +288,8 @@ PRAgent.handle_request = controlled_handle_request
         ("false", "true", 1),
         ("false", "false", 0),
         ("true", "true", 0),
+        ("none", "true", 0),
+        ("zero", "true", 0),
     ],
 )
 def test_process_entrypoints_map_request_status(
@@ -297,10 +322,10 @@ def test_process_entrypoints_map_request_status(
 
 
 def test_process_entrypoints_preserve_argparse_status(
-    process_entrypoints,
+    argparse_entrypoints,
     controlled_process_env,
 ):
-    for entrypoint in process_entrypoints:
+    for entrypoint in argparse_entrypoints:
         completed = subprocess.run(
             [*entrypoint, "not-a-command"],
             cwd=Path(__file__).parents[2],

@@ -40,7 +40,7 @@ This is useful for debugging or experimenting with different tools.
 python -m pr_agent.cli --pr_url=<pr_url> review --config.propagate_tool_errors=true
 ```
 
-When a propagated tool error makes the request fail, both this module form and the installed `pr-agent` command exit with status 1. The default remains compatible with existing CLI behavior and exits with status 0; argparse parse and usage errors continue to exit with status 2.
+When a propagated tool error makes the request fail, the installed `pr-agent` command, `python -m pr_agent.cli`, and the customizable pip script exit with status 1. The default remains compatible with existing CLI behavior and exits with status 0; argparse parse and usage errors continue to exit with status 2.
 
 ### CLI Health Check
 
