@@ -8182,8 +8182,18 @@ async def test_native_bedrock_model_region_precedence(monkeypatch, model_source,
     assert_request(seen[0])
     handler = LiteLLMAIHandler()
     captured = dict(handler._aws_active_creds)
+    if region_source == "imds":
+        session.get_credentials.assert_not_called()
+        if auth == "sigv4":
+            captured = {**credentials, "aws_region_name": "us-east-1"}
     with pytest.raises(TransportReached):
         await handler.chat_completion(model, "sys", "usr")
+    if region_source == "imds":
+        if auth == "sigv4":
+            session.get_credentials.assert_called_once_with()
+            session.get_credentials.return_value.get_frozen_credentials.assert_called_once_with()
+        else:
+            session.get_credentials.assert_not_called()
     assert len(seen) == 2
     assert seen[1].url == seen[0].url
     assert_request(seen[1])

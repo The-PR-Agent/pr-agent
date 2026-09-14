@@ -316,10 +316,18 @@ Set `AWS_USE_IMDS=true` in the environment. PR-Agent will resolve credentials vi
 | EKS pod with IRSA | Web identity token + STS |
 | Lambda function | Runtime-injected credentials |
 
-Credential discovery runs synchronously when the handler is initialized. Before each SigV4 call, PR-Agent
-refreshes credentials synchronously through the same boto3 credentials object and passes a request-local snapshot
-to LiteLLM, without writing credentials into the process environment. AWS calls using this provider chain are
-serialized within a handler, including any static-credential retry. Discovery and refresh can block the event loop.
+Credential discovery runs on the first SigV4 request that needs the opted-in provider chain, not during handler
+initialization or for non-AWS and bearer-authenticated requests. Discovery and subsequent refreshes through the
+same boto3 credentials object run in a background thread. PR-Agent passes a request-local snapshot to LiteLLM
+without writing credentials into the process environment. Discovery errors are therefore reported on first use.
+
+AWS calls using this provider chain remain serialized within a handler, including any static-credential retry.
+Cancelling a request does not stop an already-running boto3 operation: its lock remains held until that operation
+finishes, so a later request cannot start overlapping credential preparation. An indefinitely blocked operation
+delays subsequent AWS requests on that handler; callers can still cancel their waits. This is a per-handler bound,
+not a service-wide thread limit. Preparation uses the event loop's shared default executor: blocked operations
+across handlers can delay unrelated executor work and process shutdown. Handler initialization still captures
+environment and credential-file fingerprints synchronously; this local file I/O is not moved to the background.
 
 The same opt-in is required for other boto3 provider-chain sources, including `AWS_PROFILE` and shared credentials
 files. LiteLLM-specific `AWS_PROFILE_NAME` and `AWS_ROLE_NAME` selectors are not supported because they can override
