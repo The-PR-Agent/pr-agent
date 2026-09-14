@@ -420,6 +420,22 @@ def _apply_repo_settings_file(repo_settings_file, repo_settings_scope="repo"):
             contents = {k: v for k, v in contents.items() if k.lower() not in per_dir_host_only_keys}
             if not contents:
                 continue
+            if section.lower() == "config":
+                normalized_contents = {key.lower(): value for key, value in contents.items()}
+                invalid_model_keys = [
+                    key for key in ("model", "model_weak", "model_reasoning")
+                    if key in normalized_contents
+                    and (not isinstance(normalized_contents[key], str) or not normalized_contents[key].strip())
+                ]
+                if invalid_model_keys:
+                    get_logger().warning(
+                        f"Ignoring non-string model setting(s) {invalid_model_keys} from per-directory settings"
+                    )
+                    contents = {
+                        key: value for key, value in contents.items() if key.lower() not in invalid_model_keys
+                    }
+                if not contents:
+                    continue
         allowed_keys = REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION.get(section.lower())
         if allowed_keys is not None:
             rejected = [k for k in contents if k.lower() not in allowed_keys]

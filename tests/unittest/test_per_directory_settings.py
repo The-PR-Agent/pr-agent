@@ -778,6 +778,30 @@ per_directory_settings_max_tree_pages = 999999
         assert get_settings().config.model == "nested-model"
         assert get_settings().config.temperature == 0.5
 
+    def test_per_directory_config_drops_non_string_model_values(self, per_dir_settings, monkeypatch):
+        trusted_model_weak = get_settings().get("config.model_weak", None)
+        config = b"""
+[config]
+model = 1
+model_weak = false
+model_reasoning = "reasoning-model"
+"""
+        monkeypatch.setattr(
+            "pr_agent.git_providers.utils.get_git_provider_with_context",
+            lambda url: _provider(
+                root_settings=ROOT_TOML,
+                tree_paths=["services/.pr_agent.toml"],
+                contents={"services/.pr_agent.toml": config},
+                files=["services/api.py"],
+            ),
+        )
+
+        git_utils.apply_repo_settings("https://github.com/org/repo/pull/1")
+
+        assert get_settings().config.model == "root-model"
+        assert get_settings().get("config.model_weak", None) == trusted_model_weak
+        assert get_settings().config.model_reasoning == "reasoning-model"
+
     def test_per_directory_config_drops_fallback_models(self, per_dir_settings, monkeypatch):
         config = b"""
 [config]
