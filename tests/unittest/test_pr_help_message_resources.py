@@ -151,6 +151,7 @@ def test_unreadable_document_is_skipped_when_another_document_loads(tmp_path, mo
     )
 
 
+@pytest.mark.asyncio
 async def test_missing_corpus_fails_before_model_attempt(tmp_path, monkeypatch):
     package_root = tmp_path / "installed" / "pr_agent"
     package_root.mkdir(parents=True)
@@ -252,6 +253,7 @@ async def test_source_fallback_failure_notifies_before_model_attempt(tmp_path, m
     logger.exception.assert_called_once_with("Unable to load the PR-Agent help documentation")
 
 
+@pytest.mark.asyncio
 async def test_unreadable_corpus_fails_before_model_attempt(tmp_path, monkeypatch):
     package_root = tmp_path / "pr_agent"
     docs_root = package_root / "_help_docs"
@@ -298,6 +300,7 @@ async def test_unreadable_corpus_fails_before_model_attempt(tmp_path, monkeypatc
     assert "Unable to load the PR-Agent help documentation" in logger.exception.call_args.args[0]
 
 
+@pytest.mark.asyncio
 async def test_empty_corpus_fails_before_model_attempt(tmp_path, monkeypatch):
     package_root = tmp_path / "pr_agent"
     docs_root = package_root / "_help_docs"
@@ -333,6 +336,7 @@ async def test_empty_corpus_fails_before_model_attempt(tmp_path, monkeypatch):
     assert "Unable to load the PR-Agent help documentation" in logger.exception.call_args.args[0]
 
 
+@pytest.mark.asyncio
 async def test_notification_failure_preserves_original_corpus_error(monkeypatch):
     original_error = FileNotFoundError("missing corpus")
     retry = AsyncMock()
