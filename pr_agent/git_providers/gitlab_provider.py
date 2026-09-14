@@ -1416,6 +1416,8 @@ class GitLabProvider(GitProvider):
                 project_path = self.gl.projects.get(project_id).path_with_namespace
             except Exception as e:
                 get_logger().warning(f"Failed to resolve canonical GitLab project path, error: {e}")
+                if resolved:
+                    raise
                 return None
             if not project_path:
                 return None

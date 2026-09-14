@@ -94,9 +94,6 @@ def _get_repo_context_process_cache_key(
 
 def _get_repo_context_config() -> tuple[list, int] | None:
     context_files = get_settings().config.get("repo_context_files", [])
-    if not context_files:
-        context_files = []
-
     if isinstance(context_files, str):
         get_logger().warning(
             "repo_context_files should be a list of file paths; treating string value as one file path",
