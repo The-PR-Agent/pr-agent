@@ -288,6 +288,29 @@ async def test_chunks_without_nonempty_reviews_fail_the_model_attempt(chunking_e
     assert reviewer.prediction_data is None
 
 
+@pytest.mark.asyncio
+async def test_invalid_chunk_emits_one_schema_warning_before_rendering(chunking_enabled):
+    reviewer = _make_reviewer()
+    reviewer._get_prediction = AsyncMock(side_effect=[
+        "review:\n  score: 101\n  key_issues_to_review: []",
+        CHUNK_B,
+    ])
+
+    with (
+        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
+        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
+              return_value=(["chunk-a", "chunk-b"], [])),
+        patch("pr_agent.tools.pr_reviewer.get_logger") as get_logger,
+    ):
+        await reviewer._prepare_prediction("model")
+        reviewer._prepare_pr_review()
+
+    warnings = get_logger.return_value.warning.call_args_list
+    schema_warnings = [call for call in warnings if call.args == ("Review output failed schema validation",)]
+    assert len(schema_warnings) == 1
+    assert schema_warnings[0].kwargs["artifact"] == {"field": "review.score", "value": 101}
+
+
 def _render_review(reviewer):
     reviewer.prediction = "review:\n  summary: test"
     reviewer.git_provider.get_diff_files.return_value = []

@@ -893,12 +893,12 @@ class PRReviewer:
                         first_key='review', last_key='security_concerns')
 
     @staticmethod
-    def _validate_review_schema(data: dict) -> None:
+    def _validate_review_schema(data: object) -> bool:
         try:
             PRReview.model_validate(data)
         except ValidationError as error:
             first_error = error.errors()[0]
-            field_path = ".".join(str(part) for part in first_error.get("loc", ()))
+            field_path = ".".join(str(part) for part in first_error.get("loc", ())) or "$"
             get_logger().warning(
                 "Review output failed schema validation",
                 artifact={
@@ -906,6 +906,8 @@ class PRReviewer:
                     "value": first_error.get("input"),
                 },
             )
+            return False
+        return True
 
     @classmethod
     def _load_valid_review_yaml(cls, prediction: str, *, source: str = "model response") -> dict:
@@ -921,7 +923,7 @@ class PRReviewer:
         the feedback.
         """
         data = self.prediction_data if self.prediction_data is not None else self._load_review_yaml(self.prediction)
-        if isinstance(data, dict):
+        if self.prediction_data is None:
             self._validate_review_schema(data)
         github_action_output(data, 'review')
 
