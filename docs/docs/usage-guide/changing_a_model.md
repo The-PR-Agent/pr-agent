@@ -316,10 +316,17 @@ Set `AWS_USE_IMDS=true` in the environment. PR-Agent will resolve credentials vi
 | EKS pod with IRSA | Web identity token + STS |
 | Lambda function | Runtime-injected credentials |
 
-Credential discovery runs synchronously when the handler is initialized. Before each SigV4 call, PR-Agent
-refreshes credentials synchronously through the same boto3 credentials object and passes a request-local snapshot
-to LiteLLM, without writing credentials into the process environment. AWS calls using this provider chain are
-serialized within a handler, including any static-credential retry. Discovery and refresh can block the event loop.
+Credential discovery runs during handler initialization. Before each eligible SigV4 request, refresh through the
+same boto3 credentials object runs in a background thread. Non-AWS and bearer-authenticated requests do not trigger
+this refresh. PR-Agent passes a request-local snapshot to LiteLLM without writing credentials into the process
+environment. Constructor discovery and credential-file fingerprinting remain synchronous.
+
+AWS calls using this provider chain remain serialized within a handler, including any static-credential retry.
+Cancelling a request does not stop an already-running boto3 refresh, but its result cannot overwrite the handler's
+credentials or static-fallback decision. A separate lock serializes SDK refreshes, including cancelled callers'
+unfinished work. Refresh uses the event loop's shared default executor: blocked operations and workers waiting for
+the SDK lock after repeated cancellations can delay unrelated executor work and process shutdown. No service-wide
+worker quota or additional SDK timeout is introduced.
 
 The same opt-in is required for other boto3 provider-chain sources, including `AWS_PROFILE` and shared credentials
 files. LiteLLM-specific `AWS_PROFILE_NAME` and `AWS_ROLE_NAME` selectors are not supported because they can override

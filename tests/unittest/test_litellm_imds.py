@@ -614,7 +614,7 @@ async def test_health_probe_refreshes_imds_credentials_once(monkeypatch):
         "aws_region_name": "us-east-1",
     }
 
-    def refresh_credentials():
+    async def refresh_credentials():
         handler._aws_active_creds = {
             "aws_access_key_id": "refreshed-key",
             "aws_secret_access_key": "refreshed-secret",
@@ -1993,7 +1993,8 @@ async def test_concurrent_handlers_keep_static_aws_credentials_isolated(monkeypa
 
 @pytest.mark.parametrize("provider_name", ("assume-role-with-web-identity", "container-role"))
 @pytest.mark.parametrize("drift", (None, "initial", "refresh"))
-def test_native_workload_provider_keeps_source_and_token_rotation(monkeypatch, tmp_path, provider_name, drift):
+@pytest.mark.asyncio
+async def test_native_workload_provider_keeps_source_and_token_rotation(monkeypatch, tmp_path, provider_name, drift):
     import boto3
 
     monkeypatch.setenv("AWS_USE_IMDS", "true")
@@ -2075,7 +2076,8 @@ def test_native_workload_provider_keeps_source_and_token_rotation(monkeypatch, t
 
     if drift == "refresh":
         monkeypatch.setattr(native_credentials, "get_frozen_credentials", freeze_with_drift)
-    assert handler._refresh_aws_imds_credentials() is True
+    async with handler._aws_bedrock_lock:
+        assert await handler._refresh_aws_imds_credentials() is True
     assert seen_tokens == ["rotated-token"]
     assert handler._aws_boto3_creds is native_credentials
     assert os.environ[selector] == str(token_file)
