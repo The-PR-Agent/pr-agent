@@ -46,12 +46,12 @@ class Review(BaseModel):
     estimated_effort_to_review: Optional[int] = Field(
         default=None, alias="estimated_effort_to_review_[1-5]", ge=1, le=5
     )
-    risk_level: Optional[str] = None
-    merge_recommendation: Optional[str] = None
+    risk_level: Optional[Literal["low", "medium", "high"]] = None
+    merge_recommendation: Optional[Literal["safe_to_merge", "merge_with_caution", "changes_required"]] = None
     review_priority_files: Optional[List[str]] = None
     contribution_time_cost_estimate: Optional[ContributionTimeCostEstimate] = None
     score: Optional[int] = Field(default=None, ge=0, le=100)
-    relevant_tests: Optional[str] = None
+    relevant_tests: Optional[Literal["Yes", "No"]] = None
     insights_from_user_answers: Optional[str] = None
     key_issues_to_review: List[KeyIssuesComponentLink]
     security_concerns: Optional[str] = None
@@ -106,7 +106,7 @@ class FileDescription(BaseModel):
 
 
 class PRDescription(BaseModel):
-    type: List[PRType]
+    type: List[PRType] = Field(min_length=1)
     description: Optional[str] = None
     title: str
     changes_diagram: Optional[str] = None
@@ -114,7 +114,7 @@ class PRDescription(BaseModel):
 
 
 class PRDescriptionHeaders(BaseModel):
-    type: List[PRType]
+    type: List[PRType] = Field(min_length=1)
     description: Optional[str] = None
     title: str
     changes_diagram: Optional[str] = None
@@ -136,7 +136,7 @@ class Labels(BaseModel):
     labels: List[str]
 
 
-class PRRankRespones(BaseModel):
+class PRRankResponses(BaseModel):
     which_response_was_better: Literal[0, 1, 2]
     why: str
     score_response1: int = Field(ge=1, le=10)

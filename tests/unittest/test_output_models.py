@@ -21,7 +21,7 @@ from pr_agent.algo.output_models import (
     PRDescription,
     PRDescriptionHeaders,
     PRFilesWalkthrough,
-    PRRankRespones,
+    PRRankResponses,
     PRReview,
     PRType,
     RelevantSection,
@@ -48,7 +48,7 @@ def _review_fixture():
             "review_priority_files": ["src/app.py"],
             "contribution_time_cost_estimate": {"best_case": "45m", "average_case": "2h", "worst_case": "5h"},
             "score": 89,
-            "relevant_tests": "yes",
+            "relevant_tests": "Yes",
             "insights_from_user_answers": "The deployment target is Linux.",
             "key_issues_to_review": [issue],
             "security_concerns": "No",
@@ -104,7 +104,7 @@ def _review_fixture():
             "changes_title": "Handle runtime failures", "label": "bug fix",
         }]}),
         (Labels, {"labels": ["Bug fix", "Tests"]}),
-        (PRRankRespones, {"which_response_was_better": 1, "why": "It is clearer.", "score_response1": 9, "score_response2": 7}),
+        (PRRankResponses, {"which_response_was_better": 1, "why": "It is clearer.", "score_response1": 9, "score_response2": 7}),
         (DocHelper, {"user_question": "How?", "response": "Use the helper.", "relevant_sections": [{
             "file_name": "docs/guide.md", "relevant_section_header_string": "## Usage",
         }], "question_is_relevant": 1}),
@@ -128,7 +128,7 @@ def test_required_label_and_list_constraints_are_enforced():
     with pytest.raises(ValueError):
         CodeSuggestion.model_validate(suggestion)
     with pytest.raises(ValueError):
-        PRRankRespones.model_validate({"which_response_was_better": 3, "why": "No", "score_response1": 1, "score_response2": 1})
+        PRRankResponses.model_validate({"which_response_was_better": 3, "why": "No", "score_response1": 1, "score_response2": 1})
     with pytest.raises(ValueError):
         Review.model_validate({"key_issues_to_review": [], "can_be_split": [{"relevant_files": [], "title": "x"}] * 4})
     with pytest.raises(ValueError):
@@ -145,11 +145,21 @@ def test_required_label_and_list_constraints_are_enforced():
             "relevant_lines_end": 1, "suggestion_score": 11, "why": "x",
         }]})
     with pytest.raises(ValueError):
-        PRRankRespones.model_validate({"which_response_was_better": 1, "why": "x", "score_response1": 0, "score_response2": 11})
+        PRRankResponses.model_validate({"which_response_was_better": 1, "why": "x", "score_response1": 0, "score_response2": 11})
     with pytest.raises(ValueError):
         DocHelper.model_validate({"user_question": "x", "response": "x", "relevant_sections": [], "question_is_relevant": 2})
     with pytest.raises(ValueError):
         DocHeadingsHelper.model_validate({"user_question": "x", "relevant_files_ranking": [{"idx": -1, "file_name": "x"}]})
+    with pytest.raises(ValueError):
+        Review.model_validate({"key_issues_to_review": [], "risk_level": "critical"})
+    with pytest.raises(ValueError):
+        Review.model_validate({"key_issues_to_review": [], "merge_recommendation": "approve"})
+    with pytest.raises(ValueError):
+        Review.model_validate({"key_issues_to_review": [], "relevant_tests": "Maybe"})
+    with pytest.raises(ValueError):
+        PRDescription.model_validate({"type": [], "title": "x"})
+    with pytest.raises(ValueError):
+        PRDescriptionHeaders.model_validate({"type": [], "title": "x"})
 
 
 def _split_type_args(value):
@@ -177,7 +187,8 @@ def _prompt_type_signature(annotation):
     if annotation.startswith("List["):
         return ("list", _prompt_type_signature(annotation[5:-1]))
     if annotation.startswith("Literal["):
-        return ("literal", tuple(annotation[8:-1].split(",")))
+        values = tuple(value.strip().strip('"').strip("'") for value in annotation[8:-1].split(","))
+        return ("literal", values)
     if annotation == "Label":
         return "str"
     if annotation == "relevant_section":
@@ -214,7 +225,7 @@ PROMPT_MODELS = {
     "pr_description_only_description_prompts.toml": {"PRDescriptionHeaders": PRDescriptionHeaders},
     "pr_description_only_files_prompts.toml": {"FileDescription": FileDescription, "PRFilesWalkthrough": PRFilesWalkthrough},
     "pr_custom_labels.toml": {"Labels": Labels},
-    "pr_evaluate_prompt_response.toml": {"PRRankRespones": PRRankRespones},
+    "pr_evaluate_prompt_response.toml": {"PRRankResponses": PRRankResponses},
     "pr_help_prompts.toml": {"relevant_section": RelevantSection, "DocHelper": DocHelper},
     "pr_help_docs_prompts.toml": {"relevant_section": RelevantSection, "DocHelper": DocHelper},
     "pr_help_docs_headings_prompts.toml": {"file_idx_and_path": FileIdxAndPath, "DocHeadingsHelper": DocHeadingsHelper},
