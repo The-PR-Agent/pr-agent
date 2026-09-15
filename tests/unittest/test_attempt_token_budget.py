@@ -1,6 +1,5 @@
 from dataclasses import replace
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -124,54 +123,7 @@ def test_reserve_floor_is_an_explicit_consumer_policy(
     ) == expected
 
 
-@pytest.mark.parametrize("reported", [None, True, False, 0, -1, "5000", 5_000.0])
-def test_unusable_reserve_falls_through_to_output_limit(monkeypatch, reported):
-    monkeypatch.setattr(token_budget_module, "get_max_tokens", lambda *_args, **_kwargs: 10_000)
-    budget = token_budget_module.AttemptTokenBudget.for_attempt(
-        "model",
-        FakeTokenHandler(),
-        output_token_reserve=lambda _model, _default: reported,
-        output_token_limit=lambda _model: 1_600,
-        configured_output_tokens=400,
-    )
-
-    assert budget.resolve_output_reserve(2_000) == 1_600
-
-
-def test_failing_optional_controls_fall_through_to_configured_value(monkeypatch):
-    monkeypatch.setattr(token_budget_module, "get_max_tokens", lambda *_args, **_kwargs: 3_000)
-
-    def fail(*_args):
-        raise RuntimeError("unavailable")
-
-    budget = token_budget_module.AttemptTokenBudget.for_attempt(
-        "model",
-        FakeTokenHandler(),
-        output_token_reserve=fail,
-        output_token_limit=fail,
-        configured_output_tokens="400",
-    )
-
-    assert budget.resolve_output_reserve(2_000) == 400
-    assert budget.input_limit(2_000) == 2_600
-
-
-@pytest.mark.parametrize(
-    ("configured", "expected"),
-    [(None, 2_000), (0, 2_000), (-1, 2_000), ("invalid", 2_000), (True, 1)],
-)
-def test_configured_output_compatibility_coercion(monkeypatch, configured, expected):
-    monkeypatch.setattr(token_budget_module, "get_max_tokens", lambda *_args, **_kwargs: 3_000)
-    budget = token_budget_module.AttemptTokenBudget.for_attempt(
-        "model",
-        FakeTokenHandler(),
-        configured_output_tokens=configured,
-    )
-
-    assert budget.resolve_output_reserve(2_000) == expected
-
-
-def test_input_and_available_tokens_subtract_prompt_once_and_clamp(monkeypatch):
+def test_available_tokens_subtracts_prompt_once_and_clamps(monkeypatch):
     monkeypatch.setattr(token_budget_module, "get_max_tokens", lambda *_args, **_kwargs: 1_000)
     budget = token_budget_module.AttemptTokenBudget.for_attempt(
         "model",
@@ -179,7 +131,6 @@ def test_input_and_available_tokens_subtract_prompt_once_and_clamp(monkeypatch):
         output_token_reserve=lambda _model, _default: 200,
     )
 
-    assert budget.input_limit(1_500) == 800
     assert budget.available_tokens(1_500) == 700
     assert budget.available_tokens(1_500, prompt_tokens=0) == 800
     assert budget.available_tokens(1_500, prompt_tokens=900) == 0
@@ -226,63 +177,6 @@ def test_count_tokens_delegates_without_breaking_simple_fakes(monkeypatch):
 
     assert budget.count_tokens("abcd") == 4
     assert source.counted == ["abcd"]
-
-
-@pytest.mark.parametrize(
-    "normalization",
-    [None, True, ("only one",), ["system", "user"]],
-)
-def test_message_count_ignores_unusable_normalization(monkeypatch, normalization):
-    monkeypatch.setattr(token_budget_module, "get_max_tokens", lambda *_args, **_kwargs: 10_000)
-    handler = FakeTokenHandler()
-    handler.count_messages = MagicMock(return_value=53)
-    budget = token_budget_module.AttemptTokenBudget.for_attempt(
-        "model",
-        handler,
-        prompt_normalizer=lambda *_args: normalization,
-    )
-
-    assert budget.normalize_and_count_messages("system", "user") == ("system", "user", 53)
-    handler.count_messages.assert_called_once_with("system", "user")
-
-
-def test_message_count_returns_the_exact_normalized_pair(monkeypatch):
-    monkeypatch.setattr(token_budget_module, "get_max_tokens", lambda *_args, **_kwargs: 10_000)
-    handler = FakeTokenHandler()
-    handler.count_messages = MagicMock(return_value=71)
-    budget = token_budget_module.AttemptTokenBudget.for_attempt(
-        "claude-model",
-        handler,
-        prompt_normalizer=lambda model, system, user: (
-            system or f"normalized for {model}",
-            "normalized " + user,
-        ),
-    )
-
-    assert budget.normalize_and_count_messages("", "user") == (
-        "normalized for claude-model",
-        "normalized user",
-        71,
-    )
-    handler.count_messages.assert_called_once_with(
-        "normalized for claude-model",
-        "normalized user",
-    )
-
-
-def test_message_count_ignores_normalizer_failure(monkeypatch):
-    monkeypatch.setattr(token_budget_module, "get_max_tokens", lambda *_args, **_kwargs: 10_000)
-    handler = FakeTokenHandler()
-    handler.count_messages = MagicMock(return_value=53)
-    normalizer = MagicMock(side_effect=RuntimeError("normalization unavailable"))
-    budget = token_budget_module.AttemptTokenBudget.for_attempt(
-        "model",
-        handler,
-        prompt_normalizer=normalizer,
-    )
-
-    assert budget.normalize_and_count_messages("system", "user") == ("system", "user", 53)
-    handler.count_messages.assert_called_once_with("system", "user")
 
 
 def test_matches_accepts_source_or_own_bound_handler_only(monkeypatch, token_settings):

@@ -111,13 +111,10 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
                 large_pr_handling=False,
                 return_remaining_files=False,
                 return_prepared=False,
-                output_token_reserve: Callable[[str, int], int] | None = None,
-                attempt_budget: AttemptTokenBudget | None = None):
-    budget = attempt_budget or AttemptTokenBudget.for_attempt(
+                output_token_reserve: Callable[[str, int], int] | None = None):
+    budget = AttemptTokenBudget.for_attempt(
         model, token_handler, output_token_reserve=output_token_reserve
     )
-    if not budget.matches(model, token_handler):
-        raise ValueError("The diff token budget belongs to a different model attempt")
     token_handler = budget.token_handler
     soft_token_budget = budget.available_tokens(
         OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD, preserve_minimum=True, clamp=False
@@ -249,13 +246,10 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
 
 def get_pr_diff_multiple_patchs(git_provider: GitProvider, token_handler: TokenHandler, model: str,
                 add_line_numbers_to_hunks: bool = False, disable_extra_lines: bool = False,
-                output_token_reserve: Callable[[str, int], int] | None = None,
-                attempt_budget: AttemptTokenBudget | None = None):
-    budget = attempt_budget or AttemptTokenBudget.for_attempt(
+                output_token_reserve: Callable[[str, int], int] | None = None):
+    budget = AttemptTokenBudget.for_attempt(
         model, token_handler, output_token_reserve=output_token_reserve
     )
-    if not budget.matches(model, token_handler):
-        raise ValueError("The diff token budget belongs to a different model attempt")
     token_handler = budget.token_handler
     diff_files = git_provider.get_diff_files()
 
@@ -675,8 +669,7 @@ def get_pr_multi_diffs(git_provider: GitProvider,
                        add_line_numbers: bool = True,
                        return_remaining_files: bool = False,
                        prepared_diff: PreparedPRDiff | None = None,
-                       output_token_reserve: Callable[[str, int], int] | None = None,
-                       attempt_budget: AttemptTokenBudget | None = None):
+                       output_token_reserve: Callable[[str, int], int] | None = None):
     """
     Retrieves the diff files from a Git provider, sorts them by main language, and generates patches for each file.
     The patches are split into multiple groups based on the maximum number of tokens allowed for the given model.
@@ -709,17 +702,13 @@ def get_pr_multi_diffs(git_provider: GitProvider,
             else prepared_diff.token_handler is token_handler
         )
     )
-    if attempt_budget is not None:
-        budget = attempt_budget
-    elif can_reuse_prepared and prepared_diff.attempt_budget is not None:
+    if can_reuse_prepared and prepared_diff.attempt_budget is not None:
         # Reuse the model-bound prompt count while honoring this call's reserve policy.
         budget = replace(prepared_diff.attempt_budget, output_token_reserve=output_token_reserve)
     else:
         budget = AttemptTokenBudget.for_attempt(
             model, token_handler, output_token_reserve=output_token_reserve
         )
-    if not budget.matches(model, token_handler):
-        raise ValueError("The diff token budget belongs to a different model attempt")
     token_handler = budget.token_handler
     soft_token_budget = budget.available_tokens(
         OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD, preserve_minimum=True, clamp=False

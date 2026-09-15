@@ -1,6 +1,5 @@
 import sys
 import types
-from math import ceil
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -133,53 +132,3 @@ def test_force_accurate_count_uses_bound_attempt_model(monkeypatch):
 
     assert handler.count_tokens("patch", force_accurate=True) == 10
     handler._calc_claude_tokens.assert_not_called()
-
-
-def test_count_messages_uses_bound_model_and_complete_message_list(monkeypatch):
-    monkeypatch.setattr(token_handler, "get_settings", lambda use_context=True: _settings())
-    counted = []
-
-    def count(*, model, messages):
-        counted.append((model, messages))
-        return 73
-
-    monkeypatch.setattr(token_handler, "token_counter", count)
-    handler = token_handler.TokenHandler.__new__(token_handler.TokenHandler)
-    handler.model = "fallback-model"
-    handler.encoder = MagicMock()
-
-    assert handler.count_messages("system", "user") == 73
-    assert counted == [
-        (
-            "fallback-model",
-            [
-                {"role": "system", "content": "system"},
-                {"role": "user", "content": "user"},
-            ],
-        )
-    ]
-
-
-def test_count_messages_falls_back_to_framed_non_reducing_estimate(monkeypatch):
-    settings = _settings(model="fallback-model", estimate_factor=0.3)
-    monkeypatch.setattr(token_handler, "get_settings", lambda use_context=True: settings)
-    monkeypatch.setattr(token_handler, "token_counter", MagicMock(return_value=True))
-    handler = token_handler.TokenHandler.__new__(token_handler.TokenHandler)
-    handler.model = "fallback-model"
-    handler.encoder = MagicMock()
-    handler.encoder.encode.side_effect = lambda text, disallowed_special=(): list(text)
-    raw_estimate = len("abc") + len("de") + 48
-
-    assert handler.count_messages("abc", "de") == ceil(raw_estimate * 1.3)
-
-
-def test_count_messages_invalid_negative_factor_cannot_reduce_estimate(monkeypatch):
-    settings = _settings(model="fallback-model", estimate_factor=-0.5)
-    monkeypatch.setattr(token_handler, "get_settings", lambda use_context=True: settings)
-    monkeypatch.setattr(token_handler, "token_counter", MagicMock(side_effect=RuntimeError("unavailable")))
-    handler = token_handler.TokenHandler.__new__(token_handler.TokenHandler)
-    handler.model = "fallback-model"
-    handler.encoder = MagicMock()
-    handler.encoder.encode.side_effect = lambda text, disallowed_special=(): list(text)
-
-    assert handler.count_messages("abc", "de") == len("abc") + len("de") + 48

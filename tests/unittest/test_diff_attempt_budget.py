@@ -204,23 +204,6 @@ def test_incompatible_prepared_data_is_rebuilt(attempt_context, changed):
     assert {tag for tag, text in events} == {model}
 
 
-@pytest.mark.parametrize("name", ["get_pr_diff", "get_pr_diff_multiple_patchs", "get_pr_multi_diffs"])
-def test_explicit_attempt_budget_does_not_rebind_or_reload_window(monkeypatch, attempt_context, name):
-    source, events = attempt_context
-    budget = token_budget_module.AttemptTokenBudget.for_attempt("fallback-model", source)
-    events.clear()
-
-    def unexpected(*args, **kwargs):
-        pytest.fail("An explicit same-attempt budget must not be rebuilt")
-
-    monkeypatch.setattr(token_budget_module, "get_max_tokens", unexpected)
-    getattr(pr_processing, name)(Provider(), source, "fallback-model", attempt_budget=budget)
-
-    assert not any(text == "System PR" for model, text in events)
-    with pytest.raises(ValueError, match="different model attempt"):
-        getattr(pr_processing, name)(Provider(), source, "weak-model", attempt_budget=budget)
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("weak", [False, True])
 async def test_routed_weak_and_fallback_attempts_pack_with_their_own_tokenizer(monkeypatch, attempt_context, weak):
