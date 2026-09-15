@@ -40,7 +40,7 @@ def _resolve_output_token_reserve(
     model: str,
     default_output_tokens: int,
 ) -> int:
-    """Return a usable model-attempt output reserve or the supplied legacy default."""
+    """Return the model-attempt output reserve, keeping the legacy minimum margin."""
     if callable(resolver):
         try:
             output_tokens = resolver(model, default_output_tokens)
@@ -48,7 +48,7 @@ def _resolve_output_token_reserve(
             get_logger().debug(f"Failed to resolve the output token reserve for {model}: {error}")
         else:
             if isinstance(output_tokens, int) and not isinstance(output_tokens, bool) and output_tokens > 0:
-                return output_tokens
+                return max(output_tokens, default_output_tokens)
     return default_output_tokens
 
 
