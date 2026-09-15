@@ -160,7 +160,9 @@ def test_real_encoder_extended_diff_total_includes_non_additive_join(monkeypatch
         name: {"patch": patch, "tokens": tokens}
         for name, patch, tokens in zip(file_dict, patches, per_patch, strict=True)
     }
-    chunks = pr_processing._pack_pr_multi_diffs(transformed, handler, 5, False, limit - reserve - handler.prompt_tokens)
+    chunks = pr_processing._pack_pr_multi_diffs(
+        transformed, handler, 5, False, limit - reserve - handler.prompt_tokens,
+    )
     assert len(chunks) > 1
     assert all(handler.prompt_tokens + handler.count_tokens(chunk) + reserve <= limit for chunk in chunks)
 
@@ -267,6 +269,40 @@ def test_compressed_packing_repairs_non_monotone_prefixes_in_order():
     assert patches == ["\n\nA"]
     assert included == ["a.py"]
     assert remaining == ["b.py", "c.py", "d.py", "e.py"]
+
+
+def test_extended_diff_counts_trimmed_rendering():
+    class StripSensitiveHandler(CharacterTokenHandler):
+        def count_tokens(self, patch):
+            return 100 if patch and patch == patch.strip() else super().count_tokens(patch)
+
+    handler = StripSensitiveHandler(prompt_tokens=11)
+    _, total, _ = pr_processing.pr_generate_extended_diff(
+        [{"files": [_rendered_budget_files()[0]]}], handler, False,
+    )
+
+    assert total == handler.prompt_tokens + 100
+
+
+def test_compressed_packing_rejects_trimmed_overflow():
+    class StripSensitiveHandler(CharacterTokenHandler):
+        def count_tokens(self, patch):
+            return 100 if patch == "AB" else super().count_tokens(patch)
+
+    handler = StripSensitiveHandler(prompt_tokens=0)
+    total, patches, remaining, included = pr_processing.generate_full_patch(
+        True,
+        {"a.py": {"patch": "AB", "tokens": 2, "edit_type": EDIT_TYPE.MODIFIED}},
+        soft_token_budget=4,
+        remaining_files_list_prev=["a.py"],
+        token_handler=handler,
+        hard_token_budget=4,
+    )
+
+    assert total == 0
+    assert patches == []
+    assert remaining == ["a.py"]
+    assert included == []
 
 
 @pytest.mark.parametrize("policy", ["skip", "clip"])
@@ -403,6 +439,21 @@ def test_append_metadata_section_omits_non_additive_clipped_candidate(monkeypatc
     assert curr_token == 1
     assert clip_calls == 1
     assert token_handler.candidate_counts == 1
+
+
+def test_append_metadata_section_omits_trimmed_overflow():
+    class StripSensitiveHandler(CharacterTokenHandler):
+        def count_tokens(self, patch):
+            return 100 if patch == "A\n\nB" else super().count_tokens(patch)
+
+    token_handler = StripSensitiveHandler(prompt_tokens=0)
+    final_diff, curr_token, clipped = pr_processing._append_metadata_section(
+        " A", 2, "B", 8, token_handler,
+    )
+
+    assert clipped == ""
+    assert final_diff == " A"
+    assert curr_token == 2
 
 
 def test_append_metadata_sections_keep_complete_diff_within_budget():
@@ -1116,7 +1167,8 @@ def test_overflow_repair_bounds_encoded_volume_for_many_files():
     assert compressed_handler.count_tokens(rendered) <= joined_length + 2 * file_count
     assert remaining
     assert included
-    assert compressed_handler.encoded_characters < 16 * len(
+    # Exact repair checks both the raw and Jinja-trimmed serializations without recounting per admission.
+    assert compressed_handler.encoded_characters < 24 * len(
         "\n".join("\n\n" + data["patch"] for data in file_dict.values())
     )
 

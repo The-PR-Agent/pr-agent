@@ -199,7 +199,7 @@ async def test_convert_to_decoupled_uses_fallback_model_budget_and_tokenizer(mon
     assert "replacement " * 40 not in result[0]
     assert counted_models and set(counted_models) == {"fallback-model"}
     assert reserve_calls == [("fallback-model", 2_000)]
-        assert window_calls == [("fallback-model", True)]
+    assert window_calls == [("fallback-model", True)]
 
 
 @pytest.mark.asyncio

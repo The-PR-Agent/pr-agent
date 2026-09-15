@@ -41,6 +41,15 @@ def get_effective_fallback_chain() -> tuple[tuple[str, str | None], ...] | None:
     return _effective_fallback_chain.get()
 
 
+def _count_raw_and_stripped_tokens(token_handler: TokenHandler, text: str) -> int:
+    """Count both raw and stripped forms because either representation may be rendered."""
+    token_count = token_handler.count_tokens(text)
+    stripped = text.strip()
+    if stripped != text:
+        token_count = max(token_count, token_handler.count_tokens(stripped))
+    return token_count
+
+
 def _append_metadata_section(
     final_diff: str,
     curr_token: int,
@@ -65,7 +74,7 @@ def _append_metadata_section(
         return final_diff, curr_token, ""
 
     candidate = final_diff + separator + clipped_section
-    candidate_tokens = token_handler.prompt_tokens + token_handler.count_tokens(candidate)
+    candidate_tokens = token_handler.prompt_tokens + _count_raw_and_stripped_tokens(token_handler, candidate)
     if candidate_tokens <= max_tokens:
         return candidate, candidate_tokens, clipped_section
 
@@ -310,13 +319,7 @@ def _pack_pr_multi_diffs(file_dict: dict,
 
     def count_chunk(candidate_patches):
         rendered = "\n".join(candidate_patches)
-        rendered_tokens = token_handler.count_tokens(rendered)
-        stripped = rendered.strip()
-        # Count both forms: intermediate chunks retain whitespace, while the last chunk is stripped.
-        # Require both forms to fit because either can be larger under a non-additive tokenizer.
-        if stripped != rendered:
-            rendered_tokens = max(rendered_tokens, token_handler.count_tokens(stripped))
-        return rendered_tokens
+        return _count_raw_and_stripped_tokens(token_handler, rendered)
 
     def clip_single_patch(filename, patch):
         if get_settings().config.get("large_patch_policy", "skip") != "clip":
@@ -495,7 +498,7 @@ def pr_generate_extended_diff(pr_languages: list,
             patches_extended.append(full_extended_patch)
 
     if patches_extended:
-        total_tokens += token_handler.count_tokens("\n".join(patches_extended))
+        total_tokens += _count_raw_and_stripped_tokens(token_handler, "\n".join(patches_extended))
     return patches_extended, total_tokens, patches_extended_tokens
 
 
@@ -614,13 +617,16 @@ def generate_full_patch(convert_hunks_to_line_numbers, file_dict, soft_token_bud
             if get_verbosity_level() >= 2:
                 get_logger().info(f"Tokens: {total_tokens}, last filename: {filename}")
 
+    def count_patches(candidate_patches):
+        return _count_raw_and_stripped_tokens(token_handler, "\n".join(candidate_patches))
+
     if patches:
-        exact_total = token_handler.prompt_tokens + token_handler.count_tokens("\n".join(patches))
+        exact_total = token_handler.prompt_tokens + count_patches(patches)
         if exact_total - token_handler.prompt_tokens > soft_token_budget:
             best_count = _find_verified_fitting_prefix_length(
                 patches,
                 len(patches) - 1,
-                lambda prefix: token_handler.count_tokens("\n".join(prefix)) <= soft_token_budget,
+                lambda prefix: count_patches(prefix) <= soft_token_budget,
             )
 
             for filename in files_in_patch_list[best_count:]:
@@ -629,7 +635,7 @@ def generate_full_patch(convert_hunks_to_line_numbers, file_dict, soft_token_bud
             patches = patches[:best_count]
             files_in_patch_list = files_in_patch_list[:best_count]
             total_tokens = (
-                token_handler.prompt_tokens + token_handler.count_tokens("\n".join(patches))
+                token_handler.prompt_tokens + count_patches(patches)
                 if patches
                 else token_handler.prompt_tokens
             )
