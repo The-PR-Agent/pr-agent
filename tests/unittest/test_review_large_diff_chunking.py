@@ -250,6 +250,8 @@ async def test_a_malformed_chunk_does_not_discard_successful_chunks(chunking_ena
     assert reviewer.prediction_data["review"]["score"] == "40"
     assert reviewer.review_chunk_count == 3
     assert reviewer.review_failed_chunk_count == 1
+    review = _render_review(reviewer)
+    assert "1 chunk(s) failed and are not covered by this review." in review
 
 
 @pytest.mark.asyncio
