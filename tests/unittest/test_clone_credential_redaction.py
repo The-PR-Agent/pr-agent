@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -5,7 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from pr_agent.git_providers.bitbucket_server_provider import BitbucketServerProvider
-from pr_agent.git_providers.git_provider import redact_credentials
+from pr_agent.git_providers.git_provider import _CLONE_EXTRA_ENV, redact_credentials
 
 
 @pytest.mark.parametrize("url, expected", [
@@ -69,7 +70,7 @@ def test_clone_uses_clean_url_and_scoped_auth_config(tmp_path):
 
     def fake_clone(url, folder, _timeout):
         captured["url"] = url
-        captured["env"] = provider._clone_extra_env.copy()
+        captured["env"] = (_CLONE_EXTRA_ENV.get() or {}).copy()
         Path(folder, ".git").mkdir(parents=True)
 
     provider._prepare_clone_url_with_token = lambda _url: token_url
@@ -82,7 +83,7 @@ def test_clone_uses_clean_url_and_scoped_auth_config(tmp_path):
     assert captured["env"]["GIT_CONFIG_VALUE_0"] == clean_url
     assert token_url in captured["env"]["GIT_CONFIG_KEY_0"]
     assert "SECRET" not in captured["url"]
-    assert provider._clone_extra_env is None
+    assert _CLONE_EXTRA_ENV.get() is None
 
 
 def test_failed_clone_removes_partial_checkout(tmp_path):
@@ -100,6 +101,24 @@ def test_failed_clone_removes_partial_checkout(tmp_path):
 
     assert result is None
     assert not destination.exists()
+
+
+def test_timeout_clone_removes_partial_checkout_and_auth_state(tmp_path):
+    provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
+    destination = tmp_path / "checkout"
+
+    def fake_clone(_url, folder, _timeout):
+        Path(folder, ".git").mkdir(parents=True)
+        raise subprocess.TimeoutExpired("git clone", _timeout)
+
+    provider._prepare_clone_url_with_token = lambda _url: "https://oauth2:SECRET@example/repo.git"
+    provider._clone_inner = fake_clone
+    with patch("pr_agent.git_providers.git_provider.get_logger"):
+        result = provider.clone("https://example/repo.git", str(destination))
+
+    assert result is None
+    assert not destination.exists()
+    assert _CLONE_EXTRA_ENV.get() is None
 
 
 def test_failed_clone_preserves_existing_destination_when_requested(tmp_path):

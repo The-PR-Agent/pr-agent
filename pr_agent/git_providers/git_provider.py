@@ -5,6 +5,7 @@ import subprocess
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
+from contextvars import ContextVar
 from typing import Optional, Tuple
 
 from pr_agent.algo.language_handler import numeric_languages
@@ -23,6 +24,7 @@ MAX_FILES_ALLOWED_FULL = 50
 
 _URL_USERINFO_RE = re.compile(r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.\-]{0,30}://)[^/@\s]+@")
 _AUTH_HEADER_RE = re.compile(r"(?i)(authorization\s*:\s*(?:bearer|basic|token)\s+)\S+")
+_CLONE_EXTRA_ENV: ContextVar[dict | None] = ContextVar("clone_extra_env", default=None)
 
 
 # The reaction PR-Agent has always added when it picks a comment command up. Used as the
@@ -291,7 +293,7 @@ class GitProvider(ABC):
             ssl_env = os.environ.copy()
 
         # Apply authentication only for this clone process; keep the stored origin URL clean.
-        clone_extra_env = getattr(self, "_clone_extra_env", None)
+        clone_extra_env = _CLONE_EXTRA_ENV.get()
         if clone_extra_env:
             ssl_env = {**ssl_env, **clone_extra_env}
 
@@ -316,13 +318,14 @@ class GitProvider(ABC):
         clean_clone_url = redact_credentials(clone_url)
         destination_existed = os.path.exists(dest_folder)
         preexisting_git_dir = os.path.isdir(os.path.join(dest_folder, ".git"))
-        self._clone_extra_env = {}
+        clone_extra_env = {}
         if clean_clone_url != clone_url:
-            self._clone_extra_env = {
+            clone_extra_env = {
                 "GIT_CONFIG_COUNT": "1",
                 "GIT_CONFIG_KEY_0": f"url.{clone_url}.insteadOf",
                 "GIT_CONFIG_VALUE_0": clean_clone_url,
             }
+        env_token = _CLONE_EXTRA_ENV.set(clone_extra_env)
         try:
             if remove_dest_folder and os.path.exists(dest_folder) and os.path.isdir(dest_folder):
                 shutil.rmtree(dest_folder)
@@ -341,7 +344,7 @@ class GitProvider(ABC):
                 artifact={"error": redact_credentials(e), "url": redact_credentials(clone_url),
                           "dest_folder": dest_folder})
         finally:
-            self._clone_extra_env = None
+            _CLONE_EXTRA_ENV.reset(env_token)
         return returned_obj
 
     @abstractmethod
