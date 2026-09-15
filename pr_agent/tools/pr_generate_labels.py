@@ -73,26 +73,28 @@ class PRGenerateLabels:
             get_settings().pr_custom_labels_prompt.user,
         )
 
-        # Initialize patches_diff and prediction attributes
+        # Initialize prediction state
         self.patches_diff = None
         self.prediction = None
+        self.data = None
 
     async def run(self):
         """
         Generates a PR labels using an AI model and publishes it to the PR.
         """
 
+        progress_comment = None
         try:
             get_logger().info(f"Generating a PR labels {self.pr_id}")
             if get_settings().config.publish_output:
-                self.git_provider.publish_comment("Preparing PR labels...", is_temporary=True)
+                progress_comment = self.git_provider.publish_comment(
+                    "Preparing PR labels...", is_temporary=True
+                )
 
             await retry_with_fallback_models(self._prepare_prediction, git_provider=self.git_provider)
 
             get_logger().info(f"Preparing answer {self.pr_id}")
-            if self.prediction:
-                self._prepare_data()
-            else:
+            if self.prediction is None:
                 return None
 
             pr_labels = self._prepare_labels()
@@ -110,11 +112,16 @@ class PRGenerateLabels:
                     value = ', '.join(v for v in pr_labels)
                     pr_labels_text = f"## PR Labels:\n{value}\n"
                     self.git_provider.publish_comment(pr_labels_text, is_temporary=False)
-                self.git_provider.remove_initial_comment()
         except Exception as e:
             get_logger().error(f"Error generating PR labels {self.pr_id}: {e}")
             if get_settings().config.get("propagate_tool_errors", False):
                 raise
+        finally:
+            if progress_comment is not None:
+                try:
+                    self.git_provider.remove_initial_comment()
+                except Exception as e:
+                    get_logger().error(f"Failed to remove temporary PR labels comment {self.pr_id}: {e}")
 
         return ""
 
@@ -133,10 +140,17 @@ class PRGenerateLabels:
 
         """
 
+        self.prediction = None
+        self.data = None
+
         get_logger().info(f"Getting PR diff {self.pr_id}")
         self.patches_diff = get_pr_diff(self.git_provider, self.token_handler, model)
         get_logger().info(f"Getting AI prediction {self.pr_id}")
-        self.prediction = await self._get_prediction(model)
+        prediction = await self._get_prediction(model)
+        data = self._load_valid_labels_yaml(prediction)
+
+        self.prediction = prediction
+        self.data = data
 
     async def _get_prediction(self, model: str) -> str:
         """
@@ -168,9 +182,35 @@ class PRGenerateLabels:
         return response
 
     def _prepare_data(self):
-        # Load the AI prediction data into a dictionary
-        self.data = load_yaml(self.prediction.strip())
+        self.data = self._load_valid_labels_yaml(self.prediction)
 
+    @staticmethod
+    def _load_valid_labels_yaml(prediction: str) -> dict:
+        """Load a usable labels response or fail the current model attempt."""
+        if not isinstance(prediction, str) or not prediction.strip():
+            raise ValueError("The labels prediction must be a non-empty string")
+
+        data = load_yaml(prediction.strip())
+        if not isinstance(data, dict) or "labels" not in data:
+            raise ValueError("The labels prediction must be a mapping containing 'labels'")
+
+        raw_labels = data["labels"]
+        if isinstance(raw_labels, list):
+            if not raw_labels:
+                data["labels"] = []
+                return data
+            entries = raw_labels
+        elif isinstance(raw_labels, str):
+            entries = raw_labels.split(",")
+        else:
+            raise ValueError("The 'labels' value must be a list or comma-separated string")
+
+        normalized_labels = [name for name in (_label_name(label) for label in entries) if name]
+        if not normalized_labels:
+            raise ValueError("The labels prediction contains no usable label entries")
+
+        data["labels"] = normalized_labels
+        return data
 
 
     def _prepare_labels(self) -> List[str]:
