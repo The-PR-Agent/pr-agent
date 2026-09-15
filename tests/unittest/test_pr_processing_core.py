@@ -41,6 +41,212 @@ class CharacterTokenHandler(FakeTokenHandler):
         return len(patch)
 
 
+def _rendered_budget_files():
+    lines = [
+        'F6[SZCg 3utmp{/(o8HXGWIwSROm2l(ULv"2d":{',
+        "E'57U/iCFe V9\\'2t:_JBD=d4W{il2T'zdAMWM)]",
+    ]
+    return [
+        FilePatchInfo("old\n", lines[i % 2] + "\n",
+                      "@@ -1 +1 @@\n-old\n+" + lines[i % 2] + "\n",
+                      f"file_{i}.py", edit_type=EDIT_TYPE.MODIFIED)
+        for i in range(4)
+    ]
+
+
+@pytest.mark.parametrize("add_line_numbers", [False, True])
+def test_extended_diff_total_counts_the_rendered_join(add_line_numbers):
+    handler = CharacterTokenHandler(prompt_tokens=11)
+    patches, total, per_patch = pr_processing.pr_generate_extended_diff(
+        [{"files": _rendered_budget_files()}], handler, add_line_numbers,
+    )
+
+    assert per_patch == [handler.count_tokens(patch) for patch in patches]
+    assert total == handler.prompt_tokens + handler.count_tokens("\n".join(patches))
+
+
+@pytest.mark.parametrize("packing_path", ["single", "multi"])
+@pytest.mark.parametrize("add_line_numbers", [False, True])
+def test_fast_path_rejects_a_join_that_exceeds_the_reserved_limit(
+    monkeypatch, packing_path, add_line_numbers,
+):
+    handler = CharacterTokenHandler(prompt_tokens=11)
+    patches, _, individual_counts = pr_processing.pr_generate_extended_diff(
+        [{"files": _rendered_budget_files()}], handler, add_line_numbers,
+    )
+    reserve = 5_000
+    limit = handler.prompt_tokens + sum(individual_counts) + reserve + 1
+    assert handler.prompt_tokens + handler.count_tokens("\n".join(patches)) + reserve > limit
+    monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda langs, files: [{"files": files}])
+    monkeypatch.setattr(pr_processing, "extend_patch", lambda original, patch, *args, **kwargs: patch)
+    monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: limit)
+    monkeypatch.setattr(
+        pr_processing, "pr_generate_compressed_diff",
+        lambda *args, **kwargs: ([["compressed"]], [12], [], [], {}, [[]]),
+    )
+    monkeypatch.setattr(pr_processing, "_pack_pr_multi_diffs", lambda *args: ["compressed"])
+
+    if packing_path == "single":
+        result = pr_processing.get_pr_diff(
+            FakeProvider(_rendered_budget_files()), handler, "model",
+            add_line_numbers_to_hunks=add_line_numbers,
+            output_token_reserve=lambda model, default: reserve,
+        )
+        assert result == "compressed"
+    else:
+        result = pr_processing.get_pr_multi_diffs(
+            FakeProvider(_rendered_budget_files()), handler, "model",
+            add_line_numbers=add_line_numbers,
+            output_token_reserve=lambda model, default: reserve,
+        )
+        assert result == ["compressed"]
+
+
+def test_real_encoder_extended_diff_total_includes_non_additive_join(monkeypatch):
+    import tiktoken
+
+    encoder = tiktoken.get_encoding("o200k_base")
+
+    class EncoderHandler(FakeTokenHandler):
+        def count_tokens(self, patch):
+            return len(encoder.encode(patch))
+
+    handler = EncoderHandler(prompt_tokens=11)
+    patches, total, per_patch = pr_processing.pr_generate_extended_diff(
+        [{"files": _rendered_budget_files()}], handler, False,
+    )
+    rendered_count = handler.count_tokens("\n".join(patches))
+    assert rendered_count > sum(per_patch)
+    assert total == handler.prompt_tokens + rendered_count
+
+    reserve = 1_500
+    limit = handler.prompt_tokens + sum(per_patch) + reserve
+    file_dict = {
+        file.filename: {"patch": file.patch, "tokens": handler.count_tokens(file.patch),
+                        "edit_type": file.edit_type}
+        for file in _rendered_budget_files()
+    }
+    _, compressed, remaining, _ = pr_processing.generate_full_patch(
+        False, file_dict, limit, list(file_dict), handler, reserve, 1_000,
+    )
+    assert remaining
+    assert handler.prompt_tokens + handler.count_tokens("\n".join(compressed)) + reserve <= limit
+
+    monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: limit)
+    transformed = {
+        name: {"patch": patch, "tokens": tokens}
+        for name, patch, tokens in zip(file_dict, patches, per_patch, strict=True)
+    }
+    chunks = pr_processing._pack_pr_multi_diffs(transformed, handler, "model", 5, False, reserve)
+    assert len(chunks) > 1
+    assert all(handler.prompt_tokens + handler.count_tokens(chunk) + reserve <= limit for chunk in chunks)
+
+
+@pytest.mark.parametrize("convert_line_numbers", [False, True])
+@pytest.mark.parametrize("overflow", [0, 1])
+def test_compressed_packing_counts_join_before_admitting_file(convert_line_numbers, overflow):
+    handler = CharacterTokenHandler(prompt_tokens=11)
+    file_dict = {
+        name: {"patch": "+ alpha", "tokens": 7, "edit_type": EDIT_TYPE.MODIFIED}
+        for name in ["a.py", "b.py"]
+    }
+    rendered = [
+        "\n\n+ alpha" if convert_line_numbers else f"\n\n## File: '{name}'\n\n+ alpha\n"
+        for name in file_dict
+    ]
+    reserve = 1_500
+    limit = handler.prompt_tokens + handler.count_tokens("\n".join(rendered)) + reserve - overflow
+
+    total, patches, remaining, included = pr_processing.generate_full_patch(
+        convert_line_numbers, file_dict, limit, list(file_dict), handler, reserve, 1_000,
+    )
+
+    assert total == handler.prompt_tokens + handler.count_tokens("\n".join(patches))
+    assert total + reserve <= limit
+    assert included == (["a.py", "b.py"] if overflow == 0 else ["a.py"])
+    assert remaining == ([] if overflow == 0 else ["b.py"])
+
+
+@pytest.mark.parametrize("overflow", [0, 1])
+@pytest.mark.parametrize("max_calls", [1, 2])
+def test_multi_packing_recounts_non_additive_join_and_preserves_remaining(
+    monkeypatch, overflow, max_calls,
+):
+    class NonAdditiveHandler(CharacterTokenHandler):
+        def count_tokens(self, patch):
+            return len(patch) + (3 if "\n" in patch else 0)
+
+    handler = NonAdditiveHandler(prompt_tokens=11)
+    reserve = 1_500
+    limit = handler.prompt_tokens + handler.count_tokens("A\nB") + reserve - overflow
+    monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: limit)
+    file_dict = {name: {"patch": patch, "tokens": 1} for name, patch in [("a.py", "A"), ("b.py", "B")]}
+
+    chunks, remaining = pr_processing._pack_pr_multi_diffs(
+        file_dict, handler, "model", max_calls, True, reserve,
+    )
+
+    assert all(handler.prompt_tokens + handler.count_tokens(chunk) + reserve <= limit for chunk in chunks)
+    assert chunks == (["A\nB"] if overflow == 0 else ["A", "B"][:max_calls])
+    assert remaining == (["b.py"] if overflow and max_calls == 1 else [])
+
+
+@pytest.mark.parametrize("policy", ["skip", "clip"])
+def test_multi_packing_does_not_assume_stripping_reduces_tokens(monkeypatch, policy):
+    class StripSensitiveHandler(CharacterTokenHandler):
+        def count_tokens(self, patch):
+            return 100 if patch == "AB" else len(patch)
+
+    handler = StripSensitiveHandler(prompt_tokens=0)
+    settings = get_settings()
+    original_policy = settings.config.get("large_patch_policy", "skip")
+    settings.config.large_patch_policy = policy
+    monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: 1_504)
+    monkeypatch.setattr(pr_processing, "clip_tokens", lambda patch, *args, **kwargs: patch)
+    try:
+        chunks, remaining = pr_processing._pack_pr_multi_diffs(
+            {"a.py": {"patch": " AB ", "tokens": 4}}, handler, "model", 2, True, 1_500,
+        )
+    finally:
+        settings.config.large_patch_policy = original_policy
+
+    assert chunks == []
+    assert remaining == ["a.py"]
+
+
+def test_fresh_and_prepared_multi_diffs_fit_the_same_rendered_boundary(monkeypatch):
+    handler = CharacterTokenHandler(prompt_tokens=11)
+    files = _rendered_budget_files()
+    patches, _, _ = pr_processing.pr_generate_extended_diff([{"files": files}], handler, True)
+    reserve = 5_000
+    limit = handler.prompt_tokens + handler.count_tokens("\n".join(patches[:2])) + reserve - 1
+    monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: limit)
+    monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda langs, files: [{"files": files}])
+    monkeypatch.setattr(pr_processing, "extend_patch", lambda original, patch, *args, **kwargs: patch)
+    provider = FakeProvider(files)
+    prepared = pr_processing.get_pr_diff(
+        provider, handler, "model", add_line_numbers_to_hunks=True, return_prepared=True,
+        output_token_reserve=lambda model, default: reserve,
+    )
+    assert prepared.file_dict
+
+    prepared_chunks = pr_processing.get_pr_multi_diffs(
+        provider, handler, "model", prepared_diff=prepared, return_remaining_files=True,
+        output_token_reserve=lambda model, default: reserve,
+    )
+    fresh_chunks = pr_processing.get_pr_multi_diffs(
+        FakeProvider(_rendered_budget_files()), handler, "model", return_remaining_files=True,
+        output_token_reserve=lambda model, default: reserve,
+    )
+
+    assert prepared_chunks == fresh_chunks
+    chunks, remaining = prepared_chunks
+    assert not remaining
+    assert len(chunks) > 1
+    assert all(handler.prompt_tokens + handler.count_tokens(chunk) + reserve <= limit for chunk in chunks)
+    assert provider.diff_calls == 1
+
+
 @pytest.mark.parametrize(
     ("max_tokens", "expected_diff", "expected_tokens"),
     [
@@ -645,15 +851,22 @@ def test_prepared_pr_diff_reuses_compressed_files_without_changing_chunks(monkey
         expected_order = [f"file_{index}.py" for index in range(3, -1, -1)]
         assert list(prepared.file_dict) == expected_order
         calls_after_prepare = token_handler.count_calls
-        prepared_chunks = pr_processing.get_pr_multi_diffs(
-            provider,
-            token_handler,
-            "tiny-model",
-            max_calls=3,
-            add_line_numbers=True,
-            return_remaining_files=True,
-            prepared_diff=prepared,
-        )
+        def unexpected_preparation(*args, **kwargs):
+            pytest.fail("Prepared patches must not be transformed again")
+
+        with monkeypatch.context() as packing_patch:
+            packing_patch.setattr(pr_processing, "extend_patch", unexpected_preparation)
+            packing_patch.setattr(pr_processing, "handle_patch_deletions", unexpected_preparation)
+            packing_patch.setattr(pr_processing, "decouple_and_convert_to_hunks_with_lines_numbers", unexpected_preparation)
+            prepared_chunks = pr_processing.get_pr_multi_diffs(
+                provider,
+                token_handler,
+                "tiny-model",
+                max_calls=3,
+                add_line_numbers=True,
+                return_remaining_files=True,
+                prepared_diff=prepared,
+            )
 
         fresh_provider = FakeProvider([
             FilePatchInfo("old\n", "new\n", hunks[index], f"file_{index}.py", edit_type=EDIT_TYPE.MODIFIED)
@@ -674,7 +887,8 @@ def test_prepared_pr_diff_reuses_compressed_files_without_changing_chunks(monkey
         assert [combined_chunks.index(filename) for filename in expected_order] == sorted(
             combined_chunks.index(filename) for filename in expected_order
         )
-        assert token_handler.count_calls == calls_after_prepare
+        # Exact assembled candidates must be recounted, while preparation stays cached.
+        assert 0 < token_handler.count_calls - calls_after_prepare <= 4 * len(prepared.file_dict)
         assert (provider.diff_calls, provider.language_calls) == (1, 1)
     finally:
         for key, value in original.items():

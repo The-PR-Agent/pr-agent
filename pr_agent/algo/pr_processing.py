@@ -301,6 +301,16 @@ def _pack_pr_multi_diffs(file_dict: dict,
     call_number = 1
     max_input_tokens = get_max_tokens(model) - soft_output_token_reserve
 
+    def count_chunk(candidate_patches):
+        rendered = "\n".join(candidate_patches)
+        rendered_tokens = token_handler.count_tokens(rendered)
+        stripped = rendered.strip()
+        # Intermediate chunks retain whitespace; the last chunk is stripped. Either
+        # can be larger under a non-additive tokenizer, so both must fit on admission.
+        if stripped != rendered:
+            rendered_tokens = max(rendered_tokens, token_handler.count_tokens(stripped))
+        return token_handler.prompt_tokens + rendered_tokens
+
     for filename, data in file_dict.items():
         if call_number > max_calls:
             if get_verbosity_level() >= 2:
@@ -309,8 +319,11 @@ def _pack_pr_multi_diffs(file_dict: dict,
 
         patch = data["patch"]
         new_patch_tokens = data["tokens"]
+        if not patch:
+            continue
 
-        if patch and (token_handler.prompt_tokens + new_patch_tokens) > max_input_tokens:
+        single_patch_tokens = count_chunk([patch])
+        if single_patch_tokens > max_input_tokens:
             if get_settings().config.get("large_patch_policy", "skip") == "skip":
                 get_logger().warning(f"Patch too large, skipping: {filename}")
                 continue
@@ -318,8 +331,8 @@ def _pack_pr_multi_diffs(file_dict: dict,
                 delta_tokens = max_input_tokens - token_handler.prompt_tokens
                 patch_clipped = clip_tokens(patch, delta_tokens, delete_last_line=True,
                                              num_input_tokens=new_patch_tokens)
-                new_patch_tokens = token_handler.count_tokens(patch_clipped)
-                if patch_clipped and (token_handler.prompt_tokens + new_patch_tokens) > max_input_tokens:
+                single_patch_tokens = count_chunk([patch_clipped]) if patch_clipped else max_input_tokens + 1
+                if single_patch_tokens > max_input_tokens:
                     get_logger().warning(f"Patch too large, skipping: {filename}")
                     continue
                 get_logger().info(f"Clipped large patch for file: {filename}")
@@ -328,10 +341,11 @@ def _pack_pr_multi_diffs(file_dict: dict,
                 get_logger().warning(f"Patch too large, skipping: {filename}")
                 continue
 
-        if patch and (total_tokens + new_patch_tokens > max_input_tokens):
+        candidate_tokens = count_chunk([*patches, patch]) if patches else single_patch_tokens
+        if patches and candidate_tokens > max_input_tokens:
             final_diff_list.append("\n".join(patches))
             patches = []
-            total_tokens = token_handler.prompt_tokens
+            candidate_tokens = single_patch_tokens
             call_number += 1
             if call_number > max_calls:
                 if get_verbosity_level() >= 2:
@@ -343,7 +357,7 @@ def _pack_pr_multi_diffs(file_dict: dict,
         if patch:
             patches.append(patch)
             files_in_patches.add(filename)
-            total_tokens += new_patch_tokens
+            total_tokens = candidate_tokens
             if get_verbosity_level() >= 2:
                 get_logger().info(f"Tokens: {total_tokens}, last filename: {filename}")
 
@@ -429,10 +443,11 @@ def pr_generate_extended_diff(pr_languages: list,
 
             patch_tokens = token_handler.count_tokens(full_extended_patch)
             file.tokens = patch_tokens
-            total_tokens += patch_tokens
             patches_extended_tokens.append(patch_tokens)
             patches_extended.append(full_extended_patch)
 
+    if patches_extended:
+        total_tokens += token_handler.count_tokens("\n".join(patches_extended))
     return patches_extended, total_tokens, patches_extended_tokens
 
 
@@ -540,13 +555,15 @@ def generate_full_patch(convert_hunks_to_line_numbers, file_dict, max_tokens_mod
                 patch_final = f"\n\n## File: '{filename.strip()}'\n\n{patch.strip()}\n"
             else:
                 patch_final = "\n\n" + patch.strip()
-            new_patch_tokens = token_handler.count_tokens(patch_final)
+            candidate_tokens = token_handler.prompt_tokens + token_handler.count_tokens(
+                "\n".join([*patches, patch_final])
+            )
         else:
             patch_final = ""
-            new_patch_tokens = 0
+            candidate_tokens = total_tokens
 
         # If the patch is too large, leave the file in the remaining-files list.
-        if total_tokens + new_patch_tokens > max_tokens_model - soft_output_token_reserve:
+        if candidate_tokens > max_tokens_model - soft_output_token_reserve:
             # Current logic is to skip the patch if it's too large
             # TODO: Option for alternative logic to remove hunks from the patch to reduce the number of tokens
             #  until we meet the requirements
@@ -557,7 +574,7 @@ def generate_full_patch(convert_hunks_to_line_numbers, file_dict, max_tokens_mod
 
         if patch:
             patches.append(patch_final)
-            total_tokens += new_patch_tokens
+            total_tokens = candidate_tokens
             files_in_patch_list.append(filename)
             if get_verbosity_level() >= 2:
                 get_logger().info(f"Tokens: {total_tokens}, last filename: {filename}")
