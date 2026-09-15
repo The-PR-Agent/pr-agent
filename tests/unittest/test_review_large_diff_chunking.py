@@ -235,20 +235,21 @@ async def test_a_failed_chunk_blocks_persistent_finding_resolution(chunking_enab
 
 
 @pytest.mark.asyncio
-async def test_a_malformed_chunk_fails_the_model_attempt(chunking_enabled):
+async def test_a_malformed_chunk_does_not_discard_successful_chunks(chunking_enabled):
     reviewer = _make_reviewer()
-    reviewer._get_prediction = AsyncMock(side_effect=["review: {}", CHUNK_B])
+    reviewer._get_prediction = AsyncMock(side_effect=[CHUNK_A, "not yaml at all", CHUNK_B])
 
     with (
         patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
         patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
-              return_value=(["chunk-a", "chunk-b"], [])),
-        pytest.raises(ValueError, match="non-empty review"),
+              return_value=(["chunk-a", "chunk-b", "chunk-c"], [])),
     ):
         await reviewer._prepare_prediction("model")
 
-    assert reviewer._get_prediction.await_count == 2
-    assert reviewer.prediction_data is None
+    assert reviewer._get_prediction.await_count == 3
+    assert reviewer.prediction_data["review"]["score"] == "90"
+    assert reviewer.review_chunk_count == 3
+    assert reviewer.review_failed_chunk_count == 1
 
 
 @pytest.mark.asyncio

@@ -838,7 +838,13 @@ class PRReviewer:
                 continue
             if isinstance(prediction, BaseException):
                 raise prediction
-            data = self._load_valid_review_yaml(prediction, source=f"review chunk {chunk_index + 1}")
+            try:
+                data = self._load_valid_review_yaml(prediction, source=f"review chunk {chunk_index + 1}")
+            except Exception as error:
+                chunk_errors.append(error)
+                get_logger().warning(f"Failed to parse review chunk {chunk_index + 1}; retaining successful chunks",
+                                     artifact={"error": error})
+                continue
             raw_predictions.append(prediction)
             chunk_outputs.append(data)
 
