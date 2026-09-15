@@ -275,13 +275,21 @@ def test_append_metadata_section_reserves_exact_separator_capacity(
     assert curr_token == expected_tokens
 
 
-def test_append_metadata_section_recounts_non_additive_clipped_candidate(monkeypatch):
+def test_append_metadata_section_omits_non_additive_clipped_candidate(monkeypatch):
     class NonAdditiveTokenHandler(CharacterTokenHandler):
+        candidate_counts = 0
+
         def count_tokens(self, patch):
+            if patch.startswith("A\n\n"):
+                self.candidate_counts += 1
             tokens = super().count_tokens(patch)
             return tokens + 2 if patch.startswith("A\n\n") else tokens
 
+    clip_calls = 0
+
     def clip_with_marker(text, max_tokens, **kwargs):
+        nonlocal clip_calls
+        clip_calls += 1
         if len(text) <= max_tokens:
             return text
         return text[:max(0, max_tokens - 1)] + "…"
@@ -290,12 +298,14 @@ def test_append_metadata_section_recounts_non_additive_clipped_candidate(monkeyp
     token_handler = NonAdditiveTokenHandler(prompt_tokens=0)
 
     final_diff, curr_token, clipped = pr_processing._append_metadata_section(
-        "A", 1, "BBBB", 7, token_handler
+        "A", 1, "BBBB", 6, token_handler
     )
 
-    assert clipped == "B…"
-    assert final_diff == "A\n\nB…"
-    assert curr_token == token_handler.count_tokens(final_diff) == 7
+    assert clipped == ""
+    assert final_diff == "A"
+    assert curr_token == 1
+    assert clip_calls == 1
+    assert token_handler.candidate_counts == 1
 
 
 def test_append_metadata_sections_keep_complete_diff_within_budget():

@@ -48,7 +48,7 @@ def _append_metadata_section(
     max_tokens: int,
     token_handler: TokenHandler,
 ) -> tuple[str, int, str]:
-    """Append a clipped metadata section without exceeding the rendered input budget."""
+    """Append one clipped metadata section when its rendered form fits the input budget."""
     if not section:
         return final_diff, curr_token, section
 
@@ -56,19 +56,18 @@ def _append_metadata_section(
     available_tokens = max_tokens - curr_token
     separator_tokens = token_handler.count_tokens(separator)
     section_budget = available_tokens - separator_tokens
+    if section_budget <= 0:
+        return final_diff, curr_token, ""
+
     section_tokens = token_handler.count_tokens(section)
+    clipped_section = clip_tokens(section, section_budget, num_input_tokens=section_tokens)
+    if not clipped_section:
+        return final_diff, curr_token, ""
 
-    while section_budget > 0:
-        clipped_section = clip_tokens(section, section_budget, num_input_tokens=section_tokens)
-        if not clipped_section:
-            break
-
-        candidate = final_diff + separator + clipped_section
-        candidate_tokens = token_handler.prompt_tokens + token_handler.count_tokens(candidate)
-        if candidate_tokens <= max_tokens:
-            return candidate, candidate_tokens, clipped_section
-
-        section_budget -= max(1, candidate_tokens - max_tokens)
+    candidate = final_diff + separator + clipped_section
+    candidate_tokens = token_handler.prompt_tokens + token_handler.count_tokens(candidate)
+    if candidate_tokens <= max_tokens:
+        return candidate, candidate_tokens, clipped_section
 
     return final_diff, curr_token, ""
 
@@ -294,7 +293,7 @@ def _pack_pr_multi_diffs(file_dict: dict,
         rendered_tokens = token_handler.count_tokens(rendered)
         stripped = rendered.strip()
         # Count both forms: intermediate chunks retain whitespace, while the last chunk is stripped.
-        # Either form can be larger under a non-additive tokenizer, so both must fit on admission.
+        # Require both forms to fit because either can be larger under a non-additive tokenizer.
         if stripped != rendered:
             rendered_tokens = max(rendered_tokens, token_handler.count_tokens(stripped))
         return rendered_tokens
