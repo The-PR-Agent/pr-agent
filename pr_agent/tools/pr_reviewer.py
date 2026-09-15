@@ -776,6 +776,11 @@ class PRReviewer:
             "disable_extra_lines": False,
             "return_remaining_files": True,
         }
+        output_token_reserve = getattr(
+            getattr(self, "ai_handler", None), "get_output_token_reserve", None
+        )
+        if callable(output_token_reserve):
+            diff_kwargs["output_token_reserve"] = output_token_reserve
         if chunking_enabled:
             diff_kwargs["return_prepared"] = True
         output = get_pr_diff(self.git_provider, self.token_handler, model, **diff_kwargs)
@@ -814,6 +819,11 @@ class PRReviewer:
             "add_line_numbers": True,
             "return_remaining_files": True,
         }
+        output_token_reserve = getattr(
+            getattr(self, "ai_handler", None), "get_output_token_reserve", None
+        )
+        if callable(output_token_reserve):
+            multi_diff_kwargs["output_token_reserve"] = output_token_reserve
         if prepared_diff is not None:
             multi_diff_kwargs["prepared_diff"] = prepared_diff
         patches_diff_list, remaining_files_list = get_pr_multi_diffs(

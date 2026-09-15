@@ -27,6 +27,7 @@ from pr_agent.algo.prompt_fragments import render_diff_hunk_format
 from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.run_details import init_run_details, record_model_used
 from pr_agent.algo.skills_loader import get_skills_context
+from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (
     ModelType,
@@ -1769,7 +1770,12 @@ class PRCodeSuggestions:
                                                         self.token_handler,
                                                         model,
                                                         max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
-                                                        add_line_numbers=True)  # decouple hunk with line numbers
+                                                        add_line_numbers=True,
+                                                        output_token_reserve=getattr(
+                                                            getattr(self, "ai_handler", None),
+                                                            "get_output_token_reserve",
+                                                            None,
+                                                        ))  # decouple hunk with line numbers
             self.patches_diff_list_no_line_numbers = self.remove_line_numbers(self.patches_diff_list)  # decouple hunk
 
         else:
@@ -1778,7 +1784,12 @@ class PRCodeSuggestions:
                                                                         self.token_handler,
                                                                         model,
                                                                         max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
-                                                                        add_line_numbers=False)
+                                                                        add_line_numbers=False,
+                                                                        output_token_reserve=getattr(
+                                                                            getattr(self, "ai_handler", None),
+                                                                            "get_output_token_reserve",
+                                                                            None,
+                                                                        ))
             self.patches_diff_list = await self.convert_to_decoupled_with_line_numbers(
                 self.patches_diff_list_no_line_numbers, model)
             if not self.patches_diff_list:
@@ -1787,7 +1798,12 @@ class PRCodeSuggestions:
                                                             self.token_handler,
                                                             model,
                                                             max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
-                                                            add_line_numbers=True)  # decouple hunk with line numbers
+                                                            add_line_numbers=True,
+                                                            output_token_reserve=getattr(
+                                                                getattr(self, "ai_handler", None),
+                                                                "get_output_token_reserve",
+                                                                None,
+                                                            ))  # decouple hunk with line numbers
                 self.patches_diff_list_no_line_numbers = self.remove_line_numbers(self.patches_diff_list)
 
         if self.patches_diff_list:
@@ -1843,6 +1859,16 @@ class PRCodeSuggestions:
     async def convert_to_decoupled_with_line_numbers(self, patches_diff_list_no_line_numbers, model) -> List[str]:
         with get_logger().contextualize(sub_feature='convert_to_decoupled_with_line_numbers'):
             try:
+                attempt_budget = AttemptTokenBudget.for_attempt(
+                    model,
+                    self.token_handler,
+                    output_token_reserve=getattr(
+                        getattr(self, "ai_handler", None), "get_output_token_reserve", None
+                    ),
+                )
+                max_input_tokens = attempt_budget.available_tokens(
+                    2_000, preserve_minimum=True
+                )
                 patches_diff_list = []
                 for patch_prompt in patches_diff_list_no_line_numbers:
                     file_prefix = "## File: "
@@ -1859,14 +1885,23 @@ class PRCodeSuggestions:
                                                                                                           file=None).strip()
                         patches_new[i] = patches_new[i].strip()
                     patch_final = "\n\n\n".join(patches_new)
-                    # take the actual max tokens, without any reductions
-                    max_tokens_full = get_max_tokens(model, ignore_max_model_tokens=True)
-                    delta_output = 2000
-                    token_count = self.token_handler.count_tokens(patch_final)
-                    if token_count > max_tokens_full - delta_output:
+                    token_count = attempt_budget.count_tokens(patch_final)
+                    if token_count > max_input_tokens:
                         get_logger().warning(
-                            f"Token count {token_count} exceeds the limit {max_tokens_full - delta_output}. clipping the tokens")
-                        patch_final = clip_tokens(patch_final, max_tokens_full - delta_output)
+                            f"Token count {token_count} exceeds the limit {max_input_tokens}. clipping the tokens")
+                        add_truncation_marker = True
+                        while patch_final and token_count > max_input_tokens:
+                            clipped_patch = clip_tokens(
+                                patch_final,
+                                max_input_tokens,
+                                add_three_dots=add_truncation_marker,
+                                num_input_tokens=token_count,
+                            )
+                            add_truncation_marker = False
+                            if len(clipped_patch) >= len(patch_final):
+                                clipped_patch = patch_final[:len(patch_final) // 2]
+                            patch_final = clipped_patch
+                            token_count = attempt_budget.count_tokens(patch_final)
                     patches_diff_list.append(patch_final)
                 return patches_diff_list
             except Exception:

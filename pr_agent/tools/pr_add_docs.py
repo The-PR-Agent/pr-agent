@@ -82,7 +82,10 @@ class PRAddDocs:
                                         self.token_handler,
                                         model,
                                         add_line_numbers_to_hunks=True,
-                                        disable_extra_lines=False)
+                                        disable_extra_lines=False,
+                                        output_token_reserve=getattr(
+                                            getattr(self, "ai_handler", None), "get_output_token_reserve", None
+                                        ))
 
         get_logger().info('Getting AI prediction...')
         self.prediction = await self._get_prediction(model)
