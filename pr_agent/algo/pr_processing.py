@@ -70,6 +70,13 @@ def cap_and_log_extra_lines(value, direction) -> int:
     return value
 
 
+def _get_token_handler_for_model(token_handler: TokenHandler, model: str):
+    """Bind real token handlers to the model selected for this attempt."""
+    if isinstance(token_handler, TokenHandler):
+        return token_handler.for_model(model)
+    return token_handler
+
+
 def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
                 model: str,
                 add_line_numbers_to_hunks: bool = False,
@@ -77,6 +84,7 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
                 large_pr_handling=False,
                 return_remaining_files=False,
                 return_prepared=False):
+    token_handler = _get_token_handler_for_model(token_handler, model)
     if disable_extra_lines:
         PATCH_EXTRA_LINES_BEFORE = 0
         PATCH_EXTRA_LINES_AFTER = 0
@@ -159,15 +167,21 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
                     deleted_list_str = deleted_list_str + f"\n{filename}"
 
     # prune the added, modified, and deleted files lists, and add them to the final diff
-    added_list_str = clip_tokens(added_list_str, max_tokens - curr_token)
+    added_list_tokens = token_handler.count_tokens(added_list_str) if added_list_str else 0
+    added_list_str = clip_tokens(
+        added_list_str, max_tokens - curr_token, num_input_tokens=added_list_tokens)
     if added_list_str:
         final_diff = final_diff + "\n\n" + added_list_str
         curr_token += token_handler.count_tokens(added_list_str) + 2
-    modified_list_str = clip_tokens(modified_list_str, max_tokens - curr_token)
+    modified_list_tokens = token_handler.count_tokens(modified_list_str) if modified_list_str else 0
+    modified_list_str = clip_tokens(
+        modified_list_str, max_tokens - curr_token, num_input_tokens=modified_list_tokens)
     if modified_list_str:
         final_diff = final_diff + "\n\n" + modified_list_str
         curr_token += token_handler.count_tokens(modified_list_str) + 2
-    deleted_list_str = clip_tokens(deleted_list_str, max_tokens - curr_token)
+    deleted_list_tokens = token_handler.count_tokens(deleted_list_str) if deleted_list_str else 0
+    deleted_list_str = clip_tokens(
+        deleted_list_str, max_tokens - curr_token, num_input_tokens=deleted_list_tokens)
     if deleted_list_str:
         final_diff = final_diff + "\n\n" + deleted_list_str
 
@@ -196,6 +210,7 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
 
 def get_pr_diff_multiple_patchs(git_provider: GitProvider, token_handler: TokenHandler, model: str,
                 add_line_numbers_to_hunks: bool = False, disable_extra_lines: bool = False):
+    token_handler = _get_token_handler_for_model(token_handler, model)
     diff_files = git_provider.get_diff_files()
 
     # get pr languages
@@ -573,6 +588,7 @@ def get_pr_multi_diffs(git_provider: GitProvider,
         With `return_remaining_files`, a tuple of that list and the list of omitted file names.
 
     """
+    token_handler = _get_token_handler_for_model(token_handler, model)
     if (
         prepared_diff is not None
         and prepared_diff.file_dict is not None
