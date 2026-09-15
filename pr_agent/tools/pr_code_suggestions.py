@@ -1763,6 +1763,8 @@ class PRCodeSuggestions:
         self.failed_chunk_count = 0
         self.total_chunk_count = 0
         self.parse_failure_count = 0
+        if isinstance(self.token_handler, TokenHandler):
+            self.token_handler = self.token_handler.for_model(model)
         # get PR diff
         if get_settings().pr_code_suggestions.decouple_hunks:
             self.patches_diff_list = get_pr_multi_diffs(self.git_provider,
@@ -1866,7 +1868,11 @@ class PRCodeSuggestions:
                     if token_count > max_tokens_full - delta_output:
                         get_logger().warning(
                             f"Token count {token_count} exceeds the limit {max_tokens_full - delta_output}. clipping the tokens")
-                        patch_final = clip_tokens(patch_final, max_tokens_full - delta_output)
+                        patch_final = clip_tokens(
+                            patch_final,
+                            max_tokens_full - delta_output,
+                            num_input_tokens=token_count,
+                        )
                     patches_diff_list.append(patch_final)
                 return patches_diff_list
             except Exception as e:
