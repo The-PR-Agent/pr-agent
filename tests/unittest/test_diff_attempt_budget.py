@@ -5,7 +5,6 @@ import pytest
 
 import pr_agent.algo.pr_processing as pr_processing
 import pr_agent.algo.token_budget as token_budget_module
-from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenEncoder, TokenHandler
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.algo.utils import ModelType
@@ -208,7 +207,7 @@ def test_incompatible_prepared_data_is_rebuilt(attempt_context, changed):
 @pytest.mark.parametrize("name", ["get_pr_diff", "get_pr_diff_multiple_patchs", "get_pr_multi_diffs"])
 def test_explicit_attempt_budget_does_not_rebind_or_reload_window(monkeypatch, attempt_context, name):
     source, events = attempt_context
-    budget = AttemptTokenBudget.for_attempt("fallback-model", source)
+    budget = token_budget_module.AttemptTokenBudget.for_attempt("fallback-model", source)
     events.clear()
 
     def unexpected(*args, **kwargs):

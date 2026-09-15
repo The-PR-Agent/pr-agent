@@ -5,7 +5,6 @@ import pytest
 
 import pr_agent.algo.pr_processing as pr_processing
 import pr_agent.algo.token_budget as token_budget
-from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.algo.utils import ModelType
 from pr_agent.config_loader import get_settings
@@ -382,7 +381,7 @@ def _make_budget_files(tokens_per_file=2_800):
 
 @pytest.mark.parametrize("resolved", [None, 0, -1, True, "5000"])
 def test_output_token_reserve_rejects_unusable_values(resolved):
-    budget = AttemptTokenBudget(
+    budget = token_budget.AttemptTokenBudget(
         "model", object(), object(), 10_000, output_token_reserve=lambda model, default: resolved,
     )
 
@@ -392,7 +391,7 @@ def test_output_token_reserve_rejects_unusable_values(resolved):
 @pytest.mark.parametrize("default", [1_000, 1_500])
 @pytest.mark.parametrize("resolved", [1, 100, 999, 1_000, 1_200, 1_499, 1_500, 5_000])
 def test_output_token_reserve_keeps_the_legacy_minimum(default, resolved):
-    budget = AttemptTokenBudget(
+    budget = token_budget.AttemptTokenBudget(
         "model", object(), object(), 10_000, output_token_reserve=lambda model, fallback: resolved,
     )
 
@@ -457,7 +456,7 @@ def test_output_token_reserve_falls_back_independently_when_one_resolution_fails
             return 5_000
         raise RuntimeError("hard reserve unavailable")
 
-    budget = AttemptTokenBudget("model", object(), object(), 10_000, output_token_reserve=resolve)
+    budget = token_budget.AttemptTokenBudget("model", object(), object(), 10_000, output_token_reserve=resolve)
 
     assert budget.resolve_output_reserve(1_500, preserve_minimum=True) == 5_000
     assert budget.resolve_output_reserve(1_000, preserve_minimum=True) == 1_000

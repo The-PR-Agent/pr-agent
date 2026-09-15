@@ -6,8 +6,6 @@ import pytest
 
 import pr_agent.algo.token_budget as token_budget_module
 import pr_agent.algo.token_handler as token_handler_module
-from pr_agent.algo.token_budget import AttemptTokenBudget
-from pr_agent.algo.token_handler import TokenEncoder, TokenHandler
 
 
 class FakeTokenHandler:
@@ -32,7 +30,7 @@ def token_settings(monkeypatch):
     )
     monkeypatch.setattr(token_handler_module, "get_settings", lambda use_context=True: settings)
     monkeypatch.setattr(
-        TokenEncoder,
+        token_handler_module.TokenEncoder,
         "get_token_encoder",
         lambda model=None: SimpleNamespace(
             model=model,
@@ -52,7 +50,7 @@ def test_for_attempt_uses_requested_window_and_preserves_fake_handler(monkeypatc
 
     monkeypatch.setattr(token_budget_module, "get_max_tokens", get_window)
 
-    budget = AttemptTokenBudget.for_attempt(
+    budget = token_budget_module.AttemptTokenBudget.for_attempt(
         "fallback-model",
         fake_handler,
         ignore_max_model_tokens=True,
@@ -69,9 +67,9 @@ def test_for_attempt_uses_requested_window_and_preserves_fake_handler(monkeypatc
 def test_for_attempt_binds_real_handler_without_mutating_source(monkeypatch, token_settings):
     monkeypatch.setattr(token_budget_module, "get_max_tokens", lambda *_args, **_kwargs: 10_000)
     variables = {"title": "PR"}
-    source = TokenHandler(object(), variables, "system {{ title }}", "user")
+    source = token_handler_module.TokenHandler(object(), variables, "system {{ title }}", "user")
 
-    budget = AttemptTokenBudget.for_attempt("fallback-model", source)
+    budget = token_budget_module.AttemptTokenBudget.for_attempt("fallback-model", source)
 
     assert source.model == "primary-model"
     assert budget.source_token_handler is source
@@ -89,7 +87,7 @@ def test_reserves_are_resolved_independently_for_each_default(monkeypatch):
         calls.append((model, default))
         return default + 500
 
-    budget = AttemptTokenBudget.for_attempt(
+    budget = token_budget_module.AttemptTokenBudget.for_attempt(
         "openrouter/model",
         FakeTokenHandler(),
         output_token_reserve=reserve,
@@ -114,7 +112,7 @@ def test_reserve_floor_is_an_explicit_consumer_policy(
     monkeypatch, reported, preserve_minimum, expected
 ):
     monkeypatch.setattr(token_budget_module, "get_max_tokens", lambda *_args, **_kwargs: 10_000)
-    budget = AttemptTokenBudget.for_attempt(
+    budget = token_budget_module.AttemptTokenBudget.for_attempt(
         "model",
         FakeTokenHandler(),
         output_token_reserve=lambda _model, _default: reported,
@@ -129,7 +127,7 @@ def test_reserve_floor_is_an_explicit_consumer_policy(
 @pytest.mark.parametrize("reported", [None, True, False, 0, -1, "5000", 5_000.0])
 def test_unusable_reserve_falls_through_to_output_limit(monkeypatch, reported):
     monkeypatch.setattr(token_budget_module, "get_max_tokens", lambda *_args, **_kwargs: 10_000)
-    budget = AttemptTokenBudget.for_attempt(
+    budget = token_budget_module.AttemptTokenBudget.for_attempt(
         "model",
         FakeTokenHandler(),
         output_token_reserve=lambda _model, _default: reported,
@@ -146,7 +144,7 @@ def test_failing_optional_controls_fall_through_to_configured_value(monkeypatch)
     def fail(*_args):
         raise RuntimeError("unavailable")
 
-    budget = AttemptTokenBudget.for_attempt(
+    budget = token_budget_module.AttemptTokenBudget.for_attempt(
         "model",
         FakeTokenHandler(),
         output_token_reserve=fail,
@@ -164,7 +162,7 @@ def test_failing_optional_controls_fall_through_to_configured_value(monkeypatch)
 )
 def test_configured_output_compatibility_coercion(monkeypatch, configured, expected):
     monkeypatch.setattr(token_budget_module, "get_max_tokens", lambda *_args, **_kwargs: 3_000)
-    budget = AttemptTokenBudget.for_attempt(
+    budget = token_budget_module.AttemptTokenBudget.for_attempt(
         "model",
         FakeTokenHandler(),
         configured_output_tokens=configured,
@@ -175,7 +173,7 @@ def test_configured_output_compatibility_coercion(monkeypatch, configured, expec
 
 def test_input_and_available_tokens_subtract_prompt_once_and_clamp(monkeypatch):
     monkeypatch.setattr(token_budget_module, "get_max_tokens", lambda *_args, **_kwargs: 1_000)
-    budget = AttemptTokenBudget.for_attempt(
+    budget = token_budget_module.AttemptTokenBudget.for_attempt(
         "model",
         FakeTokenHandler(prompt_tokens=100),
         output_token_reserve=lambda _model, _default: 200,
@@ -193,7 +191,7 @@ def test_input_and_available_tokens_subtract_prompt_once_and_clamp(monkeypatch):
 )
 def test_raw_capacity_distinguishes_exhausted_from_exact_boundary(window, reserve, prompt, expected):
     handler = FakeTokenHandler(prompt_tokens=prompt)
-    budget = AttemptTokenBudget(
+    budget = token_budget_module.AttemptTokenBudget(
         "model", handler, handler, window, output_token_reserve=lambda model, default: reserve,
     )
 
@@ -204,7 +202,7 @@ def test_raw_capacity_distinguishes_exhausted_from_exact_boundary(window, reserv
 def test_frozen_budget_can_refresh_callback_without_rebinding(monkeypatch):
     monkeypatch.setattr(token_budget_module, "get_max_tokens", lambda *_args, **_kwargs: 10_000)
     source = FakeTokenHandler()
-    budget = AttemptTokenBudget.for_attempt(
+    budget = token_budget_module.AttemptTokenBudget.for_attempt(
         "model",
         source,
         output_token_reserve=lambda _model, _default: 1_500,
@@ -224,7 +222,7 @@ def test_frozen_budget_can_refresh_callback_without_rebinding(monkeypatch):
 def test_count_tokens_delegates_without_breaking_simple_fakes(monkeypatch):
     monkeypatch.setattr(token_budget_module, "get_max_tokens", lambda *_args, **_kwargs: 10_000)
     source = FakeTokenHandler()
-    budget = AttemptTokenBudget.for_attempt("model", source)
+    budget = token_budget_module.AttemptTokenBudget.for_attempt("model", source)
 
     assert budget.count_tokens("abcd") == 4
     assert source.counted == ["abcd"]
@@ -238,7 +236,7 @@ def test_message_count_ignores_unusable_normalization(monkeypatch, normalization
     monkeypatch.setattr(token_budget_module, "get_max_tokens", lambda *_args, **_kwargs: 10_000)
     handler = FakeTokenHandler()
     handler.count_messages = MagicMock(return_value=53)
-    budget = AttemptTokenBudget.for_attempt(
+    budget = token_budget_module.AttemptTokenBudget.for_attempt(
         "model",
         handler,
         prompt_normalizer=lambda *_args: normalization,
@@ -252,7 +250,7 @@ def test_message_count_returns_the_exact_normalized_pair(monkeypatch):
     monkeypatch.setattr(token_budget_module, "get_max_tokens", lambda *_args, **_kwargs: 10_000)
     handler = FakeTokenHandler()
     handler.count_messages = MagicMock(return_value=71)
-    budget = AttemptTokenBudget.for_attempt(
+    budget = token_budget_module.AttemptTokenBudget.for_attempt(
         "claude-model",
         handler,
         prompt_normalizer=lambda model, system, user: (
@@ -277,7 +275,7 @@ def test_message_count_ignores_normalizer_failure(monkeypatch):
     handler = FakeTokenHandler()
     handler.count_messages = MagicMock(return_value=53)
     normalizer = MagicMock(side_effect=RuntimeError("normalization unavailable"))
-    budget = AttemptTokenBudget.for_attempt(
+    budget = token_budget_module.AttemptTokenBudget.for_attempt(
         "model",
         handler,
         prompt_normalizer=normalizer,
@@ -289,8 +287,8 @@ def test_message_count_ignores_normalizer_failure(monkeypatch):
 
 def test_matches_accepts_source_or_own_bound_handler_only(monkeypatch, token_settings):
     monkeypatch.setattr(token_budget_module, "get_max_tokens", lambda *_args, **_kwargs: 10_000)
-    source = TokenHandler(object(), {}, "system", "user")
-    budget = AttemptTokenBudget.for_attempt("fallback-model", source)
+    source = token_handler_module.TokenHandler(object(), {}, "system", "user")
+    budget = token_budget_module.AttemptTokenBudget.for_attempt("fallback-model", source)
     equivalent_handler = source.for_model("fallback-model")
 
     assert budget.matches("fallback-model", source)
