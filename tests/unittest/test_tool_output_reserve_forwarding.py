@@ -7,24 +7,20 @@ import pr_agent.tools.pr_add_docs as add_docs_module
 import pr_agent.tools.pr_generate_labels as generate_labels_module
 import pr_agent.tools.pr_questions as questions_module
 import pr_agent.tools.pr_update_changelog as update_changelog_module
-from pr_agent.tools.pr_add_docs import PRAddDocs
-from pr_agent.tools.pr_generate_labels import PRGenerateLabels
-from pr_agent.tools.pr_questions import PRQuestions
-from pr_agent.tools.pr_update_changelog import PRUpdateChangelog
 
 
 @pytest.mark.parametrize(
     "tool_class, tool_module, attributes, diff_options",
     [
         (
-            PRAddDocs,
+            add_docs_module.PRAddDocs,
             add_docs_module,
             {},
             {"add_line_numbers_to_hunks": True, "disable_extra_lines": False},
         ),
-        (PRGenerateLabels, generate_labels_module, {"pr_id": "repo#1"}, {}),
-        (PRQuestions, questions_module, {}, {}),
-        (PRUpdateChangelog, update_changelog_module, {}, {}),
+        (generate_labels_module.PRGenerateLabels, generate_labels_module, {"pr_id": "repo#1"}, {}),
+        (questions_module.PRQuestions, questions_module, {}, {}),
+        (update_changelog_module.PRUpdateChangelog, update_changelog_module, {}, {}),
     ],
     ids=["add-docs", "generate-labels", "questions", "update-changelog"],
 )
