@@ -298,6 +298,21 @@ class GitProvider(ABC):
         ], env=ssl_env, check=True,  # check=True will raise an exception if the command fails
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=operation_timeout_in_seconds)
 
+    def _scrub_clone_credentials(self, dest_folder: str, clean_url: str) -> None:
+        """Replace the authenticated clone URL persisted by Git with its clean form."""
+        try:
+            ssl_env = get_git_ssl_env()
+        except Exception:
+            ssl_env = os.environ.copy()
+        subprocess.run(
+            ["git", "-C", dest_folder, "remote", "set-url", "origin", clean_url],
+            env=ssl_env,
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=self.CLONE_TIMEOUT_SEC,
+        )
+
     CLONE_TIMEOUT_SEC = 20
     # Clone a given url to a destination folder. If successful, returns an object that wraps the destination folder,
     # deleting it once it is garbage collected. See: GitProvider.ScopedClonedRepo for more details.
@@ -312,8 +327,13 @@ class GitProvider(ABC):
             if remove_dest_folder and os.path.exists(dest_folder) and os.path.isdir(dest_folder):
                 shutil.rmtree(dest_folder)
             self._clone_inner(clone_url, dest_folder, operation_timeout_in_seconds)
+            self._scrub_clone_credentials(dest_folder, repo_url_to_clone)
             returned_obj = GitProvider.ScopedClonedRepo(dest_folder)
         except Exception as e:
+            # A failed clone may have created .git/config before the error. Remove the
+            # checkout so an authenticated remote URL cannot remain on disk.
+            if os.path.isdir(dest_folder):
+                shutil.rmtree(dest_folder, ignore_errors=True)
             get_logger().error("Clone failed: Could not clone url.",
                 artifact={"error": redact_credentials(e), "url": redact_credentials(clone_url),
                           "dest_folder": dest_folder})
