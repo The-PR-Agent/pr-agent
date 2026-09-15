@@ -865,6 +865,11 @@ async def extract_tickets(git_provider):
                                            artifact={"traceback": traceback.format_exc()})
                         continue
 
+                    # A PR reference is not an issue ticket. GitHub's issue API
+                    # exposes pull requests through the ``pull_request`` field.
+                    if getattr(issue_main, "pull_request", None) is not None:
+                        continue
+
                     issue_body_str = issue_main.body or ""
                     if len(issue_body_str) > MAX_TICKET_CHARACTERS:
                         issue_body_str = issue_body_str[:MAX_TICKET_CHARACTERS] + "..."
