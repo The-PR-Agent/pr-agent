@@ -214,8 +214,12 @@ async def test_a_failed_chunk_blocks_persistent_finding_resolution(chunking_enab
         patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
         patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
               return_value=(["chunk-a", "chunk-b"], [])),
+        pytest.raises(RuntimeError, match="model refused"),
     ):
         await reviewer._prepare_prediction("model")
+
+    reviewer._get_prediction.side_effect = [CHUNK_A]
+    await reviewer._prepare_prediction("fallback-model")
 
     previous_state = reconcile_review_findings(
         None,
@@ -235,7 +239,7 @@ async def test_a_failed_chunk_blocks_persistent_finding_resolution(chunking_enab
 
     assert reviewer._review_state_result is not None
     assert reviewer._review_state_result.resolved_ids == ()
-    assert reviewer._review_state_result.state["last_run"]["complete"] is False
+    assert reviewer._review_state_result.state["last_run"]["complete"] is True
     assert reviewer._review_state_result.state["findings"][0]["state"] == "ACTIVE"
 
 
