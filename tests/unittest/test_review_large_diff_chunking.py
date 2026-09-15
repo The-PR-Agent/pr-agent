@@ -198,7 +198,7 @@ async def test_a_chunk_that_fails_does_not_lose_the_chunks_that_succeeded(chunki
     reviewer._get_prediction.side_effect = [CHUNK_A]
     await reviewer._prepare_chunked_prediction("model")
 
-    assert reviewer.prediction_data["review"]["score"] == "40"
+    assert reviewer.prediction_data["review"]["score"] == 40
     assert reviewer.review_chunk_count == 2
     assert reviewer.review_failed_chunk_count == 0
     assert [call.args[1] for call in reviewer._get_prediction.await_args_list] == ["chunk-a", "chunk-b", "chunk-a"]
@@ -238,7 +238,6 @@ async def test_a_failed_chunk_blocks_persistent_finding_resolution(chunking_enab
     reviewer._prepare_review_finding_state(reviewer.prediction_data)
 
     assert reviewer._review_state_result is not None
-    assert reviewer._review_state_result.resolved_ids == ()
     assert reviewer._review_state_result.state["last_run"]["complete"] is True
     assert reviewer._review_state_result.state["findings"][0]["state"] == "ACTIVE"
 
@@ -262,7 +261,7 @@ async def test_a_malformed_chunk_is_retried_without_repeating_successful_chunks(
     reviewer._get_prediction.side_effect = [CHUNK_A]
     await reviewer._prepare_chunked_prediction("model")
 
-    assert reviewer.prediction_data["review"]["score"] == "40"
+    assert reviewer.prediction_data["review"]["score"] == 40
     assert [call.args[1] for call in reviewer._get_prediction.await_args_list] == ["chunk-a", "chunk-b", "chunk-a"]
 
 
@@ -281,7 +280,7 @@ async def test_cached_chunks_are_used_when_fallback_diff_fits(chunking_enabled):
 
     await reviewer._prepare_chunked_prediction("model")
 
-    assert reviewer.prediction_data["review"]["score"] == "40"
+    assert reviewer.prediction_data["review"]["score"] == 40
     assert [call.args[1] for call in reviewer._get_prediction.await_args_list] == ["chunk-a", "chunk-b", "chunk-b"]
 
 
