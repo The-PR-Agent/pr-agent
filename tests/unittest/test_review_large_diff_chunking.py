@@ -205,8 +205,8 @@ async def test_a_chunk_that_fails_does_not_lose_the_chunks_that_succeeded(chunki
 
 
 @pytest.mark.asyncio
-async def test_a_failed_chunk_blocks_persistent_finding_resolution(chunking_enabled):
-    """A partial review must stay partial for the finding-state lifecycle too."""
+async def test_a_failed_chunk_recovery_preserves_finding_state_lifecycle(chunking_enabled):
+    """A recovered chunked review participates in the finding-state lifecycle."""
     reviewer = _make_reviewer()
     reviewer._get_prediction = AsyncMock(side_effect=[RuntimeError("model refused"), CHUNK_B])
 
@@ -239,7 +239,7 @@ async def test_a_failed_chunk_blocks_persistent_finding_resolution(chunking_enab
 
     assert reviewer._review_state_result is not None
     assert reviewer._review_state_result.state["last_run"]["complete"] is True
-    assert reviewer._review_state_result.state["findings"][0]["state"] == "ACTIVE"
+    assert reviewer._review_state_result.state["findings"][0]["state"] == "RESOLVED"
 
 
 @pytest.mark.asyncio
