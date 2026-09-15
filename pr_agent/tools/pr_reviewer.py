@@ -43,8 +43,10 @@ from pr_agent.algo.utils import (
     convert_to_markdown_v2,
     get_pr_review_comment_identifiers,
     github_action_output,
+    hidden_marker_forms,
     load_yaml,
     push_outputs,
+    render_hidden_marker,
     show_relevant_configurations,
     show_run_details,
 )
@@ -425,7 +427,7 @@ class PRReviewer:
                         if self.incremental.is_incremental
                         else PRReviewIdentity.REGULAR.value
                     )
-                    pr_review = add_pr_review_identity(pr_review, identity_marker)
+                    pr_review = add_pr_review_identity(pr_review, identity_marker, self.git_provider)
                 self.git_provider.publish_comment(pr_review, **review_thread_kwargs)
         except Exception as e:
             review_error = e
@@ -485,8 +487,8 @@ class PRReviewer:
     @staticmethod
     def _as_non_authoritative_review(pr_review: str) -> str:
         identity_markers = {
-            PRReviewIdentity.REGULAR.value,
-            PRReviewIdentity.INCREMENTAL.value,
+            *hidden_marker_forms(PRReviewIdentity.REGULAR.value),
+            *hidden_marker_forms(PRReviewIdentity.INCREMENTAL.value),
         }
         markerless_review = "\n".join(
             line
@@ -676,7 +678,7 @@ class PRReviewer:
                 # The shared persistent publisher adds the full-review identity
                 # before inserting the update suffix. Reserve both pieces so a
                 # complete state marker remains inside the provider limit.
-                identity_overhead = len(PRReviewIdentity.REGULAR.value) + 2
+                identity_overhead = len(render_hidden_marker(PRReviewIdentity.REGULAR.value, self.git_provider)) + 2
                 return value - len(update_suffix) - identity_overhead
         return None
 

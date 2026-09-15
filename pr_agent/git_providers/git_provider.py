@@ -15,6 +15,7 @@ from pr_agent.algo.utils import (
     comment_carries_other_identity,
     comment_matches_identity,
     process_description,
+    render_hidden_marker,
 )
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
@@ -625,6 +626,10 @@ class GitProvider(ABC):
     def should_publish_improve_as_thread(self) -> bool:
         return False
 
+    def supports_html_comment_markers(self) -> bool:
+        """Return whether HTML comment identity markers render invisibly."""
+        return True
+
     def supports_review_comment_identity(self) -> bool:
         return False
 
@@ -724,7 +729,7 @@ class GitProvider(ABC):
                                    require_agent_authorship: bool = False,
                                    fallback_on_error: bool = True):
         try:
-            pr_comment = add_pr_review_identity(pr_comment, identity_marker)
+            pr_comment = add_pr_review_identity(pr_comment, identity_marker, self)
             identifiers = (
                 [identity_marker, legacy_initial_header]
                 if identity_marker
@@ -745,7 +750,7 @@ class GitProvider(ABC):
                 comment_url = self.get_comment_url(comment)
                 if update_header:
                     update_message = f"#### ({name.capitalize()} updated until commit {latest_commit_url})\n"
-                    update_anchor = identity_marker or initial_header
+                    update_anchor = render_hidden_marker(identity_marker, self) if identity_marker else initial_header
                     updated_anchor = f"{update_anchor}\n\n{update_message}"
                     pr_comment_updated = pr_comment.replace(update_anchor, updated_anchor, 1)
                 else:

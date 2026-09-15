@@ -433,7 +433,7 @@ not a valid hunk
         legacy.update.assert_called_once()
         updated_body = legacy.update.call_args.kwargs["content"]["raw"]
         assert updated_body.startswith("## Guideline Compliance Check 🔍\n\n")
-        assert PRReviewIdentity.REGULAR.value in updated_body
+        assert "[pr-agent:review:full]: https://github.com/The-PR-Agent/pr-agent" in updated_body
         provider.publish_comment.assert_not_called()
 
     def test_persistent_review_prefers_marked_comment_over_legacy_comment(self):
@@ -479,7 +479,9 @@ not a valid hunk
 
         unrelated.put.assert_not_called()
         provider.publish_comment.assert_called_once()
-        assert PRReviewIdentity.REGULAR.value in provider.publish_comment.call_args.args[0]
+        assert "[pr-agent:review:full]: https://github.com/The-PR-Agent/pr-agent" in (
+            provider.publish_comment.call_args.args[0]
+        )
 
     def test_nonreview_persistent_comment_requires_header_at_start(self):
         existing = MagicMock()
