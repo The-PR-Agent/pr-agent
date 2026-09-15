@@ -122,6 +122,41 @@ def test_output_models_validate_complete_fixtures(model, payload):
     model.model_validate(payload)
 
 
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        ({"labels": [" Bug fix ", "Tests"]}, ["Bug fix", "Tests"]),
+        ({"labels": "Bug fix, Tests"}, ["Bug fix", "Tests"]),
+        (
+            {"labels": [{"name": "Bug fix"}, {"label": "Tests"}, {"title": "Docs"},
+                        {"value": "Perf"}, 1, 2.5, {}, False]},
+            ["Bug fix", "Tests", "Docs", "Perf", "1", "2.5"],
+        ),
+        ({"labels": [{"name": " ", "label": "Tests"}, {}, "Bug fix"]}, ["Tests", "Bug fix"]),
+        ({"labels": []}, []),
+    ],
+)
+def test_labels_normalize_tolerated_model_shapes(payload, expected):
+    assert Labels.model_validate(payload).labels == expected
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"labels": ""},
+        {"labels": "   "},
+        {"labels": " , "},
+        {"labels": [{}, False]},
+        {"labels": 7},
+        {"types": ["Bug fix"]},
+        [],
+    ],
+)
+def test_labels_reject_unusable_model_shapes(payload):
+    with pytest.raises(ValueError):
+        Labels.model_validate(payload)
+
+
 def test_review_alias_accepts_prompt_field_name():
     assert Review.model_validate({"key_issues_to_review": [], "estimated_effort_to_review_[1-5]": 3}).estimated_effort_to_review == 3
     with pytest.raises(ValueError):
