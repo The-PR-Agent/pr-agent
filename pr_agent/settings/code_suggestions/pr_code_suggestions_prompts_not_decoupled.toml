@@ -54,10 +54,10 @@ Specific guidelines for generating code suggestions:
 - Only give suggestions that address critical problems and bugs in the PR code. If no relevant suggestions are applicable, return an empty list.
 - DO NOT suggest the following:
     - change packages version
-    - add missing import statement
-    - declare undefined variable, add missing imports, etc.
+    - suggest standalone or unrelated missing imports or declarations
     - use more specific exception types
 {%- endif %}
+- If the suggested `improved_code` introduces a dependency, include the import needed to make that suggestion valid. Do not suggest unrelated or standalone missing imports.
 - When mentioning code elements (variables, names, or files) in your response, surround them with markdown backticks (`). For example: "verify that `user_id` is..."
 - Note that you will only see partial code segments that were changed (diff hunks in a PR code), and not the entire codebase. Avoid suggestions that might duplicate existing functionality of the outer codebase. In addition, the absence of a definition, declaration, import, or initialization for any entity in the PR code is NEVER a basis for a suggestion.
 - Also note that if the code ends at an opening brace or statement that begins a new scope (like 'if', 'for', 'try'), don't treat it as incomplete. Instead, acknowledge the visible scope boundary and analyze only the code shown.
