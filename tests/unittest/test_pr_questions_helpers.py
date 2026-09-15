@@ -20,7 +20,7 @@ from pr_agent.git_providers.gerrit_provider import GerritProvider, adopt_to_gerr
 from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
-from pr_agent.tools.pr_questions import PRQuestions
+from pr_agent.tools.pr_questions import PRQuestions, _sanitize_slash_commands
 from tests.unittest._settings_helpers import SENTINEL, restore_settings, snapshot_settings
 
 
@@ -447,6 +447,58 @@ class TestLoadPrConversationHistory:
 
         assert history == ""
         provider.get_review_thread_comments.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _sanitize_slash_commands and the question echo
+# ---------------------------------------------------------------------------
+
+class TestSanitizeSlashCommands:
+    @pytest.mark.parametrize(
+        "text, expected",
+        [
+            ("/merge this now", " /merge this now"),
+            ("please\n/close this", "please\n /close this"),
+            ("please\r/close this", "please\r /close this"),
+            ("what does /merge do here?", "what does /merge do here?"),
+            ("", ""),
+        ],
+    )
+    def test_no_line_starts_with_slash(self, text, expected):
+        assert _sanitize_slash_commands(text) == expected
+
+
+class TestQuestionEchoSanitization:
+    def test_question_with_leading_slash_is_space_prefixed(self):
+        pr = _make_pr_questions(
+            question_str="/merge this now", prediction="no", git_provider=MagicMock()
+        )
+        out = pr._prepare_pr_answer()
+        assert "\n /merge this now" in out
+        assert "\n/merge" not in out
+
+    def test_question_with_newline_slash_is_space_prefixed(self):
+        pr = _make_pr_questions(
+            question_str="why?\n/merge now", prediction="no", git_provider=MagicMock()
+        )
+        out = pr._prepare_pr_answer()
+        assert "\n /merge now" in out
+        assert "\n/merge" not in out
+
+    def test_question_with_carriage_return_slash_is_neutralized(self):
+        pr = _make_pr_questions(
+            question_str="why?\r/close", prediction="no", git_provider=MagicMock()
+        )
+        out = pr._prepare_pr_answer()
+        assert "\r /close" in out
+        assert "\r/close" not in out
+
+    def test_mid_line_slash_mention_in_question_survives(self):
+        pr = _make_pr_questions(
+            question_str="what does /merge do here?", prediction="no", git_provider=MagicMock()
+        )
+        out = pr._prepare_pr_answer()
+        assert "what does /merge do here?" in out
 
 
 # ---------------------------------------------------------------------------
