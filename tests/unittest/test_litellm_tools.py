@@ -248,6 +248,33 @@ def test_litellm_handler_supports_tool_calling(monkeypatch):
         assert handler.supports_tool_calling("error-model") is False
 
 
+def test_supports_tool_calling_uses_routing(monkeypatch):
+    """Verify that supports_tool_calling routes the model through the handler's
+    provider pipeline before querying litellm, so Azure/Bedrock models get
+    correct capability answers."""
+    handler = litellm_handler.LiteLLMAIHandler.__new__(litellm_handler.LiteLLMAIHandler)
+    handler._custom_llm_provider = None
+    handler.azure = True  # Simulate Azure mode
+
+    captured_calls = []
+
+    def fake_get_supported(model=None, custom_llm_provider=None):
+        captured_calls.append({"model": model, "provider": custom_llm_provider})
+        return ["tools", "temperature"]
+
+    with patch("litellm.get_supported_openai_params", side_effect=fake_get_supported):
+        result = handler.supports_tool_calling("gpt-4o")
+
+    assert result is True
+    assert len(captured_calls) == 1
+    # In Azure mode, the model should have been routed (e.g., prefixed with 'azure/')
+    call = captured_calls[0]
+    assert call["model"].startswith("azure/") or call["provider"] == "azure", (
+        f"Expected Azure routing but got model={call['model']}, provider={call['provider']}"
+    )
+
+
+
 # ---------------------------------------------------------------------------
 # _get_completion_with_tools & chat_completion_with_tools
 # ---------------------------------------------------------------------------
@@ -333,3 +360,108 @@ async def test_chat_completion_with_tools_preserves_messages(monkeypatch):
     handler._chat_completion_with_tools_retry.assert_called_once()
     call_kwargs = handler._chat_completion_with_tools_retry.call_args.kwargs
     assert call_kwargs["messages"] == messages
+
+
+# ---------------------------------------------------------------------------
+# _build_request_kwargs unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestBuildRequestKwargs:
+    def test_build_request_kwargs_messages_and_tools(self, monkeypatch):
+        monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+        handler = litellm_handler.LiteLLMAIHandler()
+        messages = [{"role": "user", "content": "hello"}]
+        tools = [{"type": "function", "function": {"name": "read_pr_file"}}]
+        kwargs, log_sys, log_usr = handler._build_request_kwargs(
+            model="gpt-4o",
+            user_model="gpt-4o",
+            request_provider="openai",
+            system="system prompt",
+            user="user prompt",
+            temperature=0.3,
+            messages=messages,
+            tools=tools,
+        )
+        assert kwargs["model"] == "gpt-4o"
+        assert kwargs["messages"] == messages
+        assert kwargs["tools"] == tools
+        assert kwargs["temperature"] == 0.3
+        assert kwargs["timeout"] == 30
+
+    def test_build_request_kwargs_prompts_conversion(self, monkeypatch):
+        monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+        handler = litellm_handler.LiteLLMAIHandler()
+        kwargs, log_sys, log_usr = handler._build_request_kwargs(
+            model="gpt-4o",
+            user_model="gpt-4o",
+            request_provider="openai",
+            system="system prompt",
+            user="user prompt",
+            temperature=0.2,
+        )
+        assert kwargs["messages"] == [
+            {"role": "system", "content": "system prompt"},
+            {"role": "user", "content": "user prompt"},
+        ]
+        assert kwargs["temperature"] == 0.2
+
+    def test_build_request_kwargs_seed_validation(self, monkeypatch):
+        settings = FakeSettings(config_values={"seed": 42})
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: settings)
+        handler = litellm_handler.LiteLLMAIHandler()
+
+        # temperature > 0 and seed >= 0 raises ValueError
+        with pytest.raises(ValueError, match="Seed .* is not supported with temperature .* > 0"):
+            handler._build_request_kwargs(
+                model="gpt-4o",
+                user_model="gpt-4o",
+                request_provider="openai",
+                system="sys",
+                user="usr",
+                temperature=0.7,
+            )
+
+        # temperature == 0 with seed >= 0 works
+        kwargs, _, _ = handler._build_request_kwargs(
+            model="gpt-4o",
+            user_model="gpt-4o",
+            request_provider="openai",
+            system="sys",
+            user="usr",
+            temperature=0.0,
+        )
+        assert kwargs["seed"] == 42
+
+    def test_build_request_kwargs_gpt5_removes_temperature_and_sets_reasoning(self, monkeypatch):
+        monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+        handler = litellm_handler.LiteLLMAIHandler()
+        monkeypatch.setattr(handler, "_is_gpt5_model", lambda m: True)
+
+        kwargs, _, _ = handler._build_request_kwargs(
+            model="gpt-5-preview",
+            user_model="gpt-5-preview",
+            request_provider="openai",
+            system="sys",
+            user="usr",
+            temperature=0.5,
+        )
+        assert "temperature" not in kwargs
+        assert "reasoning_effort" in kwargs
+        assert "reasoning_effort" in kwargs.get("allowed_openai_params", [])
+
+    def test_build_request_kwargs_add_user_to_requests(self, monkeypatch):
+        settings = FakeSettings(config_values={"add_user_to_requests": True})
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: settings)
+        handler = litellm_handler.LiteLLMAIHandler()
+        monkeypatch.setattr(handler, "_get_request_user_field", lambda: "user123")
+
+        with patch("litellm.get_supported_openai_params", return_value=["user"]):
+            kwargs, _, _ = handler._build_request_kwargs(
+                model="gpt-4o",
+                user_model="gpt-4o",
+                request_provider="openai",
+                system="sys",
+                user="usr",
+            )
+            assert kwargs["user"] == "user123"

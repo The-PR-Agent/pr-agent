@@ -400,3 +400,147 @@ class TestOrchestration:
             pr.ai_handler.chat_completion_with_tools.assert_not_called()
         finally:
             restore_settings(snapshot)
+
+
+# ---------------------------------------------------------------------------
+# Regression tests: path security hardening
+# ---------------------------------------------------------------------------
+
+
+class TestPathSecurityRegression:
+    @pytest.fixture(autouse=True)
+    def setup_diff_file(self):
+        self.file_foo = FilePatchInfo(
+            base_file="old foo content",
+            head_file="new foo content",
+            patch="",
+            filename="foo.py",
+            edit_type=EDIT_TYPE.MODIFIED,
+            head_file_is_complete=True,
+        )
+        self.pr = _make_pr_questions(diff_files=[self.file_foo])
+
+    def test_path_with_raw_dotdot_in_middle_rejected(self):
+        """Raw '..' segments must be rejected BEFORE normpath to prevent bypass."""
+        for bad_path in [
+            "valid_dir/../../../etc/passwd",
+            "src/../../../secret",
+            "a/b/../../c",
+        ]:
+            res = json.loads(self.pr._execute_read_pr_file(json.dumps({"path": bad_path})))
+            assert "error" in res, f"Path '{bad_path}' should have been rejected"
+            assert "directory traversal" in res["error"]
+
+    def test_windows_drive_path_rejected(self):
+        """Windows drive-qualified paths (C:/x, C:x, D:\\path) must be rejected."""
+        for bad_path in ["C:/foo.py", "C:foo.py", "D:/path/to/file", "c:relative"]:
+            res = json.loads(self.pr._execute_read_pr_file(json.dumps({"path": bad_path})))
+            assert "error" in res, f"Path '{bad_path}' should have been rejected"
+            assert "Windows drive" in res["error"] or "forward slashes" in res["error"]
+
+    def test_empty_head_file_is_valid(self):
+        """An empty string head_file is a valid empty file, not an unavailable one."""
+        empty_file = FilePatchInfo(
+            base_file="old content",
+            head_file="",
+            patch="",
+            filename="empty.py",
+            edit_type=EDIT_TYPE.MODIFIED,
+            head_file_is_complete=True,
+        )
+        pr = _make_pr_questions(diff_files=[empty_file])
+        res = json.loads(pr._execute_read_pr_file('{"path": "empty.py"}'))
+        # Should NOT be an error — empty file is valid
+        assert "error" not in res
+        assert res["path"] == "empty.py"
+        assert res["content"] == ""
+
+
+# ---------------------------------------------------------------------------
+# Regression tests: tool-call protocol validation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+class TestToolCallProtocolValidation:
+    async def test_tool_call_missing_id_rejected(self):
+        """A tool call with missing/empty id must be rejected and fall back."""
+        pr = _make_pr_questions()
+        turn1 = AssistantTurn(
+            content=None,
+            tool_calls=[ToolCall(id="", name="read_pr_file", arguments='{"path": "foo.py"}')],
+        )
+        pr.ai_handler.chat_completion_with_tools = AsyncMock(return_value=turn1)
+        pr.ai_handler.chat_completion = AsyncMock(return_value=("Fallback answer", "stop"))
+
+        ans = await pr._get_prediction_with_tools("gpt-4o", "sys", "usr")
+        assert ans == "Fallback answer"
+        pr.ai_handler.chat_completion.assert_called_once()
+
+    async def test_tool_call_invalid_type_rejected(self):
+        """A tool call with type != 'function' must be rejected and fall back."""
+        pr = _make_pr_questions()
+        turn1 = AssistantTurn(
+            content=None,
+            tool_calls=[ToolCall(id="c1", name="read_pr_file", arguments='{"path": "foo.py"}')],
+        )
+        # Override the type to something invalid
+        turn1.tool_calls[0].type = "invalid_type"
+        pr.ai_handler.chat_completion_with_tools = AsyncMock(return_value=turn1)
+        pr.ai_handler.chat_completion = AsyncMock(return_value=("Fallback answer", "stop"))
+
+        ans = await pr._get_prediction_with_tools("gpt-4o", "sys", "usr")
+        assert ans == "Fallback answer"
+        pr.ai_handler.chat_completion.assert_called_once()
+
+    async def test_tool_call_empty_name_rejected(self):
+        """A tool call with empty name must be rejected and fall back."""
+        pr = _make_pr_questions()
+        turn1 = AssistantTurn(
+            content=None,
+            tool_calls=[ToolCall(id="c1", name="", arguments='{"path": "foo.py"}')],
+        )
+        pr.ai_handler.chat_completion_with_tools = AsyncMock(return_value=turn1)
+        pr.ai_handler.chat_completion = AsyncMock(return_value=("Fallback answer", "stop"))
+
+        ans = await pr._get_prediction_with_tools("gpt-4o", "sys", "usr")
+        assert ans == "Fallback answer"
+        pr.ai_handler.chat_completion.assert_called_once()
+
+    async def test_tool_call_malformed_arguments_returns_error_without_read(self):
+        """Malformed tool arguments must produce a tool-error result returned to the
+        model, but the actual read path (get_diff_files) must NOT be reached."""
+        file_target = FilePatchInfo(
+            base_file="",
+            head_file="content",
+            patch="",
+            filename="target.py",
+            edit_type=EDIT_TYPE.ADDED,
+            head_file_is_complete=True,
+        )
+        pr = _make_pr_questions(diff_files=[file_target])
+
+        turn1 = AssistantTurn(
+            content=None,
+            tool_calls=[
+                ToolCall(id="c1", name="read_pr_file", arguments="not valid json {{{"),
+            ],
+            finish_reason="tool_calls",
+        )
+        turn2 = AssistantTurn(content="Error handled.", finish_reason="stop")
+        pr.ai_handler.chat_completion_with_tools = AsyncMock(side_effect=[turn1, turn2])
+
+        ans = await pr._get_prediction_with_tools("gpt-4o", "sys", "usr")
+        assert ans == "Error handled."
+
+        # The turn2 messages should contain a tool result with an error — verify the
+        # tool result contains an error indicator and the actual read path was not reached
+        turn2_call = pr.ai_handler.chat_completion_with_tools.call_args_list[1]
+        messages = turn2_call.kwargs["messages"]
+        tool_msg = [m for m in messages if m["role"] == "tool"]
+        assert len(tool_msg) == 1
+        tool_content = json.loads(tool_msg[0]["content"])
+        assert "error" in tool_content
+        assert "Malformed" in tool_content["error"]
+        # The git_provider.get_diff_files should NOT have been called for this malformed path
+        pr.git_provider.get_diff_files.assert_not_called()

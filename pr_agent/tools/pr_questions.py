@@ -1,6 +1,7 @@
 import copy
 import json
 import posixpath
+import re
 from functools import partial
 
 from jinja2 import Environment, StrictUndefined
@@ -217,13 +218,17 @@ class PRQuestions:
 
         path = path.strip()
 
-        # Path security: reject absolute, traversal, backslash, NUL
+        # Path security: reject Windows drive-qualified paths, absolute, traversal, backslash, NUL
         if "\x00" in path:
             return json.dumps({"error": "Invalid path: contains null byte"})
         if "\\" in path:
             return json.dumps({"error": "Invalid path: use forward slashes (POSIX paths)"})
+        if re.match(r"^[A-Za-z]:", path):
+            return json.dumps({"error": "Invalid path: Windows drive-qualified paths are not allowed"})
         if posixpath.isabs(path):
             return json.dumps({"error": "Invalid path: absolute paths are not allowed"})
+        if any(segment == ".." for segment in path.split("/")):
+            return json.dumps({"error": "Invalid path: directory traversal is not allowed"})
         normalized = posixpath.normpath(path)
         if (
             normalized in (".", "..")
@@ -244,7 +249,7 @@ class PRQuestions:
             return json.dumps({"error": f"File '{path}' was deleted in this pull request"})
 
         # Check head file availability and completeness
-        if not diff_file.head_file or diff_file.head_file is None:
+        if diff_file.head_file is None:
             return json.dumps({"error": f"Complete head content for '{path}' is unavailable"})
         if not getattr(diff_file, "head_file_is_complete", True):
             return json.dumps({"error": f"Complete head content for '{path}' is unavailable (partial content only)"})
@@ -314,6 +319,34 @@ class PRQuestions:
             return response
 
         call = turn1.tool_calls[0]
+
+        # Protocol validation: id and name must be non-empty strings, type must be 'function'
+        if not isinstance(call.id, str) or not call.id.strip():
+            get_logger().warning("Tool call missing valid 'id'; rejecting turn and falling back")
+            if turn1.content:
+                return turn1.content
+            response, _ = await self.ai_handler.chat_completion(
+                model=model, temperature=temperature, system=system_prompt, user=user_prompt
+            )
+            return response
+
+        if call.type != "function":
+            get_logger().warning(f"Tool call has invalid type '{call.type}'; rejecting turn and falling back")
+            if turn1.content:
+                return turn1.content
+            response, _ = await self.ai_handler.chat_completion(
+                model=model, temperature=temperature, system=system_prompt, user=user_prompt
+            )
+            return response
+
+        if not isinstance(call.name, str) or not call.name.strip():
+            get_logger().warning("Tool call has missing or empty name; rejecting turn and falling back")
+            if turn1.content:
+                return turn1.content
+            response, _ = await self.ai_handler.chat_completion(
+                model=model, temperature=temperature, system=system_prompt, user=user_prompt
+            )
+            return response
 
         # Validate the tool name
         if call.name != "read_pr_file":
