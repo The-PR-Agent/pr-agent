@@ -1,7 +1,11 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from pr_agent.algo.inline_comment_dedup import InlineCommentStore, can_verify_inline_comment_publication
+from pr_agent.algo.inline_comment_dedup import (
+    InlineCommentStore,
+    can_verify_inline_comment_publication,
+    key_issue_body_with_markers,
+)
 from pr_agent.git_providers.bitbucket_provider import BitbucketProvider
 
 
@@ -42,12 +46,14 @@ def test_bitbucket_publish_records_body_and_preserves_markers():
     provider.headers = {}
     provider.bitbucket_comment_api_url = "https://bitbucket.example/comments"
     provider.max_comment_length = 31000
-    body = "x" * 31_500 + "\n\n[pr-agent-key-issue-location: abcdef123456]: https://github.com/The-PR-Agent/pr-agent"
+    body = key_issue_body_with_markers(
+        "x" * 31_500, "abcdef123456", "123456abcdef", 31_000, provider
+    )
     with patch("pr_agent.git_providers.bitbucket_provider.requests.request") as request:
         request.return_value.raise_for_status.return_value = None
         assert provider.publish_inline_comment(body, "file.py", 10)
     published = provider.get_recent_inline_comment_bodies()
-    assert published and "pr-agent-key-issue-location: abcdef123456" in published[0]
+    assert published and "pr-agent-key-issue-location: 123456abcdef" in published[0]
     assert provider.get_persistent_comment_bodies() == published
 
 
