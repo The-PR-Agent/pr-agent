@@ -464,12 +464,13 @@ class TestApplyDiagramDirection:
 
 class TestPRDescriptionLargePR:
 
-    def test_output_token_reserve_uses_positive_handler_value(self):
+    @pytest.mark.parametrize("handler_value", [1, 100, 999, 1_000, 1_200, 5_000])
+    def test_output_token_reserve_keeps_the_legacy_minimum(self, handler_value):
         obj = _make_large_pr_instance()
         obj.ai_handler = MagicMock()
-        obj.ai_handler.get_output_token_reserve.return_value = 5_000
+        obj.ai_handler.get_output_token_reserve.return_value = handler_value
 
-        assert obj._get_output_token_reserve("gpt-4o", 1_000) == 5_000
+        assert obj._get_output_token_reserve("gpt-4o", 1_000) == max(handler_value, 1_000)
         obj.ai_handler.get_output_token_reserve.assert_called_once_with("gpt-4o", 1_000)
 
     @pytest.mark.parametrize("handler_value", [None, True, False, 0, -1, "5000", 5_000.0])
@@ -490,13 +491,16 @@ class TestPRDescriptionLargePR:
         assert obj._get_output_token_reserve("gpt-4o", 1_000) == 1_000
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(("walkthrough_tokens", "expected_clip_budget"), [(4_000, None), (4_001, 4_000)])
+    @pytest.mark.parametrize(
+        ("reserve", "walkthrough_tokens", "expected_clip_budget"),
+        [(5_000, 4_000, None), (5_000, 4_001, 4_000), (100, 8_000, None), (100, 8_001, 8_000)],
+    )
     async def test_large_pr_header_reserves_handler_output_tokens(
-        self, monkeypatch, walkthrough_tokens, expected_clip_budget
+        self, monkeypatch, reserve, walkthrough_tokens, expected_clip_budget
     ):
         obj = _make_large_pr_instance()
         obj.ai_handler = MagicMock()
-        obj.ai_handler.get_output_token_reserve.return_value = 5_000
+        obj.ai_handler.get_output_token_reserve.return_value = reserve
         monkeypatch.setattr(get_settings().pr_description, "async_ai_calls", True)
 
         final_prompts = []
@@ -534,7 +538,7 @@ class TestPRDescriptionLargePR:
             assert mock_clip.call_args.kwargs["num_input_tokens"] == walkthrough_tokens
 
         final_input_tokens = len(token_handler.encoder.encode(final_prompts[0])) + token_handler.prompt_tokens
-        assert final_input_tokens + 5_000 <= 10_000
+        assert final_input_tokens + max(reserve, 1_000) <= 10_000
         obj.ai_handler.get_output_token_reserve.assert_called_once_with("gpt-4o", 1_000)
 
     @pytest.mark.asyncio
@@ -556,7 +560,7 @@ class TestPRDescriptionLargePR:
 
         obj._get_prediction = AsyncMock(side_effect=mock_get_prediction)
         token_handler = MagicMock()
-        token_handler.prompt_tokens = 9_890
+        token_handler.prompt_tokens = 8_990
         token_handler.encoder.encode.side_effect = tuple
 
         with patch(
@@ -569,7 +573,7 @@ class TestPRDescriptionLargePR:
             await obj._prepare_prediction("gpt-4o")
 
         assert final_prompts == [""]
-        assert token_handler.prompt_tokens + len(final_prompts[0]) + 100 <= 10_000
+        assert token_handler.prompt_tokens + len(final_prompts[0]) + 1_000 <= 10_000
 
     @pytest.mark.asyncio
     async def test_large_pr_header_uses_each_retry_models_output_reserve(self, monkeypatch):

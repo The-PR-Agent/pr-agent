@@ -260,6 +260,7 @@ class PRDescription:
         return ""
 
     def _get_output_token_reserve(self, model: str, default_output_tokens: int) -> int:
+        """Keep the legacy minimum margin when the handler requests less output."""
         ai_handler = getattr(self, "ai_handler", None)
         get_output_token_reserve = getattr(ai_handler, "get_output_token_reserve", None)
         if callable(get_output_token_reserve):
@@ -273,7 +274,7 @@ class PRDescription:
                     and not isinstance(output_tokens, bool)
                     and output_tokens > 0
                 ):
-                    return output_tokens
+                    return max(output_tokens, default_output_tokens)
         return default_output_tokens
 
     async def _prepare_prediction(self, model: str) -> None:
