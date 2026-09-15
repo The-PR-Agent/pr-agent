@@ -191,12 +191,17 @@ async def test_a_chunk_that_fails_does_not_lose_the_chunks_that_succeeded(chunki
         patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
         patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
               return_value=(["chunk-a", "chunk-b"], [])),
+        pytest.raises(RuntimeError, match="model refused"),
     ):
         await reviewer._prepare_prediction("model")
 
-    assert reviewer.prediction_data["review"]["score"] == 40
+    reviewer._get_prediction.side_effect = [CHUNK_A]
+    await reviewer._prepare_prediction("fallback-model")
+
+    assert reviewer.prediction_data["review"]["score"] == "40"
     assert reviewer.review_chunk_count == 2
-    assert reviewer.review_failed_chunk_count == 1
+    assert reviewer.review_failed_chunk_count == 0
+    assert [call.args[1] for call in reviewer._get_prediction.await_args_list] == ["chunk-a", "chunk-b", "chunk-a"]
 
 
 @pytest.mark.asyncio
@@ -235,7 +240,7 @@ async def test_a_failed_chunk_blocks_persistent_finding_resolution(chunking_enab
 
 
 @pytest.mark.asyncio
-async def test_a_malformed_chunk_fails_the_model_attempt(chunking_enabled):
+async def test_a_malformed_chunk_is_retried_without_repeating_successful_chunks(chunking_enabled):
     reviewer = _make_reviewer()
     reviewer._get_prediction = AsyncMock(side_effect=["review: {}", CHUNK_B])
 
@@ -249,6 +254,12 @@ async def test_a_malformed_chunk_fails_the_model_attempt(chunking_enabled):
 
     assert reviewer._get_prediction.await_count == 2
     assert reviewer.prediction_data is None
+
+    reviewer._get_prediction.side_effect = [CHUNK_A]
+    await reviewer._prepare_prediction("fallback-model")
+
+    assert reviewer.prediction_data["review"]["score"] == "40"
+    assert [call.args[1] for call in reviewer._get_prediction.await_args_list] == ["chunk-a", "chunk-b", "chunk-a"]
 
 
 @pytest.mark.asyncio

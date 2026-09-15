@@ -809,30 +809,37 @@ class PRReviewer:
 
         Returns False when chunking does not apply, leaving the single-call flow in place.
         """
-        multi_diff_kwargs = {
-            "max_calls": get_settings().pr_reviewer.get("max_number_of_calls", 3),
-            "add_line_numbers": True,
-            "return_remaining_files": True,
-        }
-        if prepared_diff is not None:
-            multi_diff_kwargs["prepared_diff"] = prepared_diff
-        patches_diff_list, remaining_files_list = get_pr_multi_diffs(
-            self.git_provider,
-            self.token_handler,
-            model,
-            **multi_diff_kwargs)
+        patches_diff_list = getattr(self, "_chunked_patches_diff_list", None)
+        remaining_files_list = getattr(self, "_chunked_remaining_files_list", None)
+        if patches_diff_list is None:
+            multi_diff_kwargs = {
+                "max_calls": get_settings().pr_reviewer.get("max_number_of_calls", 3),
+                "add_line_numbers": True,
+                "return_remaining_files": True,
+            }
+            if prepared_diff is not None:
+                multi_diff_kwargs["prepared_diff"] = prepared_diff
+            patches_diff_list, remaining_files_list = get_pr_multi_diffs(
+                self.git_provider,
+                self.token_handler,
+                model,
+                **multi_diff_kwargs)
+            self._chunked_patches_diff_list = patches_diff_list
+            self._chunked_remaining_files_list = remaining_files_list
         if len(patches_diff_list) < 2:
             get_logger().info("Large-diff chunking produced a single chunk, reviewing the PR in one call")
             return False
 
         get_logger().info(f"Number of PR chunk calls: {len(patches_diff_list)}")
         get_logger().debug("PR diff chunks", artifact=patches_diff_list)
+        chunk_results = getattr(self, "_chunked_results", {})
+        pending_indices = [index for index in range(len(patches_diff_list)) if index not in chunk_results]
         predictions = await asyncio.gather(
-            *[self._get_prediction(model, patches_diff) for patches_diff in patches_diff_list],
+            *[self._get_prediction(model, patches_diff_list[index]) for index in pending_indices],
             return_exceptions=True)
 
-        raw_predictions, chunk_outputs, chunk_errors = [], [], []
-        for chunk_index, prediction in enumerate(predictions):
+        chunk_errors = []
+        for chunk_index, prediction in zip(pending_indices, predictions, strict=True):
             if isinstance(prediction, Exception):
                 chunk_errors.append(prediction)
                 get_logger().warning(f"Failed to review chunk {chunk_index + 1}; retaining successful chunks",
@@ -840,19 +847,29 @@ class PRReviewer:
                 continue
             if isinstance(prediction, BaseException):
                 raise prediction
-            data = self._load_valid_review_yaml(prediction, source=f"review chunk {chunk_index + 1}")
-            self._validate_review_schema(data)
-            raw_predictions.append(prediction)
-            chunk_outputs.append(data)
+            try:
+                data = self._load_valid_review_yaml(prediction, source=f"review chunk {chunk_index + 1}")
+                self._validate_review_schema(data)
+            except Exception as error:
+                chunk_errors.append(error)
+                get_logger().warning(f"Failed to parse review chunk {chunk_index + 1}; retrying it with fallback",
+                                     artifact={"error": error})
+                continue
+            chunk_results[chunk_index] = (prediction, data)
+        self._chunked_results = chunk_results
 
-        if not chunk_outputs:
-            raise chunk_errors[0]
+        if len(chunk_results) < len(patches_diff_list):
+            if chunk_errors:
+                raise chunk_errors[0]
+            raise ValueError("No valid review output was produced for one or more chunks")
 
         # the raw text is kept for logging only; the merged verdict is in self.prediction_data
+        raw_predictions = [chunk_results[index][0] for index in range(len(patches_diff_list))]
+        chunk_outputs = [chunk_results[index][1] for index in range(len(patches_diff_list))]
         self.prediction = "\n".join(raw_predictions)
         self.prediction_data = merge_review_chunks(chunk_outputs)
         self.review_chunk_count = len(patches_diff_list)
-        self.review_failed_chunk_count = len(patches_diff_list) - len(chunk_outputs)
+        self.review_failed_chunk_count = 0
         self.remaining_files_list = remaining_files_list
         return True
 
