@@ -639,20 +639,49 @@ def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url
             github_tickets.append(url)
 
     try:
-        # Use the updated pattern to find matches
-        matches = GITHUB_TICKET_PATTERN.findall(pr_description)
+        custom_pattern = None
+        custom_regex = get_settings().get("config.description_issue_regex", "")
+        if custom_regex:
+            try:
+                custom_pattern = re.compile(custom_regex)
+                if custom_pattern.groups != 1:
+                    raise ValueError("expected exactly one capturing group for the issue number")
+            except (re.error, TypeError, ValueError) as e:
+                get_logger().warning(f"Invalid description_issue_regex: {e}; using default pattern.")
+                custom_pattern = None
 
-        for match in matches:
-            if match[0]:  # Full URL match
-                _add(match[0])
-            elif match[1]:  # Shorthand notation match: owner/repo#issue_number
-                owner, repo, issue_number = match[2], match[3], match[4]
-                _add(f"{base_url_html.strip('/')}/{owner}/{repo}/issues/{issue_number}")
-            else:  # #123 format
-                issue_number = match[5][1:]  # remove #
+        candidates = []
+        explicit_spans = []
+        for match in GITHUB_TICKET_PATTERN.finditer(pr_description):
+            if match[1]:  # Full URL match
+                candidates.append((match.start(), match[1]))
+                explicit_spans.append(match.span())
+            elif match[2]:  # Shorthand notation match: owner/repo#issue_number
+                owner, repo, issue_number = match[3], match[4], match[5]
+                candidates.append((match.start(),
+                                   f"{base_url_html.strip('/')}/{owner}/{repo}/issues/{issue_number}"))
+                explicit_spans.append(match.span())
+            elif custom_pattern is None:  # Default #123 format
+                issue_number = match[6][1:]
                 if (issue_number.isdigit() and repo_path
                         and len(issue_number) <= MAX_SHORTHAND_ISSUE_DIGITS):
-                    _add(f"{base_url_html.strip('/')}/{repo_path}/issues/{issue_number}")
+                    candidates.append((match.start(),
+                                       f"{base_url_html.strip('/')}/{repo_path}/issues/{issue_number}"))
+
+        if custom_pattern is not None and repo_path:
+            for match in custom_pattern.finditer(pr_description):
+                issue_number = match[1]
+                # Keep explicit references from also becoming tickets in the current repository.
+                start, end = match.span(1)
+                if any(start < explicit_end and end > explicit_start
+                       for explicit_start, explicit_end in explicit_spans):
+                    continue
+                if issue_number and issue_number.isdigit():
+                    candidates.append((match.start(),
+                                       f"{base_url_html.strip('/')}/{repo_path}/issues/{issue_number}"))
+
+        for _, url in sorted(candidates, key=lambda candidate: candidate[0]):
+            _add(url)
 
         if len(github_tickets) > MAX_GITHUB_TICKETS:
             get_logger().info(f"Too many tickets found in PR description: {len(github_tickets)}")
@@ -834,6 +863,18 @@ async def extract_tickets(git_provider):
                     except Exception as e:
                         get_logger().error(f"Error getting main issue {repo_name}#{original_issue_number}: {e}",
                                            artifact={"traceback": traceback.format_exc()})
+                        continue
+
+                    # A PR reference is not an issue ticket. GitHub's issue API
+                    # exposes pull requests through the ``pull_request`` field.
+                    # Prefer the raw API payload so duck-typed issue substitutes
+                    # (and mocks that synthesize arbitrary attributes) are not
+                    # mistaken for pull requests.
+                    issue_raw_data = getattr(issue_main, "raw_data", None)
+                    is_pull_request = isinstance(issue_raw_data, dict) and issue_raw_data.get("pull_request") is not None
+                    if not is_pull_request and "_pull_request" in vars(issue_main):
+                        is_pull_request = getattr(issue_main, "pull_request", None) is not None
+                    if is_pull_request:
                         continue
 
                     issue_body_str = issue_main.body or ""
