@@ -932,12 +932,13 @@ def test_exact_packing_checks_stay_within_linear_bound_for_many_files():
     chunks = pr_processing._pack_pr_multi_diffs(
         file_dict,
         chunk_handler,
-        max_calls=3,
+        max_calls=5,
         return_remaining_files=False,
-        token_budget=10_000,
+        token_budget=180,
     )
 
-    assert len(chunks) == 1
+    assert len(chunks) == 5
+    assert all(chunk_handler.count_tokens(chunk) <= 180 for chunk in chunks)
     assert chunk_handler.count_calls < 3 * file_count
 
     compressed_handler = FakeTokenHandler(prompt_tokens=100)
