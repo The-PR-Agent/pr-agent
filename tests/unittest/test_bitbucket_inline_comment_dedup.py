@@ -1,9 +1,8 @@
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from pr_agent.algo.inline_comment_dedup import InlineCommentStore, can_verify_inline_comment_publication
 from pr_agent.git_providers.bitbucket_provider import BitbucketProvider
-from unittest.mock import patch
 
 
 def _provider(comment_bodies):
