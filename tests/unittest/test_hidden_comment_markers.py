@@ -19,7 +19,9 @@ from pr_agent.tools.pr_reviewer import PRReviewer
 
 @pytest.mark.parametrize("identity", list(PRReviewIdentity) + list(PRCodeSuggestionsIdentity))
 def test_marker_forms_are_interchangeable_but_bounded(identity):
-    html, reference = hidden_marker_forms(identity.value)
+    html = identity.value
+    reference = f"[{html[5:-4]}]: https://github.com/The-PR-Agent/pr-agent"
+    assert hidden_marker_forms(html) == (html, reference)
     provider = BitbucketProvider.__new__(BitbucketProvider)
     assert render_hidden_marker(html, provider) == reference
     assert render_hidden_marker(reference) == html
