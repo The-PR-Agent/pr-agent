@@ -59,29 +59,30 @@ def test_empty_input_is_safe():
     assert redact_credentials("") == ""
 
 
-def test_clone_scrubs_authenticated_remote_url(tmp_path):
+def test_clone_uses_clean_url_and_scoped_auth_config(tmp_path):
     provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
     destination = tmp_path / "checkout"
     clean_url = "https://github.example/team/repo.git"
     token_url = "https://oauth2:SECRET@github.example/team/repo.git"
 
-    def fake_clone(_url, folder, _timeout):
+    captured = {}
+
+    def fake_clone(url, folder, _timeout):
+        captured["url"] = url
+        captured["env"] = provider._clone_extra_env.copy()
         Path(folder, ".git").mkdir(parents=True)
-
-    calls = []
-
-    def fake_run(args, **kwargs):
-        calls.append(args)
 
     provider._prepare_clone_url_with_token = lambda _url: token_url
     provider._clone_inner = fake_clone
-    with patch("pr_agent.git_providers.git_provider.get_git_ssl_env", return_value={}), \
-            patch("pr_agent.git_providers.git_provider.subprocess.run", side_effect=fake_run):
+    with patch("pr_agent.git_providers.git_provider.get_git_ssl_env", return_value={}):
         result = provider.clone(clean_url, str(destination))
 
     assert result is not None
-    assert calls == [["git", "-C", str(destination), "remote", "set-url", "origin", clean_url]]
-    assert "SECRET" not in " ".join(calls[0])
+    assert captured["url"] == clean_url
+    assert captured["env"]["GIT_CONFIG_VALUE_0"] == clean_url
+    assert token_url in captured["env"]["GIT_CONFIG_KEY_0"]
+    assert "SECRET" not in captured["url"]
+    assert provider._clone_extra_env is None
 
 
 def test_failed_clone_removes_partial_checkout(tmp_path):
@@ -119,6 +120,7 @@ def test_failed_clone_preserves_existing_destination_when_requested(tmp_path):
 
     assert result is None
     assert marker.read_text() == "caller-owned"
+    assert not (destination / ".git").exists()
 
 
 class TestCloneUrlValidationLogs:
