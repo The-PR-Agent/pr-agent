@@ -53,9 +53,12 @@ from pr_agent.algo import (
 )
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_helpers import (
+    AssistantTurn,
+    ToolCall,
     _get_azure_ad_credential,
     _get_azure_ad_token,
     _handle_streaming_response,
+    _handle_structured_streaming_response,
     _process_litellm_extra_body,
     _response_field,
     get_repetition_penalty,
@@ -3835,6 +3838,268 @@ class LiteLLMAIHandler(BaseAiHandler):
             img_path,
             configured_deployment_id=configured_deployment_id,
         )
+
+    def supports_tool_calling(self, model: str) -> bool:
+        """Check whether the configured model supports OpenAI-compatible tool calling.
+
+        Uses the handler's own provider resolution so the capability query matches the
+        provider that would actually receive the request. Returns False conservatively
+        when capability metadata is unavailable or on any error.
+        """
+        try:
+            custom_llm_provider = self._custom_llm_provider or None
+            supported = litellm.get_supported_openai_params(
+                model=model,
+                custom_llm_provider=custom_llm_provider,
+            )
+            if supported is None:
+                return False
+            return "tools" in supported
+        except Exception:
+            return False
+
+    async def chat_completion_with_tools(
+        self,
+        model: str,
+        system: str = "",
+        user: str = "",
+        temperature: float = 0.2,
+        tools: list[dict] | None = None,
+        messages: list[dict] | None = None,
+    ) -> AssistantTurn:
+        """Structured tool-calling completion that returns an AssistantTurn.
+
+        Shares the full provider-routing, credential, retry, logging and accounting
+        pipeline with the existing chat_completion path. The caller (e.g. PRQuestions)
+        owns orchestration; this method executes a single model turn.
+
+        Args:
+            model: Model identifier (may include provider prefix).
+            system: System prompt (used only when messages is None).
+            user: User prompt (used only when messages is None).
+            temperature: Sampling temperature.
+            tools: OpenAI-compatible tool definitions, or None for continuation turns.
+            messages: Pre-built message list for continuation turns. When provided,
+                system and user are ignored.
+        """
+        configured_deployment_id = self.deployment_id
+        return await self._chat_completion_with_tools_retry(
+            model,
+            system,
+            user,
+            temperature,
+            tools=tools,
+            messages=messages,
+            configured_deployment_id=configured_deployment_id,
+        )
+
+    @retry(
+        retry=retry_if_exception(_should_retry_same_model),
+        stop=stop_after_attempt(MODEL_RETRIES),
+        reraise=True,
+    )
+    async def _chat_completion_with_tools_retry(
+        self,
+        model: str,
+        system: str,
+        user: str,
+        temperature: float = 0.2,
+        *,
+        tools: list[dict] | None = None,
+        messages: list[dict] | None = None,
+        configured_deployment_id: str | None,
+    ) -> AssistantTurn:
+        """Retry-wrapped structured completion. Mirrors _chat_completion_with_retry but
+        returns AssistantTurn and delegates to _get_completion_with_tools."""
+        cache_control_injection_points = self._resolve_cache_control_injection_points()
+        client_retries = _configured_client_retries()
+        custom_llm_provider = self._custom_llm_provider
+        user_model = model
+        routed_model = self._route_model_for_request(user_model, custom_llm_provider, configured_deployment_id)
+        completion_model = self._normalize_gpt5_model_for_request(routed_model, user_model, custom_llm_provider)
+        request_provider = (
+            PROVIDER_SETTING_ALIASES.get(custom_llm_provider, custom_llm_provider)
+            if custom_llm_provider
+            else self._resolve_request_provider(routed_model)
+        )
+        deployment_id = (
+            configured_deployment_id
+            if request_provider == "azure" and not routed_model.startswith("azure_text/")
+            else None
+        )
+
+        _aws_imds = self._should_use_aws_imds(request_provider)
+        async with self._snapshot_aws_request_credentials(_aws_imds) as (
+            aws_request_credentials,
+            aws_can_fallback,
+        ):
+            provider_request_params = await self._get_provider_request_params_async(
+                routed_model,
+                provider=request_provider,
+                transport_provider=custom_llm_provider or None,
+                transport_model=deployment_id or completion_model,
+                aws_request_credentials=aws_request_credentials,
+            )
+            try:
+                model = completion_model
+                openrouter_model = self._canonical_openrouter_model(model, request_provider)
+                if messages is None:
+                    normalized_system, user = self.normalize_request_prompts(model, system, user)
+                    if model in self.user_message_only_models or get_settings().config.custom_reasoning_model:
+                        user = f"{normalized_system}\n\n\n{user}"
+                        messages = [{"role": "user", "content": user}]
+                    else:
+                        messages = [
+                            {"role": "system", "content": normalized_system},
+                            {"role": "user", "content": user},
+                        ]
+
+                kwargs = {
+                    "model": model,
+                    "messages": messages,
+                    "timeout": get_settings().config.ai_timeout,
+                }
+                if deployment_id:
+                    kwargs["deployment_id"] = deployment_id
+                kwargs.update(provider_request_params)
+
+                if client_retries is not None:
+                    kwargs["num_retries"] = client_retries
+                    kwargs["max_retries"] = client_retries
+
+                if model not in self.no_support_temperature_models and not get_settings().config.custom_reasoning_model:
+                    kwargs["temperature"] = temperature
+
+                if tools:
+                    kwargs["tools"] = tools
+
+                # Optional output token limit
+                max_output_tokens = self._resolve_output_token_limit(model, openrouter_model)
+                if max_output_tokens > 0:
+                    kwargs.setdefault("max_tokens", max_output_tokens)
+
+                if get_settings().litellm.get("enable_callbacks", False):
+                    kwargs = self.add_litellm_callbacks(kwargs)
+
+                if self.repetition_penalty:
+                    kwargs["repetition_penalty"] = self.repetition_penalty
+
+                kwargs = _process_litellm_extra_body(kwargs)
+
+                if cache_control_injection_points:
+                    if isinstance(model, str) and "claude" in model.lower():
+                        kwargs.setdefault("cache_control_injection_points", cache_control_injection_points)
+
+                bedrock_model_id = getattr(self, "_bedrock_model_id", None)
+                if bedrock_model_id and request_provider == "bedrock":
+                    kwargs["model_id"] = bedrock_model_id
+
+                if openrouter_model:
+                    kwargs = self._apply_openrouter_request_controls(
+                        openrouter_model, kwargs, None,
+                    )
+
+                get_logger().debug("Prompts (tool-calling path)", artifact={"messages_count": len(messages)})
+
+                if custom_llm_provider:
+                    kwargs["custom_llm_provider"] = custom_llm_provider
+
+                turn, response_obj = await self._get_completion_with_tools(**kwargs)
+
+            except openai.RateLimitError as e:
+                get_logger().error(f"Rate limit error during LLM inference: {e}")
+                raise
+            except openai.APIError as e:
+                if aws_can_fallback:
+                    if not self._aws_imds_fell_back:
+                        self._activate_static_aws_fallback()
+                    fallback_credentials = dict(self._aws_active_creds)
+                    for key in AWS_REQUEST_CREDENTIAL_KEYS:
+                        kwargs.pop(key, None)
+                    kwargs.update(fallback_credentials)
+                    turn, response_obj = await self._get_completion_with_tools(**kwargs)
+                else:
+                    get_logger().warning(f"Error during LLM inference: {e}")
+                    raise
+            except Exception as e:
+                get_logger().warning(f"Unknown error during LLM inference: {e}")
+                raise openai.APIError(
+                    str(e),
+                    request=httpx.Request("POST", model),
+                    body=None,
+                ) from e
+
+        get_logger().debug(f"\nAI response (tool path):\n{turn.content}")
+        response_log = self.prepare_logs(response_obj, system, user, turn.content or "", turn.finish_reason)
+        get_logger().debug("Full_response", artifact=response_log)
+        self._record_completion_metadata(response_obj, model=model, display_model=user_model)
+
+        return turn
+
+    async def _get_completion_with_tools(self, **kwargs):
+        """Structured completion returning (AssistantTurn, response_obj).
+
+        Mirrors _get_completion but produces an AssistantTurn that can carry tool calls.
+        The existing _get_completion is left completely unchanged.
+        """
+        model = kwargs["model"]
+        custom_llm_provider = str(kwargs.get("custom_llm_provider") or "").strip().lower()
+        kwargs["model"] = normalize_litellm_model(model, custom_llm_provider)
+        force_streaming = self._force_streaming_for_request(custom_llm_provider, kwargs.get("api_base"))
+
+        if self._requires_streaming(model) or force_streaming:
+            kwargs["stream"] = True
+            kwargs["stream_options"] = {"include_usage": True}
+            get_logger().info(f"Using streaming mode for model {model} (tool path)")
+            response = await self._acompletion(**kwargs)
+            turn, mock_resp = await _handle_structured_streaming_response(response, model=model)
+            return turn, mock_resp
+        else:
+            response = await self._acompletion(**kwargs)
+            if response is None or len(response["choices"]) == 0:
+                raise openai.APIError(
+                    f"No choices in model response from {model}",
+                    request=httpx.Request("POST", model),
+                    body=None,
+                )
+            message = response["choices"][0]["message"]
+            content = message.get("content") if isinstance(message, dict) else getattr(message, "content", None)
+            finish_reason = response["choices"][0]["finish_reason"]
+
+            raw_tool_calls = (
+                message.get("tool_calls") if isinstance(message, dict) else getattr(message, "tool_calls", None)
+            )
+            tool_calls = []
+            if raw_tool_calls:
+                for tc in raw_tool_calls:
+                    if isinstance(tc, dict):
+                        tc_id = tc.get("id", "")
+                        tc_type = tc.get("type", "function")
+                        func = tc.get("function", {})
+                        tc_name = func.get("name", "")
+                        tc_args = func.get("arguments", "")
+                    else:
+                        tc_id = getattr(tc, "id", "") or ""
+                        tc_type = getattr(tc, "type", "function") or "function"
+                        func = getattr(tc, "function", None)
+                        tc_name = getattr(func, "name", "") or "" if func else ""
+                        tc_args = getattr(func, "arguments", "") or "" if func else ""
+                    tool_calls.append(ToolCall(id=tc_id, name=tc_name, arguments=tc_args, type=tc_type))
+
+            if not content and not tool_calls:
+                get_logger().warning(f"Empty content in model response, finish_reason: {finish_reason}")
+                raise openai.APIError(
+                    f"Empty content in model response (finish_reason: {finish_reason})",
+                    request=httpx.Request("POST", model),
+                    body=None,
+                )
+
+            turn = AssistantTurn(
+                content=content if content else None,
+                finish_reason=finish_reason,
+                tool_calls=tool_calls,
+            )
+            return turn, response
 
     @retry(
         retry=retry_if_exception(_should_retry_same_model),

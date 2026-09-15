@@ -2,6 +2,7 @@ import asyncio
 import inspect
 import json
 import sys
+from dataclasses import dataclass, field
 from math import isfinite
 
 import httpx
@@ -43,6 +44,25 @@ _LITELLM_BATCH_CALLBACK_TYPES = {
     "posthog": ("litellm.integrations.posthog", "PostHogLogger"),
     "s3_v2": ("litellm.integrations.s3_v2", "S3Logger"),
 }
+
+
+@dataclass
+class ToolCall:
+    id: str
+    name: str
+    arguments: str
+    type: str = "function"
+
+
+@dataclass
+class AssistantTurn:
+    content: str | None = None
+    finish_reason: str | None = None
+    tool_calls: list[ToolCall] = field(default_factory=list)
+
+    @property
+    def has_tool_calls(self) -> bool:
+        return bool(self.tool_calls)
 
 
 def _response_field(response, name):
@@ -105,16 +125,150 @@ async def _handle_streaming_response(response, model=None):
     return full_response, finish_reason, MockResponse(full_response, finish_reason, finalized_usage, model)
 
 
+async def _handle_structured_streaming_response(response, model=None):
+    """
+    Handle streaming response from acompletion and collect content and/or tool calls into AssistantTurn.
+
+    Args:
+        response: The streaming response object from acompletion
+        model: Model name for error reporting and metadata
+
+    Returns:
+        tuple: (AssistantTurn, MockResponse)
+    """
+    full_response = ""
+    finish_reason = None
+    finalized_usage = None
+    tool_calls_by_index: dict[int, dict] = {}
+
+    try:
+        async for chunk in response:
+            usage = _stream_usage(chunk)
+            if usage is not None:
+                finalized_usage = usage
+            if chunk.choices and len(chunk.choices) > 0:
+                choice = chunk.choices[0]
+                delta = choice.delta
+                content = getattr(delta, "content", None)
+                if content:
+                    full_response += content
+                if choice.finish_reason:
+                    finish_reason = choice.finish_reason
+
+                delta_tool_calls = getattr(delta, "tool_calls", None)
+                if delta_tool_calls is None and isinstance(delta, dict):
+                    delta_tool_calls = delta.get("tool_calls")
+
+                if delta_tool_calls:
+                    for tc in delta_tool_calls:
+                        idx = getattr(tc, "index", None)
+                        if idx is None and isinstance(tc, dict):
+                            idx = tc.get("index", 0)
+                        if idx is None:
+                            idx = 0
+                        if idx not in tool_calls_by_index:
+                            tool_calls_by_index[idx] = {
+                                "id": "",
+                                "type": "function",
+                                "name": "",
+                                "arguments": "",
+                            }
+                        call_id = getattr(tc, "id", None) or (tc.get("id") if isinstance(tc, dict) else None)
+                        if call_id:
+                            tool_calls_by_index[idx]["id"] = call_id
+
+                        call_type = getattr(tc, "type", None) or (tc.get("type") if isinstance(tc, dict) else None)
+                        if call_type:
+                            tool_calls_by_index[idx]["type"] = call_type
+
+                        func = getattr(tc, "function", None) or (tc.get("function") if isinstance(tc, dict) else None)
+                        if func:
+                            fn_name = (
+                                getattr(func, "name", None) or (func.get("name") if isinstance(func, dict) else None)
+                            )
+                            if fn_name:
+                                tool_calls_by_index[idx]["name"] = fn_name
+                            fn_args = getattr(func, "arguments", None) or (
+                                func.get("arguments") if isinstance(func, dict) else None
+                            )
+                            if fn_args:
+                                tool_calls_by_index[idx]["arguments"] += fn_args
+    except Exception as e:
+        get_logger().error(f"Error handling streaming response: {e}")
+        raise
+
+    tool_calls = []
+    if tool_calls_by_index:
+        for idx in sorted(tool_calls_by_index.keys()):
+            tc_data = tool_calls_by_index[idx]
+            tool_calls.append(
+                ToolCall(
+                    id=tc_data["id"],
+                    name=tc_data["name"],
+                    arguments=tc_data["arguments"],
+                    type=tc_data["type"] or "function",
+                )
+            )
+
+    has_content = bool(full_response)
+    has_tool_calls = bool(tool_calls)
+
+    if not has_content and not has_tool_calls:
+        if finish_reason is None:
+            get_logger().warning("Streaming response resulted in empty content with no finish reason")
+            raise openai.APIError(
+                "Empty streaming response received without proper completion",
+                request=httpx.Request("POST", model or ""),
+                body=None,
+            )
+        else:
+            get_logger().debug(
+                f"Streaming response resulted in empty content but completed with finish_reason: {finish_reason}"
+            )
+            raise openai.APIError(
+                f"Streaming response completed with finish_reason '{finish_reason}' but no content received",
+                request=httpx.Request("POST", model or ""),
+                body=None,
+            )
+
+    turn = AssistantTurn(
+        content=full_response if has_content else None,
+        finish_reason=finish_reason,
+        tool_calls=tool_calls,
+    )
+    mock_resp = MockResponse(
+        full_response,
+        finish_reason,
+        usage=finalized_usage,
+        model=model,
+        tool_calls=tool_calls if has_tool_calls else None,
+    )
+    return turn, mock_resp
+
+
 class MockResponse:
     """Represent a completed streaming response while retaining LiteLLM's finalized usage object."""
 
-    def __init__(self, resp, finish_reason, usage=None, model=None):
+    def __init__(self, resp, finish_reason, usage=None, model=None, tool_calls=None):
         self.usage = usage
+        message = {"content": resp}
+        if tool_calls:
+            message["tool_calls"] = [
+                {
+                    "id": tc.id,
+                    "type": tc.type,
+                    "function": {
+                        "name": tc.name,
+                        "arguments": tc.arguments,
+                    },
+                }
+                for tc in tool_calls
+            ]
         self._data = {
             "choices": [
                 {
-                    "message": {"content": resp},
-                    "finish_reason": finish_reason
+                    "message": message,
+                    "finish_reason": finish_reason,
                 }
             ]
         }
