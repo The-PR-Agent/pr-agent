@@ -228,6 +228,8 @@ to-do list.
 | `ask_heading` | "Ask" | Set the plain-text heading for top-level /ask answers; provider-specific presentation is added automatically. |
 | `resolve_threads` | false | Enable to let /ask_line resolve the review thread when the LLM judges the issue addressed. Note: also resolves threads started by human reviewers. |
 | `extra_instructions` | "" |  |
+| `enable_tools` | false | Tool calling: when enabled and the model supports function calling, /ask can use a bounded read-only read_pr_file tool to inspect the full current-PR head content of changed files. The feature is opt-in; disable it for models or providers that do not support OpenAI-compatible tool calling. |
+| `max_tool_tokens` | 4000 | maximum token budget for tool-returned file contents before clipping |
 
 
 ## `[pr_code_suggestions]` — /improve
