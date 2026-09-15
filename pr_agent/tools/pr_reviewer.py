@@ -1130,9 +1130,15 @@ class PRReviewer:
                 if location_fingerprint in candidate_comments:
                     candidate_issues[location_fingerprint].append(issue)
                     continue
+                max_chars = next(
+                    (getattr(self.git_provider, attr) for attr in
+                     ("max_comment_chars", "max_comment_length")
+                     if isinstance(getattr(self.git_provider, attr, None), int)),
+                    None,
+                )
                 comment["body"] = key_issue_body_with_markers(
                     comment["body"], fingerprint, location_fingerprint,
-                    getattr(self.git_provider, "max_comment_chars", None), self.git_provider)
+                    max_chars, self.git_provider)
                 candidate_comments[location_fingerprint] = comment
                 candidate_issues[location_fingerprint] = [issue]
                 candidate_fingerprints[location_fingerprint] = fingerprint

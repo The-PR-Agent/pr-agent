@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from pr_agent.algo.inline_comment_dedup import can_verify_inline_comment_publication
+from pr_agent.algo.inline_comment_dedup import InlineCommentStore, can_verify_inline_comment_publication
 from pr_agent.git_providers.bitbucket_provider import BitbucketProvider
 from unittest.mock import patch
 
@@ -20,6 +20,14 @@ def test_bitbucket_cloud_exposes_inline_dedup_capabilities():
     assert can_verify_inline_comment_publication(provider)
     assert provider.get_persistent_comment_bodies() == ["old inline finding"]
     assert provider.get_recent_inline_comment_bodies() == []
+
+
+def test_store_loads_bitbucket_persistent_bodies_without_failure():
+    provider = _provider(["[pr-agent-dedup: abcdef123456]: https://github.com/The-PR-Agent/pr-agent"])
+    store = InlineCommentStore(provider)
+    store.load()
+    assert not store.load_failed
+    assert store.seen("abcdef123456")
 
 
 def test_bitbucket_cloud_dedup_bodies_include_published_comments():
