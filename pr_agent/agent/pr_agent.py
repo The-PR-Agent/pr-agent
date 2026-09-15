@@ -285,12 +285,10 @@ class PRAgent:
         get_commands_counter().add(1, {"pr_agent.command": action, "vcs.provider.name": _git_provider})
 
         settings = get_settings()
-        missing = object()
-        previous_propagation = missing
         if propagate_tool_errors is not None:
             # Apply this after repository and command settings so callers that require an honest
             # result cannot be overridden by either source. Restore it below for request isolation.
-            previous_propagation = settings.get("CONFIG.PROPAGATE_TOOL_ERRORS", missing)
+            previous_propagation = settings.get("CONFIG.PROPAGATE_TOOL_ERRORS", False)
             settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", propagate_tool_errors)
         try:
             with get_logger().contextualize(command=action, pr_url=pr_url):
@@ -311,10 +309,7 @@ class PRAgent:
                 return True
         finally:
             if propagate_tool_errors is not None:
-                if previous_propagation is missing:
-                    settings.unset("CONFIG.PROPAGATE_TOOL_ERRORS", force=True)
-                else:
-                    settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", previous_propagation)
+                settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", previous_propagation)
 
     async def handle_request(
         self, pr_url, request, notify=None, propagate_tool_errors: bool | None = None
