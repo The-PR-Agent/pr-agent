@@ -1,15 +1,17 @@
 import asyncio
+import copy
 import json
 import shlex
 from functools import partial
 
 from opentelemetry.trace import StatusCode
+from starlette_context import context, request_cycle_context
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.cli_args import CliArgs
 from pr_agent.algo.utils import update_settings_from_args
-from pr_agent.config_loader import get_settings
+from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import get_logger
 from pr_agent.telemetry.meter import get_commands_counter
@@ -197,6 +199,14 @@ class PRAgent:
             try:
                 if propagate_tool_errors is None:
                     return await self._run_command(pr_url, request, notify, span)
+                try:
+                    context["settings"]
+                except Exception:
+                    # Create request-local settings before awaiting commands outside middleware.
+                    with request_cycle_context({"settings": copy.deepcopy(global_settings)}):
+                        return await self._run_command(
+                            pr_url, request, notify, span, propagate_tool_errors=propagate_tool_errors
+                        )
                 return await self._run_command(
                     pr_url, request, notify, span, propagate_tool_errors=propagate_tool_errors
                 )

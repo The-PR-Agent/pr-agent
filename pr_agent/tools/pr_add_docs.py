@@ -72,6 +72,8 @@ class PRAddDocs:
                 self.push_inline_docs(data)
         except Exception as e:
             get_logger().error(f"Failed to generate code documentation for PR, error: {e}")
+            if get_settings().config.get("propagate_tool_errors", False):
+                raise
 
     async def _prepare_prediction(self, model: str):
         get_logger().info('Getting PR diff...')
