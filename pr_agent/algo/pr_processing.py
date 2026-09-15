@@ -295,7 +295,6 @@ def _pack_pr_multi_diffs(file_dict: dict,
     patches = []
     final_diff_list = []
     files_in_patches = set()
-    total_tokens = token_handler.prompt_tokens
     call_number = 1
 
     def count_chunk(candidate_patches):
