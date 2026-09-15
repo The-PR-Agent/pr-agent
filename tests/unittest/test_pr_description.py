@@ -557,7 +557,7 @@ class TestPRDescriptionLargePR:
         obj._get_prediction = AsyncMock(side_effect=mock_get_prediction)
         token_handler = MagicMock()
         token_handler.prompt_tokens = 9_890
-        token_handler.encoder.encode.side_effect = lambda text: tuple(text)
+        token_handler.encoder.encode.side_effect = tuple
 
         with patch(
             "pr_agent.tools.pr_description.fit_related_tickets_to_prompt_budget",
