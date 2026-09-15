@@ -128,7 +128,14 @@ class PRQuestions:
         return img_path
 
     async def _prepare_prediction(self, model: str):
-        self.patches_diff = get_pr_diff(self.git_provider, self.token_handler, model)
+        self.patches_diff = get_pr_diff(
+            self.git_provider,
+            self.token_handler,
+            model,
+            output_token_reserve=getattr(
+                getattr(self, "ai_handler", None), "get_output_token_reserve", None
+            ),
+        )
         if self.patches_diff:
             get_logger().debug("PR diff", artifact=self.patches_diff)
             self.prediction = await self._get_prediction(model)

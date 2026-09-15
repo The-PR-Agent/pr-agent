@@ -277,7 +277,20 @@ class PRDescription:
                 model,
             )
         large_pr_handling = get_settings().pr_description.get("enable_large_pr_handling", True) and "pr_description_only_files_prompts" in get_settings()
-        output = get_pr_diff(self.git_provider, self.token_handler, model, large_pr_handling=large_pr_handling, return_remaining_files=True)
+        output_token_reserve = getattr(
+            getattr(self, "ai_handler", None), "get_output_token_reserve", None
+        )
+        output_token_reserve_kwargs = (
+            {"output_token_reserve": output_token_reserve} if callable(output_token_reserve) else {}
+        )
+        output = get_pr_diff(
+            self.git_provider,
+            self.token_handler,
+            model,
+            large_pr_handling=large_pr_handling,
+            return_remaining_files=True,
+            **output_token_reserve_kwargs,
+        )
         if isinstance(output, tuple):
             patches_diff, remaining_files_list = output
         else:
@@ -310,7 +323,11 @@ class PRDescription:
             )
             (patches_compressed_list, total_tokens_list, deleted_files_list, remaining_files_list, file_dict,
              files_in_patches_list) = get_pr_diff_multiple_patchs(
-                self.git_provider, token_handler_only_files_prompt, model)
+                self.git_provider,
+                token_handler_only_files_prompt,
+                model,
+                **output_token_reserve_kwargs,
+            )
 
             # get the files prediction for each patch
             chunk_pairs = list(zip(patches_compressed_list, files_in_patches_list, strict=True))

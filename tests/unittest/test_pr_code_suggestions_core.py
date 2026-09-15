@@ -18,6 +18,7 @@ from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 def _make_tool(git_provider=None):
     tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
     tool.git_provider = git_provider or MagicMock()
+    tool.ai_handler = MagicMock()
     tool.progress_response = None
     return tool
 
@@ -177,7 +178,9 @@ async def test_prepare_prediction_main_caps_suggestions_per_file_after_chunk_mer
         )]}
 
     try:
-        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", return_value=["chunk-a", "chunk-b"]):
+        with patch.object(
+            pr_code_suggestions_module, "get_pr_multi_diffs", return_value=["chunk-a", "chunk-b"]
+        ) as get_pr_multi_diffs:
             tool._get_prediction = fake_get_prediction
 
             data = await tool.prepare_prediction_main("primary-model")
@@ -188,6 +191,7 @@ async def test_prepare_prediction_main_caps_suggestions_per_file_after_chunk_mer
         one_sentence_summary="Finding from chunk-a",
         relevant_lines_start=1,
     )]
+    assert get_pr_multi_diffs.call_args.kwargs["output_token_reserve"] is tool.ai_handler.get_output_token_reserve
 
 
 def test_limit_suggestions_per_file_keeps_highest_scores_and_preserves_other_files():
@@ -445,10 +449,11 @@ async def test_prepare_prediction_main_rebuilds_unnumbered_chunks_after_conversi
         return {"code_suggestions": [_valid_suggestion(relevant_file=f"chunk-{len(chunk_pairs)}.py")]}
 
     try:
-        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", side_effect=[
-            ["stale unnumbered chunk"],
-            ["1 fallback-a", "2 fallback-b"],
-        ]):
+        with patch.object(
+            pr_code_suggestions_module,
+            "get_pr_multi_diffs",
+            side_effect=[["stale unnumbered chunk"], ["1 fallback-a", "2 fallback-b"]],
+        ) as get_pr_multi_diffs:
             tool._get_prediction = fake_get_prediction
 
             data = await tool.prepare_prediction_main("primary-model")
@@ -462,6 +467,11 @@ async def test_prepare_prediction_main_rebuilds_unnumbered_chunks_after_conversi
     ]
     assert tool.total_chunk_count == 2
     assert len(data["code_suggestions"]) == 2
+    assert len(get_pr_multi_diffs.call_args_list) == 2
+    assert all(
+        call.kwargs["output_token_reserve"] is tool.ai_handler.get_output_token_reserve
+        for call in get_pr_multi_diffs.call_args_list
+    )
 
 
 def test_suggestions_coverage_footer_reports_partial_runs_and_respects_flag():

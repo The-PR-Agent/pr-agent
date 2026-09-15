@@ -1769,7 +1769,12 @@ class PRCodeSuggestions:
                                                         self.token_handler,
                                                         model,
                                                         max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
-                                                        add_line_numbers=True)  # decouple hunk with line numbers
+                                                        add_line_numbers=True,
+                                                        output_token_reserve=getattr(
+                                                            getattr(self, "ai_handler", None),
+                                                            "get_output_token_reserve",
+                                                            None,
+                                                        ))  # decouple hunk with line numbers
             self.patches_diff_list_no_line_numbers = self.remove_line_numbers(self.patches_diff_list)  # decouple hunk
 
         else:
@@ -1778,7 +1783,12 @@ class PRCodeSuggestions:
                                                                         self.token_handler,
                                                                         model,
                                                                         max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
-                                                                        add_line_numbers=False)
+                                                                        add_line_numbers=False,
+                                                                        output_token_reserve=getattr(
+                                                                            getattr(self, "ai_handler", None),
+                                                                            "get_output_token_reserve",
+                                                                            None,
+                                                                        ))
             self.patches_diff_list = await self.convert_to_decoupled_with_line_numbers(
                 self.patches_diff_list_no_line_numbers, model)
             if not self.patches_diff_list:
@@ -1787,7 +1797,12 @@ class PRCodeSuggestions:
                                                             self.token_handler,
                                                             model,
                                                             max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
-                                                            add_line_numbers=True)  # decouple hunk with line numbers
+                                                            add_line_numbers=True,
+                                                            output_token_reserve=getattr(
+                                                                getattr(self, "ai_handler", None),
+                                                                "get_output_token_reserve",
+                                                                None,
+                                                            ))  # decouple hunk with line numbers
                 self.patches_diff_list_no_line_numbers = self.remove_line_numbers(self.patches_diff_list)
 
         if self.patches_diff_list:

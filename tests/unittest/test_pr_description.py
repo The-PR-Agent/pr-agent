@@ -47,6 +47,7 @@ def _make_large_pr_instance(diff_files=None):
         FilePatchInfo("", "", "", "src/file1.py"),
         FilePatchInfo("", "", "", "src/file2.py"),
     ]
+    obj.ai_handler = MagicMock()
     obj.token_handler = MagicMock()
     obj.vars = {
         "title": "Test PR",
@@ -576,9 +577,11 @@ description: |
             _, diff_kwargs = mock_diff.call_args
             assert diff_kwargs.get("large_pr_handling") is True
             assert diff_kwargs.get("return_remaining_files") is True
+            assert diff_kwargs.get("output_token_reserve") is obj.ai_handler.get_output_token_reserve
 
             # Verify get_pr_diff_multiple_patchs was invoked
             mock_multi.assert_called_once()
+            assert mock_multi.call_args.kwargs["output_token_reserve"] is obj.ai_handler.get_output_token_reserve
 
         # Verify calls to prompts
         prompts_called = [p for p, _ in recorded_prompts]
