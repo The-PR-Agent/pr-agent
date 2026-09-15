@@ -14,6 +14,8 @@ dynconf_kwargs = {'core_loaders': [], # DISABLE default loaders, otherwise will 
                            'root_path': join(current_dir, "settings"), #Used for Dynaconf.find_file() - So that root path points to settings folder, since we disabled all core loaders.
                            # Multi-file section-field merging is done by pr_agent.custom_merge_loader itself (it accumulates fields
                            # across files and calls set() with a full section). Keeping dynaconf merge disabled makes settings.set()
+                           # and SECTION__KEY env vars replace list values instead of appending to them (dynaconf >= 3.3 appends
+                           # when merge_enabled is on); a section-level set() replaces the whole section, so always pass a full one.
                            "merge_enabled": False
                            }
 global_settings = Dynaconf(
