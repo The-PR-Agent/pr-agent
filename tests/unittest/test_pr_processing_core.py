@@ -1036,6 +1036,63 @@ def test_exact_packing_checks_stay_within_linear_bound_for_many_files():
     assert compressed_handler.count_calls < 3 * file_count
 
 
+def test_overflow_repair_bounds_encoded_volume_for_many_files():
+    class RepairProbeTokenHandler(FakeTokenHandler):
+        def __init__(self, prompt_tokens=100):
+            super().__init__(prompt_tokens)
+            self.encoded_characters = 0
+
+        def count_tokens(self, patch):
+            self.count_calls += 1
+            self.encoded_characters += len(patch)
+            non_additive_drift = 200 if patch.count("patch-") > 1 else 0
+            return len(patch) + non_additive_drift
+
+    file_count = 400
+    patch_length = 40
+    file_dict = {
+        f"file_{index}.py": {
+            "patch": f"patch-{index:03d}".ljust(patch_length, "x"),
+            "tokens": patch_length,
+            "edit_type": EDIT_TYPE.MODIFIED,
+        }
+        for index in range(file_count)
+    }
+    joined_length = file_count * patch_length + file_count - 1
+
+    chunk_handler = RepairProbeTokenHandler()
+    chunks = pr_processing._pack_pr_multi_diffs(
+        file_dict,
+        chunk_handler,
+        max_calls=2,
+        return_remaining_files=False,
+        token_budget=joined_length,
+    )
+
+    assert len(chunks) == 2
+    assert all(chunk_handler.count_tokens(chunk) <= joined_length for chunk in chunks)
+    assert chunk_handler.encoded_characters < 12 * joined_length
+
+    compressed_handler = RepairProbeTokenHandler()
+    total, patches, remaining, included = pr_processing.generate_full_patch(
+        True,
+        file_dict,
+        soft_token_budget=joined_length + 2 * file_count,
+        remaining_files_list_prev=list(file_dict),
+        token_handler=compressed_handler,
+        hard_token_budget=joined_length + 2 * file_count,
+    )
+    rendered = "\n".join(patches)
+
+    assert total == compressed_handler.prompt_tokens + compressed_handler.count_tokens(rendered)
+    assert compressed_handler.count_tokens(rendered) <= joined_length + 2 * file_count
+    assert remaining
+    assert included
+    assert compressed_handler.encoded_characters < 16 * len(
+        "\n".join("\n\n" + data["patch"] for data in file_dict.values())
+    )
+
+
 @pytest.mark.parametrize(
     ("prepared_model", "requested_model", "prepared_line_numbers", "requested_line_numbers"),
     [

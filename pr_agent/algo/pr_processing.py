@@ -72,6 +72,26 @@ def _append_metadata_section(
     return final_diff, curr_token, ""
 
 
+def _find_verified_fitting_prefix_length(items, max_length: int, fits: Callable[[list], bool]) -> int:
+    """Find a fitting ordered prefix with logarithmic exact-count probes.
+
+    Token counts are not assumed to be monotone across concatenated strings. The returned prefix
+    is always one that ``fits`` verified directly, although a longer fitting prefix may exist.
+    """
+    low = 0
+    high = max_length
+    while low < high:
+        middle = (low + high + 1) // 2
+        if fits(items[:middle]):
+            low = middle
+        else:
+            high = middle - 1
+
+    if low == 0 and max_length > 0 and fits(items[:1]):
+        return 1
+    return low
+
+
 @dataclass
 class PreparedPRDiff:
     """The single-call diff and compressed file data prepared for one model attempt.
@@ -330,17 +350,20 @@ def _pack_pr_multi_diffs(file_dict: dict,
 
         packable.append((filename, patch, new_patch_tokens))
 
+    separator_tokens = token_handler.count_tokens("\n")
     additive_groups = []
     current_group = []
     current_tokens = 0
     for item in packable:
         item_tokens = item[2]
-        if current_group and current_tokens + item_tokens > token_budget:
+        item_cost = item_tokens + (separator_tokens if current_group else 0)
+        if current_group and current_tokens + item_cost > token_budget:
             additive_groups.append(current_group)
             current_group = []
             current_tokens = 0
+            item_cost = item_tokens
         current_group.append(item)
-        current_tokens += item_tokens
+        current_tokens += item_cost
     if current_group:
         additive_groups.append(current_group)
 
@@ -357,34 +380,28 @@ def _pack_pr_multi_diffs(file_dict: dict,
         if len(packed_groups) >= max_calls:
             break
 
-        group_patches = [patch for _, patch, _ in group]
-        if count_chunk(group_patches) <= token_budget:
-            append_group(group)
-            continue
-
-        repaired_group = []
-        for item in group:
-            candidate = [patch for _, patch, _ in [*repaired_group, item]]
-            if count_chunk(candidate) <= token_budget:
-                repaired_group.append(item)
-                continue
-
-            if repaired_group and not append_group(repaired_group):
-                break
-            if len(packed_groups) >= max_calls:
-                repaired_group = []
+        pending_group = group
+        while pending_group and len(packed_groups) < max_calls:
+            pending_patches = [patch for _, patch, _ in pending_group]
+            if count_chunk(pending_patches) <= token_budget:
+                append_group(pending_group)
                 break
 
-            single_patch_tokens = count_chunk([item[1]])
-            if single_patch_tokens <= token_budget:
-                repaired_group = [item]
+            prefix_length = _find_verified_fitting_prefix_length(
+                pending_group,
+                len(pending_group) - 1,
+                lambda prefix: count_chunk([patch for _, patch, _ in prefix]) <= token_budget,
+            )
+            if prefix_length:
+                append_group(pending_group[:prefix_length])
+                pending_group = pending_group[prefix_length:]
                 continue
 
+            item = pending_group[0]
             clipped_item = clip_single_patch(item[0], item[1], item[2])
-            repaired_group = [clipped_item] if clipped_item else []
-
-        if repaired_group and len(packed_groups) < max_calls:
-            append_group(repaired_group)
+            if clipped_item:
+                append_group([clipped_item])
+            pending_group = pending_group[1:]
 
     packed_all = len(files_in_patches) == len(packable)
     for index, group in enumerate(packed_groups):
@@ -565,6 +582,7 @@ def generate_full_patch(convert_hunks_to_line_numbers, file_dict, soft_token_bud
     patches = []
     remaining_files_list_new = []
     files_in_patch_list = []
+    separator_tokens = None
     for filename, data in file_dict.items():
         if filename not in remaining_files_list_prev:
             continue
@@ -581,29 +599,28 @@ def generate_full_patch(convert_hunks_to_line_numbers, file_dict, soft_token_bud
             else:
                 patch_final = "\n\n" + patch.strip()
             new_patch_tokens = token_handler.count_tokens(patch_final)
-            if total_tokens + new_patch_tokens > token_handler.prompt_tokens + soft_token_budget:
+            if patches and separator_tokens is None:
+                separator_tokens = token_handler.count_tokens("\n")
+            rendered_patch_tokens = new_patch_tokens + (separator_tokens or 0)
+            if total_tokens + rendered_patch_tokens > token_handler.prompt_tokens + soft_token_budget:
                 if get_verbosity_level() >= 2:
                     get_logger().warning(f"Patch too large, skipping it: '{filename}'")
                 remaining_files_list_new.append(filename)
                 continue
             patches.append(patch_final)
             files_in_patch_list.append(filename)
-            total_tokens += new_patch_tokens
+            total_tokens += rendered_patch_tokens
             if get_verbosity_level() >= 2:
                 get_logger().info(f"Tokens: {total_tokens}, last filename: {filename}")
 
     if patches:
         exact_total = token_handler.prompt_tokens + token_handler.count_tokens("\n".join(patches))
         if exact_total - token_handler.prompt_tokens > soft_token_budget:
-            best_count = 0
-            for prefix_length in range(1, len(patches) + 1):
-                prefix_total = token_handler.prompt_tokens + token_handler.count_tokens(
-                    "\n".join(patches[:prefix_length])
-                )
-                if prefix_total - token_handler.prompt_tokens <= soft_token_budget:
-                    best_count = prefix_length
-                else:
-                    break
+            best_count = _find_verified_fitting_prefix_length(
+                patches,
+                len(patches) - 1,
+                lambda prefix: token_handler.count_tokens("\n".join(prefix)) <= soft_token_budget,
+            )
 
             for filename in files_in_patch_list[best_count:]:
                 if filename not in remaining_files_list_new:
