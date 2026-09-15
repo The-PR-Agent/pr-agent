@@ -308,6 +308,50 @@ class TestGetDiffFilesEditTypes:
         assert diffs[0].num_minus_lines == 2
 
 
+class TestGetDiffFilesContentReads:
+    def test_added_file_skips_impossible_base_read(self, patched_helpers):
+        f = _make_file("added.py", "added")
+        p = _make_provider_for_diff([f])
+        spy = Mock(return_value="content")
+        p._get_pr_file_content = spy
+
+        p.get_diff_files()
+
+        assert [call.args[1] for call in spy.call_args_list] == ["head-sha"]
+
+    def test_removed_file_skips_impossible_head_read(self, patched_helpers):
+        f = _make_file("removed.py", "removed", patch="@@ -1 +0,0 @@\n-old")
+        p = _make_provider_for_diff([f])
+        spy = Mock(return_value="content")
+        p._get_pr_file_content = spy
+
+        p.get_diff_files()
+
+        assert [call.args[1] for call in spy.call_args_list] == ["base-sha"]
+
+    def test_modified_file_still_reads_both_revisions(self, patched_helpers):
+        f = _make_file("modified.py", "modified")
+        p = _make_provider_for_diff([f])
+        spy = Mock(return_value="content")
+        p._get_pr_file_content = spy
+
+        p.get_diff_files()
+
+        assert [call.args[1] for call in spy.call_args_list] == ["head-sha", "base-sha"]
+
+    def test_incremental_added_file_still_reads_both_revisions(self, patched_helpers):
+        f = _make_file("added.py", "added")
+        p = _make_provider_for_diff([f])
+        p.incremental = SimpleNamespace(is_incremental=True, last_seen_commit_sha="prev-sha")
+        p.unreviewed_files_map = {"added.py": f}
+        spy = Mock(return_value="content")
+        p._get_pr_file_content = spy
+
+        p.get_diff_files()
+
+        assert [call.args[1] for call in spy.call_args_list] == ["head-sha", "prev-sha"]
+
+
 class TestGetDiffFilesRename:
     """A pure GitHub rename carries no `.patch` and reports 0 additions/0
     deletions, so `previous_filename` is the only place the old path lives."""
