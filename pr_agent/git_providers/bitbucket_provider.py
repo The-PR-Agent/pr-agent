@@ -64,6 +64,7 @@ class BitbucketProvider(GitProvider):
         self.headers = s.headers
         self.bitbucket_client = Cloud(session=s)
         self.max_comment_length = 31000
+        self.max_comment_chars = self.max_comment_length
         self.workspace_slug = None
         self.repo_slug = None
         self.repo = None
@@ -71,6 +72,7 @@ class BitbucketProvider(GitProvider):
         self.pr = None
         self.pr_url = pr_url
         self.temp_comments = []
+        self._published_inline_comment_bodies = []
         self.incremental = incremental
         self.diff_files = None
         self.git_files = None
@@ -78,6 +80,10 @@ class BitbucketProvider(GitProvider):
             self.set_pr(pr_url)
         self.bitbucket_comment_api_url = self.pr._BitbucketBase__data["links"]["comments"]["href"]
         self.bitbucket_pull_request_api_url = self.pr._BitbucketBase__data["links"]['self']['href']
+
+    def supports_html_comment_markers(self) -> bool:
+        """Return whether HTML comments render invisibly on this provider."""
+        return False
 
     def get_repo_settings(self):
         settings_files = []
@@ -469,6 +475,12 @@ class BitbucketProvider(GitProvider):
             get_logger().error(
                 f"Failed to publish inline comment to '{relevant_file}' at {location}, error: {e}")
             return False
+        recent_bodies = getattr(self, "_published_inline_comment_bodies", None)
+        if recent_bodies is None:
+            recent_bodies = []
+            self._published_inline_comment_bodies = recent_bodies
+        if body not in recent_bodies:
+            recent_bodies.append(body)
         return True
 
     def get_line_link(self, relevant_file: str, relevant_line_start: int, relevant_line_end: int = None) -> str:
@@ -572,6 +584,19 @@ class BitbucketProvider(GitProvider):
             )
 
         return comments
+
+    def get_persistent_comment_bodies(self) -> list[str]:
+        """Return existing Bitbucket Cloud comment bodies for inline deduplication."""
+        bodies = list(getattr(self, "_published_inline_comment_bodies", []))
+        for comment in self.get_issue_comments():
+            body = getattr(comment, "body", "")
+            if body and body not in bodies:
+                bodies.append(body)
+        return bodies
+
+    def get_recent_inline_comment_bodies(self) -> list[str]:
+        """Return inline comment bodies published during this provider run."""
+        return list(getattr(self, "_published_inline_comment_bodies", []))
 
     def remove_reaction(self, issue_comment_id: int, reaction_id: int) -> bool:
         return True
