@@ -5,6 +5,7 @@ import subprocess
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
+from contextvars import ContextVar
 from typing import Optional, Tuple
 
 from pr_agent.algo.language_handler import numeric_languages
@@ -21,8 +22,9 @@ from pr_agent.log import get_logger
 
 MAX_FILES_ALLOWED_FULL = 50
 
-_URL_USERINFO_RE = re.compile(r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.\-]{0,30}://)[^/@\s]+@")
+_URL_USERINFO_RE = re.compile(r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.\-]{0,30}://)[^@\s]+@")
 _AUTH_HEADER_RE = re.compile(r"(?i)(authorization\s*:\s*(?:bearer|basic|token)\s+)\S+")
+_CLONE_EXTRA_ENV: ContextVar[dict | None] = ContextVar("clone_extra_env", default=None)
 
 
 # The reaction PR-Agent has always added when it picks a comment command up. Used as the
@@ -290,6 +292,17 @@ class GitProvider(ABC):
             )
             ssl_env = os.environ.copy()
 
+        # Apply authentication only for this clone process; keep the stored origin URL clean.
+        clone_extra_env = _CLONE_EXTRA_ENV.get()
+        if clone_extra_env:
+            inherited_count = int(ssl_env.get("GIT_CONFIG_COUNT", "0"))
+            scoped_env = {
+                key.replace("_0", f"_{inherited_count}", 1): value
+                for key, value in clone_extra_env.items()
+                if key != "GIT_CONFIG_COUNT"
+            }
+            ssl_env = {**ssl_env, **scoped_env, "GIT_CONFIG_COUNT": str(inherited_count + 1)}
+
         subprocess.run([
             "git", "clone",
             "--filter=blob:none",
@@ -308,15 +321,36 @@ class GitProvider(ABC):
         if not clone_url:
             get_logger().error("Clone failed: Unable to obtain url to clone.")
             return returned_obj
+        clean_clone_url = redact_credentials(clone_url)
+        destination_existed = os.path.exists(dest_folder)
+        preexisting_git_dir = os.path.isdir(os.path.join(dest_folder, ".git"))
+        clone_extra_env = {}
+        if clean_clone_url != clone_url:
+            clone_extra_env = {
+                "GIT_CONFIG_COUNT": "1",
+                "GIT_CONFIG_KEY_0": f"url.{clone_url}.insteadOf",
+                "GIT_CONFIG_VALUE_0": clean_clone_url,
+            }
+        env_token = _CLONE_EXTRA_ENV.set(clone_extra_env)
         try:
             if remove_dest_folder and os.path.exists(dest_folder) and os.path.isdir(dest_folder):
                 shutil.rmtree(dest_folder)
-            self._clone_inner(clone_url, dest_folder, operation_timeout_in_seconds)
+                destination_existed = False
+                preexisting_git_dir = False
+            self._clone_inner(clean_clone_url, dest_folder, operation_timeout_in_seconds)
             returned_obj = GitProvider.ScopedClonedRepo(dest_folder)
         except Exception as e:
+            # Remove Git metadata created by a failed clone; preserve caller-owned files when remove_dest_folder=False.
+            git_dir = os.path.join(dest_folder, ".git")
+            if os.path.isdir(git_dir) and not preexisting_git_dir:
+                shutil.rmtree(git_dir, ignore_errors=True)
+            if not destination_existed and os.path.isdir(dest_folder):
+                shutil.rmtree(dest_folder, ignore_errors=True)
             get_logger().error("Clone failed: Could not clone url.",
                 artifact={"error": redact_credentials(e), "url": redact_credentials(clone_url),
                           "dest_folder": dest_folder})
+        finally:
+            _CLONE_EXTRA_ENV.reset(env_token)
         return returned_obj
 
     @abstractmethod
