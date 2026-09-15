@@ -9,7 +9,7 @@ import os
 import re
 import shutil
 import stat
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 from functools import lru_cache, wraps
 from types import FunctionType, SimpleNamespace
 from urllib.parse import urlparse
@@ -1996,6 +1996,8 @@ class LiteLLMAIHandler(BaseAiHandler):
         self._aws_credential_chain_environment = {}
         self._aws_credential_chain_files = {}
         self._aws_bedrock_lock = asyncio.Lock()
+        self._aws_discovery_complete = False
+        self._aws_preparation_future = None
         self._vertex_credentials, self._vertex_credentials_error = self._snapshot_vertex_credentials()
         self._vertex_aws_environment = {
             variable: os.environ.get(variable)
@@ -2472,7 +2474,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         return request_headers
 
     def _initialize_aws_request_credentials(self, settings) -> None:
-        """Capture request-local credentials and synchronously resolve the opted-in AWS provider chain."""
+        """Capture request-local credentials and the opted-in AWS provider chain's trust boundary."""
         use_imds = os.environ.get("AWS_USE_IMDS", "").strip().lower() in ("1", "true", "yes")
         self._aws_use_imds = use_imds
         self._aws_credential_chain_environment = {
@@ -2527,10 +2529,9 @@ class LiteLLMAIHandler(BaseAiHandler):
         if not (ambient_access_key or ambient_secret_key):
             self._aws_credential_chain_files = self._snapshot_aws_credential_chain_files()
         self._aws_region_name = request_region
-        self._initialize_aws_imds_credentials()
 
     def _initialize_aws_imds_credentials(self) -> bool:
-        """Resolve ambient AWS credentials during handler initialization without changing process credentials."""
+        """Resolve ambient AWS credentials on first use without changing process credentials."""
         import boto3
         import botocore.exceptions
 
@@ -2768,19 +2769,52 @@ class LiteLLMAIHandler(BaseAiHandler):
             raise ValueError("AWS_CREDENTIAL_FILE must reference a regular file")
         return fingerprints
 
+    def _prepare_aws_request_credentials(self) -> None:
+        """Discover or refresh credentials while the caller owns the AWS lock."""
+        if not self._aws_discovery_complete:
+            self._initialize_aws_imds_credentials()
+            self._aws_discovery_complete = True
+        elif not self._aws_imds_fell_back:
+            self._validate_aws_credential_chain_environment()
+            if self._aws_imds_mode and not self._refresh_aws_imds_credentials() and self._aws_static_creds:
+                self._activate_static_aws_fallback()
+
+    def _finish_cancelled_aws_preparation(self, future) -> None:
+        """Release ownership only when a cancelled caller's worker has actually finished."""
+        if not future.cancelled():
+            future.exception()
+        self._aws_preparation_future = None
+        self._aws_bedrock_lock.release()
+
     @contextlib.asynccontextmanager
     async def _snapshot_aws_request_credentials(self, enabled):
-        """Refresh synchronously and serialize this handler's AWS call and static fallback."""
+        """Prepare off-loop and serialize this handler's AWS call and static fallback."""
         if not enabled:
             yield dict(self._aws_active_creds), False
             return
-        async with self._aws_bedrock_lock:
-            if not self._aws_imds_fell_back:
-                self._validate_aws_credential_chain_environment()
-                if self._aws_imds_mode and not self._refresh_aws_imds_credentials() and self._aws_static_creds:
-                    self._activate_static_aws_fallback()
+        await self._aws_bedrock_lock.acquire()
+        release_in_caller = True
+        try:
+            future = asyncio.get_running_loop().run_in_executor(
+                None, copy_context().run, self._prepare_aws_request_credentials,
+            )
+            self._aws_preparation_future = future
+            try:
+                await asyncio.shield(future)
+            except asyncio.CancelledError:
+                # Keep the lock until the worker finishes: cancelling the await
+                # cannot stop it, even if this caller is cancelled again.
+                release_in_caller = False
+                future.add_done_callback(self._finish_cancelled_aws_preparation)
+                raise
+            finally:
+                if release_in_caller:
+                    self._aws_preparation_future = None
             can_fallback = self._aws_imds_mode and not self._aws_imds_fell_back and bool(self._aws_static_creds)
             yield dict(self._aws_active_creds), can_fallback
+        finally:
+            if release_in_caller:
+                self._aws_bedrock_lock.release()
 
     def _should_use_aws_imds(self, provider: str | None) -> bool:
         """Return whether this request needs SigV4 credentials from the ambient AWS chain."""

@@ -604,10 +604,11 @@ def test_bedrock_mantle_signer_bridge_fails_closed_without_optional_params(monke
 
 
 @pytest.mark.asyncio
-async def test_health_probe_refreshes_imds_credentials_once(monkeypatch):
+async def test_health_probe_refreshes_imds_credentials_once(monkeypatch, aws_session):
+    monkeypatch.setenv("AWS_USE_IMDS", "true")
     handler = LiteLLMAIHandler()
-    handler._aws_use_imds = True
-    handler._aws_imds_mode = True
+    async with handler._snapshot_aws_request_credentials(True):
+        pass
     handler._aws_active_creds = {
         "aws_access_key_id": "stale-key",
         "aws_secret_access_key": "stale-secret",
@@ -622,12 +623,14 @@ async def test_health_probe_refreshes_imds_credentials_once(monkeypatch):
         }
         return True
 
-    monkeypatch.setattr(handler, "_refresh_aws_imds_credentials", refresh_credentials)
+    refresh = MagicMock(side_effect=refresh_credentials)
+    monkeypatch.setattr(handler, "_refresh_aws_imds_credentials", refresh)
     completion = AsyncMock(return_value=_mock_response())
 
     await handler.probe_completion("bedrock/anthropic.claude-3-sonnet", _completion=completion)
 
     completion.assert_awaited_once()
+    refresh.assert_called_once_with()
     assert completion.call_args.kwargs["aws_access_key_id"] == "refreshed-key"
     assert completion.call_args.kwargs["aws_secret_access_key"] == "refreshed-secret"
 
@@ -1070,7 +1073,7 @@ async def test_bedrock_mantle_bearer_uses_request_token_without_imds_refresh(mon
     else:
         kwargs = await _call(handler, model="bedrock_mantle/openai.gpt-oss-120b")
 
-    aws_session.get_credentials.assert_called_once_with()
+    aws_session.get_credentials.assert_not_called()
     refresh.assert_not_called()
     assert kwargs["api_key"] == "request-bearer-token"
     assert "aws_access_key_id" not in kwargs
@@ -1097,7 +1100,7 @@ async def test_bedrock_bearer_uses_request_token_without_imds_refresh(monkeypatc
     else:
         kwargs = await _call(handler, model="bedrock/model")
 
-    aws_session.get_credentials.assert_called_once_with()
+    aws_session.get_credentials.assert_not_called()
     refresh.assert_not_called()
     assert kwargs["api_key"] == "request-bearer-token"
     assert kwargs["aws_region_name"] == "us-east-1"
@@ -1129,7 +1132,7 @@ def test_incomplete_static_credentials_warn_when_imds_is_enabled(monkeypatch, aw
 
 
 @pytest.mark.asyncio
-async def test_imds_credentials_are_captured_during_initialization_without_mutating_env(monkeypatch):
+async def test_imds_credentials_are_captured_on_first_request_without_mutating_env(monkeypatch):
     monkeypatch.setenv("AWS_USE_IMDS", "true")
     monkeypatch.setenv("AWS_SESSION_TOKEN", "ambient-token")
     frozen = _frozen_creds(token="imds-token")
@@ -1139,9 +1142,13 @@ async def test_imds_credentials_are_captured_during_initialization_without_mutat
 
     with patch("boto3.Session", return_value=session):
         handler = LiteLLMAIHandler()
+        session.get_credentials.assert_not_called()
+        assert handler._aws_discovery_complete is False
+        await _call(handler)
         session.get_credentials.assert_called_once_with()
         assert handler._aws_boto3_creds is session.get_credentials.return_value
-        await _call(handler)
+        session.get_credentials.return_value.get_frozen_credentials.assert_called_once_with()
+        assert handler._aws_discovery_complete is True
 
     assert handler._aws_active_creds == {
         "aws_access_key_id": "IMDS-KEY",
@@ -1206,8 +1213,9 @@ async def test_imds_mode_rejects_late_environment_credentials(monkeypatch):
         staticmethod(change_environment_after_capture),
     )
     with patch("boto3.Session") as session_factory:
+        handler = LiteLLMAIHandler()
         with pytest.raises(ValueError, match="Refusing live AWS credential environment fallback"):
-            LiteLLMAIHandler()
+            await _call(handler)
 
     session_factory.assert_not_called()
 
@@ -1217,6 +1225,10 @@ async def test_imds_mode_does_not_rediscover_late_environment_credentials(monkey
     monkeypatch.setenv("AWS_USE_IMDS", "true")
     aws_session.get_credentials.return_value = None
     handler = LiteLLMAIHandler()
+    async with handler._snapshot_aws_request_credentials(True):
+        pass
+    aws_session.get_credentials.assert_called_once_with()
+    assert handler._aws_discovery_complete is True
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "another-request-key")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "another-request-secret")
 
@@ -1418,8 +1430,9 @@ async def test_imds_mode_rechecks_credential_chain_file_during_initial_resolutio
     session.region_name = "us-east-1"
 
     with patch("boto3.Session", return_value=session):
+        handler = LiteLLMAIHandler()
         with pytest.raises(ValueError, match="Refusing changed AWS credential-chain file"):
-            LiteLLMAIHandler()
+            await _call(handler)
 
 
 @pytest.mark.asyncio
@@ -1461,8 +1474,9 @@ async def test_imds_mode_rejects_credential_process_profiles(monkeypatch, profil
     session._session.full_config = {"profiles": profiles}
 
     with patch("boto3.Session", return_value=session):
+        handler = LiteLLMAIHandler()
         with pytest.raises(ValueError, match="credential_process"):
-            LiteLLMAIHandler()
+            await _call(handler)
 
     session.get_credentials.assert_not_called()
 
@@ -1503,8 +1517,9 @@ async def test_imds_mode_rejects_credential_chain_change_during_initial_resoluti
     session.region_name = "us-east-1"
 
     with patch("boto3.Session", return_value=session):
+        handler = LiteLLMAIHandler()
         with pytest.raises(ValueError, match="Refusing changed AWS credential-chain environment"):
-            LiteLLMAIHandler()
+            await _call(handler)
 
 
 @pytest.mark.asyncio
@@ -1660,7 +1675,11 @@ async def test_imds_refresh_updates_request_credentials(monkeypatch):
     with patch("boto3.Session", return_value=session):
         handler = LiteLLMAIHandler()
         await _call(handler)
+        assert handler._aws_active_creds["aws_access_key_id"] == "IMDS-KEY"
+        credentials.get_frozen_credentials.assert_called_once_with()
+        await _call(handler)
 
+    assert credentials.get_frozen_credentials.call_count == 2
     assert handler._aws_active_creds["aws_access_key_id"] == "ROTATED-KEY"
     assert handler._aws_active_creds["aws_session_token"] == "ROTATED-TOKEN"
     assert "AWS_ACCESS_KEY_ID" not in os.environ
@@ -1680,8 +1699,12 @@ async def test_bedrock_call_refreshes_and_forwards_imds_credentials(monkeypatch)
 
     with patch("boto3.Session", return_value=session):
         handler = LiteLLMAIHandler()
+        initial_kwargs = await _call(handler)
+        assert initial_kwargs["aws_access_key_id"] == "IMDS-KEY"
+        credentials.get_frozen_credentials.assert_called_once_with()
         kwargs = await _call(handler)
 
+    assert credentials.get_frozen_credentials.call_count == 2
     assert kwargs["aws_access_key_id"] == "ROTATED-KEY"
     assert kwargs["aws_secret_access_key"] == "ROTATED-SECRET"
     assert kwargs["aws_session_token"] == ""
@@ -1739,8 +1762,13 @@ async def test_refresh_failure_activates_static_fallback_before_call(monkeypatch
 
     with patch("boto3.Session", return_value=session):
         handler = LiteLLMAIHandler()
+        initial_kwargs = await _call(handler)
+        assert initial_kwargs["aws_access_key_id"] == "IMDS-KEY"
+        assert handler._aws_imds_fell_back is False
+        credentials.get_frozen_credentials.assert_called_once_with()
         kwargs = await _call(handler)
 
+    assert credentials.get_frozen_credentials.call_count == 2
     assert kwargs["aws_access_key_id"] == "STATIC-KEY"
     assert kwargs["aws_session_token"] == ""
     assert handler._aws_imds_fell_back is True
@@ -1993,7 +2021,8 @@ async def test_concurrent_handlers_keep_static_aws_credentials_isolated(monkeypa
 
 @pytest.mark.parametrize("provider_name", ("assume-role-with-web-identity", "container-role"))
 @pytest.mark.parametrize("drift", (None, "initial", "refresh"))
-def test_native_workload_provider_keeps_source_and_token_rotation(monkeypatch, tmp_path, provider_name, drift):
+@pytest.mark.asyncio
+async def test_native_workload_provider_keeps_source_and_token_rotation(monkeypatch, tmp_path, provider_name, drift):
     import boto3
 
     monkeypatch.setenv("AWS_USE_IMDS", "true")
@@ -2054,7 +2083,12 @@ def test_native_workload_provider_keeps_source_and_token_rotation(monkeypatch, t
     if drift == "initial":
         monkeypatch.setattr(session, "get_credentials", get_with_drift)
     handler = LiteLLMAIHandler()
+    assert not seen_tokens
+    assert handler._aws_discovery_complete is False
+    async with handler._snapshot_aws_request_credentials(True) as (credentials, _):
+        assert credentials["aws_access_key_id"] == "WORKLOAD-KEY"
     assert handler._aws_imds_mode is True
+    assert handler._aws_discovery_complete is True
     assert seen_tokens and set(seen_tokens) == {"original-token"}
     if provider_name == "assume-role-with-web-identity":
         # Native _get_config, not the environment adapter, records the source feature.
@@ -2075,7 +2109,8 @@ def test_native_workload_provider_keeps_source_and_token_rotation(monkeypatch, t
 
     if drift == "refresh":
         monkeypatch.setattr(native_credentials, "get_frozen_credentials", freeze_with_drift)
-    assert handler._refresh_aws_imds_credentials() is True
+    async with handler._snapshot_aws_request_credentials(True) as (credentials, _):
+        assert credentials["aws_access_key_id"] == "WORKLOAD-KEY"
     assert seen_tokens == ["rotated-token"]
     assert handler._aws_boto3_creds is native_credentials
     assert os.environ[selector] == str(token_file)
