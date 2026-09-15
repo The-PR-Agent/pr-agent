@@ -191,17 +191,22 @@ async def test_a_chunk_that_fails_does_not_lose_the_chunks_that_succeeded(chunki
         patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
         patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
               return_value=(["chunk-a", "chunk-b"], [])),
+        pytest.raises(RuntimeError, match="model refused"),
     ):
         await reviewer._prepare_prediction("model")
 
+    reviewer._get_prediction.side_effect = [CHUNK_A]
+    await reviewer._prepare_chunked_prediction("model")
+
     assert reviewer.prediction_data["review"]["score"] == 40
     assert reviewer.review_chunk_count == 2
-    assert reviewer.review_failed_chunk_count == 1
+    assert reviewer.review_failed_chunk_count == 0
+    assert [call.args[1] for call in reviewer._get_prediction.await_args_list] == ["chunk-a", "chunk-b", "chunk-a"]
 
 
 @pytest.mark.asyncio
-async def test_a_failed_chunk_blocks_persistent_finding_resolution(chunking_enabled):
-    """A partial review must stay partial for the finding-state lifecycle too."""
+async def test_a_failed_chunk_recovery_preserves_finding_state_lifecycle(chunking_enabled):
+    """A recovered chunked review participates in the finding-state lifecycle."""
     reviewer = _make_reviewer()
     reviewer._get_prediction = AsyncMock(side_effect=[RuntimeError("model refused"), CHUNK_B])
 
@@ -209,8 +214,12 @@ async def test_a_failed_chunk_blocks_persistent_finding_resolution(chunking_enab
         patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
         patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
               return_value=(["chunk-a", "chunk-b"], [])),
+        pytest.raises(RuntimeError, match="model refused"),
     ):
         await reviewer._prepare_prediction("model")
+
+    reviewer._get_prediction.side_effect = [CHUNK_A]
+    await reviewer._prepare_chunked_prediction("model")
 
     previous_state = reconcile_review_findings(
         None,
@@ -229,13 +238,12 @@ async def test_a_failed_chunk_blocks_persistent_finding_resolution(chunking_enab
     reviewer._prepare_review_finding_state(reviewer.prediction_data)
 
     assert reviewer._review_state_result is not None
-    assert reviewer._review_state_result.resolved_ids == ()
-    assert reviewer._review_state_result.state["last_run"]["complete"] is False
-    assert reviewer._review_state_result.state["findings"][0]["state"] == "ACTIVE"
+    assert reviewer._review_state_result.state["last_run"]["complete"] is True
+    assert reviewer._review_state_result.state["findings"][0]["state"] == "RESOLVED"
 
 
 @pytest.mark.asyncio
-async def test_a_malformed_chunk_fails_the_model_attempt(chunking_enabled):
+async def test_a_malformed_chunk_is_retried_without_repeating_successful_chunks(chunking_enabled):
     reviewer = _make_reviewer()
     reviewer._get_prediction = AsyncMock(side_effect=["review: {}", CHUNK_B])
 
@@ -249,6 +257,31 @@ async def test_a_malformed_chunk_fails_the_model_attempt(chunking_enabled):
 
     assert reviewer._get_prediction.await_count == 2
     assert reviewer.prediction_data is None
+
+    reviewer._get_prediction.side_effect = [CHUNK_A]
+    await reviewer._prepare_chunked_prediction("model")
+
+    assert reviewer.prediction_data["review"]["score"] == 40
+    assert [call.args[1] for call in reviewer._get_prediction.await_args_list] == ["chunk-a", "chunk-b", "chunk-a"]
+
+
+@pytest.mark.asyncio
+async def test_cached_chunks_are_used_when_fallback_diff_fits(chunking_enabled):
+    reviewer = _make_reviewer()
+    reviewer._get_prediction = AsyncMock(side_effect=[CHUNK_A, RuntimeError("model refused"), CHUNK_B])
+
+    with (
+        patch("pr_agent.tools.pr_reviewer.get_pr_diff", side_effect=[("diff", ["b.py"]), ("full diff", [])]),
+        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
+              return_value=(["chunk-a", "chunk-b"], [])),
+        pytest.raises(RuntimeError, match="model refused"),
+    ):
+        await reviewer._prepare_prediction("model")
+
+    await reviewer._prepare_chunked_prediction("model")
+
+    assert reviewer.prediction_data["review"]["score"] == 40
+    assert [call.args[1] for call in reviewer._get_prediction.await_args_list] == ["chunk-a", "chunk-b", "chunk-b"]
 
 
 @pytest.mark.asyncio
