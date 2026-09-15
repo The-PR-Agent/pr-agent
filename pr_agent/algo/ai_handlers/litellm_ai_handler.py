@@ -53,9 +53,12 @@ from pr_agent.algo import (
 )
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_helpers import (
+    AssistantTurn,
+    ToolCall,
     _get_azure_ad_credential,
     _get_azure_ad_token,
     _handle_streaming_response,
+    _handle_structured_streaming_response,
     _process_litellm_extra_body,
     _response_field,
     get_repetition_penalty,
@@ -2846,7 +2849,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         """Apply provider routing shared by regular calls and health probes."""
         if model.startswith("azure_text/") and deployment_id:
             return f"azure_text/{deployment_id}"
-        if self.azure:
+        if getattr(self, "azure", False):
             if "/" not in model:
                 return "azure/" + model
             provider, model_name = model.split("/", 1)
@@ -3836,23 +3839,343 @@ class LiteLLMAIHandler(BaseAiHandler):
             configured_deployment_id=configured_deployment_id,
         )
 
-    @retry(
-        retry=retry_if_exception(_should_retry_same_model),
-        stop=stop_after_attempt(MODEL_RETRIES),
-        reraise=True,  # surface the provider's error; RetryError hides the reason
-    )
-    async def _chat_completion_with_retry(
+    def supports_tool_calling(self, model: str) -> bool:
+        """Check whether the configured model supports OpenAI-compatible tool calling.
+
+        Uses the handler's own provider routing and resolution so the capability query
+        matches the provider that would actually receive the request. Returns False
+        conservatively when capability metadata is unavailable or on any error.
+        """
+        try:
+            custom_llm_provider = getattr(self, "_custom_llm_provider", None) or None
+            configured_deployment_id = getattr(self, "deployment_id", None)
+            user_model = model
+            routed_model = self._route_model_for_request(user_model, custom_llm_provider or "", configured_deployment_id)
+            completion_model = self._normalize_gpt5_model_for_request(routed_model, user_model, custom_llm_provider or "")
+            request_provider = (
+                PROVIDER_SETTING_ALIASES.get(custom_llm_provider, custom_llm_provider)
+                if custom_llm_provider
+                else self._resolve_request_provider(routed_model)
+            )
+            supported = litellm.get_supported_openai_params(
+                model=completion_model,
+                custom_llm_provider=request_provider or custom_llm_provider,
+            )
+            if supported is None:
+                return False
+            return "tools" in supported
+        except Exception:
+            return False
+
+    async def chat_completion_with_tools(
         self,
+        model: str,
+        system: str = "",
+        user: str = "",
+        temperature: float = 0.2,
+        tools: list[dict] | None = None,
+        messages: list[dict] | None = None,
+    ) -> AssistantTurn:
+        """Structured tool-calling completion that returns an AssistantTurn.
+
+        Shares the full provider-routing, credential, retry, logging and accounting
+        pipeline with the existing chat_completion path. The caller (e.g. PRQuestions)
+        owns orchestration; this method executes a single model turn.
+
+        Args:
+            model: Model identifier (may include provider prefix).
+            system: System prompt (used only when messages is None).
+            user: User prompt (used only when messages is None).
+            temperature: Sampling temperature.
+            tools: OpenAI-compatible tool definitions, or None for continuation turns.
+            messages: Pre-built message list for continuation turns. When provided,
+                system and user are ignored.
+        """
+        configured_deployment_id = self.deployment_id
+        return await self._chat_completion_with_tools_retry(
+            model,
+            system,
+            user,
+            temperature,
+            tools=tools,
+            messages=messages,
+            configured_deployment_id=configured_deployment_id,
+        )
+
+    def _build_request_kwargs(
+        self,
+        *,
+        model: str,
+        user_model: str,
+        request_provider: str | None,
+        system: str,
+        user: str,
+        temperature: float = 0.2,
+        img_path: str | None = None,
+        tools: list[dict] | None = None,
+        messages: list[dict] | None = None,
+        deployment_id: str | None = None,
+        provider_request_params: dict | None = None,
+        client_retries: int | None = None,
+        cache_control_injection_points: list | None = None,
+        custom_llm_provider: str | None = None,
+    ) -> tuple[dict, str, str]:
+        openrouter_model = self._canonical_openrouter_model(model, request_provider)
+        if messages is not None:
+            req_messages = messages
+            log_system = system
+            log_user = user
+        else:
+            normalized_system, user = self.normalize_request_prompts(model, system, user)
+            if normalized_system != system:
+                get_logger().warning(
+                    "Empty system prompt for claude model. Adding a newline character to prevent OpenAI API error."
+                )
+            system = normalized_system
+            log_system = system
+            log_user = user
+            req_messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+            if img_path:
+                req_messages[1]["content"] = [
+                    {"type": "text", "text": req_messages[1]["content"]},
+                    {"type": "image_url", "image_url": {"url": img_path}},
+                ]
+
+            if model in self.user_message_only_models or get_settings().config.custom_reasoning_model:
+                user = f"{system}\n\n\n{user}"
+                system = ""
+                get_logger().info(f"Using model {model}, combining system and user prompts")
+                if img_path:
+                    content = [
+                        {"type": "text", "text": user},
+                        {"type": "image_url", "image_url": {"url": img_path}},
+                    ]
+                else:
+                    content = user
+                req_messages = [{"role": "user", "content": content}]
+
+        thinking_kwargs_gpt5 = None
+        openrouter_reasoning_effort = None
+        is_gpt6_astra = self._is_gpt6_astra_model(model)
+        is_gpt5_model = self._is_gpt5_model(openrouter_model or model)
+        if is_gpt5_model or is_gpt6_astra:
+            config_effort = self._default_reasoning_effort
+            try:
+                ReasoningEffort(config_effort)
+                effort = config_effort
+            except (ValueError, TypeError):
+                effort = ReasoningEffort.MEDIUM.value
+                if config_effort is not None:
+                    get_logger().warning(
+                        f"Invalid reasoning_effort '{config_effort}' in config. "
+                        f"Using default '{effort}'. Valid values: {[e.value for e in ReasoningEffort]}"
+                    )
+
+            if is_gpt6_astra and effort in (ReasoningEffort.NONE.value, ReasoningEffort.MINIMAL.value):
+                get_logger().info(f"GPT-6 Astra does not support reasoning_effort='{effort}'; using 'low'")
+                effort = ReasoningEffort.LOW.value
+            elif not is_gpt6_astra and effort == ReasoningEffort.MAX.value:
+                get_logger().info(
+                    "GPT-5 models name their top reasoning level 'xhigh'; "
+                    "using 'xhigh' for reasoning_effort='max'"
+                )
+                effort = ReasoningEffort.XHIGH.value
+
+            if openrouter_model:
+                openrouter_reasoning_effort = effort
+            else:
+                thinking_kwargs_gpt5 = {
+                    "reasoning_effort": effort,
+                    "allowed_openai_params": ["reasoning_effort"],
+                }
+            model_family = "GPT-6 Astra" if is_gpt6_astra else "GPT-5"
+            get_logger().info(f"Using reasoning_effort='{effort}' for {model_family} model")
+
+        kwargs = {
+            "model": model,
+            "messages": req_messages,
+            "timeout": get_settings().config.ai_timeout,
+        }
+        if deployment_id:
+            kwargs["deployment_id"] = deployment_id
+        if provider_request_params:
+            kwargs.update(provider_request_params)
+
+        if client_retries is not None:
+            kwargs["num_retries"] = client_retries
+            kwargs["max_retries"] = client_retries
+
+        if model not in self.no_support_temperature_models and not get_settings().config.custom_reasoning_model:
+            kwargs["temperature"] = temperature
+
+        if tools:
+            kwargs["tools"] = tools
+
+        if thinking_kwargs_gpt5:
+            kwargs.update(thinking_kwargs_gpt5)
+        if is_gpt5_model or is_gpt6_astra:
+            kwargs.pop("temperature", None)
+
+        reasoning_model = openrouter_model.rsplit(":", 1)[0] if openrouter_model else model
+        if any(
+            reasoning_model == m or reasoning_model.endswith("/" + m)
+            for m in self.support_reasoning_models
+        ):
+            config_effort = self._default_reasoning_effort
+            reasoning_effort = self._resolve_reasoning_effort(openrouter_model or model, config_effort)
+
+            if openrouter_model:
+                openrouter_reasoning_effort = reasoning_effort
+            else:
+                get_logger().info(f"Adding reasoning_effort with value {reasoning_effort} to model {model}.")
+                kwargs["reasoning_effort"] = reasoning_effort
+                if self._grok_reasoning_levels_for(model):
+                    try:
+                        supported_params = litellm.get_supported_openai_params(
+                            model=model,
+                            custom_llm_provider=custom_llm_provider or None,
+                        ) or []
+                    except Exception:
+                        supported_params = []
+                    if "reasoning_effort" not in supported_params:
+                        kwargs["allowed_openai_params"] = ["reasoning_effort"]
+
+        adaptive_thinking_enabled = self._claude_thinking_controls["enable_claude_adaptive_thinking"]
+        extended_thinking_enabled = self._claude_thinking_controls["enable_claude_extended_thinking"]
+        claude_thinking_mode = self._claude_thinking_mode(model)
+        if claude_thinking_mode == "adaptive":
+            kwargs = self._configure_claude_adaptive_thinking(model, kwargs)
+        elif claude_thinking_mode == "extended":
+            kwargs = self._configure_claude_extended_thinking(model, kwargs)
+        elif claude_thinking_mode == "unsupported_extended":
+            get_logger().warning(
+                f"Skipping extended thinking for {model}: adaptive-only models reject "
+                f"budget_tokens. Enable config.enable_claude_adaptive_thinking instead."
+            )
+        elif adaptive_thinking_enabled or extended_thinking_enabled:
+            message = (
+                f"No thinking configuration applied for model {model}: adaptive thinking "
+                f"requires a recognized claude 5 model name in the id and extended "
+                f"thinking requires exact membership in claude_extended_thinking_models."
+            )
+            if "arn:aws:bedrock:" in model:
+                message += (
+                    " For a Bedrock inference profile, address the model by name and pass "
+                    "the ARN with litellm.model_id."
+                )
+            get_logger().warning(message)
+
+        max_output_tokens = self._resolve_output_token_limit(model, openrouter_model)
+        if max_output_tokens > 0:
+            output_limit_param = "max_completion_tokens" if is_gpt6_astra else "max_tokens"
+            kwargs.setdefault(output_limit_param, max_output_tokens)
+
+        if get_settings().litellm.get("enable_callbacks", False):
+            kwargs = self.add_litellm_callbacks(kwargs)
+
+        seed = get_settings().config.get("seed", -1)
+        if temperature > 0 and seed >= 0:
+            raise ValueError(f"Seed ({seed}) is not supported with temperature ({temperature}) > 0")
+        elif seed >= 0:
+            get_logger().info(f"Using fixed seed of {seed}")
+            kwargs["seed"] = seed
+
+        if self.repetition_penalty:
+            kwargs["repetition_penalty"] = self.repetition_penalty
+
+        kwargs = _process_litellm_extra_body(kwargs)
+
+        if get_settings().config.get("add_user_to_requests", False):
+            request_user = self._get_request_user_field()
+            if request_user:
+                try:
+                    supported_params = litellm.get_supported_openai_params(model=model) or []
+                except Exception:
+                    supported_params = []
+                if "user" in supported_params:
+                    kwargs["user"] = request_user
+                elif openrouter_model:
+                    user_extra_body = kwargs.get("extra_body") or {}
+                    user_extra_body["user"] = request_user
+                    kwargs["extra_body"] = user_extra_body
+                else:
+                    get_logger().debug(
+                        f"add_user_to_requests: user field unsupported for {model}, skipped"
+                    )
+
+        if cache_control_injection_points:
+            if isinstance(model, str) and "claude" in model.lower():
+                kwargs.setdefault("cache_control_injection_points", cache_control_injection_points)
+            else:
+                get_logger().debug(
+                    f"cache_control_injection_points configured but not applied: {model} is not an "
+                    "Anthropic (Claude) model"
+                )
+
+        bedrock_model_id = getattr(self, "_bedrock_model_id", None)
+        if bedrock_model_id and request_provider == "bedrock":
+            kwargs["model_id"] = bedrock_model_id
+            get_logger().info(f"Using Bedrock custom inference profile: {bedrock_model_id}")
+
+        if openrouter_model:
+            kwargs = self._apply_openrouter_request_controls(
+                openrouter_model,
+                kwargs,
+                openrouter_reasoning_effort,
+            )
+
+        if messages is not None:
+            get_logger().debug("Prompts", artifact={"messages_count": len(messages)})
+        else:
+            get_logger().debug("Prompts", artifact={"system": log_system, "user": log_user})
+
+        if get_verbosity_level() >= 2:
+            if messages is not None:
+                get_logger().info(f"\nMessages ({len(messages)} items):\n{messages}")
+            else:
+                get_logger().info(f"\nSystem prompt:\n{log_system}")
+                get_logger().info(f"\nUser prompt:\n{log_user}")
+
+        if custom_llm_provider:
+            kwargs["custom_llm_provider"] = custom_llm_provider
+
+        return kwargs, log_system, log_user
+
+    async def _execute_completion_pipeline(
+        self,
+        *,
         model: str,
         system: str,
         user: str,
         temperature: float = 0.2,
-        img_path: str = None,
-        *,
-        configured_deployment_id: str | None,
+        img_path: str | None = None,
+        tools: list[dict] | None = None,
+        messages: list[dict] | None = None,
+        configured_deployment_id: str | None = None,
+        with_tools: bool = False,
     ):
-        # Validate config-derived kwargs before the try/except below, so a malformed value raises a
-        # ValueError config error instead of being wrapped as openai.APIError and retried.
+        if img_path:
+            try:
+                # Finish external image I/O before validating mutable credential fallbacks.
+                r = await asyncio.to_thread(
+                    requests.head,
+                    img_path,
+                    allow_redirects=True,
+                    timeout=_IMAGE_HEAD_TIMEOUT_SECONDS,
+                )
+                if r.status_code == 404:
+                    error_msg = (
+                        "The image link is not [alive](img_path).\nPlease repost the original image as a comment, "
+                        "and send the question again with 'quote reply' (see "
+                        "[instructions](https://docs.pr-agent.ai/tools/ask/#ask-on-images))."
+                    )
+                    get_logger().error(error_msg)
+                    return f"{error_msg}", "error"
+            except Exception as e:
+                get_logger().error(f"Error fetching image: {img_path}", e)
+                return f"Error fetching image: {img_path}", "error"
+
         cache_control_injection_points = self._resolve_cache_control_injection_points()
         client_retries = _configured_client_retries()
         custom_llm_provider = self._custom_llm_provider
@@ -3869,31 +4192,12 @@ class LiteLLMAIHandler(BaseAiHandler):
             if request_provider == "azure" and not routed_model.startswith("azure_text/")
             else None
         )
-        if img_path:
-            try:
-                # Finish external image I/O before validating mutable credential fallbacks.
-                r = await asyncio.to_thread(
-                    requests.head,
-                    img_path,
-                    allow_redirects=True,
-                    timeout=_IMAGE_HEAD_TIMEOUT_SECONDS,
-                )
-                if r.status_code == 404:
-                    error_msg = "The image link is not [alive](img_path).\nPlease repost the original image as a comment, and send the question again with 'quote reply' (see [instructions](https://docs.pr-agent.ai/tools/ask/#ask-on-images))."
-                    get_logger().error(error_msg)
-                    return f"{error_msg}", "error"
-            except Exception as e:
-                get_logger().error(f"Error fetching image: {img_path}", e)
-                return f"Error fetching image: {img_path}", "error"
 
         _aws_imds = self._should_use_aws_imds(request_provider)
         async with self._snapshot_aws_request_credentials(_aws_imds) as (
             aws_request_credentials,
             aws_can_fallback,
         ):
-            # Resolve credentials before the retry-wrapped inference block. In
-            # particular, Azure AD refresh failures are authentication errors and
-            # should not be converted to retryable OpenAI API errors below.
             provider_request_params = await self._get_provider_request_params_async(
                 routed_model,
                 provider=request_provider,
@@ -3902,269 +4206,27 @@ class LiteLLMAIHandler(BaseAiHandler):
                 aws_request_credentials=aws_request_credentials,
             )
             try:
-                resp, finish_reason = None, None
-                # Azure mode rewrites only OpenAI models. Explicit non-OpenAI provider
-                # prefixes must remain intact in multi-provider configurations.
-                model = completion_model
-                openrouter_model = self._canonical_openrouter_model(model, request_provider)
-                normalized_system, user = self.normalize_request_prompts(model, system, user)
-                if normalized_system != system:
-                    get_logger().warning(
-                        "Empty system prompt for claude model. Adding a newline character to prevent OpenAI API error.")
-                system = normalized_system
-                messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+                kwargs, log_system, log_user = self._build_request_kwargs(
+                    model=completion_model,
+                    user_model=user_model,
+                    request_provider=request_provider,
+                    system=system,
+                    user=user,
+                    temperature=temperature,
+                    img_path=img_path,
+                    tools=tools,
+                    messages=messages,
+                    deployment_id=deployment_id,
+                    provider_request_params=provider_request_params,
+                    client_retries=client_retries,
+                    cache_control_injection_points=cache_control_injection_points,
+                    custom_llm_provider=custom_llm_provider,
+                )
 
-                if img_path:
-                    messages[1]["content"] = [{"type": "text", "text": messages[1]["content"]},
-                                              {"type": "image_url", "image_url": {"url": img_path}}]
-
-                thinking_kwargs_gpt5 = None
-                openrouter_reasoning_effort = None
-                # Detect GPT-5 family regardless of provider prefix(es) on the model name.
-                # Users sometimes put a provider prefix in config (e.g. "openai/gpt-5.1-codex-max"),
-                # and Azure mode auto-prepends "azure/", which together can produce stacked prefixes
-                # like "azure/openai/gpt-5...". Without normalization the GPT-5 path is skipped and
-                # litellm rejects the request with UnsupportedParamsError for temperature=0.2.
-                is_gpt6_astra = self._is_gpt6_astra_model(model)
-                is_gpt5_model = self._is_gpt5_model(openrouter_model or model)
-                if is_gpt5_model or is_gpt6_astra:
-                    # Use configured reasoning_effort or default to MEDIUM
-                    config_effort = self._default_reasoning_effort
-                    try:
-                        ReasoningEffort(config_effort)
-                        effort = config_effort
-                    except (ValueError, TypeError):
-                        effort = ReasoningEffort.MEDIUM.value
-                        if config_effort is not None:
-                            get_logger().warning(
-                                f"Invalid reasoning_effort '{config_effort}' in config. "
-                                f"Using default '{effort}'. Valid values: {[e.value for e in ReasoningEffort]}"
-                            )
-
-                    if is_gpt6_astra and effort in (ReasoningEffort.NONE.value, ReasoningEffort.MINIMAL.value):
-                        get_logger().info(f"GPT-6 Astra does not support reasoning_effort='{effort}'; using 'low'")
-                        effort = ReasoningEffort.LOW.value
-                    elif not is_gpt6_astra and effort == ReasoningEffort.MAX.value:
-                        # 'max' is this project's own alias for "the most reasoning available",
-                        # already translated on the Grok and OpenRouter paths. GPT-5.2 and later
-                        # name that level 'xhigh'; litellm reports supports_xhigh_reasoning_effort
-                        # false for gpt-5 and gpt-5.1, so those stay unsupported either way.
-                        # GPT-6 Astra accepts 'max' natively and is left untouched.
-                        get_logger().info(
-                            "GPT-5 models name their top reasoning level 'xhigh'; "
-                            "using 'xhigh' for reasoning_effort='max'"
-                        )
-                        effort = ReasoningEffort.XHIGH.value
-
-                    if openrouter_model:
-                        openrouter_reasoning_effort = effort
-                    else:
-                        thinking_kwargs_gpt5 = {
-                            "reasoning_effort": effort,
-                            "allowed_openai_params": ["reasoning_effort"],
-                        }
-                    model_family = "GPT-6 Astra" if is_gpt6_astra else "GPT-5"
-                    get_logger().info(f"Using reasoning_effort='{effort}' for {model_family} model")
-                # Currently, some models do not support a separate system and user prompts
-                if model in self.user_message_only_models or get_settings().config.custom_reasoning_model:
-                    user = f"{system}\n\n\n{user}"
-                    system = ""
-                    get_logger().info(f"Using model {model}, combining system and user prompts")
-                    if img_path:
-                        content = [{"type": "text", "text": user},
-                                   {"type": "image_url", "image_url": {"url": img_path}}]
-                    else:
-                        content = user
-                    messages = [{"role": "user", "content": content}]
-
-                # Build request kwargs after normalizing the model and messages so credentials and
-                # endpoints can be selected for the provider that will actually receive this call.
-                kwargs = {
-                    "model": model,
-                    "messages": messages,
-                    "timeout": get_settings().config.ai_timeout,
-                }
-                if deployment_id:
-                    kwargs["deployment_id"] = deployment_id
-                kwargs.update(provider_request_params)
-
-                # Caps the completion client's own per-call retries, which otherwise
-                # multiply this handler's retry attempts. Parsed before the request
-                # try/except (see _configured_client_retries).
-                if client_retries is not None:
-                    kwargs["num_retries"] = client_retries
-                    kwargs["max_retries"] = client_retries
-
-                # Add temperature only if model supports it
-                if model not in self.no_support_temperature_models and not get_settings().config.custom_reasoning_model:
-                    # get_logger().info(f"Adding temperature with value {temperature} to model {model}.")
-                    kwargs["temperature"] = temperature
-
-                if thinking_kwargs_gpt5:
-                    kwargs.update(thinking_kwargs_gpt5)
-                if is_gpt5_model or is_gpt6_astra:
-                    kwargs.pop('temperature', None)
-
-                reasoning_model = openrouter_model.rsplit(":", 1)[0] if openrouter_model else model
-                # Add reasoning_effort if model supports it. Match the bare model
-                # id as well as any provider-prefixed form (e.g.
-                # "openrouter/google/gemini-2.5-pro", "gemini/gemini-2.5-pro"), so a
-                # configured reasoning_effort is not silently dropped for models the
-                # user references with a provider prefix. OpenRouter routing variants
-                # such as :nitro and :floor are stripped only for this membership test.
-                if any(
-                    reasoning_model == m or reasoning_model.endswith("/" + m)
-                    for m in self.support_reasoning_models
-                ):
-                    config_effort = self._default_reasoning_effort
-                    reasoning_effort = self._resolve_reasoning_effort(openrouter_model or model, config_effort)
-
-                    if openrouter_model:
-                        # LiteLLM rejects top-level reasoning_effort for some OpenRouter
-                        # model IDs it does not mark as reasoning-capable; defer to
-                        # OpenRouter's unified reasoning object below.
-                        openrouter_reasoning_effort = reasoning_effort
-                    else:
-                        get_logger().info(f"Adding reasoning_effort with value {reasoning_effort} to model {model}.")
-                        kwargs["reasoning_effort"] = reasoning_effort
-                        if self._grok_reasoning_levels_for(model):
-                            try:
-                                supported_params = litellm.get_supported_openai_params(
-                                    model=model,
-                                    custom_llm_provider=custom_llm_provider or None,
-                                ) or []
-                            except Exception:
-                                supported_params = []
-                            # LiteLLM may omit reasoning_effort for grok-build-latest
-                            # and OpenAI-compatible gateway-prefixed Grok IDs.
-                            if "reasoning_effort" not in supported_params:
-                                kwargs["allowed_openai_params"] = ["reasoning_effort"]
-
-                # https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking
-                adaptive_thinking_enabled = self._claude_thinking_controls["enable_claude_adaptive_thinking"]
-                extended_thinking_enabled = self._claude_thinking_controls["enable_claude_extended_thinking"]
-                claude_thinking_mode = self._claude_thinking_mode(model)
-                if claude_thinking_mode == "adaptive":
-                    kwargs = self._configure_claude_adaptive_thinking(model, kwargs)
-                elif claude_thinking_mode == "extended":
-                    kwargs = self._configure_claude_extended_thinking(model, kwargs)
-                elif claude_thinking_mode == "unsupported_extended":
-                    get_logger().warning(
-                        f"Skipping extended thinking for {model}: adaptive-only models reject "
-                        f"budget_tokens. Enable config.enable_claude_adaptive_thinking instead."
-                    )
-                elif adaptive_thinking_enabled or extended_thinking_enabled:
-                    message = (
-                        f"No thinking configuration applied for model {model}: adaptive thinking "
-                        f"requires a recognized claude 5 model name in the id and extended "
-                        f"thinking requires exact membership in claude_extended_thinking_models."
-                    )
-                    if "arn:aws:bedrock:" in model:
-                        message += (
-                            " For a Bedrock inference profile, address the model by name and pass "
-                            "the ARN with litellm.model_id."
-                        )
-                    get_logger().warning(message)
-
-                # Optional output token limit; 0 = unset. Without max_tokens some
-                # providers apply a low service-side default (Bedrock Converse: 4096,
-                # which reasoning can fully consume, returning empty content).
-                # setdefault keeps the extended-thinking limit authoritative.
-                max_output_tokens = self._resolve_output_token_limit(model, openrouter_model)
-                if max_output_tokens > 0:
-                    output_limit_param = "max_completion_tokens" if is_gpt6_astra else "max_tokens"
-                    kwargs.setdefault(output_limit_param, max_output_tokens)
-
-                if get_settings().litellm.get("enable_callbacks", False):
-                    kwargs = self.add_litellm_callbacks(kwargs)
-
-                seed = get_settings().config.get("seed", -1)
-                if temperature > 0 and seed >= 0:
-                    raise ValueError(f"Seed ({seed}) is not supported with temperature ({temperature}) > 0")
-                elif seed >= 0:
-                    get_logger().info(f"Using fixed seed of {seed}")
-                    kwargs["seed"] = seed
-
-                if self.repetition_penalty:
-                    kwargs["repetition_penalty"] = self.repetition_penalty
-
-                # Support for custom OpenAI body fields (e.g., Flex Processing)
-                kwargs = _process_litellm_extra_body(kwargs)
-
-                # Optional provider-side request attribution: when config.add_user_to_requests
-                # is enabled, send the current command and PR URL in the OpenAI-compatible
-                # "user" field, so provider logs and usage exports can be attributed to a
-                # specific PR without timestamp correlation (OpenRouter shows it as
-                # "external_user" and includes it in the activity export). Disabled by
-                # default: it shares request-attribution data with the model provider.
-                if get_settings().config.get("add_user_to_requests", False):
-                    request_user = self._get_request_user_field()
-                    if request_user:
-                        try:
-                            supported_params = litellm.get_supported_openai_params(model=model) or []
-                        except Exception:
-                            supported_params = []
-                        if "user" in supported_params:
-                            kwargs["user"] = request_user
-                        elif openrouter_model:
-                            # LiteLLM's OpenRouter transformation does not forward the
-                            # standard "user" parameter; extra_body reaches the
-                            # OpenAI-compatible request body verbatim.
-                            user_extra_body = kwargs.get("extra_body") or {}
-                            user_extra_body["user"] = request_user
-                            kwargs["extra_body"] = user_extra_body
-                        else:
-                            # Providers whose parameter mapping does not accept "user"
-                            # (e.g. gemini, deepseek) would reject the request when
-                            # litellm.drop_params is off: skip the field instead of
-                            # breaking the call.
-                            get_logger().debug(
-                                f"add_user_to_requests: user field unsupported for {model}, skipped")
-
-                # Anthropic prompt caching via LiteLLM's cache_control_injection_points. The value
-                # is validated before the try/except (see above) so a malformed config surfaces as
-                # a ValueError instead of being retried. The kwarg is Anthropic-specific (Claude via
-                # the Anthropic API, Bedrock or Vertex), so gate on the model to avoid passing an
-                # unsupported param to other providers when litellm.drop_params is off. setdefault
-                # guards against overwriting a value already merged into kwargs.
-                if cache_control_injection_points:
-                    if isinstance(model, str) and "claude" in model.lower():
-                        kwargs.setdefault("cache_control_injection_points", cache_control_injection_points)
-                    else:
-                        get_logger().debug(
-                            f"cache_control_injection_points configured but not applied: {model} is not an "
-                            "Anthropic (Claude) model")
-
-                # Classic `bedrock/` calls use model_id for Bedrock Runtime inference profiles.
-                # Bedrock Mantle uses Projects, so `bedrock_mantle/` intentionally omits it.
-                bedrock_model_id = getattr(self, "_bedrock_model_id", None)
-                if bedrock_model_id and request_provider == "bedrock":
-                    kwargs["model_id"] = bedrock_model_id
-                    get_logger().info(f"Using Bedrock custom inference profile: {bedrock_model_id}")
-
-                # OpenRouter provider routing, reasoning control and output cap.
-                # Registered reasoning models inherit config.reasoning_effort when
-                # no OpenRouter-specific effort or token budget is configured.
-                if openrouter_model:
-                    kwargs = self._apply_openrouter_request_controls(
-                        openrouter_model,
-                        kwargs,
-                        openrouter_reasoning_effort,
-                    )
-
-                get_logger().debug("Prompts", artifact={"system": system, "user": user})
-
-                if get_verbosity_level() >= 2:
-                    get_logger().info(f"\nSystem prompt:\n{system}")
-                    get_logger().info(f"\nUser prompt:\n{user}")
-
-                # Optional fixed provider override, so a raw hosted model id reaches the
-                # provider unchanged instead of being rewritten by LiteLLM's prefix inference.
-                if custom_llm_provider:
-                    kwargs["custom_llm_provider"] = custom_llm_provider
-
-                # Get completion with automatic streaming detection
-                resp, finish_reason, response_obj = await self._get_completion(**kwargs)
+                if with_tools:
+                    turn, response_obj = await self._get_completion_with_tools(**kwargs)
+                else:
+                    resp, finish_reason, response_obj = await self._get_completion(**kwargs)
 
             except openai.RateLimitError as e:
                 get_logger().error(f"Rate limit error during LLM inference: {e}")
@@ -4185,7 +4247,10 @@ class LiteLLMAIHandler(BaseAiHandler):
                         ))
                     ):
                         kwargs["aws_region_name"] = request_region
-                    resp, finish_reason, response_obj = await self._get_completion(**kwargs)
+                    if with_tools:
+                        turn, response_obj = await self._get_completion_with_tools(**kwargs)
+                    else:
+                        resp, finish_reason, response_obj = await self._get_completion(**kwargs)
                 else:
                     get_logger().warning(f"Error during LLM inference: {e}")
                     raise
@@ -4193,27 +4258,144 @@ class LiteLLMAIHandler(BaseAiHandler):
                 get_logger().warning(f"Unknown error during LLM inference: {e}")
                 raise openai.APIError(
                     str(e),
-                    request=httpx.Request("POST", model),
+                    request=httpx.Request("POST", completion_model),
                     body=None,
                 ) from e
 
-        # Post-response bookkeeping happens outside the Bedrock IMDS lock above: it
-        # touches no os.environ credentials, and in IMDS mode the lock serializes
-        # every concurrent call, so holding it through logging and cost pricing
-        # would make each waiting coroutine pay for them serially.
-        get_logger().debug(f"\nAI response:\n{resp}")
+        resp_text = (turn.content or "") if with_tools else (resp or "")
+        cur_finish_reason = turn.finish_reason if with_tools else finish_reason
 
-        # log the full response for debugging
-        response_log = self.prepare_logs(response_obj, system, user, resp, finish_reason)
+        get_logger().debug(f"\nAI response:\n{resp_text}")
+        response_log = self.prepare_logs(response_obj, log_system, log_user, resp_text, cur_finish_reason)
         get_logger().debug("Full_response", artifact=response_log)
 
-        # for CLI debugging
         if get_verbosity_level() >= 2:
-            get_logger().info(f"\nAI response:\n{resp}")
+            get_logger().info(f"\nAI response:\n{resp_text}")
 
-        self._record_completion_metadata(response_obj, model=model, display_model=user_model)
+        self._record_completion_metadata(response_obj, model=completion_model, display_model=user_model)
 
-        return resp, finish_reason
+        if with_tools:
+            return turn
+        else:
+            return resp, finish_reason
+
+    @retry(
+        retry=retry_if_exception(_should_retry_same_model),
+        stop=stop_after_attempt(MODEL_RETRIES),
+        reraise=True,
+    )
+    async def _chat_completion_with_tools_retry(
+        self,
+        model: str,
+        system: str,
+        user: str,
+        temperature: float = 0.2,
+        *,
+        tools: list[dict] | None = None,
+        messages: list[dict] | None = None,
+        configured_deployment_id: str | None,
+    ) -> AssistantTurn:
+        """Retry-wrapped structured completion. Dispatches through shared pipeline with with_tools=True."""
+        return await self._execute_completion_pipeline(
+            model=model,
+            system=system,
+            user=user,
+            temperature=temperature,
+            tools=tools,
+            messages=messages,
+            configured_deployment_id=configured_deployment_id,
+            with_tools=True,
+        )
+
+    async def _get_completion_with_tools(self, **kwargs):
+        """Structured completion returning (AssistantTurn, response_obj).
+
+        Mirrors _get_completion but produces an AssistantTurn that can carry tool calls.
+        The existing _get_completion is left completely unchanged.
+        """
+        model = kwargs["model"]
+        custom_llm_provider = str(kwargs.get("custom_llm_provider") or "").strip().lower()
+        kwargs["model"] = normalize_litellm_model(model, custom_llm_provider)
+        force_streaming = self._force_streaming_for_request(custom_llm_provider, kwargs.get("api_base"))
+
+        if self._requires_streaming(model) or force_streaming:
+            kwargs["stream"] = True
+            kwargs["stream_options"] = {"include_usage": True}
+            get_logger().info(f"Using streaming mode for model {model} (tool path)")
+            response = await self._acompletion(**kwargs)
+            turn, mock_resp = await _handle_structured_streaming_response(response, model=model)
+            return turn, mock_resp
+        else:
+            response = await self._acompletion(**kwargs)
+            if response is None or len(response["choices"]) == 0:
+                raise openai.APIError(
+                    f"No choices in model response from {model}",
+                    request=httpx.Request("POST", model),
+                    body=None,
+                )
+            message = response["choices"][0]["message"]
+            content = message.get("content") if isinstance(message, dict) else getattr(message, "content", None)
+            finish_reason = response["choices"][0]["finish_reason"]
+
+            raw_tool_calls = (
+                message.get("tool_calls") if isinstance(message, dict) else getattr(message, "tool_calls", None)
+            )
+            tool_calls = []
+            if raw_tool_calls:
+                for tc in raw_tool_calls:
+                    if isinstance(tc, dict):
+                        tc_id = tc.get("id", "")
+                        tc_type = tc.get("type", "function")
+                        func = tc.get("function", {})
+                        tc_name = func.get("name", "")
+                        tc_args = func.get("arguments", "")
+                    else:
+                        tc_id = getattr(tc, "id", "") or ""
+                        tc_type = getattr(tc, "type", "function") or "function"
+                        func = getattr(tc, "function", None)
+                        tc_name = getattr(func, "name", "") or "" if func else ""
+                        tc_args = getattr(func, "arguments", "") or "" if func else ""
+                    tool_calls.append(ToolCall(id=tc_id, name=tc_name, arguments=tc_args, type=tc_type))
+
+            if not content and not tool_calls:
+                get_logger().warning(f"Empty content in model response, finish_reason: {finish_reason}")
+                raise openai.APIError(
+                    f"Empty content in model response (finish_reason: {finish_reason})",
+                    request=httpx.Request("POST", model),
+                    body=None,
+                )
+
+            turn = AssistantTurn(
+                content=content if content else None,
+                finish_reason=finish_reason,
+                tool_calls=tool_calls,
+            )
+            return turn, response
+
+    @retry(
+        retry=retry_if_exception(_should_retry_same_model),
+        stop=stop_after_attempt(MODEL_RETRIES),
+        reraise=True,  # surface the provider's error; RetryError hides the reason
+    )
+    async def _chat_completion_with_retry(
+        self,
+        model: str,
+        system: str,
+        user: str,
+        temperature: float = 0.2,
+        img_path: str = None,
+        *,
+        configured_deployment_id: str | None,
+    ):
+        return await self._execute_completion_pipeline(
+            model=model,
+            system=system,
+            user=user,
+            temperature=temperature,
+            img_path=img_path,
+            configured_deployment_id=configured_deployment_id,
+            with_tools=False,
+        )
 
     async def probe_completion(self, model: str, *, max_tokens: int = 10, timeout: int = 10, _completion=None) -> None:
         """Preserve the single-call health probe using request-local credentials."""

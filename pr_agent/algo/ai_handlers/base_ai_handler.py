@@ -26,3 +26,10 @@ class BaseAiHandler(ABC):
             temperature (float): the temperature to use for the chat completion
         """
         pass
+
+    def supports_tool_calling(self, model: str) -> bool:
+        """
+        Check whether the AI handler supports tool calling for the given model.
+        Defaults to False unless overridden by a subclass.
+        """
+        return False
