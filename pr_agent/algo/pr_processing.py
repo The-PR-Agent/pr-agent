@@ -318,10 +318,11 @@ def _pack_pr_multi_diffs(file_dict: dict,
             rendered_tokens = max(rendered_tokens, token_handler.count_tokens(stripped))
         return rendered_tokens
 
-    def clip_single_patch(filename, patch, patch_tokens):
+    def clip_single_patch(filename, patch):
         if get_settings().config.get("large_patch_policy", "skip") != "clip":
             get_logger().warning(f"Patch too large, skipping: {filename}")
             return None
+        patch_tokens = count_chunk([patch])
         patch_clipped = clip_tokens(
             patch,
             token_budget,
@@ -343,7 +344,7 @@ def _pack_pr_multi_diffs(file_dict: dict,
             continue
 
         if new_patch_tokens > token_budget:
-            clipped_item = clip_single_patch(filename, patch, new_patch_tokens)
+            clipped_item = clip_single_patch(filename, patch)
             if not clipped_item:
                 continue
             filename, patch, new_patch_tokens = clipped_item
@@ -398,7 +399,7 @@ def _pack_pr_multi_diffs(file_dict: dict,
                 continue
 
             item = pending_group[0]
-            clipped_item = clip_single_patch(item[0], item[1], item[2])
+            clipped_item = clip_single_patch(item[0], item[1])
             if clipped_item:
                 append_group([clipped_item])
             pending_group = pending_group[1:]

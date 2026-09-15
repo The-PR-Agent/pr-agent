@@ -291,6 +291,34 @@ def test_multi_packing_does_not_assume_stripping_reduces_tokens(monkeypatch, pol
     assert remaining == ["a.py"]
 
 
+def test_multi_packing_clips_with_exact_single_patch_count(monkeypatch):
+    class StripSensitiveHandler(CharacterTokenHandler):
+        def count_tokens(self, patch):
+            return 100 if patch == "AB" else len(patch)
+
+    observed_counts = []
+
+    def clip_with_reported_count(patch, max_tokens, *, num_input_tokens, **kwargs):
+        observed_counts.append(num_input_tokens)
+        return patch if num_input_tokens <= max_tokens else "A"
+
+    handler = StripSensitiveHandler(prompt_tokens=0)
+    settings = get_settings()
+    original_policy = settings.config.get("large_patch_policy", "skip")
+    settings.config.large_patch_policy = "clip"
+    monkeypatch.setattr(pr_processing, "clip_tokens", clip_with_reported_count)
+    try:
+        chunks, remaining = pr_processing._pack_pr_multi_diffs(
+            {"a.py": {"patch": " AB ", "tokens": 4}}, handler, 2, True, 4,
+        )
+    finally:
+        settings.config.large_patch_policy = original_policy
+
+    assert chunks == ["A"]
+    assert remaining == []
+    assert observed_counts == [100]
+
+
 def test_fresh_and_prepared_multi_diffs_fit_the_same_rendered_boundary(monkeypatch):
     handler = CharacterTokenHandler(prompt_tokens=11)
     files = _rendered_budget_files()

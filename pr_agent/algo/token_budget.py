@@ -16,7 +16,7 @@ def _positive_int(value) -> int | None:
 
 @dataclass(frozen=True)
 class AttemptTokenBudget:
-    """Token accounting and output headroom for one attempted model."""
+    """Track token accounting and output headroom for one attempted model."""
 
     model: str
     source_token_handler: object
