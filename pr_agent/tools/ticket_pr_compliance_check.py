@@ -867,7 +867,14 @@ async def extract_tickets(git_provider):
 
                     # A PR reference is not an issue ticket. GitHub's issue API
                     # exposes pull requests through the ``pull_request`` field.
-                    if getattr(issue_main, "pull_request", None) is not None:
+                    # Prefer the raw API payload so duck-typed issue substitutes
+                    # (and mocks that synthesize arbitrary attributes) are not
+                    # mistaken for pull requests.
+                    issue_raw_data = getattr(issue_main, "raw_data", None)
+                    is_pull_request = isinstance(issue_raw_data, dict) and issue_raw_data.get("pull_request") is not None
+                    if not is_pull_request and "_pull_request" in vars(issue_main):
+                        is_pull_request = getattr(issue_main, "pull_request", None) is not None
+                    if is_pull_request:
                         continue
 
                     issue_body_str = issue_main.body or ""
