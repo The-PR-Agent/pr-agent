@@ -777,7 +777,9 @@ def test_get_pr_diff_preserves_strict_full_diff_boundary(monkeypatch, extra_capa
 
 @pytest.mark.parametrize(("extra_capacity", "uses_full_diff"), [(0, False), (1, True)])
 @pytest.mark.parametrize("reserve", [100, 1_000, 1_200, 1_500, 5_000])
-def test_get_pr_multi_diffs_preserves_strict_full_diff_boundary(monkeypatch, extra_capacity, uses_full_diff, reserve):
+def test_get_pr_multi_diffs_preserves_strict_full_diff_boundary(
+    monkeypatch, extra_capacity, uses_full_diff, reserve,
+):
     settings = get_settings()
     original_before = settings.config.patch_extra_lines_before
     original_after = settings.config.patch_extra_lines_after
@@ -907,7 +909,7 @@ def test_prepared_pr_diff_reuses_compressed_files_without_changing_chunks(monkey
         assert [combined_chunks.index(filename) for filename in expected_order] == sorted(
             combined_chunks.index(filename) for filename in expected_order
         )
-        # Exact assembled candidates must be recounted, while preparation stays cached.
+        # Recount exact assembled candidates while keeping preparation cached.
         assert 0 < token_handler.count_calls - calls_after_prepare <= 4 * len(prepared.file_dict)
         assert (provider.diff_calls, provider.language_calls) == (1, 1)
     finally:

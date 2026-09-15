@@ -110,7 +110,7 @@ def test_compressed_budgets_keep_default_plus_reasoning_reserves(monkeypatch, at
         Provider(), source, "fallback-model", output_token_reserve=lambda model, default: default + 500,
     )
 
-    # The bound fallback prompt uses eight tokens, not the primary model's four.
+    # Compare against the bound fallback prompt's eight tokens, not the primary model's four.
     assert seen == [("fallback-model", 392, 892)]
 
 
