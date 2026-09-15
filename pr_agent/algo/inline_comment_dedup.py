@@ -164,10 +164,16 @@ def inline_comment_line(comment: dict):
 def iter_existing_inline_comment_bodies(git_provider) -> Iterator[str]:
     """Yield the body of every existing comment on the current PR/MR.
 
-    Dispatch is by provider class name so this module needs no provider
-    import. Unsupported providers raise NotImplementedError, which the store
-    treats as "cannot dedup here" and degrades to within-run dedup only.
+    Providers with a persistent comment-body capability are handled through
+    that interface. The remaining legacy providers use their provider-specific
+    APIs; unsupported providers raise NotImplementedError so the store can
+    degrade to within-run dedup only.
     """
+    persistent_bodies = getattr(git_provider, "get_persistent_comment_bodies", None)
+    if callable(persistent_bodies):
+        yield from persistent_bodies()
+        return
+
     provider_name = type(git_provider).__name__
     if provider_name == "GithubProvider":
         for comment in git_provider.pr.get_comments():

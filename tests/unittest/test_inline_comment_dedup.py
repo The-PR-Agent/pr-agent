@@ -131,6 +131,14 @@ def test_iter_unsupported_provider_raises():
         pass
 
 
+def test_iter_provider_with_persistent_comment_capability():
+    class Provider:
+        def get_persistent_comment_bodies(self):
+            return ["existing Bitbucket finding"]
+
+    assert list(d.iter_existing_inline_comment_bodies(Provider())) == ["existing Bitbucket finding"]
+
+
 def _azure_provider(existing_threads=None):
     provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
     provider.azure_devops_client = MagicMock()
@@ -141,7 +149,7 @@ def _azure_provider(existing_threads=None):
     return provider
 
 
-def test_inline_publication_verification_is_limited_to_azure_devops():
+def test_inline_publication_verification_supports_providers_with_comment_capability():
     assert d.can_verify_inline_comment_publication(_azure_provider()) is True
     assert d.can_verify_inline_comment_publication(_gh_provider([])) is False
     assert d.can_verify_inline_comment_publication(_gl_provider([])) is False
