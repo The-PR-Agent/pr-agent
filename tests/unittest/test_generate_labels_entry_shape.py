@@ -1,4 +1,5 @@
 """Validate and read the labels list inside each model attempt."""
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
@@ -12,6 +13,7 @@ _TRACKED_KEYS = (
     "config.model",
     "config.fallback_models",
     "config.publish_output",
+    "config.propagate_tool_errors",
     "config.enable_custom_labels",
     "custom_labels",
     "model_routing.enable",
@@ -29,6 +31,7 @@ def fallback_models():
     settings.set("config.model", "primary-model")
     settings.set("config.fallback_models", ["fallback-model"])
     settings.set("config.publish_output", True)
+    settings.set("config.propagate_tool_errors", False)
     settings.set("config.enable_custom_labels", False)
     settings.set("custom_labels", [])
     settings.set("model_routing.enable", False)
@@ -231,3 +234,44 @@ async def test_valid_attempt_does_not_cleanup_without_progress_handle(fallback_m
     provider.publish_comment.assert_called_once_with("Preparing PR labels...", is_temporary=True)
     provider.remove_initial_comment.assert_not_called()
     provider.remove_comment.assert_not_called()
+
+
+@pytest.mark.parametrize("propagate_tool_errors", [False, True])
+@pytest.mark.asyncio
+async def test_cleanup_failure_is_best_effort_after_success(
+    fallback_models, propagate_tool_errors
+):
+    provider = MagicMock()
+    provider.publish_comment.return_value = MagicMock()
+    provider.is_supported.return_value = True
+    provider.get_pr_labels.return_value = []
+    provider.remove_initial_comment.side_effect = RuntimeError("cleanup failed")
+    tool = label_tool(provider)
+    tool._get_prediction = AsyncMock(return_value=_VALID_FALLBACK)
+    get_settings().set("config.propagate_tool_errors", propagate_tool_errors)
+
+    with patch("pr_agent.tools.pr_generate_labels.get_pr_diff", return_value="diff"):
+        assert await tool.run() == ""
+
+    provider.publish_labels.assert_called_once_with(["bug fix"])
+    provider.remove_initial_comment.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_cancellation_after_progress_handle_cleans_up_before_propagating(fallback_models):
+    provider = MagicMock()
+    provider.publish_comment.return_value = MagicMock()
+    tool = label_tool(provider)
+
+    with (
+        patch(
+            "pr_agent.tools.pr_generate_labels.retry_with_fallback_models",
+            new=AsyncMock(side_effect=asyncio.CancelledError()),
+        ),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await tool.run()
+
+    provider.publish_comment.assert_called_once_with("Preparing PR labels...", is_temporary=True)
+    provider.remove_initial_comment.assert_called_once_with()
+    provider.publish_labels.assert_not_called()
