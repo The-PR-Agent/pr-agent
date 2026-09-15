@@ -1865,6 +1865,7 @@ class PRCodeSuggestions:
                     output_token_reserve=getattr(
                         getattr(self, "ai_handler", None), "get_output_token_reserve", None
                     ),
+                    ignore_max_model_tokens=True,
                 )
                 max_input_tokens = attempt_budget.available_tokens(
                     2_000, preserve_minimum=True
