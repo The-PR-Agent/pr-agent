@@ -22,7 +22,7 @@ from pr_agent.log import get_logger
 
 MAX_FILES_ALLOWED_FULL = 50
 
-_URL_USERINFO_RE = re.compile(r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.\-]{0,30}://)[^/@\s]+@")
+_URL_USERINFO_RE = re.compile(r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.\-]{0,30}://)[^@\s]+@")
 _AUTH_HEADER_RE = re.compile(r"(?i)(authorization\s*:\s*(?:bearer|basic|token)\s+)\S+")
 _CLONE_EXTRA_ENV: ContextVar[dict | None] = ContextVar("clone_extra_env", default=None)
 
@@ -295,7 +295,13 @@ class GitProvider(ABC):
         # Apply authentication only for this clone process; keep the stored origin URL clean.
         clone_extra_env = _CLONE_EXTRA_ENV.get()
         if clone_extra_env:
-            ssl_env = {**ssl_env, **clone_extra_env}
+            inherited_count = int(ssl_env.get("GIT_CONFIG_COUNT", "0"))
+            scoped_env = {
+                key.replace("_0", f"_{inherited_count}", 1): value
+                for key, value in clone_extra_env.items()
+                if key != "GIT_CONFIG_COUNT"
+            }
+            ssl_env = {**ssl_env, **scoped_env, "GIT_CONFIG_COUNT": str(inherited_count + 1)}
 
         subprocess.run([
             "git", "clone",
