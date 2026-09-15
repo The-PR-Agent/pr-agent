@@ -444,9 +444,9 @@ class PRSimilarIssue:
                 url = list(issue.get_comments())[relevant_comment_number_list[i]].html_url
             similar_issues_str += f"{i + 1}. **[{title}]({url})** (score={score_list[i]})\n\n"
         if get_settings().config.publish_output:
-            response = issue_main.create_comment(similar_issues_str)
+            issue_main.create_comment(similar_issues_str)
         get_logger().info(similar_issues_str)
-        get_logger().info('Done')
+        get_logger().info("Done")
 
     def _process_issue(self, issue):
         header = issue.title

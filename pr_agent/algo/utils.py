@@ -909,7 +909,7 @@ def load_large_diff(filename, new_file_content_str: str, original_file_content_s
         if get_verbosity_level() >= 2 and show_warning:
             get_logger().info(f"File was modified, but no patch was found. Manually creating patch: {filename}.")
         return to_hunk_only_patch(''.join(diff))
-    except Exception as e:
+    except Exception:
         get_logger().exception(f"Failed to generate patch for file: {filename}")
         return ""
 

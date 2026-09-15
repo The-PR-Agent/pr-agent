@@ -949,7 +949,7 @@ class PRCodeSuggestions:
                         get_logger().error(f"Failed to log suggestion statistics, error: {e}")
                         pass
 
-                except Exception as e:  #
+                except Exception:
                     get_logger().error(f"Error processing suggestion score {i}",
                                        artifact={"suggestion": suggestion,
                                                  "code_suggestions_feedback": code_suggestions_feedback[i]})
@@ -1869,7 +1869,7 @@ class PRCodeSuggestions:
                         patch_final = clip_tokens(patch_final, max_tokens_full - delta_output)
                     patches_diff_list.append(patch_final)
                 return patches_diff_list
-            except Exception as e:
+            except Exception:
                 get_logger().exception("Error converting to decoupled with line numbers",
                                        artifact={'patches_diff_list_no_line_numbers': patches_diff_list_no_line_numbers})
                 return []

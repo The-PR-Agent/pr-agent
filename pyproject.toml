@@ -172,7 +172,6 @@ lint.ignore = [
   "E402", # import not at top of file
   "E501", # line too long
   "E722", # bare `except`
-  "F841", # unused local variable
   "B011", # `assert False`
   "B017", # assertRaises(Exception)
   "B023", # function definition uses loop variable
