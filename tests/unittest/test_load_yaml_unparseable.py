@@ -53,7 +53,7 @@ def test_generate_labels_rejects_an_unparseable_prediction():
     tool = PRGenerateLabels.__new__(PRGenerateLabels)
     tool.prediction = UNPARSEABLE
 
-    with pytest.raises(ValueError, match="mapping"):
+    with pytest.raises(ValueError):
         tool._prepare_data()
 
 

@@ -152,6 +152,39 @@ class Label(str, Enum):
 class Labels(BaseModel):
     labels: List[str]
 
+    @field_validator("labels", mode="before")
+    @classmethod
+    def _normalize_labels(cls, value):
+        if isinstance(value, str):
+            entries = value.split(",")
+        elif isinstance(value, list):
+            if not value:
+                return []
+            entries = value
+        else:
+            raise ValueError("labels must be a list or comma-separated string")
+
+        labels = []
+        for entry in entries:
+            if isinstance(entry, dict):
+                entry = next(
+                    (
+                        entry[key]
+                        for key in ("name", "label", "title", "value")
+                        if isinstance(entry.get(key), str) and entry[key].strip()
+                    ),
+                    None,
+                )
+            if isinstance(entry, bool) or not isinstance(entry, (str, int, float)):
+                continue
+            label = str(entry).strip()
+            if label:
+                labels.append(label)
+
+        if not labels:
+            raise ValueError("labels must contain at least one usable value")
+        return labels
+
 
 class CodeDocumentationItem(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
