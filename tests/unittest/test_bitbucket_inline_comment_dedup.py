@@ -3,6 +3,7 @@ from unittest.mock import MagicMock
 
 from pr_agent.algo.inline_comment_dedup import can_verify_inline_comment_publication
 from pr_agent.git_providers.bitbucket_provider import BitbucketProvider
+from unittest.mock import patch
 
 
 def _provider(comment_bodies):
@@ -27,6 +28,20 @@ def test_bitbucket_cloud_dedup_bodies_include_published_comments():
 
     assert provider.get_persistent_comment_bodies() == ["new inline finding"]
     assert provider.get_recent_inline_comment_bodies() == ["new inline finding"]
+
+
+def test_bitbucket_publish_records_body_and_preserves_markers():
+    provider = _provider([])
+    provider.headers = {}
+    provider.bitbucket_comment_api_url = "https://bitbucket.example/comments"
+    provider.max_comment_length = 31000
+    body = "x" * 31_500 + "\n\n[pr-agent-key-issue-location: abcdef123456]: https://github.com/The-PR-Agent/pr-agent"
+    with patch("pr_agent.git_providers.bitbucket_provider.requests.request") as request:
+        request.return_value.raise_for_status.return_value = None
+        assert provider.publish_inline_comment(body, "file.py", 10)
+    published = provider.get_recent_inline_comment_bodies()
+    assert published and "pr-agent-key-issue-location: abcdef123456" in published[0]
+    assert provider.get_persistent_comment_bodies() == published
 
 
 def test_bitbucket_cloud_skips_comments_without_raw_body():

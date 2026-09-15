@@ -64,6 +64,7 @@ class BitbucketProvider(GitProvider):
         self.headers = s.headers
         self.bitbucket_client = Cloud(session=s)
         self.max_comment_length = 31000
+        self.max_comment_chars = self.max_comment_length
         self.workspace_slug = None
         self.repo_slug = None
         self.repo = None
@@ -79,6 +80,10 @@ class BitbucketProvider(GitProvider):
             self.set_pr(pr_url)
         self.bitbucket_comment_api_url = self.pr._BitbucketBase__data["links"]["comments"]["href"]
         self.bitbucket_pull_request_api_url = self.pr._BitbucketBase__data["links"]['self']['href']
+
+    def supports_html_comment_markers(self) -> bool:
+        """Return whether HTML comments render invisibly on this provider."""
+        return False
 
     def get_repo_settings(self):
         settings_files = []

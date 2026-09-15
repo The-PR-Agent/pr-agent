@@ -36,9 +36,19 @@ import hashlib
 import re
 from typing import Iterator, Optional
 
-BODY_MARKER_RE = re.compile(r"<!-- pr-agent-dedup: ([a-f0-9]{12}) -->|\[pr-agent-dedup: ([a-f0-9]{12})\]: https://github.com/The-PR-Agent/pr-agent")
-CODE_MARKER_RE = re.compile(r"<!-- pr-agent-dedup-code: ([a-f0-9]{12}) -->|\[pr-agent-dedup-code: ([a-f0-9]{12})\]: https://github.com/The-PR-Agent/pr-agent")
-KEY_ISSUE_LOCATION_MARKER_RE = re.compile(r"<!-- pr-agent-key-issue-location: ([a-f0-9]{12}) -->|\[pr-agent-key-issue-location: ([a-f0-9]{12})\]: https://github.com/The-PR-Agent/pr-agent")
+_MARKER_URL = r"https://github.com/The-PR-Agent/pr-agent"
+BODY_MARKER_RE = re.compile(
+    rf"<!-- pr-agent-dedup: ([a-f0-9]{{12}}) -->|\[pr-agent-dedup: "
+    rf"([a-f0-9]{{12}})\]: {_MARKER_URL}"
+)
+CODE_MARKER_RE = re.compile(
+    rf"<!-- pr-agent-dedup-code: ([a-f0-9]{{12}}) -->|\[pr-agent-dedup-code: "
+    rf"([a-f0-9]{{12}})\]: {_MARKER_URL}"
+)
+KEY_ISSUE_LOCATION_MARKER_RE = re.compile(
+    rf"<!-- pr-agent-key-issue-location: ([a-f0-9]{{12}}) -->|"
+    rf"\[pr-agent-key-issue-location: ([a-f0-9]{{12}})\]: {_MARKER_URL}"
+)
 _MARKER_RES = (BODY_MARKER_RE, CODE_MARKER_RE, KEY_ISSUE_LOCATION_MARKER_RE)
 
 _LEAD_RE = re.compile(r"^\*\*Suggestion:\*\*\s*", re.IGNORECASE)
