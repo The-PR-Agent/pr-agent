@@ -196,7 +196,7 @@ async def test_a_chunk_that_fails_does_not_lose_the_chunks_that_succeeded(chunki
         await reviewer._prepare_prediction("model")
 
     reviewer._get_prediction.side_effect = [CHUNK_A]
-    await reviewer._prepare_prediction("gpt-4")
+    await reviewer._prepare_chunked_prediction("model")
 
     assert reviewer.prediction_data["review"]["score"] == "40"
     assert reviewer.review_chunk_count == 2
@@ -219,7 +219,7 @@ async def test_a_failed_chunk_blocks_persistent_finding_resolution(chunking_enab
         await reviewer._prepare_prediction("model")
 
     reviewer._get_prediction.side_effect = [CHUNK_A]
-    await reviewer._prepare_prediction("gpt-4")
+    await reviewer._prepare_chunked_prediction("model")
 
     previous_state = reconcile_review_findings(
         None,
@@ -260,7 +260,7 @@ async def test_a_malformed_chunk_is_retried_without_repeating_successful_chunks(
     assert reviewer.prediction_data is None
 
     reviewer._get_prediction.side_effect = [CHUNK_A]
-    await reviewer._prepare_prediction("gpt-4")
+    await reviewer._prepare_chunked_prediction("model")
 
     assert reviewer.prediction_data["review"]["score"] == "40"
     assert [call.args[1] for call in reviewer._get_prediction.await_args_list] == ["chunk-a", "chunk-b", "chunk-a"]
@@ -279,7 +279,7 @@ async def test_cached_chunks_are_used_when_fallback_diff_fits(chunking_enabled):
     ):
         await reviewer._prepare_prediction("model")
 
-    await reviewer._prepare_prediction("gpt-4")
+    await reviewer._prepare_chunked_prediction("model")
 
     assert reviewer.prediction_data["review"]["score"] == "40"
     assert [call.args[1] for call in reviewer._get_prediction.await_args_list] == ["chunk-a", "chunk-b", "chunk-b"]
