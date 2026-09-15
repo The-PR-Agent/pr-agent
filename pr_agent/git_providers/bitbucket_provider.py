@@ -434,7 +434,6 @@ class BitbucketProvider(GitProvider):
 
     def publish_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str | int,
                                original_suggestion=None) -> bool:
-        body = self.limit_output_characters(body, self.max_comment_length)
         # The base contract passes the line's text; publish_inline_comments passes an already resolved line number.
         if not isinstance(relevant_line_in_file, int):
             comment = self.create_inline_comment(body, relevant_file, relevant_line_in_file)
@@ -443,14 +442,23 @@ class BitbucketProvider(GitProvider):
                                    "to publish an inline comment")
                 return False
             relevant_file, relevant_line_in_file = comment["path"], comment["position"]
+        return self._post_inline_comment(body, relevant_file, relevant_line_in_file)
+
+    def _post_inline_comment(self, body: str, relevant_file: str, from_line: int, to_line: int = None) -> bool:
+        # Bitbucket Cloud anchors a span with 'start_to' and 'to'. Anything that is not a real
+        # span is posted as a single-line comment.
+        body = self.limit_output_characters(body, self.max_comment_length)
+        if isinstance(to_line, int) and to_line > from_line:
+            inline = {"start_to": from_line, "to": to_line, "path": relevant_file}
+            location = f"lines {from_line}-{to_line}"
+        else:
+            inline = {"to": from_line, "path": relevant_file}
+            location = f"line {from_line}"
         payload = json.dumps({
             "content": {
                 "raw": body,
             },
-            "inline": {
-                "to": relevant_line_in_file,
-                "path": relevant_file
-            },
+            "inline": inline,
         })
         try:
             response = requests.request(
@@ -459,7 +467,7 @@ class BitbucketProvider(GitProvider):
             response.raise_for_status()
         except Exception as e:
             get_logger().error(
-                f"Failed to publish inline comment to '{relevant_file}' at line {relevant_line_in_file}, error: {e}")
+                f"Failed to publish inline comment to '{relevant_file}' at {location}, error: {e}")
             return False
         return True
 
@@ -494,11 +502,12 @@ class BitbucketProvider(GitProvider):
         publishable_count = 0
         published_count = 0
         for comment in comments:
+            to_line = None
             if 'position' in comment:
                 from_line = comment['position']
             elif 'start_line' in comment:  # multi-line comment
-                # note that bitbucket does not seem to support range - only a comment on a single line - https://community.developer.atlassian.com/t/api-post-endpoint-for-inline-pull-request-comments/60452
                 from_line = comment['start_line']
+                to_line = comment.get('line')
             elif 'line' in comment:  # single-line comment
                 from_line = comment['line']
             else:
@@ -506,7 +515,7 @@ class BitbucketProvider(GitProvider):
                 continue
 
             publishable_count += 1
-            if self.publish_inline_comment(comment['body'], comment['path'], from_line):
+            if self._post_inline_comment(comment['body'], comment['path'], from_line, to_line):
                 published_count += 1
 
         # A partial failure must not report failure: the caller republishes the whole

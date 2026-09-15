@@ -113,6 +113,8 @@ class PRGenerateLabels:
                 self.git_provider.remove_initial_comment()
         except Exception as e:
             get_logger().error(f"Error generating PR labels {self.pr_id}: {e}")
+            if get_settings().config.get("propagate_tool_errors", False):
+                raise
 
         return ""
 

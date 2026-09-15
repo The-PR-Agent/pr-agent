@@ -679,11 +679,11 @@ wheels = [
 
 [[package]]
 name = "dynaconf"
-version = "3.2.13"
+version = "3.3.5"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/57/0e/05927cf459e73f8bf9a9277cbea6f2d5b7db8a5cc9dc1e20e7a5fbac1b90/dynaconf-3.2.13.tar.gz", hash = "sha256:d79e0189d97b3f226b8ebb1717e2ce05d1a05cdf6ea05de66d24625fdb5a0cbd", size = 283507, upload-time = "2026-03-17T19:38:47.632Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/71/e4/723ba469856bb493c948985e5bd562c8a65f2b93e70c896e9764ab76de00/dynaconf-3.3.5.tar.gz", hash = "sha256:a08f6ab44025034ef3c9f86b32548ab01efd4039094a74bd9f028a43c63d016f", size = 333426, upload-time = "2026-08-05T19:50:25.16Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/97/43/11d6e5d2c00bf000b5329717c74563bf76a9193f4a41cb0c4ef277dde4fa/dynaconf-3.2.13-py2.py3-none-any.whl", hash = "sha256:4305527aef4834bdba3e39479b23c005186e83fb85f65bcaa4bcea58fa26759b", size = 238041, upload-time = "2026-03-17T19:38:45.337Z" },
+    { url = "https://files.pythonhosted.org/packages/95/41/b38501c34c40c3261868a2af8ed5fffe3e6d889c680638708de27eb57788/dynaconf-3.3.5-py3-none-any.whl", hash = "sha256:b3b4a753d5c866fc85466b65fc58d4954f6ed7dc8aa67f2b15bcbfd85d184687", size = 271426, upload-time = "2026-08-05T19:50:23.802Z" },
 ]
 
 [[package]]
@@ -2549,7 +2549,7 @@ requires-dist = [
     { name = "azure-identity", specifier = "==1.25.0" },
     { name = "boto3", specifier = "==1.43.78" },
     { name = "certifi", specifier = ">=2026.7.22" },
-    { name = "dynaconf", specifier = ">=3.2.13,<4" },
+    { name = "dynaconf", specifier = ">=3.3.5,<4" },
     { name = "fastapi", specifier = ">=0.141.1,<1" },
     { name = "giteapy", specifier = "==1.0.8" },
     { name = "gitpython", specifier = ">=3.1.59,<4" },
