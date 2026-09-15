@@ -4,8 +4,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import pr_agent.algo.token_budget as token_budget_module
 import pr_agent.tools.pr_code_suggestions as pr_code_suggestions_module
 from pr_agent.algo.pr_processing import pr_generate_extended_diff, retry_with_fallback_models
+from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import PRCodeSuggestionsHeader, PRCodeSuggestionsIdentity, load_large_diff
 from pr_agent.config_loader import get_settings
@@ -155,6 +157,49 @@ async def test_convert_to_decoupled_preserves_quoted_file_headings_across_files(
     assert "11 +new second" in second_section
     assert "1  keep first" not in second_section
     assert "2 +new first" not in second_section
+
+
+@pytest.mark.asyncio
+async def test_convert_to_decoupled_uses_fallback_model_budget_and_tokenizer(monkeypatch):
+    counted_models = []
+    reserve_calls = []
+    window_calls = []
+
+    class ModelBoundTokenHandler(TokenHandler):
+        def __init__(self, model="primary-model"):
+            super().__init__(model=model)
+            self.prompt_tokens = 10 if model == "fallback-model" else 0
+
+        def for_model(self, model):
+            return ModelBoundTokenHandler(model)
+
+        def count_tokens(self, text, force_accurate=False):
+            counted_models.append(self.model)
+            return len(text) if self.model == "fallback-model" else 1
+
+    def get_window(model, ignore_max_model_tokens=False):
+        window_calls.append((model, ignore_max_model_tokens))
+        return 2_100
+
+    def get_output_token_reserve(model, default):
+        reserve_calls.append((model, default))
+        return default
+
+    monkeypatch.setattr(token_budget_module, "get_max_tokens", get_window)
+    tool = _make_tool()
+    tool.token_handler = ModelBoundTokenHandler()
+    tool.ai_handler = SimpleNamespace(get_output_token_reserve=get_output_token_reserve)
+    patch_prompt = "## File: 'app.py'\n\n@@ -1 +1 @@\n-old\n+" + "replacement " * 40
+
+    result = await tool.convert_to_decoupled_with_line_numbers([patch_prompt], "fallback-model")
+
+    assert len(result) == 1
+    assert result[0]
+    assert len(result[0]) <= 90
+    assert "replacement " * 40 not in result[0]
+    assert counted_models and set(counted_models) == {"fallback-model"}
+    assert reserve_calls == [("fallback-model", 2_000)]
+    assert window_calls == [("fallback-model", False)]
 
 
 @pytest.mark.asyncio
