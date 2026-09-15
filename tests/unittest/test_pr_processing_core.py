@@ -909,12 +909,51 @@ def test_prepared_pr_diff_reuses_compressed_files_without_changing_chunks(monkey
         assert [combined_chunks.index(filename) for filename in expected_order] == sorted(
             combined_chunks.index(filename) for filename in expected_order
         )
-        # Recount exact assembled candidates while keeping preparation cached.
-        assert 0 < token_handler.count_calls - calls_after_prepare <= 4 * len(prepared.file_dict)
+        # Bound exact candidate checks linearly while keeping preparation cached.
+        assert 0 < token_handler.count_calls - calls_after_prepare <= 6 * len(prepared.file_dict)
         assert (provider.diff_calls, provider.language_calls) == (1, 1)
     finally:
         for key, value in original.items():
             setattr(settings.config, key, value)
+
+
+def test_exact_packing_checks_stay_within_linear_bound_for_many_files():
+    file_count = 400
+    file_dict = {
+        f"file_{index}.py": {
+            "patch": f"patch {index}",
+            "tokens": 2,
+            "edit_type": EDIT_TYPE.MODIFIED,
+        }
+        for index in range(file_count)
+    }
+
+    chunk_handler = FakeTokenHandler(prompt_tokens=100)
+    chunks = pr_processing._pack_pr_multi_diffs(
+        file_dict,
+        chunk_handler,
+        max_calls=3,
+        return_remaining_files=False,
+        token_budget=10_000,
+    )
+
+    assert len(chunks) == 1
+    assert chunk_handler.count_calls < 3 * file_count
+
+    compressed_handler = FakeTokenHandler(prompt_tokens=100)
+    _, patches, remaining, included = pr_processing.generate_full_patch(
+        False,
+        file_dict,
+        soft_token_budget=10_000,
+        remaining_files_list_prev=list(file_dict),
+        token_handler=compressed_handler,
+        hard_token_budget=10_000,
+    )
+
+    assert len(patches) == file_count
+    assert remaining == []
+    assert len(included) == file_count
+    assert compressed_handler.count_calls < 3 * file_count
 
 
 @pytest.mark.parametrize(

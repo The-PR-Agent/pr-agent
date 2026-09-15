@@ -292,10 +292,8 @@ def _pack_pr_multi_diffs(file_dict: dict,
                          return_remaining_files: bool,
                          token_budget: int):
     """Pack serialized diffs within capacity excluding fixed prompt and output tokens."""
-    patches = []
     final_diff_list = []
     files_in_patches = set()
-    call_number = 1
 
     def count_chunk(candidate_patches):
         rendered = "\n".join(candidate_patches)
@@ -307,12 +305,8 @@ def _pack_pr_multi_diffs(file_dict: dict,
             rendered_tokens = max(rendered_tokens, token_handler.count_tokens(stripped))
         return rendered_tokens
 
+    packable = []
     for filename, data in file_dict.items():
-        if call_number > max_calls:
-            if get_verbosity_level() >= 2:
-                get_logger().info(f"Reached max calls ({max_calls})")
-            break
-
         patch = data["patch"]
         new_patch_tokens = data["tokens"]
         if not patch:
@@ -336,28 +330,45 @@ def _pack_pr_multi_diffs(file_dict: dict,
                 get_logger().warning(f"Patch too large, skipping: {filename}")
                 continue
 
-        candidate_tokens = count_chunk([*patches, patch]) if patches else single_patch_tokens
-        if patches and candidate_tokens > token_budget:
-            final_diff_list.append("\n".join(patches))
-            patches = []
-            candidate_tokens = single_patch_tokens
-            call_number += 1
-            if call_number > max_calls:
-                if get_verbosity_level() >= 2:
-                    get_logger().info(f"Reached max calls ({max_calls})")
-                break
-            if get_verbosity_level() >= 2:
-                get_logger().info(f"Call number: {call_number}")
+        packable.append((filename, patch))
 
-        if patch:
-            patches.append(patch)
-            files_in_patches.add(filename)
-            total_tokens = token_handler.prompt_tokens + candidate_tokens
-            if get_verbosity_level() >= 2:
-                get_logger().info(f"Tokens: {total_tokens}, last filename: {filename}")
+    current_chunk = []
 
-    if patches:
-        final_diff_list.append("\n".join(patches).strip())
+    def flush_current():
+        nonlocal current_chunk
+        if not current_chunk or len(final_diff_list) >= max_calls:
+            return
+        final_diff_list.append("\n".join(patch for _, patch in current_chunk))
+        files_in_patches.update(filename for filename, _ in current_chunk)
+        current_chunk = []
+
+    def admit(candidate_group):
+        nonlocal current_chunk
+        if not candidate_group or len(final_diff_list) >= max_calls:
+            return
+
+        combined = [patch for _, patch in [*current_chunk, *candidate_group]]
+        if count_chunk(combined) <= token_budget:
+            current_chunk.extend(candidate_group)
+            return
+
+        if len(candidate_group) == 1:
+            flush_current()
+            if len(final_diff_list) < max_calls:
+                current_chunk.extend(candidate_group)
+            return
+
+        midpoint = len(candidate_group) // 2
+        admit(candidate_group[:midpoint])
+        admit(candidate_group[midpoint:])
+
+    admit(packable)
+    if current_chunk and len(final_diff_list) < max_calls:
+        final_diff_list.append("\n".join(patch for _, patch in current_chunk).strip())
+        files_in_patches.update(filename for filename, _ in current_chunk)
+
+    if len(files_in_patches) < len(packable) and get_verbosity_level() >= 2:
+        get_logger().info(f"Reached max calls ({max_calls})")
 
     if not return_remaining_files:
         return final_diff_list
@@ -528,12 +539,12 @@ def generate_full_patch(convert_hunks_to_line_numbers, file_dict, soft_token_bud
     patches = []
     remaining_files_list_new = []
     files_in_patch_list = []
+    candidates = []
     for filename, data in file_dict.items():
         if filename not in remaining_files_list_prev:
             continue
 
         patch = data['patch']
-
         # Hard Stop, no more tokens
         if total_tokens - token_handler.prompt_tokens > hard_token_budget:
             get_logger().warning(f"File was fully skipped, no more tokens: {filename}.")
@@ -545,29 +556,46 @@ def generate_full_patch(convert_hunks_to_line_numbers, file_dict, soft_token_bud
                 patch_final = f"\n\n## File: '{filename.strip()}'\n\n{patch.strip()}\n"
             else:
                 patch_final = "\n\n" + patch.strip()
-            candidate_tokens = token_handler.prompt_tokens + token_handler.count_tokens(
-                "\n".join([*patches, patch_final])
-            )
-        else:
-            patch_final = ""
-            candidate_tokens = total_tokens
+            candidates.append((filename, patch_final))
 
-        # If the patch is too large, leave the file in the remaining-files list.
-        if candidate_tokens - token_handler.prompt_tokens > soft_token_budget:
-            # Current logic is to skip the patch if it's too large
-            # TODO: Option for alternative logic to remove hunks from the patch to reduce the number of tokens
-            #  until we meet the requirements
+    def admit(candidate_group):
+        nonlocal total_tokens
+        if not candidate_group:
+            return
+        if total_tokens - token_handler.prompt_tokens > hard_token_budget:
+            for filename, _ in candidate_group:
+                get_logger().warning(f"File was fully skipped, no more tokens: {filename}.")
+                remaining_files_list_new.append(filename)
+            return
+
+        candidate_patches = [patch for _, patch in candidate_group]
+        candidate_tokens = token_handler.prompt_tokens + token_handler.count_tokens(
+            "\n".join([*patches, *candidate_patches])
+        )
+        within_soft_limit = candidate_tokens - token_handler.prompt_tokens <= soft_token_budget
+        within_hard_limit = candidate_tokens - token_handler.prompt_tokens <= hard_token_budget
+        if within_soft_limit and (within_hard_limit or len(candidate_group) == 1):
+            patches.extend(candidate_patches)
+            files_in_patch_list.extend(filename for filename, _ in candidate_group)
+            total_tokens = candidate_tokens
+            if get_verbosity_level() >= 2:
+                get_logger().info(
+                    f"Tokens: {total_tokens}, last filename: {candidate_group[-1][0]}"
+                )
+            return
+
+        if len(candidate_group) == 1:
+            filename = candidate_group[0][0]
             if get_verbosity_level() >= 2:
                 get_logger().warning(f"Patch too large, skipping it: '{filename}'")
             remaining_files_list_new.append(filename)
-            continue
+            return
 
-        if patch:
-            patches.append(patch_final)
-            total_tokens = candidate_tokens
-            files_in_patch_list.append(filename)
-            if get_verbosity_level() >= 2:
-                get_logger().info(f"Tokens: {total_tokens}, last filename: {filename}")
+        midpoint = len(candidate_group) // 2
+        admit(candidate_group[:midpoint])
+        admit(candidate_group[midpoint:])
+
+    admit(candidates)
     return total_tokens, patches, remaining_files_list_new, files_in_patch_list
 
 
@@ -684,7 +712,7 @@ def get_pr_multi_diffs(git_provider: GitProvider,
     if attempt_budget is not None:
         budget = attempt_budget
     elif can_reuse_prepared and prepared_diff.attempt_budget is not None:
-        # Keep the model-bound counts, but honor the current caller's reserve policy.
+        # Reuse the model-bound prompt count while honoring this call's reserve policy.
         budget = replace(prepared_diff.attempt_budget, output_token_reserve=output_token_reserve)
     else:
         budget = AttemptTokenBudget.for_attempt(
