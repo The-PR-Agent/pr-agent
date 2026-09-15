@@ -118,8 +118,8 @@ def test_compressed_budgets_keep_default_plus_reasoning_reserves(monkeypatch, at
 def test_negative_hard_capacity_stops_before_admitting_the_first_patch(attempt_context, name):
     source, _ = attempt_context
 
-    # These are both valid callback values. Preserve the stricter hard stop even
-    # when the handler's two policies leave positive soft but negative hard room.
+    # Preserve the stricter hard stop for both valid callback values, even when
+    # the handler's two policies leave positive soft but negative hard room.
     result = getattr(pr_processing, name)(
         Provider(), source, "fallback-model",
         output_token_reserve=lambda model, default: 3_000 if default == 1_000 else 1_500,
