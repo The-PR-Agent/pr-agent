@@ -302,8 +302,8 @@ def _pack_pr_multi_diffs(file_dict: dict,
         rendered = "\n".join(candidate_patches)
         rendered_tokens = token_handler.count_tokens(rendered)
         stripped = rendered.strip()
-        # Intermediate chunks retain whitespace; the last chunk is stripped. Either
-        # can be larger under a non-additive tokenizer, so both must fit on admission.
+        # Count both forms: intermediate chunks retain whitespace, while the last chunk is stripped.
+        # Either form can be larger under a non-additive tokenizer, so both must fit on admission.
         if stripped != rendered:
             rendered_tokens = max(rendered_tokens, token_handler.count_tokens(stripped))
         return rendered_tokens

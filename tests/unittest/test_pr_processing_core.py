@@ -382,7 +382,9 @@ def _make_budget_files(tokens_per_file=2_800):
 
 @pytest.mark.parametrize("resolved", [None, 0, -1, True, "5000"])
 def test_output_token_reserve_rejects_unusable_values(resolved):
-    budget = AttemptTokenBudget("model", object(), object(), 10_000, output_token_reserve=lambda model, default: resolved)
+    budget = AttemptTokenBudget(
+        "model", object(), object(), 10_000, output_token_reserve=lambda model, default: resolved,
+    )
 
     assert budget.resolve_output_reserve(1_500, preserve_minimum=True) == 1_500
 
@@ -390,7 +392,9 @@ def test_output_token_reserve_rejects_unusable_values(resolved):
 @pytest.mark.parametrize("default", [1_000, 1_500])
 @pytest.mark.parametrize("resolved", [1, 100, 999, 1_000, 1_200, 1_499, 1_500, 5_000])
 def test_output_token_reserve_keeps_the_legacy_minimum(default, resolved):
-    budget = AttemptTokenBudget("model", object(), object(), 10_000, output_token_reserve=lambda model, fallback: resolved)
+    budget = AttemptTokenBudget(
+        "model", object(), object(), 10_000, output_token_reserve=lambda model, fallback: resolved,
+    )
 
     assert budget.resolve_output_reserve(default, preserve_minimum=True) == max(default, resolved)
 
@@ -865,13 +869,16 @@ def test_prepared_pr_diff_reuses_compressed_files_without_changing_chunks(monkey
         expected_order = [f"file_{index}.py" for index in range(3, -1, -1)]
         assert list(prepared.file_dict) == expected_order
         calls_after_prepare = token_handler.count_calls
+
         def unexpected_preparation(*args, **kwargs):
             pytest.fail("Prepared patches must not be transformed again")
 
         with monkeypatch.context() as packing_patch:
             packing_patch.setattr(pr_processing, "extend_patch", unexpected_preparation)
             packing_patch.setattr(pr_processing, "handle_patch_deletions", unexpected_preparation)
-            packing_patch.setattr(pr_processing, "decouple_and_convert_to_hunks_with_lines_numbers", unexpected_preparation)
+            packing_patch.setattr(
+                pr_processing, "decouple_and_convert_to_hunks_with_lines_numbers", unexpected_preparation,
+            )
             prepared_chunks = pr_processing.get_pr_multi_diffs(
                 provider,
                 token_handler,
