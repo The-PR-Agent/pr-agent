@@ -101,6 +101,26 @@ def test_failed_clone_removes_partial_checkout(tmp_path):
     assert not destination.exists()
 
 
+def test_failed_clone_preserves_existing_destination_when_requested(tmp_path):
+    provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
+    destination = tmp_path / "checkout"
+    destination.mkdir()
+    marker = destination / "keep.txt"
+    marker.write_text("caller-owned")
+
+    def fake_clone(_url, folder, _timeout):
+        Path(folder, ".git").mkdir()
+        raise RuntimeError("clone failed")
+
+    provider._prepare_clone_url_with_token = lambda _url: "https://oauth2:SECRET@example/repo.git"
+    provider._clone_inner = fake_clone
+    with patch("pr_agent.git_providers.git_provider.get_logger"):
+        result = provider.clone("https://example/repo.git", str(destination), remove_dest_folder=False)
+
+    assert result is None
+    assert marker.read_text() == "caller-owned"
+
+
 class TestCloneUrlValidationLogs:
     """Keep credentials out of the validation-failure logs in _prepare_clone_url_with_token.
 

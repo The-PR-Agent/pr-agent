@@ -323,16 +323,19 @@ class GitProvider(ABC):
         if not clone_url:
             get_logger().error("Clone failed: Unable to obtain url to clone.")
             return returned_obj
+        destination_existed = os.path.exists(dest_folder)
         try:
             if remove_dest_folder and os.path.exists(dest_folder) and os.path.isdir(dest_folder):
                 shutil.rmtree(dest_folder)
+                destination_existed = False
             self._clone_inner(clone_url, dest_folder, operation_timeout_in_seconds)
             self._scrub_clone_credentials(dest_folder, repo_url_to_clone)
             returned_obj = GitProvider.ScopedClonedRepo(dest_folder)
         except Exception as e:
             # A failed clone may have created .git/config before the error. Remove the
-            # checkout so an authenticated remote URL cannot remain on disk.
-            if os.path.isdir(dest_folder):
+            # checkout so an authenticated remote URL cannot remain on disk, but preserve
+            # a caller-owned destination when remove_dest_folder=False.
+            if not destination_existed and os.path.isdir(dest_folder):
                 shutil.rmtree(dest_folder, ignore_errors=True)
             get_logger().error("Clone failed: Could not clone url.",
                 artifact={"error": redact_credentials(e), "url": redact_credentials(clone_url),
