@@ -788,8 +788,10 @@ class PRReviewer:
             self.patches_diff = output
             self.remaining_files_list = []
 
-        # a non-empty remaining_files_list means the token budget truncated the diff
-        if self.remaining_files_list and chunking_enabled:
+        # Resume an incomplete chunk plan even when a fallback model can fit the full diff.
+        # Otherwise the single-call path would bypass cached successful chunks.
+        has_incomplete_chunk_plan = hasattr(self, "_chunked_patches_diff_list")
+        if chunking_enabled and (self.remaining_files_list or has_incomplete_chunk_plan):
             prepared_diff = output if isinstance(output, PreparedPRDiff) else None
             if await self._prepare_chunked_prediction(model, prepared_diff):
                 return

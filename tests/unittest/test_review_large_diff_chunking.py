@@ -263,6 +263,25 @@ async def test_a_malformed_chunk_is_retried_without_repeating_successful_chunks(
 
 
 @pytest.mark.asyncio
+async def test_cached_chunks_are_used_when_fallback_diff_fits(chunking_enabled):
+    reviewer = _make_reviewer()
+    reviewer._get_prediction = AsyncMock(side_effect=[CHUNK_A, RuntimeError("model refused"), CHUNK_B])
+
+    with (
+        patch("pr_agent.tools.pr_reviewer.get_pr_diff", side_effect=[("diff", ["b.py"]), ("full diff", [])]),
+        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
+              return_value=(["chunk-a", "chunk-b"], [])),
+        pytest.raises(RuntimeError, match="model refused"),
+    ):
+        await reviewer._prepare_prediction("model")
+
+    await reviewer._prepare_prediction("fallback-model")
+
+    assert reviewer.prediction_data["review"]["score"] == "40"
+    assert [call.args[1] for call in reviewer._get_prediction.await_args_list] == ["chunk-a", "chunk-b", "chunk-b"]
+
+
+@pytest.mark.asyncio
 async def test_a_review_where_every_chunk_failed_raises_so_a_fallback_model_is_tried(chunking_enabled):
     reviewer = _make_reviewer()
     reviewer._get_prediction = AsyncMock(side_effect=[RuntimeError("model refused"),
