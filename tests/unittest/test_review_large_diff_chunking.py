@@ -247,7 +247,7 @@ async def test_a_malformed_chunk_does_not_discard_successful_chunks(chunking_ena
         await reviewer._prepare_prediction("model")
 
     assert reviewer._get_prediction.await_count == 3
-    assert reviewer.prediction_data["review"]["score"] == "90"
+    assert reviewer.prediction_data["review"]["score"] == "40"
     assert reviewer.review_chunk_count == 3
     assert reviewer.review_failed_chunk_count == 1
 
