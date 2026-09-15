@@ -464,6 +464,162 @@ class TestApplyDiagramDirection:
 
 class TestPRDescriptionLargePR:
 
+    @pytest.mark.parametrize("handler_value", [1, 100, 999, 1_000, 1_200, 5_000])
+    def test_output_token_reserve_keeps_the_legacy_minimum(self, handler_value):
+        obj = _make_large_pr_instance()
+        obj.ai_handler = MagicMock()
+        obj.ai_handler.get_output_token_reserve.return_value = handler_value
+
+        assert obj._get_output_token_reserve("gpt-4o", 1_000) == max(handler_value, 1_000)
+        obj.ai_handler.get_output_token_reserve.assert_called_once_with("gpt-4o", 1_000)
+
+    @pytest.mark.parametrize("handler_value", [None, True, False, 0, -1, "5000", 5_000.0])
+    def test_output_token_reserve_rejects_invalid_handler_value(self, handler_value):
+        obj = _make_large_pr_instance()
+        obj.ai_handler = MagicMock()
+        obj.ai_handler.get_output_token_reserve.return_value = handler_value
+
+        assert obj._get_output_token_reserve("gpt-4o", 1_000) == 1_000
+
+    def test_output_token_reserve_falls_back_when_handler_is_missing_or_raises(self):
+        obj = _make_large_pr_instance()
+        obj.ai_handler = object()
+        assert obj._get_output_token_reserve("gpt-4o", 1_000) == 1_000
+
+        obj.ai_handler = MagicMock()
+        obj.ai_handler.get_output_token_reserve.side_effect = RuntimeError("provider lookup failed")
+        assert obj._get_output_token_reserve("gpt-4o", 1_000) == 1_000
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("reserve", "walkthrough_tokens", "expected_clip_budget"),
+        [(5_000, 4_000, None), (5_000, 4_001, 4_000), (100, 8_000, None), (100, 8_001, 8_000)],
+    )
+    async def test_large_pr_header_reserves_handler_output_tokens(
+        self, monkeypatch, reserve, walkthrough_tokens, expected_clip_budget
+    ):
+        obj = _make_large_pr_instance()
+        obj.ai_handler = MagicMock()
+        obj.ai_handler.get_output_token_reserve.return_value = reserve
+        monkeypatch.setattr(get_settings().pr_description, "async_ai_calls", True)
+
+        final_prompts = []
+
+        async def mock_get_prediction(model, patches_diff, prompt="pr_description_prompt"):
+            if prompt == "pr_description_only_description_prompts":
+                final_prompts.append(patches_diff)
+                return _header_prediction()
+            if "file1" in patches_diff:
+                return _file_prediction("src/file1.py")
+            return _file_prediction("src/file2.py")
+
+        obj._get_prediction = AsyncMock(side_effect=mock_get_prediction)
+        token_handler = MagicMock()
+        token_handler.prompt_tokens = 1_000
+        token_handler.encoder.encode.side_effect = lambda text: range(
+            expected_clip_budget if text == "clipped walkthrough" else walkthrough_tokens
+        )
+
+        with patch(
+            "pr_agent.tools.pr_description.fit_related_tickets_to_prompt_budget",
+            return_value=(obj.vars, token_handler),
+        ), patch("pr_agent.tools.pr_description.get_pr_diff", return_value=""), patch(
+            "pr_agent.tools.pr_description.get_pr_diff_multiple_patchs",
+            return_value=_large_pr_chunks(),
+        ), patch("pr_agent.tools.pr_description.get_max_tokens", return_value=10_000), patch(
+            "pr_agent.tools.pr_description.clip_tokens", return_value="clipped walkthrough"
+        ) as mock_clip:
+            await obj._prepare_prediction("gpt-4o")
+
+        if expected_clip_budget is None:
+            mock_clip.assert_not_called()
+        else:
+            assert mock_clip.call_args.args[1] == expected_clip_budget
+            assert mock_clip.call_args.kwargs["num_input_tokens"] == walkthrough_tokens
+
+        final_input_tokens = len(token_handler.encoder.encode(final_prompts[0])) + token_handler.prompt_tokens
+        assert final_input_tokens + max(reserve, 1_000) <= 10_000
+        obj.ai_handler.get_output_token_reserve.assert_called_once_with("gpt-4o", 1_000)
+
+    @pytest.mark.asyncio
+    async def test_large_pr_header_drops_clip_marker_that_exceeds_small_budget(self, monkeypatch):
+        obj = _make_large_pr_instance()
+        obj.ai_handler = MagicMock()
+        obj.ai_handler.get_output_token_reserve.return_value = 100
+        monkeypatch.setattr(get_settings().pr_description, "async_ai_calls", True)
+
+        final_prompts = []
+
+        async def mock_get_prediction(model, patches_diff, prompt="pr_description_prompt"):
+            if prompt == "pr_description_only_description_prompts":
+                final_prompts.append(patches_diff)
+                return _header_prediction()
+            if "file1" in patches_diff:
+                return _file_prediction("src/file1.py")
+            return _file_prediction("src/file2.py")
+
+        obj._get_prediction = AsyncMock(side_effect=mock_get_prediction)
+        token_handler = MagicMock()
+        token_handler.prompt_tokens = 8_990
+        token_handler.encoder.encode.side_effect = tuple
+
+        with patch(
+            "pr_agent.tools.pr_description.fit_related_tickets_to_prompt_budget",
+            return_value=(obj.vars, token_handler),
+        ), patch("pr_agent.tools.pr_description.get_pr_diff", return_value=""), patch(
+            "pr_agent.tools.pr_description.get_pr_diff_multiple_patchs",
+            return_value=_large_pr_chunks(),
+        ), patch("pr_agent.tools.pr_description.get_max_tokens", return_value=10_000):
+            await obj._prepare_prediction("gpt-4o")
+
+        assert final_prompts == [""]
+        assert token_handler.prompt_tokens + len(final_prompts[0]) + 1_000 <= 10_000
+
+    @pytest.mark.asyncio
+    async def test_large_pr_header_uses_each_retry_models_output_reserve(self, monkeypatch):
+        obj = _make_large_pr_instance()
+        obj.ai_handler = MagicMock()
+        obj.ai_handler.get_output_token_reserve.side_effect = lambda model, _default: {
+            "gpt-4o": 4_000,
+            "gpt-4o-mini": 5_000,
+        }[model]
+        monkeypatch.setattr(get_settings().pr_description, "async_ai_calls", True)
+
+        async def mock_get_prediction(model, patches_diff, prompt="pr_description_prompt"):
+            if prompt == "pr_description_only_description_prompts":
+                if model == "gpt-4o":
+                    raise RuntimeError("primary header failed")
+                return _header_prediction()
+            if "file1" in patches_diff:
+                return _file_prediction("src/file1.py")
+            return _file_prediction("src/file2.py")
+
+        obj._get_prediction = AsyncMock(side_effect=mock_get_prediction)
+        token_handler = MagicMock()
+        token_handler.prompt_tokens = 1_000
+        token_handler.encoder.encode.return_value = range(6_000)
+
+        with patch(
+            "pr_agent.tools.pr_description.fit_related_tickets_to_prompt_budget",
+            return_value=(obj.vars, token_handler),
+        ), patch("pr_agent.tools.pr_description.get_pr_diff", return_value=""), patch(
+            "pr_agent.tools.pr_description.get_pr_diff_multiple_patchs",
+            return_value=_large_pr_chunks(),
+        ), patch("pr_agent.tools.pr_description.get_max_tokens", return_value=10_000), patch(
+            "pr_agent.tools.pr_description.clip_tokens", side_effect=lambda _text, budget, **_kwargs: str(budget)
+        ) as mock_clip, patch(
+            "pr_agent.algo.pr_processing._get_all_models", return_value=["gpt-4o", "gpt-4o-mini"]
+        ), patch(
+            "pr_agent.algo.pr_processing._get_all_deployments", return_value=[None, None]
+        ), patch("pr_agent.algo.pr_processing.route_primary_model", return_value=None):
+            await retry_with_fallback_models(obj._prepare_prediction, ModelType.WEAK)
+
+        assert [call.args[1] for call in mock_clip.call_args_list] == [5_000, 4_000]
+        assert obj.ai_handler.get_output_token_reserve.call_args_list == [
+            (("gpt-4o", 1_000),),
+            (("gpt-4o-mini", 1_000),),
+        ]
+
     def test_large_pr_prompt_sections_loaded(self):
         """Verify both prompt sections are registered, present in settings, and expose system and user."""
         settings = get_settings()

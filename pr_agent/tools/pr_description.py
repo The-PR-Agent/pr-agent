@@ -259,6 +259,24 @@ class PRDescription:
 
         return ""
 
+    def _get_output_token_reserve(self, model: str, default_output_tokens: int) -> int:
+        """Keep the legacy minimum margin when the handler requests less output."""
+        ai_handler = getattr(self, "ai_handler", None)
+        get_output_token_reserve = getattr(ai_handler, "get_output_token_reserve", None)
+        if callable(get_output_token_reserve):
+            try:
+                output_tokens = get_output_token_reserve(model, default_output_tokens)
+            except Exception as error:
+                get_logger().debug(f"Failed to resolve the output token reserve for {model}: {error}")
+            else:
+                if (
+                    isinstance(output_tokens, int)
+                    and not isinstance(output_tokens, bool)
+                    and output_tokens > 0
+                ):
+                    return max(output_tokens, default_output_tokens)
+        return default_output_tokens
+
     async def _prepare_prediction(self, model: str) -> None:
         self.description_total_chunk_count = 0
         self.description_failed_chunk_count = 0
@@ -423,13 +441,30 @@ class PRDescription:
                         break
             tokens_files_walkthrough = len(
                 token_handler_only_description_prompt.encoder.encode(files_walkthrough_prompt))
-            total_tokens = token_handler_only_description_prompt.prompt_tokens + tokens_files_walkthrough
             max_tokens_model = get_max_tokens(model)
-            if total_tokens > max_tokens_model - OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD:
+            output_token_reserve = self._get_output_token_reserve(
+                model, OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD
+            )
+            available_walkthrough_tokens = max(
+                max_tokens_model - output_token_reserve
+                - token_handler_only_description_prompt.prompt_tokens,
+                0,
+            )
+            if tokens_files_walkthrough > available_walkthrough_tokens:
                 # clip files_walkthrough to git the tokens within the limit
-                files_walkthrough_prompt = clip_tokens(files_walkthrough_prompt,
-                                                       max_tokens_model - OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD - token_handler_only_description_prompt.prompt_tokens,
-                                                       num_input_tokens=tokens_files_walkthrough)
+                files_walkthrough_prompt = clip_tokens(
+                    files_walkthrough_prompt,
+                    available_walkthrough_tokens,
+                    num_input_tokens=tokens_files_walkthrough,
+                )
+                clipped_walkthrough_tokens = len(
+                    token_handler_only_description_prompt.encoder.encode(files_walkthrough_prompt)
+                )
+                if clipped_walkthrough_tokens > available_walkthrough_tokens:
+                    get_logger().debug(
+                        "Clipped PR description walkthrough still exceeded its token budget; dropping it"
+                    )
+                    files_walkthrough_prompt = ""
 
             # PR header inference
             get_logger().debug("PR diff only description", artifact=files_walkthrough_prompt)
