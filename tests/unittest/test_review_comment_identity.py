@@ -241,7 +241,7 @@ def test_bitbucket_comment_path_forwards_review_identity():
 
     assert provider.supports_review_comment_identity() is True
     provider.publish_comment.assert_called_once_with(
-        "## Team Review 🔍\n\n<!-- pr-agent:review:full -->\n\nbody"
+        "## Team Review 🔍\n\n[pr-agent:review:full]: https://github.com/The-PR-Agent/pr-agent\n\nbody"
     )
 
 
