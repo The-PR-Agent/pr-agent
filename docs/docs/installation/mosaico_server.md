@@ -18,6 +18,16 @@ The A2A server exposes three endpoints:
 | `/` | POST | A2A 1.0 JSON-RPC. Sends the `SendMessage` method with an `A2A-Version: 1.0` header (the header is required: the server treats a request without it as protocol 0.3 and rejects it). The reply arrives as a task artifact (`result.task.artifacts[].parts[].text`), not as a status message. |
 | `/health` | GET | A **live LLM connectivity probe** — `200` when an LLM round-trip succeeds, `503` otherwise |
 
+Images with health-probe hardening return `Unhealthy: LLM probe failed` for provider
+failures; the health check's own warning records only the exception type.
+`mosaico.health_timeout_seconds` sets a finite positive deadline in seconds (default: 10)
+for cooperative asynchronous preparation and dispatch. Synchronous initialization and
+blocking SDK work can exceed this deadline. Older images may predate these protections.
+Set `MOSAICO__HEALTH_TIMEOUT_SECONDS` in the server's environment to override the default.
+Invalid values produce the generic unhealthy response (503), rather than using the default.
+When increasing the budget, also allow sufficient time in any external health-check client
+and container healthcheck; the bundled Compose probe uses a separate 25-second HTTP timeout.
+
 The advertised agent card carries the skills `review`, `improve`, `describe`, and `ask`, the
 name `"PR-Agent Solution Agent"`, a `version` derived from the running build (never
 hand-maintained), and the required

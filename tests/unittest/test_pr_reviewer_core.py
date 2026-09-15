@@ -213,6 +213,71 @@ def test_prepare_pr_review_leaves_original_content_unchanged_without_remaining_f
     assert "Review coverage" not in review
 
 
+def test_prepare_pr_review_warns_on_invalid_model_output_without_changing_markdown():
+    reviewer = _make_prediction_reviewer()
+    reviewer.prediction = "review:\n  key_issues_to_review: wrong"
+    reviewer.git_provider.get_diff_files.return_value = []
+    reviewer.git_provider.is_supported.return_value = False
+    reviewer.set_review_labels = MagicMock()
+
+    with (
+        patch("pr_agent.tools.pr_reviewer.load_yaml", return_value={"review": {"key_issues_to_review": "wrong"}}),
+        patch("pr_agent.tools.pr_reviewer.github_action_output"),
+        patch("pr_agent.tools.pr_reviewer.convert_to_markdown_v2", return_value="original review"),
+        patch("pr_agent.tools.pr_reviewer.get_logger") as get_logger,
+    ):
+        review = reviewer._prepare_pr_review()
+
+    assert review == "original review"
+    get_logger.return_value.warning.assert_called_once()
+    warning = get_logger.return_value.warning.call_args.kwargs
+    assert warning["artifact"] == {"field": "review.key_issues_to_review", "value": "wrong"}
+
+
+def test_prepare_pr_review_does_not_warn_for_valid_model_output():
+    reviewer = _make_prediction_reviewer()
+    reviewer.prediction = "review:\n  key_issues_to_review: []"
+    reviewer.git_provider.get_diff_files.return_value = []
+    reviewer.git_provider.is_supported.return_value = False
+    reviewer.set_review_labels = MagicMock()
+
+    with (
+        patch("pr_agent.tools.pr_reviewer.load_yaml", return_value={"review": {"key_issues_to_review": []}}),
+        patch("pr_agent.tools.pr_reviewer.github_action_output"),
+        patch("pr_agent.tools.pr_reviewer.convert_to_markdown_v2", return_value="original review"),
+        patch("pr_agent.tools.pr_reviewer.get_logger") as get_logger,
+    ):
+        review = reviewer._prepare_pr_review()
+
+    assert review == "original review"
+    get_logger.return_value.warning.assert_not_called()
+
+
+def test_review_schema_requires_enabled_prompt_fields_only():
+    reviewer = _make_prediction_reviewer()
+    reviewer.vars = {"require_tests": True}
+    with patch("pr_agent.tools.pr_reviewer.get_logger") as get_logger:
+        assert reviewer._validate_review_schema({"review": {"key_issues_to_review": []}}) is False
+
+    warning = get_logger.return_value.warning.call_args.kwargs
+    assert warning["artifact"] == {"field": "review.relevant_tests", "value": None}
+
+    reviewer.vars = {"require_tests": False}
+    get_logger.return_value.warning.reset_mock()
+    assert reviewer._validate_review_schema({"review": {"key_issues_to_review": []}}) is True
+    get_logger.return_value.warning.assert_not_called()
+
+
+def test_review_schema_reports_none_for_missing_fields():
+    reviewer = _make_prediction_reviewer()
+    with patch("pr_agent.tools.pr_reviewer.get_logger") as get_logger:
+        assert reviewer._validate_review_schema({"review": {}}) is False
+
+    warning = get_logger.return_value.warning.call_args.kwargs
+    assert warning["artifact"]["field"] == "review.key_issues_to_review"
+    assert warning["artifact"]["value"] is None
+
+
 def test_prepare_pr_review_limits_coverage_footer_to_50_files():
     reviewer = _make_prediction_reviewer()
     remaining_files = [f"file_{index}.py" for index in range(51)]

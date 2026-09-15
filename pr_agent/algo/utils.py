@@ -482,6 +482,11 @@ def convert_to_markdown_v2(output_data: dict,
                     try:
                         if not issue or not isinstance(issue, dict):
                             continue
+                        if any(
+                            field in issue and not isinstance(issue[field], str)
+                            for field in ('relevant_file', 'issue_header', 'issue_content')
+                        ):
+                            continue
                         relevant_file = issue.get('relevant_file', '').strip()
                         issue_header = issue.get('issue_header', '').strip()
                         if issue_header.lower() == 'possible bug':

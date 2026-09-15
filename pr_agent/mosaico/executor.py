@@ -18,7 +18,9 @@ TaskArtifactUpdateEvent (not a TaskStatusUpdateEvent), otherwise the SDK raises
 "Agent should enqueue Task before TaskStatusUpdateEvent event".
 
 health_check issues a single, NON-retry-wrapped litellm probe."""
+import asyncio
 import copy
+from math import isfinite
 
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
@@ -120,8 +122,16 @@ async def health_check() -> str:
         model = get_settings().get("CONFIG.MODEL", None)
         if not model:
             return "Unhealthy: no model configured"
-        await handler.probe_completion(model, _completion=litellm.acompletion)
+        timeout = get_settings().get("MOSAICO.HEALTH_TIMEOUT_SECONDS", 10)
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not isfinite(timeout) or timeout <= 0:
+            raise ValueError("MOSAICO health timeout must be a finite positive number")
+        # Bound cooperative waits, including request preparation, not just HTTP I/O.
+        # Synchronous handler construction and blocking SDK work cannot be interrupted.
+        async with asyncio.timeout(timeout):
+            await handler.probe_completion(
+                model, timeout=timeout, _completion=litellm.acompletion,
+            )
         return "OK"
     except Exception as e:
-        get_logger().warning(f"MOSAICO health_check unhealthy: {e}")
-        return f"Unhealthy: {e}"
+        get_logger().warning(f"MOSAICO health_check unhealthy: {type(e).__name__}")
+        return "Unhealthy: LLM probe failed"

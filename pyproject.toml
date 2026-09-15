@@ -37,7 +37,7 @@ dependencies = [
   "azure-identity==1.25.0",
   "boto3==1.43.78",
   "certifi>=2026.7.22",
-  "dynaconf>=3.2.13,<4",
+  "dynaconf>=3.3.5,<4",
   "fastapi>=0.141.1,<1",
   "GitPython>=3.1.59,<4",
   "starlette>=1.6.0,<2",
