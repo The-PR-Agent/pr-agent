@@ -57,6 +57,38 @@ def get_effective_fallback_chain() -> tuple[tuple[str, str | None], ...] | None:
     return _effective_fallback_chain.get()
 
 
+def _append_metadata_section(
+    final_diff: str,
+    curr_token: int,
+    section: str,
+    max_tokens: int,
+    token_handler: TokenHandler,
+) -> tuple[str, int, str]:
+    """Append a clipped metadata section without exceeding the rendered input budget."""
+    if not section:
+        return final_diff, curr_token, section
+
+    separator = "\n\n"
+    available_tokens = max_tokens - curr_token
+    separator_tokens = token_handler.count_tokens(separator)
+    section_budget = available_tokens - separator_tokens
+    section_tokens = token_handler.count_tokens(section)
+
+    while section_budget > 0:
+        clipped_section = clip_tokens(section, section_budget, num_input_tokens=section_tokens)
+        if not clipped_section:
+            break
+
+        candidate = final_diff + separator + clipped_section
+        candidate_tokens = token_handler.prompt_tokens + token_handler.count_tokens(candidate)
+        if candidate_tokens <= max_tokens:
+            return candidate, candidate_tokens, clipped_section
+
+        section_budget -= max(1, candidate_tokens - max_tokens)
+
+    return final_diff, curr_token, ""
+
+
 @dataclass
 class PreparedPRDiff:
     """The single-call diff and compressed file data prepared for one model attempt.
@@ -156,13 +188,12 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
 
     # return the first patch
     patches_compressed = patches_compressed_list[0]
-    total_tokens_new = total_tokens_list[0]
     files_in_patch = files_in_patches_list[0]
 
     # Insert additional information about added, modified, and deleted files if there is enough space
     max_tokens = get_max_tokens(model) - hard_output_token_reserve
-    curr_token = total_tokens_new  # == token_handler.count_tokens(final_diff)+token_handler.prompt_tokens
     final_diff = "\n".join(patches_compressed)
+    curr_token = token_handler.prompt_tokens + token_handler.count_tokens(final_diff)
     delta_tokens = 10
     added_list_str = modified_list_str = deleted_list_str = ""
     unprocessed_files = []
@@ -191,17 +222,15 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
                     deleted_list_str = deleted_list_str + f"\n{filename}"
 
     # prune the added, modified, and deleted files lists, and add them to the final diff
-    added_list_str = clip_tokens(added_list_str, max_tokens - curr_token)
-    if added_list_str:
-        final_diff = final_diff + "\n\n" + added_list_str
-        curr_token += token_handler.count_tokens(added_list_str) + 2
-    modified_list_str = clip_tokens(modified_list_str, max_tokens - curr_token)
-    if modified_list_str:
-        final_diff = final_diff + "\n\n" + modified_list_str
-        curr_token += token_handler.count_tokens(modified_list_str) + 2
-    deleted_list_str = clip_tokens(deleted_list_str, max_tokens - curr_token)
-    if deleted_list_str:
-        final_diff = final_diff + "\n\n" + deleted_list_str
+    final_diff, curr_token, added_list_str = _append_metadata_section(
+        final_diff, curr_token, added_list_str, max_tokens, token_handler
+    )
+    final_diff, curr_token, modified_list_str = _append_metadata_section(
+        final_diff, curr_token, modified_list_str, max_tokens, token_handler
+    )
+    final_diff, curr_token, deleted_list_str = _append_metadata_section(
+        final_diff, curr_token, deleted_list_str, max_tokens, token_handler
+    )
 
     get_logger().debug(f"After pruning, added_list_str: {added_list_str}, modified_list_str: {modified_list_str}, "
                        f"deleted_list_str: {deleted_list_str}")
@@ -270,6 +299,7 @@ def _pack_pr_multi_diffs(file_dict: dict,
     files_in_patches = set()
     total_tokens = token_handler.prompt_tokens
     call_number = 1
+    max_input_tokens = get_max_tokens(model) - soft_output_token_reserve
 
     for filename, data in file_dict.items():
         if call_number > max_calls:
@@ -280,16 +310,16 @@ def _pack_pr_multi_diffs(file_dict: dict,
         patch = data["patch"]
         new_patch_tokens = data["tokens"]
 
-        if patch and (token_handler.prompt_tokens + new_patch_tokens) > get_max_tokens(model) - soft_output_token_reserve:
+        if patch and (token_handler.prompt_tokens + new_patch_tokens) > max_input_tokens:
             if get_settings().config.get("large_patch_policy", "skip") == "skip":
                 get_logger().warning(f"Patch too large, skipping: {filename}")
                 continue
             if get_settings().config.get("large_patch_policy") == "clip":
-                delta_tokens = get_max_tokens(model) - soft_output_token_reserve - token_handler.prompt_tokens
+                delta_tokens = max_input_tokens - token_handler.prompt_tokens
                 patch_clipped = clip_tokens(patch, delta_tokens, delete_last_line=True,
                                              num_input_tokens=new_patch_tokens)
                 new_patch_tokens = token_handler.count_tokens(patch_clipped)
-                if patch_clipped and (token_handler.prompt_tokens + new_patch_tokens) > get_max_tokens(model) - soft_output_token_reserve:
+                if patch_clipped and (token_handler.prompt_tokens + new_patch_tokens) > max_input_tokens:
                     get_logger().warning(f"Patch too large, skipping: {filename}")
                     continue
                 get_logger().info(f"Clipped large patch for file: {filename}")
@@ -298,7 +328,7 @@ def _pack_pr_multi_diffs(file_dict: dict,
                 get_logger().warning(f"Patch too large, skipping: {filename}")
                 continue
 
-        if patch and (total_tokens + new_patch_tokens > get_max_tokens(model) - soft_output_token_reserve):
+        if patch and (total_tokens + new_patch_tokens > max_input_tokens):
             final_diff_list.append("\n".join(patches))
             patches = []
             total_tokens = token_handler.prompt_tokens

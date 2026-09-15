@@ -35,6 +35,123 @@ class FakeProvider:
         return {"Python": 100}
 
 
+class CharacterTokenHandler(FakeTokenHandler):
+    def count_tokens(self, patch):
+        self.count_calls += 1
+        return len(patch)
+
+
+@pytest.mark.parametrize(
+    ("max_tokens", "expected_diff", "expected_tokens"),
+    [
+        (9, "base", 7),
+        (10, "base\n\nx", 10),
+    ],
+)
+def test_append_metadata_section_reserves_exact_separator_capacity(
+    max_tokens, expected_diff, expected_tokens
+):
+    token_handler = CharacterTokenHandler(prompt_tokens=3)
+
+    final_diff, curr_token, _ = pr_processing._append_metadata_section(
+        "base", 7, "x", max_tokens, token_handler
+    )
+
+    assert final_diff == expected_diff
+    assert curr_token == expected_tokens
+
+
+def test_append_metadata_section_recounts_non_additive_clipped_candidate(monkeypatch):
+    class NonAdditiveTokenHandler(CharacterTokenHandler):
+        def count_tokens(self, patch):
+            tokens = super().count_tokens(patch)
+            return tokens + 2 if patch.startswith("A\n\n") else tokens
+
+    def clip_with_marker(text, max_tokens, **kwargs):
+        if len(text) <= max_tokens:
+            return text
+        return text[:max(0, max_tokens - 1)] + "…"
+
+    monkeypatch.setattr(pr_processing, "clip_tokens", clip_with_marker)
+    token_handler = NonAdditiveTokenHandler(prompt_tokens=0)
+
+    final_diff, curr_token, clipped = pr_processing._append_metadata_section(
+        "A", 1, "BBBB", 7, token_handler
+    )
+
+    assert clipped == "B…"
+    assert final_diff == "A\n\nB…"
+    assert curr_token == token_handler.count_tokens(final_diff) == 7
+
+
+def test_append_metadata_sections_keep_complete_diff_within_budget():
+    token_handler = CharacterTokenHandler(prompt_tokens=3)
+    max_tokens = token_handler.prompt_tokens + len("base\n\naa\n\nbb")
+    final_diff = "base"
+    curr_token = token_handler.prompt_tokens + token_handler.count_tokens(final_diff)
+
+    for section in ("aa", "bb"):
+        final_diff, curr_token, _ = pr_processing._append_metadata_section(
+            final_diff, curr_token, section, max_tokens, token_handler
+        )
+
+    assert final_diff == "base\n\naa\n\nbb"
+    assert curr_token == token_handler.prompt_tokens + token_handler.count_tokens(final_diff)
+    assert curr_token == max_tokens
+
+
+@pytest.mark.parametrize(
+    ("edit_type", "heading"),
+    [
+        (EDIT_TYPE.ADDED, pr_processing.ADDED_FILES_.strip()),
+        (EDIT_TYPE.MODIFIED, pr_processing.MORE_MODIFIED_FILES_.strip()),
+        (EDIT_TYPE.RENAMED, pr_processing.MORE_MODIFIED_FILES_.strip()),
+        (EDIT_TYPE.DELETED, pr_processing.DELETED_FILES_.strip()),
+    ],
+)
+def test_get_pr_diff_routes_each_metadata_type_through_bounded_append(
+    monkeypatch, edit_type, heading
+):
+    token_handler = CharacterTokenHandler(prompt_tokens=0)
+    file_dict = {"metadata.py": {"edit_type": edit_type}}
+    appended_sections = []
+    original_append_metadata_section = pr_processing._append_metadata_section
+
+    def append_metadata_section(*args, **kwargs):
+        appended_sections.append(args[2])
+        return original_append_metadata_section(*args, **kwargs)
+
+    monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: 500)
+    monkeypatch.setattr(pr_processing, "_append_metadata_section", append_metadata_section)
+    monkeypatch.setattr(
+        pr_processing,
+        "sort_files_by_main_languages",
+        lambda languages, files: [{"files": files}],
+    )
+    monkeypatch.setattr(
+        pr_processing,
+        "pr_generate_extended_diff",
+        lambda *args, **kwargs: (["full diff"], 500, []),
+    )
+    monkeypatch.setattr(
+        pr_processing,
+        "pr_generate_compressed_diff",
+        lambda *args, **kwargs: ([["base"]], [498], [], [], file_dict, [[]]),
+    )
+
+    diff = pr_processing.get_pr_diff(
+        FakeProvider([]),
+        token_handler,
+        "model",
+        output_token_reserve=lambda model, default: 1,
+    )
+
+    assert heading in diff
+    assert "metadata.py" in diff
+    assert [section for section in appended_sections if section] == [f"{heading}\n\nmetadata.py"]
+    assert token_handler.prompt_tokens + token_handler.count_tokens(diff) <= 499
+
+
 def _make_budget_files(tokens_per_file=2_800):
     return [
         FilePatchInfo(
@@ -362,7 +479,7 @@ def test_get_pr_diff_preserves_strict_full_diff_boundary(monkeypatch, extra_capa
     monkeypatch.setattr(
         pr_processing,
         "pr_generate_compressed_diff",
-        lambda *args, **kwargs: ([['compressed']], [101], [], [], {}, [[]]),
+        lambda *args, **kwargs: ([["compressed"]], [101], [], [], {}, [[]]),
     )
 
     try:
