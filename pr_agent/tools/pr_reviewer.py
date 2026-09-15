@@ -1132,7 +1132,7 @@ class PRReviewer:
                     continue
                 comment["body"] = key_issue_body_with_markers(
                     comment["body"], fingerprint, location_fingerprint,
-                    getattr(self.git_provider, "max_comment_chars", None))
+                    getattr(self.git_provider, "max_comment_chars", None), self.git_provider)
                 candidate_comments[location_fingerprint] = comment
                 candidate_issues[location_fingerprint] = [issue]
                 candidate_fingerprints[location_fingerprint] = fingerprint
