@@ -42,6 +42,24 @@ class CharacterTokenHandler(FakeTokenHandler):
         return len(patch)
 
 
+class NonMonotoneTokenHandler(FakeTokenHandler):
+    def count_tokens(self, patch):
+        self.count_calls += 1
+        letters = "".join(
+            line for line in patch.splitlines() if line in {"A", "B", "C", "D", "E"}
+        )
+        prefix_counts = {
+            "A": 1,
+            "AB": 6,
+            "ABC": 4,
+            "ABCD": 4,
+            "ABCDE": 6,
+            "BCD": 3,
+            "BCDE": 6,
+        }
+        return prefix_counts.get(letters, len(letters))
+
+
 def _rendered_budget_files():
     lines = [
         'F6[SZCg 3utmp{/(o8HXGWIwSROm2l(ULv"2d":{',
@@ -198,6 +216,57 @@ def test_multi_packing_recounts_non_additive_join_and_preserves_remaining(
     assert all(handler.prompt_tokens + handler.count_tokens(chunk) + reserve <= limit for chunk in chunks)
     assert chunks == (["A\nB"] if overflow == 0 else ["A", "B"][:max_calls])
     assert remaining == (["b.py"] if overflow and max_calls == 1 else [])
+
+
+@pytest.mark.parametrize(
+    ("max_calls", "expected_chunks", "expected_remaining"),
+    [
+        (2, ["A", "B\nC\nD"], ["e.py"]),
+        (3, ["A", "B\nC\nD", "E"], []),
+    ],
+)
+def test_multi_packing_repairs_non_monotone_prefixes_in_order(
+    max_calls, expected_chunks, expected_remaining,
+):
+    handler = NonMonotoneTokenHandler()
+    file_dict = {
+        f"{patch.lower()}.py": {"patch": patch, "tokens": 1}
+        for patch in "ABCDE"
+    }
+
+    chunks, remaining = pr_processing._pack_pr_multi_diffs(
+        file_dict, handler, max_calls, True, token_budget=5,
+    )
+
+    assert chunks == expected_chunks
+    assert remaining == expected_remaining
+    assert all(handler.count_tokens(chunk) <= 5 for chunk in chunks)
+
+
+def test_compressed_packing_repairs_non_monotone_prefixes_in_order():
+    handler = NonMonotoneTokenHandler(prompt_tokens=11)
+    file_dict = {
+        f"{patch.lower()}.py": {
+            "patch": patch,
+            "tokens": 1,
+            "edit_type": EDIT_TYPE.MODIFIED,
+        }
+        for patch in "ABCDE"
+    }
+
+    total, patches, remaining, included = pr_processing.generate_full_patch(
+        True,
+        file_dict,
+        soft_token_budget=5,
+        remaining_files_list_prev=list(file_dict),
+        token_handler=handler,
+        hard_token_budget=5,
+    )
+
+    assert total == handler.prompt_tokens + 1
+    assert patches == ["\n\nA"]
+    assert included == ["a.py"]
+    assert remaining == ["b.py", "c.py", "d.py", "e.py"]
 
 
 @pytest.mark.parametrize("policy", ["skip", "clip"])

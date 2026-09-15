@@ -284,7 +284,7 @@ def _pack_pr_multi_diffs(file_dict: dict,
                          max_calls: int,
                          return_remaining_files: bool,
                          token_budget: int):
-    """Pack serialized diffs within capacity excluding fixed prompt and output tokens."""
+    """Pack diffs additively, then verify each rendered group against the input budget."""
     final_diff_list = []
     files_in_patches = set()
 
@@ -298,6 +298,23 @@ def _pack_pr_multi_diffs(file_dict: dict,
             rendered_tokens = max(rendered_tokens, token_handler.count_tokens(stripped))
         return rendered_tokens
 
+    def clip_single_patch(filename, patch, patch_tokens):
+        if get_settings().config.get("large_patch_policy", "skip") != "clip":
+            get_logger().warning(f"Patch too large, skipping: {filename}")
+            return None
+        patch_clipped = clip_tokens(
+            patch,
+            token_budget,
+            delete_last_line=True,
+            num_input_tokens=patch_tokens,
+        )
+        clipped_tokens = count_chunk([patch_clipped]) if patch_clipped else token_budget + 1
+        if clipped_tokens > token_budget:
+            get_logger().warning(f"Patch too large, skipping: {filename}")
+            return None
+        get_logger().info(f"Clipped large patch for file: {filename}")
+        return filename, patch_clipped, clipped_tokens
+
     packable = []
     for filename, data in file_dict.items():
         patch = data["patch"]
@@ -305,55 +322,76 @@ def _pack_pr_multi_diffs(file_dict: dict,
         if not patch:
             continue
 
-        single_patch_tokens = count_chunk([patch])
-        if single_patch_tokens > token_budget:
-            if get_settings().config.get("large_patch_policy", "skip") == "skip":
-                get_logger().warning(f"Patch too large, skipping: {filename}")
+        if new_patch_tokens > token_budget:
+            clipped_item = clip_single_patch(filename, patch, new_patch_tokens)
+            if not clipped_item:
                 continue
-            if get_settings().config.get("large_patch_policy") == "clip":
-                patch_clipped = clip_tokens(patch, token_budget, delete_last_line=True,
-                                             num_input_tokens=new_patch_tokens)
-                single_patch_tokens = count_chunk([patch_clipped]) if patch_clipped else token_budget + 1
-                if single_patch_tokens > token_budget:
-                    get_logger().warning(f"Patch too large, skipping: {filename}")
-                    continue
-                get_logger().info(f"Clipped large patch for file: {filename}")
-                patch = patch_clipped
-            else:
-                get_logger().warning(f"Patch too large, skipping: {filename}")
-                continue
+            filename, patch, new_patch_tokens = clipped_item
 
-        packable.append((filename, patch))
+        packable.append((filename, patch, new_patch_tokens))
 
-    next_index = 0
-    while next_index < len(packable) and len(final_diff_list) < max_calls:
-        low = 1
-        high = len(packable) - next_index
-        best_count = 0
-        while low <= high:
-            midpoint = (low + high) // 2
-            candidate_patches = [
-                patch for _, patch in packable[next_index:next_index + midpoint]
-            ]
-            if count_chunk(candidate_patches) <= token_budget:
-                best_count = midpoint
-                low = midpoint + 1
-            else:
-                high = midpoint - 1
+    additive_groups = []
+    current_group = []
+    current_tokens = 0
+    for item in packable:
+        item_tokens = item[2]
+        if current_group and current_tokens + item_tokens > token_budget:
+            additive_groups.append(current_group)
+            current_group = []
+            current_tokens = 0
+        current_group.append(item)
+        current_tokens += item_tokens
+    if current_group:
+        additive_groups.append(current_group)
 
-        if best_count == 0:
-            filename = packable[next_index][0]
-            get_logger().warning(f"Patch too large after serialization, skipping: {filename}")
-            next_index += 1
+    packed_groups = []
+
+    def append_group(group):
+        if not group or len(packed_groups) >= max_calls:
+            return False
+        packed_groups.append(group)
+        files_in_patches.update(filename for filename, _, _ in group)
+        return True
+
+    for group in additive_groups:
+        if len(packed_groups) >= max_calls:
+            break
+
+        group_patches = [patch for _, patch, _ in group]
+        if count_chunk(group_patches) <= token_budget:
+            append_group(group)
             continue
 
-        chunk = packable[next_index:next_index + best_count]
-        next_index += best_count
-        rendered_chunk = "\n".join(patch for _, patch in chunk)
-        if next_index == len(packable):
+        repaired_group = []
+        for item in group:
+            candidate = [patch for _, patch, _ in [*repaired_group, item]]
+            if count_chunk(candidate) <= token_budget:
+                repaired_group.append(item)
+                continue
+
+            if repaired_group and not append_group(repaired_group):
+                break
+            if len(packed_groups) >= max_calls:
+                repaired_group = []
+                break
+
+            single_patch_tokens = count_chunk([item[1]])
+            if single_patch_tokens <= token_budget:
+                repaired_group = [item]
+                continue
+
+            clipped_item = clip_single_patch(item[0], item[1], item[2])
+            repaired_group = [clipped_item] if clipped_item else []
+
+        if repaired_group and len(packed_groups) < max_calls:
+            append_group(repaired_group)
+
+    packed_all = len(files_in_patches) == len(packable)
+    for index, group in enumerate(packed_groups):
+        rendered_chunk = "\n".join(patch for _, patch, _ in group)
+        if packed_all and index == len(packed_groups) - 1:
             rendered_chunk = rendered_chunk.strip()
         final_diff_list.append(rendered_chunk)
-        files_in_patches.update(filename for filename, _ in chunk)
 
     if len(files_in_patches) < len(packable) and get_verbosity_level() >= 2:
         get_logger().info(f"Reached max calls ({max_calls})")
@@ -557,19 +595,15 @@ def generate_full_patch(convert_hunks_to_line_numbers, file_dict, soft_token_bud
     if patches:
         exact_total = token_handler.prompt_tokens + token_handler.count_tokens("\n".join(patches))
         if exact_total - token_handler.prompt_tokens > soft_token_budget:
-            low = 1
-            high = len(patches)
             best_count = 0
-            while low <= high:
-                midpoint = (low + high) // 2
+            for prefix_length in range(1, len(patches) + 1):
                 prefix_total = token_handler.prompt_tokens + token_handler.count_tokens(
-                    "\n".join(patches[:midpoint])
+                    "\n".join(patches[:prefix_length])
                 )
                 if prefix_total - token_handler.prompt_tokens <= soft_token_budget:
-                    best_count = midpoint
-                    low = midpoint + 1
+                    best_count = prefix_length
                 else:
-                    high = midpoint - 1
+                    break
 
             for filename in files_in_patch_list[best_count:]:
                 if filename not in remaining_files_list_new:
