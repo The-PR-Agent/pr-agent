@@ -41,11 +41,12 @@ def test_packaged_help_docs_are_filtered_and_priority_sorted(tmp_path, monkeypat
     _write_document(docs_root, "finetuning_benchmark/sample.md", "excluded")
     monkeypatch.setattr(pr_help_message, "package_files", lambda _package: package_root)
 
-    prompt = pr_help_message._load_help_docs_prompt()
+    prompt, available_docs_files = pr_help_message._load_help_docs_prompt()
 
     assert prompt.index("/index.md") < prompt.index("/tools/review.md") < prompt.index("/reference/other.md")
     assert "compression_strategy" not in prompt
     assert "finetuning_benchmark" not in prompt
+    assert available_docs_files == {"index.md", "tools/review.md", "reference/other.md"}
 
 
 def test_source_checkout_is_used_when_packaged_docs_are_absent(tmp_path, monkeypatch):
@@ -56,10 +57,11 @@ def test_source_checkout_is_used_when_packaged_docs_are_absent(tmp_path, monkeyp
     monkeypatch.setattr(pr_help_message, "package_files", lambda _package: package_root)
     monkeypatch.setattr(pr_help_message, "__file__", str(source_module))
 
-    prompt = pr_help_message._load_help_docs_prompt()
+    prompt, available_docs_files = pr_help_message._load_help_docs_prompt()
 
     assert "/tools/review.md" in prompt
     assert "source checkout" in prompt
+    assert available_docs_files == {"tools/review.md"}
 
 
 def test_source_fallback_preserves_packaged_resource_traceback(tmp_path, monkeypatch):
@@ -129,6 +131,7 @@ def test_unreadable_document_is_skipped_when_another_document_loads(tmp_path, mo
     docs_root = package_root / "_help_docs"
     _write_document(docs_root, "good.md", "readable")
     bad_document = _write_document(docs_root, "bad.md", "unreadable")
+    _write_document(docs_root, "empty.md", " \n\t")
     original_read_text = Path.read_text
     logger = Mock()
 
@@ -141,10 +144,12 @@ def test_unreadable_document_is_skipped_when_another_document_loads(tmp_path, mo
     monkeypatch.setattr(Path, "read_text", read_text)
     monkeypatch.setattr(pr_help_message, "get_logger", lambda: logger)
 
-    prompt = pr_help_message._load_help_docs_prompt()
+    prompt, available_docs_files = pr_help_message._load_help_docs_prompt()
 
     assert "readable" in prompt
     assert "/bad.md" not in prompt
+    assert "/empty.md" not in prompt
+    assert available_docs_files == {"good.md"}
     logger.opt.assert_called_once_with(exception=True)
     logger.opt.return_value.error.assert_called_once_with(
         f"Error while reading the documentation file {bad_document}"

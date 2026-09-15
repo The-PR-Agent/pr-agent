@@ -107,9 +107,10 @@ def _iter_help_docs(root: Traversable) -> list[tuple[PurePosixPath, Traversable]
     return sorted(documents, key=sort_key)
 
 
-def _load_help_docs_prompt() -> str:
+def _load_help_docs_prompt() -> tuple[str, set[str]]:
     docs_root = _get_help_docs_root()
     sections = []
+    available_docs_files = set()
     for relative_path, document in _iter_help_docs(docs_root):
         try:
             content = document.read_text(encoding="utf-8").strip()
@@ -120,15 +121,17 @@ def _load_help_docs_prompt() -> str:
             continue
         if not content:
             continue
+        relative_file_path = relative_path.as_posix()
         sections.append(
-            f"\n==file name==\n\n/{relative_path.as_posix()}\n\n"
+            f"\n==file name==\n\n/{relative_file_path}\n\n"
             f"==file content==\n\n{content}\n=========\n\n"
         )
+        available_docs_files.add(relative_file_path)
 
     if not sections:
         raise FileNotFoundError(f"No readable Markdown documentation was found for /help in {docs_root}")
 
-    return "".join(sections).strip()
+    return "".join(sections).strip(), available_docs_files
 
 
 class PRHelpMessage:
@@ -412,7 +415,8 @@ class PRHelpMessage:
     async def run(self):
         if self.question_str:
             try:
-                self.vars['snippets'] = _load_help_docs_prompt()
+                self.vars["snippets"], self._available_docs_files = _load_help_docs_prompt()
+                self._model_visible_docs_files = set()
             except FileNotFoundError:
                 get_logger().exception("Unable to load the PR-Agent help documentation")
                 if get_settings().config.publish_output:

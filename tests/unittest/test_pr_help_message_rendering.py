@@ -1,5 +1,7 @@
 """Regression tests for provider-independent /help behavior."""
 
+from pathlib import Path
+
 import pytest
 
 from pr_agent.config_loader import get_settings
@@ -235,14 +237,14 @@ async def test_question_does_not_link_to_document_that_failed_to_load(
     )
     tool = build_question_tool(tmp_path, monkeypatch, handler)
     unreadable_doc.write_text("# FAQ", encoding="utf-8")
-    real_open = open
+    real_read_text = Path.read_text
 
-    def fail_unreadable_doc(file, *args, **kwargs):
-        if str(file) == str(unreadable_doc):
+    def fail_unreadable_doc(document, *args, **kwargs):
+        if document == unreadable_doc:
             raise OSError("unreadable test document")
-        return real_open(file, *args, **kwargs)
+        return real_read_text(document, *args, **kwargs)
 
-    monkeypatch.setattr(pr_help_message_module, "open", fail_unreadable_doc, raising=False)
+    monkeypatch.setattr(Path, "read_text", fail_unreadable_doc)
 
     await tool.run()
 
