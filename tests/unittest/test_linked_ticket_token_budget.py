@@ -121,7 +121,14 @@ def test_oversized_ticket_payload_keeps_diff_budget_and_raw_cache(monkeypatch):
         }
     }
 
-    result = generate_full_patch(True, file_dict, max_tokens, ["src/app.py"], handler)
+    result = generate_full_patch(
+        True,
+        file_dict,
+        max_tokens - OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD - handler.prompt_tokens,
+        ["src/app.py"],
+        handler,
+        hard_token_budget=max_tokens - 1_000 - handler.prompt_tokens,
+    )
 
     assert result[1] == [f"\n\n{patch}"]
     assert result[2] == []

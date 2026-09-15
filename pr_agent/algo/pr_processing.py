@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import traceback
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable, List, Tuple
 
 from pr_agent.algo.git_patch_processing import (
@@ -13,9 +13,10 @@ from pr_agent.algo.git_patch_processing import (
 from pr_agent.algo.language_handler import sort_files_by_main_languages
 from pr_agent.algo.model_routing import route_primary_model
 from pr_agent.algo.run_details import record_model_used
+from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.types import EDIT_TYPE
-from pr_agent.algo.utils import ModelType, clip_tokens, get_max_tokens, get_model
+from pr_agent.algo.utils import ModelType, clip_tokens, get_model
 from pr_agent.config_loader import get_settings, get_verbosity_level
 from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.log import get_logger
@@ -33,23 +34,6 @@ MAX_EXTRA_LINES = 10
 _effective_fallback_chain: ContextVar[tuple[tuple[str, str | None], ...] | None] = ContextVar(
     "pr_agent_effective_fallback_chain", default=None
 )
-
-
-def _resolve_output_token_reserve(
-    resolver: Callable[[str, int], int] | None,
-    model: str,
-    default_output_tokens: int,
-) -> int:
-    """Return the model-attempt output reserve, keeping the legacy minimum margin."""
-    if callable(resolver):
-        try:
-            output_tokens = resolver(model, default_output_tokens)
-        except Exception as error:
-            get_logger().debug(f"Failed to resolve the output token reserve for {model}: {error}")
-        else:
-            if isinstance(output_tokens, int) and not isinstance(output_tokens, bool) and output_tokens > 0:
-                return max(output_tokens, default_output_tokens)
-    return default_output_tokens
 
 
 def get_effective_fallback_chain() -> tuple[tuple[str, str | None], ...] | None:
@@ -94,7 +78,7 @@ class PreparedPRDiff:
     """The single-call diff and compressed file data prepared for one model attempt.
 
     The compressed file data is request-scoped. It is only reused by a caller that keeps the
-    same token handler and model, so fallback attempts still rebuild their model-specific budget.
+    same source or bound token handler and model. A different model rebuilds its own counts.
     """
 
     diff: str
@@ -104,6 +88,7 @@ class PreparedPRDiff:
     model: str | None = None
     add_line_numbers_to_hunks: bool = False
     token_handler: TokenHandler | None = None
+    attempt_budget: AttemptTokenBudget | None = None
 
 
 def cap_and_log_extra_lines(value, direction) -> int:
@@ -126,12 +111,19 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
                 large_pr_handling=False,
                 return_remaining_files=False,
                 return_prepared=False,
-                output_token_reserve: Callable[[str, int], int] | None = None):
-    soft_output_token_reserve = _resolve_output_token_reserve(
-        output_token_reserve, model, OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD
+                output_token_reserve: Callable[[str, int], int] | None = None,
+                attempt_budget: AttemptTokenBudget | None = None):
+    budget = attempt_budget or AttemptTokenBudget.for_attempt(
+        model, token_handler, output_token_reserve=output_token_reserve
     )
-    hard_output_token_reserve = _resolve_output_token_reserve(
-        output_token_reserve, model, OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD
+    if not budget.matches(model, token_handler):
+        raise ValueError("The diff token budget belongs to a different model attempt")
+    token_handler = budget.token_handler
+    soft_token_budget = budget.available_tokens(
+        OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD, preserve_minimum=True, clamp=False
+    )
+    hard_token_budget = budget.available_tokens(
+        OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD, preserve_minimum=True, clamp=False
     )
     if disable_extra_lines:
         PATCH_EXTRA_LINES_BEFORE = 0
@@ -158,28 +150,27 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
         patch_extra_lines_before=PATCH_EXTRA_LINES_BEFORE, patch_extra_lines_after=PATCH_EXTRA_LINES_AFTER)
 
     # if we are under the limit, return the full diff
-    if total_tokens + soft_output_token_reserve < get_max_tokens(model):
-        get_logger().info(f"Tokens: {total_tokens}, total tokens under limit: {get_max_tokens(model)}, "
+    if total_tokens - token_handler.prompt_tokens < soft_token_budget:
+        get_logger().info(f"Tokens: {total_tokens}, total tokens under limit: {budget.context_window}, "
                           f"returning full diff.")
         full_diff = "\n".join(patches_extended)
         if return_prepared:
             return PreparedPRDiff(full_diff, [], model=model,
                                   add_line_numbers_to_hunks=add_line_numbers_to_hunks,
-                                  token_handler=token_handler)
+                                  token_handler=token_handler, attempt_budget=budget)
         return full_diff
 
     # if we are over the limit, start pruning (If we got here, we will not extend the patches with extra lines)
-    get_logger().info(f"Tokens: {total_tokens}, total tokens over limit: {get_max_tokens(model)}, "
+    get_logger().info(f"Tokens: {total_tokens}, total tokens over limit: {budget.context_window}, "
                       f"pruning diff.")
     patches_compressed_list, total_tokens_list, deleted_files_list, remaining_files_list, file_dict, files_in_patches_list = \
         pr_generate_compressed_diff(
             pr_languages,
             token_handler,
-            model,
+            soft_token_budget,
+            hard_token_budget,
             add_line_numbers_to_hunks,
             large_pr_handling,
-            soft_output_token_reserve=soft_output_token_reserve,
-            hard_output_token_reserve=hard_output_token_reserve,
         )
 
     if large_pr_handling and len(patches_compressed_list) > 1:
@@ -191,7 +182,7 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
     files_in_patch = files_in_patches_list[0]
 
     # Insert additional information about added, modified, and deleted files if there is enough space
-    max_tokens = get_max_tokens(model) - hard_output_token_reserve
+    max_tokens = token_handler.prompt_tokens + hard_token_budget
     final_diff = "\n".join(patches_compressed)
     curr_token = token_handler.prompt_tokens + token_handler.count_tokens(final_diff)
     delta_tokens = 10
@@ -248,6 +239,7 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
             model=model,
             add_line_numbers_to_hunks=add_line_numbers_to_hunks,
             token_handler=token_handler,
+            attempt_budget=budget,
         )
     if not return_remaining_files:
         return final_diff
@@ -257,7 +249,14 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
 
 def get_pr_diff_multiple_patchs(git_provider: GitProvider, token_handler: TokenHandler, model: str,
                 add_line_numbers_to_hunks: bool = False, disable_extra_lines: bool = False,
-                output_token_reserve: Callable[[str, int], int] | None = None):
+                output_token_reserve: Callable[[str, int], int] | None = None,
+                attempt_budget: AttemptTokenBudget | None = None):
+    budget = attempt_budget or AttemptTokenBudget.for_attempt(
+        model, token_handler, output_token_reserve=output_token_reserve
+    )
+    if not budget.matches(model, token_handler):
+        raise ValueError("The diff token budget belongs to a different model attempt")
+    token_handler = budget.token_handler
     diff_files = git_provider.get_diff_files()
 
     # get pr languages
@@ -268,21 +267,20 @@ def get_pr_diff_multiple_patchs(git_provider: GitProvider, token_handler: TokenH
         except Exception:
             pass
 
-    soft_output_token_reserve = _resolve_output_token_reserve(
-        output_token_reserve, model, OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD
+    soft_token_budget = budget.available_tokens(
+        OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD, preserve_minimum=True, clamp=False
     )
-    hard_output_token_reserve = _resolve_output_token_reserve(
-        output_token_reserve, model, OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD
+    hard_token_budget = budget.available_tokens(
+        OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD, preserve_minimum=True, clamp=False
     )
     patches_compressed_list, total_tokens_list, deleted_files_list, remaining_files_list, file_dict, files_in_patches_list = \
         pr_generate_compressed_diff(
             pr_languages,
             token_handler,
-            model,
+            soft_token_budget,
+            hard_token_budget,
             add_line_numbers_to_hunks,
             large_pr_handling=True,
-            soft_output_token_reserve=soft_output_token_reserve,
-            hard_output_token_reserve=hard_output_token_reserve,
         )
 
     return patches_compressed_list, total_tokens_list, deleted_files_list, remaining_files_list, file_dict, files_in_patches_list
@@ -290,16 +288,15 @@ def get_pr_diff_multiple_patchs(git_provider: GitProvider, token_handler: TokenH
 
 def _pack_pr_multi_diffs(file_dict: dict,
                          token_handler: TokenHandler,
-                         model: str,
                          max_calls: int,
                          return_remaining_files: bool,
-                         soft_output_token_reserve: int):
+                         token_budget: int):
+    """Pack serialized diffs within capacity excluding fixed prompt and output tokens."""
     patches = []
     final_diff_list = []
     files_in_patches = set()
     total_tokens = token_handler.prompt_tokens
     call_number = 1
-    max_input_tokens = get_max_tokens(model) - soft_output_token_reserve
 
     def count_chunk(candidate_patches):
         rendered = "\n".join(candidate_patches)
@@ -309,7 +306,7 @@ def _pack_pr_multi_diffs(file_dict: dict,
         # can be larger under a non-additive tokenizer, so both must fit on admission.
         if stripped != rendered:
             rendered_tokens = max(rendered_tokens, token_handler.count_tokens(stripped))
-        return token_handler.prompt_tokens + rendered_tokens
+        return rendered_tokens
 
     for filename, data in file_dict.items():
         if call_number > max_calls:
@@ -323,16 +320,15 @@ def _pack_pr_multi_diffs(file_dict: dict,
             continue
 
         single_patch_tokens = count_chunk([patch])
-        if single_patch_tokens > max_input_tokens:
+        if single_patch_tokens > token_budget:
             if get_settings().config.get("large_patch_policy", "skip") == "skip":
                 get_logger().warning(f"Patch too large, skipping: {filename}")
                 continue
             if get_settings().config.get("large_patch_policy") == "clip":
-                delta_tokens = max_input_tokens - token_handler.prompt_tokens
-                patch_clipped = clip_tokens(patch, delta_tokens, delete_last_line=True,
+                patch_clipped = clip_tokens(patch, token_budget, delete_last_line=True,
                                              num_input_tokens=new_patch_tokens)
-                single_patch_tokens = count_chunk([patch_clipped]) if patch_clipped else max_input_tokens + 1
-                if single_patch_tokens > max_input_tokens:
+                single_patch_tokens = count_chunk([patch_clipped]) if patch_clipped else token_budget + 1
+                if single_patch_tokens > token_budget:
                     get_logger().warning(f"Patch too large, skipping: {filename}")
                     continue
                 get_logger().info(f"Clipped large patch for file: {filename}")
@@ -342,7 +338,7 @@ def _pack_pr_multi_diffs(file_dict: dict,
                 continue
 
         candidate_tokens = count_chunk([*patches, patch]) if patches else single_patch_tokens
-        if patches and candidate_tokens > max_input_tokens:
+        if patches and candidate_tokens > token_budget:
             final_diff_list.append("\n".join(patches))
             patches = []
             candidate_tokens = single_patch_tokens
@@ -357,7 +353,7 @@ def _pack_pr_multi_diffs(file_dict: dict,
         if patch:
             patches.append(patch)
             files_in_patches.add(filename)
-            total_tokens = candidate_tokens
+            total_tokens = token_handler.prompt_tokens + candidate_tokens
             if get_verbosity_level() >= 2:
                 get_logger().info(f"Tokens: {total_tokens}, last filename: {filename}")
 
@@ -376,10 +372,9 @@ def _pack_pr_multi_diffs(file_dict: dict,
 
 def _get_pr_multi_diffs_from_prepared(prepared_diff: PreparedPRDiff,
                                       token_handler: TokenHandler,
-                                      model: str,
                                       max_calls: int,
                                       return_remaining_files: bool,
-                                      soft_output_token_reserve: int):
+                                      token_budget: int):
     """Pack already transformed file patches without repeating preparation work.
 
     ``get_pr_diff`` and the review chunking path use the same model-specific token handler and
@@ -400,10 +395,9 @@ def _get_pr_multi_diffs_from_prepared(prepared_diff: PreparedPRDiff,
     return _pack_pr_multi_diffs(
         file_dict,
         token_handler,
-        model,
         max_calls,
         return_remaining_files,
-        soft_output_token_reserve,
+        token_budget,
     )
 
 
@@ -451,12 +445,12 @@ def pr_generate_extended_diff(pr_languages: list,
     return patches_extended, total_tokens, patches_extended_tokens
 
 
-def pr_generate_compressed_diff(top_langs: list, token_handler: TokenHandler, model: str,
+def pr_generate_compressed_diff(top_langs: list, token_handler: TokenHandler,
+                                soft_token_budget: int, hard_token_budget: int,
                                 convert_hunks_to_line_numbers: bool,
                                 large_pr_handling: bool,
-                                soft_output_token_reserve: int = OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
-                                hard_output_token_reserve: int = OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
                                 ) -> Tuple[list, list, list, list, dict, list]:
+    """Prepare patches using the caller's soft and hard diff-only capacities."""
     deleted_files_list = []
 
     for lang in top_langs:
@@ -496,16 +490,14 @@ def pr_generate_compressed_diff(top_langs: list, token_handler: TokenHandler, mo
         new_patch_tokens = token_handler.count_tokens(patch)
         file_dict[file.filename] = {'patch': patch, 'tokens': new_patch_tokens, 'edit_type': file.edit_type}
 
-    max_tokens_model = get_max_tokens(model)
-
     # first iteration
     files_in_patches_list = []
     remaining_files_list =  [file.filename for file in sorted_files]
     patches_list =[]
     total_tokens_list = []
     total_tokens, patches, remaining_files_list, files_in_patch_list = generate_full_patch(convert_hunks_to_line_numbers, file_dict,
-                                       max_tokens_model, remaining_files_list, token_handler,
-                                       soft_output_token_reserve, hard_output_token_reserve)
+                                       soft_token_budget, remaining_files_list, token_handler,
+                                       hard_token_budget=hard_token_budget)
     patches_list.append(patches)
     total_tokens_list.append(total_tokens)
     files_in_patches_list.append(files_in_patch_list)
@@ -517,10 +509,9 @@ def pr_generate_compressed_diff(top_langs: list, token_handler: TokenHandler, mo
             if remaining_files_list:
                 total_tokens, patches, remaining_files_list, files_in_patch_list = generate_full_patch(convert_hunks_to_line_numbers,
                                                                                  file_dict,
-                                                                                  max_tokens_model,
+                                                                                  soft_token_budget,
                                                                                   remaining_files_list, token_handler,
-                                                                                  soft_output_token_reserve,
-                                                                                  hard_output_token_reserve)
+                                                                                  hard_token_budget=hard_token_budget)
                 if patches:
                     patches_list.append(patches)
                     total_tokens_list.append(total_tokens)
@@ -531,9 +522,9 @@ def pr_generate_compressed_diff(top_langs: list, token_handler: TokenHandler, mo
     return patches_list, total_tokens_list, deleted_files_list, remaining_files_list, file_dict, files_in_patches_list
 
 
-def generate_full_patch(convert_hunks_to_line_numbers, file_dict, max_tokens_model, remaining_files_list_prev,
-                        token_handler, soft_output_token_reserve: int = OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
-                        hard_output_token_reserve: int = OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD):
+def generate_full_patch(convert_hunks_to_line_numbers, file_dict, soft_token_budget, remaining_files_list_prev,
+                        token_handler, *, hard_token_budget: int):
+    """Admit rendered patches using diff-only budgets; return prompt-inclusive totals."""
     total_tokens = token_handler.prompt_tokens # initial tokens
     patches = []
     remaining_files_list_new = []
@@ -545,7 +536,7 @@ def generate_full_patch(convert_hunks_to_line_numbers, file_dict, max_tokens_mod
         patch = data['patch']
 
         # Hard Stop, no more tokens
-        if total_tokens > max_tokens_model - hard_output_token_reserve:
+        if total_tokens - token_handler.prompt_tokens > hard_token_budget:
             get_logger().warning(f"File was fully skipped, no more tokens: {filename}.")
             remaining_files_list_new.append(filename)
             continue
@@ -563,7 +554,7 @@ def generate_full_patch(convert_hunks_to_line_numbers, file_dict, max_tokens_mod
             candidate_tokens = total_tokens
 
         # If the patch is too large, leave the file in the remaining-files list.
-        if candidate_tokens > max_tokens_model - soft_output_token_reserve:
+        if candidate_tokens - token_handler.prompt_tokens > soft_token_budget:
             # Current logic is to skip the patch if it's too large
             # TODO: Option for alternative logic to remove hunks from the patch to reduce the number of tokens
             #  until we meet the requirements
@@ -657,7 +648,8 @@ def get_pr_multi_diffs(git_provider: GitProvider,
                        add_line_numbers: bool = True,
                        return_remaining_files: bool = False,
                        prepared_diff: PreparedPRDiff | None = None,
-                       output_token_reserve: Callable[[str, int], int] | None = None):
+                       output_token_reserve: Callable[[str, int], int] | None = None,
+                       attempt_budget: AttemptTokenBudget | None = None):
     """
     Retrieves the diff files from a Git provider, sorts them by main language, and generates patches for each file.
     The patches are split into multiple groups based on the maximum number of tokens allowed for the given model.
@@ -678,25 +670,41 @@ def get_pr_multi_diffs(git_provider: GitProvider,
         With `return_remaining_files`, a tuple of that list and the list of omitted file names.
 
     """
-    soft_output_token_reserve = _resolve_output_token_reserve(
-        output_token_reserve, model, OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD
-    )
-
-    if (
+    can_reuse_prepared = (
         prepared_diff is not None
         and prepared_diff.file_dict is not None
         and prepared_diff.model == model
         and add_line_numbers
         and prepared_diff.add_line_numbers_to_hunks == add_line_numbers
-        and prepared_diff.token_handler is token_handler
-    ):
+        and (
+            prepared_diff.attempt_budget.matches(model, token_handler)
+            if prepared_diff.attempt_budget is not None
+            else prepared_diff.token_handler is token_handler
+        )
+    )
+    if attempt_budget is not None:
+        budget = attempt_budget
+    elif can_reuse_prepared and prepared_diff.attempt_budget is not None:
+        # Keep the model-bound counts, but honor the current caller's reserve policy.
+        budget = replace(prepared_diff.attempt_budget, output_token_reserve=output_token_reserve)
+    else:
+        budget = AttemptTokenBudget.for_attempt(
+            model, token_handler, output_token_reserve=output_token_reserve
+        )
+    if not budget.matches(model, token_handler):
+        raise ValueError("The diff token budget belongs to a different model attempt")
+    token_handler = budget.token_handler
+    soft_token_budget = budget.available_tokens(
+        OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD, preserve_minimum=True, clamp=False
+    )
+
+    if can_reuse_prepared:
         return _get_pr_multi_diffs_from_prepared(
             prepared_diff,
             token_handler,
-            model,
             max_calls,
             return_remaining_files,
-            soft_output_token_reserve,
+            soft_token_budget,
         )
 
     diff_files = git_provider.get_diff_files()
@@ -718,7 +726,7 @@ def get_pr_multi_diffs(git_provider: GitProvider,
         patch_extra_lines_after=PATCH_EXTRA_LINES_AFTER)
 
     # if we are under the limit, return the full diff
-    if total_tokens + soft_output_token_reserve < get_max_tokens(model):
+    if total_tokens - token_handler.prompt_tokens < soft_token_budget:
         full_diff_list = ["\n".join(patches_extended)] if patches_extended else []
         return (full_diff_list, []) if return_remaining_files else full_diff_list
 
@@ -762,10 +770,9 @@ def get_pr_multi_diffs(git_provider: GitProvider,
     return _pack_pr_multi_diffs(
         file_dict,
         token_handler,
-        model,
         max_calls,
         return_remaining_files,
-        soft_output_token_reserve,
+        soft_token_budget,
     )
 
 

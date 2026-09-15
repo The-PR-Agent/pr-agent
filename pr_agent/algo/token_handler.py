@@ -1,8 +1,9 @@
 import re
-from math import ceil
+from math import ceil, isfinite
 from threading import Lock
 
 from jinja2 import Environment, StrictUndefined
+from litellm import token_counter
 from tiktoken import encoding_for_model, get_encoding
 
 from pr_agent.config_loader import get_settings
@@ -65,6 +66,8 @@ class TokenHandler:
     # Constants
     CLAUDE_MODEL = "claude-3-7-sonnet-20250219"
     CLAUDE_MAX_CONTENT_SIZE = 9_000_000 # Maximum allowed content size (9MB) for Claude API
+    MESSAGE_FRAMING_TOKEN_ALLOWANCE = 16
+    REPLY_FRAMING_TOKEN_ALLOWANCE = 16
 
     def __init__(self, pr=None, vars: dict | None = None, system="", user="", model=None):
         """
@@ -79,10 +82,22 @@ class TokenHandler:
         """
         if vars is None:
             vars = {}
-        self.encoder = TokenEncoder.get_token_encoder(model)
+        self.model = model or get_settings().config.model
+        self.pr = pr
+        self.vars = vars
+        self.system = system
+        self.user = user
+        self.prompt_tokens = 0
+        self.encoder = TokenEncoder.get_token_encoder(self.model)
 
         if pr is not None:
             self.prompt_tokens = self._get_system_user_tokens(pr, self.encoder, vars, system, user)
+
+    def for_model(self, model: str):
+        """Return a handler bound to ``model`` without mutating this handler."""
+        if model == self.model:
+            return self
+        return TokenHandler(self.pr, self.vars, self.system, self.user, model=model)
 
     def _get_system_user_tokens(self, pr, encoder, vars: dict, system, user):
         """
@@ -165,7 +180,7 @@ class TokenHandler:
         Returns:
             int: The calculated token count.
         """
-        model_name = get_settings().config.model.lower()
+        model_name = str(getattr(self, "model", None) or get_settings().config.model).lower()
 
         if ModelTypeValidator.is_openai_model(model_name) and get_settings(use_context=False).get('openai.key'):
             return default_estimate
@@ -196,3 +211,41 @@ class TokenHandler:
             return encoder_estimate
 
         return self._get_token_count_by_model_type(patch, encoder_estimate)
+
+    def count_messages(self, system: str, user: str) -> int:
+        """Count the two chat messages sent by PR-Agent for this model attempt."""
+        model = getattr(self, "model", None) or get_settings().config.model
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        try:
+            model_token_count = token_counter(model=model, messages=messages)
+            if isinstance(model_token_count, int) and not isinstance(model_token_count, bool) and model_token_count > 0:
+                return model_token_count
+        except Exception as e:
+            get_logger().debug(f"Model-aware token counting failed for {model}: {e}")
+
+        content_tokens = sum(
+            len(self.encoder.encode(message["content"], disallowed_special=())) for message in messages
+        )
+        framing_tokens = self.MESSAGE_FRAMING_TOKEN_ALLOWANCE * len(messages) + self.REPLY_FRAMING_TOKEN_ALLOWANCE
+        raw_estimate = content_tokens + framing_tokens
+        raw_factor = get_settings().get("config.model_token_count_estimate_factor", 0)
+        try:
+            extra_factor = float(raw_factor)
+        except (TypeError, ValueError, OverflowError):
+            extra_factor = 0
+        if isinstance(raw_factor, bool) or not isfinite(extra_factor):
+            extra_factor = 0
+        multiplier = max(1.0, 1.0 + extra_factor)
+        try:
+            estimated_tokens = raw_estimate * multiplier
+            if not isfinite(estimated_tokens):
+                raise ValueError("non-finite token estimate")
+            return ceil(estimated_tokens)
+        except (OverflowError, ValueError):
+            get_logger().warning(
+                f"model_token_count_estimate_factor is too large ({raw_factor!r}), using the estimate as is"
+            )
+            return raw_estimate

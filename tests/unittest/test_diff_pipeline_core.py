@@ -263,8 +263,7 @@ class TestExtractHunkLinesFromPatch:
 
 
 class TestGenerateFullPatch:
-    def test_files_within_budget_are_all_included(self, monkeypatch):
-        monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: 10_000)
+    def test_files_within_budget_are_all_included(self):
         token_handler = FakeTokenHandler(prompt_tokens=10)
         file_dict = {
             "a.py": {"patch": "+ change a", "tokens": 5, "edit_type": EDIT_TYPE.MODIFIED},
@@ -273,9 +272,10 @@ class TestGenerateFullPatch:
         total, patches, remaining, files_in = pr_processing.generate_full_patch(
             convert_hunks_to_line_numbers=False,
             file_dict=file_dict,
-            max_tokens_model=10_000,
+            soft_token_budget=10_000 - 1_500 - token_handler.prompt_tokens,
             remaining_files_list_prev=list(file_dict),
             token_handler=token_handler,
+            hard_token_budget=10_000 - 1_000 - token_handler.prompt_tokens,
         )
         assert files_in == ["a.py", "b.py"]
         assert remaining == []
@@ -294,9 +294,10 @@ class TestGenerateFullPatch:
         total, patches, remaining, files_in = pr_processing.generate_full_patch(
             convert_hunks_to_line_numbers=False,
             file_dict=file_dict,
-            max_tokens_model=4_000,  # SOFT=1500, HARD=1000
+            soft_token_budget=4_000 - 1_500 - token_handler.prompt_tokens,
             remaining_files_list_prev=list(file_dict),
             token_handler=token_handler,
+            hard_token_budget=4_000 - 1_000 - token_handler.prompt_tokens,
         )
         assert "small.py" in files_in
         assert "huge.py" not in files_in
@@ -332,9 +333,18 @@ class TestGenerateFullPatch:
         total, patches, remaining, files_in = pr_processing.generate_full_patch(
             convert_hunks_to_line_numbers=False,
             file_dict=file_dict,
-            max_tokens_model=max_tokens_model,
+            soft_token_budget=(
+                max_tokens_model
+                - pr_processing.OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD
+                - token_handler.prompt_tokens
+            ),
             remaining_files_list_prev=[filename],
             token_handler=token_handler,
+            hard_token_budget=(
+                max_tokens_model
+                - pr_processing.OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD
+                - token_handler.prompt_tokens
+            ),
         )
 
         assert token_handler.prompt_tokens + file_dict[filename]["tokens"] <= (
@@ -354,9 +364,10 @@ class TestGenerateFullPatch:
         total, patches, remaining, files_in = pr_processing.generate_full_patch(
             convert_hunks_to_line_numbers=False,
             file_dict=file_dict,
-            max_tokens_model=10_000,
+            soft_token_budget=10_000 - 1_500 - token_handler.prompt_tokens,
             remaining_files_list_prev=["b.py"],  # only b.py is eligible this round
             token_handler=token_handler,
+            hard_token_budget=10_000 - 1_000 - token_handler.prompt_tokens,
         )
         assert files_in == ["b.py"]
         assert remaining == []
@@ -370,9 +381,10 @@ class TestGenerateFullPatch:
         total, patches, _, _ = pr_processing.generate_full_patch(
             convert_hunks_to_line_numbers=True,
             file_dict=file_dict,
-            max_tokens_model=10_000,
+            soft_token_budget=10_000 - 1_500 - token_handler.prompt_tokens,
             remaining_files_list_prev=["a.py"],
             token_handler=token_handler,
+            hard_token_budget=10_000 - 1_000 - token_handler.prompt_tokens,
         )
         # In line-numbered mode, the function does not wrap with another header.
         assert patches[0].count("## File: 'a.py'") == 1
@@ -389,8 +401,7 @@ class TestPrGenerateCompressedDiff:
         from pr_agent.config_loader import get_settings
         return get_settings()
 
-    def test_deleted_files_collected_and_excluded_from_patches(self, monkeypatch):
-        monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: 10_000)
+    def test_deleted_files_collected_and_excluded_from_patches(self):
 
         deleted = FilePatchInfo(
             base_file="old content",
@@ -408,7 +419,8 @@ class TestPrGenerateCompressedDiff:
             pr_processing.pr_generate_compressed_diff(
                 top_langs=top_langs,
                 token_handler=FakeTokenHandler(prompt_tokens=10),
-                model="some-model",
+                soft_token_budget=10_000 - 1_500 - 10,
+                hard_token_budget=10_000 - 1_000 - 10,
                 convert_hunks_to_line_numbers=False,
                 large_pr_handling=False,
             )
@@ -422,7 +434,7 @@ class TestPrGenerateCompressedDiff:
         assert len(patches_list) == 1
         assert len(total_tokens_list) == 1
 
-    def test_large_pr_handling_paginates_across_iterations(self, monkeypatch):
+    def test_large_pr_handling_paginates_across_iterations(self):
         # Build patches large enough that exactly one fits per iteration. The
         # per-iteration budget in generate_full_patch is
         #   max_tokens_model - OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD - prompt_tokens
@@ -439,7 +451,6 @@ class TestPrGenerateCompressedDiff:
         #   prompt + patch_tokens     <= max - SOFT
         #   prompt + 2 * patch_tokens >  max - SOFT
         max_tokens = soft_threshold + prompt_tokens + patch_tokens + 1
-        monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: max_tokens)
 
         settings = self._settings()
         original_max_ai_calls = settings.pr_description.max_ai_calls
@@ -459,7 +470,10 @@ class TestPrGenerateCompressedDiff:
                 pr_processing.pr_generate_compressed_diff(
                     top_langs=top_langs,
                     token_handler=token_handler,
-                    model="some-model",
+                    soft_token_budget=max_tokens - soft_threshold - prompt_tokens,
+                    hard_token_budget=(
+                        max_tokens - pr_processing.OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD - prompt_tokens
+                    ),
                     convert_hunks_to_line_numbers=False,
                     large_pr_handling=True,
                 )
@@ -473,7 +487,7 @@ class TestPrGenerateCompressedDiff:
         finally:
             settings.pr_description.max_ai_calls = original_max_ai_calls
 
-    def test_large_pr_handling_retries_file_when_wrapper_crosses_soft_budget(self, monkeypatch):
+    def test_large_pr_handling_retries_file_when_wrapper_crosses_soft_budget(self):
         prompt_tokens = 100
         token_handler = Utf8TokenHandler(prompt_tokens=prompt_tokens)
         patch_str = "@@ -1 +1 @@\n+" + "value " * 100
@@ -491,7 +505,6 @@ class TestPrGenerateCompressedDiff:
             + rendered_patch_tokens
             + bare_patch_tokens
         )
-        monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: max_tokens)
         settings = self._settings()
         original_max_ai_calls = settings.pr_description.max_ai_calls
         settings.pr_description.max_ai_calls = 3
@@ -506,7 +519,12 @@ class TestPrGenerateCompressedDiff:
              file_dict, files_in_patches_list) = pr_processing.pr_generate_compressed_diff(
                 top_langs=[{"files": files}],
                 token_handler=token_handler,
-                model="some-model",
+                soft_token_budget=(
+                    max_tokens - pr_processing.OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD - prompt_tokens
+                ),
+                hard_token_budget=(
+                    max_tokens - pr_processing.OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD - prompt_tokens
+                ),
                 convert_hunks_to_line_numbers=False,
                 large_pr_handling=True,
             )
@@ -526,8 +544,7 @@ class TestPrGenerateCompressedDiff:
         finally:
             settings.pr_description.max_ai_calls = original_max_ai_calls
 
-    def test_files_with_empty_patch_are_skipped(self, monkeypatch):
-        monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: 10_000)
+    def test_files_with_empty_patch_are_skipped(self):
 
         empty = _make_file(filename="empty.py", patch="", tokens=0)
         kept = _make_file(filename="kept.py", tokens=5)
@@ -538,7 +555,8 @@ class TestPrGenerateCompressedDiff:
             pr_processing.pr_generate_compressed_diff(
                 top_langs=top_langs,
                 token_handler=FakeTokenHandler(prompt_tokens=10),
-                model="some-model",
+                soft_token_budget=10_000 - 1_500 - 10,
+                hard_token_budget=10_000 - 1_000 - 10,
                 convert_hunks_to_line_numbers=False,
                 large_pr_handling=False,
             )
@@ -548,8 +566,7 @@ class TestPrGenerateCompressedDiff:
         assert "kept.py" in file_dict
         assert files_in_patches_list[0] == ["kept.py"]
 
-    def test_convert_hunks_to_line_numbers_runs_decouple_per_file(self, monkeypatch):
-        monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: 10_000)
+    def test_convert_hunks_to_line_numbers_runs_decouple_per_file(self):
         kept = _make_file(filename="kept.py", tokens=5)
         top_langs = [{"files": [kept]}]
 
@@ -557,7 +574,8 @@ class TestPrGenerateCompressedDiff:
             pr_processing.pr_generate_compressed_diff(
                 top_langs=top_langs,
                 token_handler=FakeTokenHandler(prompt_tokens=10),
-                model="some-model",
+                soft_token_budget=10_000 - 1_500 - 10,
+                hard_token_budget=10_000 - 1_000 - 10,
                 convert_hunks_to_line_numbers=True,
                 large_pr_handling=False,
             )
@@ -565,10 +583,9 @@ class TestPrGenerateCompressedDiff:
         assert "__new hunk__" in file_dict["kept.py"]["patch"]
         assert files_in_patches_list[0] == ["kept.py"]
 
-    def test_max_ai_calls_boundary_caps_iterations(self, monkeypatch):
+    def test_max_ai_calls_boundary_caps_iterations(self):
         # Force every patch to be too big to fit so each iteration defers
         # everything to the next round; this isolates the iteration cap.
-        monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: 1_000)
         settings = self._settings()
         original_max_ai_calls = settings.pr_description.max_ai_calls
         settings.pr_description.max_ai_calls = 2  # allow 1 extra loop iteration (range(0))
@@ -583,7 +600,8 @@ class TestPrGenerateCompressedDiff:
                 pr_processing.pr_generate_compressed_diff(
                     top_langs=top_langs,
                     token_handler=FakeTokenHandler(prompt_tokens=10_000),
-                    model="some-model",
+                    soft_token_budget=1_000 - 1_500 - 10_000,
+                    hard_token_budget=1_000 - 1_000 - 10_000,
                     convert_hunks_to_line_numbers=False,
                     large_pr_handling=True,
                 )

@@ -4,6 +4,8 @@ from pathlib import Path
 import pytest
 
 import pr_agent.algo.pr_processing as pr_processing
+import pr_agent.algo.token_budget as token_budget
+from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.algo.utils import ModelType
 from pr_agent.config_loader import get_settings
@@ -79,7 +81,7 @@ def test_fast_path_rejects_a_join_that_exceeds_the_reserved_limit(
     assert handler.prompt_tokens + handler.count_tokens("\n".join(patches)) + reserve > limit
     monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda langs, files: [{"files": files}])
     monkeypatch.setattr(pr_processing, "extend_patch", lambda original, patch, *args, **kwargs: patch)
-    monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: limit)
+    monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: limit)
     monkeypatch.setattr(
         pr_processing, "pr_generate_compressed_diff",
         lambda *args, **kwargs: ([["compressed"]], [12], [], [], {}, [[]]),
@@ -127,17 +129,21 @@ def test_real_encoder_extended_diff_total_includes_non_additive_join(monkeypatch
         for file in _rendered_budget_files()
     }
     _, compressed, remaining, _ = pr_processing.generate_full_patch(
-        False, file_dict, limit, list(file_dict), handler, reserve, 1_000,
+        False,
+        file_dict,
+        limit - reserve - handler.prompt_tokens,
+        list(file_dict),
+        handler,
+        hard_token_budget=limit - 1_000 - handler.prompt_tokens,
     )
     assert remaining
     assert handler.prompt_tokens + handler.count_tokens("\n".join(compressed)) + reserve <= limit
 
-    monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: limit)
     transformed = {
         name: {"patch": patch, "tokens": tokens}
         for name, patch, tokens in zip(file_dict, patches, per_patch, strict=True)
     }
-    chunks = pr_processing._pack_pr_multi_diffs(transformed, handler, "model", 5, False, reserve)
+    chunks = pr_processing._pack_pr_multi_diffs(transformed, handler, 5, False, limit - reserve - handler.prompt_tokens)
     assert len(chunks) > 1
     assert all(handler.prompt_tokens + handler.count_tokens(chunk) + reserve <= limit for chunk in chunks)
 
@@ -158,7 +164,12 @@ def test_compressed_packing_counts_join_before_admitting_file(convert_line_numbe
     limit = handler.prompt_tokens + handler.count_tokens("\n".join(rendered)) + reserve - overflow
 
     total, patches, remaining, included = pr_processing.generate_full_patch(
-        convert_line_numbers, file_dict, limit, list(file_dict), handler, reserve, 1_000,
+        convert_line_numbers,
+        file_dict,
+        limit - reserve - handler.prompt_tokens,
+        list(file_dict),
+        handler,
+        hard_token_budget=limit - 1_000 - handler.prompt_tokens,
     )
 
     assert total == handler.prompt_tokens + handler.count_tokens("\n".join(patches))
@@ -179,11 +190,10 @@ def test_multi_packing_recounts_non_additive_join_and_preserves_remaining(
     handler = NonAdditiveHandler(prompt_tokens=11)
     reserve = 1_500
     limit = handler.prompt_tokens + handler.count_tokens("A\nB") + reserve - overflow
-    monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: limit)
     file_dict = {name: {"patch": patch, "tokens": 1} for name, patch in [("a.py", "A"), ("b.py", "B")]}
 
     chunks, remaining = pr_processing._pack_pr_multi_diffs(
-        file_dict, handler, "model", max_calls, True, reserve,
+        file_dict, handler, max_calls, True, limit - reserve - handler.prompt_tokens,
     )
 
     assert all(handler.prompt_tokens + handler.count_tokens(chunk) + reserve <= limit for chunk in chunks)
@@ -201,11 +211,10 @@ def test_multi_packing_does_not_assume_stripping_reduces_tokens(monkeypatch, pol
     settings = get_settings()
     original_policy = settings.config.get("large_patch_policy", "skip")
     settings.config.large_patch_policy = policy
-    monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: 1_504)
     monkeypatch.setattr(pr_processing, "clip_tokens", lambda patch, *args, **kwargs: patch)
     try:
         chunks, remaining = pr_processing._pack_pr_multi_diffs(
-            {"a.py": {"patch": " AB ", "tokens": 4}}, handler, "model", 2, True, 1_500,
+            {"a.py": {"patch": " AB ", "tokens": 4}}, handler, 2, True, 4,
         )
     finally:
         settings.config.large_patch_policy = original_policy
@@ -220,7 +229,7 @@ def test_fresh_and_prepared_multi_diffs_fit_the_same_rendered_boundary(monkeypat
     patches, _, _ = pr_processing.pr_generate_extended_diff([{"files": files}], handler, True)
     reserve = 5_000
     limit = handler.prompt_tokens + handler.count_tokens("\n".join(patches[:2])) + reserve - 1
-    monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: limit)
+    monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: limit)
     monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda langs, files: [{"files": files}])
     monkeypatch.setattr(pr_processing, "extend_patch", lambda original, patch, *args, **kwargs: patch)
     provider = FakeProvider(files)
@@ -327,7 +336,7 @@ def test_get_pr_diff_routes_each_metadata_type_through_bounded_append(
         appended_sections.append(args[2])
         return original_append_metadata_section(*args, **kwargs)
 
-    monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: 1_500)
+    monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: 1_500)
     monkeypatch.setattr(pr_processing, "_append_metadata_section", append_metadata_section)
     monkeypatch.setattr(
         pr_processing,
@@ -373,15 +382,17 @@ def _make_budget_files(tokens_per_file=2_800):
 
 @pytest.mark.parametrize("resolved", [None, 0, -1, True, "5000"])
 def test_output_token_reserve_rejects_unusable_values(resolved):
-    assert pr_processing._resolve_output_token_reserve(lambda model, default: resolved, "model", 1_500) == 1_500
+    budget = AttemptTokenBudget("model", object(), object(), 10_000, output_token_reserve=lambda model, default: resolved)
+
+    assert budget.resolve_output_reserve(1_500, preserve_minimum=True) == 1_500
 
 
 @pytest.mark.parametrize("default", [1_000, 1_500])
 @pytest.mark.parametrize("resolved", [1, 100, 999, 1_000, 1_200, 1_499, 1_500, 5_000])
 def test_output_token_reserve_keeps_the_legacy_minimum(default, resolved):
-    assert pr_processing._resolve_output_token_reserve(
-        lambda model, fallback: resolved, "model", default
-    ) == max(default, resolved)
+    budget = AttemptTokenBudget("model", object(), object(), 10_000, output_token_reserve=lambda model, fallback: resolved)
+
+    assert budget.resolve_output_reserve(default, preserve_minimum=True) == max(default, resolved)
 
 
 @pytest.mark.parametrize("packing_path", ["single", "multi", "multiple_patchs", "prepared"])
@@ -389,7 +400,7 @@ def test_small_output_reserve_preserves_legacy_packing(monkeypatch, packing_path
     monkeypatch.setattr(get_settings().config, "patch_extra_lines_before", 0)
     monkeypatch.setattr(get_settings().config, "patch_extra_lines_after", 0)
     monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda languages, files: [{"files": files}])
-    monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: 6_500)
+    monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: 6_500)
 
     def pack(**kwargs):
         provider = FakeProvider(_make_budget_files())
@@ -416,12 +427,12 @@ def test_compressed_paths_keep_distinct_soft_and_hard_floors(monkeypatch, packin
     monkeypatch.setattr(get_settings().config, "patch_extra_lines_before", 0)
     monkeypatch.setattr(get_settings().config, "patch_extra_lines_after", 0)
     monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda languages, files: [{"files": files}])
-    monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: 6_500)
+    monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: 6_500)
     original_compressed_diff = pr_processing.pr_generate_compressed_diff
     reserves = []
 
     def compressed_diff(*args, **kwargs):
-        reserves.append((kwargs["soft_output_token_reserve"], kwargs["hard_output_token_reserve"]))
+        reserves.append((args[2], args[3]))
         return original_compressed_diff(*args, **kwargs)
 
     monkeypatch.setattr(pr_processing, "pr_generate_compressed_diff", compressed_diff)
@@ -430,7 +441,7 @@ def test_compressed_paths_keep_distinct_soft_and_hard_floors(monkeypatch, packin
         output_token_reserve=lambda model, default: 1_200,
     )
 
-    assert reserves == [(1_500, 1_200)]
+    assert reserves == [(4_900, 5_200)]
 
 
 def test_output_token_reserve_falls_back_independently_when_one_resolution_fails():
@@ -442,8 +453,10 @@ def test_output_token_reserve_falls_back_independently_when_one_resolution_fails
             return 5_000
         raise RuntimeError("hard reserve unavailable")
 
-    assert pr_processing._resolve_output_token_reserve(resolve, "model", 1_500) == 5_000
-    assert pr_processing._resolve_output_token_reserve(resolve, "model", 1_000) == 1_000
+    budget = AttemptTokenBudget("model", object(), object(), 10_000, output_token_reserve=resolve)
+
+    assert budget.resolve_output_reserve(1_500, preserve_minimum=True) == 5_000
+    assert budget.resolve_output_reserve(1_000, preserve_minimum=True) == 1_000
     assert calls == [("model", 1_500), ("model", 1_000)]
 
 
@@ -458,7 +471,7 @@ def test_get_pr_multi_diffs_reserves_the_active_completion_allowance(monkeypatch
     settings.config.patch_extra_lines_after = 0
     settings.config.large_patch_policy = "skip"
     monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda languages, files: [{"files": files}])
-    monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: 10_000)
+    monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: 10_000)
 
     try:
         default_chunks = pr_processing.get_pr_multi_diffs(
@@ -496,7 +509,7 @@ def test_get_pr_diff_reserves_output_in_compressed_diff_and_metadata(monkeypatch
     settings.config.patch_extra_lines_after = 0
     settings.config.verbosity_level = 0
     monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda languages, files: [{"files": files}])
-    monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: 10_000)
+    monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: 10_000)
     token_handler = FakeTokenHandler(prompt_tokens=100)
 
     try:
@@ -528,7 +541,7 @@ def test_get_pr_diff_uses_the_dynamic_hard_reserve_for_metadata(monkeypatch):
     settings.config.patch_extra_lines_after = 0
     settings.config.verbosity_level = 0
     monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda languages, files: [{"files": files}])
-    monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: 10_000)
+    monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: 10_000)
     reserve_calls = []
 
     def resolve(model, default):
@@ -567,7 +580,7 @@ def test_get_pr_diff_multiple_patchs_resolves_the_output_allowance(monkeypatch):
     settings.pr_description.max_ai_calls = 4
     settings.config.verbosity_level = 0
     monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda languages, files: [{"files": files}])
-    monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: 10_000)
+    monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: 10_000)
 
     try:
         default_result = pr_processing.get_pr_diff_multiple_patchs(
@@ -589,7 +602,7 @@ def test_get_pr_diff_multiple_patchs_resolves_the_output_allowance(monkeypatch):
 
 def test_prepared_multi_diffs_apply_the_current_attempt_reserve(monkeypatch):
     token_handler = FakeTokenHandler(prompt_tokens=100)
-    monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: 10_000)
+    monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: 10_000)
     file_dict = {
         f"file_{index}.py": {
             "patch": "token " * 2_800,
@@ -619,38 +632,47 @@ def test_prepared_multi_diffs_apply_the_current_attempt_reserve(monkeypatch):
     assert len(chunks) == 2
 
 
-def test_direct_compressed_helpers_keep_legacy_defaults(monkeypatch):
-    monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: 10_000)
+def test_direct_compressed_helpers_accept_explicit_numeric_budgets(monkeypatch):
+    context_window = 10_000
+    prompt_tokens = 100
+    soft_token_budget = context_window - pr_processing.OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD - prompt_tokens
+    hard_token_budget = context_window - pr_processing.OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD - prompt_tokens
+    monkeypatch.setattr(
+        token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: context_window
+    )
+    monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda languages, files: [{"files": files}])
     file_dict = {
         "file.py": {"patch": "+ change", "tokens": 2, "edit_type": EDIT_TYPE.MODIFIED},
     }
-    token_handler = FakeTokenHandler(prompt_tokens=100)
+    token_handler = FakeTokenHandler(prompt_tokens=prompt_tokens)
 
-    default_patch = pr_processing.generate_full_patch(
-        False, file_dict, 10_000, ["file.py"], token_handler
-    )
-    explicit_patch = pr_processing.generate_full_patch(
+    total, patches, remaining_files, files_in_patch = pr_processing.generate_full_patch(
         False,
         file_dict,
-        10_000,
+        soft_token_budget,
         ["file.py"],
         token_handler,
-        pr_processing.OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
-        pr_processing.OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
+        hard_token_budget=hard_token_budget,
     )
 
-    def compressed(explicit):
-        args = ([{"files": _make_budget_files(tokens_per_file=10)[:1]}], FakeTokenHandler(100), "model", False, False)
-        if explicit:
-            return pr_processing.pr_generate_compressed_diff(
-                *args,
-                soft_output_token_reserve=pr_processing.OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
-                hard_output_token_reserve=pr_processing.OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
-            )
-        return pr_processing.pr_generate_compressed_diff(*args)
+    expected_compressed = pr_processing.pr_generate_compressed_diff(
+        [{"files": _make_budget_files(tokens_per_file=10)[:1]}],
+        FakeTokenHandler(prompt_tokens),
+        soft_token_budget,
+        hard_token_budget,
+        False,
+        True,
+    )
+    actual_compressed = pr_processing.get_pr_diff_multiple_patchs(
+        FakeProvider(_make_budget_files(tokens_per_file=10)[:1]),
+        FakeTokenHandler(prompt_tokens),
+        "model",
+    )
 
-    assert default_patch == explicit_patch
-    assert compressed(False) == compressed(True)
+    assert total == token_handler.prompt_tokens + token_handler.count_tokens("\n".join(patches))
+    assert remaining_files == []
+    assert files_in_patch == ["file.py"]
+    assert actual_compressed == expected_compressed
 
 
 def test_generate_full_patch_preserves_soft_boundary_equality():
@@ -659,16 +681,13 @@ def test_generate_full_patch_preserves_soft_boundary_equality():
         "file.py": {"patch": "+ exact boundary", "tokens": 2, "edit_type": EDIT_TYPE.MODIFIED},
     }
     rendered_tokens = token_handler.count_tokens("\n\n## File: 'file.py'\n\n+ exact boundary\n")
-    reserve = 5_000
-
     _, _, remaining_files, files_in_patch = pr_processing.generate_full_patch(
         False,
         file_dict,
-        token_handler.prompt_tokens + rendered_tokens + reserve,
+        rendered_tokens,
         ["file.py"],
         token_handler,
-        soft_output_token_reserve=reserve,
-        hard_output_token_reserve=reserve,
+        hard_token_budget=rendered_tokens,
     )
 
     assert files_in_patch == ["file.py"]
@@ -684,36 +703,27 @@ def test_generate_full_patch_preserves_hard_boundary_equality():
     _, _, remaining_files, files_in_patch = pr_processing.generate_full_patch(
         False,
         file_dict,
-        5_100,
+        4_000,
         ["file.py"],
         token_handler,
-        soft_output_token_reserve=1_000,
-        hard_output_token_reserve=5_000,
+        hard_token_budget=0,
     )
 
     assert files_in_patch == ["file.py"]
     assert remaining_files == []
 
 
-def test_pack_pr_multi_diffs_preserves_soft_boundary_equality(monkeypatch):
+def test_pack_pr_multi_diffs_preserves_soft_boundary_equality():
     token_handler = FakeTokenHandler(prompt_tokens=100)
-    reserve = 5_000
     file_dict = {
         "file.py": {"patch": "exact boundary", "tokens": 2, "edit_type": EDIT_TYPE.MODIFIED},
     }
-    monkeypatch.setattr(
-        pr_processing,
-        "get_max_tokens",
-        lambda model: token_handler.prompt_tokens + file_dict["file.py"]["tokens"] + reserve,
-    )
-
     chunks = pr_processing._pack_pr_multi_diffs(
         file_dict,
         token_handler,
-        "model",
-        max_calls=1,
-        return_remaining_files=False,
-        soft_output_token_reserve=reserve,
+        1,
+        False,
+        file_dict["file.py"]["tokens"],
     )
 
     assert chunks == ["exact boundary"]
@@ -727,19 +737,21 @@ def test_get_pr_diff_preserves_strict_full_diff_boundary(monkeypatch, extra_capa
     original_after = settings.config.patch_extra_lines_after
     settings.config.patch_extra_lines_before = 0
     settings.config.patch_extra_lines_after = 0
-    max_tokens = {}
-    full_diff = {}
     original_generate_extended_diff = pr_processing.pr_generate_extended_diff
-
-    def generate_extended_diff(*args, **kwargs):
-        result = original_generate_extended_diff(*args, **kwargs)
-        max_tokens["value"] = result[1] + max(reserve, 1_500) + extra_capacity
-        full_diff["value"] = "\n".join(result[0])
-        return result
+    probe_handler = FakeTokenHandler(prompt_tokens=100)
+    probe_files = _make_budget_files(tokens_per_file=1)[:1]
+    probe_patches, probe_total, _ = original_generate_extended_diff(
+        [{"files": probe_files}], probe_handler, False, patch_extra_lines_before=0, patch_extra_lines_after=0
+    )
+    full_diff = "\n".join(probe_patches)
+    context_window = probe_total + max(reserve, 1_500) + extra_capacity
 
     monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda languages, files: [{"files": files}])
-    monkeypatch.setattr(pr_processing, "pr_generate_extended_diff", generate_extended_diff)
-    monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: max_tokens["value"])
+    monkeypatch.setattr(
+        token_budget,
+        "get_max_tokens",
+        lambda model, ignore_max_model_tokens=False: context_window,
+    )
     monkeypatch.setattr(
         pr_processing,
         "pr_generate_compressed_diff",
@@ -757,7 +769,7 @@ def test_get_pr_diff_preserves_strict_full_diff_boundary(monkeypatch, extra_capa
         settings.config.patch_extra_lines_before = original_before
         settings.config.patch_extra_lines_after = original_after
 
-    assert diff == (full_diff["value"] if uses_full_diff else "compressed")
+    assert diff == (full_diff if uses_full_diff else "compressed")
 
 
 @pytest.mark.parametrize(("extra_capacity", "uses_full_diff"), [(0, False), (1, True)])
@@ -768,24 +780,26 @@ def test_get_pr_multi_diffs_preserves_strict_full_diff_boundary(monkeypatch, ext
     original_after = settings.config.patch_extra_lines_after
     settings.config.patch_extra_lines_before = 0
     settings.config.patch_extra_lines_after = 0
-    max_tokens = {}
-    full_diff = {}
-    packed_reserves = []
+    packed_budgets = []
     original_generate_extended_diff = pr_processing.pr_generate_extended_diff
-
-    def generate_extended_diff(*args, **kwargs):
-        result = original_generate_extended_diff(*args, **kwargs)
-        max_tokens["value"] = result[1] + max(reserve, 1_500) + extra_capacity
-        full_diff["value"] = "\n".join(result[0])
-        return result
+    probe_handler = FakeTokenHandler(prompt_tokens=100)
+    probe_files = _make_budget_files(tokens_per_file=1)[:1]
+    probe_patches, probe_total, _ = original_generate_extended_diff(
+        [{"files": probe_files}], probe_handler, True, patch_extra_lines_before=0, patch_extra_lines_after=0
+    )
+    full_diff = "\n".join(probe_patches)
+    context_window = probe_total + max(reserve, 1_500) + extra_capacity
 
     def pack_diffs(*args):
-        packed_reserves.append(args[-1])
+        packed_budgets.append(args[-1])
         return ["compressed"]
 
     monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda languages, files: [{"files": files}])
-    monkeypatch.setattr(pr_processing, "pr_generate_extended_diff", generate_extended_diff)
-    monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: max_tokens["value"])
+    monkeypatch.setattr(
+        token_budget,
+        "get_max_tokens",
+        lambda model, ignore_max_model_tokens=False: context_window,
+    )
     monkeypatch.setattr(
         pr_processing,
         "pr_generate_compressed_diff",
@@ -804,8 +818,8 @@ def test_get_pr_multi_diffs_preserves_strict_full_diff_boundary(monkeypatch, ext
         settings.config.patch_extra_lines_before = original_before
         settings.config.patch_extra_lines_after = original_after
 
-    assert chunks == ([full_diff["value"]] if uses_full_diff else ["compressed"])
-    assert packed_reserves == ([] if uses_full_diff else [max(reserve, 1_500)])
+    assert chunks == ([full_diff] if uses_full_diff else ["compressed"])
+    assert packed_budgets == ([] if uses_full_diff else [probe_total - probe_handler.prompt_tokens])
 
 
 def test_prepared_pr_diff_reuses_compressed_files_without_changing_chunks(monkeypatch):
@@ -834,7 +848,7 @@ def test_prepared_pr_diff_reuses_compressed_files_without_changing_chunks(monkey
     token_handler = FakeTokenHandler(prompt_tokens=100)
 
     monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda languages, files: [{"files": files}])
-    monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: 1_700)
+    monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: 1_700)
 
     try:
         prepared = pr_processing.get_pr_diff(
@@ -916,7 +930,7 @@ def test_prepared_pr_diff_is_not_reused_across_model_or_patch_format(
     provider = FakeProvider(files)
     token_handler = FakeTokenHandler(prompt_tokens=100)
     monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda languages, files: [{"files": files}])
-    monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: 1_700)
+    monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: 1_700)
 
     try:
         prepared = pr_processing.get_pr_diff(
@@ -952,10 +966,12 @@ def test_prepared_pr_diff_is_not_reused_across_model_or_patch_format(
         lambda provider, token_handler: pr_processing.get_pr_multi_diffs(provider, token_handler, "model"),
     ],
 )
-def test_shared_diff_paths_propagate_project_rate_limit(call_diff):
+def test_shared_diff_paths_propagate_project_rate_limit(monkeypatch, call_diff):
     class RateLimitedProvider(FakeProvider):
         def get_diff_files(self):
             raise RateLimitExceeded("rate limit exceeded")
+
+    monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: 10_000)
 
     with pytest.raises(RateLimitExceeded, match="rate limit exceeded"):
         call_diff(RateLimitedProvider([]), FakeTokenHandler())
@@ -994,9 +1010,18 @@ def test_generate_full_patch_keeps_remaining_files_when_patch_exceeds_soft_budge
         total_tokens, patches, remaining_files, files_in_patch = pr_processing.generate_full_patch(
             convert_hunks_to_line_numbers=False,
             file_dict=file_dict,
-            max_tokens_model=max_tokens_model,
+            soft_token_budget=(
+                max_tokens_model
+                - pr_processing.OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD
+                - token_handler.prompt_tokens
+            ),
             remaining_files_list_prev=list(file_dict),
             token_handler=token_handler,
+            hard_token_budget=(
+                max_tokens_model
+                - pr_processing.OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD
+                - token_handler.prompt_tokens
+            ),
         )
 
         assert total_tokens > token_handler.prompt_tokens
@@ -1023,9 +1048,10 @@ def test_generate_full_patch_records_files_after_hard_token_stop():
     total_tokens, patches, remaining_files, files_in_patch = pr_processing.generate_full_patch(
         convert_hunks_to_line_numbers=False,
         file_dict=file_dict,
-        max_tokens_model=3_000,
+        soft_token_budget=3_000 - 1_500 - token_handler.prompt_tokens,
         remaining_files_list_prev=list(file_dict),
         token_handler=token_handler,
+        hard_token_budget=3_000 - 1_000 - token_handler.prompt_tokens,
     )
 
     assert total_tokens > 3_000 - pr_processing.OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD
@@ -1045,9 +1071,10 @@ def test_generate_full_patch_records_too_large_patch_files():
     total_tokens, patches, remaining_files, files_in_patch = pr_processing.generate_full_patch(
         convert_hunks_to_line_numbers=False,
         file_dict=file_dict,
-        max_tokens_model=4_000,
+        soft_token_budget=4_000 - 1_500 - token_handler.prompt_tokens,
         remaining_files_list_prev=list(file_dict),
         token_handler=token_handler,
+        hard_token_budget=4_000 - 1_000 - token_handler.prompt_tokens,
     )
 
     assert total_tokens > token_handler.prompt_tokens
@@ -1123,7 +1150,9 @@ def test_get_pr_multi_diffs_clips_large_patch_with_legacy_and_dynamic_reserve(
     clip_budgets = []
 
     monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda languages, files: [{"files": files}])
-    monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: context_limit)
+    monkeypatch.setattr(
+        token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: context_limit
+    )
 
     def clip_patch(patch, token_budget, **kwargs):
         clip_budgets.append(token_budget)
@@ -1181,7 +1210,7 @@ def test_get_pr_multi_diffs_reports_the_files_the_token_budget_left_out(monkeypa
     token_handler = FakeTokenHandler(prompt_tokens=100)
 
     monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda languages, files: [{"files": files}])
-    monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: 1700)
+    monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: 1700)
 
     try:
         diffs, remaining_files = pr_processing.get_pr_multi_diffs(
@@ -1212,7 +1241,7 @@ def test_get_pr_multi_diffs_reports_no_remaining_files_when_the_whole_diff_fits(
     token_handler = FakeTokenHandler(prompt_tokens=100)
 
     monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda languages, files: [{"files": files}])
-    monkeypatch.setattr(pr_processing, "get_max_tokens", lambda model: 100000)
+    monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: 100000)
 
     try:
         diffs, remaining_files = pr_processing.get_pr_multi_diffs(
