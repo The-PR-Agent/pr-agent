@@ -114,6 +114,38 @@ async def test_add_docs_does_not_call_model_when_no_diff_fits(monkeypatch):
     tool._get_prediction.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_add_docs_removes_temporary_comment_after_terminal_failure(monkeypatch):
+    class Config:
+        publish_output = True
+
+        @staticmethod
+        def get(_key, default=None):
+            return default
+
+    tool = add_docs_module.PRAddDocs.__new__(add_docs_module.PRAddDocs)
+    tool.git_provider = MagicMock()
+    tool._prepare_prediction = AsyncMock()
+    monkeypatch.setattr(
+        add_docs_module,
+        "get_settings",
+        lambda: SimpleNamespace(config=Config()),
+    )
+    monkeypatch.setattr(
+        add_docs_module,
+        "retry_with_fallback_models",
+        AsyncMock(side_effect=RuntimeError("all attempts failed")),
+    )
+
+    await tool.run()
+
+    tool.git_provider.publish_comment.assert_called_once_with(
+        "Generating Documentation...",
+        is_temporary=True,
+    )
+    tool.git_provider.remove_initial_comment.assert_called_once_with()
+
+
 @pytest.mark.parametrize(
     "tool_class, tool_module, command",
     [

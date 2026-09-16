@@ -56,10 +56,12 @@ class PRAddDocs:
                                           get_settings().pr_add_docs_prompt.user)
 
     async def run(self):
+        temporary_comment_published = False
         try:
             get_logger().info('Generating code Docs for PR...')
             if get_settings().config.publish_output:
                 self.git_provider.publish_comment("Generating Documentation...", is_temporary=True)
+                temporary_comment_published = True
 
             get_logger().info('Preparing PR documentation...')
             await retry_with_fallback_models(self._prepare_prediction, git_provider=self.git_provider)
@@ -71,12 +73,21 @@ class PRAddDocs:
             if get_settings().config.publish_output:
                 get_logger().info('Pushing PR documentation...')
                 self.git_provider.remove_initial_comment()
+                temporary_comment_published = False
                 get_logger().info('Pushing inline code documentation...')
                 self.push_inline_docs(data)
         except Exception as e:
             get_logger().error(f"Failed to generate code documentation for PR, error: {e}")
             if get_settings().config.get("propagate_tool_errors", False):
                 raise
+        finally:
+            if temporary_comment_published:
+                try:
+                    self.git_provider.remove_initial_comment()
+                except Exception as cleanup_error:
+                    get_logger().warning(
+                        f"Failed to remove the temporary documentation comment: {cleanup_error}"
+                    )
 
     async def _prepare_prediction(self, model: str):
         get_logger().info('Getting PR diff...')

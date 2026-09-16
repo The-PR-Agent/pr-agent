@@ -900,6 +900,10 @@ class PRCodeSuggestions:
             default_output_tokens=OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
             preserve_minimum=True,
         )
+        if fitted.optional_text != patches_diff_no_line_number:
+            raise ValueError(
+                f"The complete suggestion chunk does not fit the token limit for {model}"
+            )
         system_prompt, user_prompt = fitted.system_prompt, fitted.user_prompt
         response, finish_reason = await self.ai_handler.chat_completion(
             model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)

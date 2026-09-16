@@ -48,6 +48,27 @@ def _valid_suggestion(**overrides):
     return suggestion
 
 
+@pytest.mark.asyncio
+async def test_get_prediction_rejects_a_clipped_suggestion_chunk():
+    tool = _make_tool()
+    tool.ai_handler.chat_completion = AsyncMock()
+    tool._suggestion_attempt_budget = SimpleNamespace(
+        model="attempt-model",
+        fit_optional_text=MagicMock(
+            return_value=SimpleNamespace(
+                optional_text="clipped diff",
+                system_prompt="system",
+                user_prompt="user",
+            )
+        ),
+    )
+
+    with pytest.raises(ValueError, match="complete suggestion chunk"):
+        await tool._get_prediction("attempt-model", "numbered diff", "complete diff")
+
+    tool.ai_handler.chat_completion.assert_not_awaited()
+
+
 def test_prepare_pr_code_suggestions_filters_duplicates_and_missing_required_fields():
     tool = _make_tool()
     prediction = """
