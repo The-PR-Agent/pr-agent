@@ -92,6 +92,62 @@ async def test_prepare_prediction_forwards_attempt_output_reserve(
     assert tool.prediction == prediction
 
 
+@pytest.mark.parametrize(
+    "tool_class, tool_module, attributes",
+    [
+        (add_docs_module.PRAddDocs, add_docs_module, {}),
+        (generate_labels_module.PRGenerateLabels, generate_labels_module, {"pr_id": "repo#1"}),
+        (questions_module.PRQuestions, questions_module, {}),
+        (update_changelog_module.PRUpdateChangelog, update_changelog_module, {}),
+    ],
+    ids=["add-docs", "generate-labels", "questions", "update-changelog"],
+)
+@pytest.mark.asyncio
+async def test_prepare_prediction_rejects_clipped_packed_diff(
+    monkeypatch,
+    tool_class,
+    tool_module,
+    attributes,
+):
+    tool = tool_class.__new__(tool_class)
+    tool.git_provider = SimpleNamespace(
+        pr=None,
+        get_pr_url=MagicMock(return_value="https://example.test/pr/1"),
+    )
+    tool.ai_handler = SimpleNamespace()
+    tool.vars = {"diff": "", "conversation_history": "", "pr_link": ""}
+    tool._get_prediction = AsyncMock()
+    for name, value in attributes.items():
+        setattr(tool, name, value)
+
+    class ClippingBudget:
+        token_handler = object()
+
+        def require_input_capacity(self, *_args, **_kwargs):
+            return 1
+
+        def fit_prompt_variable(self, _variables, _name, optional_text, **_kwargs):
+            return SimpleNamespace(
+                optional_text=optional_text[:-1],
+                system_prompt="system",
+                user_prompt="user",
+            )
+
+    monkeypatch.setattr(
+        tool_module.AttemptTokenBudget,
+        "for_prompt_attempt",
+        lambda *_args, **_kwargs: ClippingBudget(),
+    )
+    monkeypatch.setattr(tool_module, "get_pr_diff", lambda *_args, **_kwargs: "complete-diff")
+    if tool_class is generate_labels_module.PRGenerateLabels:
+        monkeypatch.setattr(tool_module, "set_custom_labels", lambda *_args: None)
+
+    with pytest.raises(ValueError, match="complete packed .* diff"):
+        await tool._prepare_prediction("fallback-model")
+
+    tool._get_prediction.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_add_docs_does_not_call_model_when_no_diff_fits(monkeypatch):
     tool = add_docs_module.PRAddDocs.__new__(add_docs_module.PRAddDocs)

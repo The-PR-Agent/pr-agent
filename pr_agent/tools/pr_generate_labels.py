@@ -158,6 +158,10 @@ class PRGenerateLabels:
             default_output_tokens=OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
             preserve_minimum=True,
         )
+        if fitted.optional_text != patches_diff:
+            raise ValueError(
+                f"The complete packed labels diff does not fit the token limit for {model}"
+            )
         variables["diff"] = fitted.optional_text
         self.patches_diff = fitted.optional_text
         self._attempt_system_prompt = fitted.system_prompt

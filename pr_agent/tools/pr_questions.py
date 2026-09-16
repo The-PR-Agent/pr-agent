@@ -194,6 +194,10 @@ class PRQuestions:
             preserve_minimum=True,
             image_path=image_path,
         )
+        if fitted.optional_text != patches_diff:
+            raise ValueError(
+                f"The complete packed question diff does not fit the token limit for {model}"
+            )
         self.patches_diff = fitted.optional_text
         self._attempt_system_prompt = fitted.system_prompt
         self._attempt_user_prompt = fitted.user_prompt

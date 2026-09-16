@@ -94,6 +94,30 @@ title: Partial description
 description: Summarizes the successfully described files."""
 
 
+@pytest.mark.asyncio
+async def test_normal_description_rejects_clipped_packed_diff():
+    tool = _make_large_pr_instance()
+    tool._description_prompt_handlers = {}
+    tool.ai_handler.chat_completion = AsyncMock()
+
+    class ClippingBudget:
+        def fit_prompt_variable(self, _variables, _name, optional_text, **_kwargs):
+            return MagicMock(
+                optional_text=optional_text[:-1],
+                system_prompt="system",
+                user_prompt="user",
+            )
+
+    with patch(
+        "pr_agent.tools.pr_description.AttemptTokenBudget.for_prompt_attempt",
+        return_value=ClippingBudget(),
+    ):
+        with pytest.raises(ValueError, match="complete packed description diff"):
+            await tool._get_prediction("fallback-model", "complete-diff")
+
+    tool.ai_handler.chat_completion.assert_not_awaited()
+
+
 def _mock_settings(pr_diagram_direction: str = 'adaptive', pr_diagram_direction_threshold: int = 5):
     """Mock get_settings used by _prepare_data."""
     settings = MagicMock()
