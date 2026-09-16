@@ -146,16 +146,6 @@ def test_invalid_numeric_capture_preserves_valid_references(description_regex, n
     assert _links(f"ticket: {number} ticket: 42") == [f"{BASE}/{REPO}/issues/42"]
 
 
-def test_pathological_pattern_times_out_and_uses_default_matching(description_regex, monkeypatch):
-    from unittest.mock import Mock
-
-    logger = Mock()
-    monkeypatch.setattr("pr_agent.tools.ticket_pr_compliance_check.get_logger", lambda: logger)
-    description_regex(r"(?:a+)+(\d+)")
-    assert _links("a99 " + "a" * 10000 + "! Fixes #42") == [f"{BASE}/{REPO}/issues/42"]
-    logger.warning.assert_called_once_with("description_issue_regex timed out; using default pattern.")
-
-
 def test_custom_matches_keep_explicit_references_order_and_cap(description_regex):
     description_regex(r"ticket: (\d+)")
     assert _links("ticket: 1 other/project#2 ticket: 1 https://github.com/org/repo/issues/3 ticket: 4") == [

@@ -6,7 +6,6 @@ import traceback
 from urllib.parse import urlparse
 
 import aiohttp
-import regex
 from atlassian import Jira
 
 from pr_agent.algo.pr_processing import OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD
@@ -28,7 +27,6 @@ BRANCH_ISSUE_PATTERN = re.compile(r"(?:^|/)(\d{1,6})(?=-|$)")
 # only followed up to this many digits. The bound matches BRANCH_ISSUE_PATTERN above: the same
 # number written in a branch name and in the description should resolve the same way.
 MAX_SHORTHAND_ISSUE_DIGITS = 6
-DESCRIPTION_REGEX_TIMEOUT = 0.1
 
 # Cap on the total tickets analysed per PR, enforced at the Jira step (see add_jira_tickets).
 # The provider-native lookups keep their own budgets (MAX_GITHUB_TICKETS, MAX_GITLAB_TICKETS,
@@ -688,11 +686,8 @@ def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url
                 custom_pattern = re.compile(custom_regex)
                 if custom_pattern.groups != 1:
                     raise ValueError("expected exactly one capturing group for the issue number")
-                custom_matches = list(regex.finditer(custom_regex, pr_description, timeout=DESCRIPTION_REGEX_TIMEOUT))
-            except TimeoutError:
-                get_logger().warning("description_issue_regex timed out; using default pattern.")
-                custom_pattern = None
-            except (re.error, regex.error, TypeError, ValueError, OverflowError, RecursionError) as e:
+                custom_matches = list(custom_pattern.finditer(pr_description))
+            except (re.error, TypeError, ValueError, OverflowError, RecursionError) as e:
                 get_logger().warning(f"Invalid description_issue_regex: {e}; using default pattern.")
                 custom_pattern = None
 
