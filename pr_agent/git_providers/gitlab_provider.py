@@ -476,7 +476,7 @@ class GitLabProvider(GitProvider):
         self.mr = self._get_merge_request()
         try:
             # the versions endpoint is ordered newest-first, so the latest diff is the first entry
-            self.last_diff = self.mr.diffs.list(get_all=True)[0]
+            self.last_diff = self.mr.diffs.list(page=1, per_page=1, get_all=False)[0]
         except IndexError as e:
             get_logger().error(f"Could not get diff for merge request {self.id_mr}")
             raise DiffNotFoundError(f"Could not get diff for merge request {self.id_mr}") from e
@@ -1232,7 +1232,7 @@ class GitLabProvider(GitProvider):
         if not changes:
             get_logger().error('No changes found for the merge request.')
             return None
-        all_diffs = self.mr.diffs.list(get_all=True)
+        all_diffs = self.mr.diffs.list(page=1, per_page=1, get_all=False)
         if not all_diffs:
             get_logger().error('No diffs found for the merge request.')
             return None
