@@ -154,3 +154,19 @@ def test_reconstruct_base_add_to_empty():
     # Even though head ends with "\n", an empty base must stay "" (no trailing
     # newline appended) so it is falsy for extend_patch().
     assert result == ""
+
+
+_NO_BASE_TRAILING_NL_PATCH = """--- a/noeol.py
++++ b/noeol.py
+@@ -1 +1 @@
+-old
+\\ No newline at end of file
++new
+"""
+
+
+def test_reconstruct_base_preserves_base_no_newline_when_head_has_one():
+    """The EOF marker applies to the removed base line, not the head line."""
+    result = reconstruct_base_file("new\n", _NO_BASE_TRAILING_NL_PATCH)
+    assert result == "old"
+    assert not result.endswith("\n")

@@ -97,9 +97,23 @@ def reconstruct_base_file(head_file_str: str, patch_str: str) -> str:
 
     base_lines.extend(head_lines[head_idx:])
     result = "\n".join(base_lines)
+    # Track EOF markers from the diff itself. The head file's newline status is
+    # not sufficient when a replacement changes whether the base ended in one.
+    base_has_trailing_newline = head_file_str.endswith("\n")
+    previous_line_type = None
+    for hunk in patch_set[0]:
+        for line in hunk:
+            if line.line_type == "\\":
+                if previous_line_type == "-":
+                    base_has_trailing_newline = False
+                elif previous_line_type == "+":
+                    base_has_trailing_newline = True
+            elif line.line_type in {"-", "+", " "}:
+                previous_line_type = line.line_type
+
     # Preserve a trailing newline only when the base actually has content; an
     # empty base (e.g. reversing an add-file patch) must stay "" so downstream
     # extend_patch() correctly treats it as having no original file.
-    if base_lines and head_file_str.endswith("\n"):
+    if base_lines and base_has_trailing_newline:
         result += "\n"
     return result
