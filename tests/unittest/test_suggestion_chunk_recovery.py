@@ -147,6 +147,7 @@ async def test_larger_fallback_recovers_when_earlier_one_is_over_budget(configur
     assert [(m, c) for m, c, _, _ in calls if m == "gpt-4.1"] == [("gpt-4.1", "b")]
 
 
+@pytest.mark.asyncio
 async def test_recovery_skips_fallback_that_fits_only_a_clipped_chunk(configured, monkeypatch):
     tool, _calls = make_tool(monkeypatch, {})
     tool._recovery_chain = MagicMock(
