@@ -384,8 +384,11 @@ class AttemptTokenBudget:
 
         best_prompt = empty_prompt
         marker_prompt = prepare(truncation_marker)
-        if marker_prompt.input_tokens <= input_limit:
-            best_prompt = marker_prompt
+        if marker_prompt.input_tokens > input_limit:
+            raise ValueError(
+                f"The truncation marker does not fit the token limit for {self.model}"
+            )
+        best_prompt = marker_prompt
 
         encoder = getattr(self.token_handler, "encoder", None)
         encode = getattr(encoder, "encode", None)

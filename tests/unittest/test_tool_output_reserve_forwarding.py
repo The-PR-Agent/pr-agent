@@ -326,7 +326,7 @@ async def test_empty_attempt_diff_advances_to_fallback_model(
 
 
 @pytest.mark.asyncio
-async def test_generate_labels_counts_custom_schema_before_packing_and_allows_empty_diff(monkeypatch):
+async def test_generate_labels_counts_custom_schema_before_rejecting_empty_diff(monkeypatch):
     captured_variables = []
     tool = generate_labels_module.PRGenerateLabels.__new__(generate_labels_module.PRGenerateLabels)
     tool.git_provider = SimpleNamespace(pr=None)
@@ -363,11 +363,11 @@ async def test_generate_labels_counts_custom_schema_before_packing_and_allows_em
     )
     monkeypatch.setattr(generate_labels_module, "get_pr_diff", lambda *_args, **_kwargs: "")
 
-    await tool._prepare_prediction("fallback-model")
+    with pytest.raises(ValueError, match="No PR diff fits the /generate_labels request"):
+        await tool._prepare_prediction("fallback-model")
 
     assert captured_variables == [{"diff": "", "custom_labels_class": "Bug | Feature"}]
-    tool._get_prediction.assert_awaited_once_with("fallback-model")
-    assert tool.patches_diff == ""
+    tool._get_prediction.assert_not_awaited()
 
 
 @pytest.mark.asyncio

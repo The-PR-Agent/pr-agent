@@ -98,7 +98,7 @@ def prompt_budget(monkeypatch):
 
 
 def test_ticket_payload_keeps_exact_prefix_that_fits_prompt_budget(prompt_budget):
-    # max=3,525 -> max(100, 3,525 - 2*1,500) = 525. Two tickets plus the notice fit.
+    # Verify that max(100, 3,525 - 2*1,500) = 525 fits two tickets plus the omission notice.
     prompt_budget({"model": 3525})
     raw_vars = {"related_tickets": _tickets(3)}
 

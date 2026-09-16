@@ -5,6 +5,8 @@ import pytest
 
 import pr_agent.algo.token_budget as token_budget_module
 import pr_agent.algo.token_handler as token_handler_module
+from pr_agent.algo.ai_handlers.langchain_ai_handler import LangChainOpenAIHandler
+from pr_agent.algo.ai_handlers.openai_ai_handler import OpenAIHandler
 
 
 class FakeTokenHandler:
@@ -331,6 +333,42 @@ def test_prepare_request_counts_the_handler_final_message_shape(monkeypatch):
     ]
 
 
+@pytest.mark.parametrize("handler_class", [OpenAIHandler, LangChainOpenAIHandler])
+def test_prepare_request_counts_text_only_for_handlers_that_ignore_images(
+    monkeypatch,
+    token_settings,
+    handler_class,
+):
+    handler = FakeTokenHandler()
+    budget = token_budget_module.AttemptTokenBudget("attempt-model", handler, handler, 10_000)
+    observed = []
+
+    def count_messages(*, model, messages):
+        observed.append((model, messages))
+        return 100
+
+    monkeypatch.setattr(token_budget_module, "token_counter", count_messages)
+    monkeypatch.setattr(token_budget_module, "get_settings", lambda: token_settings)
+
+    prepared = budget.prepare_request(
+        handler_class.__new__(handler_class),
+        "system",
+        "user",
+        image_path="https://example.test/image.png",
+    )
+
+    assert observed == [
+        (
+            "attempt-model",
+            [
+                {"role": "system", "content": "system"},
+                {"role": "user", "content": "user"},
+            ],
+        )
+    ]
+    assert prepared.input_tokens == 100
+
+
 @pytest.mark.parametrize("allowance", [None, -1, True, "4096"])
 def test_image_allowance_must_be_a_non_negative_integer(monkeypatch, allowance):
     handler = FakeTokenHandler()
@@ -432,6 +470,25 @@ def test_fit_optional_text_keeps_marker_when_no_content_character_fits(monkeypat
 
     assert fitted.optional_text == "[cut]"
     assert fitted.input_tokens == 8
+
+
+def test_fit_optional_text_rejects_unmarked_empty_replacement(monkeypatch):
+    handler = FakeTokenHandler()
+    budget = token_budget_module.AttemptTokenBudget("attempt-model", handler, handler, 6)
+    monkeypatch.setattr(
+        token_budget_module,
+        "token_counter",
+        lambda *, model, messages: sum(len(message["content"]) for message in messages),
+    )
+
+    with pytest.raises(ValueError, match="truncation marker"):
+        budget.fit_optional_text(
+            "optional",
+            lambda optional: ("s", f"u:{optional}"),
+            ai_handler=object(),
+            default_output_tokens=1,
+            truncation_marker="[cut]",
+        )
 
 
 def test_fit_optional_text_truncates_only_at_attempt_token_boundaries(monkeypatch):

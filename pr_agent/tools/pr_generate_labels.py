@@ -150,6 +150,8 @@ class PRGenerateLabels:
             model,
             output_token_reserve=output_token_reserve,
         )
+        if not patches_diff:
+            raise ValueError(f"No PR diff fits the /generate_labels request for {model}")
         fitted = budget.fit_prompt_variable(
             variables,
             "diff",
