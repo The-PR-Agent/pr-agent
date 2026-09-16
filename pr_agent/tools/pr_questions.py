@@ -1,12 +1,16 @@
 import copy
 from functools import partial
 
-from jinja2 import Environment, StrictUndefined
-
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
-from pr_agent.algo.pr_processing import get_pr_diff, retry_with_fallback_models
+from pr_agent.algo.pr_processing import (
+    OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
+    OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+    get_pr_diff,
+    retry_with_fallback_models,
+)
 from pr_agent.algo.skills_loader import get_skills_context
+from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import ModelType, decode_user_text_args, format_pr_questions_header
 from pr_agent.config_loader import get_settings
@@ -128,15 +132,59 @@ class PRQuestions:
         return img_path
 
     async def _prepare_prediction(self, model: str):
-        self.patches_diff = get_pr_diff(
-            self.git_provider,
-            self.token_handler,
+        variables = copy.deepcopy(self.vars)
+        raw_history = variables.get("conversation_history", "")
+        variables["conversation_history"] = ""
+        output_token_reserve = getattr(self.ai_handler, "get_output_token_reserve", None)
+        history_budget = AttemptTokenBudget.for_prompt_attempt(
             model,
-            output_token_reserve=getattr(
-                getattr(self, "ai_handler", None), "get_output_token_reserve", None
-            ),
+            getattr(self.git_provider, "pr", None),
+            variables,
+            get_settings().pr_questions_prompt.system,
+            get_settings().pr_questions_prompt.user,
+            ai_handler=self.ai_handler,
+            output_token_reserve=output_token_reserve,
         )
-        if self.patches_diff:
+        fitted_history = history_budget.fit_prompt_variable(
+            variables,
+            "conversation_history",
+            raw_history,
+            ai_handler=self.ai_handler,
+            default_output_tokens=OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
+            preserve_minimum=True,
+            additional_input_reserve=OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+            keep="suffix",
+        )
+        variables["conversation_history"] = fitted_history.optional_text
+
+        budget = AttemptTokenBudget.for_prompt_attempt(
+            model,
+            getattr(self.git_provider, "pr", None),
+            variables,
+            get_settings().pr_questions_prompt.system,
+            get_settings().pr_questions_prompt.user,
+            ai_handler=self.ai_handler,
+            output_token_reserve=output_token_reserve,
+        )
+        patches_diff = get_pr_diff(
+            self.git_provider,
+            budget.token_handler,
+            model,
+            output_token_reserve=output_token_reserve,
+        )
+        if patches_diff:
+            fitted = budget.fit_prompt_variable(
+                variables,
+                "diff",
+                patches_diff,
+                ai_handler=self.ai_handler,
+                default_output_tokens=OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
+                preserve_minimum=True,
+            )
+            self.patches_diff = fitted.optional_text
+            self._attempt_system_prompt = fitted.system_prompt
+            self._attempt_user_prompt = fitted.user_prompt
+            self._attempt_variables = variables
             get_logger().debug("PR diff", artifact=self.patches_diff)
             self.prediction = await self._get_prediction(model)
         else:
@@ -144,11 +192,9 @@ class PRQuestions:
             self.prediction = ""
 
     async def _get_prediction(self, model: str):
-        variables = copy.deepcopy(self.vars)
-        variables["diff"] = self.patches_diff  # update diff
-        environment = Environment(undefined=StrictUndefined)
-        system_prompt = environment.from_string(get_settings().pr_questions_prompt.system).render(variables)
-        user_prompt = environment.from_string(get_settings().pr_questions_prompt.user).render(variables)
+        system_prompt = self._attempt_system_prompt
+        user_prompt = self._attempt_user_prompt
+        variables = self._attempt_variables
         if 'img_path' in variables:
             img_path = self.vars['img_path']
             response, finish_reason = await (self.ai_handler.chat_completion

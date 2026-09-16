@@ -5,7 +5,6 @@ import re
 from functools import partial
 from typing import List, Optional, Tuple
 
-from jinja2 import Environment, StrictUndefined
 from pydantic import ValidationError
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
@@ -20,6 +19,7 @@ from pr_agent.algo.inline_comment_dedup import (
 )
 from pr_agent.algo.output_models import PRReview
 from pr_agent.algo.pr_processing import (
+    OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
     OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
     PreparedPRDiff,
     add_ai_metadata_to_diff_files,
@@ -37,6 +37,7 @@ from pr_agent.algo.review_finding_state import (
 from pr_agent.algo.review_merge import merge_review_chunks
 from pr_agent.algo.run_details import get_run_details, init_run_details, record_model_used
 from pr_agent.algo.skills_loader import get_skills_context
+from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (
     ModelType,
@@ -44,7 +45,6 @@ from pr_agent.algo.utils import (
     PRReviewIdentity,
     add_pr_review_identity,
     convert_to_markdown_v2,
-    get_max_tokens,
     get_pr_review_comment_identifiers,
     github_action_output,
     hidden_marker_forms,
@@ -780,6 +780,10 @@ class PRReviewer:
         self.review_chunk_count = 1
         self.review_failed_chunk_count = 0
         raw_prompt_vars = getattr(self, "_raw_prompt_vars", getattr(self, "vars", None))
+        ai_handler = getattr(self, "ai_handler", None)
+        output_token_reserve = getattr(
+            ai_handler, "get_output_token_reserve", None
+        )
         if raw_prompt_vars is not None:
             self.vars, self.token_handler = fit_related_tickets_to_prompt_budget(
                 self.git_provider.pr,
@@ -787,6 +791,8 @@ class PRReviewer:
                 get_settings().pr_review_prompt.system,
                 get_settings().pr_review_prompt.user,
                 model,
+                ai_handler=ai_handler,
+                output_token_reserve=output_token_reserve,
             )
         chunking_enabled = get_settings().pr_reviewer.get("enable_large_pr_chunking", False)
         diff_kwargs = {
@@ -794,9 +800,6 @@ class PRReviewer:
             "disable_extra_lines": False,
             "return_remaining_files": True,
         }
-        output_token_reserve = getattr(
-            getattr(self, "ai_handler", None), "get_output_token_reserve", None
-        )
         if callable(output_token_reserve):
             diff_kwargs["output_token_reserve"] = output_token_reserve
         if chunking_enabled:
@@ -904,7 +907,11 @@ class PRReviewer:
         """Split oversized pending chunks at file boundaries while preserving result order."""
         chunks = self._chunked_patches_diff_list
         results = getattr(self, "_chunked_results", {})
-        budget = get_max_tokens(model) - OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD - self.token_handler.prompt_tokens
+        attempt_budget = self._review_attempt_budget(model)
+        chunk_limit = attempt_budget.available_tokens(
+            OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+            preserve_minimum=True,
+        )
         max_calls = get_settings().pr_reviewer.get("max_number_of_calls", 3)
         resized, retained = [], {}
         for index, chunk in enumerate(chunks):
@@ -912,13 +919,13 @@ class PRReviewer:
                 retained[len(resized)] = results[index]
                 resized.append(chunk)
                 continue
-            if self.token_handler.count_tokens(chunk) <= budget:
+            if attempt_budget.count_tokens(chunk) <= chunk_limit:
                 resized.append(chunk)
                 continue
             sections = re.split(r"(?=^## File: ')", chunk, flags=re.MULTILINE)
             parts, current = [], ""
             for section in sections:
-                if current and self.token_handler.count_tokens(current + section) > budget:
+                if current and attempt_budget.count_tokens(current + section) > chunk_limit:
                     parts.append(current)
                     current = ""
                 current += section
@@ -926,7 +933,7 @@ class PRReviewer:
                 parts.append(current)
             reserved = len(chunks) - index - 1
             if (parts and len(resized) + len(parts) + reserved <= max_calls
-                    and all(self.token_handler.count_tokens(part) <= budget for part in parts)):
+                    and all(attempt_budget.count_tokens(part) <= chunk_limit for part in parts)):
                 resized.extend(parts)
             else:
                 # Retain unsplittable work for a later model and report it as failed if none can fit it.
@@ -940,7 +947,11 @@ class PRReviewer:
         results = getattr(self, "_chunked_results", {})
         remaining = self._chunked_remaining_files_list
         pending = [index for index in range(len(chunks)) if index not in results]
-        budget = get_max_tokens(model) - OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD - self.token_handler.prompt_tokens
+        attempt_budget = self._review_attempt_budget(model)
+        chunk_limit = attempt_budget.available_tokens(
+            OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+            preserve_minimum=True,
+        )
         max_calls = get_settings().pr_reviewer.get("max_number_of_calls", 3)
         included = set()
         for section in re.split(r"(?=^## File: ')", self.patches_diff or "", flags=re.MULTILINE):
@@ -949,16 +960,24 @@ class PRReviewer:
                 continue
             for index in pending:
                 combined = chunks[index] + "\n\n" + section
-                if self.token_handler.count_tokens(combined) <= budget:
+                if attempt_budget.count_tokens(combined) <= chunk_limit:
                     chunks[index] = combined
                     included.add(match[1])
                     break
             else:
-                if len(chunks) < max_calls and self.token_handler.count_tokens(section) <= budget:
+                if len(chunks) < max_calls and attempt_budget.count_tokens(section) <= chunk_limit:
                     pending.append(len(chunks))
                     chunks.append(section)
                     included.add(match[1])
         self._chunked_remaining_files_list = [name for name in remaining if name not in included]
+
+    def _review_attempt_budget(self, model: str) -> AttemptTokenBudget:
+        """Return the model-bound budget used for review chunk planning and dispatch."""
+        return AttemptTokenBudget.for_attempt(
+            model,
+            self.token_handler,
+            output_token_reserve=getattr(self.ai_handler, "get_output_token_reserve", None),
+        )
 
     def _merge_cached_review_chunks(self) -> bool:
         """Merge successful chunks in order, retaining incomplete coverage after exhausted retries."""
@@ -995,22 +1014,23 @@ class PRReviewer:
         Returns:
             A string representing the AI prediction for the pull request review.
         """
-        if patches_diff is not None:
-            budget = get_max_tokens(model) - OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD - self.token_handler.prompt_tokens
-            if self.token_handler.count_tokens(patches_diff) > budget:
-                raise ValueError("Review chunk exceeds the current model token budget")
         variables = copy.deepcopy(self.vars)
-        variables["diff"] = self.patches_diff if patches_diff is None else patches_diff  # update diff
-
-        environment = Environment(undefined=StrictUndefined)
-        system_prompt = environment.from_string(get_settings().pr_review_prompt.system).render(variables)
-        user_prompt = environment.from_string(get_settings().pr_review_prompt.user).render(variables)
+        patches_diff = self.patches_diff if patches_diff is None else patches_diff
+        budget = self._review_attempt_budget(model)
+        fitted = budget.fit_prompt_variable(
+            variables,
+            "diff",
+            patches_diff,
+            ai_handler=self.ai_handler,
+            default_output_tokens=OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
+            preserve_minimum=True,
+        )
 
         response, finish_reason = await self.ai_handler.chat_completion(
             model=model,
             temperature=get_settings().config.temperature,
-            system=system_prompt,
-            user=user_prompt
+            system=fitted.system_prompt,
+            user=fitted.user_prompt,
         )
 
         return response

@@ -2,12 +2,15 @@ import copy
 from functools import partial
 from typing import List
 
-from jinja2 import Environment, StrictUndefined
-
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.output_models import Labels
-from pr_agent.algo.pr_processing import get_pr_diff, retry_with_fallback_models
+from pr_agent.algo.pr_processing import (
+    OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
+    get_pr_diff,
+    retry_with_fallback_models,
+)
+from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import get_user_labels, load_yaml, set_custom_labels
 from pr_agent.config_loader import get_settings
@@ -52,7 +55,7 @@ class PRGenerateLabels:
 
         # Initialize the token handler
         self.token_handler = TokenHandler(
-            self.git_provider.pr,
+            getattr(self.git_provider, "pr", None),
             self.vars,
             get_settings().pr_custom_labels_prompt.system,
             get_settings().pr_custom_labels_prompt.user,
@@ -129,18 +132,41 @@ class PRGenerateLabels:
         self.data = None
 
         get_logger().info(f"Getting PR diff {self.pr_id}")
-        self.patches_diff = get_pr_diff(
-            self.git_provider,
-            self.token_handler,
+        variables = copy.deepcopy(self.vars)
+        set_custom_labels(variables, self.git_provider)
+        output_token_reserve = getattr(self.ai_handler, "get_output_token_reserve", None)
+        budget = AttemptTokenBudget.for_prompt_attempt(
             model,
-            output_token_reserve=getattr(
-                getattr(self, "ai_handler", None), "get_output_token_reserve", None
-            ),
+            getattr(self.git_provider, "pr", None),
+            variables,
+            get_settings().pr_custom_labels_prompt.system,
+            get_settings().pr_custom_labels_prompt.user,
+            ai_handler=self.ai_handler,
+            output_token_reserve=output_token_reserve,
         )
+        patches_diff = get_pr_diff(
+            self.git_provider,
+            budget.token_handler,
+            model,
+            output_token_reserve=output_token_reserve,
+        )
+        fitted = budget.fit_prompt_variable(
+            variables,
+            "diff",
+            patches_diff,
+            ai_handler=self.ai_handler,
+            default_output_tokens=OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
+            preserve_minimum=True,
+        )
+        variables["diff"] = fitted.optional_text
+        self.patches_diff = fitted.optional_text
+        self._attempt_system_prompt = fitted.system_prompt
+        self._attempt_user_prompt = fitted.user_prompt
         get_logger().info(f"Getting AI prediction {self.pr_id}")
         prediction = await self._get_prediction(model)
         data = self._load_valid_labels_yaml(prediction)
 
+        self.variables = variables
         self.prediction = prediction
         self.data = data
 
@@ -154,21 +180,11 @@ class PRGenerateLabels:
         Returns:
             str: The generated AI prediction.
         """
-        variables = copy.deepcopy(self.vars)
-        variables["diff"] = self.patches_diff  # update diff
-
-        environment = Environment(undefined=StrictUndefined)
-        set_custom_labels(variables, self.git_provider)
-        self.variables = variables
-
-        system_prompt = environment.from_string(get_settings().pr_custom_labels_prompt.system).render(self.variables)
-        user_prompt = environment.from_string(get_settings().pr_custom_labels_prompt.user).render(self.variables)
-
         response, finish_reason = await self.ai_handler.chat_completion(
             model=model,
             temperature=get_settings().config.temperature,
-            system=system_prompt,
-            user=user_prompt
+            system=self._attempt_system_prompt,
+            user=self._attempt_user_prompt,
         )
 
         return response

@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import pr_agent.algo.token_budget as token_budget_module
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
     generate_full_patch,
@@ -52,8 +53,20 @@ def prompt_budget(monkeypatch):
     """Use a 1,500-token diff/output reserve with deterministic prompt sizes."""
 
     def configure(model_limits):
-        monkeypatch.setattr(tickets_module, "TokenHandler", _PromptCountingTokenHandler)
-        monkeypatch.setattr(tickets_module, "get_max_tokens", lambda model: model_limits[model])
+        def make_budget(model, pr, variables, system, user, **_kwargs):
+            handler = _PromptCountingTokenHandler(pr, variables, system, user, model=model)
+            return SimpleNamespace(
+                token_handler=handler,
+                prompt_tokens=handler.prompt_tokens,
+                input_token_limit=lambda *_args, **_kwargs: model_limits[model]
+                - 2 * OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+            )
+
+        monkeypatch.setattr(
+            tickets_module.AttemptTokenBudget,
+            "for_prompt_attempt",
+            make_budget,
+        )
 
     return configure
 
@@ -94,7 +107,7 @@ def test_under_budget_ticket_payload_is_preserved_without_aliasing_raw_cache(pro
 
 
 def test_oversized_ticket_payload_keeps_diff_budget_and_raw_cache(monkeypatch):
-    monkeypatch.setattr(tickets_module, "get_max_tokens", lambda _model: 32000)
+    monkeypatch.setattr(token_budget_module, "get_max_tokens", lambda _model, **_kwargs: 32000)
     raw_vars = {"related_tickets": _tickets(33, tokens=10000)}
     raw_before = copy.deepcopy(raw_vars)
 
@@ -201,7 +214,7 @@ async def test_tools_use_the_same_bounded_ticket_vars_for_packing_and_rendering(
     diff_handlers = []
     rendered_vars = []
 
-    def fit_payload(pr, raw_vars, _system, _user, model):
+    def fit_payload(pr, raw_vars, _system, _user, model, **_kwargs):
         helper_calls.append((pr, raw_vars, model))
         return prompt_vars, handler
 
@@ -255,7 +268,7 @@ async def test_description_large_pr_fits_each_prompt_from_raw_tickets(monkeypatc
     packed_handlers = []
     prediction_calls = []
 
-    def fit_payload(_pr, raw_vars, _system, _user, model):
+    def fit_payload(_pr, raw_vars, _system, _user, model, **_kwargs):
         call_index = len(fit_calls)
         fit_calls.append((raw_vars, model))
         return prompt_vars[call_index], handlers[call_index]

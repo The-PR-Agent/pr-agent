@@ -10,6 +10,7 @@ import yaml
 from starlette_context import request_cycle_context
 
 import pr_agent.tools.pr_code_suggestions as module
+from pr_agent.algo import token_budget as token_budget_module
 from pr_agent.algo.pr_processing import retry_with_fallback_models
 from pr_agent.algo.run_details import get_run_details, init_run_details
 from pr_agent.algo.types import FilePatchInfo
@@ -133,7 +134,11 @@ async def test_larger_fallback_recovers_when_earlier_one_is_over_budget(configur
     # The first fallback model cannot fit the full prompt, so it is skipped and
     # recovery still moves on to the later model instead of giving up.
     get_settings().set("config.fallback_models", ["gpt-4o-mini", "gpt-4.1"])
-    monkeypatch.setattr(module, "get_max_tokens", lambda model: 1600 if model == "gpt-4o-mini" else 10000)
+    monkeypatch.setattr(
+        token_budget_module,
+        "get_max_tokens",
+        lambda model, **kwargs: 1600 if model == "gpt-4o-mini" else 10000,
+    )
     tool, calls = make_tool(monkeypatch, {("gpt-4o", "b"): RuntimeError("failure")})
     tool.vars["instructions"] = "must retain these instructions " * 500
     result = await retry_with_fallback_models(tool.prepare_prediction_main)
@@ -167,7 +172,11 @@ async def test_oversized_fallback_is_skipped_without_truncating_context(configur
     tool, calls = make_tool(monkeypatch, {("gpt-4o", "b"): RuntimeError("failure")})
     tool.vars["instructions"] = "must retain these instructions " * 500
     # Use the real per-model tokenizer, with a deliberately smaller configured capacity.
-    monkeypatch.setattr(module, "get_max_tokens", lambda model: 1600 if model == "gpt-4o-mini" else 10000)
+    monkeypatch.setattr(
+        token_budget_module,
+        "get_max_tokens",
+        lambda model, **kwargs: 1600 if model == "gpt-4o-mini" else 10000,
+    )
     result = await retry_with_fallback_models(tool.prepare_prediction_main)
     assert not any(m == "gpt-4o-mini" for m, _, _, _ in calls)
     assert [s["relevant_file"] for s in result["code_suggestions"]] == (
@@ -189,7 +198,12 @@ async def test_marker_text_in_diff_is_counted_literally_for_recovery(configured,
 async def test_boundary_size_chunk_is_eligible_for_recovery(configured, monkeypatch):
     tool, calls = make_tool(monkeypatch, {("gpt-4o", "b"): RuntimeError("failure")})
     monkeypatch.setattr(module.TokenHandler, "count_tokens", lambda self, s: 1)
-    monkeypatch.setattr(module, "get_max_tokens", lambda model: 1502 if model == "gpt-4o-mini" else 10000)
+    monkeypatch.setattr(
+        token_budget_module,
+        "get_max_tokens",
+        lambda model, **kwargs: 1502 if model == "gpt-4o-mini" else 10000,
+    )
+    monkeypatch.setattr(token_budget_module, "token_counter", lambda **kwargs: 2)
     result = await retry_with_fallback_models(tool.prepare_prediction_main)
     assert [s["relevant_file"] for s in result["code_suggestions"]] == ["a.py", "b.py", "c.py"]
     assert tool.failed_chunk_count == 0
@@ -213,13 +227,23 @@ async def test_recovery_reserves_handler_output_budget_for_fallback(configured, 
         get_output_token_reserve=get_output_token_reserve,
     )
     monkeypatch.setattr(module.TokenHandler, "count_tokens", lambda self, s: 1)
-    monkeypatch.setattr(module, "get_max_tokens", lambda model: 5001 if model == "gpt-4o-mini" else 10000)
+    monkeypatch.setattr(
+        token_budget_module,
+        "get_max_tokens",
+        lambda model, **kwargs: 5001 if model == "gpt-4o-mini" else 10000,
+    )
+    monkeypatch.setattr(token_budget_module, "token_counter", lambda **kwargs: 2)
     result = await retry_with_fallback_models(tool.prepare_prediction_main)
     assert [s["relevant_file"] for s in result["code_suggestions"]] == ["a.py", "b.py", "c.py"]
     assert tool.failed_chunk_count == 0
     assert [m for m, _, _, _ in calls] == ["gpt-4o"] * 3 + ["gpt-4.1"]
     assert [(m, c) for m, c, _, _ in calls if m == "gpt-4.1"] == [("gpt-4.1", "b")]
-    assert reserves == [("gpt-4o-mini", "secondary"), ("gpt-4.1", "last")]
+    fallback_reserves = [(model, deployment) for model, deployment in reserves if model != "gpt-4o"]
+    assert fallback_reserves == [
+        ("gpt-4o-mini", "secondary"),
+        ("gpt-4.1", "last"),
+        ("gpt-4.1", "last"),
+    ]
 
 
 async def test_empty_prediction_is_a_success_not_a_retry_trigger(configured, monkeypatch):

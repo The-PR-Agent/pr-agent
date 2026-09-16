@@ -5,11 +5,14 @@ from functools import partial
 from time import sleep
 from typing import Tuple
 
-from jinja2 import Environment, StrictUndefined
-
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
-from pr_agent.algo.pr_processing import get_pr_diff, retry_with_fallback_models
+from pr_agent.algo.pr_processing import (
+    OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
+    get_pr_diff,
+    retry_with_fallback_models,
+)
+from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import ModelType, show_relevant_configurations
 from pr_agent.config_loader import get_settings
@@ -123,15 +126,37 @@ class PRUpdateChangelog:
                 self.git_provider.publish_comment(changelog_comment)
 
     async def _prepare_prediction(self, model: str):
-        self.patches_diff = get_pr_diff(
-            self.git_provider,
-            self.token_handler,
+        variables = copy.deepcopy(self.vars)
+        if get_settings().pr_update_changelog.add_pr_link:
+            variables["pr_link"] = self.git_provider.get_pr_url()
+        output_token_reserve = getattr(self.ai_handler, "get_output_token_reserve", None)
+        budget = AttemptTokenBudget.for_prompt_attempt(
             model,
-            output_token_reserve=getattr(
-                getattr(self, "ai_handler", None), "get_output_token_reserve", None
-            ),
+            getattr(self.git_provider, "pr", None),
+            variables,
+            get_settings().pr_update_changelog_prompt.system,
+            get_settings().pr_update_changelog_prompt.user,
+            ai_handler=self.ai_handler,
+            output_token_reserve=output_token_reserve,
         )
-        if self.patches_diff:
+        patches_diff = get_pr_diff(
+            self.git_provider,
+            budget.token_handler,
+            model,
+            output_token_reserve=output_token_reserve,
+        )
+        if patches_diff:
+            fitted = budget.fit_prompt_variable(
+                variables,
+                "diff",
+                patches_diff,
+                ai_handler=self.ai_handler,
+                default_output_tokens=OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
+                preserve_minimum=True,
+            )
+            self.patches_diff = fitted.optional_text
+            self._attempt_system_prompt = fitted.system_prompt
+            self._attempt_user_prompt = fitted.user_prompt
             get_logger().debug("PR diff", artifact=self.patches_diff)
             self.prediction = await self._get_prediction(model)
         else:
@@ -139,13 +164,8 @@ class PRUpdateChangelog:
             self.prediction = ""
 
     async def _get_prediction(self, model: str):
-        variables = copy.deepcopy(self.vars)
-        variables["diff"] = self.patches_diff  # update diff
-        if get_settings().pr_update_changelog.add_pr_link:
-            variables["pr_link"] = self.git_provider.get_pr_url()
-        environment = Environment(undefined=StrictUndefined)
-        system_prompt = environment.from_string(get_settings().pr_update_changelog_prompt.system).render(variables)
-        user_prompt = environment.from_string(get_settings().pr_update_changelog_prompt.user).render(variables)
+        system_prompt = self._attempt_system_prompt
+        user_prompt = self._attempt_user_prompt
         response, finish_reason = await self.ai_handler.chat_completion(
             model=model, system=system_prompt, user=user_prompt, temperature=get_settings().config.temperature)
 

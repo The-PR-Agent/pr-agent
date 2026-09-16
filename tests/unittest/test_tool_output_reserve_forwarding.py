@@ -7,6 +7,8 @@ import pr_agent.tools.pr_add_docs as add_docs_module
 import pr_agent.tools.pr_generate_labels as generate_labels_module
 import pr_agent.tools.pr_questions as questions_module
 import pr_agent.tools.pr_update_changelog as update_changelog_module
+from pr_agent.config_loader import get_settings
+from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 
 @pytest.mark.parametrize(
@@ -38,9 +40,10 @@ async def test_prepare_prediction_forwards_attempt_output_reserve(
         return 5_000
 
     tool = tool_class.__new__(tool_class)
-    tool.git_provider = object()
+    tool.git_provider = SimpleNamespace(pr=None, get_pr_url=lambda: "https://example.test/pr/1")
     tool.token_handler = object()
     tool.ai_handler = SimpleNamespace(get_output_token_reserve=output_token_reserve)
+    tool.vars = {"diff": "", "conversation_history": ""}
     prediction = "labels: []\n" if tool_class is generate_labels_module.PRGenerateLabels else "prediction"
     tool._get_prediction = AsyncMock(return_value=prediction)
     for name, value in attributes.items():
@@ -48,12 +51,32 @@ async def test_prepare_prediction_forwards_attempt_output_reserve(
 
     get_pr_diff = MagicMock(return_value="diff")
     monkeypatch.setattr(tool_module, "get_pr_diff", get_pr_diff)
+    if tool_class is generate_labels_module.PRGenerateLabels:
+        monkeypatch.setattr(tool_module, "set_custom_labels", lambda *_args: None)
+
+    attempt_handler = object()
+
+    class FakeBudget:
+        token_handler = attempt_handler
+
+        def fit_prompt_variable(self, _variables, _name, optional_text, **_kwargs):
+            return SimpleNamespace(
+                optional_text=optional_text,
+                system_prompt="system",
+                user_prompt="user",
+            )
+
+    monkeypatch.setattr(
+        tool_module.AttemptTokenBudget,
+        "for_prompt_attempt",
+        lambda *_args, **_kwargs: FakeBudget(),
+    )
 
     await tool._prepare_prediction("fallback-model")
 
     get_pr_diff.assert_called_once_with(
         tool.git_provider,
-        tool.token_handler,
+        attempt_handler,
         "fallback-model",
         output_token_reserve=output_token_reserve,
         **diff_options,
@@ -63,3 +86,165 @@ async def test_prepare_prediction_forwards_attempt_output_reserve(
     tool._get_prediction.assert_awaited_once_with("fallback-model")
     assert tool.patches_diff == "diff"
     assert tool.prediction == prediction
+
+
+@pytest.mark.asyncio
+async def test_add_docs_does_not_call_model_when_no_diff_fits(monkeypatch):
+    tool = add_docs_module.PRAddDocs.__new__(add_docs_module.PRAddDocs)
+    tool.git_provider = SimpleNamespace(pr=None)
+    tool.ai_handler = SimpleNamespace()
+    tool.vars = {"diff": ""}
+    tool._get_prediction = AsyncMock()
+    budget = SimpleNamespace(token_handler=object())
+
+    monkeypatch.setattr(
+        add_docs_module.AttemptTokenBudget,
+        "for_prompt_attempt",
+        lambda *_args, **_kwargs: budget,
+    )
+    monkeypatch.setattr(add_docs_module, "get_pr_diff", lambda *_args, **_kwargs: "")
+
+    with pytest.raises(ValueError, match="No PR diff fits"):
+        await tool._prepare_prediction("fallback-model")
+
+    tool._get_prediction.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_generate_labels_counts_custom_schema_before_packing_and_allows_empty_diff(monkeypatch):
+    captured_variables = []
+    tool = generate_labels_module.PRGenerateLabels.__new__(generate_labels_module.PRGenerateLabels)
+    tool.git_provider = SimpleNamespace(pr=None)
+    tool.ai_handler = SimpleNamespace()
+    tool.vars = {"diff": "", "custom_labels_class": ""}
+    tool.pr_id = "repo#1"
+    tool._get_prediction = AsyncMock(return_value="labels: []")
+
+    class FakeBudget:
+        token_handler = object()
+
+        def fit_prompt_variable(self, _variables, _name, optional_text, **_kwargs):
+            return SimpleNamespace(
+                optional_text=optional_text,
+                system_prompt="system",
+                user_prompt="user",
+            )
+
+    def make_budget(_model, _pr, variables, *_args, **_kwargs):
+        captured_variables.append(variables.copy())
+        return FakeBudget()
+
+    def set_custom_labels(variables, _provider):
+        variables["custom_labels_class"] = "Bug | Feature"
+
+    monkeypatch.setattr(generate_labels_module, "set_custom_labels", set_custom_labels)
+    monkeypatch.setattr(
+        generate_labels_module.AttemptTokenBudget,
+        "for_prompt_attempt",
+        make_budget,
+    )
+    monkeypatch.setattr(generate_labels_module, "get_pr_diff", lambda *_args, **_kwargs: "")
+
+    await tool._prepare_prediction("fallback-model")
+
+    assert captured_variables == [{"diff": "", "custom_labels_class": "Bug | Feature"}]
+    tool._get_prediction.assert_awaited_once_with("fallback-model")
+    assert tool.patches_diff == ""
+
+
+@pytest.mark.asyncio
+async def test_changelog_counts_pr_link_before_packing(monkeypatch):
+    captured_variables = []
+    settings_snapshot = snapshot_settings(("pr_update_changelog.add_pr_link",))
+    tool = update_changelog_module.PRUpdateChangelog.__new__(
+        update_changelog_module.PRUpdateChangelog
+    )
+    tool.git_provider = SimpleNamespace(
+        pr=None,
+        get_pr_url=MagicMock(return_value="https://example.test/pr/1"),
+    )
+    tool.ai_handler = SimpleNamespace()
+    tool.vars = {"diff": "", "pr_link": ""}
+    tool._get_prediction = AsyncMock(return_value="prediction")
+
+    class FakeBudget:
+        token_handler = object()
+
+        def fit_prompt_variable(self, _variables, _name, optional_text, **_kwargs):
+            return SimpleNamespace(
+                optional_text=optional_text,
+                system_prompt="system",
+                user_prompt="user",
+            )
+
+    def make_budget(_model, _pr, variables, *_args, **_kwargs):
+        captured_variables.append(variables.copy())
+        return FakeBudget()
+
+    monkeypatch.setattr(
+        update_changelog_module.AttemptTokenBudget,
+        "for_prompt_attempt",
+        make_budget,
+    )
+    monkeypatch.setattr(update_changelog_module, "get_pr_diff", lambda *_args, **_kwargs: "diff")
+
+    try:
+        get_settings().set("pr_update_changelog.add_pr_link", True)
+        await tool._prepare_prediction("fallback-model")
+    finally:
+        restore_settings(settings_snapshot)
+
+    assert captured_variables == [
+        {"diff": "", "pr_link": "https://example.test/pr/1"}
+    ]
+    tool.git_provider.get_pr_url.assert_called_once_with()
+    tool._get_prediction.assert_awaited_once_with("fallback-model")
+
+
+@pytest.mark.asyncio
+async def test_questions_keep_recent_history_before_diff_packing(monkeypatch):
+    budget_variables = []
+    fit_calls = []
+    tool = questions_module.PRQuestions.__new__(questions_module.PRQuestions)
+    tool.git_provider = SimpleNamespace(pr=None)
+    tool.ai_handler = SimpleNamespace()
+    tool.vars = {"diff": "", "conversation_history": "old\nrecent"}
+    tool._get_prediction = AsyncMock(return_value="prediction")
+
+    class FakeBudget:
+        def __init__(self, index):
+            self.index = index
+            self.token_handler = object()
+
+        def fit_prompt_variable(self, _variables, name, optional_text, **kwargs):
+            fit_calls.append((self.index, name, optional_text, kwargs.get("keep")))
+            fitted_text = "recent" if name == "conversation_history" else optional_text
+            return SimpleNamespace(
+                optional_text=fitted_text,
+                system_prompt="system",
+                user_prompt="user",
+            )
+
+    def make_budget(_model, _pr, variables, *_args, **_kwargs):
+        budget_variables.append(variables.copy())
+        return FakeBudget(len(budget_variables))
+
+    monkeypatch.setattr(
+        questions_module.AttemptTokenBudget,
+        "for_prompt_attempt",
+        make_budget,
+    )
+    monkeypatch.setattr(questions_module, "get_pr_diff", lambda *_args, **_kwargs: "diff")
+
+    await tool._prepare_prediction("fallback-model")
+
+    assert budget_variables == [
+        {"diff": "", "conversation_history": ""},
+        {"diff": "", "conversation_history": "recent"},
+    ]
+    assert fit_calls == [
+        (1, "conversation_history", "old\nrecent", "suffix"),
+        (2, "diff", "diff", None),
+    ]
+    assert tool.vars["conversation_history"] == "old\nrecent"
+    tool._get_prediction.assert_awaited_once_with("fallback-model")

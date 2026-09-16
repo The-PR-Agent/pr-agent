@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 from litellm import token_counter
 
+import pr_agent.algo.token_budget as token_budget_module
 import pr_agent.tools.pr_line_questions as plq
 from pr_agent.config_loader import get_settings
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
@@ -222,7 +223,7 @@ async def test_ask_line_uses_attempted_model_for_non_gpt_prompt_budget(monkeypat
         settings.set("side", "RIGHT")
         settings.set("file_name", "src/example.py")
         settings.set("comment_id", 100)
-        monkeypatch.setattr(plq, "token_counter", model_aware_counter, raising=False)
+        monkeypatch.setattr(token_budget_module, "token_counter", model_aware_counter)
 
         await question.run()
 

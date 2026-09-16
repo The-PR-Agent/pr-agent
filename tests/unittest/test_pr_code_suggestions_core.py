@@ -17,10 +17,18 @@ from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 
+@pytest.fixture(autouse=True)
+def _known_model_windows(monkeypatch):
+    monkeypatch.setattr(token_budget_module, "get_max_tokens", lambda model, **kwargs: 10_000)
+
+
 def _make_tool(git_provider=None):
     tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
     tool.git_provider = git_provider or MagicMock()
     tool.ai_handler = MagicMock()
+    tool.vars = {"diff": "", "diff_no_line_numbers": ""}
+    tool.pr_code_suggestions_prompt_system = "Review the pull request"
+    tool.pr_code_suggestions_prompt_user = "{{ diff_no_line_numbers }}"
     tool.progress_response = None
     return tool
 
@@ -321,6 +329,31 @@ code_suggestions:
         assert data["code_suggestions"][0]["relevant_lines_end"] == -1
     finally:
         settings.config.publish_output = original_publish_output
+
+
+@pytest.mark.asyncio
+async def test_self_reflection_skips_model_when_required_prompt_exceeds_budget(monkeypatch):
+    tool = _make_tool()
+    tool.ai_handler.chat_completion = AsyncMock()
+
+    class RequiredPromptOverflow:
+        def fit_prompt_variable(self, *_args, **_kwargs):
+            raise ValueError("required prompt exceeds budget")
+
+    monkeypatch.setattr(
+        pr_code_suggestions_module.AttemptTokenBudget,
+        "for_prompt_attempt",
+        lambda *_args, **_kwargs: RequiredPromptOverflow(),
+    )
+
+    result = await tool.self_reflect_on_suggestions(
+        [_valid_suggestion()],
+        "numbered diff",
+        "fallback-model",
+    )
+
+    assert result == ""
+    tool.ai_handler.chat_completion.assert_not_awaited()
 
 
 @pytest.mark.asyncio

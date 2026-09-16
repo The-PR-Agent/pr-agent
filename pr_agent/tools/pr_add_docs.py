@@ -3,12 +3,15 @@ import textwrap
 from functools import partial
 from typing import Dict
 
-from jinja2 import Environment, StrictUndefined
-
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
-from pr_agent.algo.pr_processing import get_pr_diff, retry_with_fallback_models
+from pr_agent.algo.pr_processing import (
+    OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
+    get_pr_diff,
+    retry_with_fallback_models,
+)
 from pr_agent.algo.prompt_fragments import render_diff_hunk_format
+from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import load_yaml
 from pr_agent.config_loader import get_settings, get_verbosity_level
@@ -78,24 +81,45 @@ class PRAddDocs:
     async def _prepare_prediction(self, model: str):
         get_logger().info('Getting PR diff...')
 
-        self.patches_diff = get_pr_diff(self.git_provider,
-                                        self.token_handler,
-                                        model,
-                                        add_line_numbers_to_hunks=True,
-                                        disable_extra_lines=False,
-                                        output_token_reserve=getattr(
-                                            getattr(self, "ai_handler", None), "get_output_token_reserve", None
-                                        ))
+        variables = copy.deepcopy(self.vars)
+        output_token_reserve = getattr(self.ai_handler, "get_output_token_reserve", None)
+        budget = AttemptTokenBudget.for_prompt_attempt(
+            model,
+            getattr(self.git_provider, "pr", None),
+            variables,
+            get_settings().pr_add_docs_prompt.system,
+            get_settings().pr_add_docs_prompt.user,
+            ai_handler=self.ai_handler,
+            output_token_reserve=output_token_reserve,
+        )
+        patches_diff = get_pr_diff(
+            self.git_provider,
+            budget.token_handler,
+            model,
+            add_line_numbers_to_hunks=True,
+            disable_extra_lines=False,
+            output_token_reserve=output_token_reserve,
+        )
+        if not patches_diff:
+            raise ValueError("No PR diff fits the /add_docs request")
+        fitted = budget.fit_prompt_variable(
+            variables,
+            "diff",
+            patches_diff,
+            ai_handler=self.ai_handler,
+            default_output_tokens=OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
+            preserve_minimum=True,
+        )
+        self.patches_diff = fitted.optional_text
+        self._attempt_system_prompt = fitted.system_prompt
+        self._attempt_user_prompt = fitted.user_prompt
 
         get_logger().info('Getting AI prediction...')
         self.prediction = await self._get_prediction(model)
 
     async def _get_prediction(self, model: str):
-        variables = copy.deepcopy(self.vars)
-        variables["diff"] = self.patches_diff  # update diff
-        environment = Environment(undefined=StrictUndefined)
-        system_prompt = environment.from_string(get_settings().pr_add_docs_prompt.system).render(variables)
-        user_prompt = environment.from_string(get_settings().pr_add_docs_prompt.user).render(variables)
+        system_prompt = self._attempt_system_prompt
+        user_prompt = self._attempt_user_prompt
         if get_verbosity_level() >= 2:
             get_logger().info(f"\nSystem prompt:\n{system_prompt}")
             get_logger().info(f"\nUser prompt:\n{user_prompt}")
