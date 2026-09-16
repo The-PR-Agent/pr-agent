@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import math
 import multiprocessing
 import traceback
@@ -6,6 +7,7 @@ from collections import deque
 from datetime import datetime, timezone
 
 import aiohttp
+from starlette_context import request_cycle_context
 
 from pr_agent.agent.pr_agent import PRAgent
 from pr_agent.algo.ai_handlers.litellm_helpers import (
@@ -26,6 +28,14 @@ POLLING_CAPACITY_CHECK_INTERVAL = 0.25
 
 class _PollingWorkerStartError(RuntimeError):
     """Stop dispatch when child startup leaves process state uncertain."""
+
+
+def _polling_request_settings():
+    """Create settings isolated to one polled comment."""
+    settings = copy.deepcopy(global_settings)
+    settings.set("CONFIG.PUBLISH_OUTPUT_PROGRESS", False)
+    settings.set("pr_description.publish_description_as_comment", True)
+    return settings
 
 
 def _get_polling_request_timeout() -> float:
@@ -113,24 +123,25 @@ def run_handle_request(pr_url, rest_of_comment, comment_id, git_provider):
 
 def process_comment_sync(pr_url, rest_of_comment, comment_id):
     try:
-        # Run the async handle_request in a separate function
-        git_provider = get_git_provider()(pr_url=pr_url)
-        run_handle_request(pr_url, rest_of_comment, comment_id, git_provider)
+        with request_cycle_context({"settings": _polling_request_settings()}):
+            git_provider = get_git_provider()(pr_url=pr_url)
+            run_handle_request(pr_url, rest_of_comment, comment_id, git_provider)
     except Exception as e:
         get_logger().error(f"Error processing comment: {e}", artifact={"traceback": traceback.format_exc()})
 
 
 async def process_comment(pr_url, rest_of_comment, comment_id):
     try:
-        git_provider = get_git_provider()(pr_url=pr_url)
-        git_provider.set_pr(pr_url)
-        agent = PRAgent()
-        await agent.handle_request(
-            pr_url,
-            rest_of_comment,
-            notify=lambda: git_provider.add_eyes_reaction(comment_id)
-        )
-        get_logger().info(f"Finished processing comment for PR: {pr_url}")
+        with request_cycle_context({"settings": _polling_request_settings()}):
+            git_provider = get_git_provider()(pr_url=pr_url)
+            git_provider.set_pr(pr_url)
+            agent = PRAgent()
+            await agent.handle_request(
+                pr_url,
+                rest_of_comment,
+                notify=lambda: git_provider.add_eyes_reaction(comment_id)
+            )
+            get_logger().info(f"Finished processing comment for PR: {pr_url}")
     except Exception as e:
         get_logger().error(f"Error processing comment: {e}", artifact={"traceback": traceback.format_exc()})
 
@@ -256,8 +267,6 @@ async def polling_loop():
     last_modified = [None]
     git_provider = get_git_provider()()
     user_id = git_provider.get_user_id()
-    get_settings().set("CONFIG.PUBLISH_OUTPUT_PROGRESS", False)
-    get_settings().set("pr_description.publish_description_as_comment", True)
 
     try:
         deployment_type = get_settings().github.deployment_type

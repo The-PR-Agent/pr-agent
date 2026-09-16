@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import multiprocessing
 import random
 import time
@@ -7,8 +8,69 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from starlette_context import context
 
+from pr_agent.config_loader import global_settings
 from pr_agent.servers import github_polling
+
+
+@pytest.mark.asyncio
+async def test_process_comment_uses_isolated_polling_settings(monkeypatch):
+    observed = []
+    settings = copy.deepcopy(global_settings)
+    original_progress = settings.config.publish_output_progress
+
+    class FakeProvider:
+        def set_pr(self, pr_url):
+            observed.append((context["settings"], pr_url))
+
+        def add_eyes_reaction(self, comment_id):
+            pass
+
+    class FakeAgent:
+        async def handle_request(self, *args, **kwargs):
+            current = context["settings"]
+            observed.append((current, current.config.publish_output_progress, current.pr_description.publish_description_as_comment))
+            current.set("CONFIG.PUBLISH_OUTPUT_PROGRESS", "mutated")
+
+    monkeypatch.setattr(github_polling, "global_settings", settings)
+    monkeypatch.setattr(github_polling, "get_git_provider", lambda: lambda **kwargs: FakeProvider())
+    monkeypatch.setattr(github_polling, "PRAgent", FakeAgent)
+
+    await github_polling.process_comment("https://example.test/pull/1", "/review", 1)
+
+    request_settings = observed[1][0]
+    assert request_settings is not settings
+    assert observed[1][1:] == (False, True)
+    assert settings.config.publish_output_progress is original_progress
+
+
+
+def test_process_comment_sync_uses_isolated_polling_settings(monkeypatch):
+    observed = []
+    settings = copy.deepcopy(global_settings)
+    original_progress = settings.config.publish_output_progress
+
+    class FakeProvider:
+        pass
+
+    def fake_get_provider():
+        return lambda **kwargs: FakeProvider()
+
+    def fake_run(*args):
+        current = context["settings"]
+        observed.append((current, current.config.publish_output_progress, current.pr_description.publish_description_as_comment))
+        current.set("CONFIG.PUBLISH_OUTPUT_PROGRESS", "mutated")
+
+    monkeypatch.setattr(github_polling, "global_settings", settings)
+    monkeypatch.setattr(github_polling, "get_git_provider", fake_get_provider)
+    monkeypatch.setattr(github_polling, "run_handle_request", fake_run)
+
+    github_polling.process_comment_sync("https://example.test/pull/1", "/review", 1)
+
+    assert observed[0][0] is not settings
+    assert observed[0][1:] == (False, True)
+    assert settings.config.publish_output_progress is original_progress
 
 
 @pytest.fixture
