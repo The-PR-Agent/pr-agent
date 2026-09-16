@@ -16,7 +16,6 @@ from pr_agent.log import get_logger
 MESSAGE_FRAMING_TOKEN_ALLOWANCE = 16
 REPLY_FRAMING_TOKEN_ALLOWANCE = 16
 DEFAULT_TRUNCATION_MARKER = "\n...(truncated)\n"
-IMAGE_INPUT_TOKEN_ALLOWANCE = 4_096
 
 
 def _positive_int(value) -> int | None:
@@ -25,9 +24,15 @@ def _positive_int(value) -> int | None:
     return None
 
 
+def _non_negative_int(value) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return None
+
+
 @dataclass(frozen=True)
 class FittedPrompt:
-    """A normalized prompt pair whose optional text fits one model attempt."""
+    """Represent a normalized prompt pair whose optional text fits one model attempt."""
 
     optional_text: str
     system_prompt: str
@@ -224,18 +229,20 @@ class AttemptTokenBudget:
         user_prompt: str,
         *,
         image_path: str | None = None,
+        messages: list[dict] | None = None,
     ) -> int:
-        """Count a two-message request, including framing and optional image input."""
-        user_content = user_prompt
-        if image_path:
-            user_content = [
-                {"type": "text", "text": user_prompt},
-                {"type": "image_url", "image_url": {"url": image_path}},
+        """Count the final request messages, including framing and optional image input."""
+        if messages is None:
+            user_content = user_prompt
+            if image_path:
+                user_content = [
+                    {"type": "text", "text": user_prompt},
+                    {"type": "image_url", "image_url": {"url": image_path}},
+                ]
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
             ]
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_content},
-        ]
         model_token_count = None
         try:
             counted = token_counter(model=self.model, messages=messages)
@@ -246,10 +253,34 @@ class AttemptTokenBudget:
         except Exception as error:
             get_logger().debug(f"Model-aware token counting failed for {self.model}: {error}")
 
-        content_tokens = self.count_tokens(system_prompt) + self.count_tokens(user_prompt)
+        content_tokens = 0
+        image_count = 0
+        for message in messages:
+            content = message.get("content", "")
+            if isinstance(content, str):
+                content_tokens += self.count_tokens(content)
+                continue
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "text" and isinstance(block.get("text"), str):
+                    content_tokens += self.count_tokens(block["text"])
+                elif block.get("type") == "image_url":
+                    image_url = block.get("image_url")
+                    if isinstance(image_url, dict) and isinstance(image_url.get("url"), str):
+                        content_tokens += self.count_tokens(image_url["url"])
+                    image_count += 1
         raw_estimate = content_tokens + MESSAGE_FRAMING_TOKEN_ALLOWANCE * len(messages) + REPLY_FRAMING_TOKEN_ALLOWANCE
-        if image_path:
-            raw_estimate += self.count_tokens(image_path) + IMAGE_INPUT_TOKEN_ALLOWANCE
+        if image_count:
+            raw_allowance = get_settings().get("config.image_input_token_allowance")
+            image_allowance = _non_negative_int(raw_allowance)
+            if image_allowance is None:
+                raise ValueError(
+                    "config.image_input_token_allowance must be a non-negative integer"
+                )
+            raw_estimate += image_count * image_allowance
         raw_factor = get_settings().get("config.model_token_count_estimate_factor", 0)
         try:
             extra_factor = float(raw_factor)
@@ -287,6 +318,15 @@ class AttemptTokenBudget:
             system_prompt,
             user_prompt,
         )
+        messages = None
+        build_messages = getattr(ai_handler, "build_request_messages", None)
+        if callable(build_messages):
+            messages = build_messages(
+                self.model,
+                system_prompt,
+                user_prompt,
+                image_path=image_path,
+            )
         return FittedPrompt(
             optional_text=optional_text,
             system_prompt=system_prompt,
@@ -295,6 +335,7 @@ class AttemptTokenBudget:
                 system_prompt,
                 user_prompt,
                 image_path=image_path,
+                messages=messages,
             ),
         )
 
@@ -345,20 +386,44 @@ class AttemptTokenBudget:
         marker_prompt = prepare(truncation_marker)
         if marker_prompt.input_tokens <= input_limit:
             best_prompt = marker_prompt
-        low = 1
-        high = len(optional_text)
-        while low <= high:
-            keep_characters = (low + high) // 2
+
+        encoder = getattr(self.token_handler, "encoder", None)
+        encode = getattr(encoder, "encode", None)
+        decode = getattr(encoder, "decode", None)
+        if callable(encode) and callable(decode):
+            encoded = encode(optional_text, disallowed_special=())
+
+            def retain(count: int) -> str:
+                retained = encoded[-count:] if keep == "suffix" else encoded[:count]
+                return decode(retained)
+        else:
+            encoded = list(optional_text)
+
+            def retain(count: int) -> str:
+                retained = encoded[-count:] if keep == "suffix" else encoded[:count]
+                return "".join(retained)
+
+        # Start near the available token capacity, then use each exact count to
+        # reduce the retained token slice. This avoids assuming that rendered BPE
+        # counts are monotonic in the number of source characters.
+        marker_capacity = max(input_limit - marker_prompt.input_tokens, 0)
+        keep_tokens = min(len(encoded) - 1, marker_capacity)
+        while keep_tokens > 0:
+            retained_text = retain(keep_tokens)
             if keep == "suffix":
-                candidate = truncation_marker + optional_text[-keep_characters:].lstrip()
+                candidate = truncation_marker + retained_text.lstrip()
             else:
-                candidate = optional_text[:keep_characters].rstrip() + truncation_marker
+                candidate = retained_text.rstrip() + truncation_marker
             candidate_prompt = prepare(candidate)
             if candidate_prompt.input_tokens <= input_limit:
                 best_prompt = candidate_prompt
-                low = keep_characters + 1
-            else:
-                high = keep_characters - 1
+                break
+            candidate_cost = max(
+                candidate_prompt.input_tokens - marker_prompt.input_tokens,
+                1,
+            )
+            scaled_keep = keep_tokens * marker_capacity // candidate_cost
+            keep_tokens = min(keep_tokens - 1, scaled_keep)
 
         if best_prompt.input_tokens > input_limit:
             raise ValueError(f"Failed to fit the optional prompt text for {self.model}")

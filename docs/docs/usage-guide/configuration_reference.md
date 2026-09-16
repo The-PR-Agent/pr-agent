@@ -71,6 +71,7 @@ to-do list.
 | `custom_model_max_tokens` | -1 | for models not in the default list |
 | `max_output_tokens` | 0 | 0 = unset (the provider's own default applies) |
 | `model_token_count_estimate_factor` | 0.3 | factor to increase the token count estimate, in order to reduce likelihood of model failure due to too many tokens - applicable only when requesting an accurate estimate. |
+| `image_input_token_allowance` | 4096 | conservative per-image input reserve used when provider token counting omits or underestimates image cost |
 **patch extension logic**
 
 | Key | Default | Description |

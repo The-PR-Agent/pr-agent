@@ -23,6 +23,7 @@ def token_settings(monkeypatch):
         config=SimpleNamespace(model="primary-model"),
         get=lambda key, default=None: {
             "config.model_token_count_estimate_factor": 0,
+            "config.image_input_token_allowance": 4096,
             "openai.key": "test-key",
             "anthropic.key": None,
         }.get(key, default),
@@ -34,6 +35,7 @@ def token_settings(monkeypatch):
         lambda model=None: SimpleNamespace(
             model=model,
             encode=lambda text, disallowed_special=(): list(text),
+            decode=lambda tokens: "".join(tokens),
         ),
     )
     return settings
@@ -258,7 +260,11 @@ def test_prepare_request_counts_image_message_with_conservative_floor(monkeypatc
     handler = FakeTokenHandler()
     budget = token_budget_module.AttemptTokenBudget("attempt-model", handler, handler, 10_000)
     observed = []
-    settings = SimpleNamespace(get=lambda _key, default=None: default)
+    settings = SimpleNamespace(
+        get=lambda key, default=None: {
+            "config.image_input_token_allowance": 4096,
+        }.get(key, default)
+    )
 
     def count_messages(*, model, messages):
         observed.append((model, messages))
@@ -296,8 +302,54 @@ def test_prepare_request_counts_image_message_with_conservative_floor(monkeypatc
         len("systemuserhttps://example.test/image.png")
         + 2 * token_budget_module.MESSAGE_FRAMING_TOKEN_ALLOWANCE
         + token_budget_module.REPLY_FRAMING_TOKEN_ALLOWANCE
-        + token_budget_module.IMAGE_INPUT_TOKEN_ALLOWANCE
+        + 4096
     )
+
+
+def test_prepare_request_counts_the_handler_final_message_shape(monkeypatch):
+    handler = FakeTokenHandler()
+    budget = token_budget_module.AttemptTokenBudget("attempt-model", handler, handler, 10_000)
+    observed = []
+
+    class AIHandler:
+        def build_request_messages(self, model, system_prompt, user_prompt, *, image_path=None):
+            assert model == "attempt-model"
+            assert image_path is None
+            return [{"role": "user", "content": f"{system_prompt}\n\n\n{user_prompt}"}]
+
+    def count_messages(*, model, messages):
+        observed.append((model, messages))
+        return 17
+
+    monkeypatch.setattr(token_budget_module, "token_counter", count_messages)
+
+    prepared = budget.prepare_request(AIHandler(), "system", "user")
+
+    assert prepared.input_tokens == 17
+    assert observed == [
+        ("attempt-model", [{"role": "user", "content": "system\n\n\nuser"}])
+    ]
+
+
+@pytest.mark.parametrize("allowance", [None, -1, True, "4096"])
+def test_image_allowance_must_be_a_non_negative_integer(monkeypatch, allowance):
+    handler = FakeTokenHandler()
+    budget = token_budget_module.AttemptTokenBudget("attempt-model", handler, handler, 10_000)
+    settings = SimpleNamespace(
+        get=lambda key, default=None: (
+            allowance if key == "config.image_input_token_allowance" else default
+        )
+    )
+    monkeypatch.setattr(token_budget_module, "token_counter", lambda **_kwargs: 100)
+    monkeypatch.setattr(token_budget_module, "get_settings", lambda: settings)
+
+    with pytest.raises(ValueError, match="image_input_token_allowance"):
+        budget.prepare_request(
+            object(),
+            "system",
+            "user",
+            image_path="https://example.test/image.png",
+        )
 
 
 @pytest.mark.parametrize("counter_result", [0, True, "not-a-count"])
@@ -380,6 +432,32 @@ def test_fit_optional_text_keeps_marker_when_no_content_character_fits(monkeypat
 
     assert fitted.optional_text == "[cut]"
     assert fitted.input_tokens == 8
+
+
+def test_fit_optional_text_truncates_only_at_attempt_token_boundaries(monkeypatch):
+    handler = FakeTokenHandler()
+    handler.encoder = SimpleNamespace(
+        encode=lambda text, disallowed_special=(): text.split("|"),
+        decode=lambda tokens: "|".join(tokens),
+    )
+    budget = token_budget_module.AttemptTokenBudget("attempt-model", handler, handler, 27)
+    monkeypatch.setattr(
+        token_budget_module,
+        "token_counter",
+        lambda *, model, messages: sum(len(message["content"]) for message in messages),
+    )
+
+    fitted = budget.fit_optional_text(
+        "alpha|bravo|charlie|delta",
+        lambda optional: ("sys", optional),
+        ai_handler=object(),
+        default_output_tokens=2,
+        truncation_marker="[cut]",
+    )
+
+    retained = fitted.optional_text.removesuffix("[cut]").rstrip("|")
+    assert retained in {"alpha", "alpha|bravo", "alpha|bravo|charlie"}
+    assert fitted.input_tokens <= 25
 
 
 def test_fit_optional_text_rejects_required_prompt_that_cannot_fit(monkeypatch):

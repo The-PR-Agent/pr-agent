@@ -3646,6 +3646,40 @@ class LiteLLMAIHandler(BaseAiHandler):
             system_prompt = "No system prompt provided"
         return system_prompt, user_prompt
 
+    def build_request_messages(
+        self,
+        model: str,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        image_path: str | None = None,
+    ) -> list[dict]:
+        """Build the exact message payload for normalized prompt strings."""
+        combine_prompts = (
+            model in self.user_message_only_models
+            or get_settings().config.custom_reasoning_model
+        )
+        if combine_prompts:
+            user_prompt = f"{system_prompt}\n\n\n{user_prompt}"
+            content = user_prompt
+            if image_path:
+                content = [
+                    {"type": "text", "text": user_prompt},
+                    {"type": "image_url", "image_url": {"url": image_path}},
+                ]
+            return [{"role": "user", "content": content}]
+
+        user_content = user_prompt
+        if image_path:
+            user_content = [
+                {"type": "text", "text": user_prompt},
+                {"type": "image_url", "image_url": {"url": image_path}},
+            ]
+        return [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+        ]
+
     def _configure_claude_extended_thinking(self, model: str, kwargs: dict) -> dict:
         """
         Configure Claude extended thinking parameters if applicable.
@@ -3930,11 +3964,12 @@ class LiteLLMAIHandler(BaseAiHandler):
                     get_logger().warning(
                         "Empty system prompt for claude model. Adding a newline character to prevent OpenAI API error.")
                 system = normalized_system
-                messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
-
-                if img_path:
-                    messages[1]["content"] = [{"type": "text", "text": messages[1]["content"]},
-                                              {"type": "image_url", "image_url": {"url": img_path}}]
+                messages = self.build_request_messages(
+                    model,
+                    system,
+                    user,
+                    image_path=img_path,
+                )
 
                 thinking_kwargs_gpt5 = None
                 openrouter_reasoning_effort = None
@@ -3988,12 +4023,6 @@ class LiteLLMAIHandler(BaseAiHandler):
                     user = f"{system}\n\n\n{user}"
                     system = ""
                     get_logger().info(f"Using model {model}, combining system and user prompts")
-                    if img_path:
-                        content = [{"type": "text", "text": user},
-                                   {"type": "image_url", "image_url": {"url": img_path}}]
-                    else:
-                        content = user
-                    messages = [{"role": "user", "content": content}]
 
                 # Build request kwargs after normalizing the model and messages so credentials and
                 # endpoints can be selected for the provider that will actually receive this call.
