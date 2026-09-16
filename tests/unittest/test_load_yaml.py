@@ -10,6 +10,10 @@ from pr_agent.log import get_logger
 
 
 class TestLoadYaml:
+    @pytest.mark.parametrize("response", [None, {}, [], 0, b"a: 1"])
+    def test_non_string_input_returns_empty_mapping(self, response):
+        assert load_yaml(response) == {}
+
     #  Tests that load_yaml loads a valid YAML string
     def test_load_valid_yaml(self):
         yaml_str = 'name: John Smith\nage: 35'

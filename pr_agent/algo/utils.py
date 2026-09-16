@@ -1055,6 +1055,8 @@ def drop_sign_off_after_wrapper_fence(text: str) -> str:
 
 
 def load_yaml(response_text: str, keys_fix_yaml: List[str] | None = None, first_key="", last_key="") -> dict:
+    if not isinstance(response_text, str):
+        return {}
     if keys_fix_yaml is None:
         keys_fix_yaml = []
     response_text_original = copy.deepcopy(response_text)
