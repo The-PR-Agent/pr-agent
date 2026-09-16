@@ -7,6 +7,7 @@ import pr_agent.tools.pr_add_docs as add_docs_module
 import pr_agent.tools.pr_generate_labels as generate_labels_module
 import pr_agent.tools.pr_questions as questions_module
 import pr_agent.tools.pr_update_changelog as update_changelog_module
+from pr_agent.algo.pr_processing import retry_with_fallback_models
 from pr_agent.config_loader import get_settings
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
@@ -111,6 +112,129 @@ async def test_add_docs_does_not_call_model_when_no_diff_fits(monkeypatch):
         await tool._prepare_prediction("fallback-model")
 
     tool._get_prediction.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "tool_class, tool_module, command",
+    [
+        (questions_module.PRQuestions, questions_module, "/ask"),
+        (
+            update_changelog_module.PRUpdateChangelog,
+            update_changelog_module,
+            "/update_changelog",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_empty_attempt_diff_retries_instead_of_succeeding(
+    monkeypatch,
+    tool_class,
+    tool_module,
+    command,
+):
+    tool = tool_class.__new__(tool_class)
+    tool.git_provider = SimpleNamespace(
+        pr=None,
+        get_pr_url=MagicMock(return_value="https://example.test/pr/1"),
+    )
+    tool.ai_handler = SimpleNamespace()
+    tool.vars = {"diff": "", "conversation_history": "", "pr_link": ""}
+    tool._get_prediction = AsyncMock()
+
+    class FakeBudget:
+        token_handler = object()
+
+        def require_input_capacity(self, *_args, **_kwargs):
+            return 1
+
+        def fit_prompt_variable(self, _variables, _name, optional_text, **_kwargs):
+            return SimpleNamespace(
+                optional_text=optional_text,
+                system_prompt="system",
+                user_prompt="user",
+            )
+
+    monkeypatch.setattr(
+        tool_module.AttemptTokenBudget,
+        "for_prompt_attempt",
+        lambda *_args, **_kwargs: FakeBudget(),
+    )
+    monkeypatch.setattr(tool_module, "get_pr_diff", lambda *_args, **_kwargs: "")
+
+    with pytest.raises(ValueError, match=f"No PR diff fits the {command} request"):
+        await tool._prepare_prediction("small-model")
+
+    tool._get_prediction.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "tool_class, tool_module",
+    [
+        (questions_module.PRQuestions, questions_module),
+        (update_changelog_module.PRUpdateChangelog, update_changelog_module),
+    ],
+)
+@pytest.mark.asyncio
+async def test_empty_attempt_diff_advances_to_fallback_model(
+    monkeypatch,
+    tool_class,
+    tool_module,
+):
+    settings_snapshot = snapshot_settings(
+        (
+            "config.model",
+            "config.fallback_models",
+            "openai.deployment_id",
+            "openai.fallback_deployments",
+        )
+    )
+    get_settings().set("config.model", "small-model")
+    get_settings().set("config.fallback_models", ["large-model"])
+    get_settings().set("openai.deployment_id", "primary")
+    get_settings().set("openai.fallback_deployments", ["fallback"])
+
+    tool = tool_class.__new__(tool_class)
+    tool.git_provider = SimpleNamespace(
+        pr=None,
+        get_pr_url=MagicMock(return_value="https://example.test/pr/1"),
+    )
+    tool.ai_handler = SimpleNamespace()
+    tool.vars = {"diff": "", "conversation_history": "", "pr_link": ""}
+    tool._get_prediction = AsyncMock(return_value="fallback prediction")
+    diff_models = []
+
+    class FakeBudget:
+        token_handler = object()
+
+        def require_input_capacity(self, *_args, **_kwargs):
+            return 1
+
+        def fit_prompt_variable(self, _variables, _name, optional_text, **_kwargs):
+            return SimpleNamespace(
+                optional_text=optional_text,
+                system_prompt="system",
+                user_prompt="user",
+            )
+
+    def get_diff(_provider, _handler, model, **_kwargs):
+        diff_models.append(model)
+        return "" if model == "small-model" else "diff"
+
+    monkeypatch.setattr(
+        tool_module.AttemptTokenBudget,
+        "for_prompt_attempt",
+        lambda *_args, **_kwargs: FakeBudget(),
+    )
+    monkeypatch.setattr(tool_module, "get_pr_diff", get_diff)
+
+    try:
+        await retry_with_fallback_models(tool._prepare_prediction)
+    finally:
+        restore_settings(settings_snapshot)
+
+    assert diff_models == ["small-model", "large-model"]
+    tool._get_prediction.assert_awaited_once_with("large-model")
+    assert tool.prediction == "fallback prediction"
 
 
 @pytest.mark.asyncio

@@ -1778,7 +1778,7 @@ class PRCodeSuggestions:
                             return attempt_budget.render_prompt_templates(variables)
 
                         try:
-                            attempt_budget.fit_optional_text(
+                            fitted = attempt_budget.fit_optional_text(
                                 unnumbered,
                                 render,
                                 ai_handler=self.ai_handler,
@@ -1791,6 +1791,12 @@ class PRCodeSuggestions:
                                 "the required prompt exceeds its token budget"
                             )
                         else:
+                            if fitted.optional_text != unnumbered:
+                                get_logger().warning(
+                                    f"Skipping recovery of chunk {index + 1} with {fallback_model}: "
+                                    "the complete diff does not fit its token budget"
+                                )
+                                continue
                             eligible.append(index)
                 except Exception as error:
                     get_logger().warning(f"Cannot prepare chunk recovery with {fallback_model}: {error}")

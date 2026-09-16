@@ -176,24 +176,23 @@ class PRQuestions:
             model,
             output_token_reserve=output_token_reserve,
         )
-        if patches_diff:
-            fitted = budget.fit_prompt_variable(
-                variables,
-                "diff",
-                patches_diff,
-                ai_handler=self.ai_handler,
-                default_output_tokens=OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
-                preserve_minimum=True,
-            )
-            self.patches_diff = fitted.optional_text
-            self._attempt_system_prompt = fitted.system_prompt
-            self._attempt_user_prompt = fitted.user_prompt
-            self._attempt_variables = variables
-            get_logger().debug("PR diff", artifact=self.patches_diff)
-            self.prediction = await self._get_prediction(model)
-        else:
-            get_logger().error("Error getting PR diff")
-            self.prediction = ""
+        if not patches_diff:
+            raise ValueError(f"No PR diff fits the /ask request for {model}")
+
+        fitted = budget.fit_prompt_variable(
+            variables,
+            "diff",
+            patches_diff,
+            ai_handler=self.ai_handler,
+            default_output_tokens=OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
+            preserve_minimum=True,
+        )
+        self.patches_diff = fitted.optional_text
+        self._attempt_system_prompt = fitted.system_prompt
+        self._attempt_user_prompt = fitted.user_prompt
+        self._attempt_variables = variables
+        get_logger().debug("PR diff", artifact=self.patches_diff)
+        self.prediction = await self._get_prediction(model)
 
     async def _get_prediction(self, model: str):
         system_prompt = self._attempt_system_prompt

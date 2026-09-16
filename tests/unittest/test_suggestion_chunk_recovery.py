@@ -3,7 +3,7 @@
 import asyncio
 import copy
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import yaml
@@ -145,6 +145,49 @@ async def test_larger_fallback_recovers_when_earlier_one_is_over_budget(configur
     assert [s["relevant_file"] for s in result["code_suggestions"]] == ["a.py", "b.py", "c.py"]
     assert tool.failed_chunk_count == 0
     assert [(m, c) for m, c, _, _ in calls if m == "gpt-4.1"] == [("gpt-4.1", "b")]
+
+
+async def test_recovery_skips_fallback_that_fits_only_a_clipped_chunk(configured, monkeypatch):
+    tool, _calls = make_tool(monkeypatch, {})
+    tool._recovery_chain = MagicMock(
+        return_value=(
+            [
+                ("gpt-4o", "primary"),
+                ("gpt-4o-mini", "secondary"),
+                ("gpt-4.1", "last"),
+            ],
+            1,
+        )
+    )
+    recovered = {"code_suggestions": []}
+    tool._predict_chunks = AsyncMock(return_value=[recovered])
+
+    class FakeBudget:
+        def __init__(self, model):
+            self.model = model
+
+        def render_prompt_templates(self, _variables):
+            return "system", "user"
+
+        def fit_optional_text(self, optional_text, *_args, **_kwargs):
+            fitted_text = "clipped" if self.model == "gpt-4o-mini" else optional_text
+            return SimpleNamespace(optional_text=fitted_text)
+
+    monkeypatch.setattr(
+        module.AttemptTokenBudget,
+        "for_prompt_attempt",
+        lambda model, *_args, **_kwargs: FakeBudget(model),
+    )
+    results = [{"code_suggestions": []}, RuntimeError("primary failed")]
+    chunk_pairs = [("numbered-a", "a"), ("numbered-b", "complete-b")]
+
+    await tool._recover_failed_chunks("gpt-4o", chunk_pairs, results)
+
+    tool._predict_chunks.assert_awaited_once_with(
+        "gpt-4.1",
+        [("numbered-b", "complete-b")],
+    )
+    assert results[1] is recovered
 
 
 async def test_all_failed_primary_keeps_existing_outer_fallback(configured, monkeypatch):
