@@ -204,6 +204,8 @@ class AttemptTokenBudget:
 
     def render_prompt_templates(self, variables: dict) -> tuple[str, str]:
         """Render this attempt handler's templates with the supplied variables."""
+        # These templates produce plain-text model input; HTML escaping would corrupt code and diffs.
+        # codeql[py/jinja2/autoescape-false]
         environment = Environment(undefined=StrictUndefined)
         system_prompt = environment.from_string(self.token_handler.system).render(variables)
         user_prompt = environment.from_string(self.token_handler.user).render(variables)
