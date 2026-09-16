@@ -91,7 +91,7 @@ def _find_repository_root() -> Optional[Path]:
     no_way_up = False
     while not no_way_up:
         no_way_up = cwd == cwd.parent
-        if (cwd / ".git").is_dir():
+        if (cwd / ".git").exists():
             return cwd
         cwd = cwd.parent
     return None
