@@ -1939,7 +1939,6 @@ def is_value_no(value):
     if not value:
         return True
     value_str = str(value).strip().lower()
-    value_str = value_str.rstrip(".,;:!?")
     if value_str == 'no' or value_str == 'none' or value_str == 'false':
         return True
     return False

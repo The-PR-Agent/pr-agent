@@ -315,7 +315,11 @@ async def test_handle_request_returns_false_for_unknown_command(monkeypatch):
 @pytest.mark.asyncio
 async def test_handle_request_language_instruction_preserves_control_values(monkeypatch):
     settings = get_settings()
-    original = settings.pr_reviewer.extra_instructions
+    original = {
+        key: settings.get(key).extra_instructions
+        for key in settings
+        if hasattr(settings.get(key), "extra_instructions")
+    }
     settings.config.response_language = "de-DE"
 
     class FakeReviewer:
@@ -338,4 +342,5 @@ async def test_handle_request_language_instruction_preserves_control_values(monk
         assert "do not translate them" in instructions
     finally:
         settings.config.response_language = "en-us"
-        settings.pr_reviewer.extra_instructions = original
+        for key, value in original.items():
+            settings.get(key).extra_instructions = value

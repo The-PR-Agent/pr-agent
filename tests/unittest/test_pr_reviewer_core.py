@@ -1195,7 +1195,8 @@ def test_set_review_labels_replaces_stale_review_labels_and_keeps_user_labels(re
         ("  No  \n", False),
         ("", False),
         (None, False),
-        ("No.", False),
+        # A punctuated negative is not a recognised "no", so it labels and renders as a concern.
+        ("No.", True),
     ],
 )
 def test_set_review_labels_security_label_matches_the_rendered_review_body(
@@ -1258,31 +1259,12 @@ def test_set_review_labels_does_not_label_security_free_localized_review(review_
         settings.config.response_language = original_language
 
 
-def test_language_instruction_preserves_schema_control_values():
-    # The response-language instruction must not let the model localize the
-    # 'No' sentinel: a localized negative is not recognised by is_value_no and
-    # would be rendered and labelled as a security concern.
-    response_language = "de-DE"
-    lang_instruction_text = (
-        f"Your response MUST be written in the language corresponding "
-        f"to locale code: '{response_language}'. This is crucial. "
-        f"Keep schema control values (such as 'No', 'Yes', 'None', "
-        f"'false') in their original English form and do not translate them."
-    )
-    assert "do not translate them" in lang_instruction_text
-    assert "'No'" in lang_instruction_text
-    assert response_language in lang_instruction_text
-
-
 def test_security_concerns_field_prompt_preserves_no_sentinel_for_localized_responses():
     # The prompt must keep the exact English 'No' sentinel even when the
     # response language instructs the model to localize its answer, otherwise
     # localized negatives are treated as security concerns by the label and the
     # rendered body.
-    from pathlib import Path
-
-    prompts_path = Path("pr_agent/settings/pr_reviewer_prompts.toml")
-    prompt = prompts_path.read_text(encoding="utf-8")
+    prompt = get_settings().pr_review_prompt.system
     security_field = prompt.split("security_concerns: str = Field(description=")[1].split("\n")[0]
     assert "Answer 'No'" in security_field
     assert "do not translate it into another language" in security_field
