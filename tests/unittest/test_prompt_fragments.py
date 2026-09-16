@@ -196,6 +196,7 @@ def test_non_decoupled_suggestions_render_without_the_shared_fragment(monkeypatc
 
 
 @pytest.mark.parametrize("include_ai_metadata", [False, True])
+@pytest.mark.asyncio
 async def test_reflection_supplies_the_numbered_fragment(
     include_ai_metadata,
     restore_prompt_settings,

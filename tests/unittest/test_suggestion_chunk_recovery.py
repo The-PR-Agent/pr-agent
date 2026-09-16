@@ -130,6 +130,7 @@ async def test_fallback_recovery_runs_whenever_fallbacks_are_set(configured, mon
     assert len(calls) == (3 if not fallbacks else 4)
 
 
+@pytest.mark.asyncio
 async def test_larger_fallback_recovers_when_earlier_one_is_over_budget(configured, monkeypatch):
     # The first fallback model cannot fit the full prompt, so it is skipped and
     # recovery still moves on to the later model instead of giving up.
@@ -210,6 +211,7 @@ async def test_partial_success_on_outer_fallback_only_tries_later_models(configu
 
 
 @pytest.mark.parametrize("remaining_model", [True, False])
+@pytest.mark.asyncio
 async def test_oversized_fallback_is_skipped_without_truncating_context(configured, monkeypatch, remaining_model):
     if not remaining_model:
         get_settings().set("config.fallback_models", ["gpt-4o-mini"])
@@ -239,6 +241,7 @@ async def test_marker_text_in_diff_is_counted_literally_for_recovery(configured,
     assert len(result["code_suggestions"]) == 3
 
 
+@pytest.mark.asyncio
 async def test_boundary_size_chunk_is_eligible_for_recovery(configured, monkeypatch):
     tool, calls = make_tool(monkeypatch, {("gpt-4o", "b"): RuntimeError("failure")})
     monkeypatch.setattr(module.TokenHandler, "count_tokens", lambda self, s: 1)
