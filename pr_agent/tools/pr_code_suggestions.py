@@ -1868,7 +1868,10 @@ class PRCodeSuggestions:
                                                                         add_line_numbers=False,
                                                                         output_token_reserve=output_token_reserve)
             self.patches_diff_list = await self.convert_to_decoupled_with_line_numbers(
-                self.patches_diff_list_no_line_numbers, model)
+                self.patches_diff_list_no_line_numbers,
+                model,
+                attempt_budget=self._suggestion_attempt_budget,
+            )
             if not self.patches_diff_list:
                 # fallback to decoupled hunks
                 self.patches_diff_list = get_pr_multi_diffs(self.git_provider,
@@ -1929,17 +1932,24 @@ class PRCodeSuggestions:
             self.data = data = None
         return data
 
-    async def convert_to_decoupled_with_line_numbers(self, patches_diff_list_no_line_numbers, model) -> List[str]:
+    async def convert_to_decoupled_with_line_numbers(
+        self,
+        patches_diff_list_no_line_numbers,
+        model,
+        *,
+        attempt_budget: AttemptTokenBudget | None = None,
+    ) -> List[str]:
         with get_logger().contextualize(sub_feature='convert_to_decoupled_with_line_numbers'):
             try:
-                attempt_budget = AttemptTokenBudget.for_attempt(
-                    model,
-                    self.token_handler,
-                    output_token_reserve=getattr(
-                        getattr(self, "ai_handler", None), "get_output_token_reserve", None
-                    ),
-                    ignore_max_model_tokens=True,
-                )
+                if attempt_budget is None:
+                    attempt_budget = AttemptTokenBudget.for_attempt(
+                        model,
+                        self.token_handler,
+                        output_token_reserve=getattr(
+                            getattr(self, "ai_handler", None), "get_output_token_reserve", None
+                        ),
+                        ignore_max_model_tokens=True,
+                    )
                 max_input_tokens = attempt_budget.available_tokens(
                     2_000, preserve_minimum=True
                 )

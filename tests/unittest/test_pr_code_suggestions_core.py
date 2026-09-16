@@ -232,6 +232,28 @@ async def test_convert_to_decoupled_uses_fallback_model_budget_and_tokenizer(mon
 
 
 @pytest.mark.asyncio
+async def test_convert_to_decoupled_reuses_supplied_attempt_budget():
+    tool = _make_tool()
+    tool.token_handler = MagicMock()
+    attempt_budget = SimpleNamespace(
+        available_tokens=MagicMock(return_value=1_000),
+        count_tokens=MagicMock(return_value=1),
+    )
+    patch_prompt = "## File: 'app.py'\n\n@@ -1 +1 @@\n-old\n+new"
+
+    result = await tool.convert_to_decoupled_with_line_numbers(
+        [patch_prompt],
+        "fallback-model",
+        attempt_budget=attempt_budget,
+    )
+
+    assert len(result) == 1
+    assert "1 +new" in result[0]
+    attempt_budget.available_tokens.assert_called_once_with(2_000, preserve_minimum=True)
+    attempt_budget.count_tokens.assert_called_once_with(result[0])
+
+
+@pytest.mark.asyncio
 async def test_prepare_prediction_main_caps_suggestions_per_file_after_chunk_merge():
     settings_snapshot = snapshot_settings((
         "pr_code_suggestions.decouple_hunks",
@@ -596,6 +618,11 @@ async def test_prepare_prediction_main_rebuilds_unnumbered_chunks_after_conversi
     assert tool.total_chunk_count == 2
     assert len(data["code_suggestions"]) == 2
     assert len(get_pr_multi_diffs.call_args_list) == 2
+    tool.convert_to_decoupled_with_line_numbers.assert_awaited_once_with(
+        ["stale unnumbered chunk"],
+        "primary-model",
+        attempt_budget=tool._suggestion_attempt_budget,
+    )
     assert all(
         call.kwargs["output_token_reserve"] is tool.ai_handler.get_output_token_reserve
         for call in get_pr_multi_diffs.call_args_list
