@@ -87,7 +87,7 @@ to-do list.
 | `output_run_cost` | false | if true, collect estimated LiteLLM API cost and include it inside the enabled run details section |
 | `large_patch_policy` | "clip" | "clip", "skip" |
 | `duplicate_prompt_examples` | false |  |
-| `persistent_inline_comments` | false | Persistent inline comments (issue #2037): when true, the GitHub, GitLab, and Azure DevOps providers fingerprint each inline comment, embed the fingerprint as an HTML marker, and skip re-posting suggestions already present on the PR/MR across runs. |
+| `persistent_inline_comments` | false | Persistent inline comments (issue #2037): when true, providers with inline-comment deduplication support fingerprint each inline comment, embed the fingerprint as an HTML marker, and skip re-posting suggestions already present on the PR/MR across runs. |
 **seed**
 
 | Key | Default | Description |

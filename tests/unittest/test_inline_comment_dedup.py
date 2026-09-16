@@ -76,6 +76,29 @@ def test_build_markers():
     assert "<!-- pr-agent-dedup-code: bbbbbbbbbbbb -->" in out
 
 
+def test_build_markers_uses_bitbucket_hidden_form():
+    provider = MagicMock()
+    provider.supports_html_comment_markers.return_value = False
+
+    out = d.build_markers("aaaaaaaaaaaa", "bbbbbbbbbbbb", provider)
+
+    assert "<!-- pr-agent-dedup:" not in out
+    assert "[pr-agent-dedup: aaaaaaaaaaaa]: https://github.com/The-PR-Agent/pr-agent" in out
+    assert "[pr-agent-dedup-code: bbbbbbbbbbbb]: https://github.com/The-PR-Agent/pr-agent" in out
+
+
+def test_key_issue_markers_use_bitbucket_hidden_form():
+    provider = MagicMock()
+    provider.supports_html_comment_markers.return_value = False
+
+    out = d.key_issue_body_with_markers("finding", "aaaaaaaaaaaa", "bbbbbbbbbbbb", git_provider=provider)
+
+    assert "<!--" not in out
+    assert "[pr-agent-dedup: aaaaaaaaaaaa]: https://github.com/The-PR-Agent/pr-agent" in out
+    assert "[pr-agent-key-issue-location: bbbbbbbbbbbb]: https://github.com/The-PR-Agent/pr-agent" in out
+    assert d.marker_fingerprints(out) == {"aaaaaaaaaaaa", "bbbbbbbbbbbb"}
+
+
 def test_inline_comment_line_prefers_line():
     assert d.inline_comment_line({"line": 5, "position": 9}) == 5
     assert d.inline_comment_line({"position": 9}) == 9
@@ -131,6 +154,14 @@ def test_iter_unsupported_provider_raises():
         pass
 
 
+def test_iter_provider_with_persistent_comment_capability():
+    class Provider:
+        def get_persistent_comment_bodies(self):
+            return ["existing Bitbucket finding"]
+
+    assert list(d.iter_existing_inline_comment_bodies(Provider())) == ["existing Bitbucket finding"]
+
+
 def _azure_provider(existing_threads=None):
     provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
     provider.azure_devops_client = MagicMock()
@@ -141,7 +172,7 @@ def _azure_provider(existing_threads=None):
     return provider
 
 
-def test_inline_publication_verification_is_limited_to_azure_devops():
+def test_inline_publication_verification_supports_providers_with_comment_capability():
     assert d.can_verify_inline_comment_publication(_azure_provider()) is True
     assert d.can_verify_inline_comment_publication(_gh_provider([])) is False
     assert d.can_verify_inline_comment_publication(_gl_provider([])) is False

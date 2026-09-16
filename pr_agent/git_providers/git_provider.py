@@ -1,3 +1,4 @@
+import base64
 import os
 import re
 import shutil
@@ -6,6 +7,7 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from typing import Optional, Tuple
+from urllib.parse import urlsplit
 
 from pr_agent.algo.language_handler import numeric_languages
 from pr_agent.algo.types import FilePatchInfo
@@ -15,6 +17,7 @@ from pr_agent.algo.utils import (
     comment_carries_other_identity,
     comment_matches_identity,
     process_description,
+    render_hidden_marker,
 )
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
@@ -46,6 +49,21 @@ def redact_credentials(text) -> str:
         return ""
     redacted = _URL_USERINFO_RE.sub(lambda m: m.group("scheme"), str(text))
     return _AUTH_HEADER_RE.sub(lambda m: m.group(1) + "<redacted>", redacted)
+
+
+def _clone_authorization_header(repo_url: str) -> str | None:
+    """Build the Authorization header git should send for a token-bearing clone URL.
+
+    Replicates what a plain `git clone https://user[:password]@host/...` would have sent
+    via curl so the credential can ride in the environment instead of the `git` or
+    `git-remote-http` command lines. Returns None when `repo_url` carries no userinfo.
+    """
+    parsed = urlsplit(repo_url)
+    if parsed.username is None:
+        return None
+    credentials = f"{parsed.username}:" if parsed.password is None else f"{parsed.username}:{parsed.password}"
+    encoded = base64.b64encode(credentials.encode("utf-8")).decode("ascii")
+    return f"Authorization: Basic {encoded}"
 
 _GLOBAL_SETTINGS_CACHE: dict = {}
 _GLOBAL_SETTINGS_CACHE_TTL_SECONDS = 15 * 60
@@ -290,11 +308,26 @@ class GitProvider(ABC):
             )
             ssl_env = os.environ.copy()
 
+        # Keep the credential out of every git argv: clone the redacted URL and resend the
+        # token as an http.extraHeader through the GIT_CONFIG_* environment. Git applies
+        # that config to the subprocesses it spawns (including git-remote-http) without
+        # putting the credential on any command line.
+        clean_repo_url = redact_credentials(repo_url)
+        authorization_header = _clone_authorization_header(repo_url)
+        if clean_repo_url != repo_url and authorization_header is not None:
+            inherited_count = int(ssl_env.get("GIT_CONFIG_COUNT", "0"))
+            ssl_env = {
+                **ssl_env,
+                f"GIT_CONFIG_KEY_{inherited_count}": "http.extraHeader",
+                f"GIT_CONFIG_VALUE_{inherited_count}": authorization_header,
+                "GIT_CONFIG_COUNT": str(inherited_count + 1),
+            }
+
         subprocess.run([
             "git", "clone",
             "--filter=blob:none",
             "--depth", "1",
-            repo_url, dest_folder
+            clean_repo_url, dest_folder
         ], env=ssl_env, check=True,  # check=True will raise an exception if the command fails
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=operation_timeout_in_seconds)
 
@@ -308,12 +341,22 @@ class GitProvider(ABC):
         if not clone_url:
             get_logger().error("Clone failed: Unable to obtain url to clone.")
             return returned_obj
+        destination_existed = os.path.exists(dest_folder)
+        preexisting_git_dir = os.path.isdir(os.path.join(dest_folder, ".git"))
         try:
             if remove_dest_folder and os.path.exists(dest_folder) and os.path.isdir(dest_folder):
                 shutil.rmtree(dest_folder)
+                destination_existed = False
+                preexisting_git_dir = False
             self._clone_inner(clone_url, dest_folder, operation_timeout_in_seconds)
             returned_obj = GitProvider.ScopedClonedRepo(dest_folder)
         except Exception as e:
+            # Remove Git metadata created by a failed clone; preserve caller-owned files when remove_dest_folder=False.
+            git_dir = os.path.join(dest_folder, ".git")
+            if os.path.isdir(git_dir) and not preexisting_git_dir:
+                shutil.rmtree(git_dir, ignore_errors=True)
+            if not destination_existed and os.path.isdir(dest_folder):
+                shutil.rmtree(dest_folder, ignore_errors=True)
             get_logger().error("Clone failed: Could not clone url.",
                 artifact={"error": redact_credentials(e), "url": redact_credentials(clone_url),
                           "dest_folder": dest_folder})
@@ -625,6 +668,10 @@ class GitProvider(ABC):
     def should_publish_improve_as_thread(self) -> bool:
         return False
 
+    def supports_html_comment_markers(self) -> bool:
+        """Return whether HTML comment identity markers render invisibly."""
+        return True
+
     def supports_review_comment_identity(self) -> bool:
         return False
 
@@ -724,7 +771,7 @@ class GitProvider(ABC):
                                    require_agent_authorship: bool = False,
                                    fallback_on_error: bool = True):
         try:
-            pr_comment = add_pr_review_identity(pr_comment, identity_marker)
+            pr_comment = add_pr_review_identity(pr_comment, identity_marker, self)
             identifiers = (
                 [identity_marker, legacy_initial_header]
                 if identity_marker
@@ -745,7 +792,7 @@ class GitProvider(ABC):
                 comment_url = self.get_comment_url(comment)
                 if update_header:
                     update_message = f"#### ({name.capitalize()} updated until commit {latest_commit_url})\n"
-                    update_anchor = identity_marker or initial_header
+                    update_anchor = render_hidden_marker(identity_marker, self) if identity_marker else initial_header
                     updated_anchor = f"{update_anchor}\n\n{update_message}"
                     pr_comment_updated = pr_comment.replace(update_anchor, updated_anchor, 1)
                 else:
@@ -899,7 +946,7 @@ class GitProvider(ABC):
     def get_num_of_files(self):
         try:
             return len(self.get_diff_files())
-        except Exception as e:
+        except Exception:
             return -1
 
     def limit_output_characters(self, output: str, max_chars: int):

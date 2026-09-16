@@ -513,7 +513,7 @@ class GitLabProvider(GitProvider):
         if not repo_git_url: #Use PR url as context
             try:
                 desired_branch = self.gl.projects.get(self.id_project).default_branch
-            except Exception as e:
+            except Exception:
                 get_logger().exception(f"Cannot get PR: {self.pr_url} default branch. Tried project ID: {self.id_project}")
                 return ("", "")
             # numeric-alias URLs need the "projects/" segment, same as get_line_link
@@ -878,7 +878,7 @@ class GitLabProvider(GitProvider):
                     'original_files': names_original,
                     'filtered_files': names_filtered
                 })
-            except Exception as e:
+            except Exception:
                 pass
 
         diff_files = []
@@ -1212,7 +1212,7 @@ class GitLabProvider(GitProvider):
                 store.add(body_fp)
                 store.add(code_fp)
             return True
-        except Exception as e:
+        except Exception:
             try:
                 # fallback - create a general note on the file in the MR
                 if 'suggestion_orig_location' in original_suggestion:
@@ -1235,10 +1235,6 @@ class GitLabProvider(GitProvider):
                     label = original_suggestion['label']
                     score = original_suggestion.get('score', 7)
 
-                if hasattr(self, 'main_language'):
-                    language = self.main_language
-                else:
-                    language = ''
                 link = self.get_line_link(relevant_file, line_start, line_end)
                 body_fallback =f"**Suggestion:** {content} [{label}, importance: {score}]\n\n"
                 body_fallback +=f"\n\n<details><summary>[{target_file.filename} [{line_start}-{line_end}]]({link}):</summary>\n\n"
@@ -1272,7 +1268,7 @@ class GitLabProvider(GitProvider):
                     store.add(code_fp)
                 return True
 
-            except Exception as e:
+            except Exception:
                 get_logger().exception(f"Failed to create comment in MR {self.id_mr}")
                 return False
 

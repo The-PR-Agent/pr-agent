@@ -13,6 +13,14 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-install-project --no-dev --extra lambda --python /var/lang/bin/python3.12
 ENV PYTHONPATH="/opt/venv/lib/python3.12/site-packages:${LAMBDA_TASK_ROOT}"
 COPY pr_agent/ ${LAMBDA_TASK_ROOT}/pr_agent/
+RUN --mount=type=bind,source=docs/docs,target=/tmp/help-docs-source \
+    source_count="$(find /tmp/help-docs-source -type f -name '*.md' | wc -l)" && \
+    test "$source_count" -gt 0 && \
+    cd /tmp/help-docs-source && \
+    find . -type f -name '*.md' -exec sh -c 'for source in "$@"; do destination="${LAMBDA_TASK_ROOT}/pr_agent/_help_docs/${source#./}"; mkdir -p "$(dirname "$destination")"; cp "$source" "$destination"; done' sh {} + && \
+    destination_count="$(find "${LAMBDA_TASK_ROOT}/pr_agent/_help_docs" -type f | wc -l)" && \
+    test "$destination_count" -eq "$source_count" && \
+    test -z "$(find "${LAMBDA_TASK_ROOT}/pr_agent/_help_docs" -type f ! -name '*.md' -print -quit)"
 
 FROM base AS github_lambda
 CMD ["pr_agent.servers.github_lambda_webhook.lambda_handler"]

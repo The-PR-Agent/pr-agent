@@ -1,8 +1,10 @@
 import copy
 import re
 from functools import partial
+from importlib.resources import files as package_files
+from importlib.resources.abc import Traversable
 from math import ceil, isfinite
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from jinja2 import Environment, StrictUndefined, select_autoescape
 from litellm import token_counter
@@ -22,6 +24,114 @@ HELP_OUTPUT_TOKEN_RESERVE = 2_000
 MESSAGE_FRAMING_TOKEN_ALLOWANCE = 16
 REPLY_FRAMING_TOKEN_ALLOWANCE = 16
 TRUNCATION_MARKER = "\n...(truncated)\n"
+HELP_DOCS_RESOURCE = "_help_docs"
+HELP_DOCS_UNAVAILABLE_MESSAGE = (
+    "PR-Agent help documentation is unavailable. Please contact the service administrator."
+)
+HELP_DOCS_EXCLUDED_DIRECTORIES = {"finetuning_benchmark"}
+HELP_DOCS_EXCLUDED_FILENAMES = {"compression_strategy.md"}
+HELP_DOCS_PRIORITY_PATHS = (
+    "/usage-guide/",
+    "/tools/describe.md",
+    "/tools/review.md",
+    "/tools/improve.md",
+    "/faq/",
+)
+
+
+def _is_help_doc_included(relative_path: PurePosixPath) -> bool:
+    return (
+        relative_path.suffix == ".md"
+        and relative_path.name not in HELP_DOCS_EXCLUDED_FILENAMES
+        and not any(part in HELP_DOCS_EXCLUDED_DIRECTORIES for part in relative_path.parts[:-1])
+    )
+
+
+def _get_help_docs_root() -> Traversable:
+    try:
+        packaged_docs = package_files("pr_agent").joinpath(HELP_DOCS_RESOURCE)
+        if packaged_docs.is_dir():
+            return packaged_docs
+    except Exception:
+        get_logger().opt(exception=True).debug("Unable to inspect packaged /help documentation")
+
+    try:
+        source_docs = Path(__file__).resolve().parents[2] / "docs" / "docs"
+        if source_docs.is_dir():
+            return source_docs
+    except Exception as error:
+        get_logger().opt(exception=True).error("Unable to inspect source-tree /help documentation")
+        raise FileNotFoundError(
+            "The /help documentation corpus is unavailable; unable to inspect the source checkout"
+        ) from error
+
+    raise FileNotFoundError(
+        "The /help documentation corpus is unavailable; reinstall PR-Agent from a complete package"
+    )
+
+
+def _iter_help_docs(root: Traversable) -> list[tuple[PurePosixPath, Traversable]]:
+    documents: list[tuple[PurePosixPath, Traversable]] = []
+
+    def visit(directory: Traversable, relative_directory: PurePosixPath) -> None:
+        try:
+            children = sorted(directory.iterdir(), key=lambda child: child.name)
+        except Exception:
+            get_logger().opt(exception=True).error(
+                f"Error while listing the documentation directory {directory}"
+            )
+            return
+
+        for child in children:
+            relative_path = relative_directory / child.name
+            try:
+                if child.is_dir():
+                    if child.name not in HELP_DOCS_EXCLUDED_DIRECTORIES:
+                        visit(child, relative_path)
+                elif child.is_file() and _is_help_doc_included(relative_path):
+                    documents.append((relative_path, child))
+            except Exception:
+                get_logger().opt(exception=True).error(
+                    f"Error while inspecting the documentation path {child}"
+                )
+
+    visit(root, PurePosixPath())
+
+    def sort_key(document: tuple[PurePosixPath, Traversable]) -> tuple[int, str]:
+        relative_name = f"/{document[0].as_posix()}"
+        priority_rank = 0 if relative_name == "/index.md" else 1
+        if priority_rank and not any(priority in relative_name for priority in HELP_DOCS_PRIORITY_PATHS):
+            priority_rank = 2
+        return priority_rank, relative_name
+
+    return sorted(documents, key=sort_key)
+
+
+def _load_help_docs_prompt() -> tuple[str, set[str]]:
+    docs_root = _get_help_docs_root()
+    sections = []
+    available_docs_files = set()
+    for relative_path, document in _iter_help_docs(docs_root):
+        try:
+            content = document.read_text(encoding="utf-8").strip()
+        except Exception:
+            get_logger().opt(exception=True).error(
+                f"Error while reading the documentation file {document}"
+            )
+            continue
+        if not content:
+            continue
+        relative_file_path = relative_path.as_posix()
+        sections.append(
+            f"\n==file name==\n\n/{relative_file_path}\n\n"
+            f"==file content==\n\n{content}\n=========\n\n"
+        )
+        available_docs_files.add(relative_file_path)
+
+    if not sections:
+        raise FileNotFoundError(f"No readable Markdown documentation was found for /help in {docs_root}")
+
+    return "".join(sections).strip(), available_docs_files
 
 
 class PRHelpMessage:
@@ -303,43 +413,22 @@ class PRHelpMessage:
 
 
     async def run(self):
+        if self.question_str:
+            try:
+                self.vars["snippets"], self._available_docs_files = _load_help_docs_prompt()
+                self._model_visible_docs_files = set()
+            except FileNotFoundError:
+                get_logger().exception("Unable to load the PR-Agent help documentation")
+                if get_settings().config.publish_output:
+                    try:
+                        self.git_provider.publish_comment(HELP_DOCS_UNAVAILABLE_MESSAGE)
+                    except Exception:
+                        get_logger().exception("Unable to publish the help documentation failure message")
+                raise
+
         try:
             if self.question_str:
                 get_logger().info(f'Answering a PR question about the PR {self.git_provider.pr_url} ')
-
-                # current path
-                docs_path= Path(__file__).parent.parent.parent / 'docs' / 'docs'
-                # get all the 'md' files inside docs_path and its subdirectories
-                md_files = list(docs_path.glob('**/*.md'))
-                folders_to_exclude = ['/finetuning_benchmark/']
-                files_to_exclude = {'compression_strategy.md', '/docs/overview/index.md'}
-                md_files = [file for file in md_files if not any(folder in str(file) for folder in folders_to_exclude) and not any(file.name == file_to_exclude for file_to_exclude in files_to_exclude)]
-
-                # sort the 'md_files' so that 'priority_files' will be at the top
-                priority_files_strings = ['/docs/index.md', '/usage-guide', 'tools/describe.md', 'tools/review.md',
-                                          'tools/improve.md', '/faq']
-                md_files_priority = [file for file in md_files if
-                                     any(priority_string in str(file) for priority_string in priority_files_strings)]
-                md_files_not_priority = [file for file in md_files if file not in md_files_priority]
-                md_files = md_files_priority + md_files_not_priority
-
-                docs_prompt = ""
-                available_docs_files = set()
-                for file in md_files:
-                    try:
-                        with open(file, 'r') as f:
-                            file_contents = f.read().strip()
-                            relative_file_path = file.relative_to(docs_path).as_posix()
-                            docs_prompt += (
-                                f"\n==file name==\n\n/{relative_file_path}\n\n"
-                                f"==file content==\n\n{file_contents}\n=========\n\n"
-                            )
-                            available_docs_files.add(relative_file_path)
-                    except Exception as e:
-                        get_logger().error(f"Error while reading the file {file}: {e}")
-                self.vars['snippets'] = docs_prompt.strip()
-                self._available_docs_files = available_docs_files
-                self._model_visible_docs_files = set()
 
                 # run the AI model
                 response = await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.REGULAR)

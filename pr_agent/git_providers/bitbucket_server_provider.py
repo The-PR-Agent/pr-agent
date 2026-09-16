@@ -1,6 +1,5 @@
 import difflib
 import re
-import shlex
 import subprocess
 from collections import Counter
 from types import SimpleNamespace
@@ -72,7 +71,7 @@ class BitbucketServerProvider(GitProvider):
         try:
             parsed_url = urlparse(self.pr_url)
             return f"{parsed_url.scheme}://{parsed_url.netloc}/scm/{self.workspace_slug.lower()}/{self.repo_slug.lower()}.git"
-        except Exception as e:
+        except Exception:
             get_logger().exception(f"url is not a valid merge requests url: {self.pr_url}")
             return ""
 
@@ -763,10 +762,15 @@ class BitbucketServerProvider(GitProvider):
             #Shouldn't happen since this is checked in _prepare_clone, therefore - throwing an exception.
             raise RuntimeError("Bearer token is required!")
 
-        cli_args = shlex.split(f"git clone -c http.extraHeader='Authorization: Bearer {bearer_token}' "
-                               f"--filter=blob:none --depth 1 {repo_url} {dest_folder}")
-
-        ssl_env = get_git_ssl_env()
-
-        subprocess.run(cli_args, env=ssl_env, check=True,  # check=True will raise an exception if the command fails
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=operation_timeout_in_seconds)
+        # Pass the header through the Git process environment (Git >= 2.31), so it never
+        # reaches argv or the checkout's .git/config.
+        ssl_env = {
+            **get_git_ssl_env(),
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "http.extraHeader",
+            "GIT_CONFIG_VALUE_0": f"Authorization: Bearer {bearer_token}",
+        }
+        cli_args = ["git", "clone", "--filter=blob:none", "--depth", "1", repo_url, dest_folder]
+        subprocess.run(cli_args, env=ssl_env, check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=operation_timeout_in_seconds)

@@ -47,8 +47,10 @@ from pr_agent.algo.utils import (
     get_max_tokens,
     get_pr_review_comment_identifiers,
     github_action_output,
+    hidden_marker_forms,
     load_yaml,
     push_outputs,
+    render_hidden_marker,
     show_relevant_configurations,
     show_run_details,
 )
@@ -440,7 +442,7 @@ class PRReviewer:
                         if self.incremental.is_incremental
                         else PRReviewIdentity.REGULAR.value
                     )
-                    pr_review = add_pr_review_identity(pr_review, identity_marker)
+                    pr_review = add_pr_review_identity(pr_review, identity_marker, self.git_provider)
                 self.git_provider.publish_comment(pr_review, **review_thread_kwargs)
         except Exception as e:
             review_error = e
@@ -503,8 +505,8 @@ class PRReviewer:
     @staticmethod
     def _as_non_authoritative_review(pr_review: str) -> str:
         identity_markers = {
-            PRReviewIdentity.REGULAR.value,
-            PRReviewIdentity.INCREMENTAL.value,
+            *hidden_marker_forms(PRReviewIdentity.REGULAR.value),
+            *hidden_marker_forms(PRReviewIdentity.INCREMENTAL.value),
         }
         markerless_review = "\n".join(
             line
@@ -694,7 +696,7 @@ class PRReviewer:
                 # The shared persistent publisher adds the full-review identity
                 # before inserting the update suffix. Reserve both pieces so a
                 # complete state marker remains inside the provider limit.
-                identity_overhead = len(PRReviewIdentity.REGULAR.value) + 2
+                identity_overhead = len(render_hidden_marker(PRReviewIdentity.REGULAR.value, self.git_provider)) + 2
                 return value - len(update_suffix) - identity_overhead
         return None
 
@@ -792,6 +794,11 @@ class PRReviewer:
             "disable_extra_lines": False,
             "return_remaining_files": True,
         }
+        output_token_reserve = getattr(
+            getattr(self, "ai_handler", None), "get_output_token_reserve", None
+        )
+        if callable(output_token_reserve):
+            diff_kwargs["output_token_reserve"] = output_token_reserve
         if chunking_enabled:
             diff_kwargs["return_prepared"] = True
         output = get_pr_diff(self.git_provider, self.token_handler, model, **diff_kwargs)
@@ -839,6 +846,11 @@ class PRReviewer:
                 "add_line_numbers": True,
                 "return_remaining_files": True,
             }
+            output_token_reserve = getattr(
+                getattr(self, "ai_handler", None), "get_output_token_reserve", None
+            )
+            if callable(output_token_reserve):
+                multi_diff_kwargs["output_token_reserve"] = output_token_reserve
             if prepared_diff is not None:
                 multi_diff_kwargs["prepared_diff"] = prepared_diff
             patches_diff_list, remaining_files_list = get_pr_multi_diffs(
@@ -1251,7 +1263,7 @@ class PRReviewer:
                 store.add_body(body)
         except Exception as e:
             get_logger().warning(
-                f"Inline key-issue publishing cannot verify new Azure DevOps threads, error: {e}; "
+                f"Inline key-issue publishing cannot verify newly published comments, error: {e}; "
                 "keeping findings in the review summary")
             return set()
         return {fingerprint for fingerprint in fingerprints if store.seen(fingerprint)}
@@ -1275,7 +1287,7 @@ class PRReviewer:
         store = get_inline_comment_store(self.git_provider)
         store.load()
         if store.load_failed:
-            get_logger().warning("Inline key-issue publishing cannot verify existing Azure DevOps threads; "
+            get_logger().warning("Inline key-issue publishing cannot verify existing provider comments; "
                                  "keeping findings in the review summary")
             return data
         remaining_issues = []
@@ -1298,9 +1310,15 @@ class PRReviewer:
                 if location_fingerprint in candidate_comments:
                     candidate_issues[location_fingerprint].append(issue)
                     continue
+                max_chars = next(
+                    (getattr(self.git_provider, attr) for attr in
+                     ("max_comment_chars", "max_comment_length")
+                     if isinstance(getattr(self.git_provider, attr, None), int)),
+                    None,
+                )
                 comment["body"] = key_issue_body_with_markers(
                     comment["body"], fingerprint, location_fingerprint,
-                    getattr(self.git_provider, "max_comment_chars", None))
+                    max_chars, self.git_provider)
                 candidate_comments[location_fingerprint] = comment
                 candidate_issues[location_fingerprint] = [issue]
                 candidate_fingerprints[location_fingerprint] = fingerprint
@@ -1318,7 +1336,7 @@ class PRReviewer:
                               "end_line": comment["relevant_lines_end"]}
                              for comment in candidate_comments.values()]
                 get_logger().warning(
-                    f"Failed to publish review findings as Azure DevOps threads, error: {e}",
+                    f"Failed to publish review findings as inline comments, error: {e}",
                     artifact={"locations": locations})
             verified_locations = self._published_inline_key_issue_fingerprints(store, set(candidate_comments))
             for location_fingerprint, comment in candidate_comments.items():
@@ -1328,7 +1346,7 @@ class PRReviewer:
                     store.add(location_fingerprint)
                     published += len(issues_for_location)
                     continue
-                get_logger().warning("Failed to publish a review finding as an Azure DevOps inline comment, "
+                get_logger().warning("Failed to publish a review finding as an inline comment, "
                                      "keeping it in the summary",
                                      artifact={"relevant_file": comment["relevant_file"],
                                                "start_line": comment["relevant_lines_start"],

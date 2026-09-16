@@ -902,6 +902,31 @@ async def test_native_azure_ad_responses_companion(monkeypatch, native_azure_oid
         provider.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_native_azure_ad_responses_scopes_companion_client_cache(monkeypatch, native_azure_oidc):
+    import azure.identity
+
+    state = native_azure_oidc
+    state.response_kind = "responses"
+    state.expected_url = "https://owned.openai.azure.com/openai/responses?api-version=2024-06-01"
+    monkeypatch.setenv("AZURE_AD_TOKEN", "shared-ad-token")
+    monkeypatch.setenv("AZURE_CLIENT_SECRET", "first-secret")
+    monkeypatch.setattr(litellm, "enable_azure_ad_token_refresh", True)
+    first = LiteLLMAIHandler()
+    monkeypatch.setenv("AZURE_CLIENT_SECRET", "second-secret")
+    second = LiteLLMAIHandler()
+    constructor = MagicMock(wraps=azure.identity.ClientSecretCredential)
+    monkeypatch.setattr(azure.identity, "ClientSecretCredential", constructor)
+    tokens = iter(("first-provider-token", "second-provider-token"))
+    provider = MagicMock(side_effect=lambda *args, **kwargs: lambda: next(tokens))
+    monkeypatch.setattr(azure.identity, "get_bearer_token_provider", provider)
+
+    assert await state.invoke(first, model="azure/responses/gpt-4o") == "Bearer first-provider-token"
+    assert await state.invoke(second, model="azure/responses/gpt-4o") == "Bearer second-provider-token"
+    assert constructor.call_count == 2
+    assert provider.call_count == 2
+
+
 @pytest.mark.parametrize("transport", ("classic", "v1"))
 @pytest.mark.parametrize("entrypoint", ("chat", "probe"))
 @pytest.mark.parametrize("source", ("client_secret", "password", "both", "incomplete", "password_without_tenant"))

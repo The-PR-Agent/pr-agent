@@ -44,6 +44,7 @@ CHUNK_B = """review:
 def _make_reviewer():
     reviewer = PRReviewer.__new__(PRReviewer)
     reviewer.git_provider = MagicMock()
+    reviewer.ai_handler = MagicMock()
     reviewer.token_handler = MagicMock()
     reviewer.token_handler.prompt_tokens = 0
     reviewer.token_handler.count_tokens.side_effect = len
@@ -115,6 +116,7 @@ async def test_a_truncated_diff_is_reviewed_chunk_by_chunk_and_merged(chunking_e
         max_calls=3,
         add_line_numbers=True,
         return_remaining_files=True,
+        output_token_reserve=reviewer.ai_handler.get_output_token_reserve,
     )
     assert [call.args[1] for call in reviewer._get_prediction.await_args_list] == ["chunk-a", "chunk-b"]
 
@@ -147,6 +149,8 @@ async def test_chunked_review_reuses_the_prepared_diff_for_the_same_model_attemp
 
     assert get_pr_diff.call_args.kwargs["return_prepared"] is True
     assert get_pr_multi_diffs.call_args.kwargs["prepared_diff"] is prepared
+    assert get_pr_diff.call_args.kwargs["output_token_reserve"] is reviewer.ai_handler.get_output_token_reserve
+    assert get_pr_multi_diffs.call_args.kwargs["output_token_reserve"] is reviewer.ai_handler.get_output_token_reserve
     assert reviewer.review_chunk_count == 2
     assert reviewer.remaining_files_list == ["still_left_out.py"]
 

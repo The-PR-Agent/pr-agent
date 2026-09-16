@@ -50,7 +50,7 @@ dependencies = [
   # Revalidate compatibility when updating grpcio-status or related Google/gRPC dependencies.
   "protobuf==6.33.6",
   "Jinja2==3.1.6",
-  "litellm==1.100.0",
+  "litellm==1.101.0",
   "loguru==0.7.2",
   "msrest==0.7.1",
   "openai>=1.55.3",
@@ -69,7 +69,7 @@ dependencies = [
   "langfuse==3.14.5",
   "gunicorn==23.0.0",
   "pydantic==2.13.3",
-  # litellm 1.100.0 declares pydantic-settings as a base dependency and imports it unconditionally from
+  # litellm 1.101.0 declares pydantic-settings as a base dependency and imports it unconditionally from
   # litellm/integrations/otel/model/config.py. Keep the exact pin to lock the resolved transitive version.
   # Version matches litellm's own constraint (>=2.14.1,<3.0); the existing observability guard covers the callback import.
   "pydantic-settings==2.14.2",
@@ -172,7 +172,6 @@ lint.ignore = [
   "E402", # import not at top of file
   "E501", # line too long
   "E722", # bare `except`
-  "F841", # unused local variable
   "B011", # `assert False`
   "B017", # assertRaises(Exception)
   "B023", # function definition uses loop variable
