@@ -1195,8 +1195,7 @@ def test_set_review_labels_replaces_stale_review_labels_and_keeps_user_labels(re
         ("  No  \n", False),
         ("", False),
         (None, False),
-        # A punctuated negative is not a recognised "no", so it labels and renders as a concern.
-        ("No.", True),
+        ("No.", False),
     ],
 )
 def test_set_review_labels_security_label_matches_the_rendered_review_body(
