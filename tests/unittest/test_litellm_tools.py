@@ -163,11 +163,77 @@ async def test_streaming_tool_call_only_succeeds_without_content():
     content, finish_reason, mock_resp = await _handle_streaming_response(mock_stream(), model="test-model")
     assert content == ""
     assert finish_reason == "tool_calls"
-    tool_calls = _extract_tool_calls(mock_resp.dict())
+    # Test extraction directly on MockResponse object (not just .dict())
+    tool_calls = _extract_tool_calls(mock_resp)
     assert len(tool_calls) == 1
     assert tool_calls[0].id == "call_1"
     assert tool_calls[0].name == "read_pr_file"
     assert tool_calls[0].arguments == '{"path": "test.py"}'
+    turn = AssistantTurn(content=content, finish_reason=finish_reason, tool_calls=tool_calls)
+    assert turn.has_tool_calls
+    assert turn.tool_calls[0].arguments == '{"path": "test.py"}'
+
+
+@pytest.mark.asyncio
+async def test_streaming_mock_response_direct_tool_call_reconstruction():
+    """Verify streaming fragments reconstruct across chunks into MockResponse and extract correctly."""
+    async def mock_multi_fragment_stream():
+        chunks = [
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(
+                            content=None,
+                            tool_calls=[
+                                SimpleNamespace(
+                                    index=0,
+                                    id="call_fragmented",
+                                    type="function",
+                                    function=SimpleNamespace(name="read_pr_file", arguments='{"path": "src/'),
+                                )
+                            ],
+                        ),
+                        finish_reason=None,
+                    )
+                ]
+            ),
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(
+                            content=None,
+                            tool_calls=[
+                                SimpleNamespace(
+                                    index=0,
+                                    id=None,
+                                    type=None,
+                                    function=SimpleNamespace(name=None, arguments='core/algo.py"}'),
+                                )
+                            ],
+                        ),
+                        finish_reason="tool_calls",
+                    )
+                ]
+            ),
+        ]
+        for c in chunks:
+            yield c
+
+    content, finish_reason, mock_resp = await _handle_streaming_response(mock_multi_fragment_stream(), model="gpt-4o")
+    # Verify mock_resp itself exposes .choices and .dict()
+    assert hasattr(mock_resp, "choices")
+    assert len(mock_resp.choices) == 1
+    # Extract tool calls directly from MockResponse instance
+    extracted_tool_calls = _extract_tool_calls(mock_resp)
+    assert len(extracted_tool_calls) == 1
+    assert extracted_tool_calls[0].id == "call_fragmented"
+    assert extracted_tool_calls[0].name == "read_pr_file"
+    assert extracted_tool_calls[0].arguments == '{"path": "src/core/algo.py"}'
+
+    turn = AssistantTurn(content=content, finish_reason=finish_reason, tool_calls=extracted_tool_calls)
+    assert turn.has_tool_calls
+    assert len(turn.tool_calls) == 1
+    assert turn.tool_calls[0].arguments == '{"path": "src/core/algo.py"}'
 
 
 @pytest.mark.asyncio

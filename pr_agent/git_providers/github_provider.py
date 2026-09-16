@@ -366,9 +366,11 @@ class GithubProvider(GitProvider):
                 patch = file.patch
                 is_renamed = file.status == "renamed" and getattr(file, "previous_filename", None)
                 old_filename = file.previous_filename if is_renamed else None
+                head_file_is_complete = True
                 if is_close_to_rate_limit:
                     new_file_content_str = ""
                     original_file_content_str = ""
+                    head_file_is_complete = False
                 else:
                     # allow only a limited number of files to be fully loaded. We can manage the rest with diffs only
                     counter_valid += 1
@@ -380,8 +382,19 @@ class GithubProvider(GitProvider):
 
                     if avoid_load:
                         new_file_content_str = ""
+                        head_file_is_complete = False
                     else:
-                        new_file_content_str = self._get_pr_file_content(file, self.pr.head.sha)  # communication with GitHub
+                        if file.status == 'removed':
+                            new_file_content_str = ""
+                            head_file_is_complete = False
+                        else:
+                            try:
+                                new_file_content_str = self._get_pr_file_content(
+                                    file, self.pr.head.sha, propagate_errors=True
+                                )  # communication with GitHub
+                            except Exception:
+                                new_file_content_str = ""
+                                head_file_is_complete = False
 
                     if self.incremental.is_incremental and self.unreviewed_files_map:
                         original_file_content_str = self._get_pr_file_content(
@@ -392,8 +405,12 @@ class GithubProvider(GitProvider):
                         if avoid_load:
                             original_file_content_str = ""
                         else:
-                            original_file_content_str = self._get_pr_file_content(file, merge_base_commit.sha, path=old_filename)
-                            # original_file_content_str = self._get_pr_file_content(file, self.pr.base.sha)
+                            try:
+                                original_file_content_str = self._get_pr_file_content(
+                                    file, merge_base_commit.sha, path=old_filename
+                                )
+                            except Exception:
+                                original_file_content_str = ""
                         if not patch:
                             patch = load_large_diff(file.filename, new_file_content_str, original_file_content_str)
 
@@ -419,11 +436,17 @@ class GithubProvider(GitProvider):
                     num_plus_lines = len([line for line in patch_lines if line.startswith('+')])
                     num_minus_lines = len([line for line in patch_lines if line.startswith('-')])
 
-                file_patch_canonical_structure = FilePatchInfo(original_file_content_str, new_file_content_str, patch,
-                                                               file.filename, edit_type=edit_type,
-                                                               old_filename=old_filename,
-                                                               num_plus_lines=num_plus_lines,
-                                                               num_minus_lines=num_minus_lines,)
+                file_patch_canonical_structure = FilePatchInfo(
+                    original_file_content_str,
+                    new_file_content_str,
+                    patch,
+                    file.filename,
+                    edit_type=edit_type,
+                    old_filename=old_filename,
+                    num_plus_lines=num_plus_lines,
+                    num_minus_lines=num_minus_lines,
+                    head_file_is_complete=head_file_is_complete,
+                )
                 diff_files.append(file_patch_canonical_structure)
             if invalid_files_names:
                 get_logger().info(f"Filtered out files with invalid extensions: {invalid_files_names}")
@@ -1624,7 +1647,7 @@ class GithubProvider(GitProvider):
     def _get_pr(self):
         return self._get_repo().get_pull(self.pr_num)
 
-    def get_pr_file_content(self, file_path: str, branch: str) -> str:
+    def get_pr_file_content(self, file_path: str, branch: str, propagate_errors: bool = False) -> str:
         try:
             file_content_str = str(
                 self._get_repo()
@@ -1632,6 +1655,8 @@ class GithubProvider(GitProvider):
                 .decoded_content.decode()
             )
         except Exception:
+            if propagate_errors:
+                raise
             file_content_str = ""
         return file_content_str
 
@@ -1651,8 +1676,10 @@ class GithubProvider(GitProvider):
             branch=branch,
         )
 
-    def _get_pr_file_content(self, file: FilePatchInfo, sha: str, path: str = None) -> str:
-        return self.get_pr_file_content(path or file.filename, sha)
+    def _get_pr_file_content(
+        self, file: FilePatchInfo, sha: str, path: str = None, propagate_errors: bool = False
+    ) -> str:
+        return self.get_pr_file_content(path or file.filename, sha, propagate_errors=propagate_errors)
 
     def publish_labels(self, pr_types):
         try:

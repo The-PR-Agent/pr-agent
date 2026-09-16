@@ -1,5 +1,5 @@
 import json
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -38,6 +38,10 @@ def _make_pr_questions(
     git_provider.get_diff_files.return_value = diff_files or []
     obj.git_provider = git_provider
     obj._diff_files = diff_files
+    token_handler = MagicMock()
+    token_handler.count_tokens = MagicMock(return_value=10)
+    token_handler.prompt_tokens = 500
+    obj.token_handler = token_handler
     if ai_handler is None:
         ai_handler = MagicMock()
         ai_handler.supports_tool_calling = MagicMock(return_value=True)
@@ -593,7 +597,7 @@ class TestPromptTemplateToolsConditional:
     def test_prompt_template_renders_tool_instructions_only_when_enabled(self):
         from jinja2 import Environment, StrictUndefined
 
-        env = Environment(undefined=StrictUndefined)
+        env = Environment(undefined=StrictUndefined, autoescape=True)
         template_str = get_settings().pr_questions_prompt.system
 
         vars_disabled = {"enable_tools": False, "skills_context": "", "extra_instructions": ""}
@@ -603,3 +607,171 @@ class TestPromptTemplateToolsConditional:
         vars_enabled = {"enable_tools": True, "skills_context": "", "extra_instructions": ""}
         rendered_enabled = env.from_string(template_str).render(vars_enabled)
         assert "If you are provided with a tool to read file contents" in rendered_enabled
+
+
+class TestContextWindowBudget:
+    @pytest.mark.asyncio
+    async def test_diff_reserves_continuation_when_tools_enabled(self, monkeypatch):
+        snapshot = snapshot_settings(_SETTINGS_KEYS)
+        try:
+            get_settings().set("pr_questions.enable_tools", True)
+            get_settings().set("pr_questions.max_tool_tokens", 4000)
+            pr = _make_pr_questions()
+            pr.token_handler = MagicMock()
+            pr.token_handler.prompt_tokens = 500
+
+            with patch("pr_agent.tools.pr_questions.get_pr_diff", return_value="some diff") as mock_get_diff, \
+                 patch.object(pr, "_get_prediction", new_callable=AsyncMock):
+                await pr._prepare_prediction("gpt-4o")
+
+                assert mock_get_diff.called
+                passed_handler = mock_get_diff.call_args[0][1]
+                # Should be original 500 + max_tool_tokens (4000) + overhead (150) = 4650
+                assert passed_handler.prompt_tokens == 4650
+                # Original token_handler prompt_tokens should not be mutated
+                assert pr.token_handler.prompt_tokens == 500
+        finally:
+            restore_settings(snapshot)
+
+    @pytest.mark.asyncio
+    async def test_diff_no_reservation_when_tools_disabled(self):
+        pr = _make_pr_questions()
+        pr.token_handler = MagicMock()
+        pr.token_handler.prompt_tokens = 500
+
+        with patch("pr_agent.tools.pr_questions.get_pr_diff", return_value="some diff") as mock_get_diff, \
+             patch.object(pr, "_get_prediction", new_callable=AsyncMock):
+            await pr._prepare_prediction("gpt-4o")
+
+            assert mock_get_diff.called
+            passed_handler = mock_get_diff.call_args[0][1]
+            assert passed_handler.prompt_tokens == 500
+
+    def test_execute_read_pr_file_respects_max_tokens_limit(self):
+        diff_file = FilePatchInfo(
+            base_file="",
+            head_file="line\n" * 1000,
+            patch="patch",
+            filename="big.py",
+            edit_type=EDIT_TYPE.MODIFIED,
+            head_file_is_complete=True,
+        )
+        pr = _make_pr_questions(diff_files=[diff_file])
+
+        # When max_tokens_limit is explicitly constrained to 50 tokens
+        raw_res = pr._execute_read_pr_file(json.dumps({"path": "big.py"}), max_tokens_limit=50)
+        res = json.loads(raw_res)
+        assert res["path"] == "big.py"
+        assert res.get("truncated") is True
+        # Content should be clipped to around 50 tokens
+        assert len(res["content"]) < 500
+
+
+class TestGithubProviderHeadFileCompleteness:
+    def test_github_provider_empty_file_remains_complete(self):
+        from pr_agent.git_providers.github_provider import GithubProvider
+        provider = GithubProvider.__new__(GithubProvider)
+        provider.diff_files = []
+        provider.repo_obj = MagicMock()
+        provider.pr = MagicMock()
+        provider.pr.base.sha = "base_sha"
+        provider.pr.head.sha = "head_sha"
+        provider.incremental = MagicMock(is_incremental=False)
+        provider.unreviewed_files_map = {}
+
+        mock_file = MagicMock()
+        mock_file.filename = "empty.txt"
+        mock_file.status = "modified"
+        mock_file.patch = "@@ -0,0 +0,0 @@"
+        mock_file.previous_filename = None
+
+        provider.get_files = MagicMock(return_value=[mock_file])
+        provider._get_pr_file_content = MagicMock(return_value="")  # Genuine empty file returned
+
+        diff_files = provider._get_diff_files()
+        assert len(diff_files) == 1
+        assert diff_files[0].head_file == ""
+        assert diff_files[0].head_file_is_complete is True
+
+    def test_github_provider_avoid_load_marks_incomplete(self):
+        from pr_agent.git_providers.github_provider import MAX_FILES_ALLOWED_FULL, GithubProvider
+
+        provider = GithubProvider.__new__(GithubProvider)
+        provider.diff_files = []
+        provider.repo_obj = MagicMock()
+        provider.pr = MagicMock()
+        provider.pr.base.sha = "base_sha"
+        provider.pr.head.sha = "head_sha"
+        provider.incremental = MagicMock(is_incremental=False)
+        provider.unreviewed_files_map = {}
+
+        files = []
+        for i in range(MAX_FILES_ALLOWED_FULL + 5):
+            f = MagicMock()
+            f.filename = f"file_{i}.py"
+            f.status = "modified"
+            f.patch = "@@ -1 +1 @@\n-a\n+b"
+            f.previous_filename = None
+            files.append(f)
+
+        provider.get_files = MagicMock(return_value=files)
+        provider._get_pr_file_content = MagicMock(return_value="content")
+
+        diff_files = provider._get_diff_files()
+        for i, df in enumerate(diff_files):
+            if i < MAX_FILES_ALLOWED_FULL - 1:
+                assert df.head_file_is_complete is True
+                assert df.head_file == "content"
+            else:
+                assert df.head_file_is_complete is False
+                assert df.head_file == ""
+
+    def test_github_provider_content_exception_marks_incomplete(self):
+        from pr_agent.git_providers.github_provider import GithubProvider
+        provider = GithubProvider.__new__(GithubProvider)
+        provider.diff_files = []
+        provider.repo_obj = MagicMock()
+        provider.pr = MagicMock()
+        provider.pr.base.sha = "base_sha"
+        provider.pr.head.sha = "head_sha"
+        provider.incremental = MagicMock(is_incremental=False)
+        provider.unreviewed_files_map = {}
+
+        mock_file = MagicMock()
+        mock_file.filename = "unreachable.py"
+        mock_file.status = "modified"
+        mock_file.patch = "@@ -1 +1 @@"
+        mock_file.previous_filename = None
+
+        provider.get_files = MagicMock(return_value=[mock_file])
+        provider._get_pr_file_content = MagicMock(side_effect=Exception("Rate limit or API error"))
+
+        diff_files = provider._get_diff_files()
+        assert len(diff_files) == 1
+        assert diff_files[0].head_file == ""
+        assert diff_files[0].head_file_is_complete is False
+
+    def test_github_provider_removed_file_marks_incomplete(self):
+        from pr_agent.git_providers.github_provider import GithubProvider
+        provider = GithubProvider.__new__(GithubProvider)
+        provider.diff_files = []
+        provider.repo_obj = MagicMock()
+        provider.pr = MagicMock()
+        provider.pr.base.sha = "base_sha"
+        provider.pr.head.sha = "head_sha"
+        provider.incremental = MagicMock(is_incremental=False)
+        provider.unreviewed_files_map = {}
+
+        mock_file = MagicMock()
+        mock_file.filename = "deleted.py"
+        mock_file.status = "removed"
+        mock_file.patch = "@@ -1 +0,0 @@\n-old"
+        mock_file.previous_filename = None
+
+        provider.get_files = MagicMock(return_value=[mock_file])
+        provider._get_pr_file_content = MagicMock(return_value="")
+
+        diff_files = provider._get_diff_files()
+        assert len(diff_files) == 1
+        assert diff_files[0].head_file == ""
+        assert diff_files[0].head_file_is_complete is False

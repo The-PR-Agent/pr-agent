@@ -9,7 +9,11 @@ from jinja2 import Environment, StrictUndefined
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.ai_handlers.litellm_helpers import AssistantTurn
-from pr_agent.algo.pr_processing import get_pr_diff, retry_with_fallback_models
+from pr_agent.algo.pr_processing import (
+    OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
+    get_pr_diff,
+    retry_with_fallback_models,
+)
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.types import EDIT_TYPE
@@ -18,6 +22,7 @@ from pr_agent.algo.utils import (
     clip_tokens,
     decode_user_text_args,
     format_pr_questions_header,
+    get_max_tokens,
 )
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
@@ -44,6 +49,7 @@ READ_PR_FILE_TOOL = {
     },
 }
 _MAX_TOOL_CALLS_PER_TURN = 1
+_TOOL_CALL_OVERHEAD_TOKENS = 150
 
 
 class PRQuestions:
@@ -160,7 +166,15 @@ class PRQuestions:
         return img_path
 
     async def _prepare_prediction(self, model: str):
-        self.patches_diff = get_pr_diff(self.git_provider, self.token_handler, model)
+        token_handler = self.token_handler
+        if self._should_use_tools(model):
+            max_tool_tokens = get_settings().pr_questions.get("max_tool_tokens", 4000)
+            token_handler = copy.copy(self.token_handler)
+            token_handler.prompt_tokens = (
+                self.token_handler.prompt_tokens + max_tool_tokens + _TOOL_CALL_OVERHEAD_TOKENS
+            )
+
+        self.patches_diff = get_pr_diff(self.git_provider, token_handler, model)
         if self.patches_diff:
             get_logger().debug("PR diff", artifact=self.patches_diff)
             self.prediction = await self._get_prediction(model)
@@ -199,9 +213,12 @@ class PRQuestions:
                     file_map[f.base_filename.lstrip("/")] = f
         return file_map
 
-    def _execute_read_pr_file(self, arguments_json: str) -> str:
+    def _execute_read_pr_file(self, arguments_json: str, max_tokens_limit: int | None = None) -> str:
         """Validate and execute a read_pr_file tool call. Returns a JSON string."""
-        max_tool_tokens = get_settings().pr_questions.get("max_tool_tokens", 4000)
+        configured_max = get_settings().pr_questions.get("max_tool_tokens", 4000)
+        max_tool_tokens = configured_max
+        if max_tokens_limit is not None:
+            max_tool_tokens = min(configured_max, max(0, max_tokens_limit))
 
         # Parse arguments
         try:
@@ -359,7 +376,22 @@ class PRQuestions:
             get_logger().warning(f"Unknown tool call '{call.name}'; returning error to model")
             tool_result = json.dumps({"error": f"Unknown tool: '{call.name}'"})
         else:
-            tool_result = self._execute_read_pr_file(call.arguments)
+            max_model_tokens = get_max_tokens(model)
+            count_fn = (
+                self.token_handler.count_tokens
+                if hasattr(self, "token_handler") and self.token_handler
+                else lambda text: len(text) // 4
+            )
+            used_tokens = (
+                count_fn(system_prompt)
+                + count_fn(user_prompt)
+                + count_fn(turn1.content or "")
+                + count_fn(call.arguments or "")
+                + _TOOL_CALL_OVERHEAD_TOKENS
+                + OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD
+            )
+            remaining_budget = max_model_tokens - used_tokens
+            tool_result = self._execute_read_pr_file(call.arguments, max_tokens_limit=remaining_budget)
             get_logger().debug("Tool result", artifact={"tool": call.name, "path": call.arguments})
 
         # Build continuation messages

@@ -183,6 +183,10 @@ class MockResponse:
         if model is not None:
             self._data["model"] = model
 
+    @property
+    def choices(self):
+        return self._data["choices"]
+
     def dict(self):
         data = self._data.copy()
         if self.usage is not None:
@@ -200,7 +204,20 @@ def _extract_tool_calls(response_obj) -> list[ToolCall]:
     if not response_obj:
         return []
     try:
-        choices = response_obj.get("choices") if isinstance(response_obj, dict) else getattr(response_obj, "choices", None)
+        if isinstance(response_obj, dict):
+            response_data = response_obj
+        elif hasattr(response_obj, "dict") and callable(response_obj.dict):
+            response_data = response_obj.dict()
+        elif hasattr(response_obj, "model_dump") and callable(response_obj.model_dump):
+            response_data = response_obj.model_dump()
+        else:
+            response_data = response_obj
+
+        choices = (
+            response_data.get("choices")
+            if isinstance(response_data, dict)
+            else getattr(response_data, "choices", None)
+        )
         if not choices:
             return []
         choice = choices[0]
@@ -220,7 +237,14 @@ def _extract_tool_calls(response_obj) -> list[ToolCall]:
             fn = tc.get("function", {}) if isinstance(tc, dict) else getattr(tc, "function", {})
             fn_name = fn.get("name", "") if isinstance(fn, dict) else getattr(fn, "name", "")
             fn_args = fn.get("arguments", "") if isinstance(fn, dict) else getattr(fn, "arguments", "")
-            tool_calls.append(ToolCall(id=tc_id, type=tc_type, name=fn_name, arguments=fn_args))
+            tool_calls.append(
+                ToolCall(
+                    id=str(tc_id or ""),
+                    type=str(tc_type or "function"),
+                    name=str(fn_name or ""),
+                    arguments=str(fn_args or ""),
+                )
+            )
         return tool_calls
     except Exception:
         return []
