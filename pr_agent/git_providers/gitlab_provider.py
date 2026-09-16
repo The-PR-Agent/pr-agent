@@ -1472,8 +1472,9 @@ class GitLabProvider(GitProvider):
         return self.mr.title
 
     def get_languages(self):
-        languages = self.gl.projects.get(self.id_project).languages()
-        return languages
+        if not hasattr(self, "_languages"):
+            self._languages = self.gl.projects.get(self.id_project).languages()
+        return self._languages
 
     def get_pr_branch(self):
         return self.mr.source_branch
