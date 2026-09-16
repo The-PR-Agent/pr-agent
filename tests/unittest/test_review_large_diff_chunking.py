@@ -266,6 +266,79 @@ async def test_a_malformed_chunk_is_retried_without_repeating_successful_chunks(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("has_successful_chunks", [True, False])
+async def test_exhausted_fallbacks_publish_partial_review_only_when_chunks_succeeded(
+    chunking_enabled, has_successful_chunks,
+):
+    reviewer = _make_reviewer()
+    reviewer.vars = {}
+    reviewer.git_provider.should_publish_review_as_thread.return_value = False
+    reviewer.git_provider.supports_review_comment_identity.return_value = False
+    chunk_c = CHUNK_A.replace("a.py", "c.py").replace("the index is never checked", "the value is never checked")
+    primary = [CHUNK_A, "review: {}", chunk_c] if has_successful_chunks else ["review: {}"] * 3
+    fallback = [RuntimeError("context limit exceeded")] * (1 if has_successful_chunks else 3)
+    reviewer._get_prediction = AsyncMock(side_effect=primary + fallback)
+    settings_values = {
+        "config.model": "primary",
+        "config.fallback_models": ["fallback"],
+        "config.publish_output": True,
+        "config.is_auto_command": False,
+        "config.propagate_tool_errors": False,
+        "pr_reviewer.persistent_comment": False,
+        "pr_reviewer.publish_error_details": False,
+    }
+    snapshot = snapshot_settings(settings_values)
+    try:
+        for key, value in settings_values.items():
+            get_settings().set(key, value)
+        with (
+            patch("pr_agent.tools.pr_reviewer.extract_and_cache_pr_tickets", new_callable=AsyncMock),
+            patch("pr_agent.tools.pr_reviewer.fit_related_tickets_to_prompt_budget",
+                  return_value=({}, reviewer.token_handler)),
+            patch("pr_agent.algo.pr_processing.route_primary_model", return_value=None),
+            patch("pr_agent.algo.pr_processing._get_all_deployments", return_value=[None, None]),
+            patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
+            patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
+                  return_value=(["chunk-a", "chunk-b", "chunk-c"], [])),
+            patch.object(reviewer, "_prepare_pr_review", side_effect=lambda: _render_review(reviewer)) as render,
+        ):
+            # Exercise the real fallback chain and run()'s terminal publication path.
+            await reviewer.run()
+    finally:
+        restore_settings(snapshot)
+
+    calls = [call.args for call in reviewer._get_prediction.await_args_list]
+    assert calls[:3] == [("primary", "chunk-a"), ("primary", "chunk-b"), ("primary", "chunk-c")]
+    published = reviewer.git_provider.publish_comment.call_args.args[0]
+    if not has_successful_chunks:
+        render.assert_not_called()
+        assert published == "Failed to review PR"
+        assert reviewer.prediction_data is None
+        assert calls[3:] == [("fallback", chunk) for chunk in ("chunk-a", "chunk-b", "chunk-c")]
+        return
+
+    assert calls[3:] == [("fallback", "chunk-b")]
+    assert reviewer.review_chunk_count == 3
+    assert reviewer.review_failed_chunk_count == 1
+    assert reviewer.remaining_files_list == []
+    assert "1 chunk(s) failed and are not covered by this review." in published
+    issues = reviewer.prediction_data["review"]["key_issues_to_review"]
+    assert [issue["relevant_file"].strip() for issue in issues] == ["a.py", "c.py"]
+
+    previous_state = reconcile_review_findings(
+        None, [{"path": "b.py", "body": "old finding", "line_start": 3, "line_end": 4}],
+        allow_resolution=False,
+    ).state
+    reviewer._review_finding_state_enabled = lambda: True
+    reviewer._load_review_finding_state = lambda: ParsedReviewState(previous_state, present=True, valid=True)
+    reviewer._review_head_sha = lambda: "head-2"
+    reviewer._review_run_id = lambda: "run-2"
+    reviewer._prepare_review_finding_state(reviewer.prediction_data)
+    assert reviewer._review_state_result.state["last_run"]["complete"] is False
+    assert reviewer._review_state_result.state["findings"][0]["state"] != "RESOLVED"
+
+
+@pytest.mark.asyncio
 async def test_cached_chunks_are_used_when_fallback_diff_fits(chunking_enabled):
     reviewer = _make_reviewer()
     reviewer._get_prediction = AsyncMock(side_effect=[CHUNK_A, RuntimeError("model refused"), CHUNK_B])
@@ -355,7 +428,7 @@ def _render_review(reviewer):
         patch("pr_agent.tools.pr_reviewer.github_action_output"),
         patch("pr_agent.tools.pr_reviewer.convert_to_markdown_v2", return_value="original review"),
     ):
-        return reviewer._prepare_pr_review()
+        return PRReviewer._prepare_pr_review(reviewer)
 
 
 def test_a_chunked_review_says_how_many_chunks_it_was_built_from():

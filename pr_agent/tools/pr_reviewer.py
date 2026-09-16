@@ -305,8 +305,13 @@ class PRReviewer:
             if get_settings().config.publish_output and not get_settings().config.get('is_auto_command', False):
                 progress_response = self.git_provider.publish_comment("Preparing review...", is_temporary=True)
 
-            await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.REGULAR,
-                                             git_provider=self.git_provider)
+            try:
+                await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.REGULAR,
+                                                 git_provider=self.git_provider)
+            except Exception:
+                if not self._merge_cached_review_chunks():
+                    raise
+                get_logger().warning("Fallback models exhausted; publishing successful review chunks")
             if not self.prediction:
                 return None
 
@@ -865,14 +870,23 @@ class PRReviewer:
                 raise chunk_errors[0]
             raise ValueError("No valid review output was produced for one or more chunks")
 
-        # the raw text is kept for logging only; the merged verdict is in self.prediction_data
-        raw_predictions = [chunk_results[index][0] for index in range(len(patches_diff_list))]
-        chunk_outputs = [chunk_results[index][1] for index in range(len(patches_diff_list))]
+        return self._merge_cached_review_chunks()
+
+    def _merge_cached_review_chunks(self) -> bool:
+        """Merge successful chunks in order, retaining incomplete coverage after exhausted retries."""
+        chunk_results = getattr(self, "_chunked_results", {})
+        if not chunk_results:
+            return False
+
+        # The raw text is kept for logging only; the merged verdict is in self.prediction_data.
+        indices = sorted(chunk_results)
+        raw_predictions = [chunk_results[index][0] for index in indices]
+        chunk_outputs = [chunk_results[index][1] for index in indices]
         self.prediction = "\n".join(raw_predictions)
         self.prediction_data = merge_review_chunks(chunk_outputs)
-        self.review_chunk_count = len(patches_diff_list)
-        self.review_failed_chunk_count = 0
-        self.remaining_files_list = remaining_files_list
+        self.review_chunk_count = len(self._chunked_patches_diff_list)
+        self.review_failed_chunk_count = self.review_chunk_count - len(chunk_results)
+        self.remaining_files_list = self._chunked_remaining_files_list
         return True
 
     async def _get_prediction(self, model: str, patches_diff: Optional[str] = None) -> str:
