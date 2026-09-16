@@ -1,6 +1,8 @@
 import re
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from pr_agent.algo import inline_comment_dedup as dedup
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
 
@@ -15,7 +17,7 @@ class _FakeTargetFile:
     filename = "a.py"
     old_filename = "a.py"
     head_file = "line1\nline2\nline3\n"
-    patch = "@@ -1,3 +1,3 @@\n line1\n line2\n line3\n"
+    patch = "@@ -1,2 +1,3 @@\n line1\n line2\n+line3\n"
 
 
 def _suggestion(**overrides):
@@ -108,6 +110,27 @@ def test_context_line_suggestion_sends_both_gitlab_line_numbers():
     position = p.mr.discussions.create.call_args.args[0]['position']
     assert position['old_line'] == 2
     assert position['new_line'] == 2
+
+
+@pytest.mark.parametrize("start, expected", [
+    (4, (3, 4)),  # context line whose text also appears as the added line 2
+    (3, (2, 3)),  # blank context line
+])
+def test_anchor_is_positional_not_first_text_match(start, expected):
+    class _RepeatingTargetFile(_FakeTargetFile):
+        head_file = "a\nb\n\nb\n"
+        patch = "@@ -1,3 +1,4 @@\n a\n+b\n \n b\n"
+
+    p = _gl_provider()
+    p.get_diff_files = MagicMock(return_value=[_RepeatingTargetFile()])
+    gs = _settings(as_review=False)
+    try:
+        assert p.publish_code_suggestions([_suggestion(relevant_lines_start=start, relevant_lines_end=start)]) is True
+    finally:
+        gs.stop()
+
+    position = p.mr.discussions.create.call_args.args[0]['position']
+    assert (position['old_line'], position['new_line']) == expected
 
 
 def test_flag_on_queues_draft_notes_and_bulk_publishes_once():
