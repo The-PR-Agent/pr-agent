@@ -55,11 +55,19 @@ def prompt_budget(monkeypatch):
     def configure(model_limits):
         def make_budget(model, pr, variables, system, user, **_kwargs):
             handler = _PromptCountingTokenHandler(pr, variables, system, user, model=model)
+
+            def require_input_capacity(default_output_tokens, **_capacity_kwargs):
+                available = model_limits[model] - default_output_tokens - handler.prompt_tokens
+                if available <= 0:
+                    raise ValueError("required prompt leaves no input capacity")
+                return available
+
             return SimpleNamespace(
                 token_handler=handler,
                 prompt_tokens=handler.prompt_tokens,
                 input_token_limit=lambda *_args, **_kwargs: model_limits[model]
                 - 2 * OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+                require_input_capacity=require_input_capacity,
             )
 
         monkeypatch.setattr(
@@ -179,6 +187,25 @@ def test_baseline_overflow_uses_no_ticket_context(prompt_budget):
     assert prompt_vars["related_tickets"] == []
     assert handler.prompt_tokens == 600
     assert raw_vars["related_tickets"] == _tickets(2)
+
+
+def test_fixed_prompt_capacity_is_rechecked_for_each_model_attempt(prompt_budget):
+    _PromptCountingTokenHandler.baseline_tokens = 2_100
+    prompt_budget({"primary": 3_500, "fallback": 4_000})
+    try:
+        with pytest.raises(ValueError, match="no input capacity"):
+            fit_related_tickets_to_prompt_budget(
+                object(), {"related_tickets": []}, "system", "user", "primary"
+            )
+
+        prompt_vars, handler = fit_related_tickets_to_prompt_budget(
+            object(), {"related_tickets": []}, "system", "user", "fallback"
+        )
+    finally:
+        _PromptCountingTokenHandler.baseline_tokens = 100
+
+    assert prompt_vars["related_tickets"] == []
+    assert handler.model == "fallback"
 
 
 def _make_tool(tool_name):

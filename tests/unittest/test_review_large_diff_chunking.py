@@ -131,6 +131,41 @@ async def test_a_truncated_diff_is_reviewed_chunk_by_chunk_and_merged(chunking_e
 
 
 @pytest.mark.asyncio
+async def test_final_fit_clipping_marks_a_review_chunk_failed(chunking_enabled):
+    reviewer = _make_reviewer()
+    reviewer._raw_prompt_vars = None
+    reviewer.vars = {"diff": ""}
+    reviewer.ai_handler.chat_completion = AsyncMock(return_value=(CHUNK_A, "stop"))
+
+    class SelectiveBudget:
+        def fit_prompt_variable(self, _variables, _name, optional_text, **_kwargs):
+            fitted_text = optional_text[:-1] if optional_text == "chunk-b" else optional_text
+            return SimpleNamespace(
+                optional_text=fitted_text,
+                system_prompt="system",
+                user_prompt="user",
+            )
+
+    with (
+        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
+        patch(
+            "pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
+            return_value=(["chunk-a", "chunk-b"], []),
+        ),
+        patch(
+            "pr_agent.tools.pr_reviewer.AttemptTokenBudget.for_attempt",
+            return_value=SelectiveBudget(),
+        ),
+    ):
+        await reviewer._prepare_prediction("model")
+
+    assert reviewer.review_chunk_count == 2
+    assert reviewer.review_failed_chunk_count == 1
+    assert reviewer.remaining_files_list == []
+    reviewer.ai_handler.chat_completion.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_chunked_review_reuses_the_prepared_diff_for_the_same_model_attempt(chunking_enabled):
     reviewer = _make_reviewer()
     reviewer._get_prediction = AsyncMock(side_effect=[CHUNK_A, CHUNK_B])

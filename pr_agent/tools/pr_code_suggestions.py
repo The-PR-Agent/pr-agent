@@ -838,6 +838,10 @@ class PRCodeSuggestions:
             ai_handler=self.ai_handler,
             output_token_reserve=output_token_reserve,
         )
+        self._suggestion_attempt_budget.require_input_capacity(
+            OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+            preserve_minimum=True,
+        )
         self.patches_diff = get_pr_diff(self.git_provider,
                                         self._suggestion_attempt_budget.token_handler,
                                         model,
@@ -1829,6 +1833,10 @@ class PRCodeSuggestions:
             self.pr_code_suggestions_prompt_user,
             ai_handler=self.ai_handler,
             output_token_reserve=output_token_reserve,
+        )
+        self._suggestion_attempt_budget.require_input_capacity(
+            OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+            preserve_minimum=True,
         )
         attempt_token_handler = self._suggestion_attempt_budget.token_handler
         # get PR diff

@@ -9,6 +9,7 @@ from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
+    OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
     get_pr_diff,
     retry_with_fallback_models,
 )
@@ -138,6 +139,10 @@ class PRUpdateChangelog:
             get_settings().pr_update_changelog_prompt.user,
             ai_handler=self.ai_handler,
             output_token_reserve=output_token_reserve,
+        )
+        budget.require_input_capacity(
+            OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+            preserve_minimum=True,
         )
         patches_diff = get_pr_diff(
             self.git_provider,

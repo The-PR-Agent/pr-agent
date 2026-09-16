@@ -1025,6 +1025,10 @@ class PRReviewer:
             default_output_tokens=OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
             preserve_minimum=True,
         )
+        if fitted.optional_text != patches_diff:
+            raise ValueError(
+                f"The complete packed review diff does not fit the token limit for {model}"
+            )
 
         response, finish_reason = await self.ai_handler.chat_completion(
             model=model,

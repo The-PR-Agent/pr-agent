@@ -137,6 +137,30 @@ async def test_prepare_prediction_keeps_incremental_review_compatible_with_tuple
     assert reviewer.prediction == _VALID_PREDICTION
 
 
+@pytest.mark.asyncio
+async def test_final_review_fit_rejects_untracked_diff_clipping():
+    reviewer = _make_prediction_reviewer()
+    reviewer.vars = {"diff": ""}
+    reviewer.ai_handler = SimpleNamespace(chat_completion=AsyncMock())
+
+    class ClippingBudget:
+        def fit_prompt_variable(self, _variables, _name, optional_text, **_kwargs):
+            return SimpleNamespace(
+                optional_text=optional_text[:-1],
+                system_prompt="system",
+                user_prompt="user",
+            )
+
+    with patch(
+        "pr_agent.tools.pr_reviewer.AttemptTokenBudget.for_attempt",
+        return_value=ClippingBudget(),
+    ):
+        with pytest.raises(ValueError, match="complete packed review diff"):
+            await reviewer._get_prediction("fallback-model", "complete-diff")
+
+    reviewer.ai_handler.chat_completion.assert_not_awaited()
+
+
 def _render_review(reviewer, remaining_files, supports_gfm_markdown=False):
     reviewer.prediction = "review:\n  summary: test"
     reviewer.remaining_files_list = remaining_files

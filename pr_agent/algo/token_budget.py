@@ -156,6 +156,22 @@ class AttemptTokenBudget:
             additional_input_reserve = 0
         return max(self.context_window - output_reserve - max(additional_input_reserve, 0), 0)
 
+    def require_input_capacity(
+        self,
+        default_output_tokens: int,
+        *,
+        preserve_minimum: bool = False,
+    ) -> int:
+        """Return remaining input capacity or fail this model attempt."""
+        available = self.available_tokens(
+            default_output_tokens,
+            preserve_minimum=preserve_minimum,
+            clamp=False,
+        )
+        if available <= 0:
+            raise ValueError(f"The required prompt leaves no input capacity for {self.model}")
+        return available
+
     def count_tokens(self, text: str, *, force_accurate: bool = False) -> int:
         """Count text with the tokenizer bound to this attempt."""
         if force_accurate:
@@ -290,6 +306,9 @@ class AttemptTokenBudget:
             return empty_prompt
 
         best_prompt = empty_prompt
+        marker_prompt = prepare(truncation_marker)
+        if marker_prompt.input_tokens <= input_limit:
+            best_prompt = marker_prompt
         low = 1
         high = len(optional_text)
         while low <= high:

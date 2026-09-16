@@ -166,6 +166,10 @@ class PRQuestions:
             ai_handler=self.ai_handler,
             output_token_reserve=output_token_reserve,
         )
+        budget.require_input_capacity(
+            OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+            preserve_minimum=True,
+        )
         patches_diff = get_pr_diff(
             self.git_provider,
             budget.token_handler,

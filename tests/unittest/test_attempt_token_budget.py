@@ -169,6 +169,15 @@ def test_input_token_limit_uses_attempt_reserve_and_extra_headroom(monkeypatch):
     assert budget.input_token_limit(100, additional_input_reserve=True) == 750
 
 
+def test_require_input_capacity_rejects_an_exhausted_attempt():
+    handler = FakeTokenHandler(prompt_tokens=900)
+    budget = token_budget_module.AttemptTokenBudget("small-model", handler, handler, 1_000)
+
+    assert budget.require_input_capacity(99) == 1
+    with pytest.raises(ValueError, match="leaves no input capacity"):
+        budget.require_input_capacity(100)
+
+
 @pytest.mark.parametrize(
     ("window", "reserve", "prompt", "expected"),
     [(1_000, 1_200, 0, -200), (1_000, 900, 200, -100), (1_000, 900, 100, 0), (1_000, 900, 99, 1)],
@@ -304,6 +313,27 @@ def test_fit_optional_text_preserves_the_requested_side_and_exact_prompts(
     assert fitted.system_prompt == "fixed"
     assert fitted.user_prompt == f"body:{fitted.optional_text}"
     assert fitted.input_tokens <= 29
+
+
+def test_fit_optional_text_keeps_marker_when_no_content_character_fits(monkeypatch):
+    handler = FakeTokenHandler()
+    budget = token_budget_module.AttemptTokenBudget("attempt-model", handler, handler, 9)
+    monkeypatch.setattr(
+        token_budget_module,
+        "token_counter",
+        lambda *, model, messages: sum(len(message["content"]) for message in messages),
+    )
+
+    fitted = budget.fit_optional_text(
+        "abcdefghi",
+        lambda optional: ("s", f"u:{optional}"),
+        ai_handler=object(),
+        default_output_tokens=1,
+        truncation_marker="[cut]",
+    )
+
+    assert fitted.optional_text == "[cut]"
+    assert fitted.input_tokens == 8
 
 
 def test_fit_optional_text_rejects_required_prompt_that_cannot_fit(monkeypatch):

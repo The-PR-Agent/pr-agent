@@ -394,6 +394,10 @@ def fit_related_tickets_to_prompt_budget(
         output_token_reserve=output_token_reserve,
     )
     if not raw_tickets:
+        budget.require_input_capacity(
+            OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+            preserve_minimum=True,
+        )
         return prompt_vars, budget.token_handler
 
     prompt_token_limit = budget.input_token_limit(
@@ -434,6 +438,11 @@ def fit_related_tickets_to_prompt_budget(
                 "model": model,
             },
         )
+
+    best_budget.require_input_capacity(
+        OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+        preserve_minimum=True,
+    )
 
     return prompt_vars, best_budget.token_handler
 

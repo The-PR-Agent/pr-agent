@@ -59,6 +59,9 @@ async def test_prepare_prediction_forwards_attempt_output_reserve(
     class FakeBudget:
         token_handler = attempt_handler
 
+        def require_input_capacity(self, *_args, **_kwargs):
+            return 1
+
         def fit_prompt_variable(self, _variables, _name, optional_text, **_kwargs):
             return SimpleNamespace(
                 optional_text=optional_text,
@@ -123,6 +126,9 @@ async def test_generate_labels_counts_custom_schema_before_packing_and_allows_em
     class FakeBudget:
         token_handler = object()
 
+        def require_input_capacity(self, *_args, **_kwargs):
+            return 1
+
         def fit_prompt_variable(self, _variables, _name, optional_text, **_kwargs):
             return SimpleNamespace(
                 optional_text=optional_text,
@@ -170,6 +176,9 @@ async def test_changelog_counts_pr_link_before_packing(monkeypatch):
     class FakeBudget:
         token_handler = object()
 
+        def require_input_capacity(self, *_args, **_kwargs):
+            return 1
+
         def fit_prompt_variable(self, _variables, _name, optional_text, **_kwargs):
             return SimpleNamespace(
                 optional_text=optional_text,
@@ -216,6 +225,9 @@ async def test_questions_keep_recent_history_before_diff_packing(monkeypatch):
             self.index = index
             self.token_handler = object()
 
+        def require_input_capacity(self, *_args, **_kwargs):
+            return 1
+
         def fit_prompt_variable(self, _variables, name, optional_text, **kwargs):
             fit_calls.append((self.index, name, optional_text, kwargs.get("keep")))
             fitted_text = "recent" if name == "conversation_history" else optional_text
@@ -247,4 +259,45 @@ async def test_questions_keep_recent_history_before_diff_packing(monkeypatch):
         (2, "diff", "diff", None),
     ]
     assert tool.vars["conversation_history"] == "old\nrecent"
+    tool._get_prediction.assert_awaited_once_with("fallback-model")
+
+
+@pytest.mark.asyncio
+async def test_questions_retry_candidate_rejects_exhausted_fixed_prompt(monkeypatch):
+    tool = questions_module.PRQuestions.__new__(questions_module.PRQuestions)
+    tool.git_provider = SimpleNamespace(pr=None)
+    tool.ai_handler = SimpleNamespace()
+    tool.vars = {"diff": "", "conversation_history": ""}
+    tool._get_prediction = AsyncMock(return_value="prediction")
+    get_pr_diff = MagicMock(return_value="diff")
+
+    class FakeBudget:
+        def __init__(self, model):
+            self.model = model
+            self.token_handler = object()
+
+        def require_input_capacity(self, *_args, **_kwargs):
+            if self.model == "small-model":
+                raise ValueError("required prompt leaves no input capacity")
+            return 1
+
+        def fit_prompt_variable(self, _variables, _name, optional_text, **_kwargs):
+            return SimpleNamespace(
+                optional_text=optional_text,
+                system_prompt="system",
+                user_prompt="user",
+            )
+
+    monkeypatch.setattr(
+        questions_module.AttemptTokenBudget,
+        "for_prompt_attempt",
+        lambda model, *_args, **_kwargs: FakeBudget(model),
+    )
+    monkeypatch.setattr(questions_module, "get_pr_diff", get_pr_diff)
+
+    with pytest.raises(ValueError, match="no input capacity"):
+        await tool._prepare_prediction("small-model")
+    await tool._prepare_prediction("fallback-model")
+
+    get_pr_diff.assert_called_once()
     tool._get_prediction.assert_awaited_once_with("fallback-model")
