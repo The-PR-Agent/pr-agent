@@ -581,14 +581,6 @@ class TestParseCodeSuggestionGfm:
         assert "<tr><td>relevant line</td>" in out
         assert "foo = 1" in out
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "parse_code_suggestion only left-strips a leading backtick from "
-            "relevant_line; the trailing backtick is not stripped. This xfail "
-            "encodes the desired symmetric stripping behavior."
-        ),
-    )
     def test_relevant_line_strips_both_backticks(self):
         suggestion = {
             "relevant_file": "src/app.py",
