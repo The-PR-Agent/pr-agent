@@ -210,7 +210,7 @@ async def test_reflection_supplies_the_numbered_fragment(
     result = await tool.self_reflect_on_suggestions(
         [{"one_sentence_summary": "Keep the shared prompt accurate"}],
         diff,
-        "test-model",
+        settings.config.model,
     )
 
     call = ai_handler.chat_completion.await_args.kwargs

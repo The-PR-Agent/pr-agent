@@ -2147,9 +2147,10 @@ class PRCodeSuggestions:
             raw_diff = variables["diff"]
             variables["diff"] = ""
             output_token_reserve = getattr(self.ai_handler, "get_output_token_reserve", None)
+            git_provider = getattr(self, "git_provider", None)
             budget = AttemptTokenBudget.for_prompt_attempt(
                 model,
-                getattr(self.git_provider, "pr", None),
+                getattr(git_provider, "pr", None),
                 variables,
                 system_template,
                 user_template,
