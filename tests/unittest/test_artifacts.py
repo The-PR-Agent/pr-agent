@@ -19,6 +19,9 @@ class TestResolveArtifactPathRobustness:
     def test_whitespace_path_returns_none(self):
         assert resolve_artifact_path("   ") is None
 
+    def test_embedded_null_path_returns_none(self):
+        assert resolve_artifact_path("bad\x00name") is None
+
     def test_oserror_during_resolve_returns_none(self, tmp_path):
         with patch("pr_agent.algo.artifacts.Path") as mock_path_cls:
             mock_path_cls.return_value.is_absolute.return_value = True

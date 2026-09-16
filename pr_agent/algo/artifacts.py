@@ -37,7 +37,7 @@ def resolve_artifact_path(path: str) -> Optional[Path]:
                 return None
 
         return resolved if resolved.is_file() else None
-    except OSError as e:
+    except (OSError, ValueError) as e:
         get_logger().warning(f"Failed to resolve artifact path '{path}': {e}")
         return None
 
