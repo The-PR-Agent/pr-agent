@@ -872,7 +872,8 @@ class PRReviewer:
                 raise prediction
             try:
                 data = self._load_valid_review_yaml(prediction, source=f"review chunk {chunk_index + 1}")
-                self._validate_review_schema(data)
+                if not self._validate_review_schema(data):
+                    raise ValueError(f"review chunk {chunk_index + 1} failed schema validation")
             except Exception as error:
                 chunk_errors.append(error)
                 get_logger().warning(f"Failed to parse review chunk {chunk_index + 1}; retrying it with fallback",

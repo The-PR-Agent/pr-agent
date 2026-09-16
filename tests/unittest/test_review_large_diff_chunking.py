@@ -536,7 +536,7 @@ async def test_chunks_without_nonempty_reviews_fail_the_model_attempt(chunking_e
 
 
 @pytest.mark.asyncio
-async def test_invalid_chunk_emits_one_schema_warning_before_rendering(chunking_enabled):
+async def test_invalid_chunk_is_retried_after_a_single_schema_warning(chunking_enabled):
     reviewer = _make_reviewer()
     reviewer._get_prediction = AsyncMock(side_effect=[
         "review:\n  score: 101\n  key_issues_to_review: []",
@@ -548,14 +548,25 @@ async def test_invalid_chunk_emits_one_schema_warning_before_rendering(chunking_
         patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
               return_value=(["chunk-a", "chunk-b"], [])),
         patch("pr_agent.tools.pr_reviewer.get_logger") as get_logger,
+        pytest.raises(ValueError, match="failed schema validation"),
     ):
         await reviewer._prepare_prediction("model")
-        reviewer._prepare_pr_review()
 
     warnings = get_logger.return_value.warning.call_args_list
     schema_warnings = [call for call in warnings if call.args == ("Review output failed schema validation",)]
     assert len(schema_warnings) == 1
     assert schema_warnings[0].kwargs["artifact"] == {"field": "review.score", "value": 101}
+    assert reviewer.prediction_data is None
+
+    reviewer._get_prediction.side_effect = [CHUNK_A]
+    await reviewer._prepare_chunked_prediction("model")
+    reviewer._prepare_pr_review()
+
+    assert reviewer.review_chunk_count == 2
+    assert reviewer.review_failed_chunk_count == 0
+    assert [call.args[1] for call in reviewer._get_prediction.await_args_list] == [
+        "chunk-a", "chunk-b", "chunk-a",
+    ]
 
 
 def _render_review(reviewer):
