@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import ceil, isfinite
 from typing import Callable, Literal
 
 from jinja2 import StrictUndefined
 from jinja2.sandbox import SandboxedEnvironment
-from litellm import token_counter
 
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import get_max_tokens
@@ -231,7 +229,7 @@ class AttemptTokenBudget:
         image_path: str | None = None,
         messages: list[dict] | None = None,
     ) -> int:
-        """Count the final request messages, including framing and optional image input."""
+        """Count the final request with the attempt tokenizer, framing, and image input."""
         if messages is None:
             user_content = user_prompt
             if image_path:
@@ -243,16 +241,6 @@ class AttemptTokenBudget:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},
             ]
-        model_token_count = None
-        try:
-            counted = token_counter(model=self.model, messages=messages)
-            if isinstance(counted, int) and not isinstance(counted, bool) and counted > 0:
-                model_token_count = counted
-            if model_token_count is not None and not image_path:
-                return model_token_count
-        except Exception as error:
-            get_logger().debug(f"Model-aware token counting failed for {self.model}: {error}")
-
         content_tokens = 0
         image_count = 0
         for message in messages:
@@ -272,7 +260,11 @@ class AttemptTokenBudget:
                     if isinstance(image_url, dict) and isinstance(image_url.get("url"), str):
                         content_tokens += self.count_tokens(image_url["url"])
                     image_count += 1
-        raw_estimate = content_tokens + MESSAGE_FRAMING_TOKEN_ALLOWANCE * len(messages) + REPLY_FRAMING_TOKEN_ALLOWANCE
+        request_tokens = (
+            content_tokens
+            + MESSAGE_FRAMING_TOKEN_ALLOWANCE * len(messages)
+            + REPLY_FRAMING_TOKEN_ALLOWANCE
+        )
         if image_count:
             raw_allowance = get_settings().get("config.image_input_token_allowance")
             image_allowance = _non_negative_int(raw_allowance)
@@ -280,28 +272,8 @@ class AttemptTokenBudget:
                 raise ValueError(
                     "config.image_input_token_allowance must be a non-negative integer"
                 )
-            raw_estimate += image_count * image_allowance
-        raw_factor = get_settings().get("config.model_token_count_estimate_factor", 0)
-        try:
-            extra_factor = float(raw_factor)
-        except (TypeError, ValueError, OverflowError):
-            extra_factor = 0
-        if isinstance(raw_factor, bool) or not isfinite(extra_factor):
-            extra_factor = 0
-        multiplier = max(1.0, 1.0 + extra_factor)
-        try:
-            estimated_tokens = raw_estimate * multiplier
-            if not isfinite(estimated_tokens):
-                raise ValueError("non-finite token estimate")
-            fallback_estimate = ceil(estimated_tokens)
-            if model_token_count is not None:
-                return max(model_token_count, fallback_estimate)
-            return fallback_estimate
-        except (OverflowError, ValueError):
-            get_logger().warning(
-                f"model_token_count_estimate_factor is too large ({raw_factor!r}), using the estimate as is"
-            )
-            return raw_estimate
+            request_tokens += image_count * image_allowance
+        return request_tokens
 
     def prepare_request(
         self,

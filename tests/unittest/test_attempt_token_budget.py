@@ -82,9 +82,8 @@ def test_for_attempt_binds_real_handler_without_mutating_source(monkeypatch, tok
     assert budget.prompt_tokens == len("system PR") + len("user")
 
 
-def test_for_prompt_attempt_replaces_content_only_count_with_exact_request_count(monkeypatch, token_settings):
+def test_for_prompt_attempt_counts_content_and_request_framing(monkeypatch, token_settings):
     monkeypatch.setattr(token_budget_module, "get_max_tokens", lambda *_args, **_kwargs: 10_000)
-    monkeypatch.setattr(token_budget_module, "token_counter", lambda **_kwargs: 73)
     variables = {"title": "PR", "diff": ""}
 
     budget = token_budget_module.AttemptTokenBudget.for_prompt_attempt(
@@ -98,7 +97,11 @@ def test_for_prompt_attempt_replaces_content_only_count_with_exact_request_count
 
     assert budget.token_handler.model == "fallback-model"
     assert budget.token_handler.vars is variables
-    assert budget.prompt_tokens == 73
+    assert budget.prompt_tokens == (
+        len("system PRuser ")
+        + 2 * token_budget_module.MESSAGE_FRAMING_TOKEN_ALLOWANCE
+        + token_budget_module.REPLY_FRAMING_TOKEN_ALLOWANCE
+    )
 
 
 def test_reserves_are_resolved_independently_for_each_default(monkeypatch):
@@ -242,37 +245,29 @@ def test_prepare_request_normalizes_and_counts_the_dispatched_messages(monkeypat
                 raise RuntimeError("provider normalization unavailable")
             return normalization
 
-    def count_messages(*, model, messages):
-        observed.append((model, messages))
-        return sum(len(message["content"]) for message in messages) + 7
-
-    monkeypatch.setattr(token_budget_module, "token_counter", count_messages)
-
     prepared = budget.prepare_request(AIHandler(), "system", "user", optional_text="diff")
 
     expected_prompts = normalization or ("system", "user")
     assert (prepared.system_prompt, prepared.user_prompt) == expected_prompts
     assert prepared.optional_text == "diff"
-    assert prepared.input_tokens == sum(map(len, expected_prompts)) + 7
+    assert prepared.input_tokens == (
+        sum(map(len, expected_prompts))
+        + 2 * token_budget_module.MESSAGE_FRAMING_TOKEN_ALLOWANCE
+        + token_budget_module.REPLY_FRAMING_TOKEN_ALLOWANCE
+    )
     assert observed[0] == ("attempt-model", "system", "user")
-    assert observed[1][0] == "attempt-model"
+    assert handler.counted == list(expected_prompts)
 
 
 def test_prepare_request_counts_image_message_with_conservative_floor(monkeypatch):
     handler = FakeTokenHandler()
     budget = token_budget_module.AttemptTokenBudget("attempt-model", handler, handler, 10_000)
-    observed = []
     settings = SimpleNamespace(
         get=lambda key, default=None: {
             "config.image_input_token_allowance": 4096,
         }.get(key, default)
     )
 
-    def count_messages(*, model, messages):
-        observed.append((model, messages))
-        return 100
-
-    monkeypatch.setattr(token_budget_module, "token_counter", count_messages)
     monkeypatch.setattr(token_budget_module, "get_settings", lambda: settings)
 
     prepared = budget.prepare_request(
@@ -282,24 +277,7 @@ def test_prepare_request_counts_image_message_with_conservative_floor(monkeypatc
         image_path="https://example.test/image.png",
     )
 
-    assert observed == [
-        (
-            "attempt-model",
-            [
-                {"role": "system", "content": "system"},
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "user"},
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": "https://example.test/image.png"},
-                        },
-                    ],
-                },
-            ],
-        )
-    ]
+    assert handler.counted == ["system", "user", "https://example.test/image.png"]
     assert prepared.input_tokens == (
         len("systemuserhttps://example.test/image.png")
         + 2 * token_budget_module.MESSAGE_FRAMING_TOKEN_ALLOWANCE
@@ -311,26 +289,20 @@ def test_prepare_request_counts_image_message_with_conservative_floor(monkeypatc
 def test_prepare_request_counts_the_handler_final_message_shape(monkeypatch):
     handler = FakeTokenHandler()
     budget = token_budget_module.AttemptTokenBudget("attempt-model", handler, handler, 10_000)
-    observed = []
-
     class AIHandler:
         def build_request_messages(self, model, system_prompt, user_prompt, *, image_path=None):
             assert model == "attempt-model"
             assert image_path is None
             return [{"role": "user", "content": f"{system_prompt}\n\n\n{user_prompt}"}]
 
-    def count_messages(*, model, messages):
-        observed.append((model, messages))
-        return 17
-
-    monkeypatch.setattr(token_budget_module, "token_counter", count_messages)
-
     prepared = budget.prepare_request(AIHandler(), "system", "user")
 
-    assert prepared.input_tokens == 17
-    assert observed == [
-        ("attempt-model", [{"role": "user", "content": "system\n\n\nuser"}])
-    ]
+    assert prepared.input_tokens == (
+        len("system\n\n\nuser")
+        + token_budget_module.MESSAGE_FRAMING_TOKEN_ALLOWANCE
+        + token_budget_module.REPLY_FRAMING_TOKEN_ALLOWANCE
+    )
+    assert handler.counted == ["system\n\n\nuser"]
 
 
 @pytest.mark.parametrize("handler_class", [OpenAIHandler, LangChainOpenAIHandler])
@@ -341,13 +313,6 @@ def test_prepare_request_counts_text_only_for_handlers_that_ignore_images(
 ):
     handler = FakeTokenHandler()
     budget = token_budget_module.AttemptTokenBudget("attempt-model", handler, handler, 10_000)
-    observed = []
-
-    def count_messages(*, model, messages):
-        observed.append((model, messages))
-        return 100
-
-    monkeypatch.setattr(token_budget_module, "token_counter", count_messages)
     monkeypatch.setattr(token_budget_module, "get_settings", lambda: token_settings)
 
     prepared = budget.prepare_request(
@@ -357,16 +322,12 @@ def test_prepare_request_counts_text_only_for_handlers_that_ignore_images(
         image_path="https://example.test/image.png",
     )
 
-    assert observed == [
-        (
-            "attempt-model",
-            [
-                {"role": "system", "content": "system"},
-                {"role": "user", "content": "user"},
-            ],
-        )
-    ]
-    assert prepared.input_tokens == 100
+    assert prepared.input_tokens == (
+        len("systemuser")
+        + 2 * token_budget_module.MESSAGE_FRAMING_TOKEN_ALLOWANCE
+        + token_budget_module.REPLY_FRAMING_TOKEN_ALLOWANCE
+    )
+    assert handler.counted == ["system", "user"]
 
 
 @pytest.mark.parametrize("allowance", [None, -1, True, "4096"])
@@ -378,7 +339,6 @@ def test_image_allowance_must_be_a_non_negative_integer(monkeypatch, allowance):
             allowance if key == "config.image_input_token_allowance" else default
         )
     )
-    monkeypatch.setattr(token_budget_module, "token_counter", lambda **_kwargs: 100)
     monkeypatch.setattr(token_budget_module, "get_settings", lambda: settings)
 
     with pytest.raises(ValueError, match="image_input_token_allowance"):
@@ -390,8 +350,7 @@ def test_image_allowance_must_be_a_non_negative_integer(monkeypatch, allowance):
         )
 
 
-@pytest.mark.parametrize("counter_result", [0, True, "not-a-count"])
-def test_count_request_tokens_falls_back_to_framed_model_bound_estimate(monkeypatch, counter_result):
+def test_count_request_tokens_uses_attempt_tokenizer_and_ignores_estimate_factor(monkeypatch):
     handler = FakeTokenHandler()
     budget = token_budget_module.AttemptTokenBudget("attempt-model", handler, handler, 1_000)
     settings = SimpleNamespace(
@@ -399,26 +358,23 @@ def test_count_request_tokens_falls_back_to_framed_model_bound_estimate(monkeypa
             "config.model_token_count_estimate_factor": 0.25,
         }.get(key, default)
     )
-    monkeypatch.setattr(token_budget_module, "token_counter", lambda **_kwargs: counter_result)
     monkeypatch.setattr(token_budget_module, "get_settings", lambda: settings)
 
     count = budget.count_request_tokens("1234", "123456")
 
-    raw_estimate = 10 + 2 * token_budget_module.MESSAGE_FRAMING_TOKEN_ALLOWANCE
-    raw_estimate += token_budget_module.REPLY_FRAMING_TOKEN_ALLOWANCE
-    assert count == token_budget_module.ceil(raw_estimate * 1.25)
+    expected = 10 + 2 * token_budget_module.MESSAGE_FRAMING_TOKEN_ALLOWANCE
+    expected += token_budget_module.REPLY_FRAMING_TOKEN_ALLOWANCE
+    assert count == expected
     assert handler.counted == ["1234", "123456"]
 
 
-@pytest.mark.parametrize("factor", [True, -0.5, "invalid", float("inf")])
-def test_count_request_tokens_never_reduces_the_local_fallback(monkeypatch, factor):
+def test_count_request_tokens_counts_the_provided_message_shape():
     handler = FakeTokenHandler()
     budget = token_budget_module.AttemptTokenBudget("attempt-model", handler, handler, 1_000)
-    settings = SimpleNamespace(get=lambda _key, _default=None: factor)
-    monkeypatch.setattr(token_budget_module, "token_counter", lambda **_kwargs: None)
-    monkeypatch.setattr(token_budget_module, "get_settings", lambda: settings)
+    messages = [{"role": "user", "content": "combined"}]
 
-    assert budget.count_request_tokens("12", "345") == 53
+    assert budget.count_request_tokens("ignored", "ignored", messages=messages) == 40
+    assert handler.counted == ["combined"]
 
 
 @pytest.mark.parametrize(
@@ -429,12 +385,7 @@ def test_fit_optional_text_preserves_the_requested_side_and_exact_prompts(
     monkeypatch, keep, expected_start, expected_end
 ):
     handler = FakeTokenHandler()
-    budget = token_budget_module.AttemptTokenBudget("attempt-model", handler, handler, 34)
-    monkeypatch.setattr(
-        token_budget_module,
-        "token_counter",
-        lambda *, model, messages: sum(len(message["content"]) for message in messages),
-    )
+    budget = token_budget_module.AttemptTokenBudget("attempt-model", handler, handler, 82)
 
     fitted = budget.fit_optional_text(
         "abcdefghijklmnopqrst",
@@ -448,17 +399,12 @@ def test_fit_optional_text_preserves_the_requested_side_and_exact_prompts(
     assert fitted.optional_text.endswith(expected_end)
     assert fitted.system_prompt == "fixed"
     assert fitted.user_prompt == f"body:{fitted.optional_text}"
-    assert fitted.input_tokens <= 29
+    assert fitted.input_tokens <= 77
 
 
 def test_fit_optional_text_keeps_marker_when_no_content_character_fits(monkeypatch):
     handler = FakeTokenHandler()
-    budget = token_budget_module.AttemptTokenBudget("attempt-model", handler, handler, 9)
-    monkeypatch.setattr(
-        token_budget_module,
-        "token_counter",
-        lambda *, model, messages: sum(len(message["content"]) for message in messages),
-    )
+    budget = token_budget_module.AttemptTokenBudget("attempt-model", handler, handler, 57)
 
     fitted = budget.fit_optional_text(
         "abcdefghi",
@@ -469,17 +415,12 @@ def test_fit_optional_text_keeps_marker_when_no_content_character_fits(monkeypat
     )
 
     assert fitted.optional_text == "[cut]"
-    assert fitted.input_tokens == 8
+    assert fitted.input_tokens == 56
 
 
 def test_fit_optional_text_rejects_unmarked_empty_replacement(monkeypatch):
     handler = FakeTokenHandler()
-    budget = token_budget_module.AttemptTokenBudget("attempt-model", handler, handler, 6)
-    monkeypatch.setattr(
-        token_budget_module,
-        "token_counter",
-        lambda *, model, messages: sum(len(message["content"]) for message in messages),
-    )
+    budget = token_budget_module.AttemptTokenBudget("attempt-model", handler, handler, 54)
 
     with pytest.raises(ValueError, match="truncation marker"):
         budget.fit_optional_text(
@@ -497,12 +438,7 @@ def test_fit_optional_text_truncates_only_at_attempt_token_boundaries(monkeypatc
         encode=lambda text, disallowed_special=(): text.split("|"),
         decode=lambda tokens: "|".join(tokens),
     )
-    budget = token_budget_module.AttemptTokenBudget("attempt-model", handler, handler, 27)
-    monkeypatch.setattr(
-        token_budget_module,
-        "token_counter",
-        lambda *, model, messages: sum(len(message["content"]) for message in messages),
-    )
+    budget = token_budget_module.AttemptTokenBudget("attempt-model", handler, handler, 75)
 
     fitted = budget.fit_optional_text(
         "alpha|bravo|charlie|delta",
@@ -514,17 +450,12 @@ def test_fit_optional_text_truncates_only_at_attempt_token_boundaries(monkeypatc
 
     retained = fitted.optional_text.removesuffix("[cut]").rstrip("|")
     assert retained in {"alpha", "alpha|bravo", "alpha|bravo|charlie"}
-    assert fitted.input_tokens <= 25
+    assert fitted.input_tokens <= 73
 
 
 def test_fit_optional_text_rejects_required_prompt_that_cannot_fit(monkeypatch):
     handler = FakeTokenHandler()
-    budget = token_budget_module.AttemptTokenBudget("attempt-model", handler, handler, 10)
-    monkeypatch.setattr(
-        token_budget_module,
-        "token_counter",
-        lambda *, model, messages: sum(len(message["content"]) for message in messages),
-    )
+    budget = token_budget_module.AttemptTokenBudget("attempt-model", handler, handler, 58)
 
     with pytest.raises(ValueError, match="required prompt"):
         budget.fit_optional_text(
@@ -550,12 +481,7 @@ def test_fit_optional_text_rejects_unknown_retention_policy():
 
 
 def test_fit_prompt_variable_does_not_mutate_shared_variables(monkeypatch, token_settings):
-    monkeypatch.setattr(token_budget_module, "get_max_tokens", lambda *_args, **_kwargs: 30)
-    monkeypatch.setattr(
-        token_budget_module,
-        "token_counter",
-        lambda *, model, messages: sum(len(message["content"]) for message in messages),
-    )
+    monkeypatch.setattr(token_budget_module, "get_max_tokens", lambda *_args, **_kwargs: 78)
     variables = {"diff": "", "title": "PR"}
     budget = token_budget_module.AttemptTokenBudget.for_prompt_attempt(
         "fallback-model",
