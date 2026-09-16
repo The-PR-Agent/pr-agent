@@ -1205,7 +1205,7 @@ class AzureDevopsProvider(GitProvider):
         pr_info = self.azure_devops_client.get_pull_request_by_id(
             project=self.workspace_slug, pull_request_id=self.pr_num
         )
-        source_branch = pr_info.source_ref_name.split("/")[-1]
+        source_branch = pr_info.source_ref_name.removeprefix("refs/heads/")
         return source_branch
 
     def get_user_id(self):

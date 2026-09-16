@@ -15,6 +15,18 @@ from pr_agent.git_providers.azuredevops_provider import (
 from pr_agent.log import get_logger
 
 
+def test_get_pr_branch_preserves_slashes_in_source_branch():
+    provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+    provider.workspace_slug = "org"
+    provider.pr_num = 1
+    provider.azure_devops_client = MagicMock()
+    provider.azure_devops_client.get_pull_request_by_id.return_value = SimpleNamespace(
+        source_ref_name="refs/heads/feature/release/v2"
+    )
+
+    assert provider.get_pr_branch() == "feature/release/v2"
+
+
 def test_publish_description_propagates_update_failure():
     provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
     provider.workspace_slug = "my-project"
