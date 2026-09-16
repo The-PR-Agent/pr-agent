@@ -1219,6 +1219,17 @@ def test_set_review_labels_skips_providers_without_label_support():
         settings.pr_reviewer.enable_review_labels_security = original["enable_review_labels_security"]
 
 
+def test_review_head_sha_reads_azure_pull_request_head_commit():
+    provider = MagicMock()
+    provider.last_commit_id = None
+    provider.pr = SimpleNamespace(
+        last_merge_commit=SimpleNamespace(commit_id="head-2")
+    )
+    reviewer = _make_reviewer(provider)
+
+    assert reviewer._review_head_sha() == "head-2"
+
+
 def test_get_user_answers_collects_question_and_answer_from_issue_comments():
     git_provider = MagicMock()
     git_provider.get_issue_comments.return_value = [
