@@ -464,6 +464,16 @@ async def test_chat_completion_combines_prompts_for_user_message_only_models(mon
     assert messages == [{"role": "user", "content": "sys\n\n\nusr"}]
 
 
+@pytest.mark.parametrize("model", ["o1-mini", "azure/o1-mini", "azure_text/o1-preview"])
+def test_request_messages_recognize_routed_user_only_models(monkeypatch, model):
+    monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+    handler = litellm_handler.LiteLLMAIHandler()
+
+    messages = handler.build_request_messages(model, "sys", "usr")
+
+    assert messages == [{"role": "user", "content": "sys\n\n\nusr"}]
+
+
 @pytest.mark.asyncio
 async def test_chat_completion_keeps_image_for_user_message_only_models(monkeypatch):
     monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)

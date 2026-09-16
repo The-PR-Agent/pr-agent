@@ -3656,7 +3656,7 @@ class LiteLLMAIHandler(BaseAiHandler):
     ) -> list[dict]:
         """Build the exact message payload for normalized prompt strings."""
         combine_prompts = (
-            model in self.user_message_only_models
+            self._uses_user_message_only(model)
             or get_settings().config.custom_reasoning_model
         )
         if combine_prompts:
@@ -3679,6 +3679,13 @@ class LiteLLMAIHandler(BaseAiHandler):
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content},
         ]
+
+    def _uses_user_message_only(self, model: str) -> bool:
+        """Recognize user-only models through any routed provider prefix."""
+        return any(
+            model == registered_model or model.endswith(f"/{registered_model}")
+            for registered_model in self.user_message_only_models
+        )
 
     def _configure_claude_extended_thinking(self, model: str, kwargs: dict) -> dict:
         """
@@ -4019,7 +4026,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                     model_family = "GPT-6 Astra" if is_gpt6_astra else "GPT-5"
                     get_logger().info(f"Using reasoning_effort='{effort}' for {model_family} model")
                 # Currently, some models do not support a separate system and user prompts
-                if model in self.user_message_only_models or get_settings().config.custom_reasoning_model:
+                if self._uses_user_message_only(model) or get_settings().config.custom_reasoning_model:
                     user = f"{system}\n\n\n{user}"
                     system = ""
                     get_logger().info(f"Using model {model}, combining system and user prompts")
