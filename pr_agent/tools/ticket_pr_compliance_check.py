@@ -706,12 +706,15 @@ def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url
                                        f"{base_url_html.strip('/')}/{repo_path}/issues/{issue_number}"))
 
         if custom_pattern is not None and repo_path:
+            explicit_index = 0
             for match in custom_pattern.finditer(pr_description):
                 issue_number = match[1]
                 # Keep explicit references from also becoming tickets in the current repository.
+                # Both match sequences are ordered, so one forward pointer covers the overlap check.
                 start, end = match.span(1)
-                if any(start < explicit_end and end > explicit_start
-                       for explicit_start, explicit_end in explicit_spans):
+                while explicit_index < len(explicit_spans) and explicit_spans[explicit_index][1] <= start:
+                    explicit_index += 1
+                if explicit_index < len(explicit_spans) and explicit_spans[explicit_index][0] < end:
                     continue
                 if issue_number and issue_number.isdigit():
                     candidates.append((match.start(),
@@ -902,16 +905,7 @@ async def extract_tickets(git_provider):
                                            artifact={"traceback": traceback.format_exc()})
                         continue
 
-                    # A PR reference is not an issue ticket. GitHub's issue API
-                    # exposes pull requests through the ``pull_request`` field.
-                    # Prefer the raw API payload so duck-typed issue substitutes
-                    # (and mocks that synthesize arbitrary attributes) are not
-                    # mistaken for pull requests.
-                    issue_raw_data = getattr(issue_main, "raw_data", None)
-                    is_pull_request = isinstance(issue_raw_data, dict) and issue_raw_data.get("pull_request") is not None
-                    if not is_pull_request and "_pull_request" in vars(issue_main):
-                        is_pull_request = getattr(issue_main, "pull_request", None) is not None
-                    if is_pull_request:
+                    if getattr(issue_main, "pull_request", None) is not None:
                         continue
 
                     issue_body_str = issue_main.body or ""
