@@ -89,7 +89,24 @@ class TestParseUnifiedDiff:
         assert files[0].old_filename == "old.py"
         assert files[0].patch == ""
 
-    def test_paths_with_spaces_are_read_from_file_headers(self):
+    def test_quoted_paths_are_parsed(self):
+        diff = (
+            'diff --git "a/foo bar.txt" "b/foo bar.txt"\n'
+            "index 1111111..2222222 100644\n"
+            '--- "a/foo bar.txt"\n'
+            '+++ "b/foo bar.txt"\n'
+            "@@ -1 +1 @@\n"
+            "-old\n"
+            "+new\n"
+        )
+
+        files = parse_unified_diff(diff)
+
+        assert len(files) == 1
+        assert files[0].filename == "foo bar.txt"
+        assert "-old" in files[0].patch
+        assert "+new" in files[0].patch
+
         diff = (
             "diff --git a/src/a b/file.py b/src/a b/file.py\n"
             "index 1111111..2222222 100644\n"

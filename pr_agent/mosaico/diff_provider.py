@@ -8,6 +8,7 @@ The diff is parsed by parse_unified_diff(); per-request the parsed files/languag
 are read from MOSAICO.INPUT on the (context) settings.
 """
 import re
+import shlex
 from typing import List, Optional
 
 from pr_agent.algo.git_patch_processing import to_hunk_only_patch
@@ -24,10 +25,13 @@ class _PullRequestMimic:
         self.diff_files = diff_files
 
 
-_DIFF_GIT_RE = re.compile(r'^diff --git a/(?P<a>.+?) b/(?P<b>.+?)\s*$')
+_DIFF_GIT_RE = re.compile(r'^diff --git (?P<paths>.+?)\s*$')
 
 
 def _normalize_file_header_path(path: str) -> str:
+    path = path.strip()
+    if len(path) >= 2 and path[0] == path[-1] == '"':
+        path = path[1:-1]
     if path == "/dev/null":
         return ""
     if path.startswith(("a/", "b/")):
@@ -59,8 +63,14 @@ def parse_unified_diff(diff_text: str) -> List[FilePatchInfo]:
         section = lines[starts[idx]:starts[idx + 1]]
         header = section[0].rstrip("\r\n")
         m = _DIFF_GIT_RE.match(header)
-        a_path = m.group("a") if m else ""
-        b_path = m.group("b") if m else ""
+        try:
+            paths = shlex.split(m.group("paths")) if m else []
+        except ValueError:
+            paths = []
+        a_path = paths[0] if len(paths) > 0 else ""
+        b_path = paths[1] if len(paths) > 1 else ""
+        a_path = _normalize_file_header_path(a_path)
+        b_path = _normalize_file_header_path(b_path)
 
         edit_type = EDIT_TYPE.MODIFIED
         old_filename = None
