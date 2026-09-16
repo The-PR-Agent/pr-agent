@@ -817,7 +817,6 @@ class PRReviewer:
         Returns False when chunking does not apply, leaving the single-call flow in place.
         """
         patches_diff_list = getattr(self, "_chunked_patches_diff_list", None)
-        remaining_files_list = getattr(self, "_chunked_remaining_files_list", None)
         if patches_diff_list is None:
             multi_diff_kwargs = {
                 "max_calls": get_settings().pr_reviewer.get("max_number_of_calls", 3),
