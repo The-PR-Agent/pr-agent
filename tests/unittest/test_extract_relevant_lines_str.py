@@ -1,6 +1,8 @@
 import textwrap
 from unittest.mock import Mock
 
+import pytest
+
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.algo.utils import convert_to_markdown_v2, extract_relevant_lines_str
 
@@ -14,6 +16,22 @@ def _make_file(filename: str, head_file: str, language: str = "python", patch: s
         language=language,
         edit_type=EDIT_TYPE.MODIFIED,
     )
+
+
+@pytest.mark.parametrize("dedent", [False, True])
+@pytest.mark.parametrize("inner_fence, outer_fence", [("```", "~~~"), ("```\n~~~", "````")])
+def test_patch_fallback_preserves_nested_fences(inner_fence, outer_fence, dedent):
+    """Fence patch-derived snippets after extraction and optional dedenting."""
+    lines = ["    " + line for line in inner_fence.splitlines()] + ["    example"]
+    patch = f"@@ -0,0 +1,{len(lines)} @@\n" + "\n".join("+" + line for line in lines) + "\n"
+    file = _make_file("README.md", None, language="markdown", patch=patch)
+
+    result = extract_relevant_lines_str(len(lines), [file], "README.md", 1, dedent=dedent)
+
+    content = "\n".join(lines) + "\n"
+    if dedent:
+        content = textwrap.dedent(content)
+    assert result == f"{outer_fence}markdown\n{content}\n{outer_fence}"
 
 
 class TestExtractRelevantLinesStr:
