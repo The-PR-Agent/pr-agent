@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from jinja2 import Environment
 
 import pr_agent.algo.token_budget as token_budget_module
 from pr_agent.algo.pr_processing import (
@@ -30,8 +31,8 @@ class _PromptCountingTokenHandler:
         self.vars = copy.deepcopy(vars_)
         self.model = model
         self.prompt_tokens = self.baseline_tokens + sum(
-            ticket["_test_tokens"] for ticket in self.vars.get("related_tickets", [])
-        )
+            ticket.get("_test_tokens", 0) for ticket in self.vars.get("related_tickets", [])
+        ) + (25 if self.vars.get("related_tickets_omitted") else 0)
 
 
 def _tickets(count, tokens=200):
@@ -46,6 +47,23 @@ def _tickets(count, tokens=200):
         }
         for index in range(count)
     ]
+
+
+@pytest.mark.parametrize(
+    "prompt_name",
+    [
+        "pr_description_prompt",
+        "pr_description_only_files_prompts",
+        "pr_description_only_description_prompts",
+        "pr_review_prompt",
+    ],
+)
+def test_related_ticket_prompts_disclose_omitted_records(prompt_name):
+    template = Environment().from_string(get_settings().get(prompt_name).user)
+
+    rendered = template.render(related_tickets=[], related_tickets_omitted=2)
+
+    assert "2 additional related ticket(s) were omitted" in rendered
 
 
 @pytest.fixture
@@ -80,8 +98,8 @@ def prompt_budget(monkeypatch):
 
 
 def test_ticket_payload_keeps_exact_prefix_that_fits_prompt_budget(prompt_budget):
-    # max=3,500 -> max(100, 3,500 - 2*1,500) = 500.  Two 200-token tickets fit exactly.
-    prompt_budget({"model": 3500})
+    # max=3,525 -> max(100, 3,525 - 2*1,500) = 525. Two tickets plus the notice fit.
+    prompt_budget({"model": 3525})
     raw_vars = {"related_tickets": _tickets(3)}
 
     prompt_vars, handler = fit_related_tickets_to_prompt_budget(
@@ -89,8 +107,9 @@ def test_ticket_payload_keeps_exact_prefix_that_fits_prompt_budget(prompt_budget
     )
 
     assert [ticket["ticket_id"] for ticket in prompt_vars["related_tickets"]] == [0, 1]
-    assert handler.prompt_tokens == 500
-    assert handler.prompt_tokens <= 3500 - 2 * OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD
+    assert prompt_vars["related_tickets_omitted"] == 1
+    assert handler.prompt_tokens == 525
+    assert handler.prompt_tokens <= 3525 - 2 * OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD
 
 
 def test_under_budget_ticket_payload_is_preserved_without_aliasing_raw_cache(prompt_budget):
@@ -156,7 +175,7 @@ def test_oversized_ticket_payload_keeps_diff_budget_and_raw_cache(monkeypatch):
 
 
 def test_smaller_fallback_model_recalculates_from_raw_tickets(prompt_budget):
-    prompt_budget({"primary": 4100, "fallback": 3500})
+    prompt_budget({"primary": 4100, "fallback": 3525})
     raw_vars = {"related_tickets": _tickets(5)}
 
     primary_vars, primary_handler = fit_related_tickets_to_prompt_budget(
@@ -167,25 +186,25 @@ def test_smaller_fallback_model_recalculates_from_raw_tickets(prompt_budget):
     )
 
     assert len(primary_vars["related_tickets"]) == 5
-    assert len(fallback_vars["related_tickets"]) == 2
+    assert [ticket["ticket_id"] for ticket in fallback_vars["related_tickets"]] == [0, 1]
+    assert fallback_vars["related_tickets_omitted"] == 3
     assert primary_handler.model == "primary"
     assert fallback_handler.model == "fallback"
     assert raw_vars["related_tickets"] == _tickets(5)
 
 
-def test_baseline_overflow_uses_no_ticket_context(prompt_budget):
+def test_baseline_overflow_rejects_attempt_when_omission_marker_cannot_fit(prompt_budget):
     _PromptCountingTokenHandler.baseline_tokens = 600
     prompt_budget({"model": 3500})
     raw_vars = {"related_tickets": _tickets(2)}
     try:
-        prompt_vars, handler = fit_related_tickets_to_prompt_budget(
-            object(), raw_vars, "system", "{{ related_tickets }}", "model"
-        )
+        with pytest.raises(ValueError, match="omission marker exceeds"):
+            fit_related_tickets_to_prompt_budget(
+                object(), raw_vars, "system", "{{ related_tickets }}", "model"
+            )
     finally:
         _PromptCountingTokenHandler.baseline_tokens = 100
 
-    assert prompt_vars["related_tickets"] == []
-    assert handler.prompt_tokens == 600
     assert raw_vars["related_tickets"] == _tickets(2)
 
 

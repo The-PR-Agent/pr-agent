@@ -405,13 +405,33 @@ def fit_related_tickets_to_prompt_budget(
         preserve_minimum=True,
         additional_input_reserve=OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
     )
-    best_budget = budget
-    lower_bound = 1
-    upper_bound = len(raw_tickets)
+    full_vars = copy.deepcopy(prompt_vars)
+    full_vars["related_tickets"] = copy.deepcopy(raw_tickets)
+    full_budget = AttemptTokenBudget.for_prompt_attempt(
+        model,
+        pr,
+        full_vars,
+        system_prompt,
+        user_prompt,
+        ai_handler=ai_handler,
+        output_token_reserve=output_token_reserve,
+    )
+    if full_budget.prompt_tokens <= prompt_token_limit:
+        full_budget.require_input_capacity(
+            OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+            preserve_minimum=True,
+        )
+        return full_vars, full_budget.token_handler
+
+    best_vars = None
+    best_budget = None
+    lower_bound = 0
+    upper_bound = len(raw_tickets) - 1
     while lower_bound <= upper_bound:
         prefix_size = (lower_bound + upper_bound) // 2
         candidate_vars = copy.deepcopy(prompt_vars)
         candidate_vars["related_tickets"] = copy.deepcopy(raw_tickets[:prefix_size])
+        candidate_vars["related_tickets_omitted"] = len(raw_tickets) - prefix_size
         candidate_budget = AttemptTokenBudget.for_prompt_attempt(
             model,
             pr,
@@ -424,20 +444,23 @@ def fit_related_tickets_to_prompt_budget(
         if candidate_budget.prompt_tokens > prompt_token_limit:
             upper_bound = prefix_size - 1
         else:
-            prompt_vars = candidate_vars
+            best_vars = candidate_vars
             best_budget = candidate_budget
             lower_bound = prefix_size + 1
 
+    if best_vars is None or best_budget is None:
+        raise ValueError("Related-ticket omission marker exceeds the prompt token budget")
+
+    prompt_vars = best_vars
     included_tickets = len(prompt_vars["related_tickets"])
-    if included_tickets < len(raw_tickets):
-        get_logger().info(
-            "Clipped related tickets to preserve the prompt token budget",
-            artifact={
-                "included_tickets": included_tickets,
-                "omitted_tickets": len(raw_tickets) - included_tickets,
-                "model": model,
-            },
-        )
+    get_logger().info(
+        "Clipped related tickets to preserve the prompt token budget",
+        artifact={
+            "included_tickets": included_tickets,
+            "omitted_tickets": len(raw_tickets) - included_tickets,
+            "model": model,
+        },
+    )
 
     best_budget.require_input_capacity(
         OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
