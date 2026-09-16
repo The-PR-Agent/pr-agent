@@ -3,7 +3,6 @@ import asyncio
 
 import pytest
 
-import pr_agent.tools.pr_add_docs as pr_add_docs
 from pr_agent.config_loader import get_settings
 from pr_agent.tools.pr_add_docs import PRAddDocs
 
@@ -50,10 +49,10 @@ def publish_output():
 
 
 def run(prediction, monkeypatch):
-    async def fake_retry(fn=None, model_type=None):
+    async def fake_retry(fn=None, model_type=None, **kwargs):
         return prediction
 
-    monkeypatch.setattr(pr_add_docs, "retry_with_fallback_models", fake_retry)
+    monkeypatch.setattr("pr_agent.tools.pr_add_docs.retry_with_fallback_models", fake_retry)
     tool = PRAddDocs.__new__(PRAddDocs)
     tool.git_provider = FakeGitProvider()
     tool.prediction = prediction
