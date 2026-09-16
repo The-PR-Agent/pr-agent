@@ -135,6 +135,8 @@ def _is_valid_state(state: Any) -> bool:
 
 def parse_review_state(comment_body: str) -> ParsedReviewState:
     """Parse the versioned state marker, treating malformed state as unsafe."""
+    if not isinstance(comment_body, str):
+        return ParsedReviewState(None, present=False, valid=False)
     body = comment_body or ""
     namespace_count = body.count(_STATE_MARKER_NAMESPACE)
     if namespace_count == 0:

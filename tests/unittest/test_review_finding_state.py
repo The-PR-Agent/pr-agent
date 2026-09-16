@@ -321,6 +321,14 @@ def test_missing_state_marker_is_a_valid_cold_start():
     assert parsed.state is None
 
 
+def test_non_string_state_body_is_invalid_without_raising():
+    parsed = parse_review_state(b"<!-- pr-agent-review-state:v1\n{}\n-->")
+
+    assert parsed.present is False
+    assert parsed.valid is False
+    assert parsed.state is None
+
+
 @pytest.mark.parametrize(
     "body",
     [
