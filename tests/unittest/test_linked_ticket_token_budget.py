@@ -308,7 +308,7 @@ async def test_description_large_pr_fits_each_prompt_from_raw_tickets(monkeypatc
     handlers = [
         SimpleNamespace(prompt_tokens=0),
         SimpleNamespace(prompt_tokens=500),
-        SimpleNamespace(prompt_tokens=300, encoder=SimpleNamespace(encode=lambda _text: [])),
+        SimpleNamespace(prompt_tokens=300),
     ]
     fit_calls = []
     packed_handlers = []
@@ -319,7 +319,7 @@ async def test_description_large_pr_fits_each_prompt_from_raw_tickets(monkeypatc
         fit_calls.append((raw_vars, model))
         return prompt_vars[call_index], handlers[call_index]
 
-    def get_multiple_patches(_provider, token_handler, _model):
+    def get_multiple_patches(_provider, token_handler, _model, **_kwargs):
         packed_handlers.append(token_handler)
         return ([["@@ -1 +1 @@\n-old\n+new"]], [10], [], [], {}, [[]])
 
@@ -333,7 +333,6 @@ async def test_description_large_pr_fits_each_prompt_from_raw_tickets(monkeypatc
     monkeypatch.setattr(module, "fit_related_tickets_to_prompt_budget", fit_payload)
     monkeypatch.setattr(module, "get_pr_diff", lambda *_args, **_kwargs: "")
     monkeypatch.setattr(module, "get_pr_diff_multiple_patchs", get_multiple_patches)
-    monkeypatch.setattr(module, "get_max_tokens", lambda _model: 32000)
     monkeypatch.setattr(tool, "_get_prediction", get_prediction)
     monkeypatch.setattr(tool, "extend_uncovered_files", lambda _prediction: _empty_string())
 

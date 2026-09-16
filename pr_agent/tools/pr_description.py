@@ -7,7 +7,6 @@ from graphlib import TopologicalSorter
 from typing import List, Tuple
 
 import yaml
-from jinja2 import Environment, StrictUndefined
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
@@ -25,8 +24,6 @@ from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (
     ModelType,
     PRDescriptionHeader,
-    clip_tokens,
-    get_max_tokens,
     get_user_labels,
     load_yaml,
     push_outputs,
@@ -472,16 +469,6 @@ class PRDescription:
                         get_logger().debug(f"Too many deleted files, clipping to {MAX_EXTRA_FILES_TO_PROMPT}")
                         files_walkthrough_prompt += f"\n... and {len(deleted_files_list) - MAX_EXTRA_FILES_TO_PROMPT} more"
                         break
-            tokens_files_walkthrough = len(
-                token_handler_only_description_prompt.encoder.encode(files_walkthrough_prompt))
-            total_tokens = token_handler_only_description_prompt.prompt_tokens + tokens_files_walkthrough
-            max_tokens_model = get_max_tokens(model)
-            if total_tokens > max_tokens_model - OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD:
-                # clip files_walkthrough to git the tokens within the limit
-                files_walkthrough_prompt = clip_tokens(files_walkthrough_prompt,
-                                                       max_tokens_model - OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD - token_handler_only_description_prompt.prompt_tokens,
-                                                       num_input_tokens=tokens_files_walkthrough)
-
             # PR header inference
             get_logger().debug("PR diff only description", artifact=files_walkthrough_prompt)
             prediction_headers = await self._get_prediction(model, patches_diff=files_walkthrough_prompt,
@@ -599,50 +586,40 @@ class PRDescription:
         prompt="pr_description_prompt",
     ) -> str:
         variables = copy.deepcopy(self.vars)
-        environment = Environment(undefined=StrictUndefined)
-        if prompt == "pr_description_only_description_prompts":
-            variables["diff"] = patches_diff
-            system_prompt = environment.from_string(
-                get_settings().get(prompt, {}).get("system", "")
-            ).render(variables)
-            user_prompt = environment.from_string(
-                get_settings().get(prompt, {}).get("user", "")
-            ).render(variables)
-        else:
-            output_token_reserve = getattr(self.ai_handler, "get_output_token_reserve", None)
-            token_handler = getattr(self, "_description_prompt_handlers", {}).get(prompt)
-            if token_handler is None:
-                variables["diff"] = ""
-                budget = AttemptTokenBudget.for_prompt_attempt(
-                    model,
-                    getattr(self.git_provider, "pr", None),
-                    variables,
-                    get_settings().get(prompt, {}).get("system", ""),
-                    get_settings().get(prompt, {}).get("user", ""),
-                    ai_handler=self.ai_handler,
-                    output_token_reserve=output_token_reserve,
-                )
-            else:
-                budget = AttemptTokenBudget.for_attempt(
-                    model,
-                    token_handler,
-                    output_token_reserve=output_token_reserve,
-                )
-            fitted = budget.fit_prompt_variable(
+        output_token_reserve = getattr(self.ai_handler, "get_output_token_reserve", None)
+        token_handler = getattr(self, "_description_prompt_handlers", {}).get(prompt)
+        if token_handler is None:
+            variables["diff"] = ""
+            budget = AttemptTokenBudget.for_prompt_attempt(
+                model,
+                getattr(self.git_provider, "pr", None),
                 variables,
-                "diff",
-                patches_diff,
+                get_settings().get(prompt, {}).get("system", ""),
+                get_settings().get(prompt, {}).get("user", ""),
                 ai_handler=self.ai_handler,
-                default_output_tokens=OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
-                preserve_minimum=True,
+                output_token_reserve=output_token_reserve,
             )
-            if fitted.optional_text != patches_diff:
-                raise ValueError(
-                    f"The complete packed description diff does not fit the token limit for {model}"
-                )
-            variables["diff"] = fitted.optional_text
-            system_prompt = fitted.system_prompt
-            user_prompt = fitted.user_prompt
+        else:
+            budget = AttemptTokenBudget.for_attempt(
+                model,
+                token_handler,
+                output_token_reserve=output_token_reserve,
+            )
+        fitted = budget.fit_prompt_variable(
+            variables,
+            "diff",
+            patches_diff,
+            ai_handler=self.ai_handler,
+            default_output_tokens=OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
+            preserve_minimum=True,
+        )
+        if prompt != "pr_description_only_description_prompts" and fitted.optional_text != patches_diff:
+            raise ValueError(
+                f"The complete packed description diff does not fit the token limit for {model}"
+            )
+        variables["diff"] = fitted.optional_text
+        system_prompt = fitted.system_prompt
+        user_prompt = fitted.user_prompt
         self.variables = variables
 
         response, finish_reason = await self.ai_handler.chat_completion(
