@@ -845,7 +845,10 @@ def try_fix_json(review, max_iter=10, code_suggestions=False):
 
     if (review.rfind("'Code feedback': [") > 0 or review.rfind('"Code feedback": [') > 0) or \
             (review.rfind("'Code suggestions': [") > 0 or review.rfind('"Code suggestions": [') > 0) :
-        last_code_suggestion_ind = [m.end() for m in re.finditer(r"\}\s*,", review)][-1] - 1
+        suggestion_boundaries = [m.end() for m in re.finditer(r"\}\s*,", review)]
+        if not suggestion_boundaries:
+            return {}
+        last_code_suggestion_ind = suggestion_boundaries[-1] - 1
         valid_json = False
         iter_count = 0
 
@@ -856,7 +859,10 @@ def try_fix_json(review, max_iter=10, code_suggestions=False):
                 review = review[:last_code_suggestion_ind].strip() + closing_bracket
             except json.decoder.JSONDecodeError:
                 review = review[:last_code_suggestion_ind]
-                last_code_suggestion_ind = [m.end() for m in re.finditer(r"\}\s*,", review)][-1] - 1
+                suggestion_boundaries = [m.end() for m in re.finditer(r"\}\s*,", review)]
+                if not suggestion_boundaries:
+                    break
+                last_code_suggestion_ind = suggestion_boundaries[-1] - 1
                 iter_count += 1
 
         if not valid_json:
