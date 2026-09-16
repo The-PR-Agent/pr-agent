@@ -155,3 +155,21 @@ def test_get_canonical_url_parts_encodes_branch_names(branch, expected):
         f"https://gitlab.example.com/group/project/-/blob/{expected}",
         "?ref_type=heads",
     )
+
+
+@pytest.mark.parametrize("branch, expected", [
+    ("project#456", "project%23456"),
+    ("feature/cache", "feature/cache"),
+])
+def test_get_line_link_encodes_source_branch(branch, expected):
+    provider = _provider()
+    provider.id_project = "group/project"
+    provider.gl = SimpleNamespace(url="https://gitlab.example.com")
+    provider.mr = SimpleNamespace(
+        web_url="https://gitlab.example.com/group/project/-/merge_requests/5",
+        source_branch=branch,
+    )
+
+    assert provider.get_line_link("src/app.py", 42) == (
+        f"https://gitlab.example.com/group/project/-/blob/{expected}/src/app.py?ref_type=heads#L42"
+    )
