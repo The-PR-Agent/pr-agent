@@ -81,10 +81,6 @@ class BitbucketProvider(GitProvider):
         self.bitbucket_comment_api_url = self.pr._BitbucketBase__data["links"]["comments"]["href"]
         self.bitbucket_pull_request_api_url = self.pr._BitbucketBase__data["links"]['self']['href']
 
-    def supports_html_comment_markers(self) -> bool:
-        """Return whether HTML comments render invisibly on this provider."""
-        return False
-
     def get_repo_settings(self):
         settings_files = []
         global_settings = self._get_global_repo_settings()
