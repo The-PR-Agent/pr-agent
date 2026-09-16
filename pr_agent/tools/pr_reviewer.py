@@ -1340,6 +1340,7 @@ class PRReviewer:
                 self.git_provider.is_supported("get_labels")):
             try:
                 review_labels = []
+                has_valid_security_verdict = False
                 if get_settings().pr_reviewer.enable_review_labels_effort:
                     estimated_effort = data['review']['estimated_effort_to_review_[1-5]']
                     estimated_effort_number = None
@@ -1356,10 +1357,13 @@ class PRReviewer:
                         estimated_effort_number = max(1, min(5, int(estimated_effort_number)))
                         review_labels.append(f'Review effort {estimated_effort_number}/5')
                 if get_settings().pr_reviewer.enable_review_labels_security and get_settings().pr_reviewer.require_security_review:
-                    if 'security_concerns' not in data['review']:
+                    security_concerns = data['review'].get('security_concerns')
+                    if security_concerns is None:
                         get_logger().warning("Missing security_concerns in review data")
-                    if not is_value_no(data['review'].get('security_concerns')):
-                        review_labels.append('Possible security concern')
+                    else:
+                        has_valid_security_verdict = True
+                        if not is_value_no(security_concerns):
+                            review_labels.append('Possible security concern')
 
                 current_labels = self.git_provider.get_pr_labels(update=True)
                 if not current_labels:
@@ -1367,8 +1371,9 @@ class PRReviewer:
                 get_logger().debug(f"Current labels:\n{current_labels}")
                 if current_labels:
                     current_labels_filtered = [label for label in current_labels if
-                                               not label.lower().startswith('review effort') and not label.lower().startswith(
-                                                   'possible security concern')]
+                                               (not label.lower().startswith('review effort') and
+                                                not (label.lower().startswith(
+                                                    'possible security concern') and has_valid_security_verdict))]
                 else:
                     current_labels_filtered = []
                 new_labels = review_labels + current_labels_filtered

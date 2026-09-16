@@ -1215,6 +1215,29 @@ def test_set_review_labels_security_label_matches_the_rendered_review_body(
     assert ("<strong>Security concerns</strong>" in body) is expect_label
 
 
+@pytest.mark.parametrize("missing_value", [None, ""])
+def test_set_review_labels_keeps_existing_security_label_when_verdict_is_missing(
+    review_label_settings, missing_value
+):
+    # A truncated model response leaves security_concerns missing (None), which
+    # is not a valid negative verdict, so an already published security alert
+    # label must be preserved instead of being filtered out. An empty string is
+    # a recognised negative and does clear the stale label, matching the body.
+    git_provider = MagicMock()
+    git_provider.get_pr_labels.return_value = ["Possible security concern", "keep-me"]
+    reviewer = _make_reviewer(git_provider)
+    data = {"review": {"estimated_effort_to_review_[1-5]": "2", "security_concerns": missing_value}}
+
+    reviewer.set_review_labels(data)
+
+    published = git_provider.publish_labels.call_args[0][0]
+    if missing_value is None:
+        assert "Possible security concern" in published
+    else:
+        assert "Possible security concern" not in published
+    assert "keep-me" in published
+
+
 def test_set_review_labels_does_not_label_security_free_localized_review(review_label_settings):
     # With a non-English response language the model is told to keep the exact
     # English 'No' sentinel, so a security-free review must not get the label.
