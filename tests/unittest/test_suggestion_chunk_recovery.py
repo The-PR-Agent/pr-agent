@@ -200,6 +200,24 @@ async def test_all_failed_primary_keeps_existing_outer_fallback(configured, monk
     assert tool.failed_chunk_count == 0
 
 
+async def test_empty_primary_chunk_list_keeps_outer_fallback(configured, monkeypatch):
+    get_settings().set("config.fallback_models", ["gpt-4.1"])
+    tool, calls = make_tool(monkeypatch, {})
+    packed_models = []
+
+    def pack_for_model(_provider, _token_handler, model, **_kwargs):
+        packed_models.append(model)
+        return [] if model == "gpt-4o" else ["a"]
+
+    monkeypatch.setattr(module, "get_pr_multi_diffs", pack_for_model)
+
+    result = await retry_with_fallback_models(tool.prepare_prediction_main)
+
+    assert packed_models == ["gpt-4o", "gpt-4.1"]
+    assert [(model, chunk) for model, chunk, _, _ in calls] == [("gpt-4.1", "a")]
+    assert [suggestion["relevant_file"] for suggestion in result["code_suggestions"]] == ["a.py"]
+
+
 async def test_partial_success_on_outer_fallback_only_tries_later_models(configured, monkeypatch):
     failures = {("gpt-4o", c): RuntimeError("failure") for c in "abc"}
     failures[("gpt-4o-mini", "b")] = RuntimeError("secondary failed")

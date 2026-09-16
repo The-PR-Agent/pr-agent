@@ -1929,7 +1929,7 @@ class PRCodeSuggestions:
             self.data = data
         else:
             get_logger().warning("Empty PR diff list")
-            self.data = data = None
+            raise ValueError(f"No PR diff fits the /improve request for {model}")
         return data
 
     async def convert_to_decoupled_with_line_numbers(
