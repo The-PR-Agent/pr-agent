@@ -41,7 +41,8 @@ async def test_prepare_prediction_forwards_attempt_output_reserve(
     tool.git_provider = object()
     tool.token_handler = object()
     tool.ai_handler = SimpleNamespace(get_output_token_reserve=output_token_reserve)
-    tool._get_prediction = AsyncMock(return_value="prediction")
+    prediction = "labels: []\n" if tool_class is generate_labels_module.PRGenerateLabels else "prediction"
+    tool._get_prediction = AsyncMock(return_value=prediction)
     for name, value in attributes.items():
         setattr(tool, name, value)
 
@@ -61,4 +62,4 @@ async def test_prepare_prediction_forwards_attempt_output_reserve(
     assert forwarded_reserve("fallback-model", 1_500) == 5_000
     tool._get_prediction.assert_awaited_once_with("fallback-model")
     assert tool.patches_diff == "diff"
-    assert tool.prediction == "prediction"
+    assert tool.prediction == prediction
