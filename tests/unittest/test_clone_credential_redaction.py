@@ -1,3 +1,4 @@
+import base64
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -6,14 +7,13 @@ from unittest.mock import patch
 import pytest
 
 from pr_agent.git_providers.bitbucket_server_provider import BitbucketServerProvider
-from pr_agent.git_providers.git_provider import _CLONE_EXTRA_ENV, GitProvider, redact_credentials
+from pr_agent.git_providers.git_provider import GitProvider, redact_credentials
 
 
 @pytest.mark.parametrize("url, expected", [
     ("https://ghp_SECRET@github.com/acme/repo.git", "https://github.com/acme/repo.git"),
     ("https://oauth2:glpat-SECRET@gitlab.acme.com/t/p.git", "https://gitlab.acme.com/t/p.git"),
     ("https://user:pw@bitbucket.acme.com/scm/t/p.git", "https://bitbucket.acme.com/scm/t/p.git"),
-    ("https://user:abc/def@github.com/acme/repo.git", "https://github.com/acme/repo.git"),
 ])
 def test_url_userinfo_is_stripped(url, expected):
     assert redact_credentials(url) == expected
@@ -33,6 +33,11 @@ def test_a_long_scheme_or_credential_does_not_leave_a_redaction_gap(url, expecte
 
 def test_url_without_credentials_is_unchanged():
     url = "https://github.com/acme/repo.git"
+    assert redact_credentials(url) == url
+
+
+def test_url_with_at_in_path_is_unchanged():
+    url = "https://github.com/acme/repo@archive/a.git"
     assert redact_credentials(url) == url
 
 
@@ -61,11 +66,12 @@ def test_empty_input_is_safe():
     assert redact_credentials("") == ""
 
 
-def test_clone_uses_clean_url_and_scoped_auth_config(tmp_path):
+def test_clone_uses_clean_url_and_http_auth_header(tmp_path):
     provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
     destination = tmp_path / "checkout"
     clean_url = "https://github.example/team/repo.git"
     token_url = "https://oauth2:SECRET@github.example/team/repo.git"
+    expected_header = "Authorization: Basic " + base64.b64encode(b"oauth2:SECRET").decode("ascii")
 
     captured = {}
 
@@ -79,16 +85,18 @@ def test_clone_uses_clean_url_and_scoped_auth_config(tmp_path):
 
     assert result is not None
     assert captured["url"] == clean_url
-    assert captured["env"]["GIT_CONFIG_VALUE_0"] == clean_url
-    assert token_url in captured["env"]["GIT_CONFIG_KEY_0"]
+    assert captured["env"]["GIT_CONFIG_COUNT"] == "1"
+    assert captured["env"]["GIT_CONFIG_KEY_0"] == "http.extraHeader"
+    assert captured["env"]["GIT_CONFIG_VALUE_0"] == expected_header
     assert "SECRET" not in captured["url"]
-    assert _CLONE_EXTRA_ENV.get() is None
 
 
 def test_clone_preserves_inherited_git_config_entries(tmp_path):
     provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
     provider._prepare_clone_url_with_token = lambda _url: "https://oauth2:SECRET@example/repo.git"
     provider._clone_inner = GitProvider._clone_inner.__get__(provider, BitbucketServerProvider)
+
+    expected_header = "Authorization: Basic " + base64.b64encode(b"oauth2:SECRET").decode("ascii")
 
     with patch("pr_agent.git_providers.git_provider.get_git_ssl_env", return_value={
         "GIT_CONFIG_COUNT": "1",
@@ -101,7 +109,8 @@ def test_clone_preserves_inherited_git_config_entries(tmp_path):
     assert env["GIT_CONFIG_COUNT"] == "2"
     assert env["GIT_CONFIG_KEY_0"] == "http.proxy"
     assert env["GIT_CONFIG_VALUE_0"] == "http://proxy.example"
-    assert env["GIT_CONFIG_KEY_1"].startswith("url.https://oauth2:SECRET@")
+    assert env["GIT_CONFIG_KEY_1"] == "http.extraHeader"
+    assert env["GIT_CONFIG_VALUE_1"] == expected_header
 
 
 def test_failed_clone_removes_partial_checkout(tmp_path):
@@ -121,7 +130,7 @@ def test_failed_clone_removes_partial_checkout(tmp_path):
     assert not destination.exists()
 
 
-def test_timeout_clone_removes_partial_checkout_and_auth_state(tmp_path):
+def test_timeout_clone_removes_partial_checkout(tmp_path):
     provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
     destination = tmp_path / "checkout"
 
@@ -136,7 +145,6 @@ def test_timeout_clone_removes_partial_checkout_and_auth_state(tmp_path):
 
     assert result is None
     assert not destination.exists()
-    assert _CLONE_EXTRA_ENV.get() is None
 
 
 def test_failed_clone_preserves_existing_destination_when_requested(tmp_path):

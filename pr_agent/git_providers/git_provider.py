@@ -1,3 +1,4 @@
+import base64
 import os
 import re
 import shutil
@@ -5,8 +6,8 @@ import subprocess
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
-from contextvars import ContextVar
 from typing import Optional, Tuple
+from urllib.parse import urlsplit
 
 from pr_agent.algo.language_handler import numeric_languages
 from pr_agent.algo.types import FilePatchInfo
@@ -22,9 +23,8 @@ from pr_agent.log import get_logger
 
 MAX_FILES_ALLOWED_FULL = 50
 
-_URL_USERINFO_RE = re.compile(r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.\-]{0,30}://)[^@\s]+@")
+_URL_USERINFO_RE = re.compile(r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.\-]{0,30}://)[^/@\s]+@")
 _AUTH_HEADER_RE = re.compile(r"(?i)(authorization\s*:\s*(?:bearer|basic|token)\s+)\S+")
-_CLONE_EXTRA_ENV: ContextVar[dict | None] = ContextVar("clone_extra_env", default=None)
 
 
 # The reaction PR-Agent has always added when it picks a comment command up. Used as the
@@ -48,6 +48,21 @@ def redact_credentials(text) -> str:
         return ""
     redacted = _URL_USERINFO_RE.sub(lambda m: m.group("scheme"), str(text))
     return _AUTH_HEADER_RE.sub(lambda m: m.group(1) + "<redacted>", redacted)
+
+
+def _clone_authorization_header(repo_url: str) -> str | None:
+    """Build the Authorization header git should send for a token-bearing clone URL.
+
+    Replicates what a plain `git clone https://user[:password]@host/...` would have sent
+    via curl so the credential can ride in the environment instead of the `git` or
+    `git-remote-http` command lines. Returns None when `repo_url` carries no userinfo.
+    """
+    parsed = urlsplit(repo_url)
+    if parsed.username is None:
+        return None
+    credentials = f"{parsed.username}:" if parsed.password is None else f"{parsed.username}:{parsed.password}"
+    encoded = base64.b64encode(credentials.encode("utf-8")).decode("ascii")
+    return f"Authorization: Basic {encoded}"
 
 _GLOBAL_SETTINGS_CACHE: dict = {}
 _GLOBAL_SETTINGS_CACHE_TTL_SECONDS = 15 * 60
@@ -292,22 +307,26 @@ class GitProvider(ABC):
             )
             ssl_env = os.environ.copy()
 
-        # Apply authentication only for this clone process; keep the stored origin URL clean.
-        clone_extra_env = _CLONE_EXTRA_ENV.get()
-        if clone_extra_env:
+        # Keep the credential out of every git argv: clone the redacted URL and resend the
+        # token as an http.extraHeader through the GIT_CONFIG_* environment. Git applies
+        # that config to the subprocesses it spawns (including git-remote-http) without
+        # putting the credential on any command line.
+        clean_repo_url = redact_credentials(repo_url)
+        authorization_header = _clone_authorization_header(repo_url)
+        if clean_repo_url != repo_url and authorization_header is not None:
             inherited_count = int(ssl_env.get("GIT_CONFIG_COUNT", "0"))
-            scoped_env = {
-                key.replace("_0", f"_{inherited_count}", 1): value
-                for key, value in clone_extra_env.items()
-                if key != "GIT_CONFIG_COUNT"
+            ssl_env = {
+                **ssl_env,
+                f"GIT_CONFIG_KEY_{inherited_count}": "http.extraHeader",
+                f"GIT_CONFIG_VALUE_{inherited_count}": authorization_header,
+                "GIT_CONFIG_COUNT": str(inherited_count + 1),
             }
-            ssl_env = {**ssl_env, **scoped_env, "GIT_CONFIG_COUNT": str(inherited_count + 1)}
 
         subprocess.run([
             "git", "clone",
             "--filter=blob:none",
             "--depth", "1",
-            repo_url, dest_folder
+            clean_repo_url, dest_folder
         ], env=ssl_env, check=True,  # check=True will raise an exception if the command fails
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=operation_timeout_in_seconds)
 
@@ -321,23 +340,14 @@ class GitProvider(ABC):
         if not clone_url:
             get_logger().error("Clone failed: Unable to obtain url to clone.")
             return returned_obj
-        clean_clone_url = redact_credentials(clone_url)
         destination_existed = os.path.exists(dest_folder)
         preexisting_git_dir = os.path.isdir(os.path.join(dest_folder, ".git"))
-        clone_extra_env = {}
-        if clean_clone_url != clone_url:
-            clone_extra_env = {
-                "GIT_CONFIG_COUNT": "1",
-                "GIT_CONFIG_KEY_0": f"url.{clone_url}.insteadOf",
-                "GIT_CONFIG_VALUE_0": clean_clone_url,
-            }
-        env_token = _CLONE_EXTRA_ENV.set(clone_extra_env)
         try:
             if remove_dest_folder and os.path.exists(dest_folder) and os.path.isdir(dest_folder):
                 shutil.rmtree(dest_folder)
                 destination_existed = False
                 preexisting_git_dir = False
-            self._clone_inner(clean_clone_url, dest_folder, operation_timeout_in_seconds)
+            self._clone_inner(clone_url, dest_folder, operation_timeout_in_seconds)
             returned_obj = GitProvider.ScopedClonedRepo(dest_folder)
         except Exception as e:
             # Remove Git metadata created by a failed clone; preserve caller-owned files when remove_dest_folder=False.
@@ -349,8 +359,6 @@ class GitProvider(ABC):
             get_logger().error("Clone failed: Could not clone url.",
                 artifact={"error": redact_credentials(e), "url": redact_credentials(clone_url),
                           "dest_folder": dest_folder})
-        finally:
-            _CLONE_EXTRA_ENV.reset(env_token)
         return returned_obj
 
     @abstractmethod
