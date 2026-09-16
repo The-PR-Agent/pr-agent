@@ -35,7 +35,7 @@ from pr_agent.algo.review_finding_state import (
     reconcile_review_findings,
 )
 from pr_agent.algo.review_merge import merge_review_chunks
-from pr_agent.algo.run_details import get_run_details, init_run_details
+from pr_agent.algo.run_details import get_run_details, init_run_details, record_model_used
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (
@@ -261,7 +261,11 @@ class PRReviewer:
 
     async def run(self) -> None:
         init_run_details()
+        for name in ("_chunked_patches_diff_list", "_chunked_remaining_files_list", "_chunked_results",
+                     "_chunked_primary_model"):
+            self.__dict__.pop(name, None)
         progress_response = None
+        partial_review_error = None
         review_error = None
         review_failed = False
         persistent_write_failed = False
@@ -310,9 +314,10 @@ class PRReviewer:
             try:
                 await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.REGULAR,
                                                  git_provider=self.git_provider)
-            except Exception:
+            except Exception as error:
                 if not self._merge_cached_review_chunks():
                     raise
+                partial_review_error = error
                 get_logger().warning("Fallback models exhausted; publishing successful review chunks")
             if not self.prediction:
                 return None
@@ -330,6 +335,7 @@ class PRReviewer:
                 self._should_publish_review_no_suggestions(pr_review)
                 or state_changed
                 or state_blocked
+                or self.review_failed_chunk_count > 0
             )
             if not should_publish:
                 reason = "Review output is not published"
@@ -460,6 +466,9 @@ class PRReviewer:
                     self.git_provider.publish_comment(_review_failure_comment(review_error))
                 except Exception as e:
                     get_logger().exception(f"Failed to publish review failure result, error: {e}")
+            if (partial_review_error is not None and not review_failed
+                    and get_settings().config.get("propagate_tool_errors", False)):
+                raise partial_review_error
 
     def _review_finding_state_enabled(self) -> bool:
         settings = get_settings()
@@ -819,6 +828,9 @@ class PRReviewer:
         Returns False when chunking does not apply, leaving the single-call flow in place.
         """
         patches_diff_list = getattr(self, "_chunked_patches_diff_list", None)
+        if patches_diff_list is not None:
+            self._resize_pending_review_chunks(model)
+            patches_diff_list = self._chunked_patches_diff_list
         if patches_diff_list is not None and self._chunked_remaining_files_list:
             self._include_newly_reviewable_files(model)
         if patches_diff_list is None:
@@ -836,6 +848,7 @@ class PRReviewer:
                 **multi_diff_kwargs)
             self._chunked_patches_diff_list = patches_diff_list
             self._chunked_remaining_files_list = remaining_files_list
+            self._chunked_primary_model = model
         if len(patches_diff_list) < 2:
             get_logger().info("Large-diff chunking produced a single chunk, reviewing the PR in one call")
             return False
@@ -865,7 +878,7 @@ class PRReviewer:
                 get_logger().warning(f"Failed to parse review chunk {chunk_index + 1}; retrying it with fallback",
                                      artifact={"error": error})
                 continue
-            chunk_results[chunk_index] = (prediction, data)
+            chunk_results[chunk_index] = (prediction, data, model)
         self._chunked_results = chunk_results
 
         if len(chunk_results) < len(patches_diff_list):
@@ -874,6 +887,40 @@ class PRReviewer:
             raise ValueError("No valid review output was produced for one or more chunks")
 
         return self._merge_cached_review_chunks()
+
+    def _resize_pending_review_chunks(self, model: str) -> None:
+        """Split oversized pending chunks at file boundaries while preserving result order."""
+        chunks = self._chunked_patches_diff_list
+        results = getattr(self, "_chunked_results", {})
+        budget = get_max_tokens(model) - OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD - self.token_handler.prompt_tokens
+        max_calls = get_settings().pr_reviewer.get("max_number_of_calls", 3)
+        resized, retained = [], {}
+        for index, chunk in enumerate(chunks):
+            if index in results:
+                retained[len(resized)] = results[index]
+                resized.append(chunk)
+                continue
+            if self.token_handler.count_tokens(chunk) <= budget:
+                resized.append(chunk)
+                continue
+            sections = re.split(r"(?=^## File: ')", chunk, flags=re.MULTILINE)
+            parts, current = [], ""
+            for section in sections:
+                if current and self.token_handler.count_tokens(current + section) > budget:
+                    parts.append(current)
+                    current = ""
+                current += section
+            if current:
+                parts.append(current)
+            reserved = len(chunks) - index - 1
+            if (parts and len(resized) + len(parts) + reserved <= max_calls
+                    and all(self.token_handler.count_tokens(part) <= budget for part in parts)):
+                resized.extend(parts)
+            else:
+                # Retain unsplittable work for a later model and report it as failed if none can fit it.
+                resized.append(chunk)
+        self._chunked_patches_diff_list = resized
+        self._chunked_results = retained
 
     def _include_newly_reviewable_files(self, model: str) -> None:
         """Add newly fitting files to pending work without resending successful chunks."""
@@ -907,7 +954,7 @@ class PRReviewer:
         if not chunk_results:
             return False
 
-        # The raw text is kept for logging only; the merged verdict is in self.prediction_data.
+        # Keep raw text for logging only; use the merged verdict from self.prediction_data.
         indices = sorted(chunk_results)
         raw_predictions = [chunk_results[index][0] for index in indices]
         chunk_outputs = [chunk_results[index][1] for index in indices]
@@ -916,6 +963,12 @@ class PRReviewer:
         self.review_chunk_count = len(self._chunked_patches_diff_list)
         self.review_failed_chunk_count = self.review_chunk_count - len(chunk_results)
         self.remaining_files_list = self._chunked_remaining_files_list
+        models = list(dict.fromkeys(chunk_results[index][2] for index in indices))
+        details = get_run_details()
+        if details is not None:
+            details.models_used = models
+            for model in models:
+                record_model_used(model, is_fallback=model != self._chunked_primary_model)
         return True
 
     async def _get_prediction(self, model: str, patches_diff: Optional[str] = None) -> str:
@@ -930,6 +983,10 @@ class PRReviewer:
         Returns:
             A string representing the AI prediction for the pull request review.
         """
+        if patches_diff is not None:
+            budget = get_max_tokens(model) - OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD - self.token_handler.prompt_tokens
+            if self.token_handler.count_tokens(patches_diff) > budget:
+                raise ValueError("Review chunk exceeds the current model token budget")
         variables = copy.deepcopy(self.vars)
         variables["diff"] = self.patches_diff if patches_diff is None else patches_diff  # update diff
 

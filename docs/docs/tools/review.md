@@ -273,6 +273,18 @@ for the authoritative default values.
     after chunking are still listed in the coverage footer. Every chunk is a separate model call,
     so a chunked review costs roughly `max_number_of_calls` times a normal one.
 
+    If a chunk fails or returns malformed output, successful chunks are retained and fallback
+    models retry only the pending work. Pending chunks can be split for a smaller model, within
+    the call limit; a larger model can also include previously omitted files. Chunks that still
+    exceed the model's budget are not sent to it.
+
+    If every fallback is exhausted, successful chunks are published as a partial review with a
+    failed-chunk coverage warning, even when `publish_output_no_suggestions = false`. Incomplete
+    reviews cannot resolve absent persistent findings. If no chunk succeeds, the review fails.
+    With `config.propagate_tool_errors = true`, an exhausted fallback chain still signals failure
+    to the caller after publishing the partial review and removing the progress comment.
+    Optional run details list all models that contributed to the merged review.
+
     Each chunk answers the same questions about a different part of the PR, so the answers are
     merged field by field:
 
