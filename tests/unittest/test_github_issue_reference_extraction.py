@@ -129,7 +129,7 @@ def test_empty_custom_pattern_preserves_default(description_regex):
     assert _links("The fix landed in PR #56") == [f"{BASE}/{REPO}/issues/56"]
 
 
-@pytest.mark.parametrize("pattern", ["[", r"#\d+", r"(fixes) #(\d+)", 42])
+@pytest.mark.parametrize("pattern", ["[", r"#\d+", r"(fixes) #(\d+)", 42, r"(a){4294967296}", "(" * 1000])
 def test_invalid_custom_pattern_falls_back(description_regex, pattern, monkeypatch):
     from unittest.mock import Mock
 
@@ -138,6 +138,22 @@ def test_invalid_custom_pattern_falls_back(description_regex, pattern, monkeypat
     description_regex(pattern)
     assert _links("PR #56") == [f"{BASE}/{REPO}/issues/56"]
     logger.warning.assert_called_once()
+
+
+@pytest.mark.parametrize("number", ["9" * 4301, "²", "١٢"])
+def test_invalid_numeric_capture_preserves_valid_references(description_regex, number):
+    description_regex(r"ticket: (\S+)")
+    assert _links(f"ticket: {number} ticket: 42") == [f"{BASE}/{REPO}/issues/42"]
+
+
+def test_pathological_pattern_times_out_and_uses_default_matching(description_regex, monkeypatch):
+    from unittest.mock import Mock
+
+    logger = Mock()
+    monkeypatch.setattr("pr_agent.tools.ticket_pr_compliance_check.get_logger", lambda: logger)
+    description_regex(r"(?:a+)+(\d+)")
+    assert _links("a99 " + "a" * 10000 + "! Fixes #42") == [f"{BASE}/{REPO}/issues/42"]
+    logger.warning.assert_called_once_with("description_issue_regex timed out; using default pattern.")
 
 
 def test_custom_matches_keep_explicit_references_order_and_cap(description_regex):

@@ -160,6 +160,37 @@ def settings_snapshot():
 # ---------------------------------------------------------------------------
 
 class TestGithubExtractionMerging:
+    def test_skipped_pr_does_not_displace_later_issue(self, settings_snapshot):
+        repo_obj = _FakeRepoObj({
+            1: _FakeIssue(1, raw_data={"pull_request": {"url": "pr"}}),
+            **{number: _FakeIssue(number) for number in range(2, 6)},
+        })
+        provider = _make_github_provider(user_description="#1 #2 #3 #4 #5", repo_obj=repo_obj)
+        repo_obj.get_issue = MagicMock(wraps=repo_obj.get_issue)
+        result = asyncio.run(extract_tickets(provider))
+        assert [ticket["ticket_id"] for ticket in result] == [2, 3, 4]
+        assert [call.args[0] for call in repo_obj.get_issue.call_args_list] == [1, 2, 3, 4]
+
+    def test_malformed_url_does_not_discard_surrounding_issues(self, settings_snapshot):
+        provider = _make_github_provider(
+            user_description=f"#1 https://github.com/org/repo/issues/{'9' * 4301} #2",
+            repo_obj=_FakeRepoObj({1: _FakeIssue(1), 2: _FakeIssue(2)}),
+        )
+        result = asyncio.run(extract_tickets(provider))
+        assert [ticket["ticket_id"] for ticket in result] == [1, 2]
+
+    def test_pr_lookup_attempts_are_bounded(self, settings_snapshot):
+        repo_obj = _FakeRepoObj({
+            number: _FakeIssue(number, raw_data={"pull_request": {"url": "pr"}})
+            for number in range(1, 100)
+        })
+        repo_obj.get_issue = MagicMock(wraps=repo_obj.get_issue)
+        provider = _make_github_provider(
+            user_description=" ".join(f"#{number}" for number in range(1, 100)), repo_obj=repo_obj,
+        )
+        assert asyncio.run(extract_tickets(provider)) == []
+        assert repo_obj.get_issue.call_count == tpc.MAX_GITHUB_TICKET_LOOKUPS
+
     def test_pull_request_reference_is_skipped(self, settings_snapshot):
         repo_obj = _FakeRepoObj({
             56: _FakeIssue(56, raw_data={"pull_request": {"url": "https://api.github.com/repos/org/repo/pulls/56"}}),

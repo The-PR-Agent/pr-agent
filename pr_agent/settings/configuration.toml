@@ -119,10 +119,10 @@ extract_issue_from_branch = true
 # to default if missing). If empty, uses default pattern: first 1-6 digits at start of branch or after a slash,
 # followed by hyphen or end (e.g. feature/1-test, 123-fix). GitHub only; other providers planned for later.
 branch_issue_regex = ""
-# Optional: regex replacing bare #N references in PR descriptions, with exactly one capturing group for the issue number.
-# Empty or invalid patterns use the default bare #N matching (up to six digits); invalid patterns log a warning.
-# Custom patterns control their own digit limit. Full issue URLs and owner/repo#N references remain supported.
-# Example (TOML literal quotes preserve backslashes): description_issue_regex = '(?i)(?:fixes|closes|resolves)\s+#(\d+)'
+# Configure a regex replacing bare #N references, with exactly one capturing group for an ASCII issue number.
+# Leave empty for default matching (up to six digits); fall back with a warning on invalid patterns or a 100ms timeout.
+# Set the custom digit limit in the pattern; use only integer-parseable captures. Keep full URLs and owner/repo#N references.
+# Use TOML literal quotes to preserve backslashes, e.g. description_issue_regex = '(?i)(?:fixes|closes|resolves)\s+#(\d+)'
 description_issue_regex = ""
 
 

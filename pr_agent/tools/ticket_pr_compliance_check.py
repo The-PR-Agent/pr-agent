@@ -6,6 +6,7 @@ import traceback
 from urllib.parse import urlparse
 
 import aiohttp
+import regex
 from atlassian import Jira
 
 from pr_agent.algo.pr_processing import OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD
@@ -27,6 +28,7 @@ BRANCH_ISSUE_PATTERN = re.compile(r"(?:^|/)(\d{1,6})(?=-|$)")
 # only followed up to this many digits. The bound matches BRANCH_ISSUE_PATTERN above: the same
 # number written in a branch name and in the description should resolve the same way.
 MAX_SHORTHAND_ISSUE_DIGITS = 6
+DESCRIPTION_REGEX_TIMEOUT = 0.1
 
 # Cap on the total tickets analysed per PR, enforced at the Jira step (see add_jira_tickets).
 # The provider-native lookups keep their own budgets (MAX_GITHUB_TICKETS, MAX_GITLAB_TICKETS,
@@ -357,6 +359,7 @@ DEFAULT_ASANA_REQUEST_TIMEOUT = 10
 MAX_ASANA_REQUEST_TIMEOUT = 60
 MAX_ASANA_TICKETS = 3
 MAX_GITHUB_TICKETS = 3
+MAX_GITHUB_TICKET_LOOKUPS = 30
 MAX_GITLAB_TICKETS = 3
 GITLAB_TICKET_PATTERN = re.compile(
     r"(?P<url>https?://[^\s<>(),;]+)"
@@ -661,7 +664,8 @@ def extract_gitlab_ticket_references(pr_description, repo_path, gitlab_url):
     return references[:MAX_GITLAB_TICKETS]
 
 
-def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url_html='https://github.com'):
+def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url_html='https://github.com',
+                                             max_tickets=MAX_GITHUB_TICKETS):
     """
     Extract all ticket links from PR description
     """
@@ -677,13 +681,18 @@ def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url
 
     try:
         custom_pattern = None
+        custom_matches = []
         custom_regex = get_settings().get("config.description_issue_regex", "")
         if custom_regex:
             try:
                 custom_pattern = re.compile(custom_regex)
                 if custom_pattern.groups != 1:
                     raise ValueError("expected exactly one capturing group for the issue number")
-            except (re.error, TypeError, ValueError) as e:
+                custom_matches = list(regex.finditer(custom_regex, pr_description, timeout=DESCRIPTION_REGEX_TIMEOUT))
+            except TimeoutError:
+                get_logger().warning("description_issue_regex timed out; using default pattern.")
+                custom_pattern = None
+            except (re.error, regex.error, TypeError, ValueError, OverflowError, RecursionError) as e:
                 get_logger().warning(f"Invalid description_issue_regex: {e}; using default pattern.")
                 custom_pattern = None
 
@@ -707,25 +716,29 @@ def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url
 
         if custom_pattern is not None and repo_path:
             explicit_index = 0
-            for match in custom_pattern.finditer(pr_description):
+            for match in custom_matches:
                 issue_number = match[1]
                 # Keep explicit references from also becoming tickets in the current repository.
-                # Both match sequences are ordered, so one forward pointer covers the overlap check.
+                # Use one forward pointer because both match sequences are ordered.
                 start, end = match.span(1)
                 while explicit_index < len(explicit_spans) and explicit_spans[explicit_index][1] <= start:
                     explicit_index += 1
                 if explicit_index < len(explicit_spans) and explicit_spans[explicit_index][0] < end:
                     continue
-                if issue_number and issue_number.isdigit():
+                if issue_number and issue_number.isascii() and issue_number.isdigit():
+                    try:
+                        int(issue_number)
+                    except ValueError:
+                        continue
                     candidates.append((match.start(),
                                        f"{base_url_html.strip('/')}/{repo_path}/issues/{issue_number}"))
 
         for _, url in sorted(candidates, key=lambda candidate: candidate[0]):
             _add(url)
 
-        if len(github_tickets) > MAX_GITHUB_TICKETS:
+        if len(github_tickets) > max_tickets:
             get_logger().info(f"Too many tickets found in PR description: {len(github_tickets)}")
-            github_tickets = github_tickets[:MAX_GITHUB_TICKETS]
+            github_tickets = github_tickets[:max_tickets]
     except Exception as e:
         get_logger().error(f"Error extracting tickets error= {e}",
                            artifact={"traceback": traceback.format_exc()})
@@ -871,7 +884,8 @@ async def extract_tickets(git_provider):
 
         if _provider_supports(git_provider, "supports_issue_url_tickets"):
             description_tickets = extract_ticket_links_from_pr_description(
-                user_description, git_provider.repo, git_provider.base_url_html
+                user_description, git_provider.repo, git_provider.base_url_html,
+                max_tickets=MAX_GITHUB_TICKET_LOOKUPS,
             )
             branch_name = git_provider.get_pr_branch()
             branch_tickets = extract_ticket_links_from_branch_name(
@@ -886,22 +900,23 @@ async def extract_tickets(git_provider):
 
             if len(merged) > MAX_GITHUB_TICKETS:
                 get_logger().info(f"Too many GitHub tickets (description + branch): {len(merged)}")
-            # Preserve GitHub's established three-candidate budget. Asana tasks use
-            # their own bounded budget and therefore do not displace GitHub issues.
-            tickets = merged[:MAX_GITHUB_TICKETS]
+            # Bound lookups separately so skipped PRs do not consume the issue budget.
+            tickets = merged[:MAX_GITHUB_TICKET_LOOKUPS]
             tickets_content = []
             repo_obj_cache = {}
 
             if tickets:
 
                 for ticket in tickets:
-                    repo_name, original_issue_number = git_provider._parse_issue_url(ticket)
+                    if len(tickets_content) >= MAX_GITHUB_TICKETS:
+                        break
 
                     try:
+                        repo_name, original_issue_number = git_provider._parse_issue_url(ticket)
                         repo_obj = _get_repo_obj_for_ticket(git_provider, ticket, repo_name, repo_obj_cache)
                         issue_main = repo_obj.get_issue(original_issue_number)
                     except Exception as e:
-                        get_logger().error(f"Error getting main issue {repo_name}#{original_issue_number}: {e}",
+                        get_logger().error(f"Error getting main issue {ticket}: {e}",
                                            artifact={"traceback": traceback.format_exc()})
                         continue
 
