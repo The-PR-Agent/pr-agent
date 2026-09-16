@@ -358,6 +358,48 @@ async def test_cached_chunks_are_used_when_fallback_diff_fits(chunking_enabled):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("fallback_fits", [True, False])
+async def test_larger_fallback_includes_omitted_files_without_repeating_successes(chunking_enabled, fallback_fits):
+    reviewer = _make_reviewer()
+    reviewer.token_handler.prompt_tokens = 0
+    reviewer.token_handler.count_tokens.side_effect = len
+    get_settings().set("pr_reviewer.max_number_of_calls", 2)
+    chunk_a = "## File: 'a.py'\n+first change\n"
+    chunk_b = "## File: 'b.py'\n+second change\n"
+    chunk_c = "## File: 'c.py'\n+previously omitted change\n"
+    reviewer._get_prediction = AsyncMock(side_effect=[CHUNK_A, RuntimeError("model refused"), CHUNK_B])
+
+    with (
+        patch("pr_agent.tools.pr_reviewer.get_pr_diff", side_effect=[
+            (chunk_a, ["b.py", "c.py"]),
+            (chunk_a + chunk_b + chunk_c, []),
+        ]) as get_diff,
+        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
+              return_value=([chunk_a, chunk_b], ["c.py"])) as get_multi,
+        patch("pr_agent.tools.pr_reviewer.get_max_tokens",
+              return_value=10000 if fallback_fits else 1500 + len(chunk_b)),
+    ):
+        with pytest.raises(RuntimeError, match="model refused"):
+            await reviewer._prepare_prediction("primary")
+        await reviewer._prepare_prediction("fallback")
+
+    assert get_diff.call_count == 2
+    get_multi.assert_called_once()
+    calls = reviewer._get_prediction.await_args_list
+    assert len(calls) == 3
+    assert calls[0].args == ("primary", chunk_a)
+    assert calls[1].args == ("primary", chunk_b)
+    fallback_diff = calls[2].args[1]
+    assert calls[2].args[0] == "fallback"
+    assert chunk_a not in fallback_diff
+    assert chunk_b in fallback_diff
+    assert (chunk_c in fallback_diff) is fallback_fits
+    assert reviewer.remaining_files_list == ([] if fallback_fits else ["c.py"])
+    assert reviewer.review_chunk_count == 2
+    assert reviewer.review_failed_chunk_count == 0
+
+
+@pytest.mark.asyncio
 async def test_a_review_where_every_chunk_failed_raises_so_a_fallback_model_is_tried(chunking_enabled):
     reviewer = _make_reviewer()
     reviewer._get_prediction = AsyncMock(side_effect=[RuntimeError("model refused"),

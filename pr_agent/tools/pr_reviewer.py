@@ -20,6 +20,7 @@ from pr_agent.algo.inline_comment_dedup import (
 )
 from pr_agent.algo.output_models import PRReview
 from pr_agent.algo.pr_processing import (
+    OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
     PreparedPRDiff,
     add_ai_metadata_to_diff_files,
     get_pr_diff,
@@ -43,6 +44,7 @@ from pr_agent.algo.utils import (
     PRReviewIdentity,
     add_pr_review_identity,
     convert_to_markdown_v2,
+    get_max_tokens,
     get_pr_review_comment_identifiers,
     github_action_output,
     load_yaml,
@@ -817,6 +819,8 @@ class PRReviewer:
         Returns False when chunking does not apply, leaving the single-call flow in place.
         """
         patches_diff_list = getattr(self, "_chunked_patches_diff_list", None)
+        if patches_diff_list is not None and self._chunked_remaining_files_list:
+            self._include_newly_reviewable_files(model)
         if patches_diff_list is None:
             multi_diff_kwargs = {
                 "max_calls": get_settings().pr_reviewer.get("max_number_of_calls", 3),
@@ -870,6 +874,32 @@ class PRReviewer:
             raise ValueError("No valid review output was produced for one or more chunks")
 
         return self._merge_cached_review_chunks()
+
+    def _include_newly_reviewable_files(self, model: str) -> None:
+        """Add newly fitting files to pending work without resending successful chunks."""
+        chunks = self._chunked_patches_diff_list
+        results = getattr(self, "_chunked_results", {})
+        remaining = self._chunked_remaining_files_list
+        pending = [index for index in range(len(chunks)) if index not in results]
+        budget = get_max_tokens(model) - OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD - self.token_handler.prompt_tokens
+        max_calls = get_settings().pr_reviewer.get("max_number_of_calls", 3)
+        included = set()
+        for section in re.split(r"(?=^## File: ')", self.patches_diff or "", flags=re.MULTILINE):
+            match = re.match(r"## File: '(.*)'\n", section)
+            if not match or match[1] not in remaining or match[1] in included:
+                continue
+            for index in pending:
+                combined = chunks[index] + "\n\n" + section
+                if self.token_handler.count_tokens(combined) <= budget:
+                    chunks[index] = combined
+                    included.add(match[1])
+                    break
+            else:
+                if len(chunks) < max_calls and self.token_handler.count_tokens(section) <= budget:
+                    pending.append(len(chunks))
+                    chunks.append(section)
+                    included.add(match[1])
+        self._chunked_remaining_files_list = [name for name in remaining if name not in included]
 
     def _merge_cached_review_chunks(self) -> bool:
         """Merge successful chunks in order, retaining incomplete coverage after exhausted retries."""
