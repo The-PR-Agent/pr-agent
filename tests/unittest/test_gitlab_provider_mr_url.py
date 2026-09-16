@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
 
 
@@ -126,5 +128,30 @@ def test_get_canonical_url_parts_keeps_standard_project_path():
 
     assert provider.get_canonical_url_parts(repo_git_url=None, desired_branch=None) == (
         "https://gitlab.example.com/group/project/-/blob/main",
+        "?ref_type=heads",
+    )
+
+
+@pytest.mark.parametrize("branch, expected", [
+    # A '#' would otherwise start the URL fragment and swallow the file path and line anchor.
+    ("project#456", "project%23456"),
+    # A slash is a legal path separator in a branch name and must survive unencoded.
+    ("feature/cache", "feature/cache"),
+    ("feat/a#b", "feat/a%23b"),
+])
+def test_get_canonical_url_parts_encodes_branch_names(branch, expected):
+    provider = _provider()
+    provider.pr_url = "https://gitlab.example.com/group/project/-/merge_requests/5"
+    provider.id_project = "group/project"
+    provider.gl = SimpleNamespace(
+        url="https://gitlab.example.com",
+        projects=SimpleNamespace(get=lambda _: SimpleNamespace(default_branch=branch)),
+    )
+    provider.mr = SimpleNamespace(
+        web_url="https://gitlab.example.com/group/project/-/merge_requests/5"
+    )
+
+    assert provider.get_canonical_url_parts(repo_git_url=None, desired_branch=None) == (
+        f"https://gitlab.example.com/group/project/-/blob/{expected}",
         "?ref_type=heads",
     )
