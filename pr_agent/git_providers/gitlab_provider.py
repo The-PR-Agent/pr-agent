@@ -1328,13 +1328,40 @@ class GitLabProvider(GitProvider):
                     continue
                 relevant_line_in_file = lines[relevant_lines_start - 1]
 
-                # edit_type, found, source_line_no, target_file, target_line_no = self.find_in_file(target_file,
-                #                                                                            relevant_line_in_file)
-                # for code suggestions, we want to edit the new code
-                source_line_no = -1
-                target_line_no = relevant_lines_start + 1
-                found = True
-                edit_type = 'addition'
+                # Classify the anchor positionally from the hunk headers. A content search stops
+                # at the first line holding the same text, which moves the anchor when that text
+                # repeats earlier in the patch, and the body is a -0+N window that travels with it.
+                edit_type, found, source_line_no, target_line_no = 'addition', False, -1, 0
+                old_line_no = new_line_no = 0
+                for patch_line in (target_file.patch or '').splitlines():
+                    if patch_line.startswith('@@'):
+                        match = self.RE_HUNK_HEADER.match(patch_line)
+                        if match:
+                            old_line_no, new_line_no = int(match.group(1)), int(match.group(3))
+                        continue
+                    if patch_line.startswith('\\'):
+                        continue
+                    if patch_line.startswith('-'):
+                        old_line_no += 1
+                        continue
+                    if patch_line.startswith('+'):
+                        new_line_no += 1
+                    else:
+                        old_line_no += 1
+                        new_line_no += 1
+                    if new_line_no - 1 == relevant_lines_start:
+                        edit_type = 'addition' if patch_line.startswith('+') else 'context'
+                        found, source_line_no, target_line_no = True, old_line_no, new_line_no
+                        break
+
+                if not found:
+                    # Keep the existing fallback path for anchors outside the diff. GitLab will
+                    # reject the optimistic addition position and _create_suggestion_note will
+                    # publish the general file note instead.
+                    source_line_no = -1
+                    target_line_no = relevant_lines_start + 1
+                    found = True
+                    edit_type = 'addition'
 
                 self.send_inline_comment(body, edit_type, found, relevant_file, relevant_line_in_file,
                                          source_line_no, target_file, target_line_no, original_suggestion,
