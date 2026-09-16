@@ -378,6 +378,35 @@ async def test_self_reflection_skips_model_when_required_prompt_exceeds_budget(m
 
 
 @pytest.mark.asyncio
+async def test_self_reflection_skips_model_when_numbered_diff_is_clipped(monkeypatch):
+    tool = _make_tool()
+    tool.ai_handler.chat_completion = AsyncMock()
+
+    class ClippedReflectionDiff:
+        def fit_prompt_variable(self, *_args, **_kwargs):
+            return SimpleNamespace(
+                optional_text="numbered",
+                system_prompt="system",
+                user_prompt="user",
+            )
+
+    monkeypatch.setattr(
+        pr_code_suggestions_module.AttemptTokenBudget,
+        "for_prompt_attempt",
+        lambda *_args, **_kwargs: ClippedReflectionDiff(),
+    )
+
+    result = await tool.self_reflect_on_suggestions(
+        [_valid_suggestion()],
+        "numbered diff",
+        "fallback-model",
+    )
+
+    assert result == ""
+    tool.ai_handler.chat_completion.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_prepare_prediction_main_keeps_successful_chunks_when_one_parallel_chunk_fails():
     settings = get_settings()
     original_decouple_hunks = settings.pr_code_suggestions.decouple_hunks

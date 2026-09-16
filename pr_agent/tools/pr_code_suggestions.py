@@ -2183,6 +2183,10 @@ class PRCodeSuggestions:
                 default_output_tokens=OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
                 keep="prefix",
             )
+            if fitted.optional_text != raw_diff:
+                raise ValueError(
+                    f"The complete reflection diff does not fit the token limit for {model}"
+                )
             system_prompt_reflect = fitted.system_prompt
             user_prompt_reflect = fitted.user_prompt
 
