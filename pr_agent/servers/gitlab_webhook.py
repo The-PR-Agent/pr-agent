@@ -456,7 +456,7 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
 
                 get_logger().info(f"A comment has been added to a merge request: {url}")
                 body = data.get('object_attributes', {}).get('note')
-                if data.get('object_attributes', {}).get('type') == 'DiffNote' and '/ask' in body: # /ask_line
+                if data.get('object_attributes', {}).get('type') == 'DiffNote' and isinstance(body, str) and '/ask' in body: # /ask_line
                     body = handle_ask_line(body, data)
 
                 await handle_request(url, body, log_context, sender_id, notify=lambda: provider.add_eyes_reaction(comment_id))

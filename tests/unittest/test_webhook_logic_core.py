@@ -933,6 +933,45 @@ async def test_gitlab_automatic_feedback_follows_draft_setting(
 
 
 @pytest.mark.asyncio
+async def test_gitlab_note_with_missing_body_returns_success(
+    gitlab_webhook_module, monkeypatch
+):
+    """GitLab can send system notes without a textual note body."""
+    handled = []
+    monkeypatch.setattr(
+        gitlab_webhook_module,
+        "get_git_provider_with_context",
+        lambda **_: SimpleNamespace(add_eyes_reaction=lambda *_: None),
+    )
+    async def record_request(url, body, log_context, sender_id, notify):
+        handled.append((url, body))
+
+    monkeypatch.setattr(gitlab_webhook_module, "handle_request", record_request)
+    data = _gitlab_payload(note=None, type="DiffNote", id=1)
+    data.update(
+        {
+            "object_kind": "note",
+            "event_type": "note",
+            "merge_request": {"url": "https://gitlab.com/org/repo/-/merge_requests/1"},
+        }
+    )
+
+    settings = get_settings()
+    original_shared_secret = settings.get("GITLAB.SHARED_SECRET", None)
+    original_token = settings.get("GITLAB.PERSONAL_ACCESS_TOKEN", None)
+    settings.set("GITLAB.SHARED_SECRET", "secret-id")
+    settings.set("GITLAB.PERSONAL_ACCESS_TOKEN", "test-token")
+    try:
+        response = await _post_gitlab_webhook(gitlab_webhook_module.app, data)
+    finally:
+        settings.set("GITLAB.SHARED_SECRET", original_shared_secret)
+        settings.set("GITLAB.PERSONAL_ACCESS_TOKEN", original_token)
+
+    assert response.status_code == 200
+    assert handled == [(data["merge_request"]["url"], None)]
+
+
+@pytest.mark.asyncio
 async def test_gitlab_manual_feedback_on_draft_is_unaffected(gitlab_webhook_module, monkeypatch):
     settings = get_settings()
     settings.set("GITLAB.FEEDBACK_ON_DRAFT_PR", False)
