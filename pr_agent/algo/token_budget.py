@@ -382,7 +382,6 @@ class AttemptTokenBudget:
         if not optional_text:
             return empty_prompt
 
-        best_prompt = empty_prompt
         marker_prompt = prepare(truncation_marker)
         if marker_prompt.input_tokens > input_limit:
             raise ValueError(
