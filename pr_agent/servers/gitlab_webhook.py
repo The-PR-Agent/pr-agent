@@ -127,7 +127,10 @@ def is_bot_user(data) -> bool:
 def is_draft(data) -> bool:
     try:
         if 'draft' in data.get('object_attributes', {}):
-            return data['object_attributes']['draft']
+            draft = data['object_attributes']['draft']
+            if isinstance(draft, str):
+                return draft.lower() == 'true'
+            return bool(draft)
 
         # for gitlab server version before 16
         elif 'Draft:' in (data.get('object_attributes', {}).get('title') or ''):

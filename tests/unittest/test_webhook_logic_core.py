@@ -145,6 +145,11 @@ async def _post_gitlab_webhook(app, data):
         )
 
 
+def test_gitlab_is_draft_normalizes_string_boolean_values(gitlab_webhook_module):
+    assert gitlab_webhook_module.is_draft(_gitlab_payload(draft="false")) is False
+    assert gitlab_webhook_module.is_draft(_gitlab_payload(draft="true")) is True
+
+
 def test_bitbucket_server_should_process_pr_logic_ignores_author_title_and_branch():
     settings = get_settings()
     original = {
